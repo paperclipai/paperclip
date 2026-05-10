@@ -1,0 +1,42 @@
+name: Auto-label new issues
+
+# Security review: this workflow only reads context.issue.number, context.repo.owner,
+# and context.repo.repo via actions/github-script. No untrusted user input
+# (issue title, body, comments, head_ref, etc.) is interpolated into shell commands.
+# No run: steps at all — all logic runs inside github-script's JS sandbox.
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  add-triage-label:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            // Ensure the label exists before applying it. Self-healing on first run.
+            try {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'needs-triage',
+                color: 'fbca04',
+                description: 'Newly filed, not yet reviewed by a maintainer',
+              });
+            } catch (e) {
+              // 422 = label already exists — safe no-op.
+              if (e.status !== 422) throw e;
+            }
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: ['needs-triage'],
+            });

@@ -1,0 +1,102 @@
+name: Feature Request
+description: Propose a new capability for Paperclip.
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to propose a feature. Please read `CONTRIBUTING.md` before opening — bigger changes should be discussed in Discord `#dev` first.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I have searched existing open and closed issues and Discussions — this has not been proposed before.
+          required: true
+        - label: This feature belongs in Paperclip core, not in a plugin, skill, or external adapter.
+          required: true
+        - label: I have read `AGENTS.md` §3 (Repo Map) and know which subsystem this would affect.
+          required: true
+
+  - type: input
+    id: feature_name
+    attributes:
+      label: Feature name
+      description: A short, concrete name for what you're proposing.
+      placeholder: "e.g. Per-company budget overrides, Cross-company task templates"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: subsystem
+    attributes:
+      label: Subsystem affected
+      description: Which part of the codebase would this primarily live in?
+      options:
+        - server/ — REST API & orchestration services
+        - ui/ — React + Vite board UI
+        - packages/db — Drizzle schema, migrations
+        - packages/shared — types, constants, validators, API paths
+        - packages/adapters — agent adapter implementations
+        - packages/plugins — plugin system
+        - Cross-cutting (multiple of the above)
+        - Unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem_statement
+    attributes:
+      label: Problem
+      description: Describe the concrete problem this solves. Focus on the problem, not the solution yet.
+      placeholder: |
+        Today, when [specific situation], the user cannot [specific thing], which causes [specific negative outcome].
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed_solution
+    attributes:
+      label: Proposed solution
+      description: Describe what you'd like to see added. Be specific about commands, endpoints, UI, and behavior.
+      placeholder: |
+        Add ... so that ...
+        Example usage: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What other approaches did you consider? Why did you reject them?
+    validations:
+      required: true
+
+  - type: textarea
+    id: invariants
+    attributes:
+      label: Impact on Paperclip invariants
+      description: |
+        `AGENTS.md` §5 lists the control-plane invariants that must be preserved:
+        - Single-assignee task model
+        - Atomic issue checkout semantics
+        - Approval gates for governed actions
+        - Budget hard-stop auto-pause behavior
+        - Activity logging for mutating actions
+        - Company-scoping of all domain entities
+
+        Does this feature affect any of them? How is compliance preserved? Write "None" if not applicable.
+      placeholder: |
+        This feature touches activity logging — any mutations made by the new endpoint must write to the activity log. Other invariants unaffected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional context
+      description: Screenshots, mockups, prior art from other tools, related Discussions, or anything else that helps explain the proposal.
+    validations:
+      required: false

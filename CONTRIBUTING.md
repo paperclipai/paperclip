@@ -4,6 +4,8 @@ Thanks for wanting to contribute!
 
 We really appreciate both small fixes and thoughtful larger changes.
 
+> **Filing an issue?** Please use one of the [issue templates](./.github/ISSUE_TEMPLATE). Blank issues are disabled. For questions or general discussion, please use [Discord](https://discord.gg/m4HZY7xNG3) or [GitHub Discussions](https://github.com/paperclipai/paperclip/discussions) instead of filing an issue.
+
 ## Two Paths to Get Your Pull Request Accepted
 
 ### Path 1: Small, Focused Changes (Fastest way to get merged)

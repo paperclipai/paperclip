@@ -1,0 +1,93 @@
+name: Enhancement Proposal
+description: Propose an improvement to an existing Paperclip feature.
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        An enhancement improves something that already exists — better output, broader edge-case handling, clearer UX, performance. It does not add new commands, endpoints, or concepts. If you are proposing something new, use the **Feature Request** template instead.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I have confirmed this improves existing behavior — it does not add a new command, endpoint, or concept.
+          required: true
+        - label: I have searched existing open and closed issues and this has not already been proposed.
+          required: true
+
+  - type: input
+    id: what_is_improved
+    attributes:
+      label: What existing behavior does this improve?
+      description: Name the specific command, endpoint, UI view, or behavior being enhanced.
+      placeholder: "e.g. /api/companies response shape, board task list sorting, adapter startup log output"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: subsystem
+    attributes:
+      label: Subsystem affected
+      options:
+        - server/ — REST API & orchestration services
+        - ui/ — React + Vite board UI
+        - packages/db — Drizzle schema, migrations
+        - packages/shared — types, constants, validators, API paths
+        - packages/adapters — agent adapter implementations
+        - packages/plugins — plugin system
+        - Cross-cutting (multiple of the above)
+        - Unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: current_behavior
+    attributes:
+      label: Current behavior
+      description: Describe exactly how it works today. Include example output or a screenshot if helpful.
+      placeholder: |
+        Currently, when I call ..., the response is ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed_behavior
+    attributes:
+      label: Proposed behavior
+      description: Describe exactly how it should work after the enhancement. Include example output.
+      placeholder: |
+        After this enhancement, the response would be ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reason
+    attributes:
+      label: Reason and benefit
+      description: |
+        Why is the current behavior a problem, and what is the concrete benefit of the proposed behavior?
+
+        Vague answers like "it would be better" or "more user-friendly" are not enough.
+    validations:
+      required: true
+
+  - type: textarea
+    id: breaking_changes
+    attributes:
+      label: Breaking changes
+      description: |
+        Does this change any behavior, response shape, or output format that users or agents might rely on?
+        If yes, describe exactly what changes and how backward compatibility is maintained.
+        Write "None" only if you are certain.
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional context
+      description: Screenshots, related issues, or anything else.
+    validations:
+      required: false

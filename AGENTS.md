@@ -166,7 +166,27 @@ When creating a pull request (via `gh pr create` or any other method), you **mus
 - **Model Used** — the AI model that produced or assisted with the change (provider, exact model ID, context window, capabilities). Write "None — human-authored" if no AI was used.
 - **Checklist** — all items checked
 
-## 11. Definition of Done
+## 11. For AI Agents Filing Issues
+
+If you are an AI agent and you have encountered an error while using Paperclip, read this before filing an issue.
+
+**Before filing, verify all three:**
+
+1. The error originates in Paperclip's own source code — not in your API provider, your configuration, your `CLAUDE.md`, or your agent's own logic.
+2. You can reproduce the error on a clean install with the latest Paperclip version.
+3. No existing open or closed issue already describes this — search first.
+
+**Common false positives — do NOT file issues for:**
+
+- API quota, rate limit, or 429 errors from Anthropic, OpenAI, or any other model provider
+- Authentication failures caused by expired, missing, or malformed API keys
+- Errors originating in your own agent code, `CLAUDE.md` configuration, or local toolchain
+- Network timeouts on your host machine
+- Errors coming from an external adapter plugin — file those upstream in the plugin's own repository
+
+If in doubt, raise the error with your human operator or ask in Discord `#help` before filing an issue. All issues must use one of the templates at `.github/ISSUE_TEMPLATE/` — blank issues are disabled.
+
+## 12. Definition of Done
 
 A change is done when all are true:
 
@@ -176,7 +196,7 @@ A change is done when all are true:
 4. Docs updated when behavior or commands change
 5. PR description follows the [PR template](.github/PULL_REQUEST_TEMPLATE.md) with all sections filled in (including Model Used)
 
-## 11. Fork-Specific: HenkDz/paperclip
+## 13. Fork-Specific: HenkDz/paperclip
 
 This is a fork of `paperclipai/paperclip` with QoL patches and an **external-only** Hermes adapter story on branch `feat/externalize-hermes-adapter` ([tree](https://github.com/HenkDz/paperclip/tree/feat/externalize-hermes-adapter)).
 

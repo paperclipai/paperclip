@@ -1,0 +1,88 @@
+name: Require Issue Link
+
+# Security review:
+# - Uses pull_request_target so fork PRs receive a write-scoped GITHUB_TOKEN and the
+#   comment step actually posts instead of silently 403-ing. Safe here because
+#   neither step checks out PR-supplied code — the scan reads $PR_BODY from an env
+#   var, and the github-script step only calls the REST API with trusted context
+#   values (owner, repo, PR number). No untrusted content is executed or written.
+# - The PR body (github.event.pull_request.body) is untrusted and is handled via
+#   the safe env-var pattern: bound to $PR_BODY, then matched with grep. Never
+#   interpolated directly into the shell command string.
+# - "synchronize" is intentionally omitted from the trigger types to avoid posting
+#   duplicate "missing issue link" comments on every push. Adding a Closes/Fixes/
+#   Resolves reference happens by editing the PR body, which fires "edited", so
+#   the check still runs when contributors add the reference after opening.
+
+on:
+  pull_request_target:
+    types: [opened, edited, reopened]
+
+permissions:
+  pull-requests: write
+  issues: write
+
+jobs:
+  check-issue-link:
+    name: Issue link required
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Scan PR body for closing reference
+        id: check
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          if printf '%s' "$PR_BODY" | grep -qiE '(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#[0-9]+'; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Comment and fail if missing
+        if: steps.check.outputs.found == 'false'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            // Dedup guard: only post the comment if one isn't already present.
+            // The "edited" event fires on both title and body edits, so without
+            // this check a contributor editing the title while the body still
+            // lacks a closing reference would accumulate a new bot comment each
+            // time. Uses github.paginate so the check scans every page of
+            // comments, not just the first 100 — otherwise on high-traffic PRs
+            // the original bot comment could fall outside the fetched page and
+            // duplicates would reappear. The check still fails unconditionally
+            // when the link is missing — only the comment is skipped on repeats.
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+            const alreadyCommented = comments.some(
+              c => c.user && c.user.type === 'Bot' && typeof c.body === 'string' && c.body.startsWith('## Missing issue link')
+            );
+
+            if (!alreadyCommented) {
+              const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                body: [
+                  '## Missing issue link',
+                  '',
+                  'This PR does not reference an issue. Every PR should link to an open issue using a closing keyword in the PR body:',
+                  '',
+                  '```',
+                  'Closes #123',
+                  '```',
+                  '',
+                  `If no issue exists yet, please [open one first](${repoUrl}/issues/new/choose) and update this PR body to reference it.`,
+                  '',
+                  'This is a soft check — if your PR genuinely has no associated issue (e.g. a trivial typo fix or maintainer-only tooling change), add a short note in the PR body explaining why and ask a maintainer to override this check.',
+                ].join('\n'),
+              });
+            }
+
+            core.setFailed('PR body must contain a closing issue reference (e.g. "Closes #123").');

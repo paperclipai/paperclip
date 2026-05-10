@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Discord — questions & support
+    url: https://discord.gg/m4HZY7xNG3
+    about: For setup help, general questions, and conversation — not bug reports.
+  - name: GitHub Discussions
+    url: https://github.com/paperclipai/paperclip/discussions
+    about: For ideas, RFCs, and open-ended discussion.

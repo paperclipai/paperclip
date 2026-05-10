@@ -1,0 +1,46 @@
+name: Documentation Issue
+description: Report incorrect, missing, or unclear documentation.
+labels: ["documentation", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Help improve the docs. Point us at what's wrong, missing, or confusing.
+
+  - type: dropdown
+    id: type
+    attributes:
+      label: Issue type
+      options:
+        - Incorrect information
+        - Missing documentation
+        - Unclear or confusing
+        - Outdated (no longer matches behavior)
+        - Typo or formatting
+    validations:
+      required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: Where is the issue?
+      description: File path, URL, or section name.
+      placeholder: "e.g. README.md#installation, doc/DEVELOPING.md, docs/plugins.md"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What's wrong?
+      description: Describe the documentation issue.
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested fix
+      description: If you know what the correct information should be, include it here.
+    validations:
+      required: false

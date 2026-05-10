@@ -1,0 +1,207 @@
+name: Bug Report
+description: Report something in Paperclip that is not working correctly.
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. The more detail you provide, the faster it can be fixed.
+
+        > **⚠️ Privacy notice:** Several fields below accept logs, config, or transcript output that may contain **personally identifiable information (PII)** — usernames in file paths, API keys, tokens, company names, agent output, or task content. Before pasting:
+        > 1. Review for sensitive data
+        > 2. Redact usernames, paths, API keys, tokens (e.g. replace `/Users/yourname/` with `/Users/REDACTED/`)
+        > 3. For heavy output, consider running it through an anonymizer such as **[presidio-anonymizer](https://microsoft.github.io/presidio/)** (open-source, local-only) or **[scrub](https://github.com/dssg/scrub)**
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-submission checklist
+      description: Please confirm each of these before filing.
+      options:
+        - label: I have searched existing open and closed issues and this is not a duplicate.
+          required: true
+        - label: I am on the latest released version of Paperclip (or can reproduce on `master`).
+          required: true
+        - label: I have confirmed the error originates in Paperclip itself — not in my agent adapter, API provider, or local configuration. See `AGENTS.md` → "For AI Agents Filing Issues" if you are an AI agent.
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Paperclip version
+      description: "Run `paperclip --version`, or check the version field in the repo's `package.json`."
+      placeholder: "e.g. 1.24.0, or commit SHA if on master"
+    validations:
+      required: true
+
+  - type: input
+    id: node_version
+    attributes:
+      label: Node.js version
+      description: "Run `node --version`."
+      placeholder: "e.g. v20.11.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Windows
+        - Linux (Ubuntu / Debian)
+        - Linux (Fedora / RHEL)
+        - Linux (Arch)
+        - Linux (other)
+        - WSL
+        - Other (please describe in additional context)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: Installation method
+      options:
+        - npm / pnpm global install
+        - Docker
+        - Built from source (pnpm dev / pnpm build)
+        - Other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: adapters
+    attributes:
+      label: Agent adapter(s) involved
+      description: Select all that apply. If unsure, leave unchecked and describe in additional context.
+      options:
+        - label: Claude Code
+        - label: Codex
+        - label: Cursor
+        - label: Droid
+        - label: Hermes
+        - label: Custom / external plugin adapter
+        - label: Not adapter-specific (core bug)
+
+  - type: dropdown
+    id: database
+    attributes:
+      label: Database mode
+      options:
+        - Embedded PGlite (default — `DATABASE_URL` unset)
+        - External Postgres
+        - Not database-related
+    validations:
+      required: true
+
+  - type: dropdown
+    id: access_context
+    attributes:
+      label: Access context
+      description: Whose credentials were being used when the bug occurred?
+      options:
+        - Board (human operator)
+        - Agent (bearer API key via `agent_api_keys`)
+        - Both
+        - Unclear / not applicable
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened?
+      description: Describe the bug clearly. Be specific about which Paperclip command, endpoint, or UI action was involved.
+      placeholder: |
+        When I call POST /api/companies with ..., the server responds with 500 and logs ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: Describe the behavior you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Exact steps so someone else can reproduce this. Start from a clean install where possible.
+      placeholder: |
+        1. `pnpm install && pnpm dev`
+        2. `curl http://localhost:3100/api/health` → 200 OK
+        3. `curl -X POST http://localhost:3100/api/companies -d '{"name":"foo"}'` → 500
+        4. Error appears in server log at ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error output / logs
+      description: |
+        Paste relevant stack traces, console output, or log lines. This will be rendered as code.
+
+        **⚠️ PII warning:** Server logs often contain file paths with your username (e.g. `/Users/yourname/...`). Redact before pasting.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant config (if applicable)
+      description: |
+        If the bug is config-related, paste the relevant snippet.
+
+        **⚠️ PII warning:** Paperclip config may contain API keys, encrypted-secrets paths, company names, or tokens. **Remove all secrets before pasting.**
+      render: json
+    validations:
+      required: false
+
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: How often does this happen?
+      options:
+        - Every time (100% reproducible)
+        - Most of the time
+        - Sometimes / intermittent
+        - Only happened once
+    validations:
+      required: true
+
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Impact
+      description: How much does this affect your use of Paperclip?
+      options:
+        - Blocker — cannot use Paperclip at all
+        - Major — core feature is broken, no workaround
+        - Moderate — feature is broken but I have a workaround
+        - Minor — cosmetic or edge case
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Screenshots, related issues, adapter plugin details, or anything else.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: pii_confirmed
+    attributes:
+      label: Privacy checklist
+      description: Please confirm you've reviewed your submission for sensitive data.
+      options:
+        - label: I have reviewed all pasted output for PII (usernames, file paths, API keys, tokens, company names) and redacted where necessary.
+          required: true
