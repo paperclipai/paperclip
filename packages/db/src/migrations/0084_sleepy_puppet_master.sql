@@ -76,5 +76,5 @@ CREATE INDEX "betting_matches_external_id_idx" ON "betting_matches" USING btree 
 CREATE INDEX "betting_placed_bets_company_placed_at_idx" ON "betting_placed_bets" USING btree ("company_id","placed_at");--> statement-breakpoint
 CREATE INDEX "betting_predictions_company_created_idx" ON "betting_predictions" USING btree ("company_id","created_at");--> statement-breakpoint
 CREATE INDEX "betting_predictions_match_idx" ON "betting_predictions" USING btree ("match_id");--> statement-breakpoint
-CREATE INDEX "documents_title_search_idx" ON "documents" USING gin ("title" gin_trgm_ops);--> statement-breakpoint
-CREATE INDEX "documents_latest_body_search_idx" ON "documents" USING gin ("latest_body" gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS "documents_title_search_idx" ON "documents" USING gin ("title" gin_trgm_ops);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "documents_latest_body_search_idx" ON "documents" USING gin ("latest_body" gin_trgm_ops);
