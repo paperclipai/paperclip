@@ -57,3 +57,64 @@ export async function fetchRecentBbaRuns(
   }
   return res.json() as Promise<RecentRunsResponse>;
 }
+
+// ── Execute bet (HIGH RISK — triggers real bookmaker bet) ────────────────────
+//
+// bookmakerConfig is intentionally typed loosely (Record<string, unknown>).
+// The server route at server/src/routes/betting-browser-automation.ts validates
+// the exact shape; over-specifying here would create divergence risk.
+
+export interface ExecuteBetRequest {
+  issueId?: string | null;
+  loginUsername: { secretId?: string; secretName?: string };
+  loginPassword: { secretId?: string; secretName?: string };
+  bookmakerConfig: Record<string, unknown>;
+  bet: {
+    matchLabel: string;
+    market: string;
+    selection: string;
+    odds: number;
+    stake: number;
+    eventUrl?: string;
+    currency?: string;
+  };
+  bets?: Array<ExecuteBetRequest["bet"]>;
+  riskControls: {
+    maxStakePerBet: number;
+    maxTotalStakePerSession: number;
+    requireFinalConfirmation?: boolean;
+    dailyStopLossPct?: number;
+    sessionStopLossPct?: number;
+  };
+  execution?: Record<string, unknown>;
+  currentBalance?: number | null;
+  sessionStartedAt?: string | null;
+}
+
+export interface ExecuteBetResponse {
+  status: string;
+  failureReason?: string | null;
+  placedBetId?: string | null;
+  sessionId?: string;
+  artifactDir?: string;
+  logPath?: string;
+}
+
+export async function executeBbaBet(
+  companyId: string,
+  payload: ExecuteBetRequest,
+  signal?: AbortSignal,
+): Promise<ExecuteBetResponse> {
+  const res = await fetch(
+    `/api/companies/${encodeURIComponent(companyId)}/betting-browser-automation/execute`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal,
+    },
+  );
+  if (!res.ok) throw new Error(`executeBbaBet failed: ${res.status} ${res.statusText}`);
+  return res.json() as Promise<ExecuteBetResponse>;
+}
