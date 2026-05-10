@@ -1,5 +1,43 @@
 import { asNumber, asString, parseJson, parseObject } from "@paperclipai/adapter-utils/server-utils";
 
+// ---------------------------------------------------------------------------
+// SAG-722: comment sanitization — strip leaked tool-call JSON, echoed system
+// prompts, and internal-reasoning XML blocks before text reaches the summary.
+// ---------------------------------------------------------------------------
+
+function isPureJson(text: string): boolean {
+  const t = text.trim();
+  if (t.length < 2) return false;
+  const first = t[0];
+  if (first !== "{" && first !== "[") return false;
+  try {
+    JSON.parse(t);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const SYSTEM_PROMPT_ECHO_PATTERNS: RegExp[] = [
+  /^You are woken by reason:/i,
+  /^You are agent\b/i,
+  /^The above agent instructions were loaded from\b/i,
+  /^This base directory is authoritative for\b/i,
+  /^Treat this wake payload as/i,
+];
+
+// Match full <tag>…</tag> blocks for known internal-reasoning wrappers.
+const INTERNAL_XML_BLOCK_RE = /<(analysis|thinking|antml:thinking|antml:function_calls)>[\s\S]*?<\/\1>/gi;
+
+export function sanitizeModelText(text: string): string | null {
+  if (isPureJson(text)) return null;
+  if (SYSTEM_PROMPT_ECHO_PATTERNS.some((re) => re.test(text.trimStart()))) return null;
+  const stripped = text.replace(INTERNAL_XML_BLOCK_RE, "").trim();
+  return stripped.length > 0 ? stripped : null;
+}
+
+// ---------------------------------------------------------------------------
+
 function errorText(value: unknown): string {
   if (typeof value === "string") return value;
   const rec = parseObject(value);
@@ -46,7 +84,10 @@ export function parseOpenCodeJsonl(stdout: string) {
     if (type === "text") {
       const part = parseObject(event.part);
       const text = asString(part.text, "").trim();
-      if (text) messages.push(text);
+      if (text) {
+        const sanitized = sanitizeModelText(text);
+        if (sanitized) messages.push(sanitized);
+      }
       continue;
     }
 
