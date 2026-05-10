@@ -147,6 +147,19 @@ type SuccessfulRunHandoffActivityRow = {
   details: Record<string, unknown> | null;
   createdAt: Date;
 };
+type IssueProjectSummarySource = {
+  id: string;
+  name: string;
+  status?: string | null;
+  targetDate?: string | null;
+};
+type IssueGoalSummarySource = {
+  id: string;
+  title: string;
+  status?: string | null;
+  level?: string | null;
+  parentId?: string | null;
+};
 
 function applyCreateIssueStatusDefault(req: Request, res: Response, next: () => void) {
   if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
@@ -800,6 +813,27 @@ function buildExecutionStageWakeup(input: {
   }
 
   return null;
+}
+
+function serializeIssueProjectSummary(project: IssueProjectSummarySource | null | undefined) {
+  if (!project) return null;
+  return {
+    id: project.id,
+    name: project.name,
+    status: project.status ?? null,
+    targetDate: project.targetDate ?? null,
+  };
+}
+
+function serializeIssueGoalSummary(goal: IssueGoalSummarySource | null | undefined) {
+  if (!goal) return null;
+  return {
+    id: goal.id,
+    title: goal.title,
+    status: goal.status ?? null,
+    level: goal.level ?? null,
+    parentId: goal.parentId ?? null,
+  };
 }
 
 export function issueRoutes(
@@ -1515,7 +1549,7 @@ export function issueRoutes(
     const projectById = new Map(projects.map((project) => [project.id, project]));
     res.json(result.map((issue) => ({
       ...issue,
-      project: issue.projectId ? projectById.get(issue.projectId) ?? null : null,
+      project: issue.projectId ? serializeIssueProjectSummary(projectById.get(issue.projectId)) : null,
       successfulRunHandoff: handoffStates.get(issue.id) ?? null,
       activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
     })));
@@ -1653,8 +1687,8 @@ export function issueRoutes(
         originKind: issue.originKind,
         originId: issue.originId,
         updatedAt: issue.updatedAt,
-        project: project ?? null,
-        goal: goal ?? null,
+        project: serializeIssueProjectSummary(project),
+        goal: serializeIssueGoalSummary(goal),
       },
       ancestors: ancestors.map((ancestor) => ({
         id: ancestor.id,
@@ -1663,23 +1697,8 @@ export function issueRoutes(
         status: ancestor.status,
         priority: ancestor.priority,
       })),
-      project: project
-        ? {
-            id: project.id,
-            name: project.name,
-            status: project.status,
-            targetDate: project.targetDate,
-          }
-        : null,
-      goal: goal
-        ? {
-            id: goal.id,
-            title: goal.title,
-            status: goal.status,
-            level: goal.level,
-            parentId: goal.parentId,
-          }
-        : null,
+      project: serializeIssueProjectSummary(project),
+      goal: serializeIssueGoalSummary(goal),
       commentCursor,
       wakeComment:
         wakeComment && wakeComment.issueId === issue.id
@@ -1770,8 +1789,8 @@ export function issueRoutes(
       relatedWork: referenceSummary,
       referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
       ...documentPayload,
-      project: project ?? null,
-      goal: goal ?? null,
+      project: serializeIssueProjectSummary(project),
+      goal: serializeIssueGoalSummary(goal),
       mentionedProjects,
       currentExecutionWorkspace,
       workProducts,

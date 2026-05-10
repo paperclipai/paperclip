@@ -169,6 +169,14 @@ const legacyProjectLinkedIssue = {
   labelIds: [],
 };
 
+const unlinkedIssue = {
+  ...legacyProjectLinkedIssue,
+  id: "55555555-5555-4555-8555-555555555555",
+  identifier: "PAP-582",
+  title: "Unlinked onboarding task",
+  projectId: null,
+};
+
 const projectGoal = {
   id: "44444444-4444-4444-8444-444444444444",
   companyId: "company-1",
@@ -249,6 +257,16 @@ describe.sequential("issue goal context routes", () => {
         id: legacyProjectLinkedIssue.projectId,
         companyId: "company-1",
         name: "Onboarding",
+        status: "in_progress",
+        targetDate: null,
+        codebase: {
+          managedFolder: "/tmp/company-1/project-1",
+          effectiveLocalFolder: "/tmp/company-1/project-1",
+        },
+        workspaces: [{ id: "workspace-1" }],
+        primaryWorkspace: { id: "workspace-1" },
+        executionWorkspacePolicy: { mode: "isolated" },
+        goals: [{ id: projectGoal.id, title: projectGoal.title }],
       },
     ]);
     mockGoalService.getById.mockImplementation(async (id: string) =>
@@ -262,6 +280,21 @@ describe.sequential("issue goal context routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.goalId).toBe(projectGoal.id);
+    expect(res.body.project).toEqual({
+      id: legacyProjectLinkedIssue.projectId,
+      name: "Onboarding",
+      status: "in_progress",
+      targetDate: null,
+    });
+    expect(res.body.goal).toEqual({
+      id: projectGoal.id,
+      title: projectGoal.title,
+      status: projectGoal.status,
+      level: projectGoal.level,
+      parentId: projectGoal.parentId,
+    });
+    expect(res.body.project).not.toHaveProperty("codebase");
+    expect(res.body.project).not.toHaveProperty("workspaces");
     expect(res.body.goal).toEqual(
       expect.objectContaining({
         id: projectGoal.id,
@@ -282,8 +315,21 @@ describe.sequential("issue goal context routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.issue.goalId).toBe(projectGoal.id);
-    expect(res.body.issue.project).toEqual(expect.objectContaining({ id: legacyProjectLinkedIssue.projectId }));
-    expect(res.body.issue.goal).toEqual(expect.objectContaining({ id: projectGoal.id }));
+    expect(res.body.issue.project).toEqual({
+      id: legacyProjectLinkedIssue.projectId,
+      name: "Onboarding",
+      status: "in_progress",
+      targetDate: null,
+    });
+    expect(res.body.issue.goal).toEqual({
+      id: projectGoal.id,
+      title: projectGoal.title,
+      status: projectGoal.status,
+      level: projectGoal.level,
+      parentId: projectGoal.parentId,
+    });
+    expect(res.body.issue.project).not.toHaveProperty("codebase");
+    expect(res.body.issue.project).not.toHaveProperty("workspaces");
     expect(res.body.issue.workMode).toBe("planning");
     expect(res.body.goal).toEqual(
       expect.objectContaining({
@@ -305,10 +351,29 @@ describe.sequential("issue goal context routes", () => {
     }));
     expect(mockProjectService.listByIds).toHaveBeenCalledWith("company-1", [legacyProjectLinkedIssue.projectId]);
     expect(res.body).toHaveLength(1);
-    expect(res.body[0].project).toEqual(expect.objectContaining({
+    expect(res.body[0].project).toEqual({
       id: legacyProjectLinkedIssue.projectId,
       name: "Onboarding",
-    }));
+      status: "in_progress",
+      targetDate: null,
+    });
+    expect(res.body[0].project).not.toHaveProperty("codebase");
+    expect(res.body[0].project).not.toHaveProperty("workspaces");
+    expect(res.body[0].project).not.toHaveProperty("primaryWorkspace");
+    expect(res.body[0].project).not.toHaveProperty("executionWorkspacePolicy");
+    expect(res.body[0].project).not.toHaveProperty("goals");
+  });
+
+  it("returns null project values from GET /companies/:companyId/issues when projectId is null", async () => {
+    mockIssueService.list.mockResolvedValue([unlinkedIssue]);
+
+    const res = await request(createApp()).get("/api/companies/company-1/issues");
+
+    expect(res.status).toBe(200);
+    expect(mockProjectService.listByIds).not.toHaveBeenCalled();
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].projectId).toBeNull();
+    expect(res.body[0].project).toBeNull();
   });
 
   it("preserves direct continuation summary lookup in GET /issues/:id/heartbeat-context", async () => {
