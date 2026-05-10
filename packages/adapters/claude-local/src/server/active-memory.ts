@@ -84,6 +84,17 @@ function parseMemoryLinks(indexContent: string): string[] {
 }
 
 /**
+ * Resolve a raw MEMORY.md link against memoryDir and validate it stays within that dir.
+ * Returns null (and silently skips) if the link would escape the memory directory —
+ * prevents path traversal attacks via crafted MEMORY.md files.
+ */
+function resolveAndValidateMemoryLink(memoryDir: string, link: string): string | null {
+  const resolved = path.resolve(memoryDir, link);
+  const safeBase = path.resolve(memoryDir) + path.sep;
+  return resolved.startsWith(safeBase) ? resolved : null;
+}
+
+/**
  * Convert a filesystem path to a Claude Code project directory ID.
  * Claude Code encodes CWDs by replacing `\`, `/`, `:`, and `.` with `-`.
  * e.g. "C:\Users\wj\.paperclip\..." → "C--Users-wj--paperclip-..."
@@ -97,8 +108,10 @@ function cwdToClaudeProjectId(cwdPath: string): string {
  * Tries two locations in order:
  *   1. `<cwd>/memory/`     — in-repo memory (used by ERP-style agents)
  *   2. `~/.claude/projects/<encoded-cwd>/memory/` — Claude Code auto-memory
+ *
+ * @param homeDir  Override the home directory (used in tests to inject a fake home).
  */
-async function resolveMemoryDir(cwd: string): Promise<string | null> {
+async function resolveMemoryDir(cwd: string, homeDir = os.homedir()): Promise<string | null> {
   // Option 1: in-repo memory
   const inRepoDir = path.join(cwd, "memory");
   const inRepoIndex = path.join(inRepoDir, MEMORY_INDEX_FILE);
@@ -108,7 +121,7 @@ async function resolveMemoryDir(cwd: string): Promise<string | null> {
 
   // Option 2: Claude Code auto-memory
   const projectId = cwdToClaudeProjectId(cwd);
-  const claudeDir = path.join(os.homedir(), ".claude", "projects", projectId, "memory");
+  const claudeDir = path.join(homeDir, ".claude", "projects", projectId, "memory");
   const claudeIndex = path.join(claudeDir, MEMORY_INDEX_FILE);
   if (await fs.stat(claudeIndex).then(() => true).catch(() => false)) {
     return claudeDir;
@@ -120,19 +133,36 @@ async function resolveMemoryDir(cwd: string): Promise<string | null> {
 /**
  * Load all memories tagged `trigger: always-check` from the agent's memory directory.
  * Returns an empty array if no memory directory is found or no always-check memories exist.
+ *
+ * @param options.homeDir  Override home directory lookup (for testing only).
  */
-export async function loadActiveMemories(cwd: string): Promise<ActiveMemory[]> {
-  const memoryDir = await resolveMemoryDir(cwd);
+export async function loadActiveMemories(
+  cwd: string,
+  options?: { homeDir?: string },
+): Promise<ActiveMemory[]> {
+  const memoryDir = await resolveMemoryDir(cwd, options?.homeDir);
   if (!memoryDir) return [];
 
   const indexContent = await fs.readFile(path.join(memoryDir, MEMORY_INDEX_FILE), "utf-8").catch(() => null);
   if (!indexContent) return [];
 
   const links = parseMemoryLinks(indexContent);
-  const parsed = await Promise.all(links.map((link) => parseMemoryFile(path.join(memoryDir, link))));
+  const safePaths = links
+    .map((link) => resolveAndValidateMemoryLink(memoryDir, link))
+    .filter((p): p is string => p !== null);
+  const parsed = await Promise.all(safePaths.map((filePath) => parseMemoryFile(filePath)));
 
   return parsed.filter((m): m is ActiveMemory => m !== null && m.trigger === "always-check");
 }
+
+/**
+ * Alias for `loadActiveMemories` — used by the server-side `memory-reader` re-export
+ * so the server package can import a semantically named function without duplicating logic.
+ */
+export const readAlwaysCheckMemories = loadActiveMemories;
+
+/** Alias type for compatibility with `server/src/services/memory-reader.ts` re-export. */
+export type MemoryEntry = ActiveMemory;
 
 /**
  * Build the "## Active Memory Self-Check" block injected at the end of the
