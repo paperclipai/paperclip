@@ -7,6 +7,21 @@
 
 ---
 
+## Prerequisite — DO NOT execute against current `origin/master`
+
+**Status (2026-05-10)**: This plan is **deferred**. Empirical execution against current `origin/master` produced a ~5251-line diff instead of the planned ~230 lines.
+
+**Why**: The plan's `git checkout -b ... origin/master` step assumes `origin/master` already contains the BBA foundation (Phase A-D server code from PR #5595, plus Phase A schema from PR #5583). Currently those PRs are still open. So when the plan checks out the 4 ride-along files at `b8eaf441` onto a master that lacks the foundation, those files appear as multi-thousand-line additions (the full file contents at b8eaf441), not the small Phase F delta.
+
+**Required state before re-attempting the split**:
+- PR #5583 (`feat/bba-memory-phase-a`) merged to `paperclipai/paperclip:master`
+- PR #5595 (`feat/bba-memory-phase-b-to-e`) merged to `paperclipai/paperclip:master`
+- `git fetch origin` so local `origin/master` reflects the new tip
+
+**Then**: the documented Step 1 / Step 2 / Step 3 commands execute as originally written and produce the expected ~230-line extraction PR + cleaned ~200-line #5636.
+
+**Until then**: PR #5636 carries a Scope notice in its description (added 2026-05-10) flagging the in-scope vs ride-along split for the maintainer.
+
 ## Problem Statement
 
 PR #5636 (`feat(bba-memory): Phase F — server-side idempotency, safeParseMetaJson, UI hardening`) mixes two distinct workstreams in a single commit (`b8eaf441`):
