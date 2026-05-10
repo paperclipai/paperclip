@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -48,6 +48,7 @@ describeEmbeddedPostgres("dashboard service", () => {
 
   afterEach(async () => {
     await db.delete(heartbeatRuns);
+    await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -164,6 +165,75 @@ describeEmbeddedPostgres("dashboard service", () => {
       failed: 2,
       other: 1,
       total: 3,
+    });
+  });
+
+  it("counts only dashboard-visible issues in task totals", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Other",
+        issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    await db.insert(issues).values([
+      {
+        companyId,
+        title: "Visible backlog issue",
+        status: "backlog",
+        originKind: "manual",
+      },
+      {
+        companyId,
+        title: "Visible blocked issue",
+        status: "blocked",
+        originKind: "manual",
+      },
+      {
+        companyId,
+        title: "Visible done issue",
+        status: "done",
+        originKind: "manual",
+      },
+      {
+        companyId,
+        title: "Hidden todo issue",
+        status: "todo",
+        originKind: "manual",
+        hiddenAt: new Date(),
+      },
+      {
+        companyId,
+        title: "Plugin operation issue",
+        status: "in_progress",
+        originKind: "plugin:acpx:operation",
+      },
+      {
+        companyId: otherCompanyId,
+        title: "Other company issue",
+        status: "blocked",
+        originKind: "manual",
+      },
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    expect(summary.tasks).toEqual({
+      open: 2,
+      inProgress: 0,
+      blocked: 1,
+      done: 1,
     });
   });
 });
