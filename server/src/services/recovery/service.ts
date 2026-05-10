@@ -3451,6 +3451,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             eq(issues.status, "in_review"),
           ),
           opts?.issueCreatedAtGte ? gte(issues.createdAt, opts.issueCreatedAtGte) : undefined,
+          isNull(issues.hiddenAt),
         ),
       );
 
