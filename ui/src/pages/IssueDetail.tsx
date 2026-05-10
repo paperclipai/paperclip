@@ -1158,8 +1158,8 @@ function IssueDetailActivityTab({
                     <AlertTriangle className={cn("h-3.5 w-3.5 shrink-0", tone.iconClassName)} />
                   ) : null}
                   <ActorIdentity evt={evt} agentMap={agentMap} userProfileMap={userProfileMap} />
-                  <span>{formatIssueActivityAction(evt.action, evt.details, { agentMap, userProfileMap, currentUserId, t: tActivity })}</span>
-                  <span className="ml-auto shrink-0">{relativeTime(evt.createdAt, i18n.language)}</span>
+                  <span>{(formatIssueActivityAction as any)(evt.action, evt.details, { agentMap, userProfileMap, currentUserId, t: tActivity, i18n })}</span>
+                  <span className="ml-auto shrink-0">{(relativeTime as any)(evt.createdAt, i18n.language)}</span>
                 </div>
                 <IssueReferenceActivitySummary event={evt} />
               </div>

@@ -843,12 +843,12 @@ export function IssueProperties({
       : null;
     if (issue.executionState.status === "changes_requested") {
       return participantLabel
-        ? t(stageType === "review" ? "properties.execution_review_changes_by" : "properties.execution_approval_changes_by", { name: participantLabel })
-        : t(stageType === "review" ? "properties.execution_review_changes" : "properties.execution_approval_changes");
+        ? (t as any)(stageType === "review" ? "properties.execution_review_changes_by" : "properties.execution_approval_changes_by", { name: participantLabel })
+        : (t as any)(stageType === "review" ? "properties.execution_review_changes" : "properties.execution_approval_changes");
     }
     return participantLabel
-      ? t(stageType === "review" ? "properties.execution_review_pending_with" : "properties.execution_approval_pending_with", { name: participantLabel })
-      : t(stageType === "review" ? "properties.execution_review_pending" : "properties.execution_approval_pending");
+      ? (t as any)(stageType === "review" ? "properties.execution_review_pending_with" : "properties.execution_approval_pending_with", { name: participantLabel })
+      : (t as any)(stageType === "review" ? "properties.execution_review_pending" : "properties.execution_approval_pending");
   })();
   useEffect(() => {
     setMonitorAtInput(toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
@@ -904,13 +904,13 @@ export function IssueProperties({
   };
   const currentMonitorLabel = (() => {
     if (issue.executionPolicy?.monitor?.nextCheckAt) {
-      return t("properties.next_check", { offset: formatDate(new Date(issue.executionPolicy.monitor.nextCheckAt), i18n.language) });
+      return (t as any)("properties.next_check", { offset: (formatDate as any)(new Date(issue.executionPolicy.monitor.nextCheckAt), i18n.language) });
     }
     if (issue.executionState?.monitor?.status === "cleared") {
       return t("properties.cleared");
     }
     if (issue.monitorLastTriggeredAt) {
-      return t("properties.last_triggered", { time: timeAgo(issue.monitorLastTriggeredAt) });
+      return (t as any)("properties.last_triggered", { time: (timeAgo as any)(issue.monitorLastTriggeredAt) });
     }
     return t("properties.not_scheduled");
   })();

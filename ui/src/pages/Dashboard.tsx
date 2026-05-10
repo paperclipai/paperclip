@@ -377,7 +377,7 @@ export function Dashboard() {
                             })()}
                             <span className="text-xs text-muted-foreground sm:hidden">&middot;</span>
                             <span className="text-xs text-muted-foreground shrink-0 sm:order-last">
-                              {timeAgo(issue.updatedAt, i18n.language)}
+                              {relativeTime(issue.updatedAt, i18n.language)}
                             </span>
                           </span>
                         </span>

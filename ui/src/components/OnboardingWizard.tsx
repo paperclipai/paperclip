@@ -19,7 +19,6 @@ import {
   PopoverTrigger
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { LanguageSwitcher } from "./LanguageSwitcher/LanguageSwitcher";
 import { cn } from "../lib/utils";
 import {
   extractModelName,
