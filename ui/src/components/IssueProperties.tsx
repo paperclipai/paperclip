@@ -843,12 +843,12 @@ export function IssueProperties({
       : null;
     if (issue.executionState.status === "changes_requested") {
       return participantLabel
-        ? t(stageType === "review" ? "properties.execution_review_changes_by" : "properties.execution_approval_changes_by", stageType === "review" ? `Review requested changes by ${participantLabel}` : `Approval requested changes by ${participantLabel}`, { name: participantLabel })
-        : t(stageType === "review" ? "properties.execution_review_changes" : "properties.execution_approval_changes", stageType === "review" ? "Review requested changes" : "Approval requested changes");
+        ? t(stageType === "review" ? "properties.execution_review_changes_by" : "properties.execution_approval_changes_by", { name: participantLabel })
+        : t(stageType === "review" ? "properties.execution_review_changes" : "properties.execution_approval_changes");
     }
     return participantLabel
-      ? t(stageType === "review" ? "properties.execution_review_pending_with" : "properties.execution_approval_pending_with", stageType === "review" ? `Review pending with ${participantLabel}` : `Approval pending with ${participantLabel}`, { name: participantLabel })
-      : t(stageType === "review" ? "properties.execution_review_pending" : "properties.execution_approval_pending", stageType === "review" ? "Review pending" : "Approval pending");
+      ? t(stageType === "review" ? "properties.execution_review_pending_with" : "properties.execution_approval_pending_with", { name: participantLabel })
+      : t(stageType === "review" ? "properties.execution_review_pending" : "properties.execution_approval_pending");
   })();
   useEffect(() => {
     setMonitorAtInput(toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
