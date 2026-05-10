@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -63,6 +64,16 @@ import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
+
+function resolvePluginMcpStdioPath(): string | null {
+  try {
+    const pkgJsonPath = require.resolve("@paperclipai/mcp-server/package.json");
+    return path.join(path.dirname(pkgJsonPath), "dist", "plugin-stdio.js");
+  } catch {
+    return null;
+  }
+}
 
 interface ClaudeExecutionInput {
   runId: string;
@@ -145,6 +156,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const workspaceBranch = asString(workspaceContext.branchName, "") || null;
   const workspaceWorktreePath = asString(workspaceContext.worktreePath, "") || null;
   const agentHome = asString(workspaceContext.agentHome, "") || null;
+  const workspaceProjectId = asString(workspaceContext.projectId, "") || null;
   const workspaceHints = Array.isArray(context.paperclipWorkspaces)
     ? context.paperclipWorkspaces.filter(
         (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
@@ -385,6 +397,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const workspaceBranch = asString(workspaceContext.branchName, "") || null;
   const workspaceWorktreePath = asString(workspaceContext.worktreePath, "") || null;
   const agentHome = asString(workspaceContext.agentHome, "") || null;
+  const workspaceProjectId = asString(workspaceContext.projectId, "") || null;
   const workspaceHints = Array.isArray(context.paperclipWorkspaces)
     ? context.paperclipWorkspaces.filter(
         (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
@@ -672,6 +685,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     heartbeatPromptChars: renderedPrompt.length,
   };
 
+  const pluginMcpStdioPath = !executionTargetIsRemote ? resolvePluginMcpStdioPath() : null;
+  const pluginMcpConfigPath =
+    pluginMcpStdioPath !== null && workspaceProjectId !== null
+      ? `/tmp/paperclip-plugin-mcp-${runId}.json`
+      : null;
+  if (pluginMcpConfigPath !== null && pluginMcpStdioPath !== null && workspaceProjectId !== null) {
+    const mcpConfig = {
+      mcpServers: {
+        "paperclip-plugins": {
+          command: "node",
+          args: [pluginMcpStdioPath],
+          env: {
+            PAPERCLIP_API_URL: env.PAPERCLIP_API_URL ?? "",
+            PAPERCLIP_API_KEY: env.PAPERCLIP_API_KEY ?? "",
+            PAPERCLIP_AGENT_ID: env.PAPERCLIP_AGENT_ID ?? "",
+            PAPERCLIP_RUN_ID: runId,
+            PAPERCLIP_COMPANY_ID: env.PAPERCLIP_COMPANY_ID ?? "",
+            PAPERCLIP_PROJECT_ID: workspaceProjectId,
+          },
+        },
+      },
+    };
+    await fs.writeFile(pluginMcpConfigPath, JSON.stringify(mcpConfig, null, 2), "utf-8");
+    await onLog(
+      "stdout",
+      `[paperclip] Plugin tool MCP config written to ${pluginMcpConfigPath}\n`,
+    );
+  }
+
   const buildClaudeArgs = (
     resumeSessionId: string | null,
     attemptInstructionsFilePath: string | undefined,
@@ -699,6 +741,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     args.push("--add-dir", effectivePromptBundleAddDir);
     if (extraArgs.length > 0) args.push(...extraArgs);
+    if (pluginMcpConfigPath !== null) {
+      args.push("--mcp-config", pluginMcpConfigPath);
+    }
     return args;
   };
 
@@ -960,6 +1005,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
   } finally {
+    if (pluginMcpConfigPath !== null) {
+      await fs.unlink(pluginMcpConfigPath).catch(() => {});
+    }
     if (paperclipBridge) {
       await paperclipBridge.stop();
     }
