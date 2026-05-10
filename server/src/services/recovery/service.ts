@@ -231,6 +231,36 @@ function formatIssueLinksForComment(relations: Array<{ identifier?: string | nul
     .join(", ");
 }
 
+function unwrapDatabaseConflictError(error: unknown) {
+  if (!error || typeof error !== "object") return null;
+
+  const candidate = error as {
+    code?: string;
+    constraint?: string;
+    constraint_name?: string;
+    message?: string;
+    cause?: unknown;
+  };
+
+  if (
+    typeof candidate.code === "string" ||
+    typeof candidate.constraint === "string" ||
+    typeof candidate.constraint_name === "string"
+  ) {
+    return candidate;
+  }
+
+  const cause = candidate.cause;
+  if (!cause || typeof cause !== "object") return candidate;
+
+  return cause as {
+    code?: string;
+    constraint?: string;
+    constraint_name?: string;
+    message?: string;
+  };
+}
+
 function isAgentInvokable(agent: typeof agents.$inferSelect | null | undefined) {
   return Boolean(agent && !["paused", "terminated", "pending_approval"].includes(agent.status));
 }
@@ -928,21 +958,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   function isUniqueStaleRunEvaluationConflict(error: unknown) {
-    if (!error || typeof error !== "object") return false;
-    const maybe = error as { code?: string; constraint?: string; message?: string };
+    const maybe = unwrapDatabaseConflictError(error);
+    if (!maybe) return false;
     return maybe.code === "23505" &&
       (
         maybe.constraint === "issues_active_stale_run_evaluation_uq" ||
+        maybe.constraint_name === "issues_active_stale_run_evaluation_uq" ||
         typeof maybe.message === "string" && maybe.message.includes("issues_active_stale_run_evaluation_uq")
       );
   }
 
   function isUniqueStrandedIssueRecoveryConflict(error: unknown) {
-    if (!error || typeof error !== "object") return false;
-    const maybe = error as { code?: string; constraint?: string; message?: string };
+    const maybe = unwrapDatabaseConflictError(error);
+    if (!maybe) return false;
     return maybe.code === "23505" &&
       (
         maybe.constraint === "issues_active_stranded_issue_recovery_uq" ||
+        maybe.constraint_name === "issues_active_stranded_issue_recovery_uq" ||
         typeof maybe.message === "string" && maybe.message.includes("issues_active_stranded_issue_recovery_uq")
       );
   }
