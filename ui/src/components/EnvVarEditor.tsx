@@ -404,12 +404,26 @@ export function EnvVarEditor({
       {(() => {
         const issues: { key: string; reason: string }[] = [];
         for (const row of rows) {
-          if (row.source !== "secret" || !row.secretId) continue;
-          const secret = secrets.find((s) => s.id === row.secretId);
-          if (!secret) {
-            issues.push({ key: row.key.trim() || row.secretId, reason: "missing" });
-          } else if (secret.status !== "active") {
-            issues.push({ key: row.key.trim() || secret.name, reason: secret.status });
+          if (row.source === "secret" && row.secretId) {
+            const secret = secrets.find((s) => s.id === row.secretId);
+            if (!secret) {
+              issues.push({ key: row.key.trim() || row.secretId, reason: "missing" });
+            } else if (secret.status !== "active") {
+              issues.push({ key: row.key.trim() || secret.name, reason: secret.status });
+            }
+          } else if (row.source === "oauth_token" && row.connectionId) {
+            const conn = oauthConnections.find((c) => c.id === row.connectionId);
+            if (!conn) {
+              issues.push({
+                key: row.key.trim() || row.connectionId,
+                reason: "connection deleted",
+              });
+            } else if (conn.status !== "active") {
+              issues.push({
+                key: row.key.trim() || `${conn.providerId} · ${conn.accountLabel ?? conn.accountId}`,
+                reason: `connection ${conn.status}`,
+              });
+            }
           }
         }
         if (!issues.length) return null;
@@ -417,7 +431,7 @@ export function EnvVarEditor({
           <p className="text-[11px] text-amber-700 dark:text-amber-400 inline-flex items-start gap-1">
             <AlertCircle className="h-3 w-3 mt-0.5 shrink-0" />
             <span>
-              {issues.length} secret binding{issues.length === 1 ? "" : "s"} need attention:{" "}
+              {issues.length} env binding{issues.length === 1 ? "" : "s"} need attention:{" "}
               {issues.map((issue, idx) => (
                 <span key={idx} className="font-mono">
                   {issue.key}

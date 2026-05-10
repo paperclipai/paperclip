@@ -89,22 +89,30 @@ export async function refreshConnection(
   companyId: string,
   connectionId: string,
   opts: Opts = {},
-): Promise<Response> {
+): Promise<void> {
   const f = fetchImpl(opts);
-  return f(
+  const r = await f(
     `/api/companies/${encodeURIComponent(companyId)}/oauth/connections/${encodeURIComponent(connectionId)}/refresh`,
     { method: "POST", credentials: "include" },
   );
+  if (!r.ok) {
+    const err = (await r.json().catch(() => ({}))) as { errorCode?: string };
+    throw new Error(err.errorCode ?? `refresh ${r.status}`);
+  }
 }
 
 export async function disconnectConnection(
   companyId: string,
   connectionId: string,
   opts: Opts = {},
-): Promise<Response> {
+): Promise<void> {
   const f = fetchImpl(opts);
-  return f(
+  const r = await f(
     `/api/companies/${encodeURIComponent(companyId)}/oauth/connections/${encodeURIComponent(connectionId)}`,
     { method: "DELETE", credentials: "include" },
   );
+  if (!r.ok) {
+    const err = (await r.json().catch(() => ({}))) as { errorCode?: string };
+    throw new Error(err.errorCode ?? `disconnect ${r.status}`);
+  }
 }

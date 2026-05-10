@@ -83,4 +83,18 @@ describe("oauth API client", () => {
       expect.objectContaining({ method: "DELETE", credentials: "include" }),
     );
   });
+
+  it("refreshConnection throws on non-OK response so the UI can surface the failure", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ errorCode: "in_backoff" }, 429));
+    await expect(refreshConnection("c1", "conn-1", { fetch: fetchMock })).rejects.toThrow(
+      /in_backoff/,
+    );
+  });
+
+  it("disconnectConnection throws on non-OK response", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ errorCode: "forbidden" }, 403));
+    await expect(disconnectConnection("c1", "conn-1", { fetch: fetchMock })).rejects.toThrow(
+      /forbidden/,
+    );
+  });
 });
