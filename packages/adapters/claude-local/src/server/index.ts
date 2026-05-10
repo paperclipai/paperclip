@@ -10,11 +10,15 @@ export {
   hasActiveAccountResolver,
   resolveActiveAccount,
   applyActiveAnthropicAccountToEnv,
+  setAutoFailoverHook,
+  getAutoFailoverHook,
   type ApiKeyResolver,
   type ActiveAccountResolver,
   type ActiveAnthropicAccount,
   type ActiveAnthropicAccountMode,
   type ApplyActiveAccountResult,
+  type AutoFailoverHook,
+  type HealthyAccountCandidate,
 } from "./account-store.js";
 export { listClaudeSkills, syncClaudeSkills } from "./skills.js";
 export { listClaudeModels } from "./models.js";

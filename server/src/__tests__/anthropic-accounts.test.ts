@@ -329,6 +329,126 @@ describeEmbeddedPostgres("anthropic-accounts", () => {
     });
   });
 
+  describe("listHealthyCandidates", () => {
+    it("returns oauth/api_key siblings under the 80% utilization threshold, sorted by lowest utilization, excluding the current account", async () => {
+      const companyId = await seedCompany();
+      const svc = anthropicAccountsService(db);
+      const current = await svc.createAccount({ companyId, label: "Current", mode: "oauth" });
+      const lowUsage = await svc.createAccount({ companyId, label: "Low", mode: "oauth" });
+      const midUsage = await svc.createAccount({ companyId, label: "Mid", mode: "oauth" });
+      const overLimit = await svc.createAccount({ companyId, label: "Over", mode: "oauth" });
+      const noData = await svc.createAccount({ companyId, label: "Unknown", mode: "oauth" });
+
+      await db
+        .update(anthropicAccounts)
+        .set({ lastUtilizationFiveHour: "20" })
+        .where(eq(anthropicAccounts.id, lowUsage.id));
+      await db
+        .update(anthropicAccounts)
+        .set({ lastUtilizationFiveHour: "65" })
+        .where(eq(anthropicAccounts.id, midUsage.id));
+      await db
+        .update(anthropicAccounts)
+        .set({ lastUtilizationFiveHour: "85" })
+        .where(eq(anthropicAccounts.id, overLimit.id));
+      // noData has lastUtilizationFiveHour=null → excluded (we don't know if it's healthy).
+
+      const candidates = await svc.listHealthyCandidates(companyId, current.id);
+      expect(candidates.map((c) => c.id)).toEqual([lowUsage.id, midUsage.id]);
+      expect(candidates[0]).toMatchObject({
+        id: lowUsage.id,
+        label: "Low",
+        mode: "oauth",
+        lastUtilizationFiveHour: 20,
+      });
+      // The current account, the over-limit account, and the no-data account
+      // are all excluded.
+      expect(candidates.find((c) => c.id === current.id)).toBeUndefined();
+      expect(candidates.find((c) => c.id === overLimit.id)).toBeUndefined();
+      expect(candidates.find((c) => c.id === noData.id)).toBeUndefined();
+    });
+
+    it("excludes bedrock accounts (no subscription quota to compare against)", async () => {
+      const companyId = await seedCompany();
+      const svc = anthropicAccountsService(db);
+      const current = await svc.createAccount({ companyId, label: "Current", mode: "oauth" });
+      const bedrock = await svc.createAccount({ companyId, label: "AWS", mode: "bedrock" });
+      // Even with low utilization stored, bedrock should not be a candidate.
+      await db
+        .update(anthropicAccounts)
+        .set({ lastUtilizationFiveHour: "10" })
+        .where(eq(anthropicAccounts.id, bedrock.id));
+
+      const candidates = await svc.listHealthyCandidates(companyId, current.id);
+      expect(candidates).toHaveLength(0);
+    });
+
+    it("only considers accounts in the same company", async () => {
+      const companyA = await seedCompany("A");
+      const companyB = await seedCompany("B");
+      const svc = anthropicAccountsService(db);
+      const currentA = await svc.createAccount({ companyId: companyA, label: "Current A", mode: "oauth" });
+      const otherB = await svc.createAccount({ companyId: companyB, label: "B", mode: "oauth" });
+      await db
+        .update(anthropicAccounts)
+        .set({ lastUtilizationFiveHour: "10" })
+        .where(eq(anthropicAccounts.id, otherB.id));
+
+      const candidates = await svc.listHealthyCandidates(companyA, currentA.id);
+      expect(candidates).toHaveLength(0);
+    });
+  });
+
+  describe("logSwitch", () => {
+    it("inserts an audit row with runId, from/to account, and reason", async () => {
+      const companyId = await seedCompany();
+      const svc = anthropicAccountsService(db);
+      const from = await svc.createAccount({ companyId, label: "From", mode: "oauth" });
+      const to = await svc.createAccount({ companyId, label: "To", mode: "oauth" });
+
+      await svc.logSwitch({
+        runId: "run-xyz",
+        fromAccountId: from.id,
+        toAccountId: to.id,
+        reason: "auto:rate_limit",
+      });
+
+      const rows = await db
+        .select()
+        .from(anthropicAccountSwitches)
+        .where(eq(anthropicAccountSwitches.toAccountId, to.id));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        runId: "run-xyz",
+        fromAccountId: from.id,
+        toAccountId: to.id,
+        reason: "auto:rate_limit",
+      });
+      expect(rows[0]!.switchedAt).toBeInstanceOf(Date);
+    });
+
+    it("accepts a null fromAccountId for system-initiated switches without a known prior account", async () => {
+      const companyId = await seedCompany();
+      const svc = anthropicAccountsService(db);
+      const to = await svc.createAccount({ companyId, label: "To", mode: "oauth" });
+
+      await svc.logSwitch({
+        runId: null,
+        fromAccountId: null,
+        toAccountId: to.id,
+        reason: "system:bootstrap",
+      });
+
+      const rows = await db
+        .select()
+        .from(anthropicAccountSwitches)
+        .where(eq(anthropicAccountSwitches.toAccountId, to.id));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.fromAccountId).toBeNull();
+      expect(rows[0]!.runId).toBeNull();
+    });
+  });
+
   describe("setActiveAccount concurrency", () => {
     it("serialises concurrent switches to a single consistent pointer", async () => {
       const companyId = await seedCompany();

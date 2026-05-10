@@ -61,6 +61,7 @@ import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import {
   applyActiveAnthropicAccountToEnv,
+  getAutoFailoverHook,
   hasActiveAccountResolver,
   resolveActiveAccount,
   type ApplyActiveAccountResult,
@@ -440,8 +441,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     timeoutSec,
     graceSec,
     extraArgs,
-    anthropicAccount,
   } = runtimeConfig;
+  let anthropicAccount = runtimeConfig.anthropicAccount;
   let loggedEnv = initialLoggedEnv;
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   const terminalResultCleanupGraceMs = Math.max(
@@ -955,8 +956,108 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
+  // Auto-failover: when a transient rate-limit puts the next retry beyond
+  // FAILOVER_RETRY_DELAY_THRESHOLD_MS, switch to a healthier sibling account
+  // and retry once. Only one failover attempt per `execute()` invocation —
+  // cascading rate-limits on the second account just bubble up as the normal
+  // transient error, so callers fall back to their existing backoff path.
+  const FAILOVER_RETRY_DELAY_THRESHOLD_MS = 5 * 60_000;
+  let attemptedAutoFailover = false;
+  const maybeAutoFailoverRetry = async (
+    result: AdapterExecutionResult,
+  ): Promise<AdapterExecutionResult | null> => {
+    if (attemptedAutoFailover) return null;
+    if (result.errorCode !== "claude_transient_upstream") return null;
+    if (!result.retryNotBefore) return null;
+    const retryAt = new Date(result.retryNotBefore);
+    if (Number.isNaN(retryAt.getTime())) return null;
+    if (retryAt.getTime() - Date.now() <= FAILOVER_RETRY_DELAY_THRESHOLD_MS) return null;
+    if (!anthropicAccount) return null;
+    const hook = getAutoFailoverHook();
+    if (!hook) return null;
+
+    attemptedAutoFailover = true;
+    const fromAccount = anthropicAccount;
+    let candidates;
+    try {
+      candidates = await hook.listHealthyCandidates({
+        companyId: agent.companyId,
+        currentAccountId: fromAccount.accountId,
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await onLog(
+        "stderr",
+        `[paperclip] Auto-failover candidate lookup failed: ${reason}\n`,
+      );
+      return null;
+    }
+    const fallback = candidates[0];
+    if (!fallback) return null;
+
+    try {
+      await hook.setActiveAccount({
+        companyId: agent.companyId,
+        accountId: fallback.id,
+        setBy: "system:auto-failover",
+      });
+      await hook.logSwitch({
+        runId,
+        fromAccountId: fromAccount.accountId,
+        toAccountId: fallback.id,
+        reason: "auto:rate_limit",
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await onLog(
+        "stderr",
+        `[paperclip] Auto-failover switch failed: ${reason}\n`,
+      );
+      return null;
+    }
+
+    let appliedAccount: ApplyActiveAccountResult;
+    try {
+      const account = await resolveActiveAccount(agent.companyId, agent.id);
+      appliedAccount = await applyActiveAnthropicAccountToEnv({ account, env });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await onLog(
+        "stderr",
+        `[paperclip] Auto-failover env apply failed: ${reason}\n`,
+      );
+      return null;
+    }
+
+    await onLog(
+      "stdout",
+      `[paperclip] Anthropic rate limit hit on "${fromAccount.accountLabel}"; failing over to "${appliedAccount.accountLabel}" and retrying once.\n`,
+    );
+    anthropicAccount = appliedAccount;
+    loggedEnv = {
+      ...loggedEnv,
+      ...(typeof env.CLAUDE_CONFIG_DIR === "string" && env.CLAUDE_CONFIG_DIR.length > 0
+        ? { CLAUDE_CONFIG_DIR: env.CLAUDE_CONFIG_DIR }
+        : {}),
+      paperclipAnthropicAccountId: appliedAccount.accountId,
+      paperclipAnthropicAccountLabel: appliedAccount.accountLabel,
+      paperclipAnthropicAccountMode: appliedAccount.accountMode,
+    };
+
+    // Sessions are scoped to the previous account's credentials; start fresh.
+    const retry = await runAttempt(null);
+    return toAdapterResult(retry, {
+      fallbackSessionId: null,
+      clearSessionOnMissingSession: true,
+    });
+  };
+
   try {
     const initial = await runAttempt(sessionId ?? null);
+    let primaryAttempt = initial;
+    let primaryOpts: { fallbackSessionId: string | null; clearSessionOnMissingSession?: boolean } = {
+      fallbackSessionId: runtimeSessionId || runtime.sessionId,
+    };
     if (
       sessionId &&
       !initial.proc.timedOut &&
@@ -968,11 +1069,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         "stdout",
         `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
       );
-      const retry = await runAttempt(null);
-      return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+      primaryAttempt = await runAttempt(null);
+      primaryOpts = { fallbackSessionId: null, clearSessionOnMissingSession: true };
     }
 
-    return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+    const primaryResult = toAdapterResult(primaryAttempt, primaryOpts);
+    const failoverResult = await maybeAutoFailoverRetry(primaryResult);
+    return failoverResult ?? primaryResult;
   } finally {
     if (paperclipBridge) {
       await paperclipBridge.stop();

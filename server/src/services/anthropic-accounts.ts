@@ -1,8 +1,9 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
   anthropicAccounts,
+  anthropicAccountSwitches,
   anthropicActiveAccount,
   type AnthropicAccount,
 } from "@paperclipai/db";
@@ -28,6 +29,28 @@ export interface ActiveAccountView {
   setAt: Date;
   setByAgentId: string | null;
   setByUserId: string | null;
+}
+
+/**
+ * 5h utilization threshold (percent) below which an account is considered
+ * a viable failover target. Accounts at or above this value are skipped to
+ * avoid bouncing into another rate-limited account.
+ */
+export const HEALTHY_FIVE_HOUR_UTILIZATION_THRESHOLD = 80;
+
+export interface HealthyAccountCandidate {
+  id: string;
+  label: string;
+  mode: AnthropicAccountMode;
+  apiKeySecretId: string | null;
+  lastUtilizationFiveHour: number | null;
+}
+
+export interface LogSwitchInput {
+  runId: string | null;
+  fromAccountId: string | null;
+  toAccountId: string;
+  reason: string;
 }
 
 const VALID_MODES: ReadonlySet<AnthropicAccountMode> = new Set([
@@ -225,6 +248,62 @@ export function anthropicAccountsService(db: Db) {
     return active.account;
   }
 
+  /**
+   * Returns oauth/api_key accounts for the company that are below the 5h
+   * utilization threshold and are not the current account. Sorted by lowest
+   * utilization first; bedrock and accounts without recent utilization data
+   * are excluded because we can't decide if they're "healthy" subscription-wise.
+   */
+  async function listHealthyCandidates(
+    companyId: string,
+    currentAccountId: string,
+  ): Promise<HealthyAccountCandidate[]> {
+    const rows = await db
+      .select()
+      .from(anthropicAccounts)
+      .where(
+        and(
+          eq(anthropicAccounts.companyId, companyId),
+          ne(anthropicAccounts.id, currentAccountId),
+        ),
+      );
+
+    const candidates: HealthyAccountCandidate[] = [];
+    for (const row of rows) {
+      if (row.mode !== "oauth" && row.mode !== "api_key") continue;
+      const utilizationRaw = row.lastUtilizationFiveHour;
+      const utilization = utilizationRaw == null ? null : Number(utilizationRaw);
+      if (utilization == null || Number.isNaN(utilization)) continue;
+      if (utilization >= HEALTHY_FIVE_HOUR_UTILIZATION_THRESHOLD) continue;
+      candidates.push({
+        id: row.id,
+        label: row.label,
+        mode: row.mode as AnthropicAccountMode,
+        apiKeySecretId: row.apiKeySecretId,
+        lastUtilizationFiveHour: utilization,
+      });
+    }
+    candidates.sort(
+      (a, b) =>
+        (a.lastUtilizationFiveHour ?? Number.POSITIVE_INFINITY) -
+        (b.lastUtilizationFiveHour ?? Number.POSITIVE_INFINITY),
+    );
+    return candidates;
+  }
+
+  /**
+   * Inserts an audit row into anthropic_account_switches. Used by both
+   * manual switches (via routes) and auto-failover.
+   */
+  async function logSwitch(input: LogSwitchInput): Promise<void> {
+    await db.insert(anthropicAccountSwitches).values({
+      runId: input.runId,
+      fromAccountId: input.fromAccountId,
+      toAccountId: input.toAccountId,
+      reason: input.reason,
+    });
+  }
+
   return {
     listAccounts,
     getAccountById,
@@ -233,6 +312,8 @@ export function anthropicAccountsService(db: Db) {
     setActiveAccount,
     getActiveAccount,
     resolveActiveForAgent,
+    listHealthyCandidates,
+    logSwitch,
   };
 }
 

@@ -100,6 +100,47 @@ export interface ApplyActiveAccountResult {
 }
 
 /**
+ * A candidate Anthropic account considered "healthy" for auto-failover —
+ * resolver-side service decides what "healthy" means (e.g. utilization < 80%).
+ */
+export interface HealthyAccountCandidate {
+  id: string;
+  label: string;
+  mode: ActiveAnthropicAccountMode;
+  apiKeySecretId: string | null;
+  /** Last 5h utilization percent (0..100) or null if unknown / not applicable. */
+  lastUtilizationFiveHour: number | null;
+}
+
+export interface AutoFailoverHook {
+  listHealthyCandidates(input: {
+    companyId: string;
+    currentAccountId: string;
+  }): Promise<HealthyAccountCandidate[]>;
+  setActiveAccount(input: {
+    companyId: string;
+    accountId: string;
+    setBy: string;
+  }): Promise<void>;
+  logSwitch(input: {
+    runId: string;
+    fromAccountId: string;
+    toAccountId: string;
+    reason: string;
+  }): Promise<void>;
+}
+
+let autoFailoverHook: AutoFailoverHook | null = null;
+
+export function setAutoFailoverHook(hook: AutoFailoverHook | null): void {
+  autoFailoverHook = hook;
+}
+
+export function getAutoFailoverHook(): AutoFailoverHook | null {
+  return autoFailoverHook;
+}
+
+/**
  * Inject Anthropic-account-specific runtime credentials into the env that the
  * Claude CLI will see. Caller decides how to populate `loggedEnv` (we never
  * touch credential values here — `redactEnvForLogs` will mask api keys downstream).

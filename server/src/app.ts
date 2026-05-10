@@ -26,6 +26,7 @@ import { anthropicAccountsRoutes } from "./routes/anthropic-accounts.js";
 import {
   setApiKeyResolver as setClaudeLocalApiKeyResolver,
   setActiveAccountResolver as setClaudeLocalActiveAccountResolver,
+  setAutoFailoverHook as setClaudeLocalAutoFailoverHook,
 } from "@paperclipai/adapter-claude-local/server";
 import { secretService } from "./services/secrets.js";
 import { anthropicAccountsService } from "./services/anthropic-accounts.js";
@@ -244,6 +245,29 @@ export async function createApp(
       mode,
       apiKeySecretId: account.apiKeySecretId,
     };
+  });
+
+  // Bridge claude-local adapter auto-failover to the anthropic-accounts service:
+  // when a transient rate-limit hits and the next reset is far enough away,
+  // the adapter asks for healthy candidates, flips the active pointer, and logs
+  // the switch through the same audit table used by manual switches.
+  setClaudeLocalAutoFailoverHook({
+    listHealthyCandidates: async ({ companyId, currentAccountId }) =>
+      anthropicAccountsSvc.listHealthyCandidates(companyId, currentAccountId),
+    setActiveAccount: async ({ companyId, accountId }) => {
+      await anthropicAccountsSvc.setActiveAccount(companyId, accountId, {
+        agentId: null,
+        userId: null,
+      });
+    },
+    logSwitch: async ({ runId, fromAccountId, toAccountId, reason }) => {
+      await anthropicAccountsSvc.logSwitch({
+        runId,
+        fromAccountId,
+        toAccountId,
+        reason,
+      });
+    },
   });
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
