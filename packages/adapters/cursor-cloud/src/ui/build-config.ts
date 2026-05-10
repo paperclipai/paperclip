@@ -51,13 +51,6 @@ export function buildCursorCloudConfig(values: CreateConfigValues): Record<strin
   if (values.promptTemplate) config.promptTemplate = values.promptTemplate;
   if (values.bootstrapPrompt) config.bootstrapPromptTemplate = values.bootstrapPrompt;
   if (values.model?.trim()) config.model = values.model.trim();
-  if (values.command?.trim()) config.command = values.command.trim();
-  if (values.extraArgs?.trim()) {
-    config.extraArgs = values.extraArgs
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean);
-  }
 
   const env = parseEnvBindings(values.envBindings);
   const legacy = parseEnvVars(values.envVars);

@@ -348,6 +348,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       provider: "cursor",
       biller: "cursor",
       billingType: "api",
+      clearSession: false,
     };
   }
 

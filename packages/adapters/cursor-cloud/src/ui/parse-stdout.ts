@@ -91,14 +91,17 @@ function parseSdkMessage(messageRaw: unknown, ts: string): TranscriptEntry[] {
         input: message.args ?? {},
       }];
     }
-    return [{
-      kind: "tool_result",
-      ts,
-      toolUseId,
-      toolName: asString(message.name, "tool"),
-      content: stringifyUnknown(message.result ?? message.args ?? {}),
-      isError: status === "error",
-    }];
+    if (status === "completed" || status === "error") {
+      return [{
+        kind: "tool_result",
+        ts,
+        toolUseId,
+        toolName: asString(message.name, "tool"),
+        content: stringifyUnknown(message.result ?? message.args ?? {}),
+        isError: status === "error",
+      }];
+    }
+    return [];
   }
 
   if (type === "status") {
