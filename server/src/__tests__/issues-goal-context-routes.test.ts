@@ -6,6 +6,8 @@ import { issueRoutes } from "../routes/issues.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  update: vi.fn(),
+  checkout: vi.fn(),
   getAncestors: vi.fn(),
   getRelationSummaries: vi.fn(),
   findMentionedProjectIds: vi.fn(),
@@ -227,10 +229,20 @@ describe.sequential("issue goal context routes", () => {
   });
 
   it("surfaces the project goal from GET /issues/:id when the issue has no direct goal", async () => {
+    mockIssueService.getCommentCursor.mockResolvedValue({
+      totalComments: 2,
+      latestCommentId: "comment-2",
+      latestCommentAt: "2026-05-04T21:15:17.065Z",
+    });
     const res = await request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111");
 
     expect(res.status).toBe(200);
     expect(res.body.goalId).toBe(projectGoal.id);
+    expect(res.body.commentCursor).toEqual({
+      totalComments: 2,
+      latestCommentId: "comment-2",
+      latestCommentAt: "2026-05-04T21:15:17.065Z",
+    });
     expect(res.body.goal).toEqual(
       expect.objectContaining({
         id: projectGoal.id,
@@ -313,6 +325,30 @@ describe.sequential("issue goal context routes", () => {
         identifier: "PAP-580",
       }),
     ]);
+    expect(res.body.issue.blockedByIssueIds).toEqual(["55555555-5555-4555-8555-555555555555"]);
+  });
+
+  it("keeps relation-derived blockedByIssueIds on GET /issues/:id even when document payload includes null", async () => {
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [
+        {
+          id: "55555555-5555-4555-8555-555555555555",
+          identifier: "PAP-580",
+          title: "Finish wakeup plumbing",
+          status: "done",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        },
+      ],
+      blocks: [],
+    });
+    mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({ blockedByIssueIds: null });
+
+    const res = await request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111");
+
+    expect(res.status).toBe(200);
+    expect(res.body.blockedByIssueIds).toEqual(["55555555-5555-4555-8555-555555555555"]);
   });
 
   it("surfaces the current execution workspace from GET /issues/:id/heartbeat-context", async () => {
@@ -358,5 +394,249 @@ describe.sequential("issue goal context routes", () => {
         }),
       ],
     }));
+  });
+
+  it("keeps checkout and heartbeat-context currentExecutionWorkspace fields in parity for the same issue", async () => {
+    const workspaceId = "66666666-6666-4666-8666-666666666666";
+    let mutableIssue = {
+      ...legacyProjectLinkedIssue,
+      executionWorkspaceId: null as string | null,
+    };
+
+    mockIssueService.getById.mockImplementation(async () => mutableIssue);
+    mockIssueService.checkout.mockImplementation(async () => {
+      mutableIssue = {
+        ...mutableIssue,
+        status: "in_progress",
+        executionWorkspaceId: workspaceId,
+      };
+      return mutableIssue;
+    });
+    mockExecutionWorkspaceService.getById.mockImplementation(async (id: string) =>
+      id === workspaceId
+        ? {
+            id: workspaceId,
+            name: "PAP-581 workspace",
+            mode: "isolated_workspace",
+            status: "active",
+            cwd: "/tmp/pap-581",
+            runtimeServices: [],
+          }
+        : null,
+    );
+
+    const checkoutRes = await request(createApp())
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/checkout")
+      .send({
+        agentId: "33333333-3333-4333-8333-333333333333",
+        expectedStatuses: ["todo", "backlog", "blocked"],
+      });
+
+    expect(checkoutRes.status).toBe(200);
+    expect(checkoutRes.body.executionWorkspaceId).toBe(workspaceId);
+    expect(checkoutRes.body.currentExecutionWorkspace).toEqual(
+      expect.objectContaining({
+        id: workspaceId,
+        cwd: "/tmp/pap-581",
+      }),
+    );
+
+    const contextRes = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(contextRes.status).toBe(200);
+    expect(contextRes.body.issue.executionWorkspaceId).toBe(workspaceId);
+    expect(contextRes.body.issue.currentExecutionWorkspace).toEqual(
+      expect.objectContaining({
+        id: workspaceId,
+        cwd: "/tmp/pap-581",
+      }),
+    );
+    expect(contextRes.body.currentExecutionWorkspace).toEqual(
+      expect.objectContaining({
+        id: workspaceId,
+        cwd: "/tmp/pap-581",
+      }),
+    );
+    expect(contextRes.body.issue.currentExecutionWorkspace).toEqual(checkoutRes.body.currentExecutionWorkspace);
+  });
+
+  it("keeps heartbeat-context executionWorkspaceId populated when workspace lookup is null", async () => {
+    const workspaceId = "77777777-7777-4777-8777-777777777777";
+    const issueWithWorkspace = {
+      ...legacyProjectLinkedIssue,
+      status: "in_progress",
+      executionWorkspaceId: workspaceId,
+    };
+
+    mockIssueService.getById.mockResolvedValue(issueWithWorkspace);
+    mockExecutionWorkspaceService.getById.mockResolvedValue(null);
+
+    const contextRes = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(contextRes.status).toBe(200);
+    expect(contextRes.body.issue.executionWorkspaceId).toBe(workspaceId);
+    expect(contextRes.body.issue.currentExecutionWorkspace).toBeNull();
+    expect(contextRes.body.currentExecutionWorkspace).toBeNull();
+  });
+
+  it("preserves direct PATCH execution workspace fields through the issue route", async () => {
+    const issueId = "11111111-1111-4111-8111-111111111111";
+    const nextExecutionWorkspaceId = "88888888-8888-4888-8888-888888888888";
+    let mutableIssue = {
+      ...legacyProjectLinkedIssue,
+      executionWorkspaceId: null as string | null,
+      executionWorkspacePreference: null as string | null,
+      executionWorkspaceSettings: null as Record<string, unknown> | null,
+    };
+
+    mockIssueService.getById.mockImplementation(async () => mutableIssue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+      mutableIssue = {
+        ...mutableIssue,
+        ...patch,
+      };
+      return mutableIssue;
+    });
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        executionWorkspaceId: nextExecutionWorkspaceId,
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: { mode: "isolated_workspace" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        executionWorkspaceId: nextExecutionWorkspaceId,
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: { mode: "isolated_workspace" },
+      }),
+    );
+    expect(res.body.executionWorkspaceId).toBe(nextExecutionWorkspaceId);
+    expect(res.body.executionWorkspacePreference).toBe("reuse_existing");
+    expect(res.body.executionWorkspaceSettings).toEqual({ mode: "isolated_workspace" });
+  });
+
+  it("accepts and persists agent_default as executionWorkspacePreference on direct PATCH", async () => {
+    const issueId = "11111111-1111-4111-8111-111111111111";
+    let mutableIssue = {
+      ...legacyProjectLinkedIssue,
+      executionWorkspaceId: null as string | null,
+      executionWorkspacePreference: null as string | null,
+      executionWorkspaceSettings: null as Record<string, unknown> | null,
+    };
+
+    mockIssueService.getById.mockImplementation(async () => mutableIssue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+      mutableIssue = {
+        ...mutableIssue,
+        ...patch,
+      };
+      return mutableIssue;
+    });
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        executionWorkspacePreference: "agent_default",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        executionWorkspacePreference: "agent_default",
+      }),
+    );
+    expect(res.body.executionWorkspacePreference).toBe("agent_default");
+  });
+
+  it("retries with a workspace-only patch when direct PATCH response returns stale workspace linkage", async () => {
+    const issueId = "11111111-1111-4111-8111-111111111111";
+    const nextExecutionWorkspaceId = "99999999-9999-4999-8999-999999999999";
+    const nextPreference = "reuse_existing";
+    let mutableIssue = {
+      ...legacyProjectLinkedIssue,
+      executionWorkspaceId: "55555555-5555-4555-8555-555555555555",
+      executionWorkspacePreference: null as string | null,
+      executionWorkspaceSettings: null as Record<string, unknown> | null,
+    };
+    let updateCallCount = 0;
+
+    mockIssueService.getById.mockImplementation(async () => mutableIssue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+      updateCallCount += 1;
+      if (updateCallCount === 1) {
+        // Simulate the stale response observed in runtime: PATCH returns 200
+        // but workspace linkage fields are unchanged.
+        return mutableIssue;
+      }
+      mutableIssue = {
+        ...mutableIssue,
+        ...patch,
+      };
+      return mutableIssue;
+    });
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        executionWorkspaceId: nextExecutionWorkspaceId,
+        executionWorkspacePreference: nextPreference,
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledTimes(2);
+    expect(mockIssueService.update).toHaveBeenNthCalledWith(
+      2,
+      issueId,
+      expect.objectContaining({
+        executionWorkspaceId: nextExecutionWorkspaceId,
+        executionWorkspacePreference: nextPreference,
+      }),
+    );
+    expect(res.body.executionWorkspaceId).toBe(nextExecutionWorkspaceId);
+    expect(res.body.executionWorkspacePreference).toBe(nextPreference);
+  });
+
+  it("returns explicit policy override reason when workspace linkage remains stale after retry", async () => {
+    const issueId = "11111111-1111-4111-8111-111111111111";
+    const nextExecutionWorkspaceId = "99999999-9999-4999-8999-999999999999";
+    const nextPreference = "reuse_existing";
+    const staleIssue = {
+      ...legacyProjectLinkedIssue,
+      executionWorkspaceId: "55555555-5555-4555-8555-555555555555",
+      executionWorkspacePreference: "agent_default" as string | null,
+      executionWorkspaceSettings: null as Record<string, unknown> | null,
+    };
+
+    mockIssueService.getById.mockImplementation(async () => staleIssue);
+    mockIssueService.update.mockImplementation(async () => staleIssue);
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        executionWorkspaceId: nextExecutionWorkspaceId,
+        executionWorkspacePreference: nextPreference,
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body).toMatchObject({
+      error: "Execution workspace selection was overridden by policy",
+      details: {
+        reason: "execution_workspace_policy_override",
+        requestedExecutionWorkspaceId: nextExecutionWorkspaceId,
+        requestedExecutionWorkspacePreference: nextPreference,
+        persistedExecutionWorkspaceId: staleIssue.executionWorkspaceId,
+        persistedExecutionWorkspacePreference: staleIssue.executionWorkspacePreference,
+      },
+    });
   });
 });

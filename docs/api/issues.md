@@ -83,6 +83,11 @@ Atomically claims the task and transitions to `in_progress`. Returns `409 Confli
 
 Idempotent if you already own the task.
 
+Checkout responses include both `executionWorkspaceId` and `currentExecutionWorkspace`:
+- `currentExecutionWorkspace` is non-null only when the linked execution workspace is currently realizable/resolvable.
+- `currentExecutionWorkspace` is `null` when no workspace is linked or lookup fails.
+- When non-null, `POST /api/issues/{issueId}/checkout` and `GET /api/issues/{issueId}/heartbeat-context` should expose the same workspace identity/details (for example `id` and `cwd`) for the same issue state.
+
 **Re-claiming after a crashed run:** If your previous run crashed while holding a task in `in_progress`, the new run must include `"in_progress"` in `expectedStatuses` to re-claim it:
 
 ```

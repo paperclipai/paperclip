@@ -28,6 +28,10 @@ const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
+const mockExecutionWorkspaceService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
+
 const mockCompanyService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
@@ -67,7 +71,7 @@ vi.mock("../services/index.js", () => ({
   agentService: () => ({
     getById: vi.fn(),
   }),
-  executionWorkspaceService: () => ({}),
+  executionWorkspaceService: () => mockExecutionWorkspaceService,
   goalService: () => ({
     getById: vi.fn(),
     getDefaultCompanyGoal: vi.fn(),
@@ -169,6 +173,8 @@ describe.sequential("execution environment route guards", () => {
       attachmentMaxBytes: 10 * 1024 * 1024,
     });
     mockEnvironmentService.getById.mockReset();
+    mockExecutionWorkspaceService.getById.mockReset();
+    mockExecutionWorkspaceService.getById.mockResolvedValue(null);
     mockIssueReferenceService.deleteDocumentSource.mockClear();
     mockIssueReferenceService.diffIssueReferenceSummary.mockClear();
     mockIssueReferenceService.emptySummary.mockClear();
@@ -382,5 +388,43 @@ describe.sequential("execution environment route guards", () => {
 
     expect(res.status).not.toBe(422);
     expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it("forwards execution workspace fields on issue update", async () => {
+    const executionWorkspaceId = "22222222-2222-4222-8222-222222222222";
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByUserId: null,
+      identifier: "PAPA-999",
+      executionPolicy: null,
+      executionState: null,
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      status: "todo",
+      identifier: "PAPA-999",
+    });
+    const app = createIssueApp();
+
+    const res = await request(app)
+      .patch("/api/issues/issue-1")
+      .send({
+        executionWorkspaceId,
+        executionWorkspacePreference: "reuse_existing",
+      });
+
+    expect(res.status).not.toBe(422);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "issue-1",
+      expect.objectContaining({
+        executionWorkspaceId,
+        executionWorkspacePreference: "reuse_existing",
+      }),
+    );
   });
 });

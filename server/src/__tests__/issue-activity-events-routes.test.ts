@@ -238,6 +238,7 @@ describe("issue activity event routes", () => {
       .send({ blockedByIssueIds: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"] });
 
     expect(res.status).toBe(200);
+    expect(res.body.blockedByIssueIds).toEqual(["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]);
     await vi.waitFor(() => {
       expect(mockLogActivity).toHaveBeenCalledWith(
         expect.anything(),

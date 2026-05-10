@@ -28,6 +28,7 @@ import {
   updateIssueWorkProductSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
+  ISSUE_EXECUTION_WORKSPACE_PREFERENCES,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
   type ExecutionWorkspace,
@@ -87,8 +88,31 @@ import {
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const issueExecutionWorkspacePreferencesRouteSchema = z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES);
+const issueExecutionWorkspaceSettingsRouteSchema = z
+  .object({
+    mode: issueExecutionWorkspacePreferencesRouteSchema.optional(),
+    environmentId: z.string().uuid().optional().nullable(),
+    workspaceStrategy: z
+      .object({
+        type: z.enum(["project_primary", "git_worktree", "adapter_managed", "cloud_sandbox"]).optional(),
+        baseRef: z.string().optional().nullable(),
+        branchTemplate: z.string().optional().nullable(),
+        worktreeParentDir: z.string().optional().nullable(),
+        provisionCommand: z.string().optional().nullable(),
+        teardownCommand: z.string().optional().nullable(),
+      })
+      .strict()
+      .optional()
+      .nullable(),
+    workspaceRuntime: z.record(z.unknown()).optional().nullable(),
+  })
+  .strict();
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
+  executionWorkspaceId: z.string().uuid().optional().nullable(),
+  executionWorkspacePreference: issueExecutionWorkspacePreferencesRouteSchema.optional().nullable(),
+  executionWorkspaceSettings: issueExecutionWorkspaceSettingsRouteSchema.optional().nullable(),
 });
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
@@ -148,6 +172,19 @@ function summarizeIssueRelationForActivity(relation: {
     identifier: relation.identifier,
     title: relation.title,
   };
+}
+
+function relationIds(relations: { id: string }[]): string[] {
+  return relations.map((relation) => relation.id);
+}
+
+function normalizeBlockedByIssueIdsFromRelations(
+  blockedBy: Array<{ id?: string | null }> | undefined,
+): string[] | null {
+  if (!Array.isArray(blockedBy)) return null;
+  return blockedBy
+    .map((relation) => relation.id)
+    .filter((id): id is string => typeof id === "string");
 }
 
 function summarizeIssueReferenceActivityDetails(input:
@@ -647,6 +684,29 @@ export function issueRoutes(
     res: Response,
     issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
   ) {
+    const isCrossAssigneeInterventionComment = (() => {
+      if (req.method !== "POST") return false;
+      if (!/^\/issues\/[^/]+\/comments$/.test(req.path)) return false;
+      if (!req.body || typeof req.body !== "object") return false;
+      return (req.body as { intervention?: unknown }).intervention === true;
+    })();
+
+    const isExecutionWorkspaceOnlyPatch = (() => {
+      if (req.method !== "PATCH") return false;
+      if (!req.body || typeof req.body !== "object") return false;
+
+      const allowedKeys = new Set([
+        "executionWorkspaceId",
+        "executionWorkspacePreference",
+        "executionWorkspaceSettings",
+      ]);
+      const keys = Object.entries(req.body as Record<string, unknown>)
+        .filter(([, value]) => value !== undefined && value !== null)
+        .map(([key]) => key);
+      if (keys.length === 0) return false;
+      return keys.every((key) => allowedKeys.has(key));
+    })();
+
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
@@ -658,6 +718,15 @@ export function issueRoutes(
     }
     if (issue.assigneeAgentId !== actorAgentId) {
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
+        return true;
+      }
+      if (
+        isCrossAssigneeInterventionComment &&
+        (await access.hasPermission(issue.companyId, "agent", actorAgentId, "tasks:assign"))
+      ) {
+        return true;
+      }
+      if (issue.status !== "in_progress" && isExecutionWorkspaceOnlyPatch) {
         return true;
       }
       if (issue.status === "in_progress") {
@@ -1142,6 +1211,7 @@ export function issueRoutes(
         goalId: goal?.id ?? issue.goalId,
         parentId: issue.parentId,
         blockedBy: relations.blockedBy,
+        blockedByIssueIds: relationIds(relations.blockedBy),
         blocks: relations.blocks,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
@@ -1214,6 +1284,7 @@ export function issueRoutes(
       { project, goal },
       ancestors,
       mentionedProjectIds,
+      commentCursor,
       documentPayload,
       relations,
       blockerAttention,
@@ -1223,6 +1294,7 @@ export function issueRoutes(
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
       svc.findMentionedProjectIds(issue.id, { includeCommentBodies: false }),
+      svc.getCommentCursor(issue.id),
       documentsSvc.getIssueDocumentPayload(issue),
       svc.getRelationSummaries(issue.id),
       svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
@@ -1236,6 +1308,7 @@ export function issueRoutes(
       ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
       : null;
     const workProducts = await workProductsSvc.listForIssue(issue.id);
+    const blockedByIssueIds = relationIds(relations.blockedBy);
     res.json({
       ...issue,
       goalId: goal?.id ?? issue.goalId,
@@ -1246,7 +1319,9 @@ export function issueRoutes(
       blocks: relations.blocks,
       relatedWork: referenceSummary,
       referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+      commentCursor,
       ...documentPayload,
+      blockedByIssueIds,
       project: project ?? null,
       goal: goal ?? null,
       mentionedProjects,
@@ -2217,6 +2292,17 @@ export function issueRoutes(
       };
     }
     Object.assign(updateFields, transition.patch);
+    // Preserve explicit workspace patch intent even if transition patching adds
+    // undefined placeholders for these fields.
+    if (Object.prototype.hasOwnProperty.call(req.body, "executionWorkspaceId")) {
+      updateFields.executionWorkspaceId = req.body.executionWorkspaceId;
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body, "executionWorkspacePreference")) {
+      updateFields.executionWorkspacePreference = req.body.executionWorkspacePreference;
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body, "executionWorkspaceSettings")) {
+      updateFields.executionWorkspaceSettings = req.body.executionWorkspaceSettings;
+    }
     if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
       const existingExecutionState = parseIssueExecutionState(existing.executionState);
       if (!existingExecutionState || existingExecutionState.status !== "pending") {
@@ -2252,6 +2338,16 @@ export function issueRoutes(
         await assertCanAssignTasks(req, existing.companyId);
       }
     }
+
+    const requestedExecutionWorkspaceId = Object.prototype.hasOwnProperty.call(req.body, "executionWorkspaceId")
+      ? (req.body.executionWorkspaceId as string | null)
+      : undefined;
+    const requestedExecutionWorkspacePreference = Object.prototype.hasOwnProperty.call(req.body, "executionWorkspacePreference")
+      ? (req.body.executionWorkspacePreference as string | null)
+      : undefined;
+    const requestedExecutionWorkspaceSettings = Object.prototype.hasOwnProperty.call(req.body, "executionWorkspaceSettings")
+      ? (req.body.executionWorkspaceSettings as Record<string, unknown> | null)
+      : undefined;
 
     let issue;
     try {
@@ -2314,6 +2410,80 @@ export function issueRoutes(
       }
       throw err;
     }
+    if (
+      issue &&
+      (requestedExecutionWorkspaceId !== undefined || requestedExecutionWorkspacePreference !== undefined) &&
+      (
+        (requestedExecutionWorkspaceId !== undefined && issue.executionWorkspaceId !== requestedExecutionWorkspaceId) ||
+        (
+          requestedExecutionWorkspacePreference !== undefined &&
+          issue.executionWorkspacePreference !== requestedExecutionWorkspacePreference
+        )
+      )
+    ) {
+      // Guardrail for direct PATCH contract: if the broader issue mutation path
+      // returns stale execution-workspace linkage fields, retry a workspace-only
+      // persistence patch and use that response.
+      const workspaceOnlyPatch: {
+        executionWorkspaceId?: string | null;
+        executionWorkspacePreference?: string | null;
+        executionWorkspaceSettings?: Record<string, unknown> | null;
+        actorAgentId?: string | null;
+        actorUserId?: string | null;
+      } = {
+        actorAgentId: actor.agentId ?? null,
+        actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      };
+      if (requestedExecutionWorkspaceId !== undefined) {
+        workspaceOnlyPatch.executionWorkspaceId = requestedExecutionWorkspaceId;
+      }
+      if (requestedExecutionWorkspacePreference !== undefined) {
+        workspaceOnlyPatch.executionWorkspacePreference = requestedExecutionWorkspacePreference;
+      }
+      if (requestedExecutionWorkspaceSettings !== undefined) {
+        workspaceOnlyPatch.executionWorkspaceSettings = requestedExecutionWorkspaceSettings;
+      }
+      const persistedWorkspacePatch = await svc.update(id, workspaceOnlyPatch);
+      if (persistedWorkspacePatch) {
+        issue = persistedWorkspacePatch;
+      }
+    }
+
+    if (issue && (requestedExecutionWorkspaceId !== undefined || requestedExecutionWorkspacePreference !== undefined)) {
+      // Re-read persisted state before returning 200 so direct PATCH cannot
+      // silently succeed with stale workspace linkage values.
+      const persistedIssue = await svc.getById(id);
+      if (!persistedIssue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      issue = persistedIssue;
+    }
+
+    if (
+      issue &&
+      (requestedExecutionWorkspaceId !== undefined || requestedExecutionWorkspacePreference !== undefined) &&
+      (
+        (requestedExecutionWorkspaceId !== undefined && issue.executionWorkspaceId !== requestedExecutionWorkspaceId) ||
+        (
+          requestedExecutionWorkspacePreference !== undefined &&
+          issue.executionWorkspacePreference !== requestedExecutionWorkspacePreference
+        )
+      )
+    ) {
+      res.status(409).json({
+        error: "Execution workspace selection was overridden by policy",
+        details: {
+          reason: "execution_workspace_policy_override",
+          requestedExecutionWorkspaceId: requestedExecutionWorkspaceId ?? null,
+          requestedExecutionWorkspacePreference: requestedExecutionWorkspacePreference ?? null,
+          persistedExecutionWorkspaceId: issue.executionWorkspaceId ?? null,
+          persistedExecutionWorkspacePreference: issue.executionWorkspacePreference ?? null,
+        },
+      });
+      return;
+    }
+
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
@@ -2374,6 +2544,7 @@ export function issueRoutes(
       issueResponse = {
         ...issue,
         blockedBy: updatedRelations.blockedBy,
+        blockedByIssueIds: relationIds(updatedRelations.blockedBy),
         blocks: updatedRelations.blocks,
       };
     }
@@ -2866,7 +3037,14 @@ export function issueRoutes(
       }
     })();
 
-    res.json({ ...issueResponse, comment });
+    const responseBlockedByIssueIds = normalizeBlockedByIssueIdsFromRelations(
+      (issueResponse as { blockedBy?: Array<{ id?: string | null }> }).blockedBy,
+    );
+    res.json({
+      ...issueResponse,
+      ...(responseBlockedByIssueIds ? { blockedByIssueIds: responseBlockedByIssueIds } : {}),
+      comment,
+    });
   });
 
   router.delete("/issues/:id", async (req, res) => {
@@ -2945,6 +3123,9 @@ export function issueRoutes(
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
     const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
+    const currentExecutionWorkspace = updated.executionWorkspaceId
+      ? await executionWorkspacesSvc.getById(updated.executionWorkspaceId)
+      : null;
     const actor = getActorInfo(req);
 
     await logActivity(db, {
@@ -2980,7 +3161,10 @@ export function issueRoutes(
         .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue checkout"));
     }
 
-    res.json(updated);
+    res.json({
+      ...updated,
+      currentExecutionWorkspace,
+    });
   });
 
   router.post("/issues/:id/release", async (req, res) => {
@@ -3627,7 +3811,12 @@ export function issueRoutes(
     const commentReferenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
 
     if (effectiveMoveToTodoRequested && (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers))) {
-      const reopenedIssue = await svc.update(id, { status: "todo" });
+      const reopenedIssue = await svc.update(id, {
+        status: "todo",
+        executionWorkspaceId: issue.executionWorkspaceId ?? null,
+        executionWorkspacePreference: issue.executionWorkspacePreference ?? null,
+        executionWorkspaceSettings: issue.executionWorkspaceSettings ?? null,
+      });
       if (!reopenedIssue) {
         res.status(404).json({ error: "Issue not found" });
         return;

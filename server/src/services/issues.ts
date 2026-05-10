@@ -64,6 +64,8 @@ const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
 const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
+const ISSUE_COMMENT_CHURN_WINDOW_MS = 30_000;
+const ISSUE_COMMENT_CHURN_MAX_PER_WINDOW = 3;
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -2677,8 +2679,6 @@ export function issueService(db: Db) {
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
-        delete issueData.executionWorkspaceId;
-        delete issueData.executionWorkspacePreference;
         delete issueData.executionWorkspaceSettings;
       }
       if (data.assigneeAgentId && data.assigneeUserId) {
@@ -2924,8 +2924,6 @@ export function issueService(db: Db) {
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
-        delete issueData.executionWorkspaceId;
-        delete issueData.executionWorkspacePreference;
         delete issueData.executionWorkspaceSettings;
       }
 
@@ -3729,6 +3727,27 @@ export function issueService(db: Db) {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
       };
       const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+      const now = new Date();
+      const hasActorIdentity = Boolean(actor.agentId || actor.userId);
+      if (hasActorIdentity) {
+        const windowStartedAt = new Date(now.getTime() - ISSUE_COMMENT_CHURN_WINDOW_MS);
+        const sameActorConditions = [
+          eq(issueComments.issueId, issueId),
+          gt(issueComments.createdAt, windowStartedAt),
+        ];
+        if (actor.agentId) sameActorConditions.push(eq(issueComments.authorAgentId, actor.agentId));
+        else sameActorConditions.push(isNull(issueComments.authorAgentId));
+        if (actor.userId) sameActorConditions.push(eq(issueComments.authorUserId, actor.userId));
+        else sameActorConditions.push(isNull(issueComments.authorUserId));
+
+        const [recentCommentCounts] = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(issueComments)
+          .where(and(...sameActorConditions));
+        if ((recentCommentCounts?.count ?? 0) >= ISSUE_COMMENT_CHURN_MAX_PER_WINDOW) {
+          throw conflict("Issue comment churn guardrail triggered: too many comments in 30 seconds");
+        }
+      }
       const [comment] = await db
         .insert(issueComments)
         .values({
@@ -3738,6 +3757,8 @@ export function issueService(db: Db) {
           authorUserId: actor.userId ?? null,
           createdByRunId: actor.runId ?? null,
           body: redactedBody,
+          createdAt: now,
+          updatedAt: now,
         })
         .returning();
 

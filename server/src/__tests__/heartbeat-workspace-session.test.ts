@@ -14,6 +14,7 @@ import {
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveRuntimeSessionParamsForWorkspace,
+  shouldPersistIssueWorkspaceReuse,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
@@ -253,6 +254,30 @@ describe("buildRealizedExecutionWorkspaceFromPersisted", () => {
     expect(result.worktreePath).toBe("/tmp/reused-worktree");
     expect(result.branchName).toBe("PAP-880-thumbs-capture-for-evals-feature");
     expect(result.source).toBe("task_session");
+  });
+});
+
+describe("shouldPersistIssueWorkspaceReuse", () => {
+  it("persists reuse for task-session workspaces even when persisted mode is shared", () => {
+    expect(shouldPersistIssueWorkspaceReuse({
+      existingPreference: null,
+      persistedWorkspaceMode: "shared_workspace",
+      realizedWorkspaceSource: "task_session",
+    })).toBe(true);
+  });
+
+  it("persists reuse for adapter-managed execution workspaces", () => {
+    expect(shouldPersistIssueWorkspaceReuse({
+      existingPreference: null,
+      persistedWorkspaceMode: "adapter_managed",
+    })).toBe(true);
+  });
+
+  it("does not force reuse for shared execution workspaces without an explicit preference", () => {
+    expect(shouldPersistIssueWorkspaceReuse({
+      existingPreference: null,
+      persistedWorkspaceMode: "shared_workspace",
+    })).toBe(false);
   });
 });
 

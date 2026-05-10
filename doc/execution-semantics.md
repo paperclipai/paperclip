@@ -325,6 +325,20 @@ Operators should prefer `snooze` for known time-bounded quiet periods. `continue
 
 The board can record watchdog decisions. The assigned owner of the watchdog evaluation issue can also record them. Other agents cannot.
 
+### Operator note: `running` with `activeRunId = null`
+
+During stale-run cleanup, snapshot surfaces (for example issue-tree hold member snapshots) can briefly reflect stale run metadata while the canonical run row has already been removed or transitioned. Treat this as a reconciliation artifact, not proof that a run is still safely recoverable.
+
+Operator guidance:
+
+- trust canonical run state from heartbeat runs and run events over historical snapshots
+- if no active run row exists, treat the issue as not actively executing and continue normal recovery flow (requeue, explicit recovery issue, or unblock path)
+- do not assume a snapshot `running` status is authoritative when `activeRunId` is null
+
+Implementation guardrail:
+
+- issue-tree hold member responses normalize run metadata so `activeRunStatus` is null whenever `activeRunId` is null, preventing `running + null` from surfacing as a durable API state
+
 ## 11. Auto-Recover vs Explicit Recovery vs Human Escalation
 
 Paperclip uses three different recovery outcomes, depending on how much it can safely infer.

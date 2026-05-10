@@ -42,6 +42,7 @@ import {
   ISSUE_LIST_DEFAULT_LIMIT,
   issueApprovalService,
   issueService,
+  issueTreeControlService,
   logActivity,
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
@@ -164,6 +165,9 @@ export function agentRoutes(
   });
   const recovery = recoveryService(db, { enqueueWakeup: heartbeat.wakeup });
   const issueApprovalsSvc = issueApprovalService(db);
+  const issueTreeControl = typeof issueTreeControlService === "function"
+    ? issueTreeControlService(db)
+    : { getActivePauseHoldGate: async () => null };
   const secretsSvc = secretService(db);
   const instructions = agentInstructionsService();
   const companySkills = companySkillService(db);
@@ -1565,23 +1569,53 @@ export function agentRoutes(
       req.actor.companyId,
       rows.map((issue) => issue.id),
     );
+    const pauseHoldGates = await Promise.all(
+      rows.map((issue) => issueTreeControl.getActivePauseHoldGate(req.actor.companyId!, issue.id)),
+    );
+    const pauseHoldGateByIssueId = new Map(
+      rows.map((issue, index) => [issue.id, pauseHoldGates[index]] as const),
+    );
 
     res.json(
-      rows.map((issue) => ({
-        id: issue.id,
-        identifier: issue.identifier,
-        title: issue.title,
-        status: issue.status,
-        priority: issue.priority,
-        projectId: issue.projectId,
-        goalId: issue.goalId,
-        parentId: issue.parentId,
-        updatedAt: issue.updatedAt,
-        activeRun: issue.activeRun,
-        dependencyReady: dependencyReadiness.get(issue.id)?.isDependencyReady ?? true,
-        unresolvedBlockerCount: dependencyReadiness.get(issue.id)?.unresolvedBlockerCount ?? 0,
-        unresolvedBlockerIssueIds: dependencyReadiness.get(issue.id)?.unresolvedBlockerIssueIds ?? [],
-      })),
+      rows.map((issue) => {
+        const readiness = dependencyReadiness.get(issue.id);
+        const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
+        const unresolvedBlockerIssueIds = readiness?.unresolvedBlockerIssueIds ?? [];
+        const activePauseHold = pauseHoldGateByIssueId.get(issue.id) ?? null;
+        const checkoutBlockedByPauseHold = Boolean(activePauseHold);
+        const checkoutBlockedByUnresolvedBlockers = unresolvedBlockerCount > 0;
+        const checkoutBlocked = checkoutBlockedByPauseHold || checkoutBlockedByUnresolvedBlockers;
+        const checkoutBlockReason = checkoutBlockedByPauseHold
+          ? "active_subtree_pause_hold"
+          : checkoutBlockedByUnresolvedBlockers
+            ? "unresolved_blockers"
+            : null;
+        return {
+          id: issue.id,
+          identifier: issue.identifier,
+          title: issue.title,
+          status: issue.status,
+          priority: issue.priority,
+          projectId: issue.projectId,
+          goalId: issue.goalId,
+          parentId: issue.parentId,
+          updatedAt: issue.updatedAt,
+          activeRun: issue.activeRun,
+          // Keep legacy field for existing consumers while enforcing checkout parity.
+          dependencyReady: !checkoutBlocked,
+          unresolvedBlockerCount,
+          unresolvedBlockerIssueIds,
+          checkoutBlocked,
+          checkoutBlockReason,
+          activePauseHold: activePauseHold
+            ? {
+              holdId: activePauseHold.holdId,
+              rootIssueId: activePauseHold.rootIssueId,
+              mode: activePauseHold.mode,
+            }
+            : null,
+        };
+      }),
     );
   });
 

@@ -164,6 +164,7 @@ const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+const BLOCKED_RELAY_COMMENT_DEDUP_WINDOW_MS = 60 * 60 * 1000;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
@@ -967,6 +968,48 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
   const preferredIndex = rows.findIndex((row) => row.id === preferredWorkspaceId);
   if (preferredIndex <= 0) return rows;
   return [rows[preferredIndex]!, ...rows.slice(0, preferredIndex), ...rows.slice(preferredIndex + 1)];
+}
+
+export function shouldPersistIssueWorkspaceReuse(input: {
+  existingPreference: string | null | undefined;
+  persistedWorkspaceMode: ExecutionWorkspace["mode"];
+  realizedWorkspaceSource?: RealizedExecutionWorkspace["source"] | null;
+}): boolean {
+  if (input.existingPreference === "reuse_existing") return true;
+  if (input.realizedWorkspaceSource === "task_session") return true;
+  return input.persistedWorkspaceMode !== "shared_workspace";
+}
+
+function normalizeWorkspacePathKey(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  if (!normalized) return null;
+  return normalized.replace(/[\\/]+$/, "");
+}
+
+export function shouldPreserveEquivalentSharedWorkspaceBinding(input: {
+  issueExecutionWorkspacePreference: string | null | undefined;
+  existingExecutionWorkspace: ExecutionWorkspace | null | undefined;
+  persistedExecutionWorkspace: ExecutionWorkspace | null | undefined;
+}): boolean {
+  if (input.issueExecutionWorkspacePreference !== "reuse_existing") return false;
+  const existing = input.existingExecutionWorkspace;
+  const persisted = input.persistedExecutionWorkspace;
+  if (!existing || !persisted) return false;
+  if (existing.id === persisted.id) return false;
+  if (existing.mode !== "shared_workspace" || persisted.mode !== "shared_workspace") return false;
+  if (existing.projectId !== persisted.projectId) return false;
+  if ((existing.projectWorkspaceId ?? null) !== (persisted.projectWorkspaceId ?? null)) return false;
+  if (existing.strategyType !== persisted.strategyType) return false;
+  if ((existing.providerType ?? null) !== (persisted.providerType ?? null)) return false;
+
+  const existingPath = normalizeWorkspacePathKey(existing.providerRef) ?? normalizeWorkspacePathKey(existing.cwd);
+  const persistedPath = normalizeWorkspacePathKey(persisted.providerRef) ?? normalizeWorkspacePathKey(persisted.cwd);
+  if (existingPath && persistedPath) {
+    return existingPath === persistedPath;
+  }
+
+  return normalizeWorkspacePathKey(existing.cwd) === normalizeWorkspacePathKey(persisted.cwd);
 }
 
 function readNonEmptyString(value: unknown): string | null {
@@ -3949,6 +3992,81 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  async function computeBlockedRelayStateFingerprint(companyId: string, issueId: string) {
+    const blockerRows = await db
+      .select({
+        blockerId: issueRelations.issueId,
+        blockerStatus: issues.status,
+        blockerAssigneeAgentId: issues.assigneeAgentId,
+        blockerMonitorNextCheckAt: issues.monitorNextCheckAt,
+      })
+      .from(issueRelations)
+      .innerJoin(
+        issues,
+        and(
+          eq(issues.companyId, issueRelations.companyId),
+          eq(issues.id, issueRelations.issueId),
+        ),
+      )
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.relatedIssueId, issueId),
+          eq(issueRelations.type, "blocks"),
+        ),
+      )
+      .orderBy(asc(issueRelations.issueId));
+
+    return JSON.stringify(
+      blockerRows.map((row) => ({
+        blockerId: row.blockerId,
+        blockerStatus: row.blockerStatus,
+        blockerAssigneeAgentId: row.blockerAssigneeAgentId,
+        blockerMonitorNextCheckAt: row.blockerMonitorNextCheckAt
+          ? row.blockerMonitorNextCheckAt.toISOString()
+          : null,
+      })),
+    );
+  }
+
+  async function shouldSuppressDedupedBlockedRelayComment(input: {
+    companyId: string;
+    issueId: string;
+    runId: string;
+    agentId: string;
+    comment: string;
+  }): Promise<{ suppress: boolean; fingerprint: string | null }> {
+    const issue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue || issue.status !== "blocked") return { suppress: false, fingerprint: null };
+
+    const fingerprint = await computeBlockedRelayStateFingerprint(input.companyId, input.issueId);
+    const cutoff = new Date(Date.now() - BLOCKED_RELAY_COMMENT_DEDUP_WINDOW_MS);
+    const previous = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, issueComments.createdByRunId))
+      .where(
+        and(
+          eq(issueComments.companyId, input.companyId),
+          eq(issueComments.issueId, input.issueId),
+          eq(issueComments.authorAgentId, input.agentId),
+          gt(issueComments.createdAt, cutoff),
+          sql`${issueComments.createdByRunId} <> ${input.runId}`,
+          sql`${heartbeatRuns.resultJson} ->> 'blockedRelayStateFingerprint' = ${fingerprint}`,
+        ),
+      )
+      .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (!previous) return { suppress: false, fingerprint };
+    return { suppress: true, fingerprint };
+  }
+
   async function refreshContinuationSummaryForRun(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -6549,12 +6667,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     if (issueId && persistedExecutionWorkspace) {
       const nextIssueWorkspaceMode = issueExecutionWorkspaceModeForPersistedWorkspace(persistedExecutionWorkspace.mode);
-      const shouldSwitchIssueToExistingWorkspace =
-        issueRef?.executionWorkspacePreference === "reuse_existing" ||
-        requestedExecutionWorkspaceMode === "isolated_workspace" ||
-        requestedExecutionWorkspaceMode === "operator_branch";
+      const shouldSwitchIssueToExistingWorkspace = shouldPersistIssueWorkspaceReuse({
+        existingPreference: issueRef?.executionWorkspacePreference,
+        persistedWorkspaceMode: persistedExecutionWorkspace.mode,
+        realizedWorkspaceSource: executionWorkspace.source,
+      });
+      const shouldKeepExistingWorkspaceBinding = shouldPreserveEquivalentSharedWorkspaceBinding({
+        issueExecutionWorkspacePreference: issueRef?.executionWorkspacePreference,
+        existingExecutionWorkspace,
+        persistedExecutionWorkspace,
+      });
       const nextIssuePatch: Record<string, unknown> = {};
-      if (issueRef?.executionWorkspaceId !== persistedExecutionWorkspace.id) {
+      if (
+        !shouldKeepExistingWorkspaceBinding
+        && issueRef?.executionWorkspaceId !== persistedExecutionWorkspace.id
+      ) {
         nextIssuePatch.executionWorkspaceId = persistedExecutionWorkspace.id;
       }
       if (resolvedProjectWorkspaceId && issueRef?.projectWorkspaceId !== resolvedProjectWorkspaceId) {
@@ -7201,7 +7328,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             if (!existingRunComment) {
               const issueComment = buildHeartbeatRunIssueComment(persistedResultJson);
               if (issueComment) {
-                await issuesSvc.addComment(issueId, issueComment, { agentId: agent.id, runId: livenessRun.id });
+                const dedup = await shouldSuppressDedupedBlockedRelayComment({
+                  companyId: livenessRun.companyId,
+                  issueId,
+                  runId: livenessRun.id,
+                  agentId: agent.id,
+                  comment: issueComment,
+                });
+                if (!dedup.suppress) {
+                  await issuesSvc.addComment(issueId, issueComment, { agentId: agent.id, runId: livenessRun.id });
+                }
+                if (dedup.fingerprint || dedup.suppress) {
+                  const latestResultJson = parseObject(livenessRun.resultJson);
+                  await db
+                    .update(heartbeatRuns)
+                    .set({
+                      resultJson: {
+                        ...latestResultJson,
+                        blockedRelayStateFingerprint: dedup.fingerprint,
+                        blockedRelayCommentDeduped: dedup.suppress,
+                      },
+                      updatedAt: new Date(),
+                    })
+                    .where(eq(heartbeatRuns.id, livenessRun.id));
+                }
               }
             }
           } catch (err) {

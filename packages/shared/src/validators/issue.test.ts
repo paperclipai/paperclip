@@ -49,9 +49,11 @@ describe("issue validators", () => {
   it("normalizes escaped line breaks in issue comment bodies", () => {
     const parsed = addIssueCommentSchema.parse({
       body: "Progress update\\r\\n\\r\\nNext action.",
+      intervention: true,
     });
 
     expect(parsed.body).toBe("Progress update\n\nNext action.");
+    expect(parsed.intervention).toBe(true);
   });
 
   it("normalizes escaped line breaks in generated task drafts", () => {

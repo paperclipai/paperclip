@@ -658,6 +658,7 @@ export {
   createIssueSchema,
   createChildIssueSchema,
   createIssueLabelSchema,
+  ISSUE_EXECUTION_WORKSPACE_PREFERENCES,
   updateIssueSchema,
   issueExecutionPolicySchema,
   issueExecutionStateSchema,

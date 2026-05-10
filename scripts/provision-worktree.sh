@@ -31,49 +31,98 @@ source_env_path="$(dirname "$source_config_path")/.env"
 
 mkdir -p "$paperclip_dir"
 
+resolve_pnpm_command() {
+  hash -r >/dev/null 2>&1 || true
+  local pnpm_path
+  pnpm_path="$(command -v pnpm 2>/dev/null || true)"
+  if [[ -z "$pnpm_path" ]]; then
+    return 1
+  fi
+  printf '%s\n' "$pnpm_path"
+}
+
 run_isolated_worktree_init() {
   local base_cli_runner="$base_cwd/cli/node_modules/tsx/dist/cli.mjs"
   local base_cli_entry="$base_cwd/cli/src/index.ts"
+  local migration_bundle_missing_exit_code=86
+
+  run_worktree_init_command() {
+    set +e
+    "$@"
+    local exit_code=$?
+    set -e
+    return "$exit_code"
+  }
+
+  run_worktree_init_with_dist_migration_fallback() {
+    local stdout_path stderr_path
+    stdout_path="$(mktemp)"
+    stderr_path="$(mktemp)"
+
+    set +e
+    "$@" >"$stdout_path" 2>"$stderr_path"
+    local exit_code=$?
+    set -e
+    cat "$stdout_path"
+    cat "$stderr_path" >&2
+    if [[ "$exit_code" -eq 0 ]]; then
+      rm -f "$stdout_path" "$stderr_path"
+      return 0
+    fi
+    if grep -q "ENOENT: no such file or directory, scandir .*dist/migrations" "$stdout_path" "$stderr_path"; then
+      rm -f "$stdout_path" "$stderr_path"
+      return "$migration_bundle_missing_exit_code"
+    fi
+
+    rm -f "$stdout_path" "$stderr_path"
+    return "$exit_code"
+  }
 
   if [[ -f "$base_cli_runner" && -f "$base_cli_entry" ]]; then
     (
       cd "$worktree_cwd"
-      node "$base_cli_runner" "$base_cli_entry" worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+      run_worktree_init_command run_worktree_init_with_dist_migration_fallback node "$base_cli_runner" "$base_cli_entry" worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
     )
-    return 0
+    local exit_code=$?
+    if [[ "$exit_code" -eq 0 ]]; then
+      return 0
+    fi
+    if [[ "$exit_code" -eq "$migration_bundle_missing_exit_code" ]]; then
+      return "$migration_bundle_missing_exit_code"
+    fi
+    return "$exit_code"
   fi
 
-  if command -v pnpm >/dev/null 2>&1 && pnpm paperclipai --help >/dev/null 2>&1; then
+  local pnpm_cmd
+  pnpm_cmd="$(resolve_pnpm_command || true)"
+  if [[ -n "$pnpm_cmd" ]] && "$pnpm_cmd" paperclipai --help >/dev/null 2>&1; then
     (
       cd "$worktree_cwd"
-      pnpm paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+      run_worktree_init_command run_worktree_init_with_dist_migration_fallback "$pnpm_cmd" paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
     )
-    return 0
-  fi
-
-  if command -v paperclipai >/dev/null 2>&1; then
-    (
-      cd "$worktree_cwd"
-      paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
-    )
-    return 0
+    local exit_code=$?
+    if [[ "$exit_code" -eq 0 ]]; then
+      return 0
+    fi
+    if [[ "$exit_code" -eq "$migration_bundle_missing_exit_code" ]]; then
+      return "$migration_bundle_missing_exit_code"
+    fi
+    return "$exit_code"
   fi
 
   return 127
 }
 
 paperclipai_command_available() {
-  if command -v pnpm >/dev/null 2>&1 && pnpm paperclipai --help >/dev/null 2>&1; then
+  local pnpm_cmd
+  pnpm_cmd="$(resolve_pnpm_command || true)"
+  if [[ -n "$pnpm_cmd" ]] && "$pnpm_cmd" paperclipai --help >/dev/null 2>&1; then
     return 0
   fi
 
   local base_cli_tsx_path="$base_cwd/cli/node_modules/tsx/dist/cli.mjs"
   local base_cli_entry_path="$base_cwd/cli/src/index.ts"
   if command -v node >/dev/null 2>&1 && [[ -f "$base_cli_tsx_path" ]] && [[ -f "$base_cli_entry_path" ]]; then
-    return 0
-  fi
-
-  if command -v paperclipai >/dev/null 2>&1; then
     return 0
   fi
 
@@ -336,7 +385,18 @@ if [[ -e "$worktree_config_path" && -e "$worktree_env_path" ]]; then
   echo "Reusing existing isolated Paperclip worktree config at $worktree_config_path" >&2
 else
   if paperclipai_command_available; then
+    set +e
     run_isolated_worktree_init
+    init_exit_code=$?
+    set -e
+    if [[ "$init_exit_code" -eq 0 ]]; then
+      :
+    elif [[ "$init_exit_code" -eq 86 ]]; then
+      echo "paperclipai worktree init could not locate dist migrations; writing isolated fallback config without DB seeding." >&2
+      write_fallback_worktree_config
+    else
+      exit "$init_exit_code"
+    fi
   else
     echo "paperclipai CLI not available in this workspace; writing isolated fallback config without DB seeding." >&2
     write_fallback_worktree_config

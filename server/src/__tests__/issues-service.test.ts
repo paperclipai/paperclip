@@ -77,6 +77,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
+    await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -102,7 +103,6 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
-
     await db.insert(agents).values([
       {
         id: agentId,
@@ -219,7 +219,6 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
-
     await db.insert(agents).values({
       id: agentId,
       companyId,
@@ -952,6 +951,151 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
 
     expect(comments.map((comment) => comment.id)).toEqual([firstCommentId]);
+  });
+
+  it("blocks high-frequency comments from the same actor on one issue", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "GuardrailAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Guardrail issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await svc.addComment(issueId, "first", { agentId });
+    await svc.addComment(issueId, "second", { agentId });
+    await svc.addComment(issueId, "third", { agentId });
+
+    await expect(
+      svc.addComment(issueId, "fourth", { agentId }),
+    ).rejects.toThrow("Issue comment churn guardrail triggered");
+  });
+
+  it("blocks high-frequency comments from the same actor even when run id changes", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "RunChangingGuardrailAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Guardrail run id scope issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const runIds = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+    await db.insert(heartbeatRuns).values(
+      runIds.map((runId) => ({
+        id: runId,
+        companyId,
+        agentId,
+        status: "running",
+        invocationSource: "manual",
+      })),
+    );
+
+    await svc.addComment(issueId, "first", { agentId, runId: runIds[0] });
+    await svc.addComment(issueId, "second", { agentId, runId: runIds[1] });
+    await svc.addComment(issueId, "third", { agentId, runId: runIds[2] });
+
+    await expect(
+      svc.addComment(issueId, "fourth", { agentId, runId: runIds[3] }),
+    ).rejects.toThrow("Issue comment churn guardrail triggered");
+  });
+
+  it("does not block comments from a different actor", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const firstAgentId = randomUUID();
+    const secondAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: firstAgentId,
+        companyId,
+        name: "FirstGuardrailAgent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: secondAgentId,
+        companyId,
+        name: "SecondGuardrailAgent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Guardrail actor scope issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await svc.addComment(issueId, "first", { agentId: firstAgentId });
+    await svc.addComment(issueId, "second", { agentId: firstAgentId });
+    await svc.addComment(issueId, "third", { agentId: firstAgentId });
+
+    await expect(
+      svc.addComment(issueId, "allowed from different actor", { agentId: secondAgentId }),
+    ).resolves.toBeTruthy();
   });
 
   it("includes blockedBy summaries on list rows in one batched pass", async () => {
@@ -2564,6 +2708,146 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
         serviceStates: null,
       },
     });
+  });
+
+  it("persists executionWorkspaceId and executionWorkspacePreference on issue update", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const firstExecutionWorkspaceId = randomUUID();
+    const secondExecutionWorkspaceId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+    });
+
+    await db.insert(executionWorkspaces).values([
+      {
+        id: firstExecutionWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "First workspace",
+        status: "active",
+        providerType: "git_worktree",
+      },
+      {
+        id: secondExecutionWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "Second workspace",
+        status: "active",
+        providerType: "git_worktree",
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Workspace reassignment issue",
+      status: "in_progress",
+      priority: "medium",
+      executionWorkspaceId: firstExecutionWorkspaceId,
+      executionWorkspacePreference: null,
+    });
+
+    const updated = await svc.update(issueId, {
+      executionWorkspaceId: secondExecutionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+    });
+
+    expect(updated?.executionWorkspaceId).toBe(secondExecutionWorkspaceId);
+    expect(updated?.executionWorkspacePreference).toBe("reuse_existing");
+  });
+
+  it("persists executionWorkspaceId and executionWorkspacePreference on update when isolated workspaces are disabled", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+    });
+
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Update workspace",
+      status: "active",
+      providerType: "git_worktree",
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Workspace preference write",
+      status: "todo",
+      priority: "medium",
+      executionWorkspaceId: null,
+      executionWorkspacePreference: null,
+    });
+
+    const updated = await svc.update(issueId, {
+      executionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
+
+    expect(updated?.executionWorkspaceId).toBe(executionWorkspaceId);
+    expect(updated?.executionWorkspacePreference).toBe("reuse_existing");
+    expect(updated?.executionWorkspaceSettings).toBeNull();
   });
 });
 

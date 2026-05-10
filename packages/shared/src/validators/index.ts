@@ -148,6 +148,7 @@ export {
 } from "./project.js";
 
 export {
+  ISSUE_EXECUTION_WORKSPACE_PREFERENCES,
   createIssueSchema,
   createChildIssueSchema,
   createIssueLabelSchema,

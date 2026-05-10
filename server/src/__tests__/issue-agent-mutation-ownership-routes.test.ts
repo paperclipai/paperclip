@@ -453,6 +453,140 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
+  it("allows peer agents with task-assignment authority to post explicit intervention comments on another agent's active checkout", async () => {
+    mockAccessService.hasPermission.mockImplementation(async (
+      _companyId: string,
+      _principalType: string,
+      principalId: string,
+      permissionKey: string,
+    ) => principalId === peerAgentId && permissionKey === "tasks:assign");
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Intervention packet", intervention: true });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Intervention packet",
+      expect.objectContaining({
+        agentId: peerAgentId,
+      }),
+    );
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+  });
+
+  it("allows explicit intervention comments on another agent's non-active issue while keeping ordinary peer comments denied", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "done", assigneeAgentId: ownerAgentId }));
+    mockAccessService.hasPermission.mockImplementation(async (
+      _companyId: string,
+      _principalType: string,
+      principalId: string,
+      permissionKey: string,
+    ) => principalId === peerAgentId && permissionKey === "tasks:assign");
+
+    const allowed = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Outcome callback", intervention: true });
+
+    expect(allowed.status, JSON.stringify(allowed.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Outcome callback",
+      expect.objectContaining({
+        agentId: peerAgentId,
+      }),
+    );
+
+    mockIssueService.addComment.mockClear();
+
+    const denied = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "ordinary comment" });
+
+    expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+    expect(denied.body.error).toBe("Agent cannot mutate another agent's issue");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("keeps denying non-comment peer mutations even when the actor can assign tasks", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }));
+    mockAccessService.hasPermission.mockImplementation(async (
+      _companyId: string,
+      _principalType: string,
+      principalId: string,
+      permissionKey: string,
+    ) => principalId === peerAgentId && permissionKey === "tasks:assign");
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Still blocked" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it.each(["todo", "blocked"] as const)(
+    "allows peer agent to patch execution workspace fields on %s issues",
+    async (status) => {
+      let mutableIssue = makeIssue({
+        status,
+        assigneeAgentId: ownerAgentId,
+        executionWorkspaceId: null,
+        executionWorkspacePreference: null,
+        executionWorkspaceSettings: null,
+      });
+      mockIssueService.getById.mockImplementation(async () => mutableIssue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+        mutableIssue = {
+          ...mutableIssue,
+          ...patch,
+        };
+        return mutableIssue;
+      });
+
+      const res = await request(await createApp(peerActor()))
+        .patch(`/api/issues/${issueId}`)
+        .send({
+          executionWorkspaceId: "6f87120d-8d67-4f0e-88aa-b6ccdb9251e4",
+          executionWorkspacePreference: "reuse_existing",
+          executionWorkspaceSettings: { mode: "isolated_workspace" },
+        });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalledWith(
+        issueId,
+        expect.objectContaining({
+          executionWorkspaceId: "6f87120d-8d67-4f0e-88aa-b6ccdb9251e4",
+          executionWorkspacePreference: "reuse_existing",
+          executionWorkspaceSettings: { mode: "isolated_workspace" },
+        }),
+      );
+      expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+      expect(res.body).toMatchObject({
+        executionWorkspaceId: "6f87120d-8d67-4f0e-88aa-b6ccdb9251e4",
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: { mode: "isolated_workspace" },
+      });
+    },
+  );
+
+  it("keeps rejecting mixed peer-agent patches that include execution workspace fields plus non-workspace fields", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        executionWorkspacePreference: "reuse_existing",
+        title: "Not allowed",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("allows same-company agent mutations on unassigned in-progress issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: null }));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
