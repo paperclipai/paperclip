@@ -34,6 +34,7 @@ import { CompanyInvites } from "./pages/CompanyInvites";
 import { CompanySkills } from "./pages/CompanySkills";
 import { Secrets } from "./pages/Secrets";
 import { Connections } from "./pages/settings/Connections";
+import { OauthUiScreenshots } from "./pages/__screenshots__/OauthUiScreenshots";
 import { CompanyExport } from "./pages/CompanyExport";
 import { CompanyImport } from "./pages/CompanyImport";
 import { DesignGuide } from "./pages/DesignGuide";
@@ -271,6 +272,9 @@ export function App() {
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
         <Route path="tests/perf/long-thread" element={<IssueChatLongThreadPerf />} />
+        {import.meta.env.DEV ? (
+          <Route path="tests/screenshots/oauth-ui" element={<OauthUiScreenshots />} />
+        ) : null}
 
         <Route element={<CloudAccessGate />}>
           <Route index element={<CompanyRootRedirect />} />
