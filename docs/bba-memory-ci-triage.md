@@ -10,7 +10,8 @@
 
 | PR | Check | Category | Root Cause | Action | Owner |
 |----|-------|----------|------------|--------|-------|
-| #5606 | `policy` | **CONFIG** | `pnpm-lock.yaml` committed | Remove lockfile from PR diff | #5606 author |
+| #5606 | `policy` | **CONFIG→RESOLVED** | `pnpm-lock.yaml` committed; reverted in 2f2fb0b8 | ✅ policy now passes | Resolved |
+| #5606 | `verify`/`e2e`/shards/Canary | **BY DESIGN** | No lockfile update for new deps — expected upstream pattern | Maintainer merges; `Refresh Lockfile` auto-creates lockfile PR | Maintainer |
 | #5636 | `verify` | **REAL BUG** | TS2345 in CDP code at `betting-browser-automation.ts:2074` | ✅ Fixed in 86644f7e | Resolved |
 | #5636 | `Canary Dry Run` | **REAL BUG** | Same TS2345 — same file/line | ✅ Fixed in 86644f7e | Resolved |
 | #5641 | `verify` | **CASCADE** | Inherits #5636 TS error via stacking | Auto-resolves when #5636 CI is fixed | #5641 author |
@@ -19,20 +20,15 @@
 
 ---
 
-## Failure 1 — PR #5606 `policy` [CONFIG]
+## Failure 1 — PR #5606 `policy` [CONFIG → RESOLVED]
 
 **Check**: `policy`  
-**Run**: `25619199516`
+**Original run**: `25619199516` (lockfile in diff → policy failed)  
+**Current run**: `25634184628` (lockfile reverted in `2f2fb0b8` → policy passes)
 
-The `policy` job runs a bash script that diffs the PR branch against its merge base and exits 1 if `pnpm-lock.yaml` appears in the changed files:
+The `policy` job runs a bash script that diffs the PR branch against its merge base and exits 1 if `pnpm-lock.yaml` appears in the changed files. The initial commit on #5606 accidentally included a regenerated lockfile; Codex commit `2f2fb0b8` reverted it to the merge-base state. The `policy` check now passes.
 
-```
-Do not commit pnpm-lock.yaml in pull requests. CI owns lockfile updates.
-```
-
-PR #5606 adds `@testing-library/react` and `happy-dom` to `ui/package.json`. The lockfile was regenerated locally and accidentally included in the commit. CI policy prohibits lockfile commits because pnpm lockfile updates are managed by the CI pipeline to prevent dev-environment drift.
-
-**Recommended action**: Add a new commit on #5606 that reverts `pnpm-lock.yaml` to the state on `master` (`git checkout master -- pnpm-lock.yaml`). Do not amend — the branch has an open PR and amending would require force-push. The `policy` check will pass on the next push.
+**Status**: RESOLVED. See Failure 5 for the remaining install-job failures, which are expected.
 
 ---
 
@@ -106,9 +102,42 @@ The teardown deletes `issueComments` before `issues` (correct order, lines 127 �
 
 ---
 
+## Failure 5 — PR #5606 `verify`/`e2e`/shards/`Canary Dry Run` [BY DESIGN]
+
+**Check**: all install-dependent jobs (7 checks)  
+**Run**: `25634184628`  
+**Error on each**: `ERR_PNPM_OUTDATED_LOCKFILE` — `pnpm install --frozen-lockfile` fails because `ui/package.json` now references `@testing-library/react` and `happy-dom` which are absent from `pnpm-lock.yaml`
+
+**This is the upstream's designed workflow for dep-adding PRs — not a fixable failure.**
+
+Investigation findings:
+
+`.github/workflows/pr.yml` line 57-63:
+```yaml
+- name: Validate dependency resolution when manifests change
+  run: |
+    changed="$(git diff --name-only "...")"
+    manifest_pattern='(^|/)package\.json$|...'
+    if printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
+      pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+    fi
+```
+The `policy` job validates resolution works (via `--lockfile-only --no-frozen-lockfile`) but does NOT commit the result. All downstream jobs (`verify`, `e2e`, shards, `Canary`) still use `--frozen-lockfile` and WILL fail for any PR that adds deps.
+
+`.github/workflows/refresh-lockfile.yml`: runs on every push to `master`, regenerates the lockfile if needed, and opens/updates `chore/refresh-lockfile` PR with auto-merge enabled. That branch is explicitly exempt from the policy check (`if: github.head_ref != 'chore/refresh-lockfile'`).
+
+**Precedent**: PR #5589 ("chore: update drizzle-orm to 0.45.2") — no lockfile committed → `policy: PASS`, `verify/e2e/Canary/all shards: FAIL` → **merged by maintainer** on 2026-05-10T04:31Z → `chore/refresh-lockfile` companion PR #5610 auto-merged 8 minutes later.
+
+**Recommended action for #5606**: No further code changes needed. The current state (`policy: PASS`, install jobs: FAIL) matches the expected pattern for dep-adding PRs. Maintainer should review and merge #5606 — the `Refresh Lockfile` workflow will automatically create and auto-merge a `chore/refresh-lockfile` PR within minutes.
+
+**Owner**: Maintainer (merge decision).
+
+---
+
 ## Human Actions Required
 
-1. **#5606 author**: `git checkout master -- pnpm-lock.yaml && git commit -m "chore: remove lockfile from PR (policy fix)"` → push
+1. ~~**#5606 author**: Remove lockfile from PR diff~~ — ✅ Done in Codex commit `2f2fb0b8`; `policy` now passes
 2. ~~**#5636 author**: Fix TS2345 at `betting-browser-automation.ts:2074`~~ — ✅ Resolved in commit `86644f7e` (`verify` + `Canary Dry Run` now pass)
-3. **Maintainer**: Re-run `Verify serialized server suites (3/4)` on #5636 (FLAKE — no code fix needed)
-4. **Maintainer** (post-#5636 merge): `gh pr edit 5641 --base master --repo paperclipai/paperclip`
+3. **Maintainer**: Merge #5606 despite install-job failures (BY DESIGN — `Refresh Lockfile` handles lockfile post-merge automatically)
+4. **Maintainer**: Re-run `Verify serialized server suites (3/4)` on #5636 (FLAKE — no code fix needed)
+5. **Maintainer** (post-#5636 merge): `gh pr edit 5641 --base master --repo paperclipai/paperclip`
