@@ -145,5 +145,11 @@
   },
   "footerSocials": {
     "github": "https://github.com/paperclip-ai/paperclip"
-  }
+  },
+  "redirects": [
+    {
+      "source": "/api/AGENTS",
+      "destination": "/api/agents"
+    }
+  ]
 }
