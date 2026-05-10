@@ -1447,6 +1447,15 @@ export function issueRoutes(
       limit,
       offset,
     });
+    const projectIds = Array.from(
+      new Set(
+        result
+          .map((issue) => issue.projectId)
+          .filter((projectId): projectId is string => typeof projectId === "string" && projectId.length > 0),
+      ),
+    );
+    const projects = projectIds.length > 0 ? await projectsSvc.listByIds(companyId, projectIds) : [];
+    const projectById = new Map(projects.map((project) => [project.id, project]));
     const handoffStates = await listSuccessfulRunHandoffStates(
       db,
       companyId,
@@ -1454,6 +1463,7 @@ export function issueRoutes(
     );
     res.json(result.map((issue) => ({
       ...issue,
+      project: issue.projectId ? projectById.get(issue.projectId) ?? null : null,
       successfulRunHandoff: handoffStates.get(issue.id) ?? null,
     })));
   });
@@ -1578,6 +1588,8 @@ export function issueRoutes(
         originKind: issue.originKind,
         originId: issue.originId,
         updatedAt: issue.updatedAt,
+        project: project ?? null,
+        goal: goal ?? null,
       },
       ancestors: ancestors.map((ancestor) => ({
         id: ancestor.id,
