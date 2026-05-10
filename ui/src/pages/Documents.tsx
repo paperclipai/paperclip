@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState, startTransition, useDeferredValue } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
 import { ArrowUpDown, ChevronDown, ChevronRight, Download, FileText, Filter, Layers, X } from "lucide-react";
 import type { CompanyDocumentListItem } from "@paperclipai/shared";
 import { documentsApi } from "../api/documents";
+import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
@@ -225,6 +226,18 @@ export function Documents() {
   }, [agents]);
 
   const issuePrefix = selectedCompany?.issuePrefix ?? null;
+
+  const queryClient = useQueryClient();
+
+  const updateIssueStatus = useMutation({
+    mutationFn: ({ issueId, status }: { issueId: string; status: string }) =>
+      issuesApi.update(issueId, { status }),
+    onSuccess: () => {
+      if (!selectedCompanyId) return;
+      queryClient.invalidateQueries({ queryKey: ["documents", selectedCompanyId] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+    },
+  });
 
   const visibleDocuments = useMemo(() => {
     const filtered = (documents ?? []).filter((d) =>
@@ -497,6 +510,9 @@ export function Documents() {
                         doc={doc}
                         issuePrefix={issuePrefix}
                         agentNameById={agentNameById}
+                        onChangeStatus={(status) =>
+                          updateIssueStatus.mutate({ issueId: doc.issue.id, status })
+                        }
                       />
                     ))}
                   </ul>
@@ -514,9 +530,10 @@ interface DocumentRowProps {
   doc: CompanyDocumentListItem;
   issuePrefix: string | null;
   agentNameById: Map<string, string>;
+  onChangeStatus: (status: string) => void;
 }
 
-function DocumentRow({ doc, issuePrefix, agentNameById }: DocumentRowProps) {
+function DocumentRow({ doc, issuePrefix, agentNameById, onChangeStatus }: DocumentRowProps) {
   const issueHref = issuePrefix
     ? `/${issuePrefix}/issues/${doc.issue.identifier ?? doc.issue.id}`
     : issueUrl({ id: doc.issue.id, identifier: doc.issue.identifier });
@@ -532,16 +549,7 @@ function DocumentRow({ doc, issuePrefix, agentNameById }: DocumentRowProps) {
 
   return (
     <li className="group flex items-center gap-2 border-b border-border py-2 pl-2 pr-2 text-sm last:border-b-0 hover:bg-accent/40">
-      <span
-        onClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-        }}
-        className="shrink-0"
-        title={`Issue status: ${doc.issue.status.replace(/_/g, " ")}`}
-      >
-        <StatusIcon status={doc.issue.status} />
-      </span>
+      <StatusIcon status={doc.issue.status} onChange={onChangeStatus} />
       <Link
         to={issueHref}
         className="shrink-0 font-mono text-xs text-muted-foreground hover:text-foreground hover:underline"
