@@ -21,6 +21,7 @@ function isPureJson(text: string): boolean {
 const SYSTEM_PROMPT_ECHO_PATTERNS: RegExp[] = [
   /^You are woken by reason:/i,
   /^You are agent\b/i,
+  /^I am agent\b/i,
   /^The above agent instructions were loaded from\b/i,
   /^This base directory is authoritative for\b/i,
   /^Treat this wake payload as/i,
