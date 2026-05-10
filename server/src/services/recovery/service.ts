@@ -1650,6 +1650,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       orphanBlockersAssigned: 0,
       escalated: 0,
       cooldownSkipped: 0,
+      blockerSkipped: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
@@ -1735,6 +1736,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             result.skipped += 1;
             continue;
           }
+          const blockerIds = await existingUnresolvedBlockerIssueIds(issue.companyId, issue.id);
+          if (blockerIds.length > 0) {
+            result.blockerSkipped += 1;
+            result.skipped += 1;
+            continue;
+          }
           const failureSummary = summarizeRunFailureForIssueComment(latestRun);
           const updated = await escalateStrandedAssignedIssue({
             issue,
@@ -1802,6 +1809,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             result.skipped += 1;
             continue;
           }
+          const blockerIds = await existingUnresolvedBlockerIssueIds(issue.companyId, issue.id);
+          if (blockerIds.length > 0) {
+            result.blockerSkipped += 1;
+            result.skipped += 1;
+            continue;
+          }
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: "in_progress",
@@ -1850,6 +1863,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           )
         ) {
           result.cooldownSkipped += 1;
+          result.skipped += 1;
+          continue;
+        }
+        const blockerIds = await existingUnresolvedBlockerIssueIds(issue.companyId, issue.id);
+        if (blockerIds.length > 0) {
+          result.blockerSkipped += 1;
           result.skipped += 1;
           continue;
         }
