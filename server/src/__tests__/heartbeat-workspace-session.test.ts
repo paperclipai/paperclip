@@ -25,6 +25,7 @@ function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}
     source: "project_primary",
     projectId: "project-1",
     workspaceId: "workspace-1",
+    setupCommand: null,
     repoUrl: null,
     repoRef: null,
     workspaceHints: [],
