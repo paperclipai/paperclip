@@ -5,6 +5,7 @@ import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 
 const mockIssueService = vi.hoisted(() => ({
+  list: vi.fn(),
   getById: vi.fn(),
   getAncestors: vi.fn(),
   getRelationSummaries: vi.fn(),
@@ -117,6 +118,9 @@ vi.mock("../services/index.js", () => ({
   }),
   issueReferenceService: () => mockIssueReferenceService,
   issueService: () => mockIssueService,
+  ISSUE_LIST_DEFAULT_LIMIT: 100,
+  ISSUE_LIST_MAX_LIMIT: 500,
+  clampIssueListLimit: (value: number) => value,
   logActivity: mockLogActivity,
   projectService: () => mockProjectService,
   routineService: () => mockRoutineService,
@@ -182,6 +186,7 @@ describe.sequential("issue goal context routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(legacyProjectLinkedIssue);
+    mockIssueService.list.mockResolvedValue([legacyProjectLinkedIssue]);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.findMentionedProjectIds.mockResolvedValue([]);
@@ -239,7 +244,13 @@ describe.sequential("issue goal context routes", () => {
       createdAt: new Date("2026-03-20T00:00:00Z"),
       updatedAt: new Date("2026-03-20T00:00:00Z"),
     });
-    mockProjectService.listByIds.mockResolvedValue([]);
+    mockProjectService.listByIds.mockResolvedValue([
+      {
+        id: legacyProjectLinkedIssue.projectId,
+        companyId: "company-1",
+        name: "Onboarding",
+      },
+    ]);
     mockGoalService.getById.mockImplementation(async (id: string) =>
       id === projectGoal.id ? projectGoal : null,
     );
@@ -271,6 +282,8 @@ describe.sequential("issue goal context routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.issue.goalId).toBe(projectGoal.id);
+    expect(res.body.issue.project).toEqual(expect.objectContaining({ id: legacyProjectLinkedIssue.projectId }));
+    expect(res.body.issue.goal).toEqual(expect.objectContaining({ id: projectGoal.id }));
     expect(res.body.issue.workMode).toBe("planning");
     expect(res.body.goal).toEqual(
       expect.objectContaining({
@@ -280,6 +293,22 @@ describe.sequential("issue goal context routes", () => {
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
     expect(res.body.attachments).toEqual([]);
+  });
+
+  it("enriches GET /companies/:companyId/issues rows with project objects when projectId is present", async () => {
+    const res = await request(createApp()).get("/api/companies/company-1/issues");
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      limit: 100,
+      offset: 0,
+    }));
+    expect(mockProjectService.listByIds).toHaveBeenCalledWith("company-1", [legacyProjectLinkedIssue.projectId]);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].project).toEqual(expect.objectContaining({
+      id: legacyProjectLinkedIssue.projectId,
+      name: "Onboarding",
+    }));
   });
 
   it("preserves direct continuation summary lookup in GET /issues/:id/heartbeat-context", async () => {

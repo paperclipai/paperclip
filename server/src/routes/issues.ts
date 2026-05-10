@@ -1500,12 +1500,22 @@ export function issueRoutes(
       offset,
     });
     const issueIds = result.map((issue) => issue.id);
-    const [handoffStates, recoveryActionByIssue] = await Promise.all([
+    const projectIds = Array.from(
+      new Set(
+        result
+          .map((issue) => issue.projectId)
+          .filter((projectId): projectId is string => typeof projectId === "string" && projectId.length > 0),
+      ),
+    );
+    const [handoffStates, recoveryActionByIssue, projects] = await Promise.all([
       listSuccessfulRunHandoffStates(db, companyId, issueIds),
       recoveryActionsSvc.listActiveForIssues(companyId, issueIds),
+      projectIds.length > 0 ? projectsSvc.listByIds(companyId, projectIds) : Promise.resolve([]),
     ]);
+    const projectById = new Map(projects.map((project) => [project.id, project]));
     res.json(result.map((issue) => ({
       ...issue,
+      project: issue.projectId ? projectById.get(issue.projectId) ?? null : null,
       successfulRunHandoff: handoffStates.get(issue.id) ?? null,
       activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
     })));
@@ -1643,6 +1653,8 @@ export function issueRoutes(
         originKind: issue.originKind,
         originId: issue.originId,
         updatedAt: issue.updatedAt,
+        project: project ?? null,
+        goal: goal ?? null,
       },
       ancestors: ancestors.map((ancestor) => ({
         id: ancestor.id,
