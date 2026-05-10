@@ -1,0 +1,49 @@
+{
+  "title": "Goals",
+  "projects_title": "Projects",
+  "actions": {
+    "add_goal": "Add Goal",
+    "new_goal": "New Goal",
+    "add_project": "Add Project"
+  },
+  "empty": {
+    "select_company": "Select a company to view goals.",
+    "no_goals": "No goals yet.",
+    "select_company_projects": "Select a company to view projects.",
+    "no_projects": "No projects yet."
+  },
+  "properties": {
+    "label_status": "Status",
+    "label_level": "Level",
+    "label_owner": "Owner",
+    "label_parent": "Parent Goal",
+    "label_created": "Created",
+    "label_updated": "Updated",
+    "no_owner": "None"
+  },
+  "new_goal_dialog": {
+    "new_sub_goal": "New sub-goal",
+    "new_goal": "New goal",
+    "title_placeholder": "Goal title",
+    "description_placeholder": "Add description...",
+    "level_company": "Company",
+    "level_team": "Team",
+    "level_agent": "Agent",
+    "level_task": "Task",
+    "parent_goal": "Parent goal",
+    "no_parent": "No parent",
+    "creating": "Creating…",
+    "create_sub_goal": "Create sub-goal",
+    "create_goal": "Create goal"
+  },
+  "detail": {
+    "goal_fallback": "Goal",
+    "show_properties": "Show properties",
+    "description_placeholder": "Add a description...",
+    "tab_sub_goals": "Sub-Goals ({{count}})",
+    "tab_projects": "Projects ({{count}})",
+    "add_sub_goal": "Sub Goal",
+    "no_sub_goals": "No sub-goals.",
+    "no_linked_projects": "No linked projects."
+  }
+}

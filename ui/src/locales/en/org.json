@@ -1,0 +1,17 @@
+{
+  "title": "Org Chart",
+  "empty": {
+    "select_company": "Select a company to view org chart.",
+    "no_agents": "No agents in the organization. Create agents to build your org chart.",
+    "no_org_hierarchy": "No organizational hierarchy defined."
+  },
+  "actions": {
+    "import_company": "Import company",
+    "export_company": "Export company",
+    "fit_to_screen": "Fit",
+    "zoom_in": "Zoom in",
+    "zoom_out": "Zoom out",
+    "fit_to_screen_title": "Fit to screen"
+  },
+  "breadcrumb": "Org Chart"
+}

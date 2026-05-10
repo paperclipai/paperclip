@@ -1,0 +1,88 @@
+{
+  "title": "Approvals",
+  "tabs": {
+    "pending": "Pending",
+    "all": "All"
+  },
+  "empty": {
+    "select_company": "Select a company first.",
+    "no_pending": "No pending approvals.",
+    "no_approvals": "No approvals yet."
+  },
+  "card": {
+    "requested_by": "Requested by",
+    "created_ago": "Approval request created {{time}}",
+    "decision_note": "Decision note.",
+    "approve": "Approve",
+    "approving": "Approving...",
+    "reject": "Reject",
+    "rejecting": "Rejecting...",
+    "view_details": "View details"
+  },
+  "status": {
+    "approved": "Approved",
+    "cancelled": "Cancelled",
+    "pending": "Pending",
+    "rejected": "Rejected",
+    "revision_requested": "Revision Requested"
+  },
+  "payload": {
+    "type_hire_agent": "Hire Agent",
+    "type_approve_ceo_strategy": "CEO Strategy",
+    "type_budget_override_required": "Budget Override",
+    "type_request_board_approval": "Board Approval",
+    "type_ceo_strategy": "CEO Strategy",
+    "type_budget_override": "Budget Override",
+    "type_board_approval": "Board Approval",
+    "field_name": "Name",
+    "field_role": "Role",
+    "field_title": "Title",
+    "field_icon": "Icon",
+    "field_capabilities": "Capabilities",
+    "field_adapter": "Adapter",
+    "field_skills": "Skills",
+    "field_scope": "Scope",
+    "field_window": "Window",
+    "field_metric": "Metric",
+    "limit_observed": "Limit {{limit}} · Observed {{observed}}",
+    "board_title": "Title",
+    "board_summary": "Summary",
+    "board_recommended_action": "Recommended action",
+    "board_on_approval": "On approval",
+    "board_risks": "Risks",
+    "board_proposed_comment": "Proposed comment"
+  },
+  "detail": {
+    "approval_fallback": "Approval",
+    "not_found": "Approval not found.",
+    "approval_confirmed": "Approval confirmed",
+    "approval_confirmed_desc": "Requesting agent was notified to review this approval and linked issues.",
+    "see_full_request": "See full request",
+    "decision_note_prefix": "Decision note",
+    "linked_issues": "Linked Issues",
+    "linked_issues_note": "Linked issues remain open until the requesting agent follows up and closes them.",
+    "budget_resolve_prefix": "Resolve this budget stop from the budget controls on",
+    "budget_resolve_suffix": ".",
+    "request_revision": "Request revision",
+    "mark_resubmitted": "Mark resubmitted",
+    "delete_agent_confirm": "Delete this disapproved agent? This cannot be undone.",
+    "delete_disapproved_agent": "Delete disapproved agent",
+    "comments": "Comments ({{count}})",
+    "comment_placeholder": "Add a comment...",
+    "posting": "Posting…",
+    "post_comment": "Post comment",
+    "review_linked_issues": "Review linked issues",
+    "review_linked_issue": "Review linked issue",
+    "open_hired_agent": "Open hired agent",
+    "back_to_approvals": "Back to approvals",
+    "board_author": "Board"
+  },
+  "errors": {
+    "approve_failed": "Failed to approve",
+    "reject_failed": "Failed to reject",
+    "revision_failed": "Failed to request revision",
+    "resubmit_failed": "Failed to resubmit",
+    "comment_failed": "Failed to post comment",
+    "delete_failed": "Failed to delete agent"
+  }
+}
