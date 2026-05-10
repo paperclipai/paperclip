@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState, startTransition, useDeferredValue } from "react";
+import { useEffect, useMemo, useRef, useState, startTransition, useDeferredValue, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
-import { ArrowUpDown, ChevronDown, ChevronRight, Download, FileText, Filter, Layers, X } from "lucide-react";
+import { ArrowUpDown, ChevronDown, ChevronRight, Download, FileText, Filter, Layers, ListTree, X } from "lucide-react";
 import type { CompanyDocumentListItem } from "@paperclipai/shared";
 import { documentsApi } from "../api/documents";
 import { issuesApi } from "../api/issues";
@@ -41,6 +41,8 @@ interface DocsViewState {
   showRoutineExecutions: boolean;
   groupBy: GroupField;
   collapsedGroups: string[];
+  nestingEnabled: boolean;
+  collapsedParents: string[];
 }
 
 const defaultViewState: DocsViewState = {
@@ -50,6 +52,8 @@ const defaultViewState: DocsViewState = {
   showRoutineExecutions: false,
   groupBy: "none",
   collapsedGroups: [],
+  nestingEnabled: true,
+  collapsedParents: [],
 };
 
 function loadViewState(): DocsViewState {
@@ -66,6 +70,13 @@ function loadViewState(): DocsViewState {
           : [],
         collapsedGroups: Array.isArray(parsed?.collapsedGroups)
           ? parsed.collapsedGroups.filter((s: unknown) => typeof s === "string")
+          : [],
+        nestingEnabled:
+          typeof parsed?.nestingEnabled === "boolean"
+            ? parsed.nestingEnabled
+            : defaultViewState.nestingEnabled,
+        collapsedParents: Array.isArray(parsed?.collapsedParents)
+          ? parsed.collapsedParents.filter((s: unknown) => typeof s === "string")
           : [],
       };
     }
@@ -274,6 +285,73 @@ export function Documents() {
     });
   }
 
+  function toggleParent(issueId: string) {
+    updateView({
+      collapsedParents: viewState.collapsedParents.includes(issueId)
+        ? viewState.collapsedParents.filter((id) => id !== issueId)
+        : [...viewState.collapsedParents, issueId],
+    });
+  }
+
+  function renderNestedRows(items: CompanyDocumentListItem[]) {
+    const byIssue = new Map<string, CompanyDocumentListItem[]>();
+    for (const doc of items) {
+      const arr = byIssue.get(doc.issueId) ?? [];
+      arr.push(doc);
+      byIssue.set(doc.issueId, arr);
+    }
+    const nodes: ReactNode[] = [];
+    for (const [issueId, docs] of byIssue) {
+      if (docs.length === 1) {
+        const doc = docs[0];
+        nodes.push(
+          <DocumentRow
+            key={doc.id}
+            doc={doc}
+            issuePrefix={issuePrefix}
+            agentNameById={agentNameById}
+            onChangeStatus={(status) =>
+              updateIssueStatus.mutate({ issueId: doc.issue.id, status })
+            }
+          />,
+        );
+      } else {
+        const issue = docs[0].issue;
+        const expanded = !viewState.collapsedParents.includes(issueId);
+        nodes.push(
+          <IssueParentRow
+            key={`parent-${issueId}`}
+            issue={issue}
+            docCount={docs.length}
+            issuePrefix={issuePrefix}
+            expanded={expanded}
+            onToggleExpanded={() => toggleParent(issueId)}
+            onChangeStatus={(status) =>
+              updateIssueStatus.mutate({ issueId, status })
+            }
+          />,
+        );
+        if (expanded) {
+          for (const doc of docs) {
+            nodes.push(
+              <DocumentRow
+                key={doc.id}
+                doc={doc}
+                issuePrefix={issuePrefix}
+                agentNameById={agentNameById}
+                onChangeStatus={(status) =>
+                  updateIssueStatus.mutate({ issueId: doc.issue.id, status })
+                }
+                depth={1}
+              />,
+            );
+          }
+        }
+      }
+    }
+    return nodes;
+  }
+
   function clickSortField(field: SortField) {
     if (viewState.sortField === field) {
       updateView({ sortDir: viewState.sortDir === "asc" ? "desc" : "asc" });
@@ -455,6 +533,24 @@ export function Documents() {
           </PopoverContent>
         </Popover>
 
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className={cn(
+            "h-8 w-8 shrink-0",
+            viewState.nestingEnabled && "bg-accent text-blue-600 dark:text-blue-400",
+          )}
+          onClick={() => updateView({ nestingEnabled: !viewState.nestingEnabled })}
+          title={
+            viewState.nestingEnabled
+              ? "Disable parent-child nesting"
+              : "Enable parent-child nesting"
+          }
+        >
+          <ListTree className="h-3.5 w-3.5" />
+        </Button>
+
         {documents && (
           <span className="ml-auto text-xs text-muted-foreground">
             {visibleDocuments.length} {visibleDocuments.length === 1 ? "document" : "documents"}
@@ -504,17 +600,19 @@ export function Documents() {
                 )}
                 {!isCollapsed && (
                   <ul>
-                    {group.items.map((doc) => (
-                      <DocumentRow
-                        key={doc.id}
-                        doc={doc}
-                        issuePrefix={issuePrefix}
-                        agentNameById={agentNameById}
-                        onChangeStatus={(status) =>
-                          updateIssueStatus.mutate({ issueId: doc.issue.id, status })
-                        }
-                      />
-                    ))}
+                    {viewState.nestingEnabled && viewState.groupBy !== "issue"
+                      ? renderNestedRows(group.items)
+                      : group.items.map((doc) => (
+                          <DocumentRow
+                            key={doc.id}
+                            doc={doc}
+                            issuePrefix={issuePrefix}
+                            agentNameById={agentNameById}
+                            onChangeStatus={(status) =>
+                              updateIssueStatus.mutate({ issueId: doc.issue.id, status })
+                            }
+                          />
+                        ))}
                   </ul>
                 )}
               </div>
@@ -531,9 +629,10 @@ interface DocumentRowProps {
   issuePrefix: string | null;
   agentNameById: Map<string, string>;
   onChangeStatus: (status: string) => void;
+  depth?: number;
 }
 
-function DocumentRow({ doc, issuePrefix, agentNameById, onChangeStatus }: DocumentRowProps) {
+function DocumentRow({ doc, issuePrefix, agentNameById, onChangeStatus, depth = 0 }: DocumentRowProps) {
   const issueHref = issuePrefix
     ? `/${issuePrefix}/issues/${doc.issue.identifier ?? doc.issue.id}`
     : issueUrl({ id: doc.issue.id, identifier: doc.issue.identifier });
@@ -546,17 +645,23 @@ function DocumentRow({ doc, issuePrefix, agentNameById, onChangeStatus }: Docume
     (doc.createdByAgentId && agentNameById.get(doc.createdByAgentId)) ||
     (doc.updatedByUserId ? "user" : null);
   const displayTitle = doc.title?.trim() || doc.key;
+  const isNested = depth > 0;
 
   return (
-    <li className="group flex items-center gap-2 border-b border-border py-2 pl-2 pr-2 text-sm last:border-b-0 hover:bg-accent/40">
-      <StatusIcon status={doc.issue.status} onChange={onChangeStatus} />
-      <Link
-        to={issueHref}
-        className="shrink-0 font-mono text-xs text-muted-foreground hover:text-foreground hover:underline"
-        title={doc.issue.title}
-      >
-        {doc.issue.identifier ?? "—"}
-      </Link>
+    <li
+      className="group flex items-center gap-2 border-b border-border py-2 pr-2 text-sm last:border-b-0 hover:bg-accent/40"
+      style={{ paddingLeft: `${depth * 16 + 8}px` }}
+    >
+      {!isNested && <StatusIcon status={doc.issue.status} onChange={onChangeStatus} />}
+      {!isNested && (
+        <Link
+          to={issueHref}
+          className="shrink-0 font-mono text-xs text-muted-foreground hover:text-foreground hover:underline"
+          title={doc.issue.title}
+        >
+          {doc.issue.identifier ?? "—"}
+        </Link>
+      )}
       <Link
         to={docHref}
         className="inline-flex min-w-0 flex-1 items-center gap-1.5 text-foreground no-underline hover:underline"
@@ -590,6 +695,63 @@ function DocumentRow({ doc, issuePrefix, agentNameById, onChangeStatus }: Docume
       >
         <Download className="h-3.5 w-3.5" />
       </a>
+    </li>
+  );
+}
+
+interface IssueParentRowProps {
+  issue: CompanyDocumentListItem["issue"];
+  docCount: number;
+  issuePrefix: string | null;
+  expanded: boolean;
+  onToggleExpanded: () => void;
+  onChangeStatus: (status: string) => void;
+}
+
+function IssueParentRow({
+  issue,
+  docCount,
+  issuePrefix,
+  expanded,
+  onToggleExpanded,
+  onChangeStatus,
+}: IssueParentRowProps) {
+  const issueHref = issuePrefix
+    ? `/${issuePrefix}/issues/${issue.identifier ?? issue.id}`
+    : issueUrl({ id: issue.id, identifier: issue.identifier });
+
+  return (
+    <li className="group flex items-center gap-2 border-b border-border py-2 pl-2 pr-2 text-sm last:border-b-0 hover:bg-accent/40">
+      <button
+        type="button"
+        onClick={onToggleExpanded}
+        className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
+        aria-label={expanded ? "Collapse children" : "Expand children"}
+      >
+        {expanded ? (
+          <ChevronDown className="h-3.5 w-3.5" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5" />
+        )}
+      </button>
+      <StatusIcon status={issue.status} onChange={onChangeStatus} />
+      <Link
+        to={issueHref}
+        className="shrink-0 font-mono text-xs text-muted-foreground hover:text-foreground hover:underline"
+        title={issue.title}
+      >
+        {issue.identifier ?? "—"}
+      </Link>
+      <Link
+        to={issueHref}
+        className="min-w-0 flex-1 truncate font-medium text-foreground no-underline hover:underline"
+        title={issue.title}
+      >
+        {issue.title}
+      </Link>
+      <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+        {docCount} docs
+      </span>
     </li>
   );
 }
