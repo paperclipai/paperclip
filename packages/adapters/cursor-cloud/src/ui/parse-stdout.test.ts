@@ -74,6 +74,49 @@ describe("parseCursorCloudStdoutLine", () => {
     ]);
   });
 
+  it("parses standalone tool_result SDK messages", () => {
+    const line = JSON.stringify({
+      type: "cursor_cloud.message",
+      message: {
+        type: "tool_result",
+        call_id: "call-9",
+        name: "read_file",
+        result: { contents: "file body" },
+      },
+    });
+    expect(parseCursorCloudStdoutLine(line, ts)).toEqual([
+      {
+        kind: "tool_result",
+        ts,
+        toolUseId: "call-9",
+        toolName: "read_file",
+        content: JSON.stringify({ contents: "file body" }, null, 2),
+        isError: false,
+      },
+    ]);
+
+    const errorLine = JSON.stringify({
+      type: "cursor_cloud.message",
+      message: {
+        type: "tool_result",
+        call_id: "call-10",
+        name: "bash",
+        is_error: true,
+        content: "exit 1",
+      },
+    });
+    expect(parseCursorCloudStdoutLine(errorLine, ts)).toEqual([
+      {
+        kind: "tool_result",
+        ts,
+        toolUseId: "call-10",
+        toolName: "bash",
+        content: "exit 1",
+        isError: true,
+      },
+    ]);
+  });
+
   it("parses result events and preserves unknown lines as stdout", () => {
     expect(
       parseCursorCloudStdoutLine(

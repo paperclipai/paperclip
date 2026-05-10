@@ -104,6 +104,21 @@ function parseSdkMessage(messageRaw: unknown, ts: string): TranscriptEntry[] {
     return [];
   }
 
+  if (type === "tool_result") {
+    const toolUseId = asString(message.call_id, asString(message.id, "tool_result"));
+    const isError =
+      message.is_error === true ||
+      asString(message.status).toLowerCase() === "error";
+    return [{
+      kind: "tool_result",
+      ts,
+      toolUseId,
+      toolName: asString(message.name, "tool"),
+      content: stringifyUnknown(message.result ?? message.content ?? message.output ?? {}),
+      isError,
+    }];
+  }
+
   if (type === "status") {
     const status = asString(message.status);
     const statusMessage = asString(message.message);
