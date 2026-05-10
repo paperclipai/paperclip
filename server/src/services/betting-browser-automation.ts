@@ -2041,7 +2041,7 @@ export function bettingBrowserAutomationService(db: Db, deps: ServiceDeps) {
         };
       }
 
-      const playwright = deps.playwright ?? await import("@playwright/test");
+      const playwright = (deps.playwright ?? await import("@playwright/test")) as PlaywrightModule;
       const browserName = resolveBrowserName(request.execution);
       const browserType = browserName === "firefox" ? playwright.firefox : playwright.chromium;
       const screenshots: string[] = [];
