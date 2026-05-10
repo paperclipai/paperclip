@@ -1790,6 +1790,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           isNull(issues.assigneeUserId),
           inArray(issues.status, ["todo", "in_progress"]),
           sql`${issues.assigneeAgentId} is not null`,
+          isNull(issues.hiddenAt),
         ),
       );
 
