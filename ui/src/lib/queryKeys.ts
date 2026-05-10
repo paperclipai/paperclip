@@ -176,4 +176,15 @@ export const queryKeys = {
   adapters: {
     all: ["adapters"] as const,
   },
+  brain: {
+    graph: (companyId: string) => ["brain", "graph", companyId] as const,
+    pages: (companyId: string, directory?: string) =>
+      ["brain", "pages", companyId, directory ?? "__all__"] as const,
+    page: (companyId: string, slug: string) => ["brain", "page", companyId, slug] as const,
+    directories: (companyId: string) => ["brain", "directories", companyId] as const,
+    search: (companyId: string, query: string) => ["brain", "search", companyId, query] as const,
+    activity: (companyId: string) => ["brain", "activity", companyId] as const,
+    stats: (companyId: string) => ["brain", "stats", companyId] as const,
+    dreamStatus: (companyId: string) => ["brain", "dream-status", companyId] as const,
+  },
 };
