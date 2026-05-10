@@ -9,6 +9,14 @@ The current implementation target is V1 and is defined in `doc/SPEC-implementati
 
 ## 2. Read This First
 
+### Session startup (fresh agents start here)
+
+Use `agent-control/` for workflow memory and verification discipline. Before substantive work, read `agent-control/AGENTS.md` and `agent-control/memory/project.md`. After meaningful changes, update Agent Control memory and regenerate `agent-control/memory/state.json`.
+
+`agent-control/` is cloned from https://github.com/mengchheanglong/agent-control and gitignored. If it is not present locally, clone it and run `npm run agent-control -- adoption-protocol` from inside it. Then run the bootstrap command noted in that protocol using the current repo state.
+
+### Repository doctrine
+
 Before making changes, read in this order:
 
 1. `doc/GOAL.md`

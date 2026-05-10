@@ -51,3 +51,7 @@ tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
+
+# Agent Control (cloned as session-memory tool, not vendored)
+# See agent-control/AGENTS.md and agent-control/memory/project.md
+agent-control/
