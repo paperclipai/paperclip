@@ -24,25 +24,25 @@ export const databaseBackupConfigSchema = z.object({
   enabled: z.boolean().default(true),
   intervalMinutes: z.number().int().min(1).max(7 * 24 * 60).default(60),
   retentionDays: z.number().int().min(1).max(3650).default(7),
-  dir: z.string().default("~/.paperclip/instances/default/data/backups"),
+  dir: z.string().default("~/.paperclip/instances/default/spaces/default/data/backups"),
 });
 
 export const databaseConfigSchema = z.object({
   mode: z.enum(["embedded-postgres", "postgres"]).default("embedded-postgres"),
   connectionString: z.string().optional(),
-  embeddedPostgresDataDir: z.string().default("~/.paperclip/instances/default/db"),
+  embeddedPostgresDataDir: z.string().default("~/.paperclip/instances/default/spaces/default/db"),
   embeddedPostgresPort: z.number().int().min(1).max(65535).default(54329),
   backup: databaseBackupConfigSchema.default({
     enabled: true,
     intervalMinutes: 60,
     retentionDays: 7,
-    dir: "~/.paperclip/instances/default/data/backups",
+    dir: "~/.paperclip/instances/default/spaces/default/data/backups",
   }),
 });
 
 export const loggingConfigSchema = z.object({
   mode: z.enum(["file", "cloud"]),
-  logDir: z.string().default("~/.paperclip/instances/default/logs"),
+  logDir: z.string().default("~/.paperclip/instances/default/spaces/default/logs"),
 });
 
 export const serverConfigSchema = z.object({
@@ -63,7 +63,7 @@ export const authConfigSchema = z.object({
 });
 
 export const storageLocalDiskConfigSchema = z.object({
-  baseDir: z.string().default("~/.paperclip/instances/default/data/storage"),
+  baseDir: z.string().default("~/.paperclip/instances/default/spaces/default/data/storage"),
 });
 
 export const storageS3ConfigSchema = z.object({
@@ -77,7 +77,7 @@ export const storageS3ConfigSchema = z.object({
 export const storageConfigSchema = z.object({
   provider: z.enum(STORAGE_PROVIDERS).default("local_disk"),
   localDisk: storageLocalDiskConfigSchema.default({
-    baseDir: "~/.paperclip/instances/default/data/storage",
+    baseDir: "~/.paperclip/instances/default/spaces/default/data/storage",
   }),
   s3: storageS3ConfigSchema.default({
     bucket: "paperclip",
@@ -88,14 +88,14 @@ export const storageConfigSchema = z.object({
 });
 
 export const secretsLocalEncryptedConfigSchema = z.object({
-  keyFilePath: z.string().default("~/.paperclip/instances/default/secrets/master.key"),
+  keyFilePath: z.string().default("~/.paperclip/instances/default/spaces/default/secrets/master.key"),
 });
 
 export const secretsConfigSchema = z.object({
   provider: z.enum(SECRET_PROVIDERS).default("local_encrypted"),
   strictMode: z.boolean().default(false),
   localEncrypted: secretsLocalEncryptedConfigSchema.default({
-    keyFilePath: "~/.paperclip/instances/default/secrets/master.key",
+    keyFilePath: "~/.paperclip/instances/default/spaces/default/secrets/master.key",
   }),
 });
 
@@ -118,7 +118,7 @@ export const paperclipConfigSchema = z
     storage: storageConfigSchema.default({
       provider: "local_disk",
       localDisk: {
-        baseDir: "~/.paperclip/instances/default/data/storage",
+        baseDir: "~/.paperclip/instances/default/spaces/default/data/storage",
       },
       s3: {
         bucket: "paperclip",
@@ -131,7 +131,7 @@ export const paperclipConfigSchema = z
       provider: "local_encrypted",
       strictMode: false,
       localEncrypted: {
-        keyFilePath: "~/.paperclip/instances/default/secrets/master.key",
+        keyFilePath: "~/.paperclip/instances/default/spaces/default/secrets/master.key",
       },
     }),
   })

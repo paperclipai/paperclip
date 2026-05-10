@@ -105,4 +105,24 @@ describe("resolveDatabaseTarget", () => {
       source: "embedded-postgres@55444",
     });
   });
+
+  it("uses spaces/default for a fresh default embedded postgres target", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-space-"));
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-cwd-"));
+    process.chdir(cwd);
+    process.env.PAPERCLIP_HOME = home;
+    delete process.env.PAPERCLIP_CONFIG;
+    delete process.env.DATABASE_URL;
+
+    const target = resolveDatabaseTarget();
+
+    expect(target).toMatchObject({
+      mode: "embedded-postgres",
+      dataDir: path.join(home, "instances", "default", "spaces", "default", "db"),
+      port: 54329,
+      source: "embedded-postgres@54329",
+      configPath: path.join(home, "instances", "default", "spaces", "default", "config.json"),
+      envPath: path.join(home, "instances", "default", "spaces", "default", ".env"),
+    });
+  });
 });

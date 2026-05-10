@@ -36,6 +36,7 @@ import {
   resolveDefaultLogsDir,
   resolvePaperclipInstanceId,
 } from "../config/home.js";
+import { ensureDefaultSpaceRegistry } from "@paperclipai/shared/space-paths";
 import { bootstrapCeoInvite } from "./auth-bootstrap-ceo.js";
 import { printPaperclipCliBanner } from "../utils/banner.js";
 import {
@@ -333,7 +334,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
   const instance = describeLocalInstancePaths(resolvePaperclipInstanceId());
   p.log.message(
     pc.dim(
-      `Local home: ${instance.homeDir} | instance: ${instance.instanceId} | config: ${configPath}`,
+      `Local home: ${instance.homeDir} | instance: ${instance.instanceId} | space: ${instance.activeSpaceId} | config: ${configPath}`,
     ),
   );
 
@@ -623,6 +624,10 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     p.log.success(`Created local secrets key file at ${pc.dim(keyResult.path)}`);
   } else if (keyResult.status === "existing") {
     p.log.message(pc.dim(`Using existing local secrets key file at ${keyResult.path}`));
+  }
+
+  if (configPath === resolveConfigPath()) {
+    ensureDefaultSpaceRegistry({ source: "onboard" });
   }
 
   writeConfig(config, opts.config);

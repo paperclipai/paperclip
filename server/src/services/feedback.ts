@@ -35,7 +35,7 @@ import {
   type FeedbackTraceTargetSummary,
   type FeedbackVoteValue,
 } from "@paperclipai/shared";
-import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { resolveHomeAwarePath, resolvePaperclipSpaceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
 import { agentInstructionsService } from "./agent-instructions.js";
 import {
@@ -391,7 +391,7 @@ async function buildCodexTraceFiles(input: {
   }
 
   const managedRoot = path.join(
-    resolvePaperclipInstanceRoot(),
+    resolvePaperclipSpaceRoot(),
     "companies",
     input.companyId,
     "codex-home",

@@ -184,6 +184,14 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
     localPath: "packages/plugins/examples/plugin-orchestration-smoke-example",
     tag: "example",
   },
+  {
+    packageName: "@paperclipai/plugin-bookmarks-example",
+    pluginKey: "paperclipai.plugin-bookmarks-example",
+    displayName: "Bookmarks (Example)",
+    description: "Company-scoped bookmark library backed by a plugin database namespace and a local markdown folder. Demonstrates scoped API routes, local folders, dashboard widget, and a plugin page.",
+    localPath: "packages/plugins/examples/plugin-bookmarks-example",
+    tag: "example",
+  },
 ];
 
 function listBundledPluginExamples(): AvailablePluginExample[] {

@@ -53,6 +53,7 @@
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "^0.31.4",
     "@paperclipai/adapter-utils": "workspace:*",
+    "@paperclipai/shared": "workspace:*",
     "@zed-industries/codex-acp": "^0.12.0",
     "acpx": "^0.6.1",
     "picocolors": "^1.1.1"

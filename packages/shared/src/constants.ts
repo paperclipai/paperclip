@@ -715,6 +715,7 @@ export const PLUGIN_CAPABILITIES = [
   "issue.documents.write",
   "projects.managed",
   "routines.managed",
+  "skills.managed",
   "agents.pause",
   "agents.resume",
   "agents.invoke",

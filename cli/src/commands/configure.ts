@@ -15,6 +15,7 @@ import {
   resolveDefaultLogsDir,
   resolvePaperclipInstanceId,
 } from "../config/home.js";
+import { ensureDefaultSpaceRegistry } from "@paperclipai/shared/space-paths";
 import { printPaperclipCliBanner } from "../utils/banner.js";
 
 type Section = "llm" | "database" | "logging" | "server" | "storage" | "secrets";
@@ -177,6 +178,9 @@ export async function configure(opts: {
     config.$meta.updatedAt = new Date().toISOString();
     config.$meta.source = "configure";
 
+    if (configPath === resolveConfigPath()) {
+      ensureDefaultSpaceRegistry({ source: "configure" });
+    }
     writeConfig(config, opts.config);
     p.log.success(`${SECTION_LABELS[section]} configuration updated.`);
 

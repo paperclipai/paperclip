@@ -93,11 +93,11 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 ## 6.2 Data Stores
 
 - Primary: PostgreSQL
-- Local default: embedded PostgreSQL at `~/.paperclip/instances/default/db`
+- Local default: embedded PostgreSQL at `~/.paperclip/instances/default/spaces/default/db`
 - Optional local prod-like: Docker Postgres
 - Optional hosted: Supabase/Postgres-compatible
 - File/object storage:
-  - local default: `~/.paperclip/instances/default/data/storage` (`local_disk`)
+  - local default: `~/.paperclip/instances/default/spaces/default/data/storage` (`local_disk`)
   - cloud: S3-compatible object storage (`s3`)
 
 ## 6.3 Background Processing
@@ -785,7 +785,7 @@ Required UX behaviors:
 
 - Node 20+
 - `DATABASE_URL` optional
-- if unset, auto-use embedded PostgreSQL under `~/.paperclip/instances/default/db`
+- if unset, auto-use embedded PostgreSQL under `~/.paperclip/instances/default/spaces/default/db`
 
 ## 15.2 Migrations
 

@@ -151,6 +151,7 @@ export const pluginManagedAgentDeclarationSchema = z.object({
   instructions: z.object({
     entryFile: z.string().min(1).max(200).optional(),
     content: z.string().max(200_000).optional(),
+    files: z.record(z.string().max(200_000)).optional(),
     assetPath: z.string().min(1).max(500).optional(),
   }).optional(),
 });
@@ -172,7 +173,7 @@ export type PluginManagedProjectDeclarationInput = z.infer<typeof pluginManagedP
 
 const pluginManagedResourceRefSchema = z.object({
   pluginKey: z.string().min(1).max(100).optional(),
-  resourceKind: z.enum(["agent", "project", "routine"]),
+  resourceKind: z.enum(["agent", "project", "routine", "skill"]),
   resourceKey: z.string().min(1).max(100).regex(/^[a-z0-9][a-z0-9._:-]*$/, {
     message: "resourceKey must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, colons, underscores, or hyphens",
   }),
@@ -231,6 +232,41 @@ export const pluginLocalFolderDeclarationSchema = z.object({
 });
 
 export type PluginLocalFolderDeclarationInput = z.infer<typeof pluginLocalFolderDeclarationSchema>;
+
+export const pluginManagedSkillFileDeclarationSchema = z.object({
+  path: pluginLocalFolderRelativePathSchema.refine(
+    (value) => value.toLowerCase() !== "skill.md",
+    { message: "managed skill files cannot replace SKILL.md; use markdown for the main skill file" },
+  ),
+  content: z.string().max(200_000),
+});
+
+export type PluginManagedSkillFileDeclarationInput = z.infer<typeof pluginManagedSkillFileDeclarationSchema>;
+
+export const pluginManagedSkillDeclarationSchema = z.object({
+  skillKey: z.string().min(1).max(100).regex(/^[a-z0-9][a-z0-9._:-]*$/, {
+    message: "skillKey must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, colons, underscores, or hyphens",
+  }),
+  displayName: z.string().min(1).max(100),
+  slug: z.string().min(1).max(100).regex(/^[a-z0-9][a-z0-9._:-]*$/, {
+    message: "slug must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, colons, underscores, or hyphens",
+  }).optional(),
+  description: z.string().max(2000).nullable().optional(),
+  markdown: z.string().max(200_000).optional(),
+  files: z.array(pluginManagedSkillFileDeclarationSchema).max(50).optional(),
+}).superRefine((value, ctx) => {
+  const paths = (value.files ?? []).map((file) => file.path);
+  const duplicates = paths.filter((path, index) => paths.indexOf(path) !== index);
+  if (duplicates.length > 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Duplicate managed skill file paths: ${[...new Set(duplicates)].join(", ")}`,
+      path: ["files"],
+    });
+  }
+});
+
+export type PluginManagedSkillDeclarationInput = z.infer<typeof pluginManagedSkillDeclarationSchema>;
 
 /**
  * Validates a {@link PluginUiSlotDeclaration} — a UI extension slot the plugin
@@ -589,6 +625,7 @@ export const pluginManifestV1Schema = z.object({
   agents: z.array(pluginManagedAgentDeclarationSchema).optional(),
   projects: z.array(pluginManagedProjectDeclarationSchema).optional(),
   routines: z.array(pluginManagedRoutineDeclarationSchema).optional(),
+  skills: z.array(pluginManagedSkillDeclarationSchema).optional(),
   localFolders: z.array(pluginLocalFolderDeclarationSchema).optional(),
   launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   ui: z.object({
@@ -673,6 +710,16 @@ export const pluginManifestV1Schema = z.object({
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "Capability 'routines.managed' is required when managed routines are declared",
+        path: ["capabilities"],
+      });
+    }
+  }
+
+  if (manifest.skills && manifest.skills.length > 0) {
+    if (!manifest.capabilities.includes("skills.managed")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Capability 'skills.managed' is required when managed skills are declared",
         path: ["capabilities"],
       });
     }
@@ -867,6 +914,18 @@ export const pluginManifestV1Schema = z.object({
         code: z.ZodIssueCode.custom,
         message: `Duplicate managed routine keys: ${[...new Set(duplicates)].join(", ")}`,
         path: ["routines"],
+      });
+    }
+  }
+
+  if (manifest.skills) {
+    const skillKeys = manifest.skills.map((skill) => skill.skillKey);
+    const duplicates = skillKeys.filter((key, i) => skillKeys.indexOf(key) !== i);
+    if (duplicates.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Duplicate managed skill keys: ${[...new Set(duplicates)].join(", ")}`,
+        path: ["skills"],
       });
     }
   }

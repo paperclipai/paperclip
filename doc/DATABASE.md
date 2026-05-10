@@ -12,12 +12,12 @@ pnpm dev
 
 That's it. On first start the server:
 
-1. Creates a `~/.paperclip/instances/default/db/` directory for storage
+1. Creates a `~/.paperclip/instances/default/spaces/default/db/` directory for storage
 2. Ensures the `paperclip` database exists
 3. Runs migrations automatically for empty databases
 4. Starts serving requests
 
-Data persists across restarts in `~/.paperclip/instances/default/db/`. To reset local dev data, delete that directory.
+Data persists across restarts in `~/.paperclip/instances/default/spaces/default/db/`. To reset local dev data, delete that directory. Older installs that still keep data at `~/.paperclip/instances/default/db/` continue to start through the legacy resolver — see [Migrating a Legacy Default-Space Install](CLI.md#migrating-a-legacy-default-space-install).
 
 If you need to apply pending migrations manually, run:
 
@@ -137,7 +137,7 @@ The database mode is controlled by `DATABASE_URL`:
 
 | `DATABASE_URL` | Mode |
 |---|---|
-| Not set | Embedded PostgreSQL (`~/.paperclip/instances/default/db/`) |
+| Not set | Embedded PostgreSQL (`~/.paperclip/instances/default/spaces/default/db/`) |
 | `postgres://...localhost...` | Local Docker PostgreSQL |
 | `postgres://...supabase.com...` | Hosted Supabase |
 
@@ -169,8 +169,8 @@ Paperclip stores secret metadata and versions in:
 For local/default installs, the active provider is `local_encrypted`:
 
 - Secret material is encrypted at rest with a local master key.
-- Default key file: `~/.paperclip/instances/default/secrets/master.key` (auto-created if missing).
-- CLI config location: `~/.paperclip/instances/default/config.json` under `secrets.localEncrypted.keyFilePath`.
+- Default key file: `~/.paperclip/instances/default/spaces/default/secrets/master.key` (auto-created if missing).
+- CLI config location: `~/.paperclip/instances/default/spaces/default/config.json` under `secrets.localEncrypted.keyFilePath`. (The instance-level `~/.paperclip/instances/default/config.json` is the cross-space registry that records which space is active.)
 - Backup/restore requires both the database metadata and the local master key file; either artifact alone is insufficient.
 - The server best-effort enforces `0600` key file permissions and provider health reports permission warnings.
 
