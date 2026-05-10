@@ -56,3 +56,7 @@ tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
+
+# Claude Code session artifacts
+.claude/settings.json
+run_*.log
