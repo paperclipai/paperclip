@@ -64,6 +64,8 @@ const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const ASSIGNED_ISSUE_TIMEOUT_QUARANTINE_COUNT_DEFAULT = 3;
+const ASSIGNED_ISSUE_TIMEOUT_QUARANTINE_WINDOW_SEC_DEFAULT = 24 * 60 * 60;
 
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
@@ -95,6 +97,11 @@ type SuccessfulRunHandoffRecoveryEvidence = {
   missingDisposition: string;
   handoffAttempt: number;
   maxHandoffAttempts: number;
+};
+
+type AssignedIssueTimeoutQuarantinePolicy = {
+  count: number;
+  windowSec: number;
 };
 
 type WatchdogDecisionActor =
@@ -142,6 +149,31 @@ function didAutomaticRecoveryFail(
     UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
       latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
     );
+}
+
+function parseAssignedIssueTimeoutQuarantinePolicy(agent: typeof agents.$inferSelect): AssignedIssueTimeoutQuarantinePolicy {
+  const runtimeConfig = parseObject(agent.runtimeConfig);
+  const heartbeat = parseObject(runtimeConfig.heartbeat);
+  return {
+    count: Math.max(
+      0,
+      Math.floor(
+        asNumber(
+          heartbeat.assignedIssueTimeoutQuarantineCount,
+          ASSIGNED_ISSUE_TIMEOUT_QUARANTINE_COUNT_DEFAULT,
+        ),
+      ),
+    ),
+    windowSec: Math.max(
+      0,
+      Math.floor(
+        asNumber(
+          heartbeat.assignedIssueTimeoutQuarantineWindowSec,
+          ASSIGNED_ISSUE_TIMEOUT_QUARANTINE_WINDOW_SEC_DEFAULT,
+        ),
+      ),
+    ),
+  };
 }
 
 function successfulRunHandoffRecoveryEvidence(latestRun: LatestIssueRun): SuccessfulRunHandoffRecoveryEvidence | null {
@@ -466,6 +498,82 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       )
       .limit(1)
       .then((rows) => Boolean(rows[0]));
+  }
+
+  async function hasAgentExecutionPath(companyId: string, agentId: string) {
+    return db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+  async function collectRecentIssueTimeouts(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    policy: AssignedIssueTimeoutQuarantinePolicy;
+  }) {
+    if (input.policy.count <= 0 || input.policy.windowSec <= 0) return [];
+    const cutoff = new Date(Date.now() - input.policy.windowSec * 1000);
+    const evidenceLimit = input.policy.count + 5;
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        finishedAt: heartbeatRuns.finishedAt,
+        errorCode: heartbeatRuns.errorCode,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, input.agentId),
+          eq(heartbeatRuns.status, "timed_out"),
+          gt(heartbeatRuns.finishedAt, cutoff),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.finishedAt), desc(heartbeatRuns.createdAt))
+      .limit(evidenceLimit);
+  }
+
+  async function maybeQuarantineRepeatedTimeouts(input: {
+    issue: typeof issues.$inferSelect;
+    agent: typeof agents.$inferSelect;
+    previousStatus: "todo" | "in_progress";
+    latestRun: LatestIssueRun;
+  }) {
+    const policy = parseAssignedIssueTimeoutQuarantinePolicy(input.agent);
+    if (policy.count <= 0 || policy.windowSec <= 0) return null;
+    const recentTimeouts = await collectRecentIssueTimeouts({
+      companyId: input.issue.companyId,
+      agentId: input.agent.id,
+      issueId: input.issue.id,
+      policy,
+    });
+    if (recentTimeouts.length < policy.count) return null;
+
+    const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
+    const timeoutWindowHours = Math.round(policy.windowSec / 3600);
+    const evidence = recentTimeouts
+      .map((run) => run.finishedAt ? `${run.id} at ${new Date(run.finishedAt).toISOString()}` : run.id)
+      .join(", ");
+    return escalateStrandedAssignedIssue({
+      issue: input.issue,
+      previousStatus: input.previousStatus,
+      latestRun: input.latestRun,
+      comment:
+        `Paperclip quarantined this assigned \`${input.previousStatus}\` issue after ${recentTimeouts.length} timeout runs ` +
+        `within ${timeoutWindowHours}h, with no live execution path.${failureSummary ?? ""} ` +
+        `Recent timeout runs: ${evidence}. Moving it to \`blocked\` so it is visible for intervention.`,
+    });
   }
 
   async function enqueueStrandedIssueRecovery(input: {
@@ -1801,10 +1909,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       successfulContinuationObserved: 0,
       orphanBlockersAssigned: 0,
       successfulRunHandoffEscalated: 0,
+      timeoutQuarantined: 0,
       escalated: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
+    const recoveredAgentIds = new Set<string>();
 
     for (const issue of candidates) {
       const agentId = issue.assigneeAgentId;
@@ -1830,6 +1940,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      const timeoutQuarantine = await maybeQuarantineRepeatedTimeouts({
+        issue,
+        agent,
+        previousStatus: issue.status as "todo" | "in_progress",
+        latestRun,
+      });
+      if (timeoutQuarantine) {
+        recoveredAgentIds.add(agentId);
+        result.timeoutQuarantined += 1;
+        result.escalated += 1;
+        result.issueIds.push(issue.id);
+        continue;
+      }
+
+      if (recoveredAgentIds.has(agentId) || await hasAgentExecutionPath(issue.companyId, agentId)) {
+        result.skipped += 1;
+        continue;
+      }
+
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
         const updated = await escalateStrandedRecoveryIssueInPlace({
           issue,
@@ -1860,6 +1989,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           const queued = await enqueueInitialAssignedTodoDispatch(issue, agentId);
           if (queued) {
             result.assignmentDispatched += 1;
+            recoveredAgentIds.add(agentId);
             result.issueIds.push(issue.id);
           } else {
             result.skipped += 1;
@@ -1907,6 +2037,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         });
         if (queued) {
           result.dispatchRequeued += 1;
+          recoveredAgentIds.add(agentId);
           result.issueIds.push(issue.id);
         } else {
           result.skipped += 1;
@@ -1982,6 +2113,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         });
         if (queued) {
           result.continuationRequeued += 1;
+          recoveredAgentIds.add(agentId);
           result.issueIds.push(issue.id);
         } else {
           result.skipped += 1;
@@ -2023,6 +2155,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
       if (queued) {
         result.continuationRequeued += 1;
+        recoveredAgentIds.add(agentId);
         result.issueIds.push(issue.id);
       } else {
         result.skipped += 1;
