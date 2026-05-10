@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadActiveMemories, buildActiveMemorySection } from "./active-memory.js";
+import { loadActiveMemories, buildActiveMemorySection, buildMemorySelfCheckBlock } from "./active-memory.js";
 
 describe("buildActiveMemorySection", () => {
   it("returns empty string for empty memories array", () => {
@@ -44,6 +44,51 @@ describe("buildActiveMemorySection", () => {
     ]);
     expect(result).toContain("**Rule A**");
     expect(result).toContain("**Rule B**");
+  });
+});
+
+describe("buildMemorySelfCheckBlock", () => {
+  it("returns empty string for empty memories array", () => {
+    expect(buildMemorySelfCheckBlock([])).toBe("");
+  });
+
+  it("renders markdown table with header and self-check prompt", () => {
+    const result = buildMemorySelfCheckBlock([
+      { name: "Rule A", description: "Never skip deploy.", trigger: "always-check", howToApply: "check before done" },
+    ]);
+    expect(result).toContain("## Active Memory Self-Check");
+    expect(result).toContain("| # | Memory | Description | How to Apply |");
+    expect(result).toContain("Rule A");
+    expect(result).toContain("Never skip deploy.");
+    expect(result).toContain("check before done");
+    expect(result).toContain("Self-check:");
+  });
+
+  it("escapes pipe characters in description and howToApply", () => {
+    const result = buildMemorySelfCheckBlock([
+      { name: "Rule B", description: "opt A | opt B", trigger: "always-check", howToApply: "x | y" },
+    ]);
+    expect(result).toContain("opt A \\| opt B");
+    expect(result).toContain("x \\| y");
+  });
+
+  it("renders multiple rows with sequential numbering", () => {
+    const result = buildMemorySelfCheckBlock([
+      { name: "R1", description: "d1", trigger: "always-check", howToApply: "h1" },
+      { name: "R2", description: "d2", trigger: "always-check", howToApply: null },
+    ]);
+    expect(result).toContain("| 1 |");
+    expect(result).toContain("| 2 |");
+    expect(result).toContain("R1");
+    expect(result).toContain("R2");
+  });
+
+  it("handles null howToApply gracefully", () => {
+    const result = buildMemorySelfCheckBlock([
+      { name: "Rule C", description: "desc C", trigger: "always-check", howToApply: null },
+    ]);
+    expect(result).toContain("Rule C");
+    expect(result).not.toContain("null");
   });
 });
 
@@ -167,11 +212,9 @@ describe("loadActiveMemories", () => {
     const fakeHome = await fs.mkdtemp(path.join(os.tmpdir(), "am-test-home-"));
     cleanupDirs.push(fakeHome);
 
-    // Create a fake CWD (no in-repo memory)
     const fakeCwd = path.join(fakeHome, "my-cwd");
     await fs.mkdir(fakeCwd, { recursive: true });
 
-    // Encode the CWD the same way the loader does
     const projectId = fakeCwd.replace(/[:\\/\.]/g, "-");
     const claudeMemoryDir = path.join(fakeHome, ".claude", "projects", projectId, "memory");
     await fs.mkdir(claudeMemoryDir, { recursive: true });
@@ -190,20 +233,34 @@ describe("loadActiveMemories", () => {
     await fs.writeFile(path.join(claudeMemoryDir, "rule.md"), memContent, "utf-8");
     await fs.writeFile(
       path.join(claudeMemoryDir, "MEMORY.md"),
-      "# Memory Index\n\n- [Claude Memory Rule](rule.md) — rule\n",
+      "# Memory Index\n\n- [rule](rule.md) — rule\n",
       "utf-8",
     );
 
-    // Temporarily patch os.homedir via the module path — instead just test directly
-    // by calling resolveMemoryDir behavior: if no in-repo dir, checks Claude path.
-    // Since we can't easily mock os.homedir in ESM, verify the fallback by ensuring
-    // the in-repo path doesn't exist and confirming loadActiveMemories finds nothing
-    // (the real homedir won't have our fake path).
-    // This test validates the logic for the primary (in-repo) fallback returns empty.
-    const result = await loadActiveMemories(fakeCwd);
-    // The real ~/.claude won't have this fake path, so we expect empty.
-    // The important thing is it doesn't throw.
+    // Inject fakeHome so the loader checks our controlled directory instead of ~/.claude
+    const result = await loadActiveMemories(fakeCwd, { homeDir: fakeHome });
+    expect(result).toHaveLength(1);
+    expect(result[0]!.name).toBe("Claude Memory Rule");
+    expect(result[0]!.trigger).toBe("always-check");
+    expect(result[0]!.howToApply).toBe("apply this rule.");
+  });
+
+  it("rejects path traversal links in MEMORY.md without throwing", async () => {
+    const tmp = os.tmpdir();
+    const cwd = await fs.mkdtemp(path.join(tmp, "am-test-traversal-"));
+    cleanupDirs.push(cwd);
+    const memoryDir = path.join(cwd, "memory");
+    await fs.mkdir(memoryDir, { recursive: true });
+
+    await fs.writeFile(
+      path.join(memoryDir, "MEMORY.md"),
+      "# Memory Index\n\n- [Evil](../../etc/passwd.md) — evil traversal\n",
+      "utf-8",
+    );
+
+    const result = await loadActiveMemories(cwd);
     expect(Array.isArray(result)).toBe(true);
+    expect(result).toHaveLength(0);
   });
 
   it("reads legacy enforcement field for backward compatibility (VOG-5838)", async () => {
