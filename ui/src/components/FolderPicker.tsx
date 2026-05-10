@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   ChevronRight,
@@ -117,20 +117,20 @@ export function FolderPicker({
   const [requestedPath, setRequestedPath] = useState("");
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
 
-  const applyPathImmediately = (nextPath: string) => {
+  const applyPathImmediately = useCallback((nextPath: string) => {
     if (debounceRef.current !== null) {
       window.clearTimeout(debounceRef.current);
       debounceRef.current = null;
     }
     setInputPath(nextPath);
     setRequestedPath(nextPath);
-  };
+  }, []);
 
   useEffect(() => {
     if (!open) return;
     const initialPath = normalizePath(value);
     applyPathImmediately(initialPath);
-  }, [open, value]);
+  }, [open, value, applyPathImmediately]);
 
   useEffect(() => {
     return () => {

@@ -109,6 +109,12 @@ async function buildEntry(directoryPath: string, name: string): Promise<Filesyst
     try {
       const stats = await fs.stat(fullPath);
       isDir = stats.isDirectory();
+      // Also reject symlinks whose target resolves into a denied path so the
+      // entry never appears in the listing. Without this, a symlink like
+      // ~/.shadow_link -> /etc/shadow would render in the UI and only error
+      // on selection.
+      const resolvedTarget = await fs.realpath(fullPath);
+      if (isDeniedPath(resolvedTarget)) return null;
     } catch {
       isDir = false;
     }
