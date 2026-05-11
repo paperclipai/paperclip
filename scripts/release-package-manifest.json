@@ -20,6 +20,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/adapters/cursor-cloud",
+    "name": "@paperclipai/adapter-cursor-cloud",
+    "publishFromCi": false
+  },
+  {
     "dir": "packages/adapters/cursor-local",
     "name": "@paperclipai/adapter-cursor-local",
     "publishFromCi": true
