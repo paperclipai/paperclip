@@ -14,7 +14,6 @@ import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import type { CompanySelectionSource } from "../lib/company-selection";
 type CompanySelectionOptions = { source?: CompanySelectionSource };
-type CompanyListResult = { companies: Company[]; unauthorized: boolean };
 
 interface CompanyContextValue {
   companies: Company[];
@@ -68,23 +67,25 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const [selectionSource, setSelectionSource] = useState<CompanySelectionSource>("bootstrap");
   const [selectedCompanyId, setSelectedCompanyIdState] = useState<string | null>(null);
+  const [companyListUnauthorized, setCompanyListUnauthorized] = useState(false);
 
-  const { data: companiesResult = { companies: [], unauthorized: false }, isLoading, error } = useQuery<CompanyListResult>({
+  const { data: companies = [], isLoading, error } = useQuery<Company[]>({
     queryKey: queryKeys.companies.all,
     queryFn: async () => {
       try {
-        return { companies: await companiesApi.list(), unauthorized: false };
+        const result = await companiesApi.list();
+        setCompanyListUnauthorized(false);
+        return result;
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
-          return { companies: [], unauthorized: true };
+          setCompanyListUnauthorized(true);
+          return [];
         }
         throw err;
       }
     },
     retry: false,
   });
-  const companies = companiesResult.companies;
-  const companyListUnauthorized = companiesResult.unauthorized;
   const sidebarCompanies = useMemo(
     () => companies.filter((company) => company.status !== "archived"),
     [companies],
