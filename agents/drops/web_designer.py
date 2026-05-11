@@ -56,7 +56,6 @@ def fetch_openverse_images(product_name: str) -> dict:
         params = urllib.parse.urlencode({
             "q":         query,
             "page_size": 6,
-            "license_type": "commercial",
         })
         req = urllib.request.Request(
             f"https://api.openverse.org/v1/images/?{params}",
