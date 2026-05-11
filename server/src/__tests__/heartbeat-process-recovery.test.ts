@@ -2127,6 +2127,44 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.status).toBe("todo");
   });
 
+  it("skips Klasse-2 escalation when the productive-continuation issue has unresolved blockers (Site-B path)", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.productive_terminal_continuation_recovery",
+      livenessState: "advanced",
+    });
+    const blockerIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: blockerIssueId,
+      companyId,
+      title: "Unresolved prerequisite blocker",
+      status: "in_progress",
+      priority: "medium",
+      issueNumber: 96,
+      identifier: `${issuePrefix}-96`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+    expect(result.blockerSkipped).toBe(1);
+    expect(result.skipped).toBe(1);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+  });
+
   it("still escalates Klasse-2 after the blocker is resolved (positive control)", async () => {
     const { companyId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
