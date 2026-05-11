@@ -266,4 +266,69 @@ export class StateMachine {
       updatedAt: new Date(r.updated_at),
     };
   }
+
+  async listRuns(
+    companyId: string,
+    opts?: { issueId?: string; status?: PipelineRunStatus; limit?: number },
+  ): Promise<PipelineRun[]> {
+    const conditions: string[] = ["company_id = $1"];
+    const params: unknown[] = [companyId];
+    let paramIdx = 2;
+
+    if (opts?.issueId) {
+      conditions.push(`parent_issue_id = $${paramIdx++}`);
+      params.push(opts.issueId);
+    }
+    if (opts?.status) {
+      conditions.push(`status = $${paramIdx++}`);
+      params.push(opts.status);
+    }
+
+    const limit = opts?.limit ?? 50;
+    const where = conditions.join(" AND ");
+
+    const rows = await this.db.query<{
+      id: string;
+      company_id: string;
+      parent_issue_id: string;
+      pipeline_name: string;
+      pipeline_version: number;
+      pipeline_yaml: string;
+      status: PipelineRunStatus;
+      created_at: string;
+      updated_at: string;
+    }>(
+      `SELECT * FROM ${this.table("pipeline_runs")} WHERE ${where} ORDER BY created_at DESC LIMIT ${limit}`,
+      params,
+    );
+
+    return rows.map((r) => ({
+      id: r.id,
+      companyId: r.company_id,
+      parentIssueId: r.parent_issue_id,
+      pipelineName: r.pipeline_name,
+      pipelineVersion: r.pipeline_version,
+      pipelineYaml: r.pipeline_yaml,
+      status: r.status,
+      createdAt: new Date(r.created_at),
+      updatedAt: new Date(r.updated_at),
+    }));
+  }
+
+  async cancelRun(runId: string): Promise<void> {
+    // Set run status to cancelled
+    await this.db.execute(
+      `UPDATE ${this.table("pipeline_runs")} SET status = 'cancelled', updated_at = NOW() WHERE id = $1`,
+      [runId],
+    );
+
+    // Set pending/running stages to skipped and release lock
+    await this.db.execute(
+      `UPDATE ${this.table("pipeline_stages")} SET status = 'skipped', completed_at = NOW()
+       WHERE pipeline_run_id = $1 AND status IN ('pending', 'running')`,
+      [runId],
+    );
+
+    this.activeLocks.delete(runId);
+  }
 }

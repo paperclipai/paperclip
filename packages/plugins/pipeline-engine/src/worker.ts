@@ -7,7 +7,8 @@ import {
 } from "@paperclipai/plugin-sdk";
 import { parsePipeline, validateDAG } from "./dag-parser.js";
 import { Dispatcher } from "./dispatcher.js";
-import { evaluateCondition, buildExpressionContext } from "./expression-engine.js";
+import { buildExpressionContext, evaluateCondition } from "./expression-engine.js";
+import { buildAdjacencyFromEdges } from "./edge-utils.js";
 import { extractOutput, loadSchema, validateOutput } from "./output-parser.js";
 import { Router } from "./router.js";
 import { StateMachine } from "./state-machine.js";
@@ -26,15 +27,20 @@ async function loadPipelines(ctx: PluginContext): Promise<PipelineDefinition[]> 
   const triggerLabels = config.trigger_labels ?? {};
   const loaded: PipelineDefinition[] = [];
 
-  for (const [_labelName, pipelineName] of Object.entries(triggerLabels)) {
-    const yamlContent = await ctx.state.get({ scopeKind: "instance", namespace: "pipeline", stateKey: `yaml:${pipelineName}` });
-    if (yamlContent) {
-      const pipeline = parsePipeline(yamlContent as string);
-      const validation = validateDAG(pipeline);
-      if (validation.valid) {
-        loaded.push(pipeline);
-      } else {
-        ctx.logger.warn("Invalid pipeline definition", { pipelineName, errors: validation.errors });
+  // Collect unique pipeline names from trigger_labels values
+  const pipelineNames = new Set(Object.values(triggerLabels));
+
+  for (const pipelineName of pipelineNames) {
+    const jsonContent = await ctx.state.get({ scopeKind: "instance", namespace: "pipeline", stateKey: `pipeline:${pipelineName}` });
+    if (jsonContent) {
+      const pipeline = safeParsePipelineJson(jsonContent as string);
+      if (pipeline) {
+        const validation = validateDAG(pipeline);
+        if (validation.valid) {
+          loaded.push(pipeline);
+        } else {
+          ctx.logger.warn("Invalid pipeline definition", { pipelineName, errors: validation.errors });
+        }
       }
     }
   }
@@ -48,6 +54,7 @@ async function buildStageContext(
   companyId: string,
   stageDef: StageDefinition,
   stageRows: Array<{ stageId: string; status: string; output: Record<string, unknown> | null }>,
+  pipeline: PipelineDefinition,
 ): Promise<string> {
   const sections: string[] = [];
 
@@ -56,13 +63,17 @@ async function buildStageContext(
     sections.push(`## Original Request\n\n**${parentIssue.title}**\n\n${parentIssue.description ?? ""}`);
   }
 
-  const deps = "depends_on" in stageDef ? stageDef.depends_on : undefined;
-  if (deps && deps.length > 0) {
+  // Use incoming edges to find upstream stages instead of depends_on
+  const incomingEdgeSourceIds = (pipeline.edges ?? [])
+    .filter((e) => e.to === stageDef.id && e.type !== "error")
+    .map((e) => e.from);
+
+  if (incomingEdgeSourceIds.length > 0) {
     const upstreamOutputs: string[] = [];
-    for (const depId of deps) {
-      const depRow = stageRows.find((s) => s.stageId === depId);
-      if (depRow?.output) {
-        upstreamOutputs.push(`### ${depId} output\n\n\`\`\`json\n${JSON.stringify(depRow.output, null, 2)}\n\`\`\``);
+    for (const sourceId of incomingEdgeSourceIds) {
+      const sourceRow = stageRows.find((s) => s.stageId === sourceId);
+      if (sourceRow?.output) {
+        upstreamOutputs.push(`### ${sourceId} output\n\n\`\`\`json\n${JSON.stringify(sourceRow.output, null, 2)}\n\`\`\``);
       }
     }
     if (upstreamOutputs.length > 0) {
@@ -110,7 +121,7 @@ async function materializePipeline(
   companyId: string,
 ): Promise<void> {
   const runId = randomUUID();
-  const pipelineYaml = JSON.stringify(pipeline);
+  const pipelineJson = JSON.stringify(pipeline);
 
   await stateMachine.createRun({
     id: runId,
@@ -118,7 +129,7 @@ async function materializePipeline(
     parentIssueId,
     pipelineName: pipeline.name,
     pipelineVersion: 1,
-    pipelineYaml,
+    pipelineYaml: pipelineJson,
   });
 
   for (const stage of pipeline.stages) {
@@ -160,6 +171,7 @@ async function advancePipeline(
         const stageRow = stageRows.find((s) => s.stageId === stageDef.id);
         if (!stageRow) continue;
         await stateMachine.updateStageStatus(stageRow.id, "skipped");
+        ctx.streams.emit("run-progress", { runId, stageId: stageDef.id, status: "skipped" });
       }
 
       const currentRows = skippedStages.length > 0
@@ -172,9 +184,11 @@ async function advancePipeline(
         const anyFailed = currentRows.some((s) => s.status === "failed");
         if (allDone && currentRows.length > 0) {
           await stateMachine.updateRunStatus(runId, "completed");
+          ctx.streams.emit("run-progress", { runId, stageId: null, status: "completed" });
           ctx.logger.info("Pipeline completed", { runId });
         } else if (anyFailed && !currentRows.some((s) => s.status === "running" || s.status === "pending")) {
           await stateMachine.updateRunStatus(runId, "failed");
+          ctx.streams.emit("run-progress", { runId, stageId: null, status: "failed" });
           ctx.logger.info("Pipeline failed — no recoverable stages remain", { runId });
         }
         return;
@@ -196,6 +210,7 @@ async function advancePipeline(
           ctx.logger.warn("Stage type not dispatchable", { stageId: stageDef.id, type: stageDef.type });
           await stateMachine.updateStageStatus(stageRow.id, "failed");
           await stateMachine.setStageError(stageRow.id, `Stage type "${stageDef.type}" requires dynamic materialization (not yet supported)`);
+          ctx.streams.emit("run-progress", { runId, stageId: stageDef.id, status: "failed" });
           continue;
         }
 
@@ -203,14 +218,17 @@ async function advancePipeline(
         if (!agentRole) {
           await stateMachine.updateStageStatus(stageRow.id, "failed");
           await stateMachine.setStageError(stageRow.id, `Stage "${stageDef.id}" has no agent_role configured`);
+          ctx.streams.emit("run-progress", { runId, stageId: stageDef.id, status: "failed" });
           continue;
         }
 
         const claimed = await stateMachine.claimStageForDispatch(stageRow.id);
         if (!claimed) continue;
 
+        ctx.streams.emit("run-progress", { runId, stageId: stageDef.id, status: "running" });
+
         try {
-          const context = await buildStageContext(ctx, run.parentIssueId, companyId, stageDef, currentRows);
+          const context = await buildStageContext(ctx, run.parentIssueId, companyId, stageDef, currentRows, pipeline);
           const result = await dispatcher.dispatch({
             pipelineRunId: runId,
             stage: stageDef,
@@ -227,6 +245,7 @@ async function advancePipeline(
           ctx.logger.error("Dispatch failed for stage", { stageId: stageDef.id, error: String(err) });
           await stateMachine.updateStageStatus(stageRow.id, "failed");
           await stateMachine.setStageError(stageRow.id, `Dispatch failed: ${String(err)}`);
+          ctx.streams.emit("run-progress", { runId, stageId: stageDef.id, status: "failed" });
           await handleStageFailure(ctx, runId, pipeline, stageDef, stageRow.id, companyId);
         }
       }
@@ -258,20 +277,33 @@ async function handleGateStage(
     companyId,
   );
 
-  let conditionMet: boolean;
-  try {
-    conditionMet = stageDef.condition ? await evaluateCondition(stageDef.condition, context) : true;
-  } catch (err) {
-    ctx.logger.error("Gate condition evaluation failed", { stageId: stageDef.id, error: String(err) });
-    await stateMachine.updateStageStatus(stageRow.id, "failed");
-    await stateMachine.setStageError(stageRow.id, `Condition evaluation failed: ${String(err)}`);
-    return;
+  // Gate condition: evaluate the outgoing edge conditions
+  // (Gates pass if any outgoing edge condition is truthy or no condition exists)
+  const outgoingEdges = (pipeline.edges ?? []).filter((e) => e.from === stageDef.id && e.type !== "error");
+  let conditionMet = outgoingEdges.length === 0; // no edges = pass-through
+
+  for (const edge of outgoingEdges) {
+    if (!edge.when) {
+      conditionMet = true;
+      break;
+    }
+    try {
+      const result = await evaluateCondition(edge.when, context);
+      if (result) {
+        conditionMet = true;
+        break;
+      }
+    } catch (err) {
+      ctx.logger.error("Gate edge condition evaluation failed", { stageId: stageDef.id, edgeId: edge.id, error: String(err) });
+    }
   }
 
   if (conditionMet) {
     await stateMachine.updateStageStatus(stageRow.id, "completed");
+    ctx.streams.emit("run-progress", { runId, stageId: stageDef.id, status: "completed" });
   } else {
     await stateMachine.updateStageStatus(stageRow.id, "failed");
+    ctx.streams.emit("run-progress", { runId, stageId: stageDef.id, status: "failed" });
     await handleStageFailure(ctx, runId, pipeline, stageDef, stageRow.id, companyId);
   }
 }
@@ -297,9 +329,10 @@ async function handleCommentEvent(ctx: PluginContext, event: PluginEvent): Promi
     ctx.logger.warn("Stage output JSON parse failed", { stageId: stageRow.stageId, error: extraction.parseError });
     await stateMachine.setStageError(stageRow.id, extraction.parseError);
     await stateMachine.updateStageStatus(stageRow.id, "failed");
+    ctx.streams.emit("run-progress", { runId: stageRow.pipelineRunId, stageId: stageRow.stageId, status: "failed" });
     const run = await stateMachine.getRun(stageRow.pipelineRunId);
     if (run) {
-      const pipeline = safeParsePipelineYaml(run.pipelineYaml);
+      const pipeline = safeParsePipelineJson(run.pipelineYaml);
       if (pipeline) {
         const stageDef = pipeline.stages.find((s) => s.id === stageRow.stageId);
         if (stageDef) {
@@ -315,9 +348,9 @@ async function handleCommentEvent(ctx: PluginContext, event: PluginEvent): Promi
   const run = await stateMachine.getRun(stageRow.pipelineRunId);
   if (!run) return;
 
-  const pipeline = safeParsePipelineYaml(run.pipelineYaml);
+  const pipeline = safeParsePipelineJson(run.pipelineYaml);
   if (!pipeline) {
-    ctx.logger.error("Corrupted pipeline YAML in database", { pipelineRunId: stageRow.pipelineRunId });
+    ctx.logger.error("Corrupted pipeline JSON in database", { pipelineRunId: stageRow.pipelineRunId });
     await stateMachine.updateRunStatus(stageRow.pipelineRunId, "failed");
     return;
   }
@@ -334,6 +367,7 @@ async function handleCommentEvent(ctx: PluginContext, event: PluginEvent): Promi
       ctx.logger.error("Failed to load schema", { schema: outputSchema, error: String(err) });
       await stateMachine.setStageError(stageRow.id, `Schema load failed: ${String(err)}`);
       await stateMachine.updateStageStatus(stageRow.id, "failed");
+      ctx.streams.emit("run-progress", { runId: run.id, stageId: stageRow.stageId, status: "failed" });
       await handleStageFailure(ctx, stageRow.pipelineRunId, pipeline, stageDef, stageRow.id, run.companyId);
       return;
     }
@@ -342,6 +376,7 @@ async function handleCommentEvent(ctx: PluginContext, event: PluginEvent): Promi
     if (!validation.valid) {
       await stateMachine.setStageError(stageRow.id, `malformed output: ${validation.error}`);
       await stateMachine.updateStageStatus(stageRow.id, "failed");
+      ctx.streams.emit("run-progress", { runId: run.id, stageId: stageRow.stageId, status: "failed" });
       await handleStageFailure(ctx, stageRow.pipelineRunId, pipeline, stageDef, stageRow.id, run.companyId);
       return;
     }
@@ -349,6 +384,7 @@ async function handleCommentEvent(ctx: PluginContext, event: PluginEvent): Promi
 
   await stateMachine.setStageOutput(stageRow.id, output);
   await stateMachine.updateStageStatus(stageRow.id, "completed");
+  ctx.streams.emit("run-progress", { runId: run.id, stageId: stageRow.stageId, status: "completed" });
 
   ctx.logger.info("Stage completed", { stageId: stageRow.stageId, pipelineRunId: stageRow.pipelineRunId });
 
@@ -360,9 +396,9 @@ async function handleCommentEvent(ctx: PluginContext, event: PluginEvent): Promi
   await advancePipeline(ctx, stageRow.pipelineRunId, pipeline, run.companyId);
 }
 
-function safeParsePipelineYaml(yaml: string): PipelineDefinition | null {
+function safeParsePipelineJson(content: string): PipelineDefinition | null {
   try {
-    return JSON.parse(yaml) as PipelineDefinition;
+    return JSON.parse(content) as PipelineDefinition;
   } catch {
     return null;
   }
@@ -382,14 +418,19 @@ async function handleCheckpointCompletion(
     outputKeys: Object.keys(output),
   });
 
+  // Find downstream stages via outgoing edges
+  const outgoingEdges = (pipeline.edges ?? []).filter(
+    (e) => e.from === checkpointStageDef.id && e.type !== "error",
+  );
   const downstreamDefs = pipeline.stages.filter((s) =>
-    (s.depends_on ?? []).includes(checkpointStageDef.id),
+    outgoingEdges.some((e) => e.to === s.id),
   );
   const hasSubPipelines = downstreamDefs.some((s) => s.type === "sub-pipeline");
 
   if (hasSubPipelines) {
     ctx.logger.warn("Sub-pipeline materialization not yet implemented — pipeline paused", { runId });
     await stateMachine.updateRunStatus(runId, "paused");
+    ctx.streams.emit("run-progress", { runId, stageId: checkpointStageDef.id, status: "paused" });
     return;
   }
 
@@ -411,12 +452,14 @@ async function handleStageFailure(
     return;
   }
 
-  const targetStageId = stageDef.on_failure?.retry_with?.goto;
+  // Find error edge targets to determine target stage for retry
+  const errorEdges = (pipeline.edges ?? []).filter((e) => e.from === stageDef.id && e.type === "error");
+  const targetStageId = errorEdges.length > 0 ? errorEdges[0].to : undefined;
   const targetRow = targetStageId
     ? stageRows.find((s) => s.stageId === targetStageId)
     : undefined;
 
-  const failureAction = router.evaluateFailure(stageDef, stageRow, targetRow ?? undefined);
+  const failureAction = router.evaluateFailure(pipeline, stageDef.id, stageRow, targetRow ?? undefined);
 
   if (failureAction.action === "escalate") {
     await stateMachine.updateRunStatus(runId, "escalated");
@@ -429,6 +472,7 @@ async function handleStageFailure(
         {},
       );
     }
+    ctx.streams.emit("run-progress", { runId, stageId: stageDef.id, status: "escalated" });
     ctx.logger.warn("Pipeline escalated", { runId, stageId: stageDef.id });
     return;
   }
@@ -449,8 +493,9 @@ async function handleStageFailure(
 
   await stateMachine.incrementRetryCount(gotoTargetRow.id);
 
+  // Build adjacency from forward edges for downstream reset
+  const adjacency = buildAdjacencyFromEdges(pipeline.edges ?? []);
   const allStageIds = pipeline.stages.map((s) => s.id);
-  const adjacency = new Map(pipeline.stages.map((s) => [s.id, s.depends_on ?? []]));
   await stateMachine.resetDownstreamStages(runId, failureAction.targetStageId, allStageIds, adjacency);
 
   const run = await stateMachine.getRun(runId);
@@ -458,6 +503,8 @@ async function handleStageFailure(
 
   const claimed = await stateMachine.claimStageForDispatch(gotoTargetRow.id);
   if (!claimed) return;
+
+  ctx.streams.emit("run-progress", { runId, stageId: failureAction.targetStageId, status: "running" });
 
   try {
     const result = await dispatcher.dispatch({
@@ -472,6 +519,7 @@ async function handleStageFailure(
     ctx.logger.error("Retry dispatch failed — escalating", { runId, stageId: targetDef.id, error: String(err) });
     await stateMachine.updateStageStatus(gotoTargetRow.id, "failed");
     await stateMachine.setStageError(gotoTargetRow.id, `Retry dispatch failed: ${String(err)}`);
+    ctx.streams.emit("run-progress", { runId, stageId: targetDef.id, status: "failed" });
     await stateMachine.updateRunStatus(runId, "escalated");
   }
 }
@@ -482,13 +530,115 @@ const plugin = definePlugin({
     const config = (await ctx.config.get()) as unknown as PipelineEngineConfig;
 
     stateMachine = new StateMachine(ctx.db as any);
-    dispatcher = new Dispatcher(ctx.issues as any, config.role_mapping ?? {}, ctx.manifest.id, ctx.agents);
+    dispatcher = new Dispatcher(ctx.issues as any, config.role_mapping ?? {}, ctx.manifest.id, ctx.agents as any);
     router = new Router();
 
     pipelines = await loadPipelines(ctx);
     triggerMatcher = new TriggerMatcher(pipelines);
 
     ctx.logger.info("Pipeline engine initialized", { pipelineCount: pipelines.length });
+
+    // Data handlers for UI
+    ctx.data.register("list-pipelines", async (_params) => {
+      return {
+        pipelines: pipelines.map((p) => ({
+          name: p.name,
+          trigger: p.trigger,
+          stageCount: p.stages.length,
+          edgeCount: p.edges.length,
+          description: p.description,
+        })),
+      };
+    });
+
+    ctx.data.register("get-pipeline", async (params) => {
+      const name = params.name as string | undefined;
+      if (!name) return null;
+      const pipeline = pipelines.find((p) => p.name === name);
+      if (!pipeline) return null;
+      return pipeline;
+    });
+
+    ctx.data.register("list-runs", async (params) => {
+      const companyId = params.companyId as string | undefined;
+      if (!companyId) return { runs: [] };
+      const runs = await stateMachine.listRuns(companyId, {
+        issueId: params.issueId as string | undefined,
+        status: params.status as any,
+        limit: params.limit as number | undefined,
+      });
+      return { runs };
+    });
+
+    ctx.data.register("get-run", async (params) => {
+      const runId = params.runId as string | undefined;
+      if (!runId) return null;
+      const run = await stateMachine.getRun(runId);
+      if (!run) return null;
+      const stages = await stateMachine.getRunStages(runId);
+      return { run, stages };
+    });
+
+    ctx.data.register("list-agents", async (params) => {
+      const companyId = params.companyId as string | undefined;
+      if (!companyId) return { agents: [] };
+      const agents = await ctx.agents.list({ companyId });
+      return { agents };
+    });
+
+    // Action handlers for UI
+    ctx.actions.register("save-pipeline", async (params) => {
+      const name = params.name as string | undefined;
+      const content = params.content as string | undefined;
+      if (!name || !content) throw new Error("name and content required");
+
+      // Validate the pipeline JSON before saving
+      const pipeline = parsePipeline(content);
+      const validation = validateDAG(pipeline);
+      if (!validation.valid) {
+        throw new Error(`Invalid pipeline: ${validation.errors.join("; ")}`);
+      }
+
+      await ctx.state.set({ scopeKind: "instance", namespace: "pipeline", stateKey: `pipeline:${name}` }, content);
+      pipelines = await loadPipelines(ctx);
+      triggerMatcher = new TriggerMatcher(pipelines);
+      return { success: true, pipelineName: name };
+    });
+
+    ctx.actions.register("delete-pipeline", async (params) => {
+      const name = params.name as string | undefined;
+      if (!name) throw new Error("name required");
+      await ctx.state.delete({ scopeKind: "instance", namespace: "pipeline", stateKey: `pipeline:${name}` });
+      pipelines = await loadPipelines(ctx);
+      triggerMatcher = new TriggerMatcher(pipelines);
+      return { success: true };
+    });
+
+    ctx.actions.register("trigger-run", async (params) => {
+      const companyId = params.companyId as string | undefined;
+      const issueId = params.issueId as string | undefined;
+      const pipelineName = params.pipelineName as string | undefined;
+      if (!companyId || !issueId || !pipelineName) throw new Error("companyId, issueId, and pipelineName required");
+
+      const pipeline = pipelines.find((p) => p.name === pipelineName);
+      if (!pipeline) throw new Error(`Pipeline "${pipelineName}" not found`);
+
+      const existing = await stateMachine.getActiveRunForIssue(issueId, companyId);
+      if (existing) throw new Error(`Active run already exists for issue ${issueId}`);
+
+      await materializePipeline(ctx, pipeline, issueId, companyId);
+      return { success: true };
+    });
+
+    ctx.actions.register("cancel-run", async (params) => {
+      const runId = params.runId as string | undefined;
+      if (!runId) throw new Error("runId required");
+      const run = await stateMachine.getRun(runId);
+      if (!run) throw new Error(`Run ${runId} not found`);
+      await stateMachine.cancelRun(runId);
+      ctx.streams.emit("run-progress", { runId, stageId: null, status: "cancelled" });
+      return { success: true };
+    });
 
     ctx.events.on("issue.created", async (event: PluginEvent) => {
       try {
@@ -534,7 +684,7 @@ const plugin = definePlugin({
     pipelines = await loadPipelines(pluginCtx);
     triggerMatcher = new TriggerMatcher(pipelines);
     const config = newConfig as unknown as PipelineEngineConfig;
-    dispatcher = new Dispatcher(pluginCtx.issues as any, config.role_mapping ?? {}, pluginCtx.manifest.id, pluginCtx.agents);
+    dispatcher = new Dispatcher(pluginCtx.issues as any, config.role_mapping ?? {}, pluginCtx.manifest.id, pluginCtx.agents as any);
     pluginCtx.logger.info("Pipeline engine config reloaded", { pipelineCount: pipelines.length });
   },
 

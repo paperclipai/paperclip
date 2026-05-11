@@ -1,4 +1,4 @@
-export type PipelineRunStatus = "running" | "paused" | "completed" | "failed" | "escalated";
+export type PipelineRunStatus = "running" | "paused" | "completed" | "failed" | "escalated" | "cancelled";
 
 export type StageStatus = "pending" | "running" | "completed" | "failed" | "skipped";
 
@@ -6,22 +6,16 @@ export type StageType = "worker" | "classifier" | "parallel_fan_out" | "gate" | 
 
 export type FanInStrategy = "all_complete" | "first_complete";
 
-export interface OnFailure {
-  retry_with?: {
-    goto: string;
-    body: string;
-    max_retries: number;
-  };
+export interface StageRetry {
+  max_retries: number;
+  body?: string;
 }
 
 interface BaseStage {
   id: string;
-  depends_on?: string[];
-  condition?: string;
-  skip_if?: string;
   timeout?: string;
-  on_failure?: OnFailure;
   checkpoint?: boolean;
+  retry?: StageRetry;
 }
 
 export interface WorkerStage extends BaseStage {
@@ -42,7 +36,6 @@ export interface ClassifierStage extends BaseStage {
 export interface ParallelFanOutStage extends BaseStage {
   type: "parallel_fan_out";
   agent_role?: string;
-  stages?: StageDefinition[];
   fan_in?: FanInStrategy;
   per_task?: boolean;
   ordering?: string;
@@ -67,11 +60,22 @@ export interface PipelineTrigger {
   label: string;
 }
 
+export interface EdgeDefinition {
+  id: string;
+  from: string;
+  to: string;
+  type?: "default" | "error";
+  when?: string;
+  label?: string;
+}
+
 export interface PipelineDefinition {
   name: string;
   description: string;
   trigger: PipelineTrigger;
   stages: StageDefinition[];
+  edges: EdgeDefinition[];
+  positions: Record<string, { x: number; y: number }>;
 }
 
 export interface PipelineRun {
@@ -115,7 +119,6 @@ export interface RoleMapping {
 export interface PipelineEngineConfig {
   role_mapping: RoleMapping;
   trigger_labels: Record<string, string>;
-  pipelines_dir?: string;
 }
 
 export interface StageOutput {
@@ -128,6 +131,7 @@ export interface ExpressionContext {
   stages: Record<string, { output: StageOutput | StageOutput[] | null; status: StageStatus; retry_count: number }>;
   pipeline: { name: string; version: number; parent_issue_id: string };
   env: { company_id: string };
+  output?: StageOutput | StageOutput[] | null;
 }
 
 export interface DispatchRequest {
@@ -143,7 +147,7 @@ export type ParsedOutput =
   | { valid: false; data: null; error: string };
 
 export type FailureAction =
-  | { action: "goto"; targetStageId: string; body: string }
+  | { action: "goto"; targetStageId: string; body?: string }
   | { action: "escalate" };
 
 export interface CreateIssueInput {

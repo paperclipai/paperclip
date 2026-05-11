@@ -1,0 +1,296 @@
+import type { Edge } from "@xyflow/react";
+import type { StageDefinition, StageType, FanInStrategy } from "../../types.js";
+
+interface EdgeInspectorProps {
+  edge: Edge;
+  onUpdate: (id: string, changes: Partial<{ label: string; when: string; type: "default" | "error" }>) => void;
+  onDelete: (id: string) => void;
+}
+
+function EdgeInspector({ edge, onUpdate, onDelete }: EdgeInspectorProps) {
+  const data = (edge.data ?? {}) as { when?: string; type?: "default" | "error" };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ color: "#f9fafb", fontSize: 13, fontWeight: 600, borderBottom: "1px solid #374151", paddingBottom: 8 }}>
+        Edge: {edge.source} → {edge.target}
+      </div>
+
+      <FieldGroup label="Label">
+        <input
+          style={inputStyle}
+          value={String(edge.label ?? "")}
+          onChange={(e) => onUpdate(edge.id, { label: e.target.value })}
+          placeholder="Optional label"
+        />
+      </FieldGroup>
+
+      <FieldGroup label="Condition (when)">
+        <input
+          style={inputStyle}
+          value={data.when ?? ""}
+          onChange={(e) => onUpdate(edge.id, { when: e.target.value })}
+          placeholder="e.g. stages.classify.output.decision == 'approve'"
+        />
+      </FieldGroup>
+
+      <FieldGroup label="Edge type">
+        <select
+          style={selectStyle}
+          value={data.type ?? "default"}
+          onChange={(e) => onUpdate(edge.id, { type: e.target.value as "default" | "error" })}
+        >
+          <option value="default">Default</option>
+          <option value="error">Error</option>
+        </select>
+      </FieldGroup>
+
+      <button
+        style={{ ...buttonStyle, background: "#7f1d1d", borderColor: "#991b1b", marginTop: 4 }}
+        onClick={() => onDelete(edge.id)}
+      >
+        Delete Edge
+      </button>
+    </div>
+  );
+}
+
+interface StageFormProps {
+  stage: StageDefinition;
+  onChange: (updated: StageDefinition) => void;
+  onDelete: (id: string) => void;
+}
+
+function StageForm({ stage, onChange, onDelete }: StageFormProps) {
+  const update = (patch: Partial<StageDefinition>) =>
+    onChange({ ...stage, ...patch } as StageDefinition);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ color: "#f9fafb", fontSize: 13, fontWeight: 600, borderBottom: "1px solid #374151", paddingBottom: 8 }}>
+        Stage Inspector
+      </div>
+
+      <FieldGroup label="ID">
+        <input
+          style={inputStyle}
+          value={stage.id}
+          onChange={(e) => update({ id: e.target.value })}
+        />
+      </FieldGroup>
+
+      <FieldGroup label="Type">
+        <select
+          style={selectStyle}
+          value={stage.type}
+          onChange={(e) => update({ type: e.target.value as StageType })}
+        >
+          <option value="worker">Worker</option>
+          <option value="classifier">Classifier</option>
+          <option value="parallel_fan_out">Fan Out</option>
+          <option value="gate">Gate</option>
+          <option value="sub-pipeline">Sub-Pipeline</option>
+        </select>
+      </FieldGroup>
+
+      <FieldGroup label="Timeout">
+        <input
+          style={inputStyle}
+          value={stage.timeout ?? ""}
+          onChange={(e) => update({ timeout: e.target.value || undefined })}
+          placeholder="e.g. 30m"
+        />
+      </FieldGroup>
+
+      <FieldGroup label="Checkpoint">
+        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={stage.checkpoint ?? false}
+            onChange={(e) => update({ checkpoint: e.target.checked || undefined })}
+            style={{ accentColor: "#6366f1" }}
+          />
+          <span style={{ color: "#d1d5db", fontSize: 12 }}>Enable checkpoint</span>
+        </label>
+      </FieldGroup>
+
+      {(stage.type === "worker" || stage.type === "classifier") && (
+        <FieldGroup label="Agent Role">
+          <input
+            style={inputStyle}
+            value={stage.agent_role ?? ""}
+            onChange={(e) => update({ agent_role: e.target.value } as Partial<StageDefinition>)}
+            placeholder="e.g. implementer"
+          />
+        </FieldGroup>
+      )}
+
+      {stage.type === "worker" && (
+        <FieldGroup label="Output Schema">
+          <input
+            style={inputStyle}
+            value={stage.output_schema ?? ""}
+            onChange={(e) => update({ output_schema: e.target.value || undefined } as Partial<StageDefinition>)}
+            placeholder="e.g. implementation-output"
+          />
+        </FieldGroup>
+      )}
+
+      {(stage.type === "parallel_fan_out" || stage.type === "gate" || stage.type === "worker") && (
+        <FieldGroup label="Fan-In Strategy">
+          <select
+            style={selectStyle}
+            value={(stage as { fan_in?: FanInStrategy }).fan_in ?? "all_complete"}
+            onChange={(e) =>
+              update({ fan_in: e.target.value as FanInStrategy } as Partial<StageDefinition>)
+            }
+          >
+            <option value="all_complete">All Complete</option>
+            <option value="first_complete">First Complete</option>
+          </select>
+        </FieldGroup>
+      )}
+
+      {stage.type === "sub-pipeline" && (
+        <FieldGroup label="Pipeline Reference">
+          <input
+            style={inputStyle}
+            value={stage.pipeline ?? ""}
+            onChange={(e) => update({ pipeline: e.target.value } as Partial<StageDefinition>)}
+            placeholder="e.g. implementation"
+          />
+        </FieldGroup>
+      )}
+
+      <div style={{ borderTop: "1px solid #374151", paddingTop: 12 }}>
+        <div style={{ color: "#9ca3af", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>
+          Retry Config
+        </div>
+        <FieldGroup label="Max Retries">
+          <input
+            type="number"
+            style={inputStyle}
+            value={stage.retry?.max_retries ?? ""}
+            min={0}
+            onChange={(e) => {
+              const val = parseInt(e.target.value, 10);
+              update({
+                retry: isNaN(val)
+                  ? undefined
+                  : { ...(stage.retry ?? {}), max_retries: val },
+              });
+            }}
+            placeholder="0"
+          />
+        </FieldGroup>
+        <FieldGroup label="Retry Body">
+          <textarea
+            style={{ ...inputStyle, height: 60, resize: "vertical" }}
+            value={stage.retry?.body ?? ""}
+            onChange={(e) =>
+              update({
+                retry: {
+                  max_retries: stage.retry?.max_retries ?? 1,
+                  body: e.target.value || undefined,
+                },
+              })
+            }
+            placeholder="Instructions for the retry attempt"
+          />
+        </FieldGroup>
+      </div>
+
+      <button
+        style={{ ...buttonStyle, background: "#7f1d1d", borderColor: "#991b1b" }}
+        onClick={() => onDelete(stage.id)}
+      >
+        Delete Stage
+      </button>
+    </div>
+  );
+}
+
+export interface StageInspectorProps {
+  selectedStage: StageDefinition | null;
+  selectedEdge: Edge | null;
+  onStageChange: (updated: StageDefinition) => void;
+  onStageDelete: (id: string) => void;
+  onEdgeUpdate: (id: string, changes: Partial<{ label: string; when: string; type: "default" | "error" }>) => void;
+  onEdgeDelete: (id: string) => void;
+}
+
+export function StageInspector({
+  selectedStage,
+  selectedEdge,
+  onStageChange,
+  onStageDelete,
+  onEdgeUpdate,
+  onEdgeDelete,
+}: StageInspectorProps) {
+  return (
+    <div
+      style={{
+        width: 320,
+        background: "#111827",
+        borderLeft: "1px solid #374151",
+        padding: 16,
+        overflowY: "auto",
+        flexShrink: 0,
+        color: "#f9fafb",
+        fontSize: 13,
+      }}
+    >
+      {selectedEdge ? (
+        <EdgeInspector edge={selectedEdge} onUpdate={onEdgeUpdate} onDelete={onEdgeDelete} />
+      ) : selectedStage ? (
+        <StageForm stage={selectedStage} onChange={onStageChange} onDelete={onStageDelete} />
+      ) : (
+        <div style={{ color: "#6b7280", fontSize: 12, textAlign: "center", marginTop: 48, lineHeight: 1.6 }}>
+          Click a stage node or edge to inspect and edit its properties.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Shared field components
+
+function FieldGroup({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <label style={{ color: "#9ca3af", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+        {label}
+      </label>
+      {children}
+    </div>
+  );
+}
+
+const inputStyle: React.CSSProperties = {
+  background: "#1f2937",
+  border: "1px solid #374151",
+  borderRadius: 6,
+  color: "#f9fafb",
+  fontSize: 12,
+  padding: "6px 8px",
+  width: "100%",
+  outline: "none",
+  boxSizing: "border-box",
+};
+
+const selectStyle: React.CSSProperties = {
+  ...inputStyle,
+  cursor: "pointer",
+};
+
+const buttonStyle: React.CSSProperties = {
+  background: "#1f2937",
+  border: "1px solid #374151",
+  borderRadius: 6,
+  color: "#f9fafb",
+  fontSize: 12,
+  fontWeight: 600,
+  padding: "7px 12px",
+  cursor: "pointer",
+  width: "100%",
+};

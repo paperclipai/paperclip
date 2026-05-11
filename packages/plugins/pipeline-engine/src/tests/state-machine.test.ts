@@ -123,4 +123,92 @@ describe("state-machine", () => {
       expect(run).toBeNull();
     });
   });
+
+  describe("listRuns", () => {
+    it("queries pipeline_runs ordered by created_at DESC", async () => {
+      db.query.mockResolvedValueOnce([]);
+      await sm.listRuns("company-1");
+      const sql = db.query.mock.calls[0][0] as string;
+      expect(sql).toContain("pipeline_runs");
+      expect(sql).toContain("ORDER BY created_at DESC");
+      expect(sql).toContain("LIMIT 50");
+    });
+
+    it("filters by issueId when provided", async () => {
+      db.query.mockResolvedValueOnce([]);
+      await sm.listRuns("company-1", { issueId: "issue-123" });
+      const sql = db.query.mock.calls[0][0] as string;
+      const params = db.query.mock.calls[0][1] as unknown[];
+      expect(sql).toContain("parent_issue_id");
+      expect(params).toContain("issue-123");
+    });
+
+    it("filters by status when provided", async () => {
+      db.query.mockResolvedValueOnce([]);
+      await sm.listRuns("company-1", { status: "running" });
+      const sql = db.query.mock.calls[0][0] as string;
+      const params = db.query.mock.calls[0][1] as unknown[];
+      expect(sql).toContain("status");
+      expect(params).toContain("running");
+    });
+
+    it("respects custom limit", async () => {
+      db.query.mockResolvedValueOnce([]);
+      await sm.listRuns("company-1", { limit: 10 });
+      const sql = db.query.mock.calls[0][0] as string;
+      expect(sql).toContain("LIMIT 10");
+    });
+
+    it("maps rows to PipelineRun objects", async () => {
+      db.query.mockResolvedValueOnce([{
+        id: "run-1",
+        company_id: "company-1",
+        parent_issue_id: "issue-1",
+        pipeline_name: "feature",
+        pipeline_version: 1,
+        pipeline_yaml: "{}",
+        status: "completed",
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T01:00:00Z",
+      }]);
+      const runs = await sm.listRuns("company-1");
+      expect(runs).toHaveLength(1);
+      expect(runs[0].id).toBe("run-1");
+      expect(runs[0].pipelineName).toBe("feature");
+      expect(runs[0].status).toBe("completed");
+    });
+  });
+
+  describe("cancelRun", () => {
+    it("sets run status to cancelled", async () => {
+      await sm.cancelRun("run-1");
+      const calls = db.execute.mock.calls as Array<[string, unknown[]]>;
+      const runUpdateCall = calls.find(([sql]) => sql.includes("pipeline_runs"));
+      expect(runUpdateCall).toBeDefined();
+      expect(runUpdateCall![0]).toContain("cancelled");
+    });
+
+    it("sets pending and running stages to skipped", async () => {
+      await sm.cancelRun("run-1");
+      const calls = db.execute.mock.calls as Array<[string, unknown[]]>;
+      const stageUpdateCall = calls.find(([sql]) => sql.includes("pipeline_stages"));
+      expect(stageUpdateCall).toBeDefined();
+      expect(stageUpdateCall![0]).toContain("skipped");
+      expect(stageUpdateCall![0]).toContain("pending");
+      expect(stageUpdateCall![0]).toContain("running");
+    });
+
+    it("releases the advisory lock for the run", async () => {
+      // Acquire a lock first
+      await sm.tryAdvisoryLock("run-1");
+      // Lock should be held
+      const secondLock = await sm.tryAdvisoryLock("run-1");
+      expect(secondLock).toBe(false);
+
+      // Cancel should release it
+      await sm.cancelRun("run-1");
+      const thirdLock = await sm.tryAdvisoryLock("run-1");
+      expect(thirdLock).toBe(true);
+    });
+  });
 });

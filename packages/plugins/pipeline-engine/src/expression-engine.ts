@@ -61,3 +61,17 @@ export function buildExpressionContext(
     env: { company_id: companyId },
   };
 }
+
+export function buildEdgeExpressionContext(
+  sourceStageId: string,
+  stages: Pick<PipelineStage, "stageId" | "status" | "output" | "retryCount">[],
+  pipelineName: string,
+  pipelineVersion: number,
+  parentIssueId: string,
+  companyId: string,
+): ExpressionContext {
+  const fullContext = buildExpressionContext(stages, pipelineName, pipelineVersion, parentIssueId, companyId);
+  const sourceEntry =
+    fullContext.stages[sourceStageId] ?? fullContext.stages[sourceStageId.replace(/-/g, "_")];
+  return { ...fullContext, output: sourceEntry?.output ?? null };
+}

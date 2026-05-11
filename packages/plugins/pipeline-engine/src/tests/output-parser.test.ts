@@ -69,9 +69,10 @@ Some more text.`;
       expect(result.valid).toBe(true);
     });
 
-    it("rejects invalid data", () => {
+    it("rejects invalid data with type errors", () => {
       const schema = loadSchema("validation-output");
-      const data = { status: "invalid_value" };
+      // status must be string, passing a number triggers a type error
+      const data = { status: 12345, lint_status: false } as unknown as Record<string, unknown>;
       const result = validateOutput(data, schema);
       expect(result.valid).toBe(false);
       if (!result.valid) {

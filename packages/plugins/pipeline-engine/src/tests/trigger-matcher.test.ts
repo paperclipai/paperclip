@@ -4,8 +4,8 @@ import type { PipelineDefinition } from "../types.js";
 
 describe("trigger-matcher", () => {
   const pipelines: PipelineDefinition[] = [
-    { name: "feature", description: "", trigger: { label: "pipeline:feature" }, stages: [] },
-    { name: "bug", description: "", trigger: { label: "pipeline:bug" }, stages: [] },
+    { name: "feature", description: "", trigger: { label: "pipeline:feature" }, stages: [], edges: [], positions: {} },
+    { name: "bug", description: "", trigger: { label: "pipeline:bug" }, stages: [], edges: [], positions: {} },
   ];
 
   it("matches a trigger label to a pipeline", () => {

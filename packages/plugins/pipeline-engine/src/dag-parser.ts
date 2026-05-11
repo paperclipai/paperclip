@@ -1,16 +1,21 @@
-import yaml from "js-yaml";
-import type { PipelineDefinition, StageDefinition } from "./types.js";
+import type { EdgeDefinition, PipelineDefinition, StageDefinition } from "./types.js";
+import { buildAdjacencyFromEdges, getForwardEdges } from "./edge-utils.js";
 
 export interface ValidationResult {
   valid: boolean;
   errors: string[];
 }
 
-export function parsePipeline(yamlContent: string): PipelineDefinition {
-  const parsed = yaml.load(yamlContent) as Record<string, unknown>;
+export function parsePipeline(content: string): PipelineDefinition {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(content) as Record<string, unknown>;
+  } catch (err) {
+    throw new Error(`Invalid JSON: ${(err as Error).message}`);
+  }
 
   if (!parsed || typeof parsed !== "object") {
-    throw new Error("Invalid YAML: expected an object");
+    throw new Error("Invalid pipeline: expected an object");
   }
   if (!parsed.name || typeof parsed.name !== "string") {
     throw new Error("Pipeline must have a 'name' field");
@@ -21,38 +26,50 @@ export function parsePipeline(yamlContent: string): PipelineDefinition {
   if (!Array.isArray(parsed.stages) || parsed.stages.length === 0) {
     throw new Error("Pipeline must have at least one stage");
   }
+  if (!Array.isArray(parsed.edges)) {
+    throw new Error("Pipeline must have an 'edges' array");
+  }
 
   return {
     name: parsed.name as string,
     description: (parsed.description as string) ?? "",
     trigger: parsed.trigger as PipelineDefinition["trigger"],
     stages: parsed.stages as StageDefinition[],
+    edges: parsed.edges as EdgeDefinition[],
+    positions: (parsed.positions as Record<string, { x: number; y: number }>) ?? {},
   };
 }
 
 export function validateDAG(pipeline: PipelineDefinition): ValidationResult {
   const errors: string[] = [];
   const stageIds = new Set<string>();
-  const allStages = flattenStages(pipeline.stages);
+  const edgeIds = new Set<string>();
 
-  for (const stage of allStages) {
+  // Check for duplicate stage IDs
+  for (const stage of pipeline.stages) {
     if (stageIds.has(stage.id)) {
       errors.push(`duplicate stage id: "${stage.id}"`);
     }
     stageIds.add(stage.id);
   }
 
-  for (const stage of allStages) {
-    if (stage.depends_on) {
-      for (const dep of stage.depends_on) {
-        if (!stageIds.has(dep)) {
-          errors.push(`stage "${stage.id}" depends on nonexistent stage "${dep}"`);
-        }
-      }
+  // Check for duplicate edge IDs and dangling references
+  for (const edge of pipeline.edges) {
+    if (edgeIds.has(edge.id)) {
+      errors.push(`duplicate edge id: "${edge.id}"`);
+    }
+    edgeIds.add(edge.id);
+
+    if (!stageIds.has(edge.from)) {
+      errors.push(`edge "${edge.id}" references nonexistent source stage "${edge.from}"`);
+    }
+    if (!stageIds.has(edge.to)) {
+      errors.push(`edge "${edge.id}" references nonexistent target stage "${edge.to}"`);
     }
   }
 
-  const cycleError = detectCycle(allStages);
+  // Cycle detection using forward edges only
+  const cycleError = detectCycle(pipeline.stages, pipeline.edges);
   if (cycleError) {
     errors.push(cycleError);
   }
@@ -60,22 +77,8 @@ export function validateDAG(pipeline: PipelineDefinition): ValidationResult {
   return { valid: errors.length === 0, errors };
 }
 
-function flattenStages(stages: StageDefinition[]): StageDefinition[] {
-  const result: StageDefinition[] = [];
-  for (const stage of stages) {
-    result.push(stage);
-    if ("stages" in stage && stage.stages) {
-      result.push(...flattenStages(stage.stages));
-    }
-  }
-  return result;
-}
-
-function detectCycle(stages: StageDefinition[]): string | null {
-  const adjacency = new Map<string, string[]>();
-  for (const stage of stages) {
-    adjacency.set(stage.id, stage.depends_on ?? []);
-  }
+function detectCycle(stages: StageDefinition[], edges: EdgeDefinition[]): string | null {
+  const adjacency = buildAdjacencyFromEdges(getForwardEdges(edges));
 
   const visited = new Set<string>();
   const inStack = new Set<string>();
@@ -85,8 +88,8 @@ function detectCycle(stages: StageDefinition[]): string | null {
     if (visited.has(nodeId)) return false;
     visited.add(nodeId);
     inStack.add(nodeId);
-    for (const dep of adjacency.get(nodeId) ?? []) {
-      if (dfs(dep)) return true;
+    for (const successor of adjacency.get(nodeId) ?? []) {
+      if (dfs(successor)) return true;
     }
     inStack.delete(nodeId);
     return false;
