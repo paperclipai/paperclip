@@ -1,0 +1,43 @@
+app = "paper-clip"
+primary_region = "sin"
+
+[build]
+
+[env]
+  HOST = "0.0.0.0"
+  PORT = "3100"
+  PAPERCLIP_HOME = "/paperclip"
+  PAPERCLIP_INSTANCE_ID = "default"
+  PAPERCLIP_DEPLOYMENT_MODE = "authenticated"
+  PAPERCLIP_DEPLOYMENT_EXPOSURE = "private"
+  PAPERCLIP_MIGRATION_AUTO_APPLY = "true"
+  SERVE_UI = "true"
+  NODE_ENV = "production"
+
+[[mounts]]
+  source = "paperclip"
+  destination = "/paperclip"
+  initial_size = "3gb"
+
+[http_service]
+  internal_port = 3100
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "180s"
+    interval = "30s"
+    method = "GET"
+    timeout = "10s"
+    path = "/health"
+
+[[restart]]
+  policy = "on-failure"
+  retries = 3
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "2gb"
