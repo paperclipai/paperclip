@@ -67,6 +67,7 @@ export interface AgentHireResponse {
 export interface AgentPermissionUpdate {
   canCreateAgents: boolean;
   canAssignTasks: boolean;
+  pipelineWorker?: boolean;
 }
 
 export interface AgentWakeRequest {

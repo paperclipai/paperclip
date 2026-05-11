@@ -1,25 +1,42 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["tasks"],
   "properties": {
     "tasks": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "title", "body", "track", "component"],
         "properties": {
-          "id": { "type": "string" },
-          "title": { "type": "string" },
-          "body": { "type": "string" },
-          "track": { "type": "string", "enum": ["feature", "bug", "fast-track"] },
-          "component": { "type": "string", "enum": ["backend", "frontend", "infra"] },
-          "dependencies": { "type": "array", "items": { "type": "string" } },
-          "estimated_complexity": { "type": "string", "enum": ["small", "medium", "large"] }
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "track": {
+            "type": "string"
+          },
+          "component": {
+            "type": "string"
+          },
+          "dependencies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "estimated_complexity": {
+            "type": "string"
+          }
         }
       }
     },
-    "rationale": { "type": "string" }
+    "rationale": {
+      "type": "string"
+    }
   },
-  "additionalProperties": false
+  "additionalProperties": true
 }

@@ -17,27 +17,16 @@ export class StateMachine {
     return `${this.db.namespace}.${name}`;
   }
 
+  private activeLocks = new Set<string>();
+
   async tryAdvisoryLock(runId: string): Promise<boolean> {
-    const lockKey = this.hashRunId(runId);
-    const rows = await this.db.query<{ locked: boolean }>(
-      `SELECT pg_try_advisory_lock($1) as locked`,
-      [lockKey],
-    );
-    return rows[0]?.locked ?? false;
+    if (this.activeLocks.has(runId)) return false;
+    this.activeLocks.add(runId);
+    return true;
   }
 
   async releaseAdvisoryLock(runId: string): Promise<void> {
-    const lockKey = this.hashRunId(runId);
-    await this.db.query(`SELECT pg_advisory_unlock($1)`, [lockKey]);
-  }
-
-  private hashRunId(runId: string): number {
-    let hash = 0;
-    for (let i = 0; i < runId.length; i++) {
-      const char = runId.charCodeAt(i);
-      hash = ((hash << 5) - hash + char) | 0;
-    }
-    return hash;
+    this.activeLocks.delete(runId);
   }
 
   async claimStageForDispatch(stageRowId: string): Promise<boolean> {

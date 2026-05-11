@@ -1,4 +1,5 @@
 import type { CreateIssueInput, DispatchRequest, RoleMapping, WakeupOptions } from "./types.js";
+import { loadSchema } from "./output-parser.js";
 
 export interface IssuesClient {
   create(input: CreateIssueInput): Promise<{ id: string }>;
@@ -32,9 +33,7 @@ export class Dispatcher {
     const agentId = agentRole ? this.roleMapping[agentRole] : undefined;
 
     const outputSchema = "output_schema" in stage ? stage.output_schema : undefined;
-    const outputInstructions = outputSchema
-      ? `\n\n---\n### Output Format\nWhen you have completed this task, post a comment containing your structured result in this exact format:\n\n\`\`\`\n<!-- pipeline-output -->\n\\\`\\\`\\\`json\n{ ... your JSON result ... }\n\\\`\\\`\\\`\n\`\`\`\n\nThe JSON must conform to schema: \`${outputSchema}\``
-      : `\n\n---\n### Output Format\nWhen you have completed this task, post a comment containing your structured result in this exact format:\n\n\`\`\`\n<!-- pipeline-output -->\n\\\`\\\`\\\`json\n{ ... your JSON result ... }\n\\\`\\\`\\\`\n\`\`\``;
+    const outputInstructions = this.buildOutputInstructions(outputSchema);
 
     const description = context
       ? `## Pipeline Stage: ${stage.id}\n\n${context}${outputInstructions}`
@@ -61,5 +60,21 @@ export class Dispatcher {
     });
 
     return { issueId: issue.id, wakeupQueued: wakeup.queued };
+  }
+
+  private buildOutputInstructions(outputSchema: string | undefined): string {
+    const format = `\n\n---\n### Output Format\nWhen you have completed this task, post a comment containing your structured result in this exact format:\n\n\`\`\`\n<!-- pipeline-output -->\n\\\`\\\`\\\`json\n{ ... your JSON result ... }\n\\\`\\\`\\\`\n\`\`\``;
+
+    if (!outputSchema) return format;
+
+    let schemaJson: string;
+    try {
+      const schema = loadSchema(outputSchema);
+      schemaJson = JSON.stringify(schema, null, 2);
+    } catch {
+      return `${format}\n\nThe JSON must conform to schema: \`${outputSchema}\``;
+    }
+
+    return `${format}\n\n### Required Schema: \`${outputSchema}\`\n\n\`\`\`json\n${schemaJson}\n\`\`\``;
   }
 }

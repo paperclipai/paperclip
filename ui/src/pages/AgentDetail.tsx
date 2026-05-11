@@ -854,6 +854,7 @@ export function AgentDetail() {
       setActionError(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.skills(agentLookupRef) });
       if (resolvedCompanyId) {
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
       }
@@ -1605,11 +1606,13 @@ function ConfigurationTab({
   }, [onSavingChange, isConfigSaving]);
 
   const canCreateAgents = Boolean(agent.permissions?.canCreateAgents);
+  const pipelineWorker = Boolean(agent.permissions?.pipelineWorker);
   const canAssignTasks = Boolean(agent.access?.canAssignTasks);
   const taskAssignSource = agent.access?.taskAssignSource ?? "none";
-  const taskAssignLocked = agent.role === "ceo" || canCreateAgents;
-  const taskAssignHint =
-    taskAssignSource === "ceo_role"
+  const taskAssignLocked = pipelineWorker || agent.role === "ceo" || canCreateAgents;
+  const taskAssignHint = pipelineWorker
+    ? "Disabled while pipeline worker is enabled."
+    : taskAssignSource === "ceo_role"
       ? "Enabled automatically for CEO agents."
       : taskAssignSource === "agent_creator"
         ? "Enabled automatically while this agent can create new agents."
@@ -1645,14 +1648,14 @@ function ConfigurationTab({
               </p>
             </div>
             <ToggleSwitch
-              checked={canCreateAgents}
+              checked={pipelineWorker ? false : canCreateAgents}
               onCheckedChange={() =>
                 updatePermissions.mutate({
                   canCreateAgents: !canCreateAgents,
                   canAssignTasks: !canCreateAgents ? true : canAssignTasks,
                 })
               }
-              disabled={updatePermissions.isPending}
+              disabled={updatePermissions.isPending || pipelineWorker}
             />
           </div>
           <div className="flex items-center justify-between gap-4 text-sm">
@@ -1663,7 +1666,7 @@ function ConfigurationTab({
               </p>
             </div>
             <ToggleSwitch
-              checked={canAssignTasks}
+              checked={pipelineWorker ? false : canAssignTasks}
               onCheckedChange={() =>
                 updatePermissions.mutate({
                   canCreateAgents,
@@ -1671,6 +1674,26 @@ function ConfigurationTab({
                 })
               }
               disabled={updatePermissions.isPending || taskAssignLocked}
+            />
+          </div>
+          <div className="flex items-center justify-between gap-4 text-sm">
+            <div className="space-y-1">
+              <div>Pipeline worker</div>
+              <p className="text-xs text-muted-foreground">
+                Disables all default Paperclip skills and installs the pipeline-worker skill.
+                This agent will only receive tasks from the pipeline engine.
+              </p>
+            </div>
+            <ToggleSwitch
+              checked={pipelineWorker}
+              onCheckedChange={() =>
+                updatePermissions.mutate({
+                  canCreateAgents: pipelineWorker ? canCreateAgents : false,
+                  canAssignTasks: pipelineWorker ? canAssignTasks : false,
+                  pipelineWorker: !pipelineWorker,
+                })
+              }
+              disabled={updatePermissions.isPending}
             />
           </div>
         </div>

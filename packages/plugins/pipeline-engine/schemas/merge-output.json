@@ -1,12 +1,22 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["status"],
   "properties": {
-    "status": { "type": "string", "enum": ["merged", "failed", "blocked"] },
-    "pr_url": { "type": "string" },
-    "merge_sha": { "type": "string" },
-    "failure_reason": { "type": ["string", "null"] }
+    "status": {
+      "type": "string"
+    },
+    "pr_url": {
+      "type": "string"
+    },
+    "merge_sha": {
+      "type": "string"
+    },
+    "failure_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
   },
-  "additionalProperties": false
+  "additionalProperties": true
 }

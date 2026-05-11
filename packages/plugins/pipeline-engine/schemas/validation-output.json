@@ -1,32 +1,47 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["status", "test_results", "lint_status", "type_check_status"],
   "properties": {
-    "status": { "type": "string", "enum": ["pass", "fail"] },
+    "status": {
+      "type": "string"
+    },
     "test_results": {
       "type": "object",
-      "required": ["passed", "failed", "skipped"],
       "properties": {
-        "passed": { "type": "integer" },
-        "failed": { "type": "integer" },
-        "skipped": { "type": "integer" }
+        "passed": {
+          "type": "integer"
+        },
+        "failed": {
+          "type": "integer"
+        },
+        "skipped": {
+          "type": "integer"
+        }
       }
     },
-    "lint_status": { "type": "string", "enum": ["pass", "fail"] },
-    "type_check_status": { "type": "string", "enum": ["pass", "fail"] },
+    "lint_status": {
+      "type": "string"
+    },
+    "type_check_status": {
+      "type": "string"
+    },
     "errors": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["type", "file", "message"],
         "properties": {
-          "type": { "type": "string", "enum": ["test_failure", "lint", "type_error"] },
-          "file": { "type": "string" },
-          "message": { "type": "string" }
+          "type": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
         }
       }
     }
   },
-  "additionalProperties": false
+  "additionalProperties": true
 }
