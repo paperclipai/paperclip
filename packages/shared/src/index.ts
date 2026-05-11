@@ -1,5 +1,23 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
+  APPLE_ADAPTER_DEFAULT_BASE_DELAY_MS,
+  APPLE_ADAPTER_DEFAULT_MAX_ATTEMPTS,
+  APPLE_ADAPTER_DEFAULT_TIMEOUT_MS,
+  appleAdapterAccountMetadataSchema,
+  appleAdapterBoundaryOptionsSchema,
+  appleAdapterDeviceMetadataSchema,
+  appleAdapterLookupInputSchema,
+  appleAdapterRetryPolicySchema,
+  appleDevicePlatformSchema,
+  type AppleAdapterAccountMetadata,
+  type AppleAdapterBoundaryOptions,
+  type AppleAdapterDeviceMetadata,
+  type AppleAdapterLookupInput,
+  type AppleAdapterRetryPolicy,
+  type AppleDevicePlatform,
+  type ResolvedAppleAdapterBoundaryOptions,
+} from "./apple-adapter.js";
+export {
   COMPANY_STATUSES,
   DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,
