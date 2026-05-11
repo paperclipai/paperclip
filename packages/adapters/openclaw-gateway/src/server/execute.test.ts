@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveSessionKey } from "./execute.js";
+import { filterOpenClawAgentParams, resolveSessionKey } from "./execute.js";
 
 describe("resolveSessionKey", () => {
   it("prefixes run-scoped session keys with the configured agent", () => {
@@ -48,5 +48,30 @@ describe("resolveSessionKey", () => {
         issueId: null,
       }),
     ).toBe("agent:meridian:paperclip");
+  });
+});
+
+describe("filterOpenClawAgentParams", () => {
+  it("strips Paperclip-only metadata and payload template keys before agent RPC", () => {
+    const { params, stripped } = filterOpenClawAgentParams({
+      agentId: "meridian",
+      message: "wake up",
+      sessionKey: "agent:meridian:paperclip",
+      idempotencyKey: "run-123",
+      timeout: 30_000,
+      text: "legacy text",
+      paperclip: { issueId: "issue-1" },
+      payloadTemplate: { message: "ignored" },
+      unsupported: true,
+    });
+
+    expect(params).toEqual({
+      agentId: "meridian",
+      message: "wake up",
+      sessionKey: "agent:meridian:paperclip",
+      idempotencyKey: "run-123",
+      timeout: 30_000,
+    });
+    expect(stripped.sort()).toEqual(["paperclip", "payloadTemplate", "unsupported"]);
   });
 });
