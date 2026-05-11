@@ -1269,6 +1269,11 @@ export const storybookDashboardSummary: DashboardSummary = {
     pausedAgents: 0,
     pausedProjects: 1,
   },
+  attention: {
+    approvals: [],
+    interactions: [],
+    total: 0,
+  },
   runActivity: [
     { date: "2026-04-07", succeeded: 4, failed: 0, other: 1, total: 5 },
     { date: "2026-04-08", succeeded: 5, failed: 1, other: 0, total: 6 },

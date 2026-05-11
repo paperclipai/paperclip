@@ -20,7 +20,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, MessageSquareText } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -290,6 +290,72 @@ export function Dashboard() {
               }
             />
           </div>
+
+          {data.attention.total > 0 ? (
+            <section className="rounded-lg border border-amber-500/25 bg-amber-500/5">
+              <div className="flex items-center justify-between gap-3 border-b border-amber-500/20 px-4 py-3">
+                <div className="flex items-center gap-2.5">
+                  <ShieldCheck className="h-4 w-4 text-amber-600 dark:text-amber-300" />
+                  <div>
+                    <h2 className="text-sm font-semibold text-foreground">Board Attention</h2>
+                    <p className="text-xs text-muted-foreground">
+                      {data.attention.total} item{data.attention.total === 1 ? "" : "s"} waiting for approval or Q&A
+                    </p>
+                  </div>
+                </div>
+                <Link to="/approvals/pending" className="text-xs font-medium text-amber-700 underline underline-offset-2 dark:text-amber-300">
+                  Open approvals
+                </Link>
+              </div>
+              <div className="divide-y divide-amber-500/15">
+                {data.attention.approvals.map((approval) => (
+                  <Link
+                    key={`approval-${approval.id}`}
+                    to={`/approvals/${approval.id}`}
+                    className="flex items-start gap-3 px-4 py-3 text-sm text-inherit no-underline transition-colors hover:bg-amber-500/10"
+                  >
+                    <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" />
+                    <span className="min-w-0 flex-1">
+                      <span className="flex flex-wrap items-center gap-2">
+                        <span className="rounded border border-amber-500/25 bg-background/70 px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                          Approval
+                        </span>
+                        <span className="text-xs text-muted-foreground">{timeAgo(approval.updatedAt)}</span>
+                      </span>
+                      <span className="mt-1 block font-medium leading-5 text-foreground">{approval.title}</span>
+                      {approval.summary ? (
+                        <span className="mt-1 line-clamp-2 block text-xs leading-5 text-muted-foreground">{approval.summary}</span>
+                      ) : null}
+                    </span>
+                  </Link>
+                ))}
+                {data.attention.interactions.map((interaction) => (
+                  <Link
+                    key={`interaction-${interaction.id}`}
+                    to={`/issues/${interaction.issueIdentifier ?? interaction.issueId}`}
+                    className="flex items-start gap-3 px-4 py-3 text-sm text-inherit no-underline transition-colors hover:bg-amber-500/10"
+                  >
+                    <MessageSquareText className="mt-0.5 h-4 w-4 shrink-0 text-sky-600 dark:text-sky-300" />
+                    <span className="min-w-0 flex-1">
+                      <span className="flex flex-wrap items-center gap-2">
+                        <span className="rounded border border-sky-500/25 bg-background/70 px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide text-sky-700 dark:text-sky-300">
+                          {interaction.interactionKind === "ask_user_questions" ? "Q&A" : "Decision"}
+                        </span>
+                        <span className="text-xs font-mono text-muted-foreground">
+                          {interaction.issueIdentifier ?? interaction.issueId.slice(0, 8)}
+                        </span>
+                        <span className="text-xs text-muted-foreground">{timeAgo(interaction.updatedAt)}</span>
+                      </span>
+                      <span className="mt-1 block font-medium leading-5 text-foreground">{interaction.title}</span>
+                      <span className="mt-1 line-clamp-2 block text-xs leading-5 text-muted-foreground">
+                        {interaction.summary ?? interaction.issueTitle}
+                      </span>
+                    </span>
+                  </Link>
+                ))}
+              </div>
+            </section>
+          ) : null}
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <ChartCard title="Run Activity" subtitle="Last 14 days">

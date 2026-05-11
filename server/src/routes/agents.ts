@@ -77,6 +77,7 @@ import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
+import { isClaudeLocalRoutableModel } from "@paperclipai/adapter-claude-local";
 import {
   DEFAULT_ACPX_LOCAL_AGENT,
   DEFAULT_ACPX_LOCAL_MODE,
@@ -86,6 +87,7 @@ import {
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
+  isCodexLocalRoutableModel,
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
@@ -1046,6 +1048,17 @@ export function agentRoutes(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
+    const model = asNonEmptyString(adapterConfig.model);
+    if (adapterType === "codex_local" && !isCodexLocalRoutableModel(model)) {
+      throw unprocessable(
+        `Invalid codex_local adapterConfig.model "${model}". GPT/OpenAI models must use codex_local; Claude/Sonnet/Opus models must use claude_local.`,
+      );
+    }
+    if (adapterType === "claude_local" && !isClaudeLocalRoutableModel(model)) {
+      throw unprocessable(
+        `Invalid claude_local adapterConfig.model "${model}". Claude/Sonnet/Opus models must use claude_local; GPT/OpenAI models must use codex_local.`,
+      );
+    }
     if (adapterType !== "opencode_local") return;
     try {
       requireOpenCodeModelId(adapterConfig.model);

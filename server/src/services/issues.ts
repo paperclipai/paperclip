@@ -234,6 +234,14 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 }
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+// A `running` heartbeat run with no spawned process is treated as stale once it
+// has been queued longer than this window. Catches phantom continuation retries
+// that took the issue lock but never started executing.
+const STALE_PHANTOM_RUN_MS = 2 * 60 * 1000;
+// A `running` heartbeat run that has not emitted output within this window is
+// treated as stale. Catches hard-killed runs that the process-loss watchdog
+// could not transition (e.g. unsupervised or untracked processes).
+const STALE_SILENT_RUN_MS = 10 * 60 * 1000;
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
 
@@ -2098,12 +2106,38 @@ export function issueService(db: Db) {
 
   async function isTerminalOrMissingHeartbeatRun(runId: string) {
     const run = await db
-      .select({ status: heartbeatRuns.status })
+      .select({
+        status: heartbeatRuns.status,
+        processPid: heartbeatRuns.processPid,
+        startedAt: heartbeatRuns.startedAt,
+        lastOutputAt: heartbeatRuns.lastOutputAt,
+      })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
     if (!run) return true;
-    return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
+    if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return true;
+    if (run.status === "running") {
+      const now = Date.now();
+      // Phantom run: never spawned a process and was queued long enough ago that
+      // a real process would have registered its pid by now.
+      if (
+        run.processPid === null &&
+        run.startedAt !== null &&
+        now - run.startedAt.getTime() >= STALE_PHANTOM_RUN_MS
+      ) {
+        return true;
+      }
+      // Hard-killed-untracked: claims to be running but has not emitted output
+      // within the silence window, beyond what the output watchdog tolerates.
+      if (
+        run.lastOutputAt !== null &&
+        now - run.lastOutputAt.getTime() >= STALE_SILENT_RUN_MS
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   async function adoptStaleCheckoutRun(input: {

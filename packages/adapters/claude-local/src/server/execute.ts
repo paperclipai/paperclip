@@ -58,7 +58,7 @@ import { prepareClaudeConfigSeed } from "./claude-config.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
-import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { isClaudeLocalRoutableModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -355,6 +355,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
   const model = asString(config.model, "");
+  if (!isClaudeLocalRoutableModel(model)) {
+    await onLog(
+      "stderr",
+      `[paperclip] Claude local refused model "${model}". Claude/Sonnet/Opus models must use claude_local; GPT/OpenAI models must use codex_local.\n`,
+    );
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: `Invalid claude_local model "${model}". Use codex_local for GPT/OpenAI models.`,
+      errorCode: "claude_local_model_route_mismatch",
+      errorMeta: { model, expectedAdapterType: "codex_local" },
+    };
+  }
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);

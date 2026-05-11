@@ -5,6 +5,7 @@ import {
   createRoutineTriggerSchema,
   rotateRoutineTriggerSecretSchema,
   runRoutineSchema,
+  isUuidLike,
   updateRoutineSchema,
   updateRoutineTriggerSchema,
 } from "@paperclipai/shared";
@@ -12,7 +13,7 @@ import { trackRoutineCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { accessService, logActivity, routineService } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { forbidden, unauthorized } from "../errors.js";
+import { badRequest, forbidden, unauthorized } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -46,6 +47,7 @@ export function routineRoutes(
   }
 
   async function assertCanManageExistingRoutine(req: Request, routineId: string) {
+    if (!isUuidLike(routineId)) throw badRequest("Routine id must be a UUID");
     const routine = await svc.get(routineId);
     if (!routine) return null;
     assertCompanyAccess(req, routine.companyId);
@@ -130,7 +132,9 @@ export function routineRoutes(
   });
 
   router.get("/routines/:id", async (req, res) => {
-    const detail = await svc.getDetail(req.params.id as string);
+    const routineId = req.params.id as string;
+    if (!isUuidLike(routineId)) throw badRequest("Routine id must be a UUID");
+    const detail = await svc.getDetail(routineId);
     if (!detail) {
       res.status(404).json({ error: "Routine not found" });
       return;

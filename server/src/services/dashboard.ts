@@ -1,10 +1,11 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, approvals, companies, costEvents, heartbeatRuns, issues, issueThreadInteractions } from "@paperclipai/db";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 
 const DASHBOARD_RUN_ACTIVITY_DAYS = 14;
+const DASHBOARD_ATTENTION_LIMIT = 6;
 
 function formatUtcDateKey(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -20,6 +21,42 @@ function getRecentUtcDateKeys(now: Date, days: number): string[] {
     const dayOffset = index - (days - 1);
     return formatUtcDateKey(new Date(todayUtc + dayOffset * 24 * 60 * 60 * 1000));
   });
+}
+
+function firstNonEmptyString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function approvalAttentionTitle(type: string, payload: unknown): string {
+  const record = asRecord(payload);
+  return firstNonEmptyString(record.title, record.name, record.summary, record.recommendedAction)
+    ?? type.replace(/_/g, " ");
+}
+
+function approvalAttentionSummary(payload: unknown): string | null {
+  const record = asRecord(payload);
+  return firstNonEmptyString(record.summary, record.recommendedAction, record.nextActionOnApproval);
+}
+
+function interactionAttentionTitle(kind: string, title: string | null, payload: unknown): string {
+  if (title?.trim()) return title.trim();
+  const record = asRecord(payload);
+  if (kind === "ask_user_questions") {
+    const questions = Array.isArray(record.questions) ? record.questions : [];
+    const firstQuestion = asRecord(questions[0]);
+    const prompt = firstNonEmptyString(firstQuestion.prompt);
+    if (prompt) return prompt;
+  }
+  return firstNonEmptyString(record.prompt, record.title) ?? kind.replace(/_/g, " ");
 }
 
 export function dashboardService(db: Db) {
@@ -43,13 +80,70 @@ export function dashboardService(db: Db) {
       const taskRows = await db
         .select({ status: issues.status, count: sql<number>`count(*)` })
         .from(issues)
-        .where(eq(issues.companyId, companyId))
+        .where(and(
+          eq(issues.companyId, companyId),
+          isNull(issues.hiddenAt),
+          sql<boolean>`NOT (${issues.originKind} LIKE 'plugin:%:operation' OR ${issues.originKind} LIKE 'plugin:%:operation:%')`,
+        ))
         .groupBy(issues.status);
 
       const pendingApprovals = await db
         .select({ count: sql<number>`count(*)` })
         .from(approvals)
         .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
+        .then((rows) => Number(rows[0]?.count ?? 0));
+
+      const attentionApprovalRows = await db
+        .select({
+          id: approvals.id,
+          type: approvals.type,
+          status: approvals.status,
+          payload: approvals.payload,
+          requestedByAgentId: approvals.requestedByAgentId,
+          createdAt: approvals.createdAt,
+          updatedAt: approvals.updatedAt,
+        })
+        .from(approvals)
+        .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
+        .orderBy(desc(approvals.updatedAt), desc(approvals.createdAt))
+        .limit(DASHBOARD_ATTENTION_LIMIT);
+
+      const attentionInteractionRows = await db
+        .select({
+          id: issueThreadInteractions.id,
+          interactionKind: issueThreadInteractions.kind,
+          status: issueThreadInteractions.status,
+          title: issueThreadInteractions.title,
+          summary: issueThreadInteractions.summary,
+          payload: issueThreadInteractions.payload,
+          issueId: issues.id,
+          issueIdentifier: issues.identifier,
+          issueTitle: issues.title,
+          createdByAgentId: issueThreadInteractions.createdByAgentId,
+          createdAt: issueThreadInteractions.createdAt,
+          updatedAt: issueThreadInteractions.updatedAt,
+        })
+        .from(issueThreadInteractions)
+        .innerJoin(issues, eq(issueThreadInteractions.issueId, issues.id))
+        .where(and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.status, "pending"),
+          isNull(issues.hiddenAt),
+          sql<boolean>`NOT (${issues.originKind} LIKE 'plugin:%:operation' OR ${issues.originKind} LIKE 'plugin:%:operation:%')`,
+        ))
+        .orderBy(desc(issueThreadInteractions.updatedAt), desc(issueThreadInteractions.createdAt))
+        .limit(DASHBOARD_ATTENTION_LIMIT);
+
+      const pendingInteractions = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(issueThreadInteractions)
+        .innerJoin(issues, eq(issueThreadInteractions.issueId, issues.id))
+        .where(and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.status, "pending"),
+          isNull(issues.hiddenAt),
+          sql<boolean>`NOT (${issues.originKind} LIKE 'plugin:%:operation' OR ${issues.originKind} LIKE 'plugin:%:operation:%')`,
+        ))
         .then((rows) => Number(rows[0]?.count ?? 0));
 
       const agentCounts: Record<string, number> = {
@@ -154,6 +248,34 @@ export function dashboardService(db: Db) {
           pendingApprovals: budgetOverview.pendingApprovalCount,
           pausedAgents: budgetOverview.pausedAgentCount,
           pausedProjects: budgetOverview.pausedProjectCount,
+        },
+        attention: {
+          approvals: attentionApprovalRows.map((approval) => ({
+            kind: "approval" as const,
+            id: approval.id,
+            type: approval.type,
+            status: approval.status,
+            title: approvalAttentionTitle(approval.type, approval.payload),
+            summary: approvalAttentionSummary(approval.payload),
+            requestedByAgentId: approval.requestedByAgentId,
+            createdAt: approval.createdAt,
+            updatedAt: approval.updatedAt,
+          })),
+          interactions: attentionInteractionRows.map((interaction) => ({
+            kind: "interaction" as const,
+            id: interaction.id,
+            interactionKind: interaction.interactionKind,
+            status: interaction.status,
+            title: interactionAttentionTitle(interaction.interactionKind, interaction.title, interaction.payload),
+            summary: interaction.summary,
+            issueId: interaction.issueId,
+            issueIdentifier: interaction.issueIdentifier,
+            issueTitle: interaction.issueTitle,
+            createdByAgentId: interaction.createdByAgentId,
+            createdAt: interaction.createdAt,
+            updatedAt: interaction.updatedAt,
+          })),
+          total: pendingApprovals + pendingInteractions,
         },
         runActivity: Array.from(runActivity.values()),
       };

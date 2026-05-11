@@ -301,6 +301,11 @@ const dashboard: DashboardSummary = {
     pausedAgents: 0,
     pausedProjects: 0,
   },
+  attention: {
+    approvals: [],
+    interactions: [],
+    total: 0,
+  },
   runActivity: [],
 };
 

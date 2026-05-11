@@ -22,7 +22,7 @@ import {
   ISSUE_THREAD_INTERACTION_STATUSES,
   MODEL_PROFILE_KEYS,
 } from "../constants.js";
-import { multilineTextSchema } from "./text.js";
+import { databaseTextSchema, multilineTextSchema } from "./text.js";
 
 export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
   "inherit",
@@ -221,7 +221,7 @@ const createIssueBaseSchema = z.object({
   parentId: z.string().uuid().optional().nullable(),
   blockedByIssueIds: z.array(z.string().uuid()).optional(),
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
-  title: z.string().min(1),
+  title: databaseTextSchema.pipe(z.string().min(1)),
   description: multilineTextSchema.optional().nullable(),
   status: z.enum(ISSUE_STATUSES),
   workMode: z.enum(ISSUE_WORK_MODES).optional().default("standard"),
@@ -252,7 +252,7 @@ export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBa
     inheritExecutionWorkspaceFromIssueId: true,
   })
   .extend({
-    acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
+    acceptanceCriteria: z.array(databaseTextSchema.pipe(z.string().trim().min(1).max(500))).max(20).optional(),
     blockParentUntilDone: z.boolean().optional().default(false),
   }));
 
@@ -371,7 +371,19 @@ export const issueCommentMetadataSchema = z.object({
 
 export type IssueCommentMetadata = z.infer<typeof issueCommentMetadataSchema>;
 
-export const addIssueCommentSchema = z.object({
+function normalizeIssueCommentInput(input: unknown): unknown {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+  const raw = input as Record<string, unknown>;
+  if (raw.body !== undefined) return input;
+  const body = raw.comment ?? raw.text ?? raw.content;
+  if (body === undefined) return input;
+  return {
+    ...raw,
+    body,
+  };
+}
+
+export const addIssueCommentInputSchema = z.object({
   body: multilineTextSchema.pipe(z.string().min(1)),
   authorType: issueCommentAuthorTypeSchema.optional(),
   presentation: issueCommentPresentationSchema.nullable().optional(),
@@ -380,6 +392,11 @@ export const addIssueCommentSchema = z.object({
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
 });
+
+export const addIssueCommentSchema = z.preprocess(
+  normalizeIssueCommentInput,
+  addIssueCommentInputSchema,
+);
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
 
@@ -550,14 +567,14 @@ export const requestConfirmationTargetSchema = z.discriminatedUnion("type", [
 
 export const requestConfirmationPayloadSchema = z.object({
   version: z.literal(1),
-  prompt: z.string().trim().min(1).max(1000),
-  acceptLabel: z.string().trim().min(1).max(80).nullable().optional(),
-  rejectLabel: z.string().trim().min(1).max(80).nullable().optional(),
+  prompt: databaseTextSchema.pipe(z.string().trim().min(1).max(1000)),
+  acceptLabel: databaseTextSchema.pipe(z.string().trim().min(1).max(80)).nullable().optional(),
+  rejectLabel: databaseTextSchema.pipe(z.string().trim().min(1).max(80)).nullable().optional(),
   rejectRequiresReason: z.boolean().optional(),
-  rejectReasonLabel: z.string().trim().min(1).max(160).nullable().optional(),
+  rejectReasonLabel: databaseTextSchema.pipe(z.string().trim().min(1).max(160)).nullable().optional(),
   allowDeclineReason: z.boolean().optional().default(true),
-  declineReasonPlaceholder: z.string().trim().min(1).max(240).nullable().optional(),
-  detailsMarkdown: z.string().max(20000).nullable().optional(),
+  declineReasonPlaceholder: databaseTextSchema.pipe(z.string().trim().min(1).max(240)).nullable().optional(),
+  detailsMarkdown: multilineTextSchema.pipe(z.string().max(20000)).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
   target: requestConfirmationTargetSchema.nullable().optional(),
 });
@@ -570,7 +587,80 @@ export const requestConfirmationResultSchema = z.object({
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
 });
 
-export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
+function normalizeRequestConfirmationTarget(target: unknown): unknown {
+  if (!target || typeof target !== "object" || Array.isArray(target)) return target;
+  const raw = target as Record<string, unknown>;
+  if (raw.type !== "issue") return target;
+  const revisionId = typeof raw.revisionId === "string" && raw.revisionId.trim().length > 0
+    ? raw.revisionId
+    : typeof raw.version === "string" && raw.version.trim().length > 0
+      ? raw.version
+      : null;
+  return {
+    ...raw,
+    type: "custom",
+    key: typeof raw.key === "string" && raw.key.trim().length > 0 ? raw.key : "issue",
+    revisionId,
+  };
+}
+
+function normalizeRequestConfirmationPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...payload };
+  if (next.version === undefined) next.version = 1;
+  if (next.prompt === undefined) {
+    if (typeof next.title === "string" && next.title.trim().length > 0) {
+      next.prompt = next.title;
+    } else if (typeof next.body === "string" && next.body.trim().length > 0) {
+      next.prompt = next.body;
+    }
+  }
+  if (next.detailsMarkdown === undefined && typeof next.body === "string") {
+    next.detailsMarkdown = next.body;
+  }
+  if (typeof next.prompt === "string" && next.prompt.length > 1000) {
+    const prompt = next.prompt.slice(0, 1000).trimEnd();
+    const overflow = next.prompt.slice(1000).trimStart();
+    next.prompt = prompt;
+    next.detailsMarkdown = [overflow, typeof next.detailsMarkdown === "string" ? next.detailsMarkdown : ""]
+      .filter(Boolean)
+      .join("\n\n");
+  }
+  next.target = normalizeRequestConfirmationTarget(next.target);
+  return next;
+}
+
+function normalizeIssueThreadInteractionInput(input: unknown): unknown {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+  const raw = input as Record<string, unknown>;
+  if (raw.kind !== "request_confirmation") return input;
+  const payload = raw.payload && typeof raw.payload === "object" && !Array.isArray(raw.payload)
+    ? raw.payload as Record<string, unknown>
+    : null;
+  if (!payload) {
+    const { prompt, body, detailsMarkdown, acceptLabel, rejectLabel, rejectRequiresReason, allowDeclineReason, declineReasonPlaceholder, target } = raw;
+    return {
+      ...raw,
+      payload: normalizeRequestConfirmationPayload({
+        version: 1,
+        prompt,
+        body,
+        detailsMarkdown,
+        acceptLabel,
+        rejectLabel,
+        rejectRequiresReason,
+        allowDeclineReason,
+        declineReasonPlaceholder,
+        target,
+      }),
+    };
+  }
+  return {
+    ...raw,
+    payload: normalizeRequestConfirmationPayload(payload),
+  };
+}
+
+const createIssueThreadInteractionBaseSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("suggest_tasks"),
     idempotencyKey: z.string().trim().max(255).nullable().optional(),
@@ -602,6 +692,11 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
     payload: requestConfirmationPayloadSchema,
   }),
 ]);
+
+export const createIssueThreadInteractionSchema = z.preprocess(
+  normalizeIssueThreadInteractionInput,
+  createIssueThreadInteractionBaseSchema,
+);
 
 export type CreateIssueThreadInteraction = z.infer<typeof createIssueThreadInteractionSchema>;
 

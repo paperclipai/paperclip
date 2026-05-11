@@ -45,26 +45,71 @@ async function ensureParentDir(target: string): Promise<void> {
   await fs.mkdir(path.dirname(target), { recursive: true });
 }
 
-async function ensureSymlink(target: string, source: string): Promise<void> {
-  const existing = await fs.lstat(target).catch(() => null);
-  if (!existing) {
-    await ensureParentDir(target);
+function isErrnoCode(err: unknown, ...codes: string[]): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    typeof (err as { code?: unknown }).code === "string" &&
+    codes.includes((err as { code: string }).code)
+  );
+}
+
+async function createMirror(target: string, source: string): Promise<void> {
+  await ensureParentDir(target);
+  try {
     await fs.symlink(source, target);
     return;
+  } catch (err) {
+    if (!isErrnoCode(err, "EPERM", "EACCES", "ENOSYS")) throw err;
   }
+  try {
+    await fs.link(source, target);
+    return;
+  } catch (err) {
+    if (!isErrnoCode(err, "EXDEV", "EPERM", "EACCES", "ENOSYS")) throw err;
+  }
+  await fs.copyFile(source, target);
+}
 
-  if (!existing.isSymbolicLink()) {
+async function ensureMirroredFile(target: string, source: string): Promise<void> {
+  const sourceStat = await fs.stat(source).catch(() => null);
+  if (!sourceStat) return;
+
+  const existing = await fs.lstat(target).catch(() => null);
+  if (!existing) {
+    await createMirror(target, source);
     return;
   }
 
-  const linkedPath = await fs.readlink(target).catch(() => null);
-  if (!linkedPath) return;
+  if (existing.isSymbolicLink()) {
+    const linkedPath = await fs.readlink(target).catch(() => null);
+    if (linkedPath) {
+      const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
+      if (resolvedLinkedPath === source) return;
+    }
+    await fs.unlink(target);
+    await createMirror(target, source);
+    return;
+  }
 
-  const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
-  if (resolvedLinkedPath === source) return;
+  if (
+    existing.dev === sourceStat.dev &&
+    existing.ino === sourceStat.ino &&
+    sourceStat.ino !== 0
+  ) {
+    return;
+  }
+
+  if (
+    existing.size === sourceStat.size &&
+    existing.mtimeMs >= sourceStat.mtimeMs
+  ) {
+    return;
+  }
 
   await fs.unlink(target);
-  await fs.symlink(source, target);
+  await createMirror(target, source);
 }
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {
@@ -117,7 +162,7 @@ export async function prepareManagedCodexHome(
     for (const name of SYMLINKED_SHARED_FILES) {
       const source = path.join(sourceHome, name);
       if (!(await pathExists(source))) continue;
-      await ensureSymlink(path.join(targetHome, name), source);
+      await ensureMirroredFile(path.join(targetHome, name), source);
     }
 
     for (const name of COPIED_SHARED_FILES) {
