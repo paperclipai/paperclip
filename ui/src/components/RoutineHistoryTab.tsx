@@ -153,6 +153,8 @@ export function RoutineHistoryTab({
   const openRestoreConfirm = () => {
     if (!selectedRevision || !isHistoricalSelected) return;
     setRestoreSummary("");
+    setSnapshotOpen(false);
+    setCompareOn(false);
     setConfirmOpen(true);
   };
 
@@ -330,30 +332,34 @@ function RevisionSnapshotDialog({
         <div className="overflow-auto flex-1">
           {showCompare && currentRevision ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <ColumnLabel
-                tone="amber"
-                title={`rev ${revision.revisionNumber} (selected)`}
-              />
-              <ColumnLabel
-                tone="emerald"
-                title={`rev ${currentRevision.revisionNumber} (current)`}
-              />
-              <RevisionPreview
-                revision={revision}
-                currentRevision={currentRevision}
-                isHistorical
-                agents={agents}
-                projects={projects}
-                highlighted={highlighted}
-              />
-              <RevisionPreview
-                revision={currentRevision}
-                currentRevision={revision}
-                isHistorical={false}
-                agents={agents}
-                projects={projects}
-                highlighted={false}
-              />
+              <div className="space-y-3 min-w-0">
+                <ColumnLabel
+                  tone="amber"
+                  title={`rev ${revision.revisionNumber} (selected)`}
+                />
+                <RevisionPreview
+                  revision={revision}
+                  currentRevision={currentRevision}
+                  isHistorical
+                  agents={agents}
+                  projects={projects}
+                  highlighted={highlighted}
+                />
+              </div>
+              <div className="space-y-3 min-w-0">
+                <ColumnLabel
+                  tone="emerald"
+                  title={`rev ${currentRevision.revisionNumber} (current)`}
+                />
+                <RevisionPreview
+                  revision={currentRevision}
+                  currentRevision={revision}
+                  isHistorical={false}
+                  agents={agents}
+                  projects={projects}
+                  highlighted={false}
+                />
+              </div>
             </div>
           ) : (
             <RevisionPreview

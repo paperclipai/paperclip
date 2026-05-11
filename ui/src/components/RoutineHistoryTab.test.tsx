@@ -301,6 +301,8 @@ describe("RoutineHistoryTab", () => {
     });
     await flush();
     expect(container.querySelector("[data-testid='dialog']")).not.toBeNull();
+    expect(container.textContent).not.toContain("Viewing revision 1 (read-only)");
+    expect(container.textContent).toContain("Restore revision 1?");
     const confirmButtons = Array.from(container.querySelectorAll("button")).filter((b) =>
       (b.textContent ?? "").includes("Restore as revision 3"),
     );
