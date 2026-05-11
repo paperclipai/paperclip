@@ -22,7 +22,6 @@ export class Router {
       if (!row || row.status !== "pending") continue;
 
       if (stageDef.type === "sub-pipeline") continue;
-      if (stageDef.type === "parallel_fan_out") continue;
 
       const depsComplete = (stageDef.depends_on ?? []).every((dep) => {
         const depRow = stageStatusMap.get(dep);
@@ -32,7 +31,9 @@ export class Router {
 
       const blockedByCheckpoint = (stageDef.depends_on ?? []).some((dep) => {
         const depDef = pipeline.stages.find((s) => s.id === dep);
-        return depDef?.checkpoint === true;
+        if (!depDef?.checkpoint) return false;
+        const depRow = stageStatusMap.get(dep);
+        return depRow?.status !== "completed";
       });
       if (blockedByCheckpoint) continue;
 
@@ -121,6 +122,6 @@ export class Router {
   }
 
   requiresAgentDispatch(stageDef: StageDefinition): boolean {
-    return stageDef.type === "worker" || stageDef.type === "classifier";
+    return stageDef.type === "worker" || stageDef.type === "classifier" || stageDef.type === "parallel_fan_out";
   }
 }

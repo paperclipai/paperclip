@@ -95,7 +95,7 @@ export interface StageOutput {
 }
 
 export interface ExpressionContext {
-  stages: Record<string, { output: StageOutput | null; status: StageStatus; retry_count: number }>;
+  stages: Record<string, { output: StageOutput | StageOutput[] | null; status: StageStatus; retry_count: number }>;
   pipeline: { name: string; version: number; parent_issue_id: string };
   env: { company_id: string };
 }
