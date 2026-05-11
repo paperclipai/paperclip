@@ -80,6 +80,11 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import {
+  AUTONOMOUS_GOAL_LOOP_CONTINUATION_DOCUMENT_KEY,
+  continueAutonomousGoalLoopFromDecision,
+  summarizeAutonomousGoalLoopContinuationOutcome,
+} from "../services/autonomous-goal-loop-continuation.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
@@ -1815,7 +1820,41 @@ export function issueRoutes(
       });
     }
 
-    res.status(result.created ? 201 : 200).json(doc);
+    let autonomousLoopContinuation: ReturnType<typeof summarizeAutonomousGoalLoopContinuationOutcome> | null = null;
+    if (doc.key === AUTONOMOUS_GOAL_LOOP_CONTINUATION_DOCUMENT_KEY) {
+      const continuationOutcome = await continueAutonomousGoalLoopFromDecision({
+        db,
+        issue,
+        actor,
+      });
+      autonomousLoopContinuation = summarizeAutonomousGoalLoopContinuationOutcome(continuationOutcome);
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.autonomous_loop_continuation",
+        entityType: "issue",
+        entityId: issue.id,
+        details: autonomousLoopContinuation,
+      });
+      if (continuationOutcome.outcome === "created") {
+        void queueIssueAssignmentWakeup({
+          heartbeat,
+          issue: continuationOutcome.childIssue,
+          reason: "autonomous_loop_continuation",
+          mutation: "create",
+          contextSource: "issue.autonomous_loop_continuation",
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+        });
+      }
+    }
+
+    res.status(result.created ? 201 : 200).json(
+      autonomousLoopContinuation ? { ...doc, autonomousLoopContinuation } : doc,
+    );
   });
 
   router.get("/issues/:id/documents/:key/revisions", async (req, res) => {

@@ -70,6 +70,7 @@ export const MISSION_CONTROL_AUTONOMOUS_LOOP_REPORT_EVENTS = [
   "budget_exceeded",
   "runtime_exceeded",
   "iteration_exceeded",
+  "failed",
   "repeated_failure",
   "elevated_risk",
 ] as const;
@@ -113,7 +114,7 @@ export const missionControlAutonomousLoopPolicySchema = z
     reportToUserOnlyOn: z
       .array(z.enum(MISSION_CONTROL_AUTONOMOUS_LOOP_REPORT_EVENTS))
       .optional()
-      .default(["goal_reached", "blocker", "approval_required", "runtime_exceeded", "iteration_exceeded"]),
+      .default(["goal_reached", "blocker", "approval_required", "runtime_exceeded", "iteration_exceeded", "failed"]),
     ceoCanApprove: z
       .array(z.enum(MISSION_CONTROL_AUTONOMOUS_LOOP_CEO_APPROVALS))
       .optional()
