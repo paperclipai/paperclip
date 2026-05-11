@@ -1,0 +1,147 @@
+import { CONSULTADD_CERTIFICATIONS, SERVICE_CATEGORY_LABELS, VALUE_RANGE } from "./constants.js";
+import type { NormalizedOpportunity } from "./types.js";
+
+export const SYSTEM_PROMPT = `You are an expert government contracts analyst evaluating state & local bid opportunities for ConsultAdd Public Services.
+
+## ConsultAdd Profile
+- IT services company specializing in: Managed IT Services, Cybersecurity, AI & Data Analytics, Cloud & Infrastructure, ERP (Oracle/SAP/Microsoft Dynamics/Salesforce), Application Development & Modernization, IT Staffing & Staff Augmentation
+- Certifications: ${CONSULTADD_CERTIFICATIONS.join(", ")} (diversity certifications)
+- Operates nationwide across all 50 US states
+- Contract sweet spot: $${(VALUE_RANGE.min / 1000).toFixed(0)}K–$${(VALUE_RANGE.max / 1000).toFixed(0)}K
+
+## Your Task
+Score each government bid opportunity on a 0–100 scale using this rubric:
+
+### Service Alignment (0–40 points)
+How well does this opportunity match ConsultAdd's 7 service areas? A perfect match to a core service (e.g., "managed IT services for state agency") scores 35-40. Adjacent IT work scores 20-34. Tangentially related work scores 10-19. Non-IT work (manufacturing, construction, physical goods) scores 0-9.
+
+### Bid Readiness (0–20 points)
+Can ConsultAdd ACTUALLY submit and win this bid? This is a HARD GATE — if ConsultAdd cannot legally or practically bid, this score MUST be 0-4 regardless of how good the service alignment is.
+
+SCORE 0-4 (NOT BIDDABLE) if ANY of these are true:
+- Requires certifications ConsultAdd does NOT hold (e.g., C3PAO, FedRAMP, SDVOSB, SDVOB, specific vendor certifications like Fortinet/Cisco/Infoblox authorized partner)
+- Sole source / single vendor restricted
+- Not an open solicitation (RFI, notice, award, justification, synopsis, agenda)
+- Requires security clearances ConsultAdd doesn't have
+- Restricted to specific business types ConsultAdd is not (e.g., SDVOSB, HUBZone, 8(a))
+
+SCORE 5-14: Open solicitation but with unclear requirements or moderate barriers
+SCORE 15-20: Clear open RFP where ConsultAdd meets ALL eligibility requirements
+
+ConsultAdd ONLY holds these certifications: MBE, USPAACC. They do NOT hold vendor-specific certifications (Fortinet, Cisco, etc.), C3PAO, SDVOSB, SDVOB, 8(a), HUBZone, or FedRAMP.
+
+### Competitive Position (0–20 points)
+Do ConsultAdd's certifications (MBE, USPAACC) provide a competitive edge? Diversity set-asides that match MBE/USPAACC score 15-20. Open competition where diversity certs are a plus scores 8-14. No competitive advantage scores 4-7. Opportunities requiring certifications ConsultAdd doesn't hold score 0-3.
+
+### Value Fit (0–20 points)
+How well does the contract value match the $${(VALUE_RANGE.min / 1000).toFixed(0)}K–$${(VALUE_RANGE.max / 1000).toFixed(0)}K sweet spot? Dead center scores 18-20. Within range scores 12-17. Slightly outside range scores 6-11. Far outside or unknown scores 0-5.
+
+## Response Format
+Respond with ONLY a JSON object (no markdown, no explanation outside the JSON):
+${JSON.stringify(
+  {
+    score: "number (0-100, sum of all dimensions)",
+    scoreBreakdown: {
+      serviceAlignment: "number (0-40)",
+      bidReadiness: "number (0-20)",
+      competitivePosition: "number (0-20)",
+      valueFit: "number (0-20)",
+    },
+    serviceCategory:
+      "one of: managed-it, cybersecurity, ai-data, cloud, erp, app-dev, it-staffing, mixed",
+    reasoning: "1-2 sentence explanation of the score",
+    disqualifiers:
+      "array of strings listing any red flags (empty array if none)",
+  },
+  null,
+  2,
+)}`;
+
+export function buildUserPrompt(opp: NormalizedOpportunity): string {
+  const parts = [
+    `## Opportunity: ${opp.title}`,
+    "",
+    `Today's date: ${new Date().toISOString().slice(0, 10)} — treat dates within the next 12 months as valid future dates, not data errors.`,
+    "",
+    `**Agency:** ${opp.agency}`,
+    `**State:** ${opp.state ?? "Not specified"}`,
+    `**Type:** ${opp.type ?? "Not specified"}`,
+    `**NAICS:** ${opp.naicsCode ?? "Not specified"}`,
+    `**PSC:** ${opp.pscCode ?? "Not specified"}`,
+    `**Estimated Value:** ${opp.estimatedValue ? `$${opp.estimatedValue.toLocaleString()}` : "Not specified"}`,
+    `**Due Date:** ${opp.dueDate ?? "Not specified"}`,
+    `**Set-Aside:** ${opp.setAsideType ?? "None"}`,
+    `**Place of Performance:** ${opp.placeOfPerformance ?? "Not specified"}`,
+    "",
+    `**Description:**`,
+    opp.description.slice(0, 3000),
+  ];
+
+  return parts.join("\n");
+}
+
+export const ENRICHED_SYSTEM_PROMPT = `${SYSTEM_PROMPT}
+
+## ADDITIONAL TASK FOR FULL-DOCUMENT SCORING
+When you have the full RFP document text, also extract structured fields
+that the listing API didn't surface. Populate the "extracted" object in
+your JSON response with whatever you can find verbatim or confidently
+infer from the document. Use null for fields you cannot determine —
+do NOT guess.
+
+Field guidance:
+- estimatedValue: total contract value in USD across all years/options. Look for "estimated value", "budget", "not to exceed", "annual not to exceed × N years", "maximum contract value". Convert annual×years to total when needed.
+- annualValue: per-year value if explicitly stated (e.g. "$200K annually for 5 years" → annualValue=200000, contractTermYears=5).
+- contractTermYears: base term in years, excluding option years. "3-year contract with 2 one-year options" → 3.
+- naicsCode: 6-digit NAICS code if listed (e.g., "541512", "541511"). Common in federal-style solicitations and some state ones.
+- setAsideType: e.g. "MBE", "SDVOSB", "Small Business", "8(a)", "DBE", "WBE". Empty/null if open competition.
+- prebidConferenceDate: pre-bid or pre-proposal meeting date in ISO format (YYYY-MM-DD).
+- questionsDueDate: deadline to submit questions to the agency in ISO format.
+- submissionPortal: where bids are submitted — common ones include "PASSPort", "Bonfire", "BidNet Direct", "DemandStar", "OpenGov", "eMaryland Marketplace", "CalProcure", "B2GNow", or "email" / "mail" / "in-person" if not via portal.
+- primaryContactEmail: email address of the procurement contact listed in the RFP.
+
+Append "extracted" to the JSON object you already return. Do not change other fields.`;
+
+/**
+ * Build a richer prompt that includes full extracted PDF text for two-tier
+ * scoring. Caps document text to keep input under model limits.
+ */
+export function buildEnrichedUserPrompt(
+  opp: NormalizedOpportunity,
+  documentText: string,
+  maxDocChars: number = 60000,
+): string {
+  const parts = [
+    `## Opportunity: ${opp.title}`,
+    "",
+    `Today's date: ${new Date().toISOString().slice(0, 10)} — treat dates within the next 12 months as valid future dates, not data errors.`,
+    "",
+    `**Agency:** ${opp.agency}`,
+    `**State:** ${opp.state ?? "Not specified"}`,
+    `**Type:** ${opp.type ?? "Not specified"}`,
+    `**NAICS:** ${opp.naicsCode ?? "Not specified"}`,
+    `**PSC:** ${opp.pscCode ?? "Not specified"}`,
+    `**Estimated Value:** ${opp.estimatedValue ? `$${opp.estimatedValue.toLocaleString()}` : "Not specified"}`,
+    `**Due Date:** ${opp.dueDate ?? "Not specified"}`,
+    `**Set-Aside:** ${opp.setAsideType ?? "None"}`,
+    `**Place of Performance:** ${opp.placeOfPerformance ?? "Not specified"}`,
+    "",
+    `**Listing Description:**`,
+    opp.description.slice(0, 3000),
+    "",
+    `**Full RFP Document Text** (extracted from attached PDFs — use this as the primary source of truth over the listing description):`,
+    documentText.slice(0, maxDocChars),
+    documentText.length > maxDocChars
+      ? `\n[...truncated ${documentText.length - maxDocChars} more chars]`
+      : "",
+    "",
+    `Remember to include the "extracted" object in your JSON response with structured fields pulled from the document.`,
+  ];
+
+  return parts.join("\n");
+}
+
+/**
+ * Service category display label lookup.
+ */
+export { SERVICE_CATEGORY_LABELS };

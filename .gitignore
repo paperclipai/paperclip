@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .env
+.bidprime-session
 *.tsbuildinfo
 drizzle/meta/
 .vite/

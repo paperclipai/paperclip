@@ -1,0 +1,12 @@
+export * from "./core/types.js";
+export * from "./core/constants.js";
+export { normalizeOpportunity } from "./core/normalizer.js";
+export { HigherGovClient } from "./core/highergov-client.js";
+export { deduplicateByOpportunityId } from "./core/dedup.js";
+export { applyHardFilters } from "./core/hard-filter.js";
+export { scoreOpportunity, scoreBatch } from "./core/scorer.js";
+export { SYSTEM_PROMPT, buildUserPrompt } from "./core/scoring-prompt.js";
+export { HubSpotClient } from "./core/hubspot-client.js";
+export { RfpMartClient } from "./core/rfpmart-client.js";
+export { normalizeRfpMartOpportunity } from "./core/rfpmart-normalizer.js";
+export { crossSourceDedup } from "./core/cross-source-dedup.js";
