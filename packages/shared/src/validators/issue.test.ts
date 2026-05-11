@@ -59,8 +59,16 @@ describe("issue validators", () => {
     const parsed = addIssueCommentSchema.parse({
       comment: "Progress\u0000 update",
     });
+    const textParsed = addIssueCommentSchema.parse({
+      text: "Text alias",
+    });
+    const contentParsed = addIssueCommentSchema.parse({
+      content: "Content alias",
+    });
 
     expect(parsed.body).toBe("Progress update");
+    expect(textParsed.body).toBe("Text alias");
+    expect(contentParsed.body).toBe("Content alias");
   });
 
   it("accepts structured issue comment presentation and metadata", () => {
@@ -150,6 +158,22 @@ describe("issue validators", () => {
     expect(parsed.payload.detailsMarkdown).toContain("Full release notes");
     expect(parsed.payload.target?.type).toBe("custom");
     expect(parsed.payload.target?.revisionId).toBe("policy-v1");
+  });
+
+  it("normalizes request confirmation payloads with title and body inside payload", () => {
+    const parsed = createIssueThreadInteractionSchema.parse({
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        title: "Approve X post draft",
+        body: "Draft ready for review.",
+      },
+    });
+
+    expect(parsed.kind).toBe("request_confirmation");
+    if (parsed.kind !== "request_confirmation") throw new Error("Expected request_confirmation");
+    expect(parsed.payload.prompt).toBe("Approve X post draft");
+    expect(parsed.payload.detailsMarkdown).toBe("Draft ready for review.");
   });
 
   it("clamps oversized requestDepth values on create", () => {

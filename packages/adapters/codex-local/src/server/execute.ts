@@ -51,6 +51,8 @@ import { isCodexLocalRoutableModel, SANDBOX_INSTALL_COMMAND } from "../index.js"
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
   /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
+const CHATGPT_UNSUPPORTED_CODEX_MODELS = new Set(["o4-mini"]);
+const CHATGPT_CODEX_CHEAP_FALLBACK_MODEL = "gpt-5.3-codex-spark";
 
 function stripCodexRolloutNoise(text: string): string {
   const parts = text.split(/\r?\n/);
@@ -90,6 +92,14 @@ function resolveCodexBiller(env: Record<string, string>, billingType: "api" | "s
   const openAiCompatibleBiller = inferOpenAiCompatibleBiller(env, "openai");
   if (openAiCompatibleBiller === "openrouter") return "openrouter";
   return billingType === "subscription" ? "chatgpt" : openAiCompatibleBiller ?? "openai";
+}
+
+function resolveCodexModelForBilling(model: string, billingType: "api" | "subscription"): string {
+  const normalizedModel = model.trim();
+  if (billingType !== "subscription") return normalizedModel;
+  return CHATGPT_UNSUPPORTED_CODEX_MODELS.has(normalizedModel)
+    ? CHATGPT_CODEX_CHEAP_FALLBACK_MODEL
+    : normalizedModel;
 }
 
 async function isLikelyPaperclipRepoRoot(candidate: string): Promise<boolean> {
@@ -509,6 +519,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ),
   );
   const billingType = resolveCodexBillingType(effectiveEnv);
+  const effectiveModel = resolveCodexModelForBilling(model, billingType);
+  if (model.trim() && effectiveModel !== model.trim()) {
+    await onLog(
+      "stdout",
+      `[paperclip] Codex local replaced model "${model.trim()}" with "${effectiveModel}" because ChatGPT-account Codex does not support that model.\n`,
+    );
+  }
   const runtimeEnv = Object.fromEntries(
     Object.entries(ensurePathInEnv(effectiveEnv)).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -680,8 +697,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const runAttempt = async (resumeSessionId: string | null) => {
+    const attemptConfig =
+      effectiveModel && effectiveModel !== model.trim()
+        ? { ...config, model: effectiveModel }
+        : config;
     const execArgs = buildCodexExecArgs(
-      forceSaferInvocation ? { ...config, fastMode: false } : config,
+      forceSaferInvocation ? { ...attemptConfig, fastMode: false } : attemptConfig,
       { resumeSessionId },
     );
     const args = execArgs.args;
@@ -809,7 +830,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionDisplayId: resolvedSessionId,
       provider: "openai",
       biller: resolveCodexBiller(effectiveEnv, billingType),
-      model,
+      model: effectiveModel || model,
       billingType,
       costUsd: null,
       resultJson: {
@@ -818,6 +839,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
         ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
         ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+        ...(effectiveModel !== model.trim() ? { configuredModel: model.trim(), effectiveModel } : {}),
       },
       summary: attempt.parsed.summary,
       clearSession: Boolean((clearSessionOnMissingSession || forceFreshSession) && !resolvedSessionId),

@@ -374,14 +374,16 @@ export type IssueCommentMetadata = z.infer<typeof issueCommentMetadataSchema>;
 function normalizeIssueCommentInput(input: unknown): unknown {
   if (!input || typeof input !== "object" || Array.isArray(input)) return input;
   const raw = input as Record<string, unknown>;
-  if (raw.body !== undefined || raw.comment === undefined) return input;
+  if (raw.body !== undefined) return input;
+  const body = raw.comment ?? raw.text ?? raw.content;
+  if (body === undefined) return input;
   return {
     ...raw,
-    body: raw.comment,
+    body,
   };
 }
 
-export const addIssueCommentSchema = z.preprocess(normalizeIssueCommentInput, z.object({
+export const addIssueCommentInputSchema = z.object({
   body: multilineTextSchema.pipe(z.string().min(1)),
   authorType: issueCommentAuthorTypeSchema.optional(),
   presentation: issueCommentPresentationSchema.nullable().optional(),
@@ -389,7 +391,12 @@ export const addIssueCommentSchema = z.preprocess(normalizeIssueCommentInput, z.
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
-}));
+});
+
+export const addIssueCommentSchema = z.preprocess(
+  normalizeIssueCommentInput,
+  addIssueCommentInputSchema,
+);
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
 
@@ -600,6 +607,13 @@ function normalizeRequestConfirmationTarget(target: unknown): unknown {
 function normalizeRequestConfirmationPayload(payload: Record<string, unknown>): Record<string, unknown> {
   const next = { ...payload };
   if (next.version === undefined) next.version = 1;
+  if (next.prompt === undefined) {
+    if (typeof next.title === "string" && next.title.trim().length > 0) {
+      next.prompt = next.title;
+    } else if (typeof next.body === "string" && next.body.trim().length > 0) {
+      next.prompt = next.body;
+    }
+  }
   if (next.detailsMarkdown === undefined && typeof next.body === "string") {
     next.detailsMarkdown = next.body;
   }
