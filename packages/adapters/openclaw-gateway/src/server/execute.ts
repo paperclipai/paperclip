@@ -333,35 +333,6 @@ function resolvePaperclipApiUrlOverride(value: unknown): string | null {
 
 const DEFAULT_CLAIMED_API_KEY_PATH = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
 
-export const OPENCLAW_AGENT_PARAM_KEYS = new Set([
-  "agentId",
-  "message",
-  "sessionKey",
-  "idempotencyKey",
-  "timeout",
-  "model",
-  "thinking",
-  "reasoning",
-  "context",
-  "cwd",
-  "attachments",
-  "metadata",
-]);
-
-export function filterOpenClawAgentParams(input: Record<string, unknown>) {
-  const params: Record<string, unknown> = {};
-  const stripped: string[] = [];
-  for (const [key, value] of Object.entries(input)) {
-    if (key === "text") continue;
-    if (OPENCLAW_AGENT_PARAM_KEYS.has(key)) {
-      params[key] = value;
-    } else {
-      stripped.push(key);
-    }
-  }
-  return { params, stripped };
-}
-
 function resolveClaimedApiKeyPath(value: unknown): string {
   return nonEmpty(value) ?? DEFAULT_CLAIMED_API_KEY_PATH;
 }
@@ -1161,13 +1132,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
   const paperclipPayload = buildStandardPaperclipPayload(ctx, wakePayload, paperclipEnv, payloadTemplate);
 
-  void paperclipPayload;
-  const { params: agentParams, stripped: strippedAgentParamKeys } = filterOpenClawAgentParams({
+  const agentParams: Record<string, unknown> = {
     ...payloadTemplate,
     message,
     sessionKey,
     idempotencyKey: ctx.runId,
-  });
+  };
+  delete agentParams.text;
+  agentParams.paperclip = paperclipPayload;
 
   const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
@@ -1185,13 +1157,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       commandArgs: ["ws", parsedUrl.toString(), "agent"],
       context: ctx.context,
     });
-  }
-
-  if (strippedAgentParamKeys.length > 0) {
-    await ctx.onLog(
-      "stdout",
-      `[openclaw-gateway] stripped unsupported agent param keys: ${strippedAgentParamKeys.sort().join(", ")}\n`,
-    );
   }
 
   const outboundHeaderKeys = Object.keys(headers).sort();
