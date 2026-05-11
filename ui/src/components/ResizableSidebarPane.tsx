@@ -54,6 +54,8 @@ type ResizableSidebarPaneProps = {
   defaultWidth?: number;
   minWidth?: number;
   maxWidth?: number;
+  /** Optional CSS custom property name to expose the live pane width on :root (e.g. "--properties-panel-width"). */
+  widthVariable?: string;
 };
 
 export function ResizableSidebarPane({
@@ -66,6 +68,7 @@ export function ResizableSidebarPane({
   defaultWidth = DEFAULT_SIDEBAR_WIDTH,
   minWidth = MIN_SIDEBAR_WIDTH,
   maxWidth = MAX_SIDEBAR_WIDTH,
+  widthVariable,
 }: ResizableSidebarPaneProps) {
   const [width, setWidth] = useState(() =>
     readStoredSidebarWidth(storageKey, defaultWidth, minWidth, maxWidth),
@@ -85,6 +88,15 @@ export function ResizableSidebarPane({
     () => ({ width: `${visibleWidth}px` }),
     [visibleWidth],
   );
+
+  useEffect(() => {
+    if (!widthVariable || typeof document === "undefined") return;
+    const root = document.documentElement;
+    root.style.setProperty(widthVariable, `${visibleWidth}px`);
+    return () => {
+      root.style.removeProperty(widthVariable);
+    };
+  }, [widthVariable, visibleWidth]);
 
   const commitWidth = useCallback(
     (nextWidth: number) => {

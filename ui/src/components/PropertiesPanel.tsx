@@ -3,7 +3,7 @@ import { usePanel } from "../context/PanelContext";
 import { Button } from "@/components/ui/button";
 import { ResizableSidebarPane } from "./ResizableSidebarPane";
 
-const PROPERTIES_PANEL_DEFAULT = 400;
+const PROPERTIES_PANEL_DEFAULT = 320;
 const PROPERTIES_PANEL_MIN = 320;
 const PROPERTIES_PANEL_MAX = 640;
 
@@ -22,6 +22,7 @@ export function PropertiesPanel() {
         defaultWidth={PROPERTIES_PANEL_DEFAULT}
         minWidth={PROPERTIES_PANEL_MIN}
         maxWidth={PROPERTIES_PANEL_MAX}
+        widthVariable="--properties-panel-width"
         className="h-full"
       >
         <div className="flex h-full w-full flex-col min-h-0">
