@@ -8,6 +8,7 @@ import type {
 } from "@paperclipai/adapter-utils";
 import {
   readPaperclipRuntimeSkillEntries,
+  readPaperclipSkillSyncPreference,
   readInstalledSkillTargets,
   resolvePaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -92,11 +93,13 @@ async function buildClaudeSkillSnapshot(config: Record<string, unknown>): Promis
 
   entries.sort((left, right) => left.key.localeCompare(right.key));
 
+  const preference = readPaperclipSkillSyncPreference(config);
   return {
     adapterType: "claude_local",
     supported: true,
     mode: "ephemeral",
     desiredSkills,
+    excludedSkills: preference.excludedSkills,
     entries,
     warnings,
   };
