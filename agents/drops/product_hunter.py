@@ -483,8 +483,11 @@ def fetch_cj_products(niche: str, cj_key: str, limit: int = 8) -> list:
                 except: return 0.0
             price_usd = parse_price(p.get("sellPrice") or p.get("nowPrice"))
             price_eur = round(price_usd * 0.92, 2)
+            # Campos correctos: productNameEn/productName, productImage (no bigImage/nameEn)
+            name  = (p.get("productNameEn") or p.get("productName") or p.get("nameEn") or "")[:100]
+            image = (p.get("productImage") or p.get("bigImage") or p.get("imageUrl") or "")
             products.append({
-                "name":                  p.get("nameEn", "")[:100],
+                "name":                  name,
                 "score":                 70,   # base score — se ajusta con LLM
                 "est_margin_pct":        int((1 - 1/3) * 100),  # ~66% a 3x markup
                 "competition":           "Med",
@@ -492,7 +495,7 @@ def fetch_cj_products(niche: str, cj_key: str, limit: int = 8) -> list:
                 "supplier_est_cost_eur": price_eur,
                 "why":                   f"Proveedor CJ verificado. Coste real: €{price_eur}",
                 "target_audience":       "adultos 25-45",
-                "image_url":             p.get("bigImage", ""),
+                "image_url":             image,
                 "sku":                   p.get("sku", ""),
                 "cj_url":                f"https://www.cjdropshipping.com/product/-p-{p.get('id','')}.html",
                 "source":                "cj_dropshipping",

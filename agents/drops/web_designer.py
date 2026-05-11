@@ -54,8 +54,12 @@ def fetch_openverse_images(product_name: str) -> dict:
         (["manta", "almohada", "cojin"], "home textile comfort"),
         (["ps5", "playstation", "xbox", "nintendo", "switch"], "gaming console accessories"),
         (["auricular", "cascos", "earbuds", "bluetooth audio"], "wireless earbuds headphones"),
+        (["gafas", "smartglass", "ar glass", "camara gafas"], "smart glasses technology wearable"),
+        (["smartwatch", "reloj inteligente", "wearable", "pulsera"], "smartwatch fitness wearable"),
+        (["dron", "drone", "quadcopter"], "drone flying technology"),
+        (["impresora 3d", "3d print"], "3d printer technology"),
     ]
-    query = "product ecommerce lifestyle"  # default menos random
+    query = "tech gadget product lifestyle"  # default más específico
     for keywords, english_query in category_queries:
         if any(kw in name_lower for kw in keywords):
             query = english_query
