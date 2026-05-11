@@ -124,6 +124,10 @@ export function SidebarAccountMenu({
     mutationFn: () => authApi.signOut(),
     onSuccess: async () => {
       setOpen(false);
+      await queryClient.cancelQueries();
+      queryClient.removeQueries({
+        predicate: (query) => query.queryKey[0] !== queryKeys.auth.session[0],
+      });
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
     },
   });

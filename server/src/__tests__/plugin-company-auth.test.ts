@@ -1,8 +1,8 @@
 /**
  * Tests for assertPluginAuthorizedForCompany (plugin-company-auth.ts).
  *
- * Authorization model (opt-in):
- * - no row          → DENIED (plugin not explicitly authorized for this company)
+ * Authorization model:
+ * - no row          → authorized (default company behavior)
  * - row enabled=true  → authorized
  * - row enabled=false → DENIED
  */
@@ -25,11 +25,11 @@ function makeDb(rows: Array<{ enabled: boolean }>): Db {
 }
 
 describe("assertPluginAuthorizedForCompany", () => {
-  it("throws when no plugin_company_settings row exists (no-row=denied)", async () => {
+  it("resolves when no plugin_company_settings row exists (no-row=enabled)", async () => {
     const db = makeDb([]);
     await expect(
       assertPluginAuthorizedForCompany(db, "plugin-1", "company-1"),
-    ).rejects.toThrow(/not authorized/i);
+    ).resolves.toBeUndefined();
   });
 
   it("resolves when row exists with enabled=true", async () => {
