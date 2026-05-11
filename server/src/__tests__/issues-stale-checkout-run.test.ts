@@ -72,11 +72,58 @@ describeEmbeddedPostgres("issueService stale checkoutRunId adoption", () => {
     });
   }
 
+  async function withDisabledForeignKeyChecks<T>(fn: () => Promise<T>): Promise<T> {
+    await db.execute(sql`set session_replication_role = replica`);
+    try {
+      return await fn();
+    } finally {
+      await db.execute(sql`set session_replication_role = origin`);
+    }
+  }
+
+  /** Heartbeat run row required for successful checkout adoption (FK on issues.checkout_run_id). */
+  async function seedActorHeartbeatRun(runId: string) {
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      updatedAt: new Date(),
+    });
+  }
+
   async function seedIssueLockedByRun(runId: string, runStatus: string, opts?: {
     runUpdatedAtOffsetMs?: number;
     skipRun?: boolean;
   }) {
     const issueId = randomUUID();
+    if (opts?.skipRun) {
+      // FK + onDelete would normally prevent a dangling checkout_run_id; replication
+      // mode skips FK triggers so we can model historical / manual drift that
+      // isTerminalOrMissingHeartbeatRun still handles.
+      await withDisabledForeignKeyChecks(async () => {
+        await db.insert(issues).values({
+          id: issueId,
+          companyId,
+          title: "Locked issue",
+          status: "in_progress",
+          priority: "medium",
+          assigneeAgentId: agentId,
+          checkoutRunId: runId,
+          executionRunId: runId,
+        });
+      });
+      return issueId;
+    }
+
+    const updatedAt = new Date(Date.now() + (opts?.runUpdatedAtOffsetMs ?? 0));
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: runStatus,
+      updatedAt,
+    });
     await db.insert(issues).values({
       id: issueId,
       companyId,
@@ -87,16 +134,6 @@ describeEmbeddedPostgres("issueService stale checkoutRunId adoption", () => {
       checkoutRunId: runId,
       executionRunId: runId,
     });
-    if (!opts?.skipRun) {
-      const updatedAt = new Date(Date.now() + (opts?.runUpdatedAtOffsetMs ?? 0));
-      await db.insert(heartbeatRuns).values({
-        id: runId,
-        companyId,
-        agentId,
-        status: runStatus,
-        updatedAt,
-      });
-    }
     return issueId;
   }
 
@@ -106,6 +143,7 @@ describeEmbeddedPostgres("issueService stale checkoutRunId adoption", () => {
     const issueId = await seedIssueLockedByRun(priorRunId, "failed");
 
     const newRunId = randomUUID();
+    await seedActorHeartbeatRun(newRunId);
     const adopted = await svc.checkout(issueId, agentId, ["in_progress"], newRunId);
 
     expect(adopted.checkoutRunId).toBe(newRunId);
@@ -125,6 +163,7 @@ describeEmbeddedPostgres("issueService stale checkoutRunId adoption", () => {
     });
 
     const newRunId = randomUUID();
+    await seedActorHeartbeatRun(newRunId);
     const adopted = await svc.checkout(issueId, agentId, ["in_progress"], newRunId);
     expect(adopted.checkoutRunId).toBe(newRunId);
   });
@@ -148,6 +187,7 @@ describeEmbeddedPostgres("issueService stale checkoutRunId adoption", () => {
     const issueId = await seedIssueLockedByRun(priorRunId, "running", { skipRun: true });
 
     const newRunId = randomUUID();
+    await seedActorHeartbeatRun(newRunId);
     const adopted = await svc.checkout(issueId, agentId, ["in_progress"], newRunId);
     expect(adopted.checkoutRunId).toBe(newRunId);
   });
