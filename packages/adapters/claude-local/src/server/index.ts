@@ -7,6 +7,8 @@ export {
   describeClaudeFailure,
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
+  isClaudeQuotaExhaustedError,
+  extractClaudeQuotaResetAt,
 } from "./parse.js";
 export {
   getQuotaWindows,

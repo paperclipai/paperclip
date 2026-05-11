@@ -9,10 +9,20 @@ import {
 const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+`?claude\s+login`?|login\s+required|requires\s+login|unauthorized|authentication\s+required)/i;
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
+// Transient = retry-soon (5xx, network blips, per-minute rate limits). Quota signals
+// were previously lumped in here, which made the dispatcher treat hard quota exhaustion
+// as immediately retryable; see ADR-001 §1.2. Those signals now live in
+// CLAUDE_QUOTA_EXHAUSTED_RE below and are checked first by execute.ts.
 const CLAUDE_TRANSIENT_UPSTREAM_RE =
-  /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
-const CLAUDE_EXTRA_USAGE_RESET_RE =
-  /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+  /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception)/i;
+// Quota = subscription/session/billing window exhausted. Caller must NOT retry
+// immediately; the dispatcher pauses the whole company until resetAt + grace.
+const CLAUDE_QUOTA_EXHAUSTED_RE =
+  /(?:out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|monthly\s+limit\s+reached|over\s+your\s+monthly|session\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|usage\s+limit\s+exceeded|billing\s+limit\s+reached)/i;
+const CLAUDE_QUOTA_RESET_RE =
+  /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|usage\s+limit\s+exceeded|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|monthly\s+limit\s+reached|session\s+limit\s+reached|billing\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+const CLAUDE_X_RATELIMIT_RESET_RE = /x-ratelimit-reset(?:-tokens|-requests)?:\s*([^\s\r\n,;]+)/i;
+const CLAUDE_QUOTA_FALLBACK_MS = 60 * 60 * 1000;
 
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
@@ -352,6 +362,26 @@ function parseClaudeResetClockTime(clockText: string, now: Date, timeZoneHint?: 
   return retryAt;
 }
 
+function parseRateLimitResetHeader(value: string, now: Date): Date | null {
+  const trimmed = value.trim().replace(/^["']|["']$/g, "");
+  if (!trimmed) return null;
+  // Numeric: epoch seconds (10 digits) or epoch milliseconds (13+ digits), or relative seconds.
+  if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+    const n = Number(trimmed);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    // < 1e9 → likely relative seconds from now (delta). >= 1e9 → epoch.
+    if (n < 1e9) {
+      return new Date(now.getTime() + Math.round(n * 1000));
+    }
+    const ms = n >= 1e12 ? n : n * 1000;
+    const date = new Date(ms);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  // ISO 8601 or HTTP date — Date constructor handles both.
+  const date = new Date(trimmed);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 export function extractClaudeRetryNotBefore(
   input: {
     parsed?: Record<string, unknown> | null;
@@ -362,9 +392,57 @@ export function extractClaudeRetryNotBefore(
   now = new Date(),
 ): Date | null {
   const haystack = buildClaudeTransientHaystack(input);
-  const match = haystack.match(CLAUDE_EXTRA_USAGE_RESET_RE);
+  const match = haystack.match(CLAUDE_QUOTA_RESET_RE);
   if (!match) return null;
   return parseClaudeResetClockTime(match[1] ?? "", now, match[2]);
+}
+
+/**
+ * Resolve the reset moment for a quota-exhausted run. Tries:
+ *   1. "resets HH:MM (a|p)m" wall-clock hint in the message (KST-default via parseClaudeResetClockTime),
+ *   2. `x-ratelimit-reset` (or `-tokens`/`-requests`) HTTP header with epoch seconds / ISO / HTTP-date,
+ *   3. fallback = now + 60 min (ADR-001 D1 conservative default).
+ */
+export function extractClaudeQuotaResetAt(
+  input: {
+    parsed?: Record<string, unknown> | null;
+    stdout?: string | null;
+    stderr?: string | null;
+    errorMessage?: string | null;
+  },
+  now = new Date(),
+): Date {
+  const clockReset = extractClaudeRetryNotBefore(input, now);
+  if (clockReset) return clockReset;
+  const haystack = buildClaudeTransientHaystack(input);
+  const headerMatch = haystack.match(CLAUDE_X_RATELIMIT_RESET_RE);
+  if (headerMatch && headerMatch[1]) {
+    const headerReset = parseRateLimitResetHeader(headerMatch[1], now);
+    if (headerReset && headerReset.getTime() > now.getTime()) return headerReset;
+  }
+  return new Date(now.getTime() + CLAUDE_QUOTA_FALLBACK_MS);
+}
+
+export function isClaudeQuotaExhaustedError(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const parsed = input.parsed ?? null;
+  if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed))) {
+    return false;
+  }
+  const loginMeta = detectClaudeLoginRequired({
+    parsed,
+    stdout: input.stdout ?? "",
+    stderr: input.stderr ?? "",
+  });
+  if (loginMeta.requiresLogin) return false;
+
+  const haystack = buildClaudeTransientHaystack(input);
+  if (!haystack) return false;
+  return CLAUDE_QUOTA_EXHAUSTED_RE.test(haystack);
 }
 
 export function isClaudeTransientUpstreamError(input: {
@@ -384,6 +462,10 @@ export function isClaudeTransientUpstreamError(input: {
     stderr: input.stderr ?? "",
   });
   if (loginMeta.requiresLogin) return false;
+
+  // Quota exhaustion is a separate, more specific class — it must NOT also count as transient,
+  // or the dispatcher's transient retry path will fire against an exhausted window.
+  if (isClaudeQuotaExhaustedError(input)) return false;
 
   const haystack = buildClaudeTransientHaystack(input);
   if (!haystack) return false;
