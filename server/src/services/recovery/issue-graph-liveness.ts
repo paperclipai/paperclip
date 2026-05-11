@@ -1,3 +1,7 @@
+import {
+  shouldTreatIssueArtifactsAsSubstantive,
+  type MissionControlCompletionGateDocument,
+} from "@paperclipai/shared";
 import { buildIssueGraphLivenessIncidentKey } from "./origins.js";
 
 export type IssueLivenessSeverity = "warning" | "critical";
@@ -26,6 +30,8 @@ export interface IssueLivenessIssueInput {
   executionState?: Record<string, unknown> | null;
   monitorNextCheckAt?: Date | string | null;
   monitorAttemptCount?: number | null;
+  documents?: MissionControlCompletionGateDocument[];
+  comments?: Array<{ body: string; createdAt?: Date | string | null }>;
 }
 
 export interface IssueLivenessRelationInput {
@@ -159,6 +165,16 @@ function readDateMs(value: unknown): number | null {
   const date = value instanceof Date ? value : new Date(value);
   const time = date.getTime();
   return Number.isNaN(time) ? null : time;
+}
+
+function hasSubstantiveMissionControlArtifact(issue: IssueLivenessIssueInput) {
+  if (!issue.documents?.length && !issue.comments?.length) return false;
+  const result = shouldTreatIssueArtifactsAsSubstantive({
+    status: issue.status,
+    documents: issue.documents ?? [],
+    comments: issue.comments ?? [],
+  });
+  return result.substantive && result.reason !== "terminal_status";
 }
 
 function monitorFromIssue(issue: IssueLivenessIssueInput) {
@@ -395,6 +411,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
 
   function hasExplicitWaitingPath(issue: IssueLivenessIssueInput) {
     return Boolean(issue.assigneeUserId) ||
+      hasSubstantiveMissionControlArtifact(issue) ||
       hasScheduledMonitor(issue, nowMs) ||
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||

@@ -18,6 +18,7 @@ import {
   MODEL_PROFILE_KEYS,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
+import { missionControlIssuePolicySchema } from "../mission-control.js";
 
 export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
   "inherit",
@@ -125,6 +126,7 @@ export const issueExecutionPolicySchema = z.object({
   commentRequired: z.boolean().optional().default(true),
   stages: z.array(issueExecutionStageSchema).default([]),
   monitor: issueExecutionMonitorPolicySchema.optional().nullable(),
+  missionControl: missionControlIssuePolicySchema.optional().nullable(),
 });
 
 export const issueExecutionMonitorStateSchema = z.object({
