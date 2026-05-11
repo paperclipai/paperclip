@@ -17,6 +17,7 @@ import { StageNode, type StageNodeData } from "./StageNode.js";
 import { StageInspector } from "./StageInspector.js";
 import { useAutoLayout } from "../hooks/useAutoLayout.js";
 import { ACTION_KEYS } from "../constants.js";
+import { validatePipeline, ValidationErrorsPanel, type ValidationError } from "./ValidationErrors.js";
 import type { PipelineDefinition, StageDefinition, StageType, EdgeDefinition } from "../../types.js";
 
 const NODE_TYPES = { stage: StageNode };
@@ -315,7 +316,15 @@ export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasP
     [setEdges],
   );
 
+  const [validationErrors, setValidationErrors] = useState<ValidationError[]>([]);
+
   const handleSave = useCallback(async () => {
+    const errors = validatePipeline(name, stages, edgeDefs);
+    if (errors.length > 0) {
+      setValidationErrors(errors);
+      return;
+    }
+    setValidationErrors([]);
     setSaving(true);
     setSaveError(null);
     try {
@@ -433,6 +442,11 @@ export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasP
             <Background color="#1f2937" gap={20} size={1} />
             <Controls style={{ background: "#1f2937", border: "1px solid #374151" }} />
           </ReactFlow>
+          <ValidationErrorsPanel
+            errors={validationErrors}
+            onClickStage={(id) => { setSelectedStageId(id); setSelectedEdgeId(null); }}
+            onDismiss={() => setValidationErrors([])}
+          />
         </div>
 
         <StageInspector
