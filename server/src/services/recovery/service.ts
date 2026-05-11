@@ -63,6 +63,7 @@ export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
+const STRANDED_ISSUE_RECOVERY_TERMINAL_COOLDOWN_MS = 60 * 60 * 1000;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 
 type RecoveryWakeupOptions = {
@@ -1345,6 +1346,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
+  async function findRecentTerminalStrandedIssueRecoveryIssue(companyId: string, sourceIssueId: string) {
+    const cooldownStartedAt = new Date(Date.now() - STRANDED_ISSUE_RECOVERY_TERMINAL_COOLDOWN_MS);
+    return db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STRANDED_ISSUE_RECOVERY_ORIGIN_KIND),
+          eq(issues.originId, sourceIssueId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+          gt(issues.updatedAt, cooldownStartedAt),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   function isStrandedIssueRecoveryIssue(issue: typeof issues.$inferSelect) {
     return issue.originKind === STRANDED_ISSUE_RECOVERY_ORIGIN_KIND;
   }
@@ -1491,6 +1512,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
     if (existing) return existing;
+
+    const recentTerminal = await findRecentTerminalStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
+    if (recentTerminal) {
+      await logActivity(db, {
+        companyId: input.issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.stranded_recovery_suppressed",
+        entityType: "issue",
+        entityId: input.issue.id,
+        details: {
+          source: "recovery.ensure_stranded_issue_recovery_issue",
+          reason: "recent_terminal_recovery_issue",
+          recentRecoveryIssueId: recentTerminal.id,
+          recentRecoveryIdentifier: recentTerminal.identifier,
+          recentRecoveryStatus: recentTerminal.status,
+          cooldownMs: STRANDED_ISSUE_RECOVERY_TERMINAL_COOLDOWN_MS,
+        },
+      });
+      return null;
+    }
 
     const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
     if (!ownerAgentId) return null;
@@ -1684,6 +1728,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }) {
     const nestedRecoverySuppressed = isStrandedIssueRecoveryIssue(input.issue);
     let recoveryIssue: typeof issues.$inferSelect | null = null;
+    let recentTerminalRecoveryIssue: typeof issues.$inferSelect | null = null;
     if (!nestedRecoverySuppressed) {
       recoveryIssue = await ensureStrandedIssueRecoveryIssue({
         issue: input.issue,
@@ -1692,6 +1737,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         recoveryCause: input.recoveryCause,
         successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
       });
+      if (!recoveryIssue) {
+        recentTerminalRecoveryIssue = await findRecentTerminalStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
+      }
     }
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
     const nextBlockerIds = recoveryIssue
@@ -1731,6 +1779,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         `- Recovery issue: ${issueUiLink({ identifier: recoveryIssue.identifier, id: recoveryIssue.id }, prefix)}`,
         `- Recovery owner: ${agentUiLink(recoveryOwner, prefix)}`,
         "- Next action: the recovery owner should either restore a live execution path or record the manual resolution, then mark the recovery issue done.",
+      ].join("\n");
+    } else if (recentTerminalRecoveryIssue) {
+      recoveryLine = [
+        "",
+        `- Recovery issue: suppressed because recent recovery ${issueUiLink({ identifier: recentTerminalRecoveryIssue.identifier, id: recentTerminalRecoveryIssue.id }, prefix)} is already \`${recentTerminalRecoveryIssue.status}\`.`,
+        "- Guard: recently terminal stranded recovery issues do not immediately create replacement recovery issues.",
+        "- Next action: inspect the source issue and the recent recovery result before manually re-dispatching work.",
       ].join("\n");
     } else {
       recoveryLine = [
