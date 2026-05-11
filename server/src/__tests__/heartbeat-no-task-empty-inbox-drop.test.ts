@@ -45,7 +45,29 @@ describeEmbeddedPostgres("heartbeat: drop no-task retry wake on empty inbox (STO
   }, 20_000);
 
   afterEach(async () => {
-    await db.delete(companySkills);
+    // heartbeat.wakeup() enqueues a background heartbeat-run that may insert
+    // into company_skills (default skill seeding) AFTER the test's await chain
+    // has returned. We drain the queue by polling until either company_skills
+    // is empty or we time out. Without this, cleanup races the bg work and
+    // companies cannot be deleted (FK from company_skills).
+    const waitForQuiescence = async () => {
+      for (let attempt = 0; attempt < 50; attempt++) {
+        // Yield to the macrotask queue so any setImmediate/Promise.then chains
+        // pending from the heartbeat runner get a chance to settle.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        try {
+          await db.delete(companySkills);
+          await db.delete(companies);
+          return;
+        } catch (err) {
+          const code = (err as { cause?: { code?: string } } | null)?.cause?.code;
+          if (code !== "23503") throw err; // not the expected FK race -> bubble up
+          // Otherwise: bg work re-inserted between our deletes; retry.
+        }
+      }
+      throw new Error("company_skills cleanup timed out (50 retries)");
+    };
+
     await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
     await db.delete(environmentLeases);
@@ -56,7 +78,7 @@ describeEmbeddedPostgres("heartbeat: drop no-task retry wake on empty inbox (STO
     await db.delete(agentRuntimeState);
     await db.delete(budgetPolicies);
     await db.delete(agents);
-    await db.delete(companies);
+    await waitForQuiescence();
   });
 
   afterAll(async () => {
