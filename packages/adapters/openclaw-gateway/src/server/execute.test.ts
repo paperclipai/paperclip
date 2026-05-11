@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildOpenClawGatewayAgentParams, resolveSessionKey } from "./execute.js";
+import { resolveSessionKey } from "./execute.js";
 
 describe("resolveSessionKey", () => {
   it("prefixes run-scoped session keys with the configured agent", () => {
@@ -48,33 +48,5 @@ describe("resolveSessionKey", () => {
         issueId: null,
       }),
     ).toBe("agent:meridian:paperclip");
-  });
-});
-
-describe("buildOpenClawGatewayAgentParams", () => {
-  it("does not send Paperclip metadata as a top-level gateway agent param", () => {
-    const params = buildOpenClawGatewayAgentParams({
-      payloadTemplate: {
-        text: "template text",
-        model: "gpt",
-        paperclip: { issueId: "issue-123" },
-      },
-      message: "wake text with structured Paperclip context",
-      sessionKey: "agent:joe:paperclip:issue:issue-123",
-      runId: "run-123",
-      waitTimeoutMs: 30_000,
-      configuredAgentId: "joe",
-    });
-
-    expect(params).toMatchObject({
-      message: "wake text with structured Paperclip context",
-      sessionKey: "agent:joe:paperclip:issue:issue-123",
-      idempotencyKey: "run-123",
-      agentId: "joe",
-      timeout: 30_000,
-      model: "gpt",
-    });
-    expect(params).not.toHaveProperty("text");
-    expect(params).not.toHaveProperty("paperclip");
   });
 });

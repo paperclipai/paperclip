@@ -522,37 +522,6 @@ function buildStandardPaperclipPayload(
   };
 }
 
-export function buildOpenClawGatewayAgentParams(input: {
-  payloadTemplate: Record<string, unknown>;
-  message: string;
-  sessionKey: string;
-  runId: string;
-  waitTimeoutMs: number;
-  configuredAgentId: string | null;
-}): Record<string, unknown> {
-  const agentParams: Record<string, unknown> = {
-    ...input.payloadTemplate,
-    message: input.message,
-    sessionKey: input.sessionKey,
-    idempotencyKey: input.runId,
-  };
-  delete agentParams.text;
-  // OpenClaw Gateway validates the top-level agent request strictly. Paperclip
-  // wake metadata is already rendered into the message; do not leak the
-  // Paperclip-internal payload object into the gateway request root.
-  delete agentParams.paperclip;
-
-  if (input.configuredAgentId && !nonEmpty(agentParams.agentId)) {
-    agentParams.agentId = input.configuredAgentId;
-  }
-
-  if (typeof agentParams.timeout !== "number") {
-    agentParams.timeout = input.waitTimeoutMs;
-  }
-
-  return agentParams;
-}
-
 function normalizeUrl(input: string): URL | null {
   try {
     return new URL(input);
@@ -1161,15 +1130,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
   const message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
-  const configuredAgentId = nonEmpty(ctx.config.agentId);
-  const agentParams = buildOpenClawGatewayAgentParams({
-    payloadTemplate,
+  const paperclipPayload = buildStandardPaperclipPayload(ctx, wakePayload, paperclipEnv, payloadTemplate);
+
+  const agentParams: Record<string, unknown> = {
+    ...payloadTemplate,
     message,
     sessionKey,
-    runId: ctx.runId,
-    waitTimeoutMs,
-    configuredAgentId,
-  });
+    idempotencyKey: ctx.runId,
+  };
+  delete agentParams.text;
+  agentParams.paperclip = paperclipPayload;
+
+  const configuredAgentId = nonEmpty(ctx.config.agentId);
+  if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
+    agentParams.agentId = configuredAgentId;
+  }
+
+  if (typeof agentParams.timeout !== "number") {
+    agentParams.timeout = waitTimeoutMs;
+  }
 
   if (ctx.onMeta) {
     await ctx.onMeta({
