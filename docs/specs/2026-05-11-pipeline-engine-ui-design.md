@@ -102,7 +102,7 @@ packages/plugins/pipeline-engine/
 
 Emit calls are added to `advancePipeline()`, `handleCommentEvent()`, and `handleStageFailure()`.
 
-> **SDK confirmed:** `ctx.stream.emit()` and `usePluginStream()` are available in the plugin SDK (exported from `@paperclipai/plugin-sdk/ui`). No fallback needed.
+> **SDK confirmed:** `ctx.streams.emit()` and `usePluginStream()` are available in the plugin SDK (exported from `@paperclipai/plugin-sdk/ui`). No fallback needed.
 
 ### Manifest Changes
 
