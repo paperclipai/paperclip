@@ -15,6 +15,7 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 const mockListMissionControlCompletionDocuments = vi.hoisted(() => vi.fn());
 const mockListAutonomousGoalLoopWatchdogPreview = vi.hoisted(() => vi.fn());
+const mockListAutonomousGoalLoopWatchdogRecoveryPlanPreview = vi.hoisted(() => vi.fn());
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
@@ -109,6 +110,10 @@ vi.mock("../services/mission-control-gates.js", () => ({
 
 vi.mock("../services/autonomous-loop-watchdog-preview.js", () => ({
   listAutonomousGoalLoopWatchdogPreview: mockListAutonomousGoalLoopWatchdogPreview,
+}));
+
+vi.mock("../services/autonomous-loop-watchdog-recovery-plan.js", () => ({
+  listAutonomousGoalLoopWatchdogRecoveryPlanPreview: mockListAutonomousGoalLoopWatchdogRecoveryPlanPreview,
 }));
 
 vi.mock("../services/instance-settings.js", () => ({
@@ -320,6 +325,26 @@ describe.sequential("issue comment reopen routes", () => {
       totalIssuesScanned: 0,
       candidates: [],
     });
+    mockListAutonomousGoalLoopWatchdogRecoveryPlanPreview.mockReset();
+    mockListAutonomousGoalLoopWatchdogRecoveryPlanPreview.mockResolvedValue({
+      companyId: "company-1",
+      mode: "recovery_plan_preview",
+      dryRun: true,
+      readOnly: true,
+      liveRecovery: false,
+      generatedAt: "2026-05-11T10:00:00.000Z",
+      totalIssuesScanned: 0,
+      candidatesConsidered: 0,
+      plans: [],
+      skippedCandidates: [],
+      guardrails: {
+        boardOnly: true,
+        dryRunOnly: true,
+        noLiveRecovery: true,
+        noApprovalLaundering: true,
+        allowedOwners: ["operator"],
+      },
+    });
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.hasPermission.mockResolvedValue(false);
@@ -421,6 +446,107 @@ describe.sequential("issue comment reopen routes", () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("Invalid limit");
     expect(mockListAutonomousGoalLoopWatchdogPreview).not.toHaveBeenCalled();
+  });
+
+  it("serves dry-run autonomous loop watchdog recovery-plan previews for operators", async () => {
+    mockListAutonomousGoalLoopWatchdogRecoveryPlanPreview.mockResolvedValue({
+      companyId: "company-1",
+      mode: "recovery_plan_preview",
+      dryRun: true,
+      readOnly: true,
+      liveRecovery: false,
+      generatedAt: "2026-05-11T10:00:00.000Z",
+      totalIssuesScanned: 2,
+      candidatesConsidered: 1,
+      plans: [
+        {
+          id: "recovery-plan:issue-1:repair_loop_decision:ceo_loop_decision_stale",
+          candidateId: "issue-1:repair_loop_decision:ceo_loop_decision_stale",
+          issueId: "issue-1",
+          identifier: "PAP-581",
+          title: "Autonomous loop goal",
+          severity: "high",
+          reason: "ceo_loop_decision_stale",
+          recoveryAction: "repair_loop_decision",
+          planKind: "repair_loop_decision_document",
+          execution: "operator_manual_only",
+          mutationPolicy: {
+            dryRunOnly: true,
+            writesDocument: false,
+            createsIssue: false,
+            createsApproval: false,
+            queuesWakeup: false,
+            continuesAutonomousLoop: false,
+            liveRecovery: false,
+          },
+          steps: [],
+          blockedActions: ["continue_autonomous_goal_loop", "create_child_issue", "request_user_approval"],
+        },
+      ],
+      skippedCandidates: [],
+      guardrails: {
+        boardOnly: true,
+        dryRunOnly: true,
+        noLiveRecovery: true,
+        noApprovalLaundering: true,
+        allowedOwners: ["operator"],
+      },
+    });
+
+    const res = await request(await installActor(createApp()))
+      .get("/api/companies/company-1/autonomous-loop-watchdog/recovery-plan/preview?limit=25&dryRun=true")
+      .send();
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      companyId: "company-1",
+      mode: "recovery_plan_preview",
+      dryRun: true,
+      readOnly: true,
+      liveRecovery: false,
+      plans: [
+        expect.objectContaining({
+          execution: "operator_manual_only",
+          planKind: "repair_loop_decision_document",
+        }),
+      ],
+    });
+    expect(mockListAutonomousGoalLoopWatchdogRecoveryPlanPreview).toHaveBeenCalledWith(mockDb, "company-1", {
+      limit: 25,
+    });
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-board actors for autonomous loop watchdog recovery-plan previews", async () => {
+    const res = await request(await installActor(createApp(), agentActor()))
+      .get("/api/companies/company-1/autonomous-loop-watchdog/recovery-plan/preview")
+      .send();
+
+    expect(res.status).toBe(403);
+    expect(mockListAutonomousGoalLoopWatchdogRecoveryPlanPreview).not.toHaveBeenCalled();
+  });
+
+  it("validates autonomous loop watchdog recovery-plan preview limits", async () => {
+    const res = await request(await installActor(createApp()))
+      .get("/api/companies/company-1/autonomous-loop-watchdog/recovery-plan/preview?limit=101")
+      .send();
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid recovery plan preview query");
+    expect(mockListAutonomousGoalLoopWatchdogRecoveryPlanPreview).not.toHaveBeenCalled();
+  });
+
+  it("rejects live/apply-shaped autonomous loop watchdog recovery-plan preview queries", async () => {
+    const dryRunFalse = await request(await installActor(createApp()))
+      .get("/api/companies/company-1/autonomous-loop-watchdog/recovery-plan/preview?dryRun=false")
+      .send();
+    const applyQuery = await request(await installActor(createApp()))
+      .get("/api/companies/company-1/autonomous-loop-watchdog/recovery-plan/preview?apply=true")
+      .send();
+
+    expect(dryRunFalse.status).toBe(400);
+    expect(applyQuery.status).toBe(400);
+    expect(mockListAutonomousGoalLoopWatchdogRecoveryPlanPreview).not.toHaveBeenCalled();
   });
 
   it("serves derived autonomous loop state for the issue detail panel", async () => {

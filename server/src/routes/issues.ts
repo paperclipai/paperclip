@@ -88,6 +88,7 @@ import {
   summarizeAutonomousGoalLoopContinuationOutcome,
 } from "../services/autonomous-goal-loop-continuation.js";
 import { listAutonomousGoalLoopWatchdogPreview } from "../services/autonomous-loop-watchdog-preview.js";
+import { listAutonomousGoalLoopWatchdogRecoveryPlanPreview } from "../services/autonomous-loop-watchdog-recovery-plan.js";
 import { listMissionControlCompletionDocuments } from "../services/mission-control-gates.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
@@ -1379,6 +1380,33 @@ export function issueRoutes(
       return;
     }
     const preview = await listAutonomousGoalLoopWatchdogPreview(db, companyId, {
+      limit: limitParsed.data,
+    });
+    res.json(preview);
+  });
+
+  router.get("/companies/:companyId/autonomous-loop-watchdog/recovery-plan/preview", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+
+    const allowedQueryKeys = new Set(["limit", "dryRun"]);
+    const unknownQueryKeys = Object.keys(req.query).filter((key) => !allowedQueryKeys.has(key));
+    const dryRunParsed = z.union([z.literal("true"), z.literal("1")]).optional().safeParse(req.query.dryRun);
+    const limitParsed = z.coerce.number().int().min(1).max(100).optional().safeParse(req.query.limit);
+    if (unknownQueryKeys.length > 0 || !dryRunParsed.success || !limitParsed.success) {
+      res.status(400).json({
+        error: "Invalid recovery plan preview query",
+        details: {
+          unknownQueryKeys,
+          dryRun: dryRunParsed.success ? undefined : dryRunParsed.error.issues,
+          limit: limitParsed.success ? undefined : limitParsed.error.issues,
+        },
+      });
+      return;
+    }
+
+    const preview = await listAutonomousGoalLoopWatchdogRecoveryPlanPreview(db, companyId, {
       limit: limitParsed.data,
     });
     res.json(preview);
