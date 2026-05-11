@@ -77,6 +77,7 @@ describe("mission-control workflow contracts", () => {
     expect(
       missionControlValidatorReportSchema.parse({
         version: 1,
+        writtenByAgentId: "validator-agent-1",
         verdict: "PASS",
         completionScore: 9,
         criteriaChecked: ["tests passed", "artifact verified"],
@@ -158,6 +159,7 @@ describe("mission-control completion gate", () => {
           key: "validator-report",
           body: JSON.stringify({
             version: 1,
+            writtenByAgentId: "validator-agent-1",
             verdict: "PASS",
             completionScore: 9,
             criteriaChecked: ["criteria checked"],
@@ -170,6 +172,103 @@ describe("mission-control completion gate", () => {
 
     expect(allowed.allowed).toBe(true);
     expect(allowed.validatorVerdict).toBe("PASS");
+  });
+
+  it("blocks validator reports written by the assigned worker", () => {
+    const blocked = evaluateMissionControlCompletionGate({
+      issue: {
+        priority: "high",
+        assigneeAgentId: "worker-agent-1",
+        executionPolicy: {
+          missionControl: { enabled: true, riskClass: "high" },
+        },
+      },
+      documents: [
+        { key: "validation-contract", body: "objective/pass criteria" },
+        { key: "worker-handoff", body: "completed/checks" },
+        {
+          key: "validator-report",
+          body: JSON.stringify({
+            version: 1,
+            writtenByAgentId: "worker-agent-1",
+            verdict: "PASS",
+            completionScore: 9,
+            criteriaChecked: ["criteria checked"],
+            evidence: ["test output"],
+            blockingIssues: [],
+          }),
+        },
+      ],
+    });
+
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.reason).toBe("validator_self_attested");
+    expect(blocked.validatorVerdict).toBe("PASS");
+  });
+
+  it("trusts document writer metadata over body-level validator identity", () => {
+    const blocked = evaluateMissionControlCompletionGate({
+      issue: {
+        priority: "high",
+        assigneeAgentId: "worker-agent-1",
+        executionPolicy: {
+          missionControl: { enabled: true, riskClass: "high" },
+        },
+      },
+      documents: [
+        { key: "validation-contract", body: "objective/pass criteria" },
+        { key: "worker-handoff", body: "completed/checks" },
+        {
+          key: "validator-report",
+          createdByAgentId: "worker-agent-1",
+          updatedByAgentId: "worker-agent-1",
+          body: JSON.stringify({
+            version: 1,
+            writtenByAgentId: "validator-agent-1",
+            verdict: "PASS",
+            completionScore: 9,
+            criteriaChecked: ["criteria checked"],
+            evidence: ["test output"],
+            blockingIssues: [],
+          }),
+        },
+      ],
+    });
+
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.reason).toBe("validator_self_attested");
+    expect(blocked.validatorVerdict).toBe("PASS");
+  });
+
+  it("allows validator reports written by a different agent than the assigned worker", () => {
+    const allowed = evaluateMissionControlCompletionGate({
+      issue: {
+        priority: "high",
+        assigneeAgentId: "worker-agent-1",
+        executionPolicy: {
+          missionControl: { enabled: true, riskClass: "high" },
+        },
+      },
+      documents: [
+        { key: "validation-contract", body: "objective/pass criteria" },
+        { key: "worker-handoff", body: "completed/checks" },
+        {
+          key: "validator-report",
+          body: JSON.stringify({
+            version: 1,
+            writtenByAgentId: "validator-agent-1",
+            verdict: "PASS",
+            completionScore: 9,
+            criteriaChecked: ["criteria checked"],
+            evidence: ["test output"],
+            blockingIssues: [],
+          }),
+        },
+      ],
+    });
+
+    expect(allowed.allowed).toBe(true);
+    expect(allowed.reason).toBe("allowed");
   });
 
   it("blocks autonomous loop completion until the CEO decision reaches the goal", () => {
@@ -195,6 +294,7 @@ describe("mission-control completion gate", () => {
         key: "validator-report",
         body: JSON.stringify({
           version: 1,
+          writtenByAgentId: "validator-agent-1",
           verdict: "PASS",
           completionScore: 9,
           criteriaChecked: ["criteria checked"],

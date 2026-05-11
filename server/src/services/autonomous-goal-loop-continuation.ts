@@ -5,6 +5,7 @@ import {
   evaluateMissionControlAutonomousLoopGate,
   evaluateMissionControlCompletionGate,
   MISSION_CONTROL_AUTONOMOUS_LOOP_DOCUMENT_KEY,
+  type MissionControlAutonomousLoopReportEvent,
   type MissionControlCeoLoopDecision,
   type MissionControlCompletionGateDocument,
   type MissionControlCompletionGateResult,
@@ -474,7 +475,7 @@ function childDescription(input: {
 function reportEventFor(input: {
   reason: AutonomousGoalLoopContinuationReason;
   decision: MissionControlCeoLoopDecision | null;
-}): string | null {
+}): MissionControlAutonomousLoopReportEvent | null {
   if (input.reason === "approval_required") return "approval_required";
   if (input.reason === "runtime_exceeded") return "runtime_exceeded";
   if (input.reason === "iteration_exceeded") return "iteration_exceeded";
@@ -491,7 +492,7 @@ function shouldReportToUser(input: {
 }) {
   const event = reportEventFor({ reason: input.reason, decision: input.decision });
   if (!event) return false;
-  return input.policy?.autonomousLoop?.reportToUserOnlyOn.includes(event as never) ?? false;
+  return input.policy?.autonomousLoop?.reportToUserOnlyOn.includes(event) ?? false;
 }
 
 function nonCreatePlan(input: {
@@ -686,7 +687,7 @@ export async function continueAutonomousGoalLoopFromDecision(input: {
     actorAgentId: input.actor.agentId ?? null,
     actorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
     originRunId: input.actor.runId ?? null,
-  } as never);
+  });
 
   return {
     outcome: "created",

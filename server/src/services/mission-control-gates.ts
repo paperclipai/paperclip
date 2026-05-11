@@ -11,6 +11,7 @@ import { unprocessable } from "../errors.js";
 export type MissionControlCompletionGateIssue = {
   id: string;
   priority: string;
+  assigneeAgentId?: string | null;
   executionPolicy?: unknown;
 };
 
@@ -61,15 +62,25 @@ export async function listMissionControlCompletionDocuments(
     .select({
       key: issueDocuments.key,
       body: documents.latestBody,
+      createdByAgentId: documents.createdByAgentId,
+      updatedByAgentId: documents.updatedByAgentId,
       updatedAt: documents.updatedAt,
     })
     .from(issueDocuments)
     .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
     .where(eq(issueDocuments.issueId, issueId));
 
-  return rows.map((row: { key: string; body: string | null; updatedAt: Date | string | null }) => ({
+  return rows.map((row: {
+    key: string;
+    body: string | null;
+    createdByAgentId: string | null;
+    updatedByAgentId: string | null;
+    updatedAt: Date | string | null;
+  }) => ({
     key: row.key,
     body: row.body,
+    createdByAgentId: row.createdByAgentId,
+    updatedByAgentId: row.updatedByAgentId,
     updatedAt: row.updatedAt,
   }));
 }
