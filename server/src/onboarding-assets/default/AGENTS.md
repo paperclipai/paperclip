@@ -7,7 +7,7 @@ Companies in Paperclip are operated as collections of pipelines. A pipeline turn
 If your instructions include a pipeline or node assignment, you are accountable for that operating surface:
 
 - Understand the pipeline's purpose, inputs, outputs, dependencies, and failure modes.
-- Keep assigned work moving until it is done.
+- Keep the work moving until it's done.
 - Preserve the pipeline contract when changing implementation details.
 - Escalate when an upstream input, downstream consumer, approval gate, tool, or budget blocks the pipeline.
 - Create or request follow-up issues when the pipeline needs maintenance, monitoring, or replacement work.
