@@ -35,6 +35,7 @@ If an agent is already running, new wakeups are merged (coalesced) instead of la
 Built-in adapters:
 
 - `claude_local`: runs your local `claude` CLI
+- `copilot_local`: runs your local `copilot` CLI
 - `codex_local`: runs your local `codex` CLI
 - `opencode_local`: runs your local `opencode` CLI
 - `cursor`: runs Cursor in background mode
@@ -48,7 +49,7 @@ External plugin adapters (install via the adapter manager or API):
 
 - `droid_local`: runs your local Factory Droid CLI (`@henkey/droid-paperclip-adapter`)
 
-For local CLI adapters (`claude_local`, `codex_local`, `opencode_local`, `hermes_local`, `droid_local`), Paperclip assumes the CLI is already installed and authenticated on the host machine.
+For local CLI adapters (`claude_local`, `copilot_local`, `codex_local`, `opencode_local`, `hermes_local`, `droid_local`), Paperclip assumes the CLI is already installed and authenticated on the host machine.
 
 ## 3.2 Runtime behavior
 
@@ -144,7 +145,7 @@ If the connection drops, the UI reconnects automatically.
 
 If runs fail repeatedly:
 
-1. Check adapter command availability (e.g. `claude`/`codex`/`opencode`/`hermes` installed and logged in).
+1. Check adapter command availability (e.g. `claude`/`copilot`/`codex`/`opencode`/`hermes` installed and logged in).
 2. Verify `cwd` exists and is accessible.
 3. Inspect run error + stderr excerpt, then full log.
 4. Confirm timeout is not too low.
@@ -177,7 +178,7 @@ Start with least privilege where possible, and avoid exposing secrets in broad r
 
 ## 10. Minimal setup checklist
 
-1. Choose adapter (e.g. `claude_local`, `codex_local`, `opencode_local`, `hermes_local`, `cursor`, or `openclaw_gateway`). External plugins like `droid_local` are also available via the adapter manager.
+1. Choose adapter (e.g. `claude_local`, `copilot_local`, `codex_local`, `opencode_local`, `hermes_local`, `cursor`, or `openclaw_gateway`). External plugins like `droid_local` are also available via the adapter manager.
 2. Set `cwd` to the target workspace (for local adapters).
 3. Optionally add a prompt template (`promptTemplate`) or use the managed instructions bundle.
 4. Configure heartbeat policy (timer and/or assignment wakeups).
