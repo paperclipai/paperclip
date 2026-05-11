@@ -464,7 +464,13 @@ def fetch_cj_products(niche: str, cj_key: str, limit: int = 8) -> list:
         raw = data.get("data", {}).get("list", [])
         products = []
         for p in raw[:limit]:
-            price_usd = float(p.get("sellPrice") or p.get("nowPrice") or 0)
+            # CJ puede devolver precio como "16.95 -- 22.97" (rango) — tomar el menor
+            def parse_price(val):
+                if not val: return 0.0
+                s = str(val).split("--")[0].strip().split("-")[0].strip()
+                try: return float(s)
+                except: return 0.0
+            price_usd = parse_price(p.get("sellPrice") or p.get("nowPrice"))
             price_eur = round(price_usd * 0.92, 2)
             products.append({
                 "name":                  p.get("nameEn", "")[:100],

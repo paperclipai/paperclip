@@ -24,55 +24,29 @@ def load_reference_landings() -> str:
         return ""
 
 
-def fetch_unsplash_fallback(product_name: str) -> dict:
+def fetch_picsum_fallback(product_name: str) -> dict:
     """
-    Genera URLs de Unsplash Source basadas en keywords del producto.
-    No requiere API key — funciona desde cualquier IP.
-    Las URLs son consistentes por seed (misma imagen cada vez).
+    Genera URLs de Picsum Photos — funciona desde cualquier IP, sin API key.
+    Usa seeds basados en el producto para consistencia (misma imagen cada ejecución).
+    picsum.photos es un servicio activo y confiable (no deprecado).
     """
-    name_lower = product_name.lower()
+    import hashlib
+    # Generar seeds numéricos consistentes a partir del nombre del producto
+    base_seed = int(hashlib.md5(product_name.encode()).hexdigest(), 16) % 1000
 
-    # Keywords específicas por tipo de producto
-    if any(w in name_lower for w in ["perro", "dog", "mascota", "pet", "gato", "cat", "collar", "arnes", "arnés"]):
-        hero_kw    = "dog,pet,happy,owner"
-        product_kw = "dog,collar,pet,accessory"
-        context_kw = "dog,walking,lifestyle"
-    elif any(w in name_lower for w in ["cocina", "kitchen", "gadget", "blender", "licuadora"]):
-        hero_kw    = "kitchen,cooking,modern"
-        product_kw = "kitchen,gadget,appliance"
-        context_kw = "cooking,food,kitchen"
-    elif any(w in name_lower for w in ["fitness", "gym", "banda", "ejercicio", "deporte", "sport"]):
-        hero_kw    = "fitness,workout,home"
-        product_kw = "fitness,exercise,sport"
-        context_kw = "workout,gym,training"
-    elif any(w in name_lower for w in ["consola", "gaming", "retro", "game", "juego"]):
-        hero_kw    = "gaming,retro,console"
-        product_kw = "gaming,handheld,device"
-        context_kw = "gaming,playing,tech"
-    elif any(w in name_lower for w in ["belleza", "beauty", "crema", "serum", "skincare", "piel"]):
-        hero_kw    = "skincare,beauty,woman"
-        product_kw = "beauty,cosmetic,skincare"
-        context_kw = "woman,beauty,routine"
-    else:
-        words = [w for w in product_name.split()[:3] if len(w) > 3]
-        hero_kw    = ",".join(words) + ",lifestyle"
-        product_kw = ",".join(words)
-        context_kw = ",".join(words) + ",person"
-
-    base = "https://source.unsplash.com/featured"
-    hero_urls    = [f"{base}/1200x600/?{hero_kw}"]
+    hero_urls    = [f"https://picsum.photos/seed/{base_seed}/1200/600"]
     product_urls = [
-        f"{base}/800x600/?{product_kw},1",
-        f"{base}/800x600/?{product_kw},2",
-        f"{base}/800x600/?{product_kw},3",
+        f"https://picsum.photos/seed/{base_seed + 1}/800/600",
+        f"https://picsum.photos/seed/{base_seed + 2}/800/600",
+        f"https://picsum.photos/seed/{base_seed + 3}/800/600",
     ]
     context_urls = [
-        f"{base}/800x600/?{context_kw},lifestyle",
-        f"{base}/800x600/?{context_kw},real",
+        f"https://picsum.photos/seed/{base_seed + 4}/800/600",
+        f"https://picsum.photos/seed/{base_seed + 5}/800/600",
     ]
 
     all_urls = hero_urls + product_urls + context_urls
-    print(f"  ✅ Unsplash fallback: {len(all_urls)} URLs generadas", flush=True)
+    print(f"  ✅ Picsum fallback: {len(all_urls)} URLs (seed base: {base_seed})", flush=True)
     return {
         "hero":    hero_urls,
         "product": product_urls,
@@ -452,8 +426,8 @@ Responde SOLO con JSON:
 
     # Prioridad 3: Unsplash fallback
     if not images.get("all"):
-        print(f"  ℹ️  Pexels no disponible — usando Unsplash", flush=True)
-        images = fetch_unsplash_fallback(name)
+        print(f"  ℹ️  Pexels no disponible — usando Picsum", flush=True)
+        images = fetch_picsum_fallback(name)
     hero_imgs    = images.get("hero", []) if images else []
     hero_img     = hero_imgs[0] if hero_imgs else ""
     product_imgs = images.get("product", []) if images else []
