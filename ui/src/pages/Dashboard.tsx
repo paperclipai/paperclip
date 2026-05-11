@@ -332,14 +332,15 @@ export function Dashboard() {
                     </p>
                   </div>
                   {data.budgets.activeIncidents > 0 ||
-                  data.tasks.blocked > 0 ? (
+                  data.tasks.blocked > 0 ||
+                  data.pendingApprovals + data.budgets.pendingApprovals > 0 ? (
                     <Badge variant="destructive" className="inline-flex items-center gap-1 uppercase px-3 py-1.5">
                       <TriangleAlert className="h-3.5 w-3.5" />
                       Attention needed
                     </Badge>
                   ) : (
 
-                    <Badge variant="outline" className="inline-flex items-center gap-1 uppercase px-3 py-1.5 text-emerald-700 dark:text-emerald-200 border-emerald-500/20 bg-emerald-500/10">
+                    <Badge variant="outline" className="inline-flex items-ts  gap-1 uppercase px-3 py-1.5 text-emerald-700 dark:text-emerald-200 border-emerald-500/20 bg-emerald-500/10">
                       Company healthy
                     </Badge>
                   )}
