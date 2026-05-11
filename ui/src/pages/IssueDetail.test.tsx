@@ -9,6 +9,7 @@ import { IssueDetail } from "./IssueDetail";
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
+  getAutonomousLoopState: vi.fn(),
   list: vi.fn(),
   listComments: vi.fn(),
   listAttachments: vi.fn(),
@@ -777,6 +778,9 @@ describe("IssueDetail", () => {
     consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(window, "scrollTo").mockImplementation(() => {});
 
+    mockIssuesApi.get.mockReset();
+    mockIssuesApi.getAutonomousLoopState.mockReset();
+    mockIssuesApi.getAutonomousLoopState.mockResolvedValue({ enabled: false, status: "disabled" });
     mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.listComments.mockResolvedValue([]);
     mockIssuesApi.listAttachments.mockResolvedValue([]);
@@ -864,6 +868,106 @@ describe("IssueDetail", () => {
     await flushReact();
 
     expect(container.querySelector('[data-status-icon-state="covered"]')?.textContent).toBe("blocked");
+  });
+
+  it("shows the Autonomous loop panel when loop state is enabled", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.getAutonomousLoopState.mockResolvedValue({
+      enabled: true,
+      status: "executing",
+      goal: "Ship autonomous creator traffic ops workflow",
+      iteration: 1,
+      maxIterations: 5,
+      progressLabel: "1 / 5",
+      currentDecision: {
+        iteration: 1,
+        decision: "next_iteration",
+        nextTaskTitle: "Expose loop state panel",
+      },
+      planner: {
+        mode: "single_child",
+        supportsParallelChildren: false,
+        nextTaskTitle: "Expose loop state panel",
+      },
+      iterations: [
+        {
+          iteration: 2,
+          issueId: "child-1",
+          identifier: "PAP-2",
+          title: "[Loop 2] Expose loop state panel",
+          status: "in_progress",
+        },
+      ],
+      supervisor: {
+        attentionRequired: false,
+        recoveryAction: "none",
+      },
+      observability: {
+        chain: [
+          { kind: "goal", issueId: "issue-1", title: "Ship autonomous creator traffic ops workflow", status: "in_progress" },
+          { kind: "iteration", issueId: "child-1", iteration: 2, identifier: "PAP-CHAIN", title: "Chain child iteration", status: "in_progress" },
+        ],
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.getAutonomousLoopState).toHaveBeenCalledWith("PAP-1");
+      expect(container.textContent).toContain("Autonomous loop");
+      expect(container.textContent).toContain("Ship autonomous creator traffic ops workflow");
+      expect(container.textContent).toContain("1 / 5");
+      expect(container.textContent).toContain("next_iteration");
+      expect(container.textContent).toContain("Expose loop state panel");
+      expect(container.textContent).toContain("PAP-2");
+      expect(container.textContent).toContain("PAP-CHAIN");
+      expect(container.textContent).toContain("Supervisor: clear");
+    });
+  });
+
+  it("shows Autonomous loop approval-required supervisor attention", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.getAutonomousLoopState.mockResolvedValue({
+      enabled: true,
+      status: "approval_required",
+      goal: "Ship autonomous creator traffic ops workflow",
+      iteration: 1,
+      maxIterations: 5,
+      currentDecision: {
+        decision: "approval_required",
+        nextTaskTitle: "Expose loop state panel",
+      },
+      supervisor: {
+        attentionRequired: true,
+        reason: "needs_user_approval",
+        recoveryAction: "approve_next_iteration",
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Autonomous loop");
+      expect(container.textContent).toContain("Supervisor: Needs approval");
+      expect(container.textContent).toContain("approval_required");
+      expect(container.textContent).toContain("Expose loop state panel");
+    });
   });
 
   it("refreshes subtree pause state after resuming a hold", async () => {

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  list: vi.fn(),
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
@@ -12,6 +13,7 @@ const mockIssueService = vi.hoisted(() => ({
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
 }));
+const mockListMissionControlCompletionDocuments = vi.hoisted(() => vi.fn());
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
@@ -98,6 +100,10 @@ vi.mock("../services/feedback.js", () => ({
 
 vi.mock("../services/heartbeat.js", () => ({
   heartbeatService: () => mockHeartbeatService,
+}));
+
+vi.mock("../services/mission-control-gates.js", () => ({
+  listMissionControlCompletionDocuments: mockListMissionControlCompletionDocuments,
 }));
 
 vi.mock("../services/instance-settings.js", () => ({
@@ -215,6 +221,7 @@ describe.sequential("issue comment reopen routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockReset();
+    mockIssueService.list.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
     mockIssueService.update.mockReset();
     mockIssueService.addComment.mockReset();
@@ -296,6 +303,9 @@ describe.sequential("issue comment reopen routes", () => {
     });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    mockIssueService.list.mockResolvedValue([]);
+    mockListMissionControlCompletionDocuments.mockReset();
+    mockListMissionControlCompletionDocuments.mockResolvedValue([]);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.hasPermission.mockResolvedValue(false);
@@ -329,6 +339,110 @@ describe.sequential("issue comment reopen routes", () => {
         ambiguous: false,
         agent: { id: reference },
       };
+    });
+  });
+
+  it("serves derived autonomous loop state for the issue detail panel", async () => {
+    const parentIssue = {
+      ...makeIssue("in_progress"),
+      priority: "high",
+      executionPolicy: {
+        missionControl: {
+          enabled: true,
+          riskClass: "high",
+          requiredDocumentKeys: ["validation-contract", "worker-handoff", "validator-report"],
+          autonomousLoop: {
+            enabled: true,
+            controller: "CEO",
+            goal: "Ship Autonomous Loop v2 observability",
+            startedAt: "2026-05-11T08:00:00.000Z",
+            iteration: 1,
+            maxIterations: 5,
+            maxRuntimeHours: 24,
+          },
+        },
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(parentIssue);
+    mockListMissionControlCompletionDocuments.mockResolvedValue([
+      { key: "validation-contract", body: "objective/pass criteria" },
+      { key: "worker-handoff", body: "worker done" },
+      { key: "validator-report", body: "Verdict: PASS" },
+      {
+        key: "ceo-loop-decision",
+        body: JSON.stringify({
+          version: 1,
+          iteration: 1,
+          decision: "next_iteration",
+          rationale: "Continue with the next safe internal task.",
+          nextTask: {
+            title: "Expose loop state panel",
+            acceptanceCriteria: ["Issue detail shows loop state"],
+            safeToRunWithoutUserApproval: true,
+          },
+        }),
+      },
+    ]);
+    mockIssueService.list.mockResolvedValue([
+      {
+        id: "child-1",
+        parentId: parentIssue.id,
+        identifier: "PAP-581",
+        title: "Expose loop state panel",
+        status: "in_progress",
+        originKind: "autonomous_goal_loop_iteration",
+        originId: parentIssue.id,
+        originFingerprint: "iteration:1",
+        createdAt: new Date("2026-05-11T09:00:00.000Z"),
+        updatedAt: new Date("2026-05-11T09:10:00.000Z"),
+      },
+    ]);
+
+    const res = await request(await installActor(createApp()))
+      .get("/api/issues/11111111-1111-4111-8111-111111111111/autonomous-loop-state")
+      .send();
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      enabled: true,
+      status: "executing",
+      goal: "Ship Autonomous Loop v2 observability",
+      iteration: 1,
+      progressLabel: "1 / 5",
+      currentDecision: {
+        iteration: 1,
+        decision: "next_iteration",
+        nextTaskTitle: "Expose loop state panel",
+      },
+      planner: {
+        mode: "single_child",
+        supportsParallelChildren: false,
+        originFingerprint: "iteration:1",
+        childIssueId: "child-1",
+      },
+      supervisor: {
+        attentionRequired: false,
+        recoveryAction: "none",
+      },
+      iterations: [
+        {
+          iteration: 2,
+          issueId: "child-1",
+          identifier: "PAP-581",
+          title: "Expose loop state panel",
+          status: "in_progress",
+        },
+      ],
+    });
+    expect(res.body.observability.chain).toEqual([
+      expect.objectContaining({ kind: "goal", issueId: parentIssue.id }),
+      expect.objectContaining({ kind: "iteration", issueId: "child-1", iteration: 2 }),
+    ]);
+    expect(mockIssueService.list).toHaveBeenCalledWith("company-1", {
+      parentId: parentIssue.id,
+      originKind: "autonomous_goal_loop_iteration",
+      originId: parentIssue.id,
+      limit: 100,
     });
   });
 

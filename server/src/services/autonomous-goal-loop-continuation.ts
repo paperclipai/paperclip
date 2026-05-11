@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { issues } from "@paperclipai/db";
 import {
+  evaluateMissionControlAutonomousLoopGate,
   evaluateMissionControlCompletionGate,
   MISSION_CONTROL_AUTONOMOUS_LOOP_DOCUMENT_KEY,
   type MissionControlCeoLoopDecision,
@@ -37,6 +38,21 @@ type AutonomousGoalLoopParentIssue = {
   assigneeUserId?: string | null;
   requestDepth?: number | null;
   executionPolicy?: unknown;
+};
+
+type AutonomousGoalLoopChildIssue = {
+  id: string;
+  parentId?: string | null;
+  identifier?: string | null;
+  title: string;
+  status?: string | null;
+  originKind?: string | null;
+  originId?: string | null;
+  originFingerprint?: string | null;
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
+  createdAt?: string | Date | null;
+  updatedAt?: string | Date | null;
 };
 
 type AutonomousGoalLoopActor = {
@@ -99,6 +115,87 @@ export type AutonomousGoalLoopContinuationOutcome =
       parentBlockerAdded: boolean;
     };
 
+export type AutonomousGoalLoopState =
+  | {
+      enabled: false;
+      status: "disabled";
+    }
+  | {
+      enabled: true;
+      status:
+        | "planning"
+        | "executing"
+        | "validating"
+        | "ceo_review"
+        | "goal_reached"
+        | "blocked"
+        | "approval_required"
+        | "failed";
+      goal: string | null;
+      iteration: number;
+      maxIterations: number | null;
+      progressLabel: string;
+      currentDecision: {
+        iteration: number;
+        decision: MissionControlCeoLoopDecision["decision"];
+        rationale: string;
+        nextTaskTitle: string | null;
+        hardGate: MissionControlCeoLoopDecision["hardGate"];
+        evidence: string[];
+      } | null;
+      planner: {
+        mode: "single_child";
+        supportsParallelChildren: false;
+        nextTaskTitle: string | null;
+        originFingerprint: string | null;
+        childIssueId: string | null;
+      };
+      supervisor: {
+        attentionRequired: boolean;
+        reason: string | null;
+        recoveryAction:
+          | "none"
+          | "request_user_approval"
+          | "resolve_blocker"
+          | "manual_recovery"
+          | "repair_loop_decision"
+          | "adjust_loop_limits_or_close_goal"
+          | "manual_review";
+        userVisible: boolean;
+      };
+      iterations: Array<{
+        iteration: number;
+        issueId: string;
+        identifier: string | null;
+        title: string;
+        status: string | null;
+        originFingerprint: string | null;
+        parentId: string | null;
+        createdAt: string | null;
+        updatedAt: string | null;
+      }>;
+      observability: {
+        generatedAt: string;
+        chain: Array<
+          | {
+              kind: "goal";
+              issueId: string;
+              identifier: string | null;
+              title: string;
+              status: string | null;
+            }
+          | {
+              kind: "iteration";
+              issueId: string;
+              identifier: string | null;
+              title: string;
+              status: string | null;
+              iteration: number;
+            }
+        >;
+      };
+    };
+
 function truncateTitle(value: string) {
   if (value.length <= MAX_CONTINUATION_TITLE_LENGTH) return value;
   return value.slice(0, MAX_CONTINUATION_TITLE_LENGTH - 1).trimEnd();
@@ -106,6 +203,202 @@ function truncateTitle(value: string) {
 
 function continuationOriginFingerprint(decision: MissionControlCeoLoopDecision) {
   return `iteration:${decision.iteration}`;
+}
+
+function serializeDate(value: string | Date | null | undefined) {
+  if (!value) return null;
+  if (value instanceof Date) return value.toISOString();
+  return value;
+}
+
+function iterationFromOriginFingerprint(value: string | null | undefined) {
+  const match = value?.match(/^iteration:(\d+)$/);
+  if (!match) return null;
+  const parsed = Number.parseInt(match[1]!, 10);
+  return Number.isFinite(parsed) ? parsed + 1 : null;
+}
+
+function readStatus(value: string | null | undefined) {
+  return value ?? null;
+}
+
+function progressLabelFor(iteration: number, maxIterations: number | null) {
+  return maxIterations ? `${iteration} / ${maxIterations}` : `${iteration}`;
+}
+
+function supervisorFor(input: {
+  reason: string;
+  decision: MissionControlCeoLoopDecision | null;
+}): Extract<AutonomousGoalLoopState, { enabled: true }>["supervisor"] {
+  if (input.reason === "approval_required" || input.decision?.decision === "approval_required") {
+    return {
+      attentionRequired: true,
+      reason: "approval_required",
+      recoveryAction: "request_user_approval",
+      userVisible: true,
+    };
+  }
+  if (input.reason === "runtime_exceeded" || input.reason === "iteration_exceeded") {
+    return {
+      attentionRequired: true,
+      reason: input.reason,
+      recoveryAction: "adjust_loop_limits_or_close_goal",
+      userVisible: true,
+    };
+  }
+  if (input.reason === "invalid_ceo_loop_decision") {
+    return {
+      attentionRequired: true,
+      reason: input.reason,
+      recoveryAction: "repair_loop_decision",
+      userVisible: false,
+    };
+  }
+  if (input.reason === "missing_ceo_loop_decision" || input.reason === "missing_documents") {
+    return {
+      attentionRequired: true,
+      reason: input.reason,
+      recoveryAction: "manual_review",
+      userVisible: false,
+    };
+  }
+  if (input.decision?.decision === "blocked") {
+    return {
+      attentionRequired: true,
+      reason: "blocked",
+      recoveryAction: "resolve_blocker",
+      userVisible: true,
+    };
+  }
+  if (input.decision?.decision === "failed") {
+    return {
+      attentionRequired: true,
+      reason: "failed",
+      recoveryAction: "manual_recovery",
+      userVisible: true,
+    };
+  }
+  return {
+    attentionRequired: false,
+    reason: null,
+    recoveryAction: "none",
+    userVisible: false,
+  };
+}
+
+function statusFor(input: {
+  reason: string;
+  decision: MissionControlCeoLoopDecision | null;
+  matchingChildIssue: AutonomousGoalLoopChildIssue | null;
+}): Extract<AutonomousGoalLoopState, { enabled: true }>["status"] {
+  if (input.reason === "approval_required" || input.decision?.decision === "approval_required") return "approval_required";
+  if (input.decision?.decision === "goal_reached") return "goal_reached";
+  if (input.decision?.decision === "blocked") return "blocked";
+  if (input.decision?.decision === "failed") return "failed";
+  if (input.reason === "invalid_ceo_loop_decision") return "failed";
+  if (input.reason === "runtime_exceeded" || input.reason === "iteration_exceeded") return "blocked";
+  if (input.decision?.decision === "next_iteration") return input.matchingChildIssue ? "executing" : "planning";
+  if (input.reason === "validator_pass_required" || input.reason === "validator_not_passed") return "validating";
+  return "ceo_review";
+}
+
+export function buildAutonomousGoalLoopState(input: {
+  issue: AutonomousGoalLoopParentIssue;
+  documents: MissionControlCompletionGateDocument[];
+  childIssues?: AutonomousGoalLoopChildIssue[];
+  now?: string | Date;
+}): AutonomousGoalLoopState {
+  const gate = evaluateMissionControlAutonomousLoopGate({
+    issue: input.issue,
+    documents: input.documents,
+    now: input.now,
+  });
+
+  if (!gate.enabled || !gate.autonomousLoopPolicy?.enabled) {
+    return { enabled: false, status: "disabled" };
+  }
+
+  const decision = gate.ceoLoopDecision;
+  const originFingerprint = decision?.decision === "next_iteration" ? continuationOriginFingerprint(decision) : null;
+  const matchingChildIssue =
+    originFingerprint && decision
+      ? input.childIssues?.find(
+          (child) =>
+            child.originKind === AUTONOMOUS_GOAL_LOOP_CONTINUATION_ORIGIN_KIND &&
+            child.originId === input.issue.id &&
+            child.originFingerprint === originFingerprint,
+        ) ?? null
+      : null;
+
+  const loopPolicy = gate.autonomousLoopPolicy;
+  const iteration = loopPolicy.iteration;
+  const maxIterations = loopPolicy.maxIterations ?? null;
+  const supervisor = supervisorFor({ reason: gate.reason, decision });
+  const status = statusFor({ reason: gate.reason, decision, matchingChildIssue });
+  const generatedAt = input.now instanceof Date ? input.now.toISOString() : (input.now ?? new Date().toISOString());
+
+  const iterations = (input.childIssues ?? [])
+    .filter((child) => child.originKind === AUTONOMOUS_GOAL_LOOP_CONTINUATION_ORIGIN_KIND && child.originId === input.issue.id)
+    .map((child) => ({
+      iteration: iterationFromOriginFingerprint(child.originFingerprint) ?? iteration + 1,
+      issueId: child.id,
+      identifier: child.identifier ?? null,
+      title: child.title,
+      status: readStatus(child.status),
+      originFingerprint: child.originFingerprint ?? null,
+      parentId: child.parentId ?? null,
+      createdAt: serializeDate(child.createdAt),
+      updatedAt: serializeDate(child.updatedAt),
+    }))
+    .sort((left, right) => left.iteration - right.iteration || left.title.localeCompare(right.title));
+
+  return {
+    enabled: true,
+    status,
+    goal: loopPolicy.goal ?? input.issue.title ?? null,
+    iteration,
+    maxIterations,
+    progressLabel: progressLabelFor(iteration, maxIterations),
+    currentDecision: decision
+      ? {
+          iteration: decision.iteration,
+          decision: decision.decision,
+          rationale: decision.rationale,
+          nextTaskTitle: decision.nextTask?.title ?? null,
+          hardGate: decision.hardGate,
+          evidence: decision.evidence,
+        }
+      : null,
+    planner: {
+      mode: "single_child",
+      supportsParallelChildren: false,
+      nextTaskTitle: decision?.nextTask?.title ?? null,
+      originFingerprint,
+      childIssueId: matchingChildIssue?.id ?? null,
+    },
+    supervisor,
+    iterations,
+    observability: {
+      generatedAt,
+      chain: [
+        {
+          kind: "goal",
+          issueId: input.issue.id,
+          identifier: input.issue.identifier ?? null,
+          title: input.issue.title,
+          status: readStatus(input.issue.status),
+        },
+        ...iterations.map((child) => ({
+          kind: "iteration" as const,
+          issueId: child.issueId,
+          identifier: child.identifier,
+          title: child.title,
+          status: child.status,
+          iteration: child.iteration,
+        })),
+      ],
+    },
+  };
 }
 
 function childMissionControlPolicy(parentPolicy: MissionControlIssuePolicy): MissionControlIssuePolicy {

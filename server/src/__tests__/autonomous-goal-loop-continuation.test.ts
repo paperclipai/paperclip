@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AUTONOMOUS_GOAL_LOOP_CONTINUATION_ORIGIN_KIND,
   buildAutonomousGoalLoopContinuationPlan,
+  buildAutonomousGoalLoopState,
 } from "../services/autonomous-goal-loop-continuation.ts";
 
 const parentIssue = {
@@ -212,6 +213,106 @@ describe("autonomous goal loop continuation planning", () => {
       action: "blocked",
       reason: "autonomous_loop_not_complete",
       reportToUser: true,
+    });
+  });
+
+  it("builds an observable loop state with planner and supervisor scaffolding", () => {
+    const state = buildAutonomousGoalLoopState({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "Validation passed; launch another safe internal slice.",
+        nextTask: {
+          title: "Expose loop state panel",
+          acceptanceCriteria: ["Issue detail shows loop state"],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["validator-report PASS"],
+      }),
+      childIssues: [
+        {
+          id: "child-1",
+          parentId: "parent-issue-1",
+          identifier: "PAP-2",
+          title: "[Loop 2] Expose loop state panel",
+          status: "in_progress",
+          originKind: AUTONOMOUS_GOAL_LOOP_CONTINUATION_ORIGIN_KIND,
+          originId: "parent-issue-1",
+          originFingerprint: "iteration:1",
+          blockedBy: [],
+          createdAt: new Date("2026-05-11T09:01:00.000Z"),
+          updatedAt: new Date("2026-05-11T09:05:00.000Z"),
+        },
+      ],
+      now: "2026-05-11T09:10:00.000Z",
+    });
+
+    expect(state).toMatchObject({
+      enabled: true,
+      status: "executing",
+      goal: "Ship autonomous creator traffic ops workflow",
+      iteration: 1,
+      maxIterations: 5,
+      progressLabel: "1 / 5",
+      currentDecision: {
+        iteration: 1,
+        decision: "next_iteration",
+        nextTaskTitle: "Expose loop state panel",
+      },
+      planner: {
+        mode: "single_child",
+        supportsParallelChildren: false,
+        nextTaskTitle: "Expose loop state panel",
+      },
+      supervisor: {
+        attentionRequired: false,
+        recoveryAction: "none",
+      },
+    });
+    expect(state.iterations).toEqual([
+      expect.objectContaining({
+        iteration: 2,
+        issueId: "child-1",
+        identifier: "PAP-2",
+        status: "in_progress",
+      }),
+    ]);
+    expect(state.observability.chain).toEqual([
+      expect.objectContaining({ kind: "goal", issueId: "parent-issue-1" }),
+      expect.objectContaining({ kind: "iteration", issueId: "child-1", iteration: 2 }),
+    ]);
+  });
+
+  it("marks approval and blocked loop states for supervisor attention", () => {
+    const state = buildAutonomousGoalLoopState({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 2,
+        decision: "approval_required",
+        rationale: "Need explicit approval before production deploy.",
+        hardGate: {
+          required: true,
+          category: "production_deploy",
+          reason: "Production deploy is user-gated.",
+        },
+        evidence: ["validator-report PASS"],
+      }),
+      childIssues: [],
+      now: "2026-05-11T10:00:00.000Z",
+    });
+
+    expect(state).toMatchObject({
+      enabled: true,
+      status: "approval_required",
+      supervisor: {
+        attentionRequired: true,
+        reason: "approval_required",
+        recoveryAction: "request_user_approval",
+        userVisible: true,
+      },
     });
   });
 });

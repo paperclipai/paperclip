@@ -27,6 +27,50 @@ export type IssueUpdateResponse = Issue & {
   comment?: IssueComment | null;
 };
 
+export type AutonomousLoopState = {
+  enabled: boolean;
+  status?: string;
+  goal?: string | null;
+  iteration?: number | null;
+  maxIterations?: number | null;
+  progressLabel?: string | null;
+  currentDecision?: {
+    iteration?: number | null;
+    decision?: string | null;
+    rationale?: string | null;
+    nextTaskTitle?: string | null;
+  } | null;
+  planner?: {
+    mode?: string | null;
+    supportsParallelChildren?: boolean | null;
+    nextTaskTitle?: string | null;
+  } | null;
+  iterations?: Array<{
+    iteration?: number | null;
+    issueId?: string | null;
+    identifier?: string | null;
+    title?: string | null;
+    status?: string | null;
+  }>;
+  supervisor?: {
+    attentionRequired?: boolean;
+    reason?: string | null;
+    recoveryAction?: string | null;
+    userVisible?: boolean | null;
+  } | null;
+  observability?: {
+    chain?: Array<{
+      kind?: string | null;
+      issueId?: string | null;
+      identifier?: string | null;
+      title?: string | null;
+      iteration?: number | null;
+      label?: string | null;
+      status?: string | null;
+    }>;
+  } | null;
+};
+
 export const issuesApi = {
   list: (
     companyId: string,
@@ -84,6 +128,7 @@ export const issuesApi = {
     api.post<IssueLabel>(`/companies/${companyId}/labels`, data),
   deleteLabel: (id: string) => api.delete<IssueLabel>(`/labels/${id}`),
   get: (id: string) => api.get<Issue>(`/issues/${id}`),
+  getAutonomousLoopState: (id: string) => api.get<AutonomousLoopState>(`/issues/${id}/autonomous-loop-state`),
   markRead: (id: string) => api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
   markUnread: (id: string) => api.delete<{ id: string; removed: boolean }>(`/issues/${id}/read`),
   archiveFromInbox: (id: string) =>

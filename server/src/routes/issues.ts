@@ -82,9 +82,12 @@ import {
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import {
   AUTONOMOUS_GOAL_LOOP_CONTINUATION_DOCUMENT_KEY,
+  AUTONOMOUS_GOAL_LOOP_CONTINUATION_ORIGIN_KIND,
+  buildAutonomousGoalLoopState,
   continueAutonomousGoalLoopFromDecision,
   summarizeAutonomousGoalLoopContinuationOutcome,
 } from "../services/autonomous-goal-loop-continuation.js";
+import { listMissionControlCompletionDocuments } from "../services/mission-control-gates.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
@@ -1692,6 +1695,26 @@ export function issueRoutes(
       currentExecutionWorkspace,
       workProducts,
     });
+  });
+
+  router.get("/issues/:id/autonomous-loop-state", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const [documents, childIssues] = await Promise.all([
+      listMissionControlCompletionDocuments(db, issue.id),
+      svc.list(issue.companyId, {
+        parentId: issue.id,
+        originKind: AUTONOMOUS_GOAL_LOOP_CONTINUATION_ORIGIN_KIND,
+        originId: issue.id,
+        limit: 100,
+      }),
+    ]);
+    res.json(buildAutonomousGoalLoopState({ issue, documents, childIssues }));
   });
 
   router.get("/issues/:id/work-products", async (req, res) => {
