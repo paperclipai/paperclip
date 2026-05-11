@@ -26,6 +26,7 @@ import type { Db } from "@paperclipai/db";
 import type {
   PaperclipPluginManifestV1,
   PluginRecord,
+  PluginToolDeclaration,
 } from "@paperclipai/shared";
 import type { ToolRunContext, ToolResult } from "@paperclipai/plugin-sdk";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
@@ -166,6 +167,21 @@ export interface PluginToolDispatcher {
    * @param pluginId - The plugin to unregister
    */
   unregisterPluginTools(pluginId: string): void;
+
+  /**
+   * Register a single dynamic tool (discovered at runtime).
+   *
+   * @param pluginId - The plugin's unique identifier (e.g. `"acme.linear"`)
+   * @param name - The tool name
+   * @param declaration - The tool metadata
+   * @param pluginDbId - Optional database UUID
+   */
+  registerDynamicTool(
+    pluginId: string,
+    name: string,
+    declaration: Pick<PluginToolDeclaration, "displayName" | "description" | "parametersSchema">,
+    pluginDbId?: string,
+  ): void;
 
   /**
    * Get the total number of registered tools, optionally scoped to a plugin.
@@ -435,6 +451,10 @@ export function createPluginToolDispatcher(
 
     unregisterPluginTools(pluginId: string): void {
       registry.unregisterPlugin(pluginId);
+    },
+
+    registerDynamicTool(pluginId: string, name: string, declaration: Pick<PluginToolDeclaration, "displayName" | "description" | "parametersSchema">, pluginDbId?: string): void {
+      registry.registerTool(pluginId, { ...declaration, name }, pluginDbId);
     },
 
     toolCount(pluginId?: string): number {
