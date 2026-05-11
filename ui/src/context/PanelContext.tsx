@@ -2,10 +2,20 @@ import { createContext, useCallback, useContext, useState, type ReactNode } from
 
 const STORAGE_KEY = "paperclip:panel-visible";
 
+export interface PanelLayoutOptions {
+  /** localStorage key under which the user's preferred panel width is saved. */
+  storageKey?: string;
+  /** Width applied when no stored value exists. */
+  defaultWidth?: number;
+  minWidth?: number;
+  maxWidth?: number;
+}
+
 interface PanelContextValue {
   panelContent: ReactNode | null;
+  panelLayout: PanelLayoutOptions;
   panelVisible: boolean;
-  openPanel: (content: ReactNode) => void;
+  openPanel: (content: ReactNode, layout?: PanelLayoutOptions) => void;
   closePanel: () => void;
   setPanelVisible: (visible: boolean) => void;
   togglePanelVisible: () => void;
@@ -30,16 +40,21 @@ function writePreference(visible: boolean) {
   }
 }
 
+const EMPTY_LAYOUT: PanelLayoutOptions = {};
+
 export function PanelProvider({ children }: { children: ReactNode }) {
   const [panelContent, setPanelContent] = useState<ReactNode | null>(null);
+  const [panelLayout, setPanelLayout] = useState<PanelLayoutOptions>(EMPTY_LAYOUT);
   const [panelVisible, setPanelVisibleState] = useState(readPreference);
 
-  const openPanel = useCallback((content: ReactNode) => {
+  const openPanel = useCallback((content: ReactNode, layout?: PanelLayoutOptions) => {
     setPanelContent(content);
+    setPanelLayout(layout ?? EMPTY_LAYOUT);
   }, []);
 
   const closePanel = useCallback(() => {
     setPanelContent(null);
+    setPanelLayout(EMPTY_LAYOUT);
   }, []);
 
   const setPanelVisible = useCallback((visible: boolean) => {
@@ -57,7 +72,7 @@ export function PanelProvider({ children }: { children: ReactNode }) {
 
   return (
     <PanelContext.Provider
-      value={{ panelContent, panelVisible, openPanel, closePanel, setPanelVisible, togglePanelVisible }}
+      value={{ panelContent, panelLayout, panelVisible, openPanel, closePanel, setPanelVisible, togglePanelVisible }}
     >
       {children}
     </PanelContext.Provider>

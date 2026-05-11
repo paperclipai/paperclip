@@ -6,22 +6,30 @@ import { ResizableSidebarPane } from "./ResizableSidebarPane";
 const PROPERTIES_PANEL_DEFAULT = 320;
 const PROPERTIES_PANEL_MIN = 320;
 const PROPERTIES_PANEL_MAX = 640;
+const PROPERTIES_PANEL_STORAGE_KEY = "paperclip.properties.width";
 
 export function PropertiesPanel() {
-  const { panelContent, panelVisible, setPanelVisible } = usePanel();
+  const { panelContent, panelLayout, panelVisible, setPanelVisible } = usePanel();
 
   if (!panelContent) return null;
+
+  const storageKey = panelLayout.storageKey ?? PROPERTIES_PANEL_STORAGE_KEY;
+  const defaultWidth = panelLayout.defaultWidth ?? PROPERTIES_PANEL_DEFAULT;
+  const minWidth = panelLayout.minWidth ?? PROPERTIES_PANEL_MIN;
+  const maxWidth = panelLayout.maxWidth ?? PROPERTIES_PANEL_MAX;
 
   return (
     <aside className="hidden md:flex border-l border-border bg-card shrink-0 h-full">
       <ResizableSidebarPane
+        // Remount when the layout key changes so the stored width is re-read fresh.
+        key={storageKey}
         open={panelVisible}
         resizable
         side="right"
-        storageKey="paperclip.properties.width"
-        defaultWidth={PROPERTIES_PANEL_DEFAULT}
-        minWidth={PROPERTIES_PANEL_MIN}
-        maxWidth={PROPERTIES_PANEL_MAX}
+        storageKey={storageKey}
+        defaultWidth={defaultWidth}
+        minWidth={minWidth}
+        maxWidth={maxWidth}
         widthVariable="--properties-panel-width"
         className="h-full"
       >

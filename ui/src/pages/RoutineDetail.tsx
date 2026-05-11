@@ -815,7 +815,12 @@ export function RoutineDetail() {
       closePanel();
       return;
     }
-    openPanel(activityTabsPanel);
+    openPanel(activityTabsPanel, {
+      storageKey: "paperclip.properties.width.routines",
+      defaultWidth: 400,
+      minWidth: 320,
+      maxWidth: 640,
+    });
     return () => closePanel();
   }, [activityTabsPanel, closePanel, openPanel]);
 
