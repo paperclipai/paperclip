@@ -24,6 +24,8 @@ fi
 
 if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
+elif [ "$(stat -c '%u:%g' /paperclip)" != "$PUID:$PGID" ]; then
+    chown node:node /paperclip
 fi
 
 exec gosu node "$@"
