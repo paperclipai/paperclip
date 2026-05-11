@@ -591,22 +591,22 @@ export function RoutineDetail() {
   const activityTabsPanel = useMemo(() => {
     if (!routine) return null;
     return (
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-3">
-        <TabsList variant="line" className="w-full justify-start gap-1">
-          <TabsTrigger value="triggers" className="gap-1.5">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-3 min-w-0">
+        <TabsList variant="line" className="w-full justify-start gap-1 h-auto flex-wrap">
+          <TabsTrigger value="triggers" className="gap-1.5 flex-none px-2">
             <Clock3 className="h-3.5 w-3.5" />
             Triggers
           </TabsTrigger>
-          <TabsTrigger value="runs" className="gap-1.5">
+          <TabsTrigger value="runs" className="gap-1.5 flex-none px-2">
             <Play className="h-3.5 w-3.5" />
             Runs
             {hasLiveRun && <span className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />}
           </TabsTrigger>
-          <TabsTrigger value="activity" className="gap-1.5">
+          <TabsTrigger value="activity" className="gap-1.5 flex-none px-2">
             <ActivityIcon className="h-3.5 w-3.5" />
             Activity
           </TabsTrigger>
-          <TabsTrigger value="history" className="gap-1.5">
+          <TabsTrigger value="history" className="gap-1.5 flex-none px-2">
             <HistoryIcon className="h-3.5 w-3.5" />
             History
           </TabsTrigger>

@@ -21,7 +21,7 @@ export function PropertiesPanel() {
           </Button>
         </div>
         <ScrollArea className="flex-1">
-          <div className="p-4">{panelContent}</div>
+          <div className="p-4 w-[320px] max-w-[320px] min-w-0">{panelContent}</div>
         </ScrollArea>
       </div>
     </aside>
