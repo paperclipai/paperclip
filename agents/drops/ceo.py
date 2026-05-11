@@ -292,12 +292,38 @@ def parse_qualifier_output(result: str) -> dict | None:
         name = p.get("name", "")
         if not name:
             continue
+        # Precio: usar el del qualifier si existe, si no del producto original
+        raw_price = p.get("suggested_price_eur") or p.get("suggested_price") or 0
+        try:
+            price = float(str(raw_price).split("--")[0].strip())
+        except Exception:
+            price = 0.0
+
+        raw_cost = p.get("supplier_cost_eur") or p.get("supplier_est_cost_eur") or 0
+        try:
+            cost = float(str(raw_cost).split("--")[0].strip())
+        except Exception:
+            cost = 0.0
+
+        # Si el qualifier no dio precio, calcular desde coste (3x markup)
+        if price <= 1 and cost > 0:
+            price = round(cost * 3, 2)
+        elif price <= 1:
+            price = 29.99  # fallback solo si no hay nada
+
+        margin = p.get("est_margin_pct", 0)
+        if not margin and cost > 0 and price > 0:
+            margin = round((1 - cost / price) * 100)
+        elif not margin:
+            margin = 60
+
         return {
             "name":                name,
             "score":               score,
             "recommendation":      rec,
-            "suggested_price_eur": float(p.get("suggested_price_eur", 29.99) or 29.99),
-            "est_margin_pct":      p.get("est_margin_pct", 60),
+            "suggested_price_eur": price,
+            "supplier_cost_eur":   cost,
+            "est_margin_pct":      margin,
             "key_strength":        str(p.get("key_strength", ""))[:150],
             "main_risk":           str(p.get("main_risk", ""))[:150],
             "suggested_hook":      str(p.get("suggested_hook", ""))[:100],

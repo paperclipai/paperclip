@@ -96,6 +96,9 @@ Responde SOLO con JSON:
       "key_strength": "su mayor ventaja en 1 frase",
       "main_risk": "su mayor riesgo en 1 frase",
       "suggested_hook": "el hook de anuncio más potente en español (máx 10 palabras)",
+      "suggested_price_eur": 39.99,
+      "supplier_cost_eur": 8.50,
+      "est_margin_pct": 65,
       "est_monthly_revenue_eur": 2400
     }}
   ]
