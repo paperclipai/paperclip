@@ -61,6 +61,20 @@ describe("parseGhArgs", () => {
     expect(parsed.scanTargets).toEqual([]);
   });
 
+  it("scans gh issue create/edit/comment but rejects invented `gh issue review`", () => {
+    expect(
+      parseGhArgs(["issue", "create", "--title", "T", "--body", "B"]).scanTargets,
+    ).toEqual([
+      { kind: "string", source: "gh --title", value: "T" },
+      { kind: "string", source: "gh --body", value: "B" },
+    ]);
+    // `gh issue review` is not a real subcommand — verb sets are split per
+    // subcommand so the parser doesn't silently accept invented shapes.
+    const parsed = parseGhArgs(["issue", "review", "--body", "B"]);
+    expect(parsed.unsupported).toBe(true);
+    expect(parsed.scanTargets).toEqual([]);
+  });
+
   it("recognizes --allow-leak-OK and strips it from scan", () => {
     const parsed = parseGhArgs(["pr", "create", "--body", "x", "--allow-leak-OK"]);
     expect(parsed.hasAllowOverride).toBe(true);

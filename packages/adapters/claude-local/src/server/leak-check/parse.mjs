@@ -70,9 +70,25 @@ export function parseGhArgs(argv) {
   const sub = args[0];
   result.subCommand = sub ?? null;
 
-  if (sub === "pr" || sub === "issue") {
+  if (sub === "pr") {
     result.verb = args[1] ?? null;
+    // gh pr has create/edit/comment/review; we scan the body/title/body-file
+    // flags on all four.
     const scannedVerbs = new Set(["create", "edit", "comment", "review"]);
+    if (!result.verb || !scannedVerbs.has(result.verb)) {
+      result.unsupported = true;
+      return result;
+    }
+    collectInlineAndFileBodyFlags(args, result.scanTargets);
+    return result;
+  }
+
+  if (sub === "issue") {
+    result.verb = args[1] ?? null;
+    // gh issue has create/edit/comment but NOT review (`gh issue review` is
+    // not a real subcommand — keep the verb sets distinct so we don't
+    // silently accept invented invocations).
+    const scannedVerbs = new Set(["create", "edit", "comment"]);
     if (!result.verb || !scannedVerbs.has(result.verb)) {
       result.unsupported = true;
       return result;

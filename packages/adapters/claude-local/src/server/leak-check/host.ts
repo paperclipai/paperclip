@@ -21,8 +21,6 @@ export interface LeakCheckShimRequest {
   runId: string;
   /** Resolved abs path to the company policies/leak-check.sh. */
   scriptPath: string;
-  /** Whether to honor --allow-leak-OK (requires approved board override). */
-  allowOverride?: boolean;
 }
 
 /**

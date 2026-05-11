@@ -2,23 +2,8 @@ import { spawnSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { prepareLeakCheckShimDir, prependPath } from "./host.js";
-
-const __thisDir = path.dirname(fileURLToPath(import.meta.url));
-
-/**
- * The real leak-check.sh ships from the company policies dir. For the
- * integration test we point at a copy in /tmp to avoid coupling to a single
- * developer's home dir. The shim contract is: bash leak-check.sh - reads
- * stdin and exits 0 (clean) or 1 (blocked).
- */
-const REAL_LEAK_CHECK_SCRIPT = path.resolve(
-  __thisDir,
-  "..", "..", "..", "..", "..", "..",
-  "..", // up to user home (rough — fall through to env override below)
-);
 
 describe("leak-check shim end-to-end", () => {
   const tempDirs: string[] = [];
@@ -408,5 +393,3 @@ async function tryReadFile(file: string): Promise<string> {
     return "";
   }
 }
-
-void REAL_LEAK_CHECK_SCRIPT;
