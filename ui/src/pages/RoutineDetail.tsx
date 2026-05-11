@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -7,33 +7,41 @@ import {
   ChevronRight,
   Clock3,
   Copy,
+  History as HistoryIcon,
   Play,
   Plus,
   Repeat,
   Save,
   SlidersHorizontal,
 } from "lucide-react";
-import { routinesApi, type RoutineTriggerResponse, type RotateRoutineTriggerResponse } from "../api/routines";
+import { ApiError } from "../api/client";
+import { routinesApi, type RoutineTriggerResponse, type RotateRoutineTriggerResponse, type RestoreRoutineRevisionResponse } from "../api/routines";
 import { TriggerListCard } from "../components/TriggerListCard";
 import { TriggerDialog } from "../components/TriggerDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import {
+  RoutineHistoryTab,
+  type RoutineHistoryDirtyFieldDescriptor,
+} from "../components/RoutineHistoryTab";
 import { heartbeatsApi } from "../api/heartbeats";
 import { LiveRunWidget } from "../components/LiveRunWidget";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
+import { accessApi } from "../api/access";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { usePanel } from "../context/PanelContext";
-import { useToast } from "../context/ToastContext";
+import { useToastActions } from "../context/ToastContext";
 import { cn } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
+import { buildMarkdownMentionOptions } from "../lib/company-members";
 import { timeAgo } from "../lib/timeAgo";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "../components/InlineEntitySelector";
-import { MarkdownEditor, type MarkdownEditorRef } from "../components/MarkdownEditor";
+import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "../components/MarkdownEditor";
 import {
   RoutineRunVariablesDialog,
   type RoutineRunDialogSubmitData,
@@ -41,6 +49,7 @@ import {
 import { RoutineVariablesEditor, RoutineVariablesHint } from "../components/RoutineVariablesEditor";
 import { RunButton } from "../components/AgentActionButtons";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
+import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
@@ -55,11 +64,11 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import type { RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
+import type { RoutineDetail as RoutineDetailType, RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
 
 const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
 const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
-const routineTabs = ["triggers", "runs", "activity"] as const;
+const routineTabs = ["triggers", "runs", "activity", "history"] as const;
 const concurrencyPolicyDescriptions: Record<string, string> = {
   coalesce_if_active: "Keep one follow-up run queued while an active run is still working.",
   always_enqueue: "Queue every trigger occurrence, even if several runs stack up.",
@@ -74,8 +83,10 @@ type RoutineTab = (typeof routineTabs)[number];
 
 type SecretMessage = {
   title: string;
-  webhookUrl: string;
-  webhookSecret: string;
+  entries: Array<{
+    webhookUrl: string;
+    webhookSecret: string;
+  }>;
 };
 
 function autoResizeTextarea(element: HTMLTextAreaElement | null) {
@@ -138,7 +149,7 @@ export function RoutineDetail() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
-  const { pushToast } = useToast();
+  const { pushToast } = useToastActions();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const hydratedRoutineIdRef = useRef<string | null>(null);
   const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -147,6 +158,7 @@ export function RoutineDetail() {
   const projectSelectorRef = useRef<HTMLButtonElement | null>(null);
   const [secretMessage, setSecretMessage] = useState<SecretMessage | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [saveConflict, setSaveConflict] = useState(false);
   const [runVariablesOpen, setRunVariablesOpen] = useState(false);
   const [triggerDialogOpen, setTriggerDialogOpen] = useState(false);
   const [editingTrigger, setEditingTrigger] = useState<RoutineTrigger | null>(null);
@@ -218,6 +230,11 @@ export function RoutineDetail() {
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: companyMembers } = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
+    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
 
   const routineDefaults = useMemo(
     () =>
@@ -235,19 +252,34 @@ export function RoutineDetail() {
         : null,
     [routine],
   );
-  const isEditDirty = useMemo(() => {
-    if (!routineDefaults) return false;
-    return (
-      editDraft.title !== routineDefaults.title ||
-      editDraft.description !== routineDefaults.description ||
-      editDraft.projectId !== routineDefaults.projectId ||
-      editDraft.assigneeAgentId !== routineDefaults.assigneeAgentId ||
-      editDraft.priority !== routineDefaults.priority ||
-      editDraft.concurrencyPolicy !== routineDefaults.concurrencyPolicy ||
-      editDraft.catchUpPolicy !== routineDefaults.catchUpPolicy ||
-      JSON.stringify(editDraft.variables) !== JSON.stringify(routineDefaults.variables)
-    );
+  const dirtyFields = useMemo<RoutineHistoryDirtyFieldDescriptor[]>(() => {
+    if (!routineDefaults) return [];
+    const result: RoutineHistoryDirtyFieldDescriptor[] = [];
+    if (editDraft.title !== routineDefaults.title) result.push({ key: "title", label: "the title" });
+    if (editDraft.description !== routineDefaults.description) {
+      result.push({ key: "description", label: "the description" });
+    }
+    if (editDraft.projectId !== routineDefaults.projectId) {
+      result.push({ key: "projectId", label: "the project" });
+    }
+    if (editDraft.assigneeAgentId !== routineDefaults.assigneeAgentId) {
+      result.push({ key: "assigneeAgentId", label: "the default agent" });
+    }
+    if (editDraft.priority !== routineDefaults.priority) {
+      result.push({ key: "priority", label: "the priority" });
+    }
+    if (editDraft.concurrencyPolicy !== routineDefaults.concurrencyPolicy) {
+      result.push({ key: "concurrencyPolicy", label: "the concurrency policy" });
+    }
+    if (editDraft.catchUpPolicy !== routineDefaults.catchUpPolicy) {
+      result.push({ key: "catchUpPolicy", label: "the catch-up policy" });
+    }
+    if (JSON.stringify(editDraft.variables) !== JSON.stringify(routineDefaults.variables)) {
+      result.push({ key: "variables", label: "the variables" });
+    }
+    return result;
   }, [editDraft, routineDefaults]);
+  const isEditDirty = dirtyFields.length > 0;
 
   useEffect(() => {
     if (!routine) return;
@@ -278,7 +310,7 @@ export function RoutineDetail() {
     }
   };
 
-  const setActiveTab = (value: string) => {
+  const setActiveTab = useCallback((value: string) => {
     if (!routineId || !isRoutineTab(value)) return;
     const params = new URLSearchParams(location.search);
     if (value === "triggers") {
@@ -294,20 +326,36 @@ export function RoutineDetail() {
       },
       { replace: true },
     );
-  };
+  }, [location.pathname, location.search, navigate, routineId]);
 
   const saveRoutine = useMutation({
     mutationFn: () => {
-      return routinesApi.update(routineId!, buildRoutineMutationPayload(editDraft));
+      const payload = buildRoutineMutationPayload(editDraft);
+      const baseRevisionId = routine?.latestRevisionId ?? null;
+      return routinesApi.update(routineId!, {
+        ...payload,
+        ...(baseRevisionId ? { baseRevisionId } : {}),
+      });
     },
     onSuccess: async () => {
+      setSaveConflict(false);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.activity(selectedCompanyId!, routineId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.routines.revisions(routineId!) }),
       ]);
     },
     onError: (error) => {
+      if (error instanceof ApiError && error.status === 409) {
+        setSaveConflict(true);
+        pushToast({
+          title: "Routine changed",
+          body: "Someone else updated this routine. Reload to see the latest revision.",
+          tone: "warn",
+        });
+        return;
+      }
       pushToast({
         title: "Failed to save routine",
         body: error instanceof Error ? error.message : "Paperclip could not save the routine.",
@@ -393,8 +441,10 @@ export function RoutineDetail() {
       if (result.secretMaterial) {
         setSecretMessage({
           title: "Webhook trigger created",
-          webhookUrl: result.secretMaterial.webhookUrl,
-          webhookSecret: result.secretMaterial.webhookSecret,
+          entries: [{
+            webhookUrl: result.secretMaterial.webhookUrl,
+            webhookSecret: result.secretMaterial.webhookSecret,
+          }],
         });
       } else {
         pushToast({
@@ -473,8 +523,10 @@ export function RoutineDetail() {
     onSuccess: async (result) => {
       setSecretMessage({
         title: "Webhook secret rotated",
-        webhookUrl: result.secretMaterial.webhookUrl,
-        webhookSecret: result.secretMaterial.webhookSecret,
+        entries: [{
+          webhookUrl: result.secretMaterial.webhookUrl,
+          webhookSecret: result.secretMaterial.webhookSecret,
+        }],
       });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
@@ -499,6 +551,7 @@ export function RoutineDetail() {
     [projects],
   );
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [routine?.id]);
+  const recentProjectIds = useMemo(() => getRecentProjectIds(), [routine?.id]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
     () =>
       sortAgentsByRecency(
@@ -520,6 +573,13 @@ export function RoutineDetail() {
       })),
     [projects],
   );
+  const mentionOptions = useMemo<MentionOption[]>(() => {
+    return buildMarkdownMentionOptions({
+      agents,
+      projects,
+      members: companyMembers?.users,
+    });
+  }, [agents, companyMembers?.users, projects]);
   const currentAssignee = editDraft.assigneeAgentId ? agentById.get(editDraft.assigneeAgentId) ?? null : null;
   const currentProject = editDraft.projectId ? projectById.get(editDraft.projectId) ?? null : null;
 
@@ -540,6 +600,10 @@ export function RoutineDetail() {
           <TabsTrigger value="activity" className="gap-1.5">
             <ActivityIcon className="h-3.5 w-3.5" />
             Activity
+          </TabsTrigger>
+          <TabsTrigger value="history" className="gap-1.5">
+            <HistoryIcon className="h-3.5 w-3.5" />
+            History
           </TabsTrigger>
         </TabsList>
 
@@ -660,16 +724,84 @@ export function RoutineDetail() {
             </div>
           )}
         </TabsContent>
+
+        <TabsContent value="history">
+          <RoutineHistoryTab
+            routine={routine}
+            isEditDirty={isEditDirty}
+            dirtyFields={dirtyFields}
+            onDiscardEdits={() => {
+              if (routineDefaults) setEditDraft(routineDefaults);
+            }}
+            onSaveEdits={() => {
+              if (!saveRoutine.isPending && editDraft.title.trim()) {
+                saveRoutine.mutate();
+              }
+            }}
+            agents={agentById}
+            projects={projectById}
+            onRestoreSecretMaterials={(response: RestoreRoutineRevisionResponse) => {
+              if (response.secretMaterials.length > 0) {
+                setSecretMessage({
+                  title: response.secretMaterials.length === 1
+                    ? "Webhook trigger restored"
+                    : `${response.secretMaterials.length} webhook triggers restored`,
+                  entries: response.secretMaterials.map((recreated) => ({
+                    webhookUrl: recreated.webhookUrl,
+                    webhookSecret: recreated.webhookSecret,
+                  })),
+                });
+              }
+            }}
+            onRestored={(response: RestoreRoutineRevisionResponse) => {
+              setSaveConflict(false);
+              queryClient.setQueryData<RoutineDetailType | undefined>(
+                queryKeys.routines.detail(routineId!),
+                (prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        ...response.routine,
+                        latestRevisionId: response.revision.id,
+                        latestRevisionNumber: response.revision.revisionNumber,
+                      }
+                    : prev,
+              );
+              setEditDraft({
+                title: response.routine.title,
+                description: response.routine.description ?? "",
+                projectId: response.routine.projectId ?? "",
+                assigneeAgentId: response.routine.assigneeAgentId ?? "",
+                priority: response.routine.priority,
+                concurrencyPolicy: response.routine.concurrencyPolicy,
+                catchUpPolicy: response.routine.catchUpPolicy,
+                variables: response.routine.variables,
+              });
+              hydratedRoutineIdRef.current = response.routine.id;
+            }}
+          />
+        </TabsContent>
       </Tabs>
     );
   }, [
     activeIssueId,
     activeTab,
     activity,
+    agentById,
+    dirtyFields,
+    editDraft.title,
     hasLiveRun,
+    isEditDirty,
+    projectById,
+    queryClient,
     rotateTrigger.mutate,
     routine,
+    routineDefaults,
     routineRuns,
+    routineId,
+    saveRoutine.isPending,
+    saveRoutine.mutate,
+    setActiveTab,
     togglingTriggerId,
     updateTrigger.mutate,
   ]);
@@ -719,36 +851,44 @@ export function RoutineDetail() {
     <div className="max-w-2xl space-y-6">
       {/* Header: editable title + actions */}
       <div className="flex items-start gap-4">
-        <textarea
-          ref={titleInputRef}
-          className="flex-1 min-w-0 resize-none overflow-hidden bg-transparent text-xl font-bold outline-none placeholder:text-muted-foreground/50"
-          placeholder="Routine title"
-          rows={1}
-          value={editDraft.title}
-          onChange={(event) => {
-            setEditDraft((current) => ({ ...current, title: event.target.value }));
-            autoResizeTextarea(event.target);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.nativeEvent.isComposing) {
-              event.preventDefault();
-              descriptionEditorRef.current?.focus();
-              return;
-            }
-            if (event.key === "Tab" && !event.shiftKey) {
-              event.preventDefault();
-              if (editDraft.assigneeAgentId) {
-                if (editDraft.projectId) {
-                  descriptionEditorRef.current?.focus();
-                } else {
-                  projectSelectorRef.current?.focus();
-                }
-              } else {
-                assigneeSelectorRef.current?.focus();
+        <div className="min-w-0 flex-1 space-y-2">
+          <textarea
+            ref={titleInputRef}
+            className="w-full resize-none overflow-hidden bg-transparent text-xl font-bold outline-none placeholder:text-muted-foreground/50"
+            placeholder="Routine title"
+            rows={1}
+            value={editDraft.title}
+            onChange={(event) => {
+              setEditDraft((current) => ({ ...current, title: event.target.value }));
+              autoResizeTextarea(event.target);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                descriptionEditorRef.current?.focus();
+                return;
               }
-            }
-          }}
-        />
+              if (event.key === "Tab" && !event.shiftKey) {
+                event.preventDefault();
+                if (editDraft.assigneeAgentId) {
+                  if (editDraft.projectId) {
+                    descriptionEditorRef.current?.focus();
+                  } else {
+                    projectSelectorRef.current?.focus();
+                  }
+                } else {
+                  assigneeSelectorRef.current?.focus();
+                }
+              }
+            }}
+          />
+          {routine.managedByPlugin ? (
+            <Badge variant="outline" className="gap-1 text-xs text-muted-foreground">
+              Managed by {routine.managedByPlugin.pluginDisplayName}
+              <span className="font-mono text-[10px]">{routine.managedByPlugin.resourceKey}</span>
+            </Badge>
+          ) : null}
+        </div>
         <div className="flex shrink-0 items-center gap-3 pt-1">
           <RunButton
             onClick={() => {
@@ -798,19 +938,58 @@ export function RoutineDetail() {
             <p className="font-medium">{secretMessage.title}</p>
             <p className="text-xs text-muted-foreground">Save this now. Paperclip will not show the secret value again.</p>
           </div>
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <Input value={secretMessage.webhookUrl} readOnly className="flex-1" />
-              <Button variant="outline" size="sm" onClick={() => copySecretValue("Webhook URL", secretMessage.webhookUrl)}>
-                <Copy className="h-3.5 w-3.5 mr-1" />
-                URL
-              </Button>
+          <div className="space-y-3">
+            {secretMessage.entries.map((entry, index) => (
+              <div key={`${entry.webhookUrl}-${index}`} className="space-y-2">
+                {secretMessage.entries.length > 1 && (
+                  <p className="text-xs font-medium text-muted-foreground">
+                    Webhook trigger {index + 1} of {secretMessage.entries.length}
+                  </p>
+                )}
+                <div className="flex items-center gap-2">
+                  <Input value={entry.webhookUrl} readOnly className="flex-1" />
+                  <Button variant="outline" size="sm" onClick={() => copySecretValue("Webhook URL", entry.webhookUrl)}>
+                    <Copy className="h-3.5 w-3.5 mr-1" />
+                    URL
+                  </Button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Input value={entry.webhookSecret} readOnly className="flex-1" />
+                  <Button variant="outline" size="sm" onClick={() => copySecretValue("Webhook secret", entry.webhookSecret)}>
+                    <Copy className="h-3.5 w-3.5 mr-1" />
+                    Secret
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Save conflict banner */}
+      {saveConflict && (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1">
+              <p className="font-medium text-amber-200">Out of date</p>
+              <p className="text-xs text-muted-foreground">
+                This routine changed while you were editing. Reload to merge the latest revision before
+                saving again.
+              </p>
             </div>
-            <div className="flex items-center gap-2">
-              <Input value={secretMessage.webhookSecret} readOnly className="flex-1" />
-              <Button variant="outline" size="sm" onClick={() => copySecretValue("Webhook secret", secretMessage.webhookSecret)}>
-                <Copy className="h-3.5 w-3.5 mr-1" />
-                Secret
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setSaveConflict(false);
+                  if (routineDefaults) {
+                    setEditDraft(routineDefaults);
+                  }
+                  queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) });
+                }}
+              >
+                Reload latest
               </Button>
             </div>
           </div>
@@ -831,6 +1010,7 @@ export function RoutineDetail() {
             ref={assigneeSelectorRef}
             value={editDraft.assigneeAgentId}
             options={assigneeOptions}
+            recentOptionIds={recentAssigneeIds}
             placeholder="Assignee"
             noneLabel="No assignee"
             searchPlaceholder="Search assignees..."
@@ -876,11 +1056,15 @@ export function RoutineDetail() {
             ref={projectSelectorRef}
             value={editDraft.projectId}
             options={projectOptions}
+            recentOptionIds={recentProjectIds}
             placeholder="Project"
             noneLabel="No project"
             searchPlaceholder="Search projects..."
             emptyMessage="No projects found."
-            onChange={(projectId) => setEditDraft((current) => ({ ...current, projectId }))}
+            onChange={(projectId) => {
+              if (projectId) trackRecentProject(projectId);
+              setEditDraft((current) => ({ ...current, projectId }));
+            }}
             onConfirm={() => descriptionEditorRef.current?.focus()}
             renderTriggerValue={(option) =>
               option && currentProject ? (
@@ -920,6 +1104,7 @@ export function RoutineDetail() {
         placeholder="Add instructions..."
         bordered={false}
         contentClassName="min-h-[120px] text-[15px] leading-7"
+        mentions={mentionOptions}
         onSubmit={() => {
           if (!saveRoutine.isPending && editDraft.title.trim()) {
             saveRoutine.mutate();
@@ -1007,6 +1192,7 @@ export function RoutineDetail() {
         open={runVariablesOpen}
         onOpenChange={setRunVariablesOpen}
         companyId={routine.companyId}
+        routineName={routine.title}
         agents={agents ?? []}
         projects={projects ?? []}
         defaultProjectId={routine.projectId}

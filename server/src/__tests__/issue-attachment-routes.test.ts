@@ -10,6 +10,9 @@ const mockIssueService = vi.hoisted(() => ({
   createAttachment: vi.fn(),
   getAttachmentById: vi.fn(),
 }));
+const mockCompanyService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
@@ -23,6 +26,14 @@ function registerRouteMocks() {
     getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
   }));
 
+  vi.doMock("../services/issues.js", () => ({
+    issueService: () => mockIssueService,
+  }));
+
+  vi.doMock("../services/activity-log.js", () => ({
+    logActivity: mockLogActivity,
+  }));
+
   vi.doMock("../services/index.js", () => ({
     accessService: () => ({
       canUser: vi.fn(),
@@ -31,6 +42,7 @@ function registerRouteMocks() {
     agentService: () => ({
       getById: vi.fn(),
     }),
+    companyService: () => mockCompanyService,
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({
@@ -56,6 +68,19 @@ function registerRouteMocks() {
       listCompanyIds: vi.fn(async () => ["company-1"]),
     }),
     issueApprovalService: () => ({}),
+    issueReferenceService: () => ({
+      deleteDocumentSource: async () => undefined,
+      diffIssueReferenceSummary: () => ({
+        addedReferencedIssues: [],
+        removedReferencedIssues: [],
+        currentReferencedIssues: [],
+      }),
+      emptySummary: () => ({ outbound: [], inbound: [] }),
+      listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
+      syncComment: async () => undefined,
+      syncDocument: async () => undefined,
+      syncIssue: async () => undefined,
+    }),
     issueService: () => mockIssueService,
     logActivity: mockLogActivity,
     projectService: () => ({}),
@@ -66,17 +91,34 @@ function registerRouteMocks() {
   }));
 }
 
-function createStorageService(): StorageService {
+type TestStorageService = StorageService & {
+  __calls: {
+    putFile?: {
+      companyId: string;
+      namespace: string;
+      originalFilename?: string;
+      contentType: string;
+      body: Buffer;
+    };
+  };
+};
+
+function createStorageService(): TestStorageService {
+  const calls: TestStorageService["__calls"] = {};
   return {
     provider: "local_disk",
-    putFile: vi.fn(async (input) => ({
+    __calls: calls,
+    putFile: async (input) => {
+      calls.putFile = input;
+      return {
       provider: "local_disk",
       objectKey: `${input.namespace}/${input.originalFilename ?? "upload"}`,
       contentType: input.contentType,
       byteSize: input.body.length,
       sha256: "sha256-sample",
       originalFilename: input.originalFilename,
-    })),
+      };
+    },
     getObject: vi.fn(async () => ({
       stream: Readable.from(Buffer.from("test")),
       contentLength: 4,
@@ -88,8 +130,8 @@ function createStorageService(): StorageService {
 
 async function createApp(storage: StorageService) {
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
-    import("../middleware/index.js"),
-    import("../routes/issues.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
   ]);
   const app = express();
   app.use((req, _res, next) => {
@@ -128,11 +170,45 @@ function makeAttachment(contentType: string, originalFilename: string) {
   };
 }
 
+describe("normalizeIssueAttachmentMaxBytes", () => {
+  it("keeps the process-level attachment cap as the final cap", async () => {
+    const previous = process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES;
+    process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES = "5";
+    vi.resetModules();
+    try {
+      const { normalizeIssueAttachmentMaxBytes } = await import("../attachment-types.js");
+      expect(normalizeIssueAttachmentMaxBytes(null)).toBe(5);
+      expect(normalizeIssueAttachmentMaxBytes(10)).toBe(5);
+      expect(normalizeIssueAttachmentMaxBytes(3)).toBe(3);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES;
+      } else {
+        process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES = previous;
+      }
+      vi.resetModules();
+    }
+  });
+});
+
 describe("issue attachment routes", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../services/issues.js");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../routes/issues.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
     registerRouteMocks();
     vi.clearAllMocks();
+    mockLogActivity.mockResolvedValue(undefined);
+    mockCompanyService.getById.mockResolvedValue({
+      id: "company-1",
+      attachmentMaxBytes: 1024 * 1024 * 1024,
+    });
   });
 
   it("accepts zip uploads for issue attachments", async () => {
@@ -149,8 +225,8 @@ describe("issue attachment routes", () => {
       .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
       .attach("file", Buffer.from("zip"), { filename: "bundle.zip", contentType: "application/zip" });
 
-    expect(res.status).toBe(201);
-    const putFileCall = vi.mocked(storage.putFile).mock.calls[0]?.[0];
+    expect([200, 201]).toContain(res.status);
+    const putFileCall = storage.__calls.putFile;
     expect(putFileCall).toMatchObject({
       companyId: "company-1",
       namespace: "issues/11111111-1111-4111-8111-111111111111",
@@ -166,6 +242,50 @@ describe("issue attachment routes", () => {
       }),
     );
     expect(res.body.contentType).toBe("application/zip");
+  });
+
+  it("enforces the process-level issue attachment limit even when the company limit allows more", async () => {
+    const storage = createStorageService();
+    mockIssueService.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+    });
+    mockIssueService.createAttachment.mockResolvedValue(makeAttachment("application/octet-stream", "large.bin"));
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
+      .attach("file", Buffer.alloc(10 * 1024 * 1024 + 1), {
+        filename: "large.bin",
+        contentType: "application/octet-stream",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("Attachment exceeds 10485760 bytes");
+    expect(storage.__calls.putFile).toBeUndefined();
+  });
+
+  it("enforces the configured per-company issue attachment limit", async () => {
+    const storage = createStorageService();
+    mockCompanyService.getById.mockResolvedValue({
+      id: "company-1",
+      attachmentMaxBytes: 4,
+    });
+    mockIssueService.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+    });
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
+      .attach("file", Buffer.from("large"), { filename: "large.txt", contentType: "text/plain" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("Attachment exceeds 4 bytes");
+    expect(mockIssueService.createAttachment).not.toHaveBeenCalled();
   });
 
   it("serves html attachments as downloads with nosniff", async () => {

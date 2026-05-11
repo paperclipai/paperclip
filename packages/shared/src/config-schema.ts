@@ -1,11 +1,13 @@
 import { z } from "zod";
 import {
   AUTH_BASE_URL_MODES,
+  BIND_MODES,
   DEPLOYMENT_EXPOSURES,
   DEPLOYMENT_MODES,
   SECRET_PROVIDERS,
   STORAGE_PROVIDERS,
 } from "./constants.js";
+import { validateConfiguredBindMode } from "./network-bind.js";
 
 export const configMetaSchema = z.object({
   version: z.literal(1),
@@ -46,6 +48,8 @@ export const loggingConfigSchema = z.object({
 export const serverConfigSchema = z.object({
   deploymentMode: z.enum(DEPLOYMENT_MODES).default("local_trusted"),
   exposure: z.enum(DEPLOYMENT_EXPOSURES).default("private"),
+  bind: z.enum(BIND_MODES).optional(),
+  customBindHost: z.string().optional(),
   host: z.string().default("127.0.0.1"),
   port: z.number().int().min(1).max(65535).default(3100),
   allowedHostnames: z.array(z.string().min(1)).default([]),
@@ -132,15 +136,26 @@ export const paperclipConfigSchema = z
     }),
   })
   .superRefine((value, ctx) => {
-    if (value.server.deploymentMode === "local_trusted") {
-      if (value.server.exposure !== "private") {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "server.exposure must be private when deploymentMode is local_trusted",
-          path: ["server", "exposure"],
-        });
-      }
-      return;
+    if (value.server.deploymentMode === "local_trusted" && value.server.exposure !== "private") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "server.exposure must be private when deploymentMode is local_trusted",
+        path: ["server", "exposure"],
+      });
+    }
+
+    for (const message of validateConfiguredBindMode({
+      deploymentMode: value.server.deploymentMode,
+      deploymentExposure: value.server.exposure,
+      bind: value.server.bind,
+      host: value.server.host,
+      customBindHost: value.server.customBindHost,
+    })) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message,
+        path: message.includes("customBindHost") ? ["server", "customBindHost"] : ["server", "bind"],
+      });
     }
 
     if (value.auth.baseUrlMode === "explicit" && !value.auth.publicBaseUrl) {

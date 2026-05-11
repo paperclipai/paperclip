@@ -1,10 +1,10 @@
 import type { PauseReason, ProjectStatus } from "../constants.js";
-import type { AgentEnvConfig } from "./secrets.js";
 import type {
   ProjectExecutionWorkspacePolicy,
   ProjectWorkspaceRuntimeConfig,
   WorkspaceRuntimeService,
 } from "./workspace-runtime.js";
+import type { AgentEnvConfig } from "./secrets.js";
 
 export type ProjectWorkspaceSourceType = "local_path" | "git_repo" | "remote_managed" | "non_git_path";
 export type ProjectWorkspaceVisibility = "default" | "advanced";
@@ -52,6 +52,18 @@ export interface ProjectCodebase {
   origin: ProjectCodebaseOrigin;
 }
 
+export interface ProjectManagedByPlugin {
+  id: string;
+  pluginId: string;
+  pluginKey: string;
+  pluginDisplayName: string;
+  resourceKind: "project";
+  resourceKey: string;
+  defaultsJson: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface Project {
   id: string;
   companyId: string;
@@ -73,6 +85,7 @@ export interface Project {
   codebase: ProjectCodebase;
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;
+  managedByPlugin?: ProjectManagedByPlugin | null;
   archivedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;

@@ -14,6 +14,7 @@ export function shouldResetScrollOnNavigation(params: {
   if (previousPathname === null) return false;
   if (previousPathname === pathname) return false;
   if (navigationType === "POP") return false;
+  if (isIssueDetailPathChange(previousPathname, pathname)) return true;
   return hasSidebarScrollResetState(state);
 }
 
@@ -42,4 +43,21 @@ export function resetNavigationScroll(mainElement: HTMLElement | null): void {
 function hasSidebarScrollResetState(state: unknown): boolean {
   if (!state || typeof state !== "object") return false;
   return (state as Record<string, unknown>).paperclipSidebarScrollReset === true;
+}
+
+function isIssueDetailPathChange(previousPathname: string, pathname: string): boolean {
+  const previousIssueRef = readIssueDetailPathRef(previousPathname);
+  const nextIssueRef = readIssueDetailPathRef(pathname);
+  return previousIssueRef !== null && nextIssueRef !== null && previousIssueRef !== nextIssueRef;
+}
+
+function readIssueDetailPathRef(pathname: string): string | null {
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments.length === 2 && segments[0] === "issues") {
+    return segments[1] ?? null;
+  }
+  if (segments.length === 3 && segments[1] === "issues") {
+    return segments[2] ?? null;
+  }
+  return null;
 }

@@ -178,6 +178,95 @@ describe("CommentThread", () => {
     });
   });
 
+  it("shows follow-up badges on explicit follow-up comments and timeline rows", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <CommentThread
+            comments={[{
+              id: "comment-1",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "local-board",
+              body: "Please continue validation.",
+              authorType: "user",
+              presentation: null,
+              metadata: null,
+              followUpRequested: true,
+              createdAt: new Date("2026-03-11T10:00:00.000Z"),
+              updatedAt: new Date("2026-03-11T10:00:00.000Z"),
+            }]}
+            timelineEvents={[{
+              id: "event-1",
+              actorType: "agent",
+              actorId: "agent-1",
+              createdAt: new Date("2026-03-11T10:00:00.000Z"),
+              commentId: "comment-1",
+              followUpRequested: true,
+            }]}
+            onAdd={async () => {}}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("Follow-up");
+    expect(container.textContent).toContain("requested follow-up");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("hides the reopen control and infers reopen for closed agent-assigned issues", async () => {
+    const root = createRoot(container);
+    const onAdd = vi.fn(async () => {});
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <CommentThread
+            comments={[]}
+            issueStatus="done"
+            currentAssigneeValue="agent:agent-1"
+            onAdd={onAdd}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).not.toContain("Re-open");
+
+    const editor = container.querySelector('textarea[aria-label="Comment editor"]') as HTMLTextAreaElement | null;
+    const submitButton = Array.from(container.querySelectorAll("button")).find(
+      (element) => element.textContent === "Comment",
+    ) as HTMLButtonElement | undefined;
+    expect(editor).not.toBeNull();
+    expect(submitButton).toBeDefined();
+
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(editor, "Please pick this back up");
+      editor?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => {
+      submitButton?.click();
+    });
+
+    expect(onAdd).toHaveBeenCalledWith("Please pick this back up", true, undefined);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders linked approvals inline in the timeline", () => {
     const root = createRoot(container);
     const agent: Agent = {
@@ -263,6 +352,9 @@ describe("CommentThread", () => {
               authorAgentId: null,
               authorUserId: "user-1",
               body: "Hello from the comment body",
+              authorType: "user",
+              presentation: null,
+              metadata: null,
               createdAt: new Date("2026-03-11T11:00:00.000Z"),
               updatedAt: new Date("2026-03-11T11:00:00.000Z"),
             }]}

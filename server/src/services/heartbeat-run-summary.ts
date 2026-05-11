@@ -1,4 +1,8 @@
-function truncateSummaryText(value: unknown, maxLength = 500) {
+export const HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS = 500;
+export const HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS = 4_096;
+export const HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES = 64 * 1024;
+
+function truncateSummaryText(value: unknown, maxLength = HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS) {
   if (typeof value !== "string") return null;
   return value.length > maxLength ? value.slice(0, maxLength) : value;
 }
@@ -62,6 +66,26 @@ export function summarizeHeartbeatRunResultJson(
     const value = readNumericField(resultJson, key);
     if (value !== undefined && value !== null) {
       summary[key] = value;
+    }
+  }
+
+  for (const key of ["stopReason", "timeoutSource"] as const) {
+    const value = readCommentText(resultJson[key]);
+    if (value !== null) {
+      summary[key] = value;
+    }
+  }
+
+  for (const key of ["effectiveTimeoutSec", "effectiveTimeoutMs"] as const) {
+    const value = readNumericField(resultJson, key);
+    if (value !== undefined && value !== null) {
+      summary[key] = value;
+    }
+  }
+
+  for (const key of ["timeoutConfigured", "timeoutFired"] as const) {
+    if (typeof resultJson[key] === "boolean") {
+      summary[key] = resultJson[key];
     }
   }
 
