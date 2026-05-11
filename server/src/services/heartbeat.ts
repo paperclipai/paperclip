@@ -510,7 +510,6 @@ export function filterValidSkillMentionIds(ids: string[]): string[] {
 // `terminated` statuses are preserved by the caller before reaching here.
 export function computeAgentStatusAfterRun(input: {
   runningCount: number;
-  outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
 }): "running" | "idle" {
   if (input.runningCount > 0) return "running";
   return "idle";
@@ -6214,10 +6213,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const isFirstHeartbeat = !existing.lastHeartbeatAt;
 
     const runningCount = await countRunningRunsForAgent(agentId);
-    const nextStatus = computeAgentStatusAfterRun({
-      runningCount,
-      outcome,
-    });
+    const nextStatus = computeAgentStatusAfterRun({ runningCount });
 
     const updated = await db
       .update(agents)

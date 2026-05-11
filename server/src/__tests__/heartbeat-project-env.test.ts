@@ -162,29 +162,13 @@ describe("computeAgentStatusAfterRun (SIE-441 regression)", () => {
   // recovery payload (e.g. the uuid crash above) took the entire CTO agent
   // offline, blocking ALL of its other heartbeats until a human reset it.
   // Errors belong to runs; the agent must stay invokable.
-  it.each(["failed", "timed_out"] as const)(
-    "does not flip the agent to error after a single %s run",
-    (outcome) => {
-      expect(
-        computeAgentStatusAfterRun({ runningCount: 0, outcome }),
-      ).toBe("idle");
-    },
-  );
-
-  it("stays running while other runs are still in flight", () => {
-    expect(
-      computeAgentStatusAfterRun({ runningCount: 2, outcome: "failed" }),
-    ).toBe("running");
+  it("settles the agent back to idle after a run finishes, regardless of outcome", () => {
+    expect(computeAgentStatusAfterRun({ runningCount: 0 })).toBe("idle");
   });
 
-  it.each(["succeeded", "cancelled"] as const)(
-    "settles back to idle after a %s run with no other runs",
-    (outcome) => {
-      expect(
-        computeAgentStatusAfterRun({ runningCount: 0, outcome }),
-      ).toBe("idle");
-    },
-  );
+  it("stays running while other runs are still in flight", () => {
+    expect(computeAgentStatusAfterRun({ runningCount: 2 })).toBe("running");
+  });
 });
 
 describe("applyRunScopedMentionedSkillKeys", () => {
