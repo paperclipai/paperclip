@@ -20,11 +20,13 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueLabels,
   issueRelations,
   issueTreeHoldMembers,
   issueTreeHolds,
   issueWorkProducts,
   issues,
+  labels,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -2441,6 +2443,36 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
     expect(wakes.some((row) => row.reason === "run_liveness_continuation")).toBe(false);
   });
+  it("skips stranded recovery on candidate issues tagged with a long-running exemption label", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    const labelId = randomUUID();
+    await db.insert(labels).values({
+      id: labelId,
+      companyId,
+      name: "monthly-audit",
+      color: "#0bf",
+    });
+    await db.insert(issueLabels).values({ issueId, labelId, companyId });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    const recoveries = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveries).toHaveLength(0);
+  });
+
   it("blocks stranded in-progress work after the continuation retry was already used", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",

@@ -8,7 +8,9 @@ import {
   createDb,
   heartbeatRuns,
   issueComments,
+  issueLabels,
   issues,
+  labels,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -358,6 +360,66 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(review?.description).toContain("Primary trigger: `long_active_duration`");
     expect(review?.priority).toBe("medium");
     expect(hold.held).toBe(false);
+  });
+
+  it.each([
+    ["long-running-by-design"],
+    ["monthly-audit"],
+  ])("skips long-active candidate issues tagged with the %s exemption label", async (labelName) => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    const labelId = randomUUID();
+    await db.insert(labels).values({
+      id: labelId,
+      companyId: seeded.companyId,
+      name: labelName,
+      color: "#888",
+    });
+    await db.insert(issueLabels).values({
+      issueId: seeded.issueId,
+      labelId,
+      companyId: seeded.companyId,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.scanned).toBe(0);
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("still scans candidate issues whose label does not match the exemption set", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    const labelId = randomUUID();
+    await db.insert(labels).values({
+      id: labelId,
+      companyId: seeded.companyId,
+      name: "important",
+      color: "#f00",
+    });
+    await db.insert(issueLabels).values({
+      issueId: seeded.issueId,
+      labelId,
+      companyId: seeded.companyId,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.scanned).toBe(1);
+    expect(result.created).toBe(1);
   });
 
   it("creates a high-churn review even when every sampled run has a progress comment", async () => {

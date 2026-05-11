@@ -31,6 +31,7 @@ import { budgetService } from "../budgets.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { issueService } from "../issues.js";
+import { longRunningExemptLabelNotExistsClause } from "../productivity-review.js";
 import { getRunLogStore } from "../run-log-store.js";
 import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
@@ -1790,6 +1791,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           isNull(issues.assigneeUserId),
           inArray(issues.status, ["todo", "in_progress"]),
           sql`${issues.assigneeAgentId} is not null`,
+          longRunningExemptLabelNotExistsClause(),
         ),
       );
 
