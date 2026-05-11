@@ -195,8 +195,16 @@ export function Dashboard() {
   const boardPulse = data
     ? [
         { label: "Active now", value: data.agents.running, tone: "primary" as const },
-        { label: "Blocked tasks", value: data.tasks.blocked, tone: "warning" as const },
-        { label: "Approvals waiting", value: data.pendingApprovals + data.budgets.pendingApprovals, tone: "warning" as const },
+        {
+          label: "Blocked tasks",
+          value: data.tasks.blocked,
+          tone: data.tasks.blocked > 0 ? ("warning" as const) : ("neutral" as const),
+        },
+        {
+          label: "Approvals waiting",
+          value: data.pendingApprovals + data.budgets.pendingApprovals,
+          tone: data.pendingApprovals + data.budgets.pendingApprovals > 0 ? ("warning" as const) : ("neutral" as const),
+        },
         { label: "Monthly spend", value: formatCents(data.costs.monthSpendCents), tone: "neutral" as const },
       ]
     : [];
