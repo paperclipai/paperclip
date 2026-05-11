@@ -134,3 +134,72 @@ export async function handleIssueUpdated(
     });
   }
 }
+
+type CommentCreatedPayload = {
+  id: string;
+  issueId: string;
+  body: string;
+  authorAgentId: string | null;
+  authorUserId: string | null;
+  issueIdentifier: string | null;
+  issueTitle: string | null;
+};
+
+export async function handleCommentCreated(
+  ctx: PluginContext,
+  config: PluginConfig,
+  event: PluginEvent<CommentCreatedPayload>,
+): Promise<void> {
+  const company = findCompany(config, event.companyId);
+  if (!company) return;
+
+  if (event.payload.authorUserId === config.boardUserId) return; // ignore self-mentions
+  if (!commentMentionsUser(event.payload.body, config.boardUserId)) return;
+
+  const url = issueUrl(config, company, event.payload.issueIdentifier);
+  const { userKey, appToken } = await resolveCredentials(ctx, config);
+  const authorLabel =
+    event.payload.authorAgentId ? `Agent ${event.payload.authorAgentId.slice(0, 8)}` : "jemand";
+
+  await dispatch(ctx, config, {
+    userKey,
+    appToken,
+    title: `[${company.issuePrefix}] @-Mention von ${authorLabel}: ${truncate(event.payload.issueTitle ?? "", 60)}`,
+    message: truncate(event.payload.body, 200),
+    url,
+    urlTitle: "In Paperclip öffnen",
+    priority: 0,
+  });
+}
+
+type ApprovalCreatedPayload = {
+  id: string;
+  type: string;
+  status: string;
+  title?: string;
+};
+
+export async function handleApprovalCreated(
+  ctx: PluginContext,
+  config: PluginConfig,
+  event: PluginEvent<ApprovalCreatedPayload>,
+): Promise<void> {
+  const company = findCompany(config, event.companyId);
+  if (!company) return;
+  if (event.payload.type !== "request_board_approval") return;
+  if (event.payload.status !== "pending") return;
+
+  const { userKey, appToken } = await resolveCredentials(ctx, config);
+  const approvalUrl = `${config.clickbackBaseUrl}/${company.issuePrefix}/approvals/${event.payload.id}`;
+  const title = event.payload.title ?? "Approval-Request";
+
+  await dispatch(ctx, config, {
+    userKey,
+    appToken,
+    title: `[${company.issuePrefix}] Approval wartet: ${truncate(title, 80)}`,
+    message: title,
+    url: approvalUrl,
+    urlTitle: "In Paperclip öffnen",
+    priority: 1,
+  });
+}

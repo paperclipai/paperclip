@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { handleIssueUpdated } from "../src/triggers.js";
+import { handleIssueUpdated, handleCommentCreated, handleApprovalCreated } from "../src/triggers.js";
 import type { PluginConfig, CachedIssueState } from "../src/config-schema.js";
 
 const CEO = "506c873e-3a40-4483-9a45-0eb0fa1554bb";
@@ -137,6 +137,116 @@ describe("handleIssueUpdated", () => {
       { id: "c-1", body: "no mentions", authorAgentId: "x", authorUserId: null, createdAt: new Date() },
     ]);
     await handleIssueUpdated(ctx, baseConfig(), event({ status: "blocked" }) as any);
+    expect(ctx.http.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleCommentCreated (T4)", () => {
+  it("fires when comment body mentions board user and author is not Walter", async () => {
+    const ctx = makeCtx(null);
+    await handleCommentCreated(ctx, baseConfig(), {
+      eventId: "evt-2",
+      eventType: "issue.comment.created",
+      occurredAt: "2026-05-11T10:05:00.000Z",
+      companyId: WHI,
+      entityId: "c-1",
+      entityType: "comment",
+      payload: {
+        id: "c-1",
+        issueId: "iss-1",
+        body: `Hi [@Walter](user://${WALTER}), thoughts?`,
+        authorAgentId: "agent-x",
+        authorUserId: null,
+        issueIdentifier: "WHI-42",
+        issueTitle: "Cleanup",
+      },
+    } as any);
+
+    expect(ctx.http.fetch).toHaveBeenCalledTimes(1);
+    const body = new URLSearchParams(ctx.http.fetch.mock.calls[0][1].body);
+    expect(body.get("title")).toMatch(/^\[WHI\] @-Mention/);
+  });
+
+  it("does not fire when author IS Walter (self-mention)", async () => {
+    const ctx = makeCtx(null);
+    await handleCommentCreated(ctx, baseConfig(), {
+      eventId: "evt-3",
+      eventType: "issue.comment.created",
+      occurredAt: "2026-05-11T10:05:00.000Z",
+      companyId: WHI,
+      entityId: "c-2",
+      entityType: "comment",
+      payload: {
+        id: "c-2",
+        issueId: "iss-1",
+        body: `Note to self [@Walter](user://${WALTER})`,
+        authorAgentId: null,
+        authorUserId: WALTER,
+        issueIdentifier: "WHI-42",
+        issueTitle: "Cleanup",
+      },
+    } as any);
+    expect(ctx.http.fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not fire when body has no mention of board user", async () => {
+    const ctx = makeCtx(null);
+    await handleCommentCreated(ctx, baseConfig(), {
+      eventId: "evt-4",
+      eventType: "issue.comment.created",
+      occurredAt: "2026-05-11T10:05:00.000Z",
+      companyId: WHI,
+      entityId: "c-3",
+      entityType: "comment",
+      payload: {
+        id: "c-3",
+        issueId: "iss-1",
+        body: "plain comment, no mention",
+        authorAgentId: "agent-x",
+        authorUserId: null,
+        issueIdentifier: "WHI-42",
+        issueTitle: "Cleanup",
+      },
+    } as any);
+    expect(ctx.http.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleApprovalCreated (T5)", () => {
+  it("fires on pending request_board_approval", async () => {
+    const ctx = makeCtx(null);
+    await handleApprovalCreated(ctx, baseConfig(), {
+      eventId: "evt-5",
+      eventType: "approval.created",
+      occurredAt: "2026-05-11T10:05:00.000Z",
+      companyId: WHI,
+      entityId: "appr-1",
+      entityType: "approval",
+      payload: {
+        id: "appr-1",
+        type: "request_board_approval",
+        status: "pending",
+        title: "Approve monthly hosting spend",
+      },
+    } as any);
+    expect(ctx.http.fetch).toHaveBeenCalledTimes(1);
+    const body = new URLSearchParams(ctx.http.fetch.mock.calls[0][1].body);
+    expect(body.get("priority")).toBe("1");
+    expect(body.get("title")).toMatch(/^\[WHI\] Approval wartet:/);
+    expect(body.get("url")).toBe("https://company.whitestag.ai/WHI/approvals/appr-1");
+  });
+
+  it("does not fire on non-pending or non-board-approval payload", async () => {
+    const ctx = makeCtx(null);
+    await handleApprovalCreated(ctx, baseConfig(), {
+      eventId: "evt-6",
+      eventType: "approval.created",
+      occurredAt: "2026-05-11T10:05:00.000Z",
+      companyId: WHI,
+      entityId: "appr-2",
+      entityType: "approval",
+      payload: { id: "appr-2", type: "hire_agent", status: "pending", title: "Hire" },
+    } as any);
     expect(ctx.http.fetch).not.toHaveBeenCalled();
   });
 });
