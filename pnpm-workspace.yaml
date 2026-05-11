@@ -17,4 +17,4 @@ allowBuilds:
   es5-ext: true
   esbuild: true
   sharp: true
-  sqlite3: false
+  sqlite3: true
