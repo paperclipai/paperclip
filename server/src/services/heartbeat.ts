@@ -45,6 +45,7 @@ import {
 import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
+import { detectRunLoop, LOOP_DETECTOR_WINDOW_SEC } from "./run-loop-detector.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
@@ -6682,6 +6683,49 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
+  async function maybeEmitRunLoopSignal(agent: typeof agents.$inferSelect) {
+    try {
+      const windowStart = new Date(Date.now() - LOOP_DETECTOR_WINDOW_SEC * 1000);
+      const recentRuns = await db
+        .select({
+          id: heartbeatRuns.id,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+          createdAt: heartbeatRuns.createdAt,
+        })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.agentId, agent.id), gt(heartbeatRuns.createdAt, windowStart)))
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(50);
+
+      const signal = detectRunLoop({
+        agentId: agent.id,
+        recentRuns,
+        now: new Date(),
+      });
+      if (!signal) return;
+
+      logger.warn(
+        {
+          agentId: signal.agentId,
+          issueId: signal.issueId,
+          wakeReason: signal.wakeReason,
+          count: signal.count,
+          threshold: signal.threshold,
+          windowSec: signal.windowSec,
+          recentRunIds: signal.recentRunIds,
+        },
+        "agent run loop suspected",
+      );
+      publishLiveEvent({
+        companyId: agent.companyId,
+        type: "heartbeat.run_loop_suspected",
+        payload: signal as unknown as Record<string, unknown>,
+      });
+    } catch (err) {
+      logger.error({ err, agentId: agent.id }, "run-loop detector failed");
+    }
+  }
+
   async function startNextQueuedRunForAgent(agentId: string) {
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
@@ -6737,6 +6781,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (leftPriorityRank !== rightPriorityRank) return leftPriorityRank - rightPriorityRank;
         return left.createdAt.getTime() - right.createdAt.getTime();
       });
+
+      await maybeEmitRunLoopSignal(agent);
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
