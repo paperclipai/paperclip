@@ -118,6 +118,9 @@ function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
   };
 }
 
+export type IssueListSortField = "created" | "updated" | "priority" | "status" | "title";
+export type IssueListSortDir = "asc" | "desc";
+
 export interface IssueFilters {
   status?: string;
   assigneeAgentId?: string;
@@ -142,6 +145,8 @@ export interface IssueFilters {
   q?: string;
   limit?: number;
   offset?: number;
+  sortField?: IssueListSortField;
+  sortDir?: IssueListSortDir;
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -2338,6 +2343,7 @@ export function issueService(db: Db) {
       conditions.push(isNull(issues.hiddenAt));
 
       const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
+      const statusOrder = sql`CASE ${issues.status} WHEN 'in_progress' THEN 0 WHEN 'todo' THEN 1 WHEN 'backlog' THEN 2 WHEN 'in_review' THEN 3 WHEN 'blocked' THEN 4 WHEN 'done' THEN 5 WHEN 'cancelled' THEN 6 ELSE 7 END`;
       const searchOrder = sql<number>`
         CASE
           WHEN ${titleStartsWithMatch} THEN 0
@@ -2350,12 +2356,29 @@ export function issueService(db: Db) {
         END
       `;
       const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);
+
+      // Build order. When the caller passes an explicit sortField the chosen
+      // column is primary; the server's traditional priority+activity order
+      // becomes a tie-breaker. Without an explicit sort we keep the old default.
+      const dir = filters?.sortDir === "asc" ? asc : desc;
+      const requestedPrimary = (() => {
+        switch (filters?.sortField) {
+          case "created": return dir(issues.createdAt);
+          case "updated": return dir(issues.updatedAt);
+          case "priority": return filters?.sortDir === "desc" ? desc(priorityOrder) : asc(priorityOrder);
+          case "status": return filters?.sortDir === "desc" ? desc(statusOrder) : asc(statusOrder);
+          case "title": return dir(issues.title);
+          default: return null;
+        }
+      })();
       const baseQuery = db
         .select(issueListSelect)
         .from(issues)
         .where(and(...conditions))
         .orderBy(
-          hasSearch ? asc(searchOrder) : asc(priorityOrder),
+          ...(requestedPrimary
+            ? [requestedPrimary]
+            : [hasSearch ? asc(searchOrder) : asc(priorityOrder)]),
           asc(priorityOrder),
           desc(canonicalLastActivityAt),
           desc(issues.updatedAt),

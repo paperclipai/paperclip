@@ -1419,6 +1419,21 @@ export function issueRoutes(
     }
     const offset = parsedOffset ?? 0;
 
+    const ISSUE_LIST_SORT_FIELDS = ["created", "updated", "priority", "status", "title"] as const;
+    type IssueListSortFieldQuery = (typeof ISSUE_LIST_SORT_FIELDS)[number];
+    const rawSortField = typeof req.query.sortField === "string" ? req.query.sortField : undefined;
+    const rawSortDir = typeof req.query.sortDir === "string" ? req.query.sortDir : undefined;
+    if (rawSortField !== undefined && !ISSUE_LIST_SORT_FIELDS.includes(rawSortField as IssueListSortFieldQuery)) {
+      res.status(400).json({ error: `sortField must be one of: ${ISSUE_LIST_SORT_FIELDS.join(", ")}` });
+      return;
+    }
+    if (rawSortDir !== undefined && rawSortDir !== "asc" && rawSortDir !== "desc") {
+      res.status(400).json({ error: "sortDir must be 'asc' or 'desc'" });
+      return;
+    }
+    const sortField = rawSortField as IssueListSortFieldQuery | undefined;
+    const sortDir = rawSortDir as "asc" | "desc" | undefined;
+
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
@@ -1446,6 +1461,8 @@ export function issueRoutes(
       q: req.query.q as string | undefined,
       limit,
       offset,
+      sortField,
+      sortDir,
     });
     const handoffStates = await listSuccessfulRunHandoffStates(
       db,
