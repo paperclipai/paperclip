@@ -72,12 +72,13 @@ interface StageFormProps {
   stage: StageDefinition;
   agents: AgentItem[];
   schemas: string[];
+  pipelineNames: string[];
   stageIds: string[];
   onChange: (updated: StageDefinition, oldId?: string) => void;
   onDelete: (id: string) => void;
 }
 
-function StageForm({ stage, agents, schemas, stageIds, onChange, onDelete }: StageFormProps) {
+function StageForm({ stage, agents, schemas, pipelineNames, stageIds, onChange, onDelete }: StageFormProps) {
   const update = (patch: Partial<StageDefinition>) =>
     onChange({ ...stage, ...patch } as StageDefinition, patch.id !== undefined ? stage.id : undefined);
 
@@ -185,12 +186,16 @@ function StageForm({ stage, agents, schemas, stageIds, onChange, onDelete }: Sta
 
       {stage.type === "sub-pipeline" && (
         <FieldGroup label="Pipeline Reference">
-          <input
-            style={inputStyle}
+          <select
+            style={selectStyle}
             value={stage.pipeline ?? ""}
             onChange={(e) => update({ pipeline: e.target.value } as Partial<StageDefinition>)}
-            placeholder="e.g. implementation"
-          />
+          >
+            <option value="">— Select pipeline —</option>
+            {pipelineNames.map((p) => (
+              <option key={p} value={p}>{p}</option>
+            ))}
+          </select>
         </FieldGroup>
       )}
 
@@ -208,12 +213,16 @@ function StageForm({ stage, agents, schemas, stageIds, onChange, onDelete }: Sta
             </label>
           </FieldGroup>
           <FieldGroup label="Ordering">
-            <input
-              style={inputStyle}
+            <select
+              style={selectStyle}
               value={(stage as any).ordering ?? ""}
               onChange={(e) => update({ ordering: e.target.value || undefined } as any)}
-              placeholder="e.g. from_output"
-            />
+            >
+              <option value="">— No ordering —</option>
+              <option value="from_output">From output</option>
+              <option value="sequential">Sequential</option>
+              <option value="parallel">Parallel</option>
+            </select>
           </FieldGroup>
         </>
       )}
@@ -288,8 +297,10 @@ export function StageInspector({
   const { companyId } = useHostContext();
   const { data: agentsData } = usePluginData<ListAgentsResult>(DATA_KEYS.LIST_AGENTS, { companyId });
   const { data: schemasData } = usePluginData<{ schemas: string[] }>(DATA_KEYS.LIST_SCHEMAS, {});
+  const { data: pipelinesData } = usePluginData<{ pipelines: { name: string }[] }>(DATA_KEYS.LIST_PIPELINES, {});
   const agents = agentsData?.agents ?? [];
   const schemas = schemasData?.schemas ?? [];
+  const pipelineNames = (pipelinesData?.pipelines ?? []).map((p) => p.name);
 
   return (
     <div
@@ -307,7 +318,7 @@ export function StageInspector({
       {selectedEdge ? (
         <EdgeInspector edge={selectedEdge} stageIds={stageIds} onUpdate={onEdgeUpdate} onDelete={onEdgeDelete} />
       ) : selectedStage ? (
-        <StageForm stage={selectedStage} agents={agents} schemas={schemas} stageIds={stageIds} onChange={onStageChange} onDelete={onStageDelete} />
+        <StageForm stage={selectedStage} agents={agents} schemas={schemas} pipelineNames={pipelineNames} stageIds={stageIds} onChange={onStageChange} onDelete={onStageDelete} />
       ) : (
         <div style={{ color: "#6b7280", fontSize: 12, textAlign: "center", marginTop: 48, lineHeight: 1.6 }}>
           Click a stage node or edge to inspect and edit its properties.
