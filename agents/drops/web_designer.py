@@ -471,26 +471,30 @@ Responde SOLO con JSON:
     # ── PASO 0a: Imágenes (CJ real → Pexels → Unsplash fallback) ────────────
     print(f"\n🖼️  Buscando imágenes para: {name}", flush=True)
 
-    # Prioridad 1: imagen real del proveedor CJ (si viene en el JSON del producto)
+    # Prioridad 1: imagen real del proveedor CJ para el HERO
+    # + Openverse para el grid de producto (variedad visual)
     cj_image = product.get("image_url", "")
     images = {}
+
     if cj_image and cj_image.startswith("http"):
-        print(f"  ✅ Imagen real CJ: {cj_image[:60]}", flush=True)
+        print(f"  ✅ Imagen real CJ (hero): {cj_image[:60]}", flush=True)
+        # Buscar imágenes adicionales en Openverse para el grid
+        search_context = f"{name} {issue_title}".strip()
+        openverse_imgs = fetch_openverse_images(search_context)
+        product_grid   = openverse_imgs.get("product", []) + openverse_imgs.get("context", [])
         images = {
             "hero":    [cj_image],
-            "product": [cj_image],
-            "context": [],
-            "all":     [cj_image],
+            "product": product_grid[:3] if product_grid else [cj_image],
+            "context": openverse_imgs.get("context", []),
+            "all":     [cj_image] + product_grid[:4],
         }
-
     # Prioridad 2: Pexels API
-    if not images.get("all") and pexels_key:
+    elif pexels_key:
         images = fetch_pexels_images(name, pexels_key)
 
-    # Prioridad 3: Unsplash fallback
+    # Prioridad 3: Openverse para todo
     if not images.get("all"):
         print(f"  ℹ️  Pexels no disponible — usando Openverse", flush=True)
-        # Combinar nombre del producto + issue title para mejor detección de categoría
         search_context = f"{name} {issue_title}".strip()
         images = fetch_openverse_images(search_context)
     hero_imgs    = images.get("hero", []) if images else []
