@@ -3,6 +3,40 @@ import type { Db } from "@paperclipai/db";
 import { agents, issues, providerRateLimitBlocks } from "@paperclipai/db";
 import { fetchAllQuotaWindows } from "./quota-windows.js";
 
+function hasPositiveMoneyValue(label: string | null | undefined): boolean {
+  if (!label) return false;
+  const match = label.match(/(?:\$|€|£)?\s*(\d+(?:\.\d+)?)/);
+  if (!match) return false;
+  const amount = Number(match[1]);
+  return Number.isFinite(amount) && amount > 0;
+}
+
+function windowShowsUsablePaidOverflow(window: {
+  windowId?: string | null;
+  label: string;
+  valueLabel?: string | null;
+  detail?: string | null;
+  usedPercent?: number | null;
+}): boolean {
+  const windowId = window.windowId?.toLowerCase() ?? "";
+  const label = window.label.toLowerCase();
+  const valueLabel = window.valueLabel?.toLowerCase() ?? "";
+  const detail = window.detail?.toLowerCase() ?? "";
+
+  if (windowId === "extra_usage" || label.includes("extra usage")) {
+    if (valueLabel.includes("not enabled") || detail.includes("not enabled")) return false;
+    if (window.usedPercent == null) return hasPositiveMoneyValue(window.valueLabel);
+    return window.usedPercent < 100;
+  }
+
+  if (windowId === "credits" || label.includes("credits")) {
+    if (valueLabel.includes("n/a") || valueLabel.includes("not enabled")) return false;
+    return hasPositiveMoneyValue(window.valueLabel);
+  }
+
+  return false;
+}
+
 export function providerRateLimitService(db: Db) {
   async function upsertBlock(input: {
     companyId: string;
@@ -13,21 +47,33 @@ export function providerRateLimitService(db: Db) {
     resetsAt: Date | null;
   }) {
     const now = new Date();
-    // Resolve any existing active block for this scope before creating a new one.
-    await db
-      .update(providerRateLimitBlocks)
-      .set({ resolvedAt: now, resolvedBy: "system", updatedAt: now })
-      .where(
-        and(
-          eq(providerRateLimitBlocks.companyId, input.companyId),
-          eq(providerRateLimitBlocks.adapterType, input.adapterType),
-          eq(providerRateLimitBlocks.limitKind, input.limitKind),
-          input.modelFamily
-            ? eq(providerRateLimitBlocks.modelFamily, input.modelFamily)
-            : isNull(providerRateLimitBlocks.modelFamily),
-          isNull(providerRateLimitBlocks.resolvedAt),
-        ),
-      );
+    const scopeFilter = and(
+      eq(providerRateLimitBlocks.companyId, input.companyId),
+      eq(providerRateLimitBlocks.adapterType, input.adapterType),
+      eq(providerRateLimitBlocks.limitKind, input.limitKind),
+      input.modelFamily
+        ? eq(providerRateLimitBlocks.modelFamily, input.modelFamily)
+        : isNull(providerRateLimitBlocks.modelFamily),
+      isNull(providerRateLimitBlocks.resolvedAt),
+    );
+
+    const existing = await db
+      .select()
+      .from(providerRateLimitBlocks)
+      .where(scopeFilter)
+      .then((rows) => rows[0] ?? null);
+    if (existing) {
+      const [updated] = await db
+        .update(providerRateLimitBlocks)
+        .set({
+          message: input.message ?? existing.message,
+          resetsAt: input.resetsAt ?? existing.resetsAt,
+          updatedAt: now,
+        })
+        .where(eq(providerRateLimitBlocks.id, existing.id))
+        .returning();
+      return updated ?? existing;
+    }
 
     const [block] = await db
       .insert(providerRateLimitBlocks)
@@ -160,14 +206,21 @@ export function providerRateLimitService(db: Db) {
       .returning();
   }
 
-  async function isWindowStillBlocked(adapterType: string, limitKind: string): Promise<boolean> {
+  async function isWindowStillBlocked(
+    adapterType: string,
+    limitKind: string,
+    opts?: { resetsAt?: Date | null; now?: Date },
+  ): Promise<boolean> {
+    const now = opts?.now ?? new Date();
+    const resetIsFuture = opts?.resetsAt ? opts.resetsAt.getTime() > now.getTime() : false;
     try {
       const results = await fetchAllQuotaWindows();
       const providerSlug = adapterType === "claude_local" ? "anthropic" : adapterType === "codex_local" ? "openai" : adapterType;
       const providerResult = results.find((r) => r.provider === providerSlug);
       if (!providerResult?.ok) return true; // Cannot verify → assume still blocked
+      if (providerResult.windows.some(windowShowsUsablePaidOverflow)) return false;
       const window = providerResult.windows.find((w) => w.windowId === limitKind);
-      if (!window) return false; // Window no longer reported → assume released
+      if (!window) return resetIsFuture; // Future provider reset remains authoritative when the quota API omits the window.
       return (window.usedPercent ?? 0) >= 100;
     } catch {
       return true; // Quota probe failed → assume still blocked
@@ -196,7 +249,10 @@ export function providerRateLimitService(db: Db) {
           eq(issues.status, "blocked"),
           inArray(issues.assigneeAgentId, resumedAgentIds),
           // Only unblock issues that became blocked after the rate limit was created.
-          or(isNull(issues.updatedAt), sql`${issues.updatedAt} >= ${block.createdAt}`),
+          or(
+            isNull(issues.updatedAt),
+            sql`${issues.updatedAt} >= ${block.createdAt.toISOString()}::timestamptz`,
+          ),
         ),
       );
   }

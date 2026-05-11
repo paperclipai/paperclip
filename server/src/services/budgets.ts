@@ -820,7 +820,9 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         const model = (agent.adapterConfig as Record<string, unknown> | null)?.model as string | null ?? null;
         const block = await providerRateLimits.getActiveBlockForAgent(companyId, agent.adapterType, model);
         if (block) {
-          const stillBlocked = await providerRateLimits.isWindowStillBlocked(block.adapterType, block.limitKind);
+          const stillBlocked = await providerRateLimits.isWindowStillBlocked(block.adapterType, block.limitKind, {
+            resetsAt: block.resetsAt,
+          });
           if (stillBlocked) {
             return {
               scopeType: "provider" as const,
@@ -904,7 +906,9 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       const block = await providerRateLimits.getActiveBlockForAgent(companyId, agent.adapterType, model);
       if (!block) return null;
 
-      const stillBlocked = await providerRateLimits.isWindowStillBlocked(block.adapterType, block.limitKind);
+      const stillBlocked = await providerRateLimits.isWindowStillBlocked(block.adapterType, block.limitKind, {
+        resetsAt: block.resetsAt,
+      });
       if (!stillBlocked) {
         await providerRateLimits.resolveBlock(block.id, "system");
         await providerRateLimits.releaseAndResumeForBlock(block);
