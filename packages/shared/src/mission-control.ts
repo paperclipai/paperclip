@@ -333,6 +333,7 @@ export type MissionControlAutonomousLoopGateReason =
   | "autonomous_loop_disabled"
   | "missing_ceo_loop_decision"
   | "invalid_ceo_loop_decision"
+  | "ceo_loop_iteration_mismatch"
   | "runtime_exceeded"
   | "iteration_exceeded"
   | "approval_required"
@@ -365,6 +366,7 @@ export type MissionControlCompletionGateResult = {
     | "validator_not_passed"
     | "missing_ceo_loop_decision"
     | "invalid_ceo_loop_decision"
+    | "ceo_loop_iteration_mismatch"
     | "runtime_exceeded"
     | "iteration_exceeded"
     | "approval_required"
@@ -491,6 +493,19 @@ export function evaluateMissionControlAutonomousLoopGate(input: {
   }
 
   const decisionContinuesLoop = ceoLoopDecision.decision === "next_iteration";
+  if (ceoLoopDecision.iteration !== autonomousLoopPolicy.iteration) {
+    return {
+      allowed: false,
+      enabled: true,
+      policy,
+      autonomousLoopPolicy,
+      missingDocumentKeys: [],
+      ceoLoopDecision,
+      requiredApprovalGate: "board",
+      reason: "ceo_loop_iteration_mismatch",
+    };
+  }
+
   const nowMs = input.now instanceof Date ? input.now.getTime() : Date.parse(input.now ?? new Date().toISOString());
   const startedAtMs = autonomousLoopPolicy.startedAt ? Date.parse(autonomousLoopPolicy.startedAt) : Number.NaN;
   if (

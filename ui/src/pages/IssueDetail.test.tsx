@@ -970,6 +970,47 @@ describe("IssueDetail", () => {
     });
   });
 
+  it("does not present internal stale approval repair as user approval", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.getAutonomousLoopState.mockResolvedValue({
+      enabled: true,
+      status: "failed",
+      goal: "Ship autonomous creator traffic ops workflow",
+      iteration: 2,
+      maxIterations: 5,
+      currentDecision: {
+        iteration: 1,
+        decision: "approval_required",
+        nextTaskTitle: "Deploy stale loop slice",
+      },
+      supervisor: {
+        attentionRequired: true,
+        reason: "ceo_loop_iteration_mismatch",
+        recoveryAction: "repair_loop_decision",
+        userVisible: false,
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Autonomous loop");
+      expect(container.textContent).toContain("Supervisor: Needs repair");
+      expect(container.textContent).toContain("ceo_loop_iteration_mismatch");
+      expect(container.textContent).not.toContain("Supervisor: Needs approval");
+      expect(container.textContent).not.toContain("approval_required");
+      expect(container.textContent).not.toContain("Deploy stale loop slice");
+    });
+  });
+
   it("refreshes subtree pause state after resuming a hold", async () => {
     const childIssue = createIssue({
       id: "child-1",

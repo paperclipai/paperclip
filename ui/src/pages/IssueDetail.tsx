@@ -221,18 +221,33 @@ function formatAutonomousLoopProgress(state: AutonomousLoopState): string {
 }
 
 function autonomousLoopSupervisorLabel(state: AutonomousLoopState): string {
-  if (state.status === "approval_required" || state.supervisor?.attentionRequired) return "Needs approval";
+  if (state.status === "approval_required") return "Needs approval";
+  if (state.supervisor?.attentionRequired && state.supervisor.userVisible !== false) return "Needs approval";
+  if (state.supervisor?.attentionRequired) return "Needs repair";
   return "clear";
+}
+
+function autonomousLoopDecisionLabel(state: AutonomousLoopState): string {
+  if (state.supervisor?.attentionRequired && state.supervisor.userVisible === false) {
+    return state.supervisor.reason ?? state.status ?? "internal_repair";
+  }
+  return state.currentDecision?.decision ?? state.status ?? "unknown";
+}
+
+function autonomousLoopNextTaskTitle(state: AutonomousLoopState): string | null {
+  if (state.supervisor?.attentionRequired && state.supervisor.userVisible === false) return null;
+  return state.currentDecision?.nextTaskTitle ?? state.planner?.nextTaskTitle ?? null;
 }
 
 function IssueAutonomousLoopPanel({ state }: { state?: AutonomousLoopState | null }) {
   if (!state?.enabled) return null;
 
   const progress = formatAutonomousLoopProgress(state);
-  const decision = state.currentDecision?.decision ?? state.status ?? "unknown";
-  const nextTaskTitle = state.currentDecision?.nextTaskTitle ?? state.planner?.nextTaskTitle ?? null;
+  const decision = autonomousLoopDecisionLabel(state);
+  const nextTaskTitle = autonomousLoopNextTaskTitle(state);
   const latestIteration = state.iterations?.at(-1) ?? null;
   const supervisorLabel = autonomousLoopSupervisorLabel(state);
+  const supervisorNeedsAttention = supervisorLabel !== "clear";
   const observabilityChain = state.observability?.chain ?? [];
 
   return (
@@ -246,7 +261,7 @@ function IssueAutonomousLoopPanel({ state }: { state?: AutonomousLoopState | nul
         </div>
         <div className={cn(
           "rounded-full border px-2 py-0.5 text-xs font-medium",
-          supervisorLabel === "Needs approval"
+          supervisorNeedsAttention
             ? "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300"
             : "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300",
         )}>

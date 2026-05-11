@@ -196,6 +196,77 @@ describe("autonomous goal loop continuation planning", () => {
     });
   });
 
+  it("blocks stale decisions whose iteration no longer matches the loop policy", () => {
+    const staleIterationIssue = {
+      ...parentIssue,
+      executionPolicy: {
+        missionControl: {
+          ...parentIssue.executionPolicy.missionControl,
+          autonomousLoop: {
+            ...parentIssue.executionPolicy.missionControl.autonomousLoop,
+            iteration: 2,
+          },
+        },
+      },
+    };
+
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: staleIterationIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "This decision was generated before the current loop iteration.",
+        nextTask: {
+          title: "Repeat stale implementation slice",
+          acceptanceCriteria: ["should not be created"],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["validator-report PASS"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "ceo_loop_iteration_mismatch",
+      reportToUser: false,
+    });
+  });
+
+  it("keeps stale terminal decisions internal instead of reporting them as goal reached", () => {
+    const staleIterationIssue = {
+      ...parentIssue,
+      executionPolicy: {
+        missionControl: {
+          ...parentIssue.executionPolicy.missionControl,
+          autonomousLoop: {
+            ...parentIssue.executionPolicy.missionControl.autonomousLoop,
+            iteration: 2,
+          },
+        },
+      },
+    };
+
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: staleIterationIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "goal_reached",
+        rationale: "This goal reached decision was generated for a stale iteration.",
+        evidence: ["validator-report PASS"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "ceo_loop_iteration_mismatch",
+      reportToUser: false,
+    });
+  });
+
   it("reports failed decisions instead of creating child work", () => {
     const plan = buildAutonomousGoalLoopContinuationPlan({
       issue: parentIssue,
@@ -285,12 +356,56 @@ describe("autonomous goal loop continuation planning", () => {
     ]);
   });
 
+  it("renders stale approval decisions as an internal repair state", () => {
+    const staleIterationIssue = {
+      ...parentIssue,
+      executionPolicy: {
+        missionControl: {
+          ...parentIssue.executionPolicy.missionControl,
+          autonomousLoop: {
+            ...parentIssue.executionPolicy.missionControl.autonomousLoop,
+            iteration: 2,
+          },
+        },
+      },
+    };
+
+    const state = buildAutonomousGoalLoopState({
+      issue: staleIterationIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "approval_required",
+        rationale: "This approval request belongs to a previous loop iteration.",
+        hardGate: {
+          required: true,
+          category: "production_deploy",
+          reason: "Production deploy is user-gated.",
+        },
+        evidence: ["validator-report PASS"],
+      }),
+      childIssues: [],
+      now: "2026-05-11T10:00:00.000Z",
+    });
+
+    expect(state).toMatchObject({
+      enabled: true,
+      status: "failed",
+      supervisor: {
+        attentionRequired: true,
+        reason: "ceo_loop_iteration_mismatch",
+        recoveryAction: "repair_loop_decision",
+        userVisible: false,
+      },
+    });
+  });
+
   it("marks approval and blocked loop states for supervisor attention", () => {
     const state = buildAutonomousGoalLoopState({
       issue: parentIssue,
       documents: missionDocsWithDecision({
         version: 1,
-        iteration: 2,
+        iteration: 1,
         decision: "approval_required",
         rationale: "Need explicit approval before production deploy.",
         hardGate: {

@@ -297,6 +297,52 @@ describe("mission-control completion gate", () => {
     ).toMatchObject({ allowed: false, reason: "runtime_exceeded", requiredApprovalGate: "board" });
   });
 
+  it("rejects stale autonomous loop decisions before creating another iteration", () => {
+    const executionPolicy = {
+      missionControl: missionControlIssuePolicySchema.parse({
+        enabled: true,
+        riskClass: "high",
+        autonomousLoop: {
+          enabled: true,
+          controller: "CEO",
+          goal: "Build the autonomous creator traffic workflow",
+          startedAt: "2026-05-11T08:00:00.000Z",
+          iteration: 3,
+          maxIterations: 5,
+          maxRuntimeHours: 24,
+        },
+      }),
+    };
+
+    expect(
+      evaluateMissionControlAutonomousLoopGate({
+        issue: { priority: "high", executionPolicy },
+        documents: [
+          {
+            key: MISSION_CONTROL_AUTONOMOUS_LOOP_DOCUMENT_KEY,
+            body: JSON.stringify({
+              version: 1,
+              iteration: 2,
+              decision: "next_iteration",
+              rationale: "This decision was generated for the previous loop iteration.",
+              nextTask: {
+                title: "Repeat stale child work",
+                acceptanceCriteria: ["should not create a new child from stale state"],
+                safeToRunWithoutUserApproval: true,
+              },
+            }),
+          },
+        ],
+        now: "2026-05-11T09:30:00.000Z",
+      }),
+    ).toMatchObject({
+      allowed: false,
+      reason: "ceo_loop_iteration_mismatch",
+      requiredApprovalGate: "board",
+      ceoLoopDecision: { iteration: 2, decision: "next_iteration" },
+    });
+  });
+
   it("does not block legacy issues unless missionControl is enabled", () => {
     expect(
       evaluateMissionControlCompletionGate({
