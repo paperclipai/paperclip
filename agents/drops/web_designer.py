@@ -43,15 +43,19 @@ def fetch_openverse_images(product_name: str) -> dict:
         (["laptop", "portatil", "portátil", "soporte laptop", "soporte ordenador"], "laptop stand desk"),
         (["mochila", "backpack", "bolsa viaje"], "backpack travel bag"),
         (["cocina", "kitchen", "blender", "licuadora"], "kitchen gadget cooking"),
-        (["fitness", "gym", "banda", "ejercicio", "deporte"], "fitness workout equipment"),
-        (["masaje", "facial", "skincare", "serum", "crema"], "skincare beauty product"),
-        (["gaming", "consola juegos", "retro game"], "gaming console retro"),
+        (["fitness", "gym", "banda", "ejercicio", "deporte", "pistola masaje", "masaje muscular"], "fitness workout equipment"),
+        (["masaje facial", "mascarilla", "skincare", "serum", "crema", "led facial", "rejuvenecimiento"], "skincare beauty facial"),
+        # Gaming — incluye marcas conocidas
+        (["gaming", "consola", "retro", "game", "anbernic", "rg35", "powkiddy",
+          "retroid", "emulador", "juegos retro", "portatil juegos"], "retro handheld gaming console"),
         (["led", "luz", "lampara", "ring light"], "led light product"),
-        (["soporte movil", "soporte telefono", "magsafe", "magnético"], "phone holder magnetic mount"),
-        (["joya", "collar joya", "pulsera", "anillo", "colgante"], "jewelry accessory necklace"),
+        (["soporte movil", "soporte telefono", "magsafe", "magnético", "soporte coche"], "phone holder car mount"),
+        (["joya", "collar joya", "pulsera", "anillo", "colgante", "jesus piece"], "jewelry necklace accessories"),
         (["manta", "almohada", "cojin"], "home textile comfort"),
+        (["ps5", "playstation", "xbox", "nintendo", "switch"], "gaming console accessories"),
+        (["auricular", "cascos", "earbuds", "bluetooth audio"], "wireless earbuds headphones"),
     ]
-    query = "product lifestyle"  # default
+    query = "product ecommerce lifestyle"  # default menos random
     for keywords, english_query in category_queries:
         if any(kw in name_lower for kw in keywords):
             query = english_query
@@ -482,7 +486,9 @@ Responde SOLO con JSON:
     # Prioridad 3: Unsplash fallback
     if not images.get("all"):
         print(f"  ℹ️  Pexels no disponible — usando Openverse", flush=True)
-        images = fetch_openverse_images(name)
+        # Combinar nombre del producto + issue title para mejor detección de categoría
+        search_context = f"{name} {issue_title}".strip()
+        images = fetch_openverse_images(search_context)
     hero_imgs    = images.get("hero", []) if images else []
     hero_img     = hero_imgs[0] if hero_imgs else ""
     product_imgs = images.get("product", []) if images else []
