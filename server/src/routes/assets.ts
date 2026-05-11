@@ -119,7 +119,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
           res.status(422).json({ error: `File exceeds ${MAX_ATTACHMENT_BYTES} bytes` });
           return;
         }
-        res.status(400).json({ error: err.message });
+        res.status(400).json({ error: "File upload error" });
         return;
       }
       throw err;
@@ -222,7 +222,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
           res.status(422).json({ error: `Image exceeds ${MAX_ATTACHMENT_BYTES} bytes` });
           return;
         }
-        res.status(400).json({ error: err.message });
+        res.status(400).json({ error: "File upload error" });
         return;
       }
       throw err;

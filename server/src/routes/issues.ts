@@ -4506,7 +4506,7 @@ export function issueRoutes(
           res.status(422).json({ error: `Attachment exceeds ${attachmentMaxBytes} bytes` });
           return;
         }
-        res.status(400).json({ error: err.message });
+        res.status(400).json({ error: "File upload error" });
         return;
       }
       throw err;
