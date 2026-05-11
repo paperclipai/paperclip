@@ -176,7 +176,18 @@ STRUCTURE_SYSTEM = """Eres experto en CRO para Shopify en el mercado español.
 Generas landing pages de alto rendimiento para dropshipping.
 Todo en español, orientado al consumidor español: directo, garantías claras, sin exageraciones.
 Cuando se te proporcionan datos de competidores reales, úsalos como base — replica lo que ya convierte
-y mejóralo con mejor copy y estructura más clara."""
+y mejóralo con mejor copy y estructura más clara.
+
+REGLAS DE CREDIBILIDAD (críticas para convertir en España):
+1. PRECIO ANCLA REALISTA — el precio tachado debe ser máximo 2x el precio actual, nunca más.
+   ❌ MAL: ~~€279.99~~ → €69.99 (parece fake)
+   ✅ BIEN: ~~€99.99~~ → €64.99 (creíble)
+2. DESCUENTO MÁXIMO 40% — descuentos del 70-80% destruyen credibilidad.
+3. SIN CLAIMS MÉDICOS SIN FUENTE — evita "200% más colágeno", "probado clínicamente" sin citar fuente.
+   Usa en cambio: "miles de clientes notan la diferencia en 2 semanas".
+4. URGENCIA CREÍBLE — si pones stock limitado, que sea coherente con el producto (no siempre 47 unidades).
+   Mejor: "Oferta válida hasta agotar stock" o un descuento temporal.
+5. GARANTÍA ESPECÍFICA — "30 días sin preguntas, devolución del 100%" es mejor que promesas vagas."""
 
 HTML_SYSTEM = """Eres un desarrollador frontend experto en landing pages de Shopify para el mercado español.
 Generas HTML/CSS completo, limpio y visual de una landing page de dropshipping.
@@ -189,7 +200,10 @@ REGLAS:
 - Botones CTA en color llamativo (naranja o verde)
 - Incluir sección hero, beneficios, reseñas, garantía y CTA final
 - Usar los textos exactos que se te proporcionen
-- Todo en español"""
+- Todo en español
+- SIEMPRE incluir un countdown timer funcional en JavaScript que cuente desde 23:59:00 hacia atrás
+  con este formato: <div id="timer">23:59:00</div> y el JS que lo hace funcionar
+- El precio tachado NUNCA debe ser más del doble del precio actual"""
 
 
 def scrape_competitor_landings(product_name: str, max_pages: int = 3) -> str:
