@@ -348,7 +348,7 @@ function RevisionSnapshotDialog({
               />
               <RevisionPreview
                 revision={currentRevision}
-                currentRevision={currentRevision}
+                currentRevision={revision}
                 isHistorical={false}
                 agents={agents}
                 projects={projects}
@@ -379,6 +379,15 @@ function RevisionSnapshotDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function DiffPill({ kind }: { kind: "differs" | "only-here" }) {
+  const label = kind === "differs" ? "differs" : "only here";
+  return (
+    <span className="ml-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 text-[10px] uppercase tracking-[0.12em] text-amber-200">
+      {label}
+    </span>
   );
 }
 
@@ -543,9 +552,17 @@ function RevisionPreview({
   const snapshot = revision.snapshot.routine;
   const triggers = revision.snapshot.triggers;
   const currentSnapshot = currentRevision?.snapshot.routine ?? null;
+  const otherTriggers = currentRevision?.snapshot.triggers ?? [];
+  const otherTriggerById = new Map(otherTriggers.map((t) => [t.id, t]));
+  const otherVariableByName = new Map(
+    (currentSnapshot?.variables ?? []).map((v) => [v.name, v]),
+  );
   const cardWrapper = `rounded-md border transition-colors duration-1000 ${
     highlighted ? "border-emerald-500/40 bg-emerald-500/10" : "border-border"
   }`;
+  const descriptionDiffers =
+    !!currentSnapshot &&
+    (currentSnapshot.description ?? "") !== (snapshot.description ?? "");
 
   const fieldRows: Array<{ key: string; label: string; value: string; differs: boolean }> = [
     {
@@ -592,6 +609,21 @@ function RevisionPreview({
     },
   ];
 
+  const triggerStatus = (trigger: RoutineRevisionSnapshotTriggerV1): "same" | "differs" | "only-here" => {
+    if (!currentRevision) return "same";
+    const other = otherTriggerById.get(trigger.id);
+    if (!other) return "only-here";
+    const sameSummary = summarizeTriggerSnapshot(trigger) === summarizeTriggerSnapshot(other);
+    return sameSummary && trigger.enabled === other.enabled ? "same" : "differs";
+  };
+
+  const variableStatus = (variable: RoutineVariable): "same" | "differs" | "only-here" => {
+    if (!currentRevision) return "same";
+    const other = otherVariableByName.get(variable.name);
+    if (!other) return "only-here";
+    return JSON.stringify(other) === JSON.stringify(variable) ? "same" : "differs";
+  };
+
   return (
     <div className="space-y-4">
       <header className={`${cardWrapper} p-4 space-y-2`}>
@@ -614,11 +646,7 @@ function RevisionPreview({
               <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{row.label}</p>
               <p className="text-sm">
                 {row.value || <span className="text-muted-foreground">—</span>}
-                {row.differs && (
-                  <span className="ml-2 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 text-[10px] uppercase tracking-[0.12em] text-amber-200">
-                    differs from current
-                  </span>
-                )}
+                {row.differs && <DiffPill kind="differs" />}
               </p>
             </div>
           ))}
@@ -626,9 +654,12 @@ function RevisionPreview({
       </div>
 
       <div className={`${cardWrapper} p-3 space-y-2`}>
-        <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-          Description
-        </p>
+        <div className="flex items-center gap-2">
+          <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+            Description
+          </p>
+          {descriptionDiffers && <DiffPill kind="differs" />}
+        </div>
         <div className="rounded-md bg-background/40 p-3 text-sm leading-7">
           {snapshot.description ? (
             <MarkdownBody>{snapshot.description}</MarkdownBody>
@@ -646,22 +677,26 @@ function RevisionPreview({
           <p className="text-sm text-muted-foreground">No triggers in this revision.</p>
         ) : (
           <ul className="divide-y divide-border">
-            {triggers.map((trigger) => (
-              <li key={trigger.id} className="py-2 flex flex-wrap items-center gap-2 text-sm">
-                <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-                  {trigger.kind}
-                </span>
-                <span className="font-medium">{trigger.label ?? trigger.kind}</span>
-                <span className="text-xs text-muted-foreground">
-                  {summarizeTriggerSnapshot(trigger)}
-                </span>
-                <span
-                  className={`ml-auto text-xs ${trigger.enabled ? "text-emerald-400" : "text-muted-foreground"}`}
-                >
-                  {trigger.enabled ? "enabled" : "disabled"}
-                </span>
-              </li>
-            ))}
+            {triggers.map((trigger) => {
+              const status = triggerStatus(trigger);
+              return (
+                <li key={trigger.id} className="py-2 flex flex-wrap items-center gap-2 text-sm">
+                  <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                    {trigger.kind}
+                  </span>
+                  <span className="font-medium">{trigger.label ?? trigger.kind}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {summarizeTriggerSnapshot(trigger)}
+                  </span>
+                  {status !== "same" && <DiffPill kind={status} />}
+                  <span
+                    className={`ml-auto text-xs ${trigger.enabled ? "text-emerald-400" : "text-muted-foreground"}`}
+                  >
+                    {trigger.enabled ? "enabled" : "disabled"}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         )}
         <p className="text-xs text-muted-foreground">
@@ -676,14 +711,18 @@ function RevisionPreview({
             Variables ({snapshot.variables.length})
           </p>
           <ul className="divide-y divide-border">
-            {snapshot.variables.map((variable) => (
-              <li key={variable.name} className="py-2 flex items-center justify-between text-sm">
-                <span className="font-mono text-xs">{variable.name}</span>
-                <span className="text-xs text-muted-foreground">
-                  default: {formatVariableDefault(variable)}
-                </span>
-              </li>
-            ))}
+            {snapshot.variables.map((variable) => {
+              const status = variableStatus(variable);
+              return (
+                <li key={variable.name} className="py-2 flex flex-wrap items-center gap-2 text-sm">
+                  <span className="font-mono text-xs">{variable.name}</span>
+                  <span className="text-xs text-muted-foreground">
+                    default: {formatVariableDefault(variable)}
+                  </span>
+                  {status !== "same" && <DiffPill kind={status} />}
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}
