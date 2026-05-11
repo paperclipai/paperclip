@@ -2,6 +2,7 @@ import type { Edge } from "@xyflow/react";
 import { usePluginData, useHostContext } from "@paperclipai/plugin-sdk/ui";
 import type { StageDefinition, StageType, FanInStrategy } from "../../types.js";
 import { DATA_KEYS } from "../constants.js";
+import { ConditionBuilder } from "./ConditionBuilder.js";
 
 interface AgentItem {
   id: string;
@@ -15,11 +16,12 @@ interface ListAgentsResult {
 
 interface EdgeInspectorProps {
   edge: Edge;
+  stageIds: string[];
   onUpdate: (id: string, changes: Partial<{ label: string; when: string; type: "default" | "error" }>) => void;
   onDelete: (id: string) => void;
 }
 
-function EdgeInspector({ edge, onUpdate, onDelete }: EdgeInspectorProps) {
+function EdgeInspector({ edge, stageIds, onUpdate, onDelete }: EdgeInspectorProps) {
   const data = (edge.data ?? {}) as { when?: string; type?: "default" | "error" };
 
   return (
@@ -38,11 +40,10 @@ function EdgeInspector({ edge, onUpdate, onDelete }: EdgeInspectorProps) {
       </FieldGroup>
 
       <FieldGroup label="Condition (when)">
-        <input
-          style={inputStyle}
+        <ConditionBuilder
           value={data.when ?? ""}
-          onChange={(e) => onUpdate(edge.id, { when: e.target.value })}
-          placeholder="e.g. stages.classify.output.decision == 'approve'"
+          onChange={(v) => onUpdate(edge.id, { when: v })}
+          stageIds={stageIds}
         />
       </FieldGroup>
 
@@ -70,11 +71,12 @@ function EdgeInspector({ edge, onUpdate, onDelete }: EdgeInspectorProps) {
 interface StageFormProps {
   stage: StageDefinition;
   agents: AgentItem[];
+  stageIds: string[];
   onChange: (updated: StageDefinition, oldId?: string) => void;
   onDelete: (id: string) => void;
 }
 
-function StageForm({ stage, agents, onChange, onDelete }: StageFormProps) {
+function StageForm({ stage, agents, stageIds, onChange, onDelete }: StageFormProps) {
   const update = (patch: Partial<StageDefinition>) =>
     onChange({ ...stage, ...patch } as StageDefinition, patch.id !== undefined ? stage.id : undefined);
 
@@ -107,11 +109,10 @@ function StageForm({ stage, agents, onChange, onDelete }: StageFormProps) {
       </FieldGroup>
 
       <FieldGroup label="Condition">
-        <input
-          style={inputStyle}
+        <ConditionBuilder
           value={(stage as any).condition ?? ""}
-          onChange={(e) => update({ condition: e.target.value || undefined } as any)}
-          placeholder="e.g. stages.spec_review.output.status == 'approved'"
+          onChange={(v) => update({ condition: v || undefined } as any)}
+          stageIds={stageIds.filter((id) => id !== stage.id)}
         />
       </FieldGroup>
 
@@ -263,6 +264,7 @@ function StageForm({ stage, agents, onChange, onDelete }: StageFormProps) {
 export interface StageInspectorProps {
   selectedStage: StageDefinition | null;
   selectedEdge: Edge | null;
+  stageIds: string[];
   onStageChange: (updated: StageDefinition, oldId?: string) => void;
   onStageDelete: (id: string) => void;
   onEdgeUpdate: (id: string, changes: Partial<{ label: string; when: string; type: "default" | "error" }>) => void;
@@ -272,6 +274,7 @@ export interface StageInspectorProps {
 export function StageInspector({
   selectedStage,
   selectedEdge,
+  stageIds,
   onStageChange,
   onStageDelete,
   onEdgeUpdate,
@@ -295,9 +298,9 @@ export function StageInspector({
       }}
     >
       {selectedEdge ? (
-        <EdgeInspector edge={selectedEdge} onUpdate={onEdgeUpdate} onDelete={onEdgeDelete} />
+        <EdgeInspector edge={selectedEdge} stageIds={stageIds} onUpdate={onEdgeUpdate} onDelete={onEdgeDelete} />
       ) : selectedStage ? (
-        <StageForm stage={selectedStage} agents={agents} onChange={onStageChange} onDelete={onStageDelete} />
+        <StageForm stage={selectedStage} agents={agents} stageIds={stageIds} onChange={onStageChange} onDelete={onStageDelete} />
       ) : (
         <div style={{ color: "#6b7280", fontSize: 12, textAlign: "center", marginTop: 48, lineHeight: 1.6 }}>
           Click a stage node or edge to inspect and edit its properties.

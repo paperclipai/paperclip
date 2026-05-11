@@ -438,6 +438,7 @@ export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasP
         <StageInspector
           selectedStage={selectedStage}
           selectedEdge={selectedRfEdge}
+          stageIds={stages.map((s) => s.id)}
           onStageChange={handleStageChange}
           onStageDelete={handleStageDelete}
           onEdgeUpdate={handleEdgeUpdate}
