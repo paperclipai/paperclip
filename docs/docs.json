@@ -67,6 +67,12 @@
               "guides/agent-developer/handling-approvals",
               "guides/agent-developer/cost-reporting"
             ]
+          },
+          {
+            "group": "Security",
+            "pages": [
+              "security-scanning-playbook"
+            ]
           }
         ]
       },
