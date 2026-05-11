@@ -1140,6 +1140,53 @@ TIKTOK_OPEN_ID=${openId}
     }
   });
 
+  // ── Auth diagnostics ────────────────────────────────────────────────────────
+  // GET /api/internal/check-auth-user?email=X&secret=Y
+  app.get("/api/internal/check-auth-user", async (req, res) => {
+    const secret = (req.query.secret as string) ?? "";
+    const expectedSecret = (process.env.BETTER_AUTH_SECRET ?? "").slice(0, 16);
+    if (!secret || !expectedSecret || secret !== expectedSecret) {
+      res.status(403).json({ error: "forbidden" }); return;
+    }
+    const email = ((req.query.email as string) ?? "").toLowerCase().trim();
+    if (!email) { res.status(400).json({ error: "email required" }); return; }
+    try {
+      const { authUsers: users, authAccounts: accounts } = await import("@paperclipai/db");
+      const user = await (db as any)
+        .select({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified, createdAt: users.createdAt })
+        .from(users).where(eq(users.email, email)).limit(1).then((r: any[]) => r[0] ?? null);
+      if (!user) { res.json({ exists: false, email }); return; }
+      const accts = await (db as any)
+        .select({ providerId: accounts.providerId, hasPassword: accounts.password })
+        .from(accounts).where(eq(accounts.userId, user.id));
+      res.json({ exists: true, user, accounts: accts.map((a: any) => ({ providerId: a.providerId, hasPassword: !!a.hasPassword })) });
+    } catch (err: unknown) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // POST /api/internal/delete-auth-user — delete user so they can re-register
+  // Body: { email, secret }
+  app.post("/api/internal/delete-auth-user", async (req, res) => {
+    const secret = ((req.body as any)?.secret as string) ?? "";
+    const expectedSecret = (process.env.BETTER_AUTH_SECRET ?? "").slice(0, 16);
+    if (!secret || !expectedSecret || secret !== expectedSecret) {
+      res.status(403).json({ error: "forbidden" }); return;
+    }
+    const email = (((req.body as any)?.email as string) ?? "").toLowerCase().trim();
+    if (!email) { res.status(400).json({ error: "email required" }); return; }
+    try {
+      const { authUsers: users } = await import("@paperclipai/db");
+      const user = await (db as any)
+        .select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1).then((r: any[]) => r[0] ?? null);
+      if (!user) { res.json({ deleted: false, reason: "user not found" }); return; }
+      await (db as any).delete(users).where(eq(users.id, user.id));
+      res.json({ deleted: true, userId: user.id, email });
+    } catch (err: unknown) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // ── Fix trading agent scripts in DiscontrolsBags ────────────────────────────
   // Usage: GET /api/internal/fix-trading-scripts?secret=<first-16-chars-BETTER_AUTH_SECRET>
   app.get("/api/internal/fix-trading-scripts", async (req, res) => {
