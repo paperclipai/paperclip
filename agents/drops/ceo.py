@@ -32,6 +32,74 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from api_client import post_issue_result, post_issue_comment, resolve_issue_context
 
 sys.stdout.reconfigure(encoding="utf-8")
+
+
+def fetch_cj_image_for_winner(winner_name: str) -> str:
+    """
+    Búsqueda dirigida en CJ para obtener imagen del producto ganador.
+    Usa el nombre exacto del winner — más preciso que la búsqueda por nicho.
+    """
+    cj_key = os.environ.get("CJ_API_KEY", "").strip()
+    if not cj_key:
+        return ""
+
+    CJ_BASE = "https://developers.cjdropshipping.com/api2.0/v1"
+
+    # Auth
+    try:
+        payload = json.dumps({"apiKey": cj_key}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{CJ_BASE}/authentication/getAccessToken",
+            data=payload, headers={"Content-Type": "application/json"}, method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            auth = json.loads(r.read().decode("utf-8"))
+        if not auth.get("result"):
+            return ""
+        token = auth["data"]["accessToken"]
+    except Exception:
+        return ""
+
+    # Traducir nombre del winner a inglés para CJ
+    kw_map = {
+        "enfriador": "cooler", "portátil": "portable", "smartphone": "phone",
+        "inteligente": "smart", "gafas": "glasses", "smartwatch": "smartwatch",
+        "soporte": "stand", "auricular": "headphone", "teclado": "keyboard",
+        "ratón": "mouse", "webcam": "webcam", "lampara": "lamp",
+        "altavoz": "speaker", "cargador": "charger", "cable": "cable",
+        "para movil": "phone", "gaming": "gaming", "rgb": "rgb",
+    }
+    query = winner_name.lower()
+    for es, en in kw_map.items():
+        query = query.replace(es, en)
+    # Quitar stopwords y tomar primeras 4 palabras
+    stopwords = {"para", "con", "de", "del", "anti", "y", "el", "la", "los", "las"}
+    words = [w for w in query.split() if w not in stopwords and len(w) > 2]
+    query = " ".join(words[:4])
+
+    # Buscar en CJ
+    try:
+        params = urllib.parse.urlencode({"keyWord": query, "pageNum": 1, "pageSize": 5})
+        req = urllib.request.Request(
+            f"{CJ_BASE}/product/list?{params}",
+            headers={"CJ-Access-Token": token, "Accept": "application/json"}, method="GET"
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read().decode("utf-8"))
+
+        if not data.get("result"):
+            return ""
+
+        products = data.get("data", {}).get("list", [])
+        for p in products:
+            img = p.get("productImage") or p.get("bigImage") or ""
+            if img and img.startswith("http"):
+                print(f"  🖼️  CJ imagen para winner '{winner_name[:30]}': {img[:60]}", flush=True)
+                return img
+    except Exception as e:
+        print(f"  ⚠️  CJ winner image search: {e}", flush=True)
+
+    return ""
 sys.stderr.reconfigure(encoding="utf-8")
 
 # ── Agent IDs — DiscontrolDrops ───────────────────────────────────────────────
@@ -435,6 +503,12 @@ def main():
         return
 
     winner_name = winner["name"]
+
+    # Búsqueda dirigida en CJ con el nombre exacto del winner
+    if not winner.get("image_url") or not winner["image_url"].startswith("http"):
+        cj_img = fetch_cj_image_for_winner(winner_name)
+        if cj_img:
+            winner["image_url"] = cj_img
 
     # Recuperar image_url: 1) del qualifier output, 2) fuzzy match, 3) top CJ product
     if not winner.get("image_url") or not winner["image_url"].startswith("http"):
