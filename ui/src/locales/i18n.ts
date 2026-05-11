@@ -1,7 +1,7 @@
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
 
-void i18n.use(initReactI18next).init({
+i18n.use(initReactI18next).init({
   resources: {},
   lng: "en",
   fallbackLng: "en",
@@ -14,6 +14,6 @@ void i18n.use(initReactI18next).init({
   parseMissingKeyHandler: (key, defaultValue) => defaultValue ?? key,
   interpolation: { escapeValue: false },
   react: { useSuspense: false },
-});
+}).catch((err) => console.error("[i18n] init failed:", err));
 
 export default i18n;
