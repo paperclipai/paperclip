@@ -120,6 +120,24 @@ export interface EnvironmentDriverReleaseInput {
   status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed">;
 }
 
+function resolvePluginSandboxRpcTimeoutMs(config: Record<string, unknown>): number | undefined {
+  const timeoutCandidates = [
+    typeof config.timeoutMs === "number" ? config.timeoutMs : undefined,
+    typeof config.bridgeRequestTimeoutMs === "number" ? config.bridgeRequestTimeoutMs : undefined,
+  ]
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0)
+    .map((value) => Math.trunc(value));
+
+  if (timeoutCandidates.length === 0) {
+    return undefined;
+  }
+
+  return resolvePluginExecuteRpcTimeoutMs({
+    requestedTimeoutMs: Math.max(...timeoutCandidates),
+    config,
+  });
+}
+
 export interface EnvironmentDriverLeaseInput {
   environment: Environment;
   lease: EnvironmentLease;
@@ -446,10 +464,12 @@ function createSandboxEnvironmentDriver(
                 driverKey: parsed.config.provider,
                 companyId: input.companyId,
                 environmentId: input.environment.id,
+                issueId: input.issueId,
                 config: workerConfig,
                 providerLeaseId: reusableLease.providerLeaseId,
                 leaseMetadata: reusableLease.metadata ?? undefined,
               },
+              resolvePluginSandboxRpcTimeoutMs(workerConfig),
             ).then((resumed) =>
               typeof resumed.providerLeaseId === "string" && resumed.providerLeaseId.length > 0
                 ? resumed
@@ -463,6 +483,7 @@ function createSandboxEnvironmentDriver(
             driverKey: parsed.config.provider,
             companyId: input.companyId,
             environmentId: input.environment.id,
+            issueId: input.issueId,
             config: workerConfig,
             // Plugin SDK requires a string; ad-hoc test leases use a fresh
             // UUID so providers that validate or persist the runId still see
@@ -470,6 +491,7 @@ function createSandboxEnvironmentDriver(
             runId: input.heartbeatRunId ?? randomUUID(),
             workspaceMode: input.executionWorkspaceMode ?? undefined,
           },
+          resolvePluginSandboxRpcTimeoutMs(workerConfig),
         );
 
         // Ad-hoc test leases are never publishable for reuse: storing them
@@ -616,6 +638,7 @@ function createSandboxEnvironmentDriver(
             driverKey: providerKey,
             companyId: input.lease.companyId,
             environmentId: input.environment.id,
+            issueId: input.lease.issueId,
             config: stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig),
             lease: {
               providerLeaseId: input.lease.providerLeaseId,
@@ -623,7 +646,7 @@ function createSandboxEnvironmentDriver(
               expiresAt: input.lease.expiresAt?.toISOString() ?? null,
             },
             workspace: input.workspace,
-          });
+          }, resolvePluginSandboxRpcTimeoutMs(stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig)));
         }
       }
 
@@ -660,6 +683,7 @@ function createSandboxEnvironmentDriver(
             driverKey: providerKey,
             companyId: input.lease.companyId,
             environmentId: input.environment.id,
+            issueId: input.lease.issueId,
             config: sanitizedConfig,
             lease: {
               providerLeaseId: input.lease.providerLeaseId,
@@ -701,10 +725,11 @@ function createSandboxEnvironmentDriver(
           driverKey: providerKey,
           companyId: input.lease.companyId,
           environmentId: input.environment.id,
+          issueId: input.lease.issueId,
           config: stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig),
           providerLeaseId: input.lease.providerLeaseId,
           leaseMetadata: metadata,
-        });
+        }, resolvePluginSandboxRpcTimeoutMs(stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig)));
       } catch {
         cleanupStatus = "failed";
       }
@@ -869,6 +894,7 @@ function createPluginEnvironmentDriver(
         driverKey: parsed.config.driverKey,
         companyId: input.companyId,
         environmentId: input.environment.id,
+        issueId: input.issueId,
         config: parsed.config.driverConfig,
         runId: input.heartbeatRunId ?? randomUUID(),
         workspaceMode: input.executionWorkspaceMode ?? undefined,
@@ -901,6 +927,7 @@ function createPluginEnvironmentDriver(
         driverKey,
         companyId: input.lease.companyId,
         environmentId: input.environment.id,
+        issueId: input.lease.issueId,
         config: driverConfig,
         providerLeaseId: input.lease.providerLeaseId,
         leaseMetadata: input.lease.metadata ?? undefined,
@@ -921,6 +948,7 @@ function createPluginEnvironmentDriver(
         workerManager,
         companyId: input.lease.companyId,
         environmentId: input.environment.id,
+        issueId: input.lease.issueId,
         config: {
           pluginKey,
           driverKey,
@@ -941,6 +969,7 @@ function createPluginEnvironmentDriver(
         workerManager,
         companyId: input.lease.companyId,
         environmentId: input.environment.id,
+        issueId: input.lease.issueId,
         config: {
           pluginKey,
           driverKey,
@@ -971,6 +1000,7 @@ function createPluginEnvironmentDriver(
           driverKey,
           companyId: input.lease.companyId,
           environmentId: input.environment.id,
+          issueId: input.lease.issueId,
           config: driverConfig,
           lease: {
             providerLeaseId: input.lease.providerLeaseId,
@@ -1001,6 +1031,7 @@ function createPluginEnvironmentDriver(
           driverKey,
           companyId: input.lease.companyId,
           environmentId: input.environment.id,
+          issueId: input.lease.issueId,
           config: driverConfig,
           lease: {
             providerLeaseId: input.lease.providerLeaseId,
