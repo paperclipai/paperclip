@@ -346,6 +346,7 @@ export interface PluginEnvironmentDriverBaseParams {
   driverKey: string;
   companyId: string;
   environmentId: string;
+  issueId?: string | null;
   config: Record<string, unknown>;
 }
 
