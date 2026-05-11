@@ -14,11 +14,14 @@ describe("Dynamic Tool Registration", () => {
   });
 
   it("should register a dynamic tool via host services", async () => {
+    // buildHostServices signature: (db, pluginId, pluginKey, eventBus, notifyWorker?, options?)
     const hostServices = buildHostServices(
       {} as any, // db
       pluginId,
       pluginDbId,
-      { toolDispatcher: mockDispatcher } as any
+      {} as any, // eventBus
+      undefined, // notifyWorker
+      { toolDispatcher: mockDispatcher } // options
     );
 
     const toolDeclaration = {
@@ -33,11 +36,12 @@ describe("Dynamic Tool Registration", () => {
       declaration: toolDeclaration,
     });
 
+    // implementation calls: registerDynamicTool(pluginKey, name, declaration, pluginId)
     expect(mockDispatcher.registerDynamicTool).toHaveBeenCalledWith(
-      pluginId,
+      pluginDbId, // matches pluginKey arg in buildHostServices
       toolDeclaration.name,
       toolDeclaration,
-      pluginDbId
+      pluginId // matches pluginId arg in buildHostServices
     );
   });
 
@@ -46,7 +50,9 @@ describe("Dynamic Tool Registration", () => {
       {} as any,
       pluginId,
       pluginDbId,
-      {} as any // No toolDispatcher
+      {} as any,
+      undefined,
+      {} // empty options, no toolDispatcher
     );
 
     await expect(
