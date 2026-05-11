@@ -22,18 +22,31 @@ let router: Router;
 let triggerMatcher: TriggerMatcher;
 let pipelines: PipelineDefinition[] = [];
 
+const PIPELINE_REGISTRY_KEY = { scopeKind: "instance" as const, namespace: "pipeline", stateKey: "registry" };
+
+async function getPipelineRegistry(ctx: PluginContext): Promise<string[]> {
+  const raw = await ctx.state.get(PIPELINE_REGISTRY_KEY);
+  if (Array.isArray(raw)) return raw as string[];
+  if (typeof raw === "string") {
+    try { const parsed = JSON.parse(raw); if (Array.isArray(parsed)) return parsed; } catch {}
+  }
+  return [];
+}
+
 async function loadPipelines(ctx: PluginContext): Promise<PipelineDefinition[]> {
   const config = (await ctx.config.get()) as unknown as PipelineEngineConfig;
   const triggerLabels = config.trigger_labels ?? {};
   const loaded: PipelineDefinition[] = [];
 
-  // Collect unique pipeline names from trigger_labels values
+  // Collect pipeline names from config AND registry
   const pipelineNames = new Set(Object.values(triggerLabels));
+  const registry = await getPipelineRegistry(ctx);
+  for (const name of registry) pipelineNames.add(name);
 
   for (const pipelineName of pipelineNames) {
     const jsonContent = await ctx.state.get({ scopeKind: "instance", namespace: "pipeline", stateKey: `pipeline:${pipelineName}` });
     if (jsonContent) {
-      const pipeline = safeParsePipelineJson(jsonContent as string);
+      const pipeline = safeParsePipelineJson(jsonContent);
       if (pipeline) {
         const validation = validateDAG(pipeline);
         if (validation.valid) {
@@ -396,9 +409,11 @@ async function handleCommentEvent(ctx: PluginContext, event: PluginEvent): Promi
   await advancePipeline(ctx, stageRow.pipelineRunId, pipeline, run.companyId);
 }
 
-function safeParsePipelineJson(content: string): PipelineDefinition | null {
+function safeParsePipelineJson(content: unknown): PipelineDefinition | null {
   try {
-    return JSON.parse(content) as PipelineDefinition;
+    if (typeof content === "object" && content !== null) return content as PipelineDefinition;
+    if (typeof content === "string") return JSON.parse(content) as PipelineDefinition;
+    return null;
   } catch {
     return null;
   }
@@ -556,7 +571,7 @@ const plugin = definePlugin({
       if (!name) return null;
       const pipeline = pipelines.find((p) => p.name === name);
       if (!pipeline) return null;
-      return pipeline;
+      return { pipeline };
     });
 
     ctx.data.register("list-runs", async (params) => {
@@ -600,6 +615,10 @@ const plugin = definePlugin({
       }
 
       await ctx.state.set({ scopeKind: "instance", namespace: "pipeline", stateKey: `pipeline:${name}` }, content);
+      const registry = await getPipelineRegistry(ctx);
+      if (!registry.includes(name)) {
+        await ctx.state.set(PIPELINE_REGISTRY_KEY, [...registry, name]);
+      }
       pipelines = await loadPipelines(ctx);
       triggerMatcher = new TriggerMatcher(pipelines);
       return { success: true, pipelineName: name };
@@ -609,6 +628,8 @@ const plugin = definePlugin({
       const name = params.name as string | undefined;
       if (!name) throw new Error("name required");
       await ctx.state.delete({ scopeKind: "instance", namespace: "pipeline", stateKey: `pipeline:${name}` });
+      const registry = await getPipelineRegistry(ctx);
+      await ctx.state.set(PIPELINE_REGISTRY_KEY, registry.filter((n) => n !== name));
       pipelines = await loadPipelines(ctx);
       triggerMatcher = new TriggerMatcher(pipelines);
       return { success: true };

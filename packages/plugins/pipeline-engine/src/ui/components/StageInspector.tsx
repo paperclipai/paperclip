@@ -1,5 +1,17 @@
 import type { Edge } from "@xyflow/react";
+import { usePluginData, useHostContext } from "@paperclipai/plugin-sdk/ui";
 import type { StageDefinition, StageType, FanInStrategy } from "../../types.js";
+import { DATA_KEYS } from "../constants.js";
+
+interface AgentItem {
+  id: string;
+  name: string;
+  role?: string;
+}
+
+interface ListAgentsResult {
+  agents: AgentItem[];
+}
 
 interface EdgeInspectorProps {
   edge: Edge;
@@ -57,13 +69,14 @@ function EdgeInspector({ edge, onUpdate, onDelete }: EdgeInspectorProps) {
 
 interface StageFormProps {
   stage: StageDefinition;
-  onChange: (updated: StageDefinition) => void;
+  agents: AgentItem[];
+  onChange: (updated: StageDefinition, oldId?: string) => void;
   onDelete: (id: string) => void;
 }
 
-function StageForm({ stage, onChange, onDelete }: StageFormProps) {
+function StageForm({ stage, agents, onChange, onDelete }: StageFormProps) {
   const update = (patch: Partial<StageDefinition>) =>
-    onChange({ ...stage, ...patch } as StageDefinition);
+    onChange({ ...stage, ...patch } as StageDefinition, patch.id !== undefined ? stage.id : undefined);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -93,6 +106,15 @@ function StageForm({ stage, onChange, onDelete }: StageFormProps) {
         </select>
       </FieldGroup>
 
+      <FieldGroup label="Condition">
+        <input
+          style={inputStyle}
+          value={(stage as any).condition ?? ""}
+          onChange={(e) => update({ condition: e.target.value || undefined } as any)}
+          placeholder="e.g. stages.spec_review.output.status == 'approved'"
+        />
+      </FieldGroup>
+
       <FieldGroup label="Timeout">
         <input
           style={inputStyle}
@@ -116,16 +138,20 @@ function StageForm({ stage, onChange, onDelete }: StageFormProps) {
 
       {(stage.type === "worker" || stage.type === "classifier") && (
         <FieldGroup label="Agent Role">
-          <input
-            style={inputStyle}
+          <select
+            style={selectStyle}
             value={stage.agent_role ?? ""}
             onChange={(e) => update({ agent_role: e.target.value } as Partial<StageDefinition>)}
-            placeholder="e.g. implementer"
-          />
+          >
+            <option value="">— Select agent —</option>
+            {agents.map((a) => (
+              <option key={a.id} value={a.name}>{a.name}</option>
+            ))}
+          </select>
         </FieldGroup>
       )}
 
-      {stage.type === "worker" && (
+      {(stage.type === "worker" || stage.type === "classifier") && (
         <FieldGroup label="Output Schema">
           <input
             style={inputStyle}
@@ -160,6 +186,30 @@ function StageForm({ stage, onChange, onDelete }: StageFormProps) {
             placeholder="e.g. implementation"
           />
         </FieldGroup>
+      )}
+
+      {(stage.type === "sub-pipeline" || stage.type === "worker" || stage.type === "parallel_fan_out") && (
+        <>
+          <FieldGroup label="Per Task">
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={(stage as any).per_task ?? false}
+                onChange={(e) => update({ per_task: e.target.checked || undefined } as any)}
+                style={{ accentColor: "#6366f1" }}
+              />
+              <span style={{ color: "#d1d5db", fontSize: 12 }}>Run per task from output</span>
+            </label>
+          </FieldGroup>
+          <FieldGroup label="Ordering">
+            <input
+              style={inputStyle}
+              value={(stage as any).ordering ?? ""}
+              onChange={(e) => update({ ordering: e.target.value || undefined } as any)}
+              placeholder="e.g. from_output"
+            />
+          </FieldGroup>
+        </>
       )}
 
       <div style={{ borderTop: "1px solid #374151", paddingTop: 12 }}>
@@ -213,7 +263,7 @@ function StageForm({ stage, onChange, onDelete }: StageFormProps) {
 export interface StageInspectorProps {
   selectedStage: StageDefinition | null;
   selectedEdge: Edge | null;
-  onStageChange: (updated: StageDefinition) => void;
+  onStageChange: (updated: StageDefinition, oldId?: string) => void;
   onStageDelete: (id: string) => void;
   onEdgeUpdate: (id: string, changes: Partial<{ label: string; when: string; type: "default" | "error" }>) => void;
   onEdgeDelete: (id: string) => void;
@@ -227,6 +277,10 @@ export function StageInspector({
   onEdgeUpdate,
   onEdgeDelete,
 }: StageInspectorProps) {
+  const { companyId } = useHostContext();
+  const { data: agentsData } = usePluginData<ListAgentsResult>(DATA_KEYS.LIST_AGENTS, { companyId });
+  const agents = agentsData?.agents ?? [];
+
   return (
     <div
       style={{
@@ -243,7 +297,7 @@ export function StageInspector({
       {selectedEdge ? (
         <EdgeInspector edge={selectedEdge} onUpdate={onEdgeUpdate} onDelete={onEdgeDelete} />
       ) : selectedStage ? (
-        <StageForm stage={selectedStage} onChange={onStageChange} onDelete={onStageDelete} />
+        <StageForm stage={selectedStage} agents={agents} onChange={onStageChange} onDelete={onStageDelete} />
       ) : (
         <div style={{ color: "#6b7280", fontSize: 12, textAlign: "center", marginTop: 48, lineHeight: 1.6 }}>
           Click a stage node or edge to inspect and edit its properties.

@@ -6,6 +6,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const packageRoot = path.resolve(__dirname, "..");
 
+const shimsDir = path.resolve(packageRoot, "src/ui/shims");
+
 await esbuild.build({
   entryPoints: [path.join(packageRoot, "src/ui/index.tsx")],
   outfile: path.join(packageRoot, "dist/ui/index.js"),
@@ -15,10 +17,13 @@ await esbuild.build({
   target: ["es2022"],
   sourcemap: true,
   external: [
-    "react",
-    "react-dom",
-    "react/jsx-runtime",
     "@paperclipai/plugin-sdk/ui",
   ],
+  alias: {
+    "react": path.join(shimsDir, "react.js"),
+    "react-dom": path.join(shimsDir, "react-dom.js"),
+    "react/jsx-runtime": path.join(shimsDir, "react-jsx-runtime.js"),
+  },
+  loader: { ".css": "text" },
   logLevel: "info",
 });

@@ -5,6 +5,7 @@ export interface StageNodeData {
   stage: StageDefinition;
   status?: StageStatus;
   subtitle?: string;
+  onSelect?: (id: string) => void;
 }
 
 const TYPE_COLORS: Record<string, string> = {
@@ -38,15 +39,16 @@ function getBorderStyle(status: StageStatus | undefined): string {
   }
 }
 
-export function StageNode({ data, selected }: NodeProps) {
+export function StageNode({ data, selected, id }: NodeProps) {
   const nodeData = data as unknown as StageNodeData;
-  const { stage, status, subtitle } = nodeData;
+  const { stage, status, subtitle, onSelect } = nodeData;
   const typeColor = TYPE_COLORS[stage.type] ?? "#6b7280";
   const badge = TYPE_BADGES[stage.type] ?? "???";
   const border = getBorderStyle(status);
 
   return (
     <div
+      onClick={(e) => { e.stopPropagation(); onSelect?.(id); }}
       style={{
         background: "#1f2937",
         border: selected ? "2px solid #6366f1" : border,

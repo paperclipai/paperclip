@@ -1,4 +1,5 @@
-import { useCallback, useMemo, useState } from "react";
+import xyflowStyles from "@xyflow/react/dist/style.css";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -70,6 +71,13 @@ export interface PipelineCanvasProps {
 }
 
 export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasProps) {
+  useEffect(() => {
+    const style = document.createElement("style");
+    style.textContent = xyflowStyles;
+    document.head.appendChild(style);
+    return () => { style.remove(); };
+  }, []);
+
   const savePipeline = usePluginAction(ACTION_KEYS.SAVE_PIPELINE);
 
   // Local copies of pipeline metadata
@@ -90,15 +98,20 @@ export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasP
   const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
 
+  const handleNodeSelect = useCallback((id: string) => {
+    setSelectedStageId(id);
+    setSelectedEdgeId(null);
+  }, []);
+
   // Build RF nodes/edges from canonical state
   const rfNodes = useMemo(() =>
     stages.map((stage) => ({
       id: stage.id,
       type: "stage" as const,
       position: positions[stage.id] ?? { x: 0, y: 0 },
-      data: { stage, selected: stage.id === selectedStageId } as unknown as StageNodeData,
+      data: { stage, selected: stage.id === selectedStageId, onSelect: handleNodeSelect } as unknown as StageNodeData,
     })),
-    [stages, positions, selectedStageId],
+    [stages, positions, selectedStageId, handleNodeSelect],
   );
 
   const rfEdges = useMemo<Edge[]>(() =>
@@ -158,6 +171,15 @@ export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasP
     setSelectedEdgeId(null);
   }, []);
 
+  const handleSelectionChange = useCallback(({ nodes: selectedNodes }: { nodes: Node[]; edges: Edge[] }) => {
+    if (selectedNodes.length === 1) {
+      setSelectedStageId(selectedNodes[0].id);
+      setSelectedEdgeId(null);
+    } else if (selectedNodes.length === 0) {
+      setSelectedStageId(null);
+    }
+  }, []);
+
   const handleEdgeClick = useCallback((_: React.MouseEvent, edge: Edge) => {
     setSelectedEdgeId(edge.id);
     setSelectedStageId(null);
@@ -195,11 +217,11 @@ export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasP
           id,
           type: "stage" as const,
           position: pos,
-          data: { stage: newStage } as unknown as StageNodeData,
+          data: { stage: newStage, onSelect: handleNodeSelect } as unknown as StageNodeData,
         } as unknown as Node,
       ]);
     },
-    [setNodes],
+    [setNodes, handleNodeSelect],
   );
 
   const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
@@ -207,16 +229,47 @@ export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasP
     e.dataTransfer.dropEffect = "copy";
   }, []);
 
-  const handleStageChange = useCallback((updated: StageDefinition) => {
-    setStages((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+  const handleStageChange = useCallback((updated: StageDefinition, oldId?: string) => {
+    const prevId = oldId ?? updated.id;
+    const newId = updated.id;
+    const idChanged = prevId !== newId;
+
+    setStages((prev) => prev.map((s) => (s.id === prevId ? updated : s)));
+
+    if (idChanged) {
+      setEdgeDefs((prev) =>
+        prev.map((e) => ({
+          ...e,
+          id: e.id.replace(prevId, newId),
+          from: e.from === prevId ? newId : e.from,
+          to: e.to === prevId ? newId : e.to,
+        })),
+      );
+      setEdges((eds) =>
+        eds.map((e) => ({
+          ...e,
+          id: e.id.replace(prevId, newId),
+          source: e.source === prevId ? newId : e.source,
+          target: e.target === prevId ? newId : e.target,
+        })),
+      );
+      setSelectedStageId(newId);
+    }
+
     setNodes((nds) =>
       nds.map((n) =>
-        n.id === updated.id
-          ? ({ ...n, data: { ...n.data, stage: updated } as unknown as StageNodeData } as unknown as Node)
+        n.id === prevId
+          ? ({ ...n, id: newId, data: { ...n.data, stage: updated, onSelect: handleNodeSelect } as unknown as StageNodeData } as unknown as Node)
           : n,
       ),
     );
-  }, [setNodes]);
+    if (idChanged) {
+      setPositions((prev) => {
+        const { [prevId]: pos, ...rest } = prev;
+        return { ...rest, [newId]: pos };
+      });
+    }
+  }, [setNodes, setEdges, handleNodeSelect]);
 
   const handleStageDelete = useCallback((id: string) => {
     setStages((prev) => prev.filter((s) => s.id !== id));
@@ -274,14 +327,14 @@ export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasP
         edges: edgeDefs,
         positions,
       };
-      await savePipeline({ companyId, pipeline: updatedPipeline });
+      await savePipeline({ name, content: JSON.stringify(updatedPipeline) });
       onSaved?.();
     } catch (err) {
       setSaveError((err as Error).message ?? "Save failed");
     } finally {
       setSaving(false);
     }
-  }, [name, description, triggerLabel, stages, edgeDefs, positions, savePipeline, companyId, onSaved]);
+  }, [name, description, triggerLabel, stages, edgeDefs, positions, savePipeline, onSaved]);
 
   const selectedStage = stages.find((s) => s.id === selectedStageId) ?? null;
   const selectedEdge = edgeDefs.find((e) => e.id === selectedEdgeId) ?? null;
@@ -373,6 +426,7 @@ export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasP
             onEdgeClick={handleEdgeClick}
             onPaneClick={handlePaneClick}
             onNodeDragStop={handleNodeDragStop}
+            onSelectionChange={handleSelectionChange}
             fitView
             style={{ background: "#0f172a" }}
           >
