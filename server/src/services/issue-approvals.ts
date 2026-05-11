@@ -86,6 +86,7 @@ export function issueApprovalService(db: Db) {
           status: issues.status,
           priority: issues.priority,
           assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
           createdByAgentId: issues.createdByAgentId,
           createdByUserId: issues.createdByUserId,
           issueNumber: issues.issueNumber,

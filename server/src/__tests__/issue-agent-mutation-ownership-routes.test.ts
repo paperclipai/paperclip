@@ -12,6 +12,7 @@ const ownerRunId = "55555555-5555-4555-8555-555555555555";
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
   assertCheckoutOwner: vi.fn(),
+  checkout: vi.fn(),
   getAttachmentById: vi.fn(),
   getByIdentifier: vi.fn(),
   getById: vi.fn(),
@@ -59,6 +60,12 @@ const mockStorageService = vi.hoisted(() => ({
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+  listForIssue: vi.fn(),
+}));
+
+const mockIssueApprovalService = vi.hoisted(() => ({
+  listApprovalsForIssue: vi.fn(),
+  unlink: vi.fn(),
 }));
 
 function registerRouteMocks() {
@@ -123,7 +130,7 @@ function registerRouteMocks() {
       })),
       listCompanyIds: vi.fn(async () => [companyId]),
     }),
-    issueApprovalService: () => ({}),
+    issueApprovalService: () => mockIssueApprovalService,
     issueReferenceService: () => ({
       deleteDocumentSource: async () => undefined,
       diffIssueReferenceSummary: () => ({
@@ -252,6 +259,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockCompanyService.getById.mockReset();
     mockIssueService.addComment.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
+    mockIssueService.checkout.mockReset();
     mockIssueService.getAttachmentById.mockReset();
     mockIssueService.getByIdentifier.mockReset();
     mockIssueService.getById.mockReset();
@@ -270,6 +278,9 @@ describe("agent issue mutation checkout ownership", () => {
     mockStorageService.getObject.mockReset();
     mockStorageService.headObject.mockReset();
     mockStorageService.deleteObject.mockReset();
+    mockIssueThreadInteractionService.listForIssue.mockReset();
+    mockIssueApprovalService.listApprovalsForIssue.mockReset();
+    mockIssueApprovalService.unlink.mockReset();
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.hasPermission.mockResolvedValue(false);
     mockAgentService.getById.mockImplementation(async (id: string) => {
@@ -286,10 +297,14 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockIssueService.getByIdentifier.mockResolvedValue(null);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    mockIssueService.checkout.mockResolvedValue(makeIssue({ status: "in_progress" }));
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
+    mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
+    mockIssueApprovalService.unlink.mockResolvedValue(undefined);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue(),
       ...patch,
@@ -420,6 +435,166 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
     expect(mockIssueService.update).toHaveBeenCalled();
     expect(mockDocumentService.upsertIssueDocument).toHaveBeenCalled();
+  });
+
+  it("blocks agent checkout while an issue has an active approval gate", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo" }));
+    mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([
+      { id: "approval-1", status: "pending" },
+    ]);
+
+    const res = await request(await createApp(ownerActor()))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId: ownerAgentId, expectedStatuses: ["todo"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body).toMatchObject({
+      error: "Issue is locked by a pending board approval",
+      details: {
+        issueId,
+        approvalId: "approval-1",
+        approvalStatus: "pending",
+        attemptedAction: "checkout_issue",
+        unlock: "board_approval_required",
+      },
+    });
+    expect(mockIssueService.checkout).not.toHaveBeenCalled();
+  });
+
+  it("blocks agent status changes that would unlock an active approval gate", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_review" }));
+    mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([
+      { id: "approval-1", status: "revision_requested" },
+    ]);
+
+    const res = await request(await createApp(ownerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details).toMatchObject({
+      issueId,
+      approvalId: "approval-1",
+      approvalStatus: "revision_requested",
+      attemptedAction: "mutate_issue",
+      unlock: "board_approval_required",
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("blocks agents from deleting an issue with an active approval gate", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_review" }));
+    mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([
+      { id: "approval-1", status: "pending" },
+    ]);
+
+    const res = await request(await createApp(ownerActor()))
+      .delete(`/api/issues/${issueId}`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details).toMatchObject({
+      issueId,
+      approvalId: "approval-1",
+      approvalStatus: "pending",
+      attemptedAction: "delete_issue",
+      unlock: "board_approval_required",
+    });
+    expect(mockIssueService.remove).not.toHaveBeenCalled();
+    expect(mockStorageService.deleteObject).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "document upsert",
+      (app: express.Express) =>
+        request(app).put(`/api/issues/${issueId}/documents/plan`).send({ format: "markdown", body: "# blocked" }),
+    ],
+    [
+      "work product update",
+      (app: express.Express) => request(app).patch("/api/work-products/product-1").send({ title: "Blocked" }),
+    ],
+    [
+      "attachment upload",
+      (app: express.Express) =>
+        request(app)
+          .post(`/api/companies/${companyId}/issues/${issueId}/attachments`)
+          .attach("file", Buffer.from("report"), { filename: "report.txt", contentType: "text/plain" }),
+    ],
+    [
+      "child issue creation",
+      (app: express.Express) => request(app).post(`/api/issues/${issueId}/children`).send({ title: "Blocked child" }),
+    ],
+  ])("blocks agent %s while an issue has an active approval gate", async (_name, sendRequest) => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_review" }));
+    mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([
+      { id: "approval-1", status: "pending" },
+    ]);
+
+    const res = await sendRequest(await createApp(ownerActor()));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details).toMatchObject({
+      issueId,
+      approvalId: "approval-1",
+      approvalStatus: "pending",
+      unlock: "board_approval_required",
+    });
+    expect(mockDocumentService.upsertIssueDocument).not.toHaveBeenCalled();
+    expect(mockWorkProductService.update).not.toHaveBeenCalled();
+    expect(mockStorageService.putFile).not.toHaveBeenCalled();
+  });
+
+  it("allows agents to park a linked-approval issue in review", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo" }));
+    mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([
+      { id: "approval-1", status: "pending" },
+    ]);
+
+    const res = await request(await createApp(ownerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_review" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "in_review", actorAgentId: ownerAgentId }),
+    );
+  });
+
+  it("blocks agents from unlinking an active approval gate", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_review" }));
+    mockAgentService.getById.mockResolvedValue(makeAgent(ownerAgentId, {
+      role: "ceo",
+      permissions: { canCreateAgents: true },
+    }));
+    mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([
+      { id: "approval-1", status: "pending" },
+    ]);
+
+    const res = await request(await createApp(ownerActor()))
+      .delete(`/api/issues/${issueId}/approvals/approval-1`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body).toMatchObject({
+      error: "Issue approval gate can only be removed by the board while approval is pending",
+      details: {
+        issueId,
+        approvalId: "approval-1",
+        approvalStatus: "pending",
+        attemptedAction: "unlink_issue_approval",
+      },
+    });
+    expect(mockIssueApprovalService.unlink).not.toHaveBeenCalled();
+  });
+
+  it("allows the board to unlink an active approval gate", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_review" }));
+
+    const res = await request(await createApp(boardActor()))
+      .delete(`/api/issues/${issueId}/approvals/approval-1`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueApprovalService.unlink).toHaveBeenCalledWith(issueId, "approval-1");
   });
 
   it("allows agents with the active-checkout management grant to mutate active checkouts", async () => {

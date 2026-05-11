@@ -13,6 +13,7 @@ import {
   approvalService,
   heartbeatService,
   issueApprovalService,
+  issueService,
   logActivity,
   secretService,
 } from "../services/index.js";
@@ -27,12 +28,15 @@ function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(a
   };
 }
 
+const ACTIVE_APPROVAL_GATE_STATUSES = new Set(["pending", "revision_requested"]);
+
 export function approvalRoutes(
   db: Db,
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
 ) {
   const router = Router();
   const svc = approvalService(db);
+  const issuesSvc = issueService(db);
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
@@ -47,6 +51,69 @@ export function approvalRoutes(
     }
     assertCompanyAccess(req, approval.companyId);
     return approval;
+  }
+
+  async function unlockLinkedIssueApprovalGates(input: {
+    approval: { id: string; requestedByAgentId?: string | null };
+    linkedIssues: Array<{
+      id: string;
+      companyId: string;
+      status: string;
+      assigneeAgentId?: string | null;
+      assigneeUserId?: string | null;
+      identifier?: string | null;
+    }>;
+    actorUserId: string | null;
+  }) {
+    const unlockedIssues: Array<{ id: string; assigneeAgentId: string | null; status: string }> = [];
+
+    for (const issue of input.linkedIssues) {
+      if (issue.status !== "in_review") continue;
+      const activeApprovals = await issueApprovalsSvc.listApprovalsForIssue(issue.id);
+      const stillLocked = activeApprovals.some((approval) =>
+        approval.id !== input.approval.id
+        && ACTIVE_APPROVAL_GATE_STATUSES.has(String(approval.status))
+      );
+      if (stillLocked) continue;
+
+      const assigneeAgentId = issue.assigneeAgentId ?? input.approval.requestedByAgentId ?? null;
+      const updated = await issuesSvc.update(issue.id, {
+        status: "todo",
+        assigneeAgentId,
+        assigneeUserId: assigneeAgentId ? null : issue.assigneeUserId ?? null,
+        actorAgentId: null,
+        actorUserId: input.actorUserId ?? "board",
+      });
+      if (!updated) continue;
+
+      unlockedIssues.push({
+        id: updated.id,
+        assigneeAgentId: updated.assigneeAgentId ?? null,
+        status: updated.status,
+      });
+
+      await logActivity(db, {
+        companyId: updated.companyId,
+        actorType: "user",
+        actorId: input.actorUserId ?? "board",
+        action: "issue.approval_gate_unlocked",
+        entityType: "issue",
+        entityId: updated.id,
+        details: {
+          identifier: updated.identifier ?? issue.identifier ?? null,
+          approvalId: input.approval.id,
+          status: updated.status,
+          assigneeAgentId: updated.assigneeAgentId ?? null,
+          _previous: {
+            status: issue.status,
+            assigneeAgentId: issue.assigneeAgentId ?? null,
+            assigneeUserId: issue.assigneeUserId ?? null,
+          },
+        },
+      });
+    }
+
+    return unlockedIssues;
   }
 
   router.get("/companies/:companyId/approvals", async (req, res) => {
@@ -147,6 +214,11 @@ export function approvalRoutes(
       const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
       const linkedIssueIds = linkedIssues.map((issue) => issue.id);
       const primaryIssueId = linkedIssueIds[0] ?? null;
+      const unlockedIssues = await unlockLinkedIssueApprovalGates({
+        approval,
+        linkedIssues,
+        actorUserId: req.actor.userId ?? null,
+      });
 
       await logActivity(db, {
         companyId: approval.companyId,
@@ -159,6 +231,7 @@ export function approvalRoutes(
           type: approval.type,
           requestedByAgentId: approval.requestedByAgentId,
           linkedIssueIds,
+          unlockedIssueIds: unlockedIssues.map((issue) => issue.id),
         },
       });
 

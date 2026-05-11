@@ -101,7 +101,7 @@ function registerRouteMocks() {
     goalService: () => ({}),
     heartbeatService: () => mockHeartbeatService,
     instanceSettingsService: () => mockInstanceSettingsService,
-    issueApprovalService: () => ({}),
+    issueApprovalService: () => ({ listApprovalsForIssue: vi.fn(async () => []) }),
     issueReferenceService: () => ({
       deleteDocumentSource: async () => undefined,
       diffIssueReferenceSummary: () => ({

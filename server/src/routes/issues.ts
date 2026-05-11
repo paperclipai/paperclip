@@ -406,6 +406,7 @@ async function listSuccessfulRunHandoffStates(
 }
 
 const ACTIVE_REVIEW_APPROVAL_STATUSES = new Set(["pending", "revision_requested"]);
+const ACTIVE_APPROVAL_GATE_STATUSES = new Set(["pending", "revision_requested"]);
 
 const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
   "invalid_issue_disposition: Agent-authored updates that move an issue to in_review must include a real review path. " +
@@ -947,6 +948,84 @@ export function issueRoutes(
     if (actorAgent.role === "ceo" || Boolean(actorAgent.permissions?.canCreateAgents)) return true;
     res.status(403).json({ error: "Missing permission to link approvals" });
     return false;
+  }
+
+  function activeApprovalGate(
+    approvals: Array<{ id: string; status: string }>,
+    approvalId?: string | null,
+  ) {
+    return approvals.find((approval) =>
+      (!approvalId || approval.id === approvalId)
+      && ACTIVE_APPROVAL_GATE_STATUSES.has(String(approval.status))
+    ) ?? null;
+  }
+
+  async function assertNoAgentApprovalGateBypass(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string },
+    attemptedAction: string,
+  ) {
+    if (req.actor.type !== "agent") return true;
+    const gate = activeApprovalGate(await issueApprovalsSvc.listApprovalsForIssue(issue.id));
+    if (!gate) return true;
+
+    res.status(409).json({
+      error: "Issue is locked by a pending board approval",
+      details: {
+        issueId: issue.id,
+        approvalId: gate.id,
+        approvalStatus: gate.status,
+        attemptedAction,
+        unlock: "board_approval_required",
+        securityPrinciples: ["Complete Mediation", "Fail Securely", "Least Privilege"],
+      },
+    });
+    return false;
+  }
+
+  async function assertAgentCanUnlinkApprovalGate(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string },
+    approvalId: string,
+  ) {
+    if (req.actor.type !== "agent") return true;
+    const gate = activeApprovalGate(await issueApprovalsSvc.listApprovalsForIssue(issue.id), approvalId);
+    if (!gate) return true;
+
+    res.status(409).json({
+      error: "Issue approval gate can only be removed by the board while approval is pending",
+      details: {
+        issueId: issue.id,
+        approvalId: gate.id,
+        approvalStatus: gate.status,
+        attemptedAction: "unlink_issue_approval",
+        unlock: "board_approval_required",
+        securityPrinciples: ["Complete Mediation", "Fail Securely", "Least Privilege"],
+      },
+    });
+    return false;
+  }
+
+  function isApprovalGateParkingPatch(input: {
+    updateFields: Record<string, unknown>;
+    reviewRequest: unknown;
+    reopenRequested: unknown;
+    resumeRequested: unknown;
+    interruptRequested: unknown;
+    hiddenAtRaw: unknown;
+  }) {
+    const updateKeys = Object.keys(input.updateFields);
+    return (
+      updateKeys.length === 1
+      && input.updateFields.status === "in_review"
+      && input.reviewRequest === undefined
+      && input.reopenRequested !== true
+      && input.resumeRequested !== true
+      && input.interruptRequested !== true
+      && input.hiddenAtRaw === undefined
+    );
   }
 
   function actorCanAccessCompany(req: Request, companyId: string) {
@@ -1745,6 +1824,7 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertNoAgentApprovalGateBypass(req, res, issue, "upsert_issue_document"))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -1848,6 +1928,7 @@ export function issueRoutes(
       }
       assertCompanyAccess(req, issue.companyId);
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      if (!(await assertNoAgentApprovalGateBypass(req, res, issue, "restore_issue_document"))) return;
       const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
       if (!keyParsed.success) {
         res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -1994,6 +2075,7 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertNoAgentApprovalGateBypass(req, res, issue, "create_work_product"))) return;
     const product = await workProductsSvc.createForIssue(issue.id, issue.companyId, {
       ...req.body,
       projectId: req.body.projectId ?? issue.projectId ?? null,
@@ -2031,6 +2113,7 @@ export function issueRoutes(
       return;
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertNoAgentApprovalGateBypass(req, res, issue, "update_work_product"))) return;
     const product = await workProductsSvc.update(id, req.body);
     if (!product) {
       res.status(404).json({ error: "Work product not found" });
@@ -2065,6 +2148,7 @@ export function issueRoutes(
       return;
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertNoAgentApprovalGateBypass(req, res, issue, "delete_work_product"))) return;
     const removed = await workProductsSvc.remove(id);
     if (!removed) {
       res.status(404).json({ error: "Work product not found" });
@@ -2269,6 +2353,7 @@ export function issueRoutes(
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertCanManageIssueApprovalLinks(req, res, issue.companyId))) return;
+    if (!(await assertAgentCanUnlinkApprovalGate(req, res, issue, approvalId))) return;
 
     await issueApprovalsSvc.unlink(id, approvalId);
 
@@ -2387,6 +2472,7 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, parent.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
+    if (!(await assertNoAgentApprovalGateBypass(req, res, parent, "create_child_issue"))) return;
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, parent.companyId);
     }
@@ -2587,6 +2673,28 @@ export function issueRoutes(
         : false;
     if (resumeRequested === true && isBlocked && hasUnresolvedFirstClassBlockers) {
       res.status(409).json({ error: "Issue follow-up blocked by unresolved blockers" });
+      return;
+    }
+    const hasAgentMaterialIssueMutation =
+      Object.keys(updateFields).length > 0
+      || reviewRequest !== undefined
+      || reopenRequested !== undefined
+      || resumeRequested !== undefined
+      || interruptRequested !== undefined
+      || hiddenAtRaw !== undefined
+      || effectiveMoveToTodoRequested;
+    if (
+      hasAgentMaterialIssueMutation
+      && !isApprovalGateParkingPatch({
+        updateFields,
+        reviewRequest,
+        reopenRequested,
+        resumeRequested,
+        interruptRequested,
+        hiddenAtRaw,
+      })
+      && !(await assertNoAgentApprovalGateBypass(req, res, existing, "mutate_issue"))
+    ) {
       return;
     }
     let interruptedRunId: string | null = null;
@@ -3399,6 +3507,7 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertNoAgentApprovalGateBypass(req, res, existing, "delete_issue"))) return;
     const attachments = await svc.listAttachments(id);
 
     const issue = await svc.remove(id);
@@ -3465,6 +3574,7 @@ export function issueRoutes(
 
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
+    if (!(await assertNoAgentApprovalGateBypass(req, res, issue, "checkout_issue"))) return;
     const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     const actor = getActorInfo(req);
 
@@ -4494,6 +4604,7 @@ export function issueRoutes(
       return;
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertNoAgentApprovalGateBypass(req, res, issue, "upload_attachment"))) return;
 
     const company = await companiesSvc.getById(companyId);
     const attachmentMaxBytes = normalizeIssueAttachmentMaxBytes(company?.attachmentMaxBytes);
@@ -4613,6 +4724,7 @@ export function issueRoutes(
       return;
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertNoAgentApprovalGateBypass(req, res, issue, "delete_attachment"))) return;
 
     try {
       await storage.deleteObject(attachment.companyId, attachment.objectKey);

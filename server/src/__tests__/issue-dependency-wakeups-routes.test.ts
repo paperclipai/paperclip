@@ -47,7 +47,7 @@ vi.mock("../services/index.js", () => ({
     get: vi.fn(),
     listCompanyIds: vi.fn(),
   }),
-  issueApprovalService: () => ({}),
+  issueApprovalService: () => ({ listApprovalsForIssue: vi.fn(async () => []) }),
   issueReferenceService: () => ({
     deleteDocumentSource: async () => undefined,
     diffIssueReferenceSummary: () => ({

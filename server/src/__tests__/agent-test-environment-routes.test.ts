@@ -54,7 +54,7 @@ vi.mock("../services/index.js", () => ({
     cancelActiveForAgent: vi.fn(),
   }),
   ISSUE_LIST_DEFAULT_LIMIT: 50,
-  issueApprovalService: () => ({}),
+  issueApprovalService: () => ({ listApprovalsForIssue: vi.fn(async () => []) }),
   issueService: () => ({}),
   logActivity: vi.fn(),
   syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),

@@ -91,7 +91,7 @@ function registerModuleMocks() {
     executionWorkspaceService: () => mockExecutionWorkspaceService,
     goalService: () => ({}),
     heartbeatService: () => mockHeartbeatService,
-    issueApprovalService: () => ({}),
+    issueApprovalService: () => ({ listApprovalsForIssue: vi.fn(async () => []) }),
     issueReferenceService: () => mockIssueReferenceService,
     issueService: () => mockIssueService,
     issueThreadInteractionService: () => mockIssueThreadInteractionService,

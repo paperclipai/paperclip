@@ -44,7 +44,7 @@ function registerModuleMocks() {
       reportRunActivity: vi.fn(async () => undefined),
     }),
     instanceSettingsService: () => ({}),
-    issueApprovalService: () => ({}),
+    issueApprovalService: () => ({ listApprovalsForIssue: vi.fn(async () => []) }),
     issueReferenceService: () => ({
       deleteDocumentSource: async () => undefined,
       diffIssueReferenceSummary: () => ({

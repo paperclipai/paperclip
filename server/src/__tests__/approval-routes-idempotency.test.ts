@@ -20,7 +20,12 @@ const mockHeartbeatService = vi.hoisted(() => ({
 
 const mockIssueApprovalService = vi.hoisted(() => ({
   listIssuesForApproval: vi.fn(),
+  listApprovalsForIssue: vi.fn(),
   linkManyForApproval: vi.fn(),
+}));
+
+const mockIssueService = vi.hoisted(() => ({
+  update: vi.fn(),
 }));
 
 const mockSecretService = vi.hoisted(() => ({
@@ -34,6 +39,7 @@ function registerModuleMocks() {
     approvalService: () => mockApprovalService,
     heartbeatService: () => mockHeartbeatService,
     issueApprovalService: () => mockIssueApprovalService,
+    issueService: () => mockIssueService,
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
   }));
@@ -104,11 +110,15 @@ describe("approval routes idempotent retries", () => {
     mockApprovalService.addComment.mockReset();
     mockHeartbeatService.wakeup.mockReset();
     mockIssueApprovalService.listIssuesForApproval.mockReset();
+    mockIssueApprovalService.listApprovalsForIssue.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
+    mockIssueService.update.mockReset();
     mockSecretService.normalizeHireApprovalPayloadForPersistence.mockReset();
     mockLogActivity.mockReset();
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
     mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
+    mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
+    mockIssueService.update.mockResolvedValue(null);
     mockLogActivity.mockResolvedValue(undefined);
   });
 
@@ -231,6 +241,76 @@ describe("approval routes idempotent retries", () => {
 
     expect(res.status).toBe(200);
     expect(mockApprovalService.approve).toHaveBeenCalledWith("approval-4", "user-1", "ship it");
+  });
+
+  it("unlocks linked in-review issues when the board approves the final active approval gate", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-7",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+    mockApprovalService.approve.mockResolvedValue({
+      approval: {
+        id: "approval-7",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "approved",
+        payload: {},
+        requestedByAgentId: "agent-1",
+      },
+      applied: true,
+    });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+      {
+        id: "issue-7",
+        companyId: "company-1",
+        status: "in_review",
+        assigneeAgentId: null,
+        assigneeUserId: "user-1",
+        identifier: "PAP-7",
+      },
+    ]);
+    mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([
+      { id: "approval-7", status: "approved" },
+    ]);
+    mockIssueService.update.mockResolvedValue({
+      id: "issue-7",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      identifier: "PAP-7",
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-7/approve")
+      .send({ decisionNote: "approved" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith("issue-7", expect.objectContaining({
+      status: "todo",
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      actorAgentId: null,
+      actorUserId: "user-1",
+    }));
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "issue.approval_gate_unlocked",
+      entityType: "issue",
+      entityId: "issue-7",
+      details: expect.objectContaining({
+        approvalId: "approval-7",
+        status: "todo",
+        assigneeAgentId: "agent-1",
+      }),
+    }));
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "approval.approved",
+      details: expect.objectContaining({ unlockedIssueIds: ["issue-7"] }),
+    }));
   });
 
   it("derives approval attribution from the authenticated actor on reject", async () => {

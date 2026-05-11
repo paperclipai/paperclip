@@ -72,7 +72,7 @@ function registerModuleMocks() {
       })),
       listCompanyIds: vi.fn(async () => ["company-1"]),
     }),
-    issueApprovalService: () => ({}),
+    issueApprovalService: () => ({ listApprovalsForIssue: vi.fn(async () => []) }),
     issueReferenceService: () => ({
       deleteDocumentSource: async () => undefined,
       diffIssueReferenceSummary: () => ({

@@ -110,7 +110,7 @@ vi.mock("../services/index.js", () => ({
   goalService: () => mockGoalService,
   heartbeatService: () => mockHeartbeatService,
   instanceSettingsService: () => mockInstanceSettingsService,
-  issueApprovalService: () => ({}),
+  issueApprovalService: () => ({ listApprovalsForIssue: vi.fn(async () => []) }),
   issueReferenceService: () => mockIssueReferenceService,
   issueService: () => mockIssueService,
   logActivity: mockLogActivity,
