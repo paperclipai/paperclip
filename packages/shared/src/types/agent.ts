@@ -87,6 +87,11 @@ export interface Agent {
   defaultEnvironmentId?: string | null;
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
+  inputTokensMonthly: number;
+  cachedInputTokensMonthly: number;
+  outputTokensMonthly: number;
+  subscriptionRunCount: number;
+  apiRunCount: number;
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
   permissions: AgentPermissions;

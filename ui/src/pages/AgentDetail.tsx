@@ -72,6 +72,9 @@ import {
   ChevronRight,
   ChevronDown,
   ArrowLeft,
+  ArrowUp,
+  ArrowDown,
+  ChevronsUpDown,
   HelpCircle,
   FolderOpen,
 } from "lucide-react";
@@ -1335,10 +1338,68 @@ function AgentOverview({
         )}
       </div>
 
+      {/* Tokens this month */}
+      <TokensThisMonthSection agent={agent} agentRouteId={agentRouteId} />
+
       {/* Costs */}
       <div className="space-y-3">
         <h3 className="text-sm font-medium">Costs</h3>
         <CostsSection runtimeState={runtimeState} runs={runs} />
+      </div>
+    </div>
+  );
+}
+
+/* ---- Tokens This Month Section ---- */
+
+function TokensThisMonthSection({
+  agent,
+  agentRouteId,
+}: {
+  agent: AgentDetailRecord;
+  agentRouteId: string;
+}) {
+  const totalMonthly =
+    (agent.inputTokensMonthly ?? 0) +
+    (agent.outputTokensMonthly ?? 0);
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-medium text-muted-foreground">Tokens / month</h3>
+        <Link
+          to={`/agents/${agentRouteId}/runs`}
+          className="text-xs text-muted-foreground hover:text-foreground transition-colors no-underline"
+        >
+          Runs &rarr;
+        </Link>
+      </div>
+      <div className="border border-border/60 rounded-lg p-3 bg-muted/20">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 tabular-nums text-xs">
+          <div>
+            <span className="block text-muted-foreground mb-0.5">Input</span>
+            <span className="font-medium">{formatTokens(agent.inputTokensMonthly ?? 0)}</span>
+          </div>
+          <div>
+            <span className="block text-muted-foreground mb-0.5">Cached</span>
+            <span className="font-medium">{formatTokens(agent.cachedInputTokensMonthly ?? 0)}</span>
+          </div>
+          <div>
+            <span className="block text-muted-foreground mb-0.5">Output</span>
+            <span className="font-medium">{formatTokens(agent.outputTokensMonthly ?? 0)}</span>
+          </div>
+          <div>
+            <span className="block text-muted-foreground mb-0.5">Subscr. runs</span>
+            <span className="font-medium">{(agent.subscriptionRunCount ?? 0).toLocaleString()}</span>
+          </div>
+          <div>
+            <span className="block text-muted-foreground mb-0.5">API runs</span>
+            <span className="font-medium">{(agent.apiRunCount ?? 0).toLocaleString()}</span>
+          </div>
+        </div>
+        {totalMonthly === 0 && (
+          <p className="text-xs text-muted-foreground mt-2">No token usage recorded this month.</p>
+        )}
       </div>
     </div>
   );
@@ -2941,6 +3002,112 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
   );
 }
 
+type RunsSortField = "createdAt" | "costUsd";
+type RunsSortDir = "asc" | "desc";
+
+function sortRuns(runs: HeartbeatRun[], field: RunsSortField, dir: RunsSortDir): HeartbeatRun[] {
+  return [...runs].sort((a, b) => {
+    let cmp = 0;
+    if (field === "createdAt") {
+      cmp = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+    } else {
+      const costA = visibleRunCostUsd(a.usageJson as Record<string, unknown> | null, a.resultJson as Record<string, unknown> | null);
+      const costB = visibleRunCostUsd(b.usageJson as Record<string, unknown> | null, b.resultJson as Record<string, unknown> | null);
+      cmp = costA - costB;
+    }
+    return dir === "desc" ? -cmp : cmp;
+  });
+}
+
+function RunsTable({
+  runs,
+  agentRouteId,
+  sortField,
+  sortDir,
+  onSort,
+}: {
+  runs: HeartbeatRun[];
+  agentRouteId: string;
+  sortField: RunsSortField;
+  sortDir: RunsSortDir;
+  onSort: (field: RunsSortField) => void;
+}) {
+  function SortIcon({ field }: { field: RunsSortField }) {
+    if (sortField !== field) return <ChevronsUpDown className="h-3 w-3 opacity-40" />;
+    return sortDir === "asc"
+      ? <ArrowUp className="h-3 w-3" />
+      : <ArrowDown className="h-3 w-3" />;
+  }
+
+  return (
+    <div className="border border-border rounded-lg overflow-x-auto">
+      <table className="w-full text-xs min-w-[640px]">
+        <thead>
+          <tr className="border-b border-border bg-accent/20">
+            <th className="text-left px-3 py-2 font-medium text-muted-foreground">
+              <button
+                className="flex items-center gap-1 hover:text-foreground transition-colors"
+                onClick={() => onSort("createdAt")}
+              >
+                Timestamp
+                <SortIcon field="createdAt" />
+              </button>
+            </th>
+            <th className="text-left px-3 py-2 font-medium text-muted-foreground">Status</th>
+            <th className="text-left px-3 py-2 font-medium text-muted-foreground">Model</th>
+            <th className="text-right px-3 py-2 font-medium text-muted-foreground">Input</th>
+            <th className="text-right px-3 py-2 font-medium text-muted-foreground">Cached</th>
+            <th className="text-right px-3 py-2 font-medium text-muted-foreground">Output</th>
+            <th className="text-right px-3 py-2 font-medium text-muted-foreground">
+              <button
+                className="flex items-center gap-1 ml-auto hover:text-foreground transition-colors"
+                onClick={() => onSort("costUsd")}
+              >
+                Cost USD
+                <SortIcon field="costUsd" />
+              </button>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {runs.map((run) => {
+            const metrics = runMetrics(run);
+            return (
+              <tr
+                key={run.id}
+                className="border-b border-border last:border-b-0 hover:bg-accent/10 transition-colors"
+              >
+                <td className="px-3 py-2 tabular-nums whitespace-nowrap">
+                  <Link
+                    to={`/agents/${agentRouteId}/runs/${run.id}`}
+                    className="hover:underline no-underline text-inherit"
+                  >
+                    {formatDate(run.createdAt)}
+                  </Link>
+                </td>
+                <td className="px-3 py-2">
+                  <Link to={`/agents/${agentRouteId}/runs/${run.id}`} className="no-underline">
+                    <StatusBadge status={run.status} />
+                  </Link>
+                </td>
+                <td className="px-3 py-2 font-mono text-muted-foreground max-w-[160px] truncate" title={metrics.model ?? undefined}>
+                  {metrics.model ?? "—"}
+                </td>
+                <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.input)}</td>
+                <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.cached)}</td>
+                <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.output)}</td>
+                <td className="px-3 py-2 text-right tabular-nums">
+                  {metrics.cost > 0 ? `$${metrics.cost.toFixed(4)}` : "—"}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function RunsTab({
   runs,
   companyId,
@@ -2959,19 +3126,28 @@ function RunsTab({
   adapterConfig: Record<string, unknown>;
 }) {
   const { isMobile } = useSidebar();
+  const [sortField, setSortField] = useState<RunsSortField>("createdAt");
+  const [sortDir, setSortDir] = useState<RunsSortDir>("desc");
+
+  function handleSort(field: RunsSortField) {
+    if (sortField === field) {
+      setSortDir((d) => (d === "desc" ? "asc" : "desc"));
+    } else {
+      setSortField(field);
+      setSortDir("desc");
+    }
+  }
 
   if (runs.length === 0) {
     return <p className="text-sm text-muted-foreground">No runs yet.</p>;
   }
 
-  // Sort by created descending
-  const sorted = [...runs].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-  );
+  const sorted = sortRuns(runs, sortField, sortDir);
 
   // On mobile, don't auto-select so the list shows first; on desktop, auto-select latest
-  const effectiveRunId = isMobile ? selectedRunId : (selectedRunId ?? sorted[0]?.id ?? null);
-  const selectedRun = sorted.find((r) => r.id === effectiveRunId) ?? null;
+  const byDate = sortRuns(runs, "createdAt", "desc");
+  const effectiveRunId = isMobile ? selectedRunId : (selectedRunId ?? byDate[0]?.id ?? null);
+  const selectedRun = runs.find((r) => r.id === effectiveRunId) ?? null;
 
   // Mobile: show either run list OR run detail with back button
   if (isMobile) {
@@ -2991,34 +3167,41 @@ function RunsTab({
     }
     return (
       <div className="border border-border rounded-lg overflow-x-hidden">
-        {sorted.map((run) => (
+        {byDate.map((run) => (
           <RunListItem key={run.id} run={run} isSelected={false} agentId={agentRouteId} />
         ))}
       </div>
     );
   }
 
-  // Desktop: side-by-side layout
+  // Desktop: table when no run selected, sidebar list + detail when selected
+  if (!selectedRun) {
+    return (
+      <RunsTable
+        runs={sorted}
+        agentRouteId={agentRouteId}
+        sortField={sortField}
+        sortDir={sortDir}
+        onSort={handleSort}
+      />
+    );
+  }
+
   return (
     <div className="flex gap-0">
-      {/* Left: run list — border stretches full height, content sticks */}
-      <div className={cn(
-        "shrink-0 border border-border rounded-lg",
-        selectedRun ? "w-72" : "w-full",
-      )}>
+      {/* Left: compact run list */}
+      <div className="shrink-0 w-72 border border-border rounded-lg">
         <div className="sticky top-4 overflow-y-auto" style={{ maxHeight: "calc(100vh - 2rem)" }}>
-        {sorted.map((run) => (
-          <RunListItem key={run.id} run={run} isSelected={run.id === effectiveRunId} agentId={agentRouteId} />
-        ))}
+          {byDate.map((run) => (
+            <RunListItem key={run.id} run={run} isSelected={run.id === effectiveRunId} agentId={agentRouteId} />
+          ))}
         </div>
       </div>
 
       {/* Right: run detail — natural height, page scrolls */}
-      {selectedRun && (
-        <div className="flex-1 min-w-0 pl-4">
-          <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} adapterConfig={adapterConfig} />
-        </div>
-      )}
+      <div className="flex-1 min-w-0 pl-4">
+        <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} adapterConfig={adapterConfig} />
+      </div>
     </div>
   );
 }

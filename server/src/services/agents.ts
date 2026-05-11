@@ -232,6 +232,11 @@ export function agentService(db: Db) {
     return withUrlKey({
       ...row,
       permissions: normalizeAgentPermissions(row.permissions, row.role),
+      inputTokensMonthly: 0,
+      cachedInputTokensMonthly: 0,
+      outputTokensMonthly: 0,
+      subscriptionRunCount: 0,
+      apiRunCount: 0,
     });
   }
 
@@ -256,6 +261,50 @@ export function agentService(db: Db) {
     return new Map(rows.map((row) => [row.agentId, Number(row.spentMonthlyCents ?? 0)]));
   }
 
+  interface AgentTokenSummary {
+    inputTokensMonthly: number;
+    cachedInputTokensMonthly: number;
+    outputTokensMonthly: number;
+    subscriptionRunCount: number;
+    apiRunCount: number;
+  }
+
+  async function getMonthlyTokenSummaryByAgentIds(companyId: string, agentIds: string[]): Promise<Map<string, AgentTokenSummary>> {
+    if (agentIds.length === 0) return new Map();
+    const { start, end } = currentUtcMonthWindow();
+    const rows = await db
+      .select({
+        agentId: costEvents.agentId,
+        inputTokensMonthly: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::bigint`,
+        cachedInputTokensMonthly: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::bigint`,
+        outputTokensMonthly: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::bigint`,
+        subscriptionRunCount: sql<number>`count(*) filter (where ${costEvents.billingType} = 'subscription_included')`,
+        apiRunCount: sql<number>`count(*) filter (where ${costEvents.billingType} in ('metered_api', 'subscription_overage'))`,
+      })
+      .from(costEvents)
+      .where(
+        and(
+          eq(costEvents.companyId, companyId),
+          inArray(costEvents.agentId, agentIds),
+          gte(costEvents.occurredAt, start),
+          lt(costEvents.occurredAt, end),
+        ),
+      )
+      .groupBy(costEvents.agentId);
+    return new Map(
+      rows.map((row) => [
+        row.agentId,
+        {
+          inputTokensMonthly: Number(row.inputTokensMonthly ?? 0),
+          cachedInputTokensMonthly: Number(row.cachedInputTokensMonthly ?? 0),
+          outputTokensMonthly: Number(row.outputTokensMonthly ?? 0),
+          subscriptionRunCount: Number(row.subscriptionRunCount ?? 0),
+          apiRunCount: Number(row.apiRunCount ?? 0),
+        },
+      ]),
+    );
+  }
+
   async function hydrateAgentSpend<T extends { id: string; companyId: string; spentMonthlyCents: number }>(rows: T[]) {
     const agentIds = rows.map((row) => row.id);
     const companyId = rows[0]?.companyId;
@@ -264,6 +313,25 @@ export function agentService(db: Db) {
     return rows.map((row) => ({
       ...row,
       spentMonthlyCents: spendByAgentId.get(row.id) ?? 0,
+    }));
+  }
+
+  const ZERO_TOKEN_SUMMARY: AgentTokenSummary = {
+    inputTokensMonthly: 0,
+    cachedInputTokensMonthly: 0,
+    outputTokensMonthly: 0,
+    subscriptionRunCount: 0,
+    apiRunCount: 0,
+  };
+
+  async function hydrateAgentTokenSummary<T extends { id: string; companyId: string }>(rows: T[]) {
+    const agentIds = rows.map((row) => row.id);
+    const companyId = rows[0]?.companyId;
+    if (!companyId || agentIds.length === 0) return rows.map((row) => ({ ...row, ...ZERO_TOKEN_SUMMARY }));
+    const summaryByAgentId = await getMonthlyTokenSummaryByAgentIds(companyId, agentIds);
+    return rows.map((row) => ({
+      ...row,
+      ...(summaryByAgentId.get(row.id) ?? ZERO_TOKEN_SUMMARY),
     }));
   }
 
@@ -404,8 +472,9 @@ export function agentService(db: Db) {
         conditions.push(ne(agents.status, "terminated"));
       }
       const rows = await db.select().from(agents).where(and(...conditions));
-      const hydrated = await hydrateAgentSpend(rows);
-      return hydrated.map(normalizeAgentRow);
+      const withSpend = await hydrateAgentSpend(rows);
+      const normalized = withSpend.map(normalizeAgentRow);
+      return await hydrateAgentTokenSummary(normalized);
     },
 
     getById,
