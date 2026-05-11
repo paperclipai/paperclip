@@ -29,6 +29,7 @@ import { userProfileRoutes } from "./routes/user-profiles.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
+import { slackThreadLinkRoutes } from "./routes/slack-thread-links.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import {
   instanceDatabaseBackupRoutes,
@@ -210,6 +211,7 @@ export async function createApp(
   api.use(sidebarBadgeRoutes(db));
   api.use(sidebarPreferenceRoutes(db));
   api.use(inboxDismissalRoutes(db));
+  api.use(slackThreadLinkRoutes(db));
   api.use(instanceSettingsRoutes(db));
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));

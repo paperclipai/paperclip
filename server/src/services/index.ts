@@ -42,6 +42,13 @@ export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
 export { sidebarPreferenceService } from "./sidebar-preferences.js";
 export { inboxDismissalService } from "./inbox-dismissals.js";
+export {
+  slackThreadLinkService,
+  SlackThreadLinkConflictError,
+  type SlackThreadLink,
+  type SlackThreadLinkInput,
+  type SlackThreadLinkService,
+} from "./slack-thread-links.js";
 export { accessService } from "./access.js";
 export { boardAuthService } from "./board-auth.js";
 export { instanceSettingsService } from "./instance-settings.js";
