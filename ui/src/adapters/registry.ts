@@ -2,6 +2,7 @@ import type { UIAdapterModule } from "./types";
 import { acpxLocalUIAdapter } from "./acpx-local";
 import { claudeLocalUIAdapter } from "./claude-local";
 import { codexLocalUIAdapter } from "./codex-local";
+import { cursorCloudUIAdapter } from "./cursor-cloud";
 import { cursorLocalUIAdapter } from "./cursor";
 import { geminiLocalUIAdapter } from "./gemini-local";
 import { openCodeLocalUIAdapter } from "./opencode-local";
@@ -53,6 +54,7 @@ function registerBuiltInUIAdapters() {
     acpxLocalUIAdapter,
     claudeLocalUIAdapter,
     codexLocalUIAdapter,
+    cursorCloudUIAdapter,
     geminiLocalUIAdapter,
     hermesLocalUIAdapter,
     openCodeLocalUIAdapter,

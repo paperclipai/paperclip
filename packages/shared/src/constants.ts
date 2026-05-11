@@ -33,6 +33,7 @@ export const AGENT_ADAPTER_TYPES = [
   "acpx_local",
   "claude_local",
   "codex_local",
+  "cursor_cloud",
   "gemini_local",
   "opencode_local",
   "pi_local",
@@ -146,7 +147,28 @@ export const INBOX_MINE_ISSUE_STATUS_FILTER = INBOX_MINE_ISSUE_STATUSES.join(","
 
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
+export const ISSUE_WORK_MODES = ["standard", "planning"] as const;
+export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
 export const MAX_ISSUE_REQUEST_DEPTH = 1024;
+
+export const ISSUE_COMMENT_AUTHOR_TYPES = ["user", "agent", "system"] as const;
+export type IssueCommentAuthorType = (typeof ISSUE_COMMENT_AUTHOR_TYPES)[number];
+
+export const ISSUE_COMMENT_PRESENTATION_KINDS = ["message", "system_notice"] as const;
+export type IssueCommentPresentationKind = (typeof ISSUE_COMMENT_PRESENTATION_KINDS)[number];
+
+export const ISSUE_COMMENT_PRESENTATION_TONES = ["neutral", "info", "success", "warning", "danger"] as const;
+export type IssueCommentPresentationTone = (typeof ISSUE_COMMENT_PRESENTATION_TONES)[number];
+
+export const ISSUE_COMMENT_METADATA_ROW_TYPES = [
+  "text",
+  "code",
+  "key_value",
+  "issue_link",
+  "agent_link",
+  "run_link",
+] as const;
+export type IssueCommentMetadataRowType = (typeof ISSUE_COMMENT_METADATA_ROW_TYPES)[number];
 
 export function clampIssueRequestDepth(value: number | null | undefined): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return 0;
@@ -373,6 +395,54 @@ export const SECRET_PROVIDERS = [
   "vault",
 ] as const;
 export type SecretProvider = (typeof SECRET_PROVIDERS)[number];
+
+export const SECRET_PROVIDER_CONFIG_STATUSES = [
+  "ready",
+  "warning",
+  "coming_soon",
+  "disabled",
+] as const;
+export type SecretProviderConfigStatus = (typeof SECRET_PROVIDER_CONFIG_STATUSES)[number];
+
+export const SECRET_PROVIDER_CONFIG_HEALTH_STATUSES = [
+  "ready",
+  "warning",
+  "error",
+  "coming_soon",
+  "disabled",
+] as const;
+export type SecretProviderConfigHealthStatus =
+  (typeof SECRET_PROVIDER_CONFIG_HEALTH_STATUSES)[number];
+
+export const SECRET_STATUSES = ["active", "disabled", "archived", "deleted"] as const;
+export type SecretStatus = (typeof SECRET_STATUSES)[number];
+
+export const SECRET_MANAGED_MODES = ["paperclip_managed", "external_reference"] as const;
+export type SecretManagedMode = (typeof SECRET_MANAGED_MODES)[number];
+
+export const SECRET_VERSION_STATUSES = [
+  "current",
+  "previous",
+  "disabled",
+  "destroyed",
+  "failed",
+] as const;
+export type SecretVersionStatus = (typeof SECRET_VERSION_STATUSES)[number];
+
+export const SECRET_BINDING_TARGET_TYPES = [
+  "agent",
+  "project",
+  "environment",
+  "routine",
+  "plugin",
+  "issue",
+  "run",
+  "system",
+] as const;
+export type SecretBindingTargetType = (typeof SECRET_BINDING_TARGET_TYPES)[number];
+
+export const SECRET_ACCESS_OUTCOMES = ["success", "failure"] as const;
+export type SecretAccessOutcome = (typeof SECRET_ACCESS_OUTCOMES)[number];
 
 export const STORAGE_PROVIDERS = ["local_disk", "s3"] as const;
 export type StorageProvider = (typeof STORAGE_PROVIDERS)[number];
@@ -646,6 +716,7 @@ export const PLUGIN_CAPABILITIES = [
   "issue.documents.write",
   "projects.managed",
   "routines.managed",
+  "skills.managed",
   "agents.pause",
   "agents.resume",
   "agents.invoke",

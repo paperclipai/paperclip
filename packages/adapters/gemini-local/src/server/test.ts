@@ -94,6 +94,9 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  if (targetIsRemote && typeof env.GEMINI_CLI_TRUST_WORKSPACE !== "string") {
+    env.GEMINI_CLI_TRUST_WORKSPACE = "true";
+  }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   const installCheck = await maybeRunSandboxInstallCommand({
     runId,
@@ -167,7 +170,7 @@ export async function testEnvironment(
       const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
       const approvalMode = asString(config.approvalMode, asBoolean(config.yolo, false) ? "yolo" : "default");
       const sandbox = asBoolean(config.sandbox, false);
-      const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, 10));
+      const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, 60));
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;

@@ -10,6 +10,7 @@ import {
   preparePluginLocalFolder,
   readPluginLocalFolderText,
   resolvePluginLocalFolderPath,
+  deletePluginLocalFolderFile,
   writePluginLocalFolderTextAtomic,
 } from "../services/plugin-local-folders.js";
 
@@ -216,6 +217,16 @@ describe("plugin local folders", () => {
     await expect(readPluginLocalFolderText(root, "nested/page.md")).resolves.toBe("updated");
     const leftovers = await fs.readdir(path.join(root, "nested"));
     expect(leftovers.filter((name) => name.includes(".paperclip-"))).toEqual([]);
+  });
+
+  it("returns the real folder key after deleting a file", async () => {
+    const root = await makeRoot();
+    await fs.writeFile(path.join(root, "stale.md"), "delete me", "utf8");
+
+    const status = await deletePluginLocalFolderFile(root, "stale.md", "content-root");
+
+    expect(status.folderKey).toBe("content-root");
+    await expect(fs.stat(path.join(root, "stale.md"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("lists nested local folder entries without following symlink escapes", async () => {

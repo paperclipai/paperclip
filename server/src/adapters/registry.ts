@@ -1,5 +1,13 @@
-import type { AdapterModelProfileDefinition, AdapterRuntimeCommandSpec, ServerAdapterModule } from "./types.js";
-import { getAdapterSessionManagement } from "@paperclipai/adapter-utils";
+import type {
+  AdapterModel,
+  AdapterModelProfileDefinition,
+  AdapterRuntimeCommandSpec,
+  ServerAdapterModule,
+} from "./types.js";
+import {
+  buildSandboxNpmInstallCommand,
+  getAdapterSessionManagement,
+} from "@paperclipai/adapter-utils";
 import {
   execute as acpxExecute,
   testEnvironment as acpxTestEnvironment,
@@ -8,7 +16,10 @@ import {
   listAcpxSkills,
   syncAcpxSkills,
 } from "@paperclipai/adapter-acpx-local/server";
-import { agentConfigurationDoc as acpxAgentConfigurationDoc } from "@paperclipai/adapter-acpx-local";
+import {
+  agentConfigurationDoc as acpxAgentConfigurationDoc,
+  models as acpxModels,
+} from "@paperclipai/adapter-acpx-local";
 import {
   execute as claudeExecute,
   listClaudeSkills,
@@ -48,6 +59,13 @@ import {
   models as cursorModels,
   modelProfiles as cursorModelProfiles,
 } from "@paperclipai/adapter-cursor-local";
+import {
+  execute as cursorCloudExecute,
+  getConfigSchema as getCursorCloudConfigSchema,
+  sessionCodec as cursorCloudSessionCodec,
+  testEnvironment as cursorCloudTestEnvironment,
+} from "@paperclipai/adapter-cursor-cloud/server";
+import { agentConfigurationDoc as cursorCloudAgentConfigurationDoc } from "@paperclipai/adapter-cursor-cloud";
 import {
   execute as geminiExecute,
   listGeminiSkills,
@@ -133,11 +151,12 @@ function buildNpmRuntimeCommandSpec(
 ): AdapterRuntimeCommandSpec {
   const command = readConfiguredCommand(config, fallbackCommand);
   const canSelfInstall = !hasPathSeparator(command) && command === fallbackCommand;
+  const installLine = buildSandboxNpmInstallCommand(packageName);
   return {
     command,
     detectCommand: command,
     installCommand: canSelfInstall
-      ? `if ! command -v ${shellQuote(command)} >/dev/null 2>&1; then npm install -g ${shellQuote(packageName)}; fi`
+      ? `if ! command -v ${shellQuote(command)} >/dev/null 2>&1; then ${installLine}; fi`
       : null,
   };
 }
@@ -182,6 +201,38 @@ function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(
   return ctx;
 }
 
+function dedupeAdapterModels(models: AdapterModel[]): AdapterModel[] {
+  const seen = new Set<string>();
+  const result: AdapterModel[] = [];
+  for (const model of models) {
+    const id = model.id.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    result.push({ ...model, id });
+  }
+  return result;
+}
+
+function prefixAdapterModelLabels(models: AdapterModel[], provider: "Claude" | "Codex"): AdapterModel[] {
+  const prefix = `${provider}: `;
+  return models.map((model) => ({
+    ...model,
+    label: model.label.startsWith(prefix) ? model.label : `${prefix}${model.label}`,
+  }));
+}
+
+async function listAcpxModels(): Promise<AdapterModel[]> {
+  const [claude, codex] = await Promise.all([
+    listClaudeModels().catch(() => claudeModels),
+    listCodexModels().catch(() => codexModels),
+  ]);
+  return dedupeAdapterModels([
+    ...acpxModels,
+    ...prefixAdapterModelLabels(claude, "Claude"),
+    ...prefixAdapterModelLabels(codex, "Codex"),
+  ]);
+}
+
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
   execute: claudeExecute,
@@ -211,6 +262,11 @@ const acpxLocalAdapter: ServerAdapterModule = {
   syncSkills: syncAcpxSkills,
   sessionCodec: acpxSessionCodec,
   sessionManagement: getAdapterSessionManagement("acpx_local") ?? undefined,
+  models: dedupeAdapterModels([
+    ...prefixAdapterModelLabels(claudeModels, "Claude"),
+    ...prefixAdapterModelLabels(codexModels, "Codex"),
+  ]),
+  listModels: listAcpxModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
@@ -257,6 +313,21 @@ const cursorLocalAdapter: ServerAdapterModule = {
   requiresMaterializedRuntimeSkills: true,
   getRuntimeCommandSpec: buildCursorRuntimeCommandSpec,
   agentConfigurationDoc: cursorAgentConfigurationDoc,
+};
+
+const cursorCloudAdapter: ServerAdapterModule = {
+  type: "cursor_cloud",
+  execute: cursorCloudExecute,
+  testEnvironment: cursorCloudTestEnvironment,
+  sessionCodec: cursorCloudSessionCodec,
+  sessionManagement: getAdapterSessionManagement("cursor_cloud") ?? undefined,
+  models: [],
+  supportsLocalAgentJwt: false,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: cursorCloudAgentConfigurationDoc,
+  getConfigSchema: getCursorCloudConfigSchema,
 };
 
 const geminiLocalAdapter: ServerAdapterModule = {
@@ -412,6 +483,7 @@ function registerBuiltInAdapters() {
     codexLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
+    cursorCloudAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
     openclawGatewayAdapter,
