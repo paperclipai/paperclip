@@ -56,6 +56,56 @@ import { prepareClaudePromptBundle } from "./prompt-cache.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
+const COMPACTED_CONTEXT_MAX_COUNT = 3;
+const COMPACTED_CONTEXT_MAX_TOKEN_BUDGET = 6000;
+
+async function loadCompactedContextsForWake(input: {
+  agentId: string;
+  issueId: string;
+  agentHome: string;
+}): Promise<string | null> {
+  const { agentId, issueId, agentHome } = input;
+  // agentHome is ~/.paperclip/instances/{instance}/workspaces/{agentId}
+  // walk up two levels to get instance root
+  const instanceRoot = path.resolve(agentHome, "..", "..");
+  const dir = path.join(instanceRoot, "compacted-contexts", agentId, issueId);
+
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return null;
+  }
+
+  const contextFiles = entries
+    .filter((f) => f.startsWith("context-") && f.endsWith(".md"))
+    .sort()
+    .reverse();
+
+  const results: Array<{ date: string; body: string }> = [];
+  let totalTokens = 0;
+
+  for (const fileName of contextFiles) {
+    if (results.length >= COMPACTED_CONTEXT_MAX_COUNT) break;
+    const raw = await fs.readFile(path.join(dir, fileName), "utf-8").catch(() => null);
+    if (!raw) continue;
+    const frontmatterEnd = raw.indexOf("\n---\n", 4);
+    if (frontmatterEnd === -1) continue;
+    const frontmatter = raw.slice(0, frontmatterEnd);
+    const body = raw.slice(frontmatterEnd + 5).trim();
+    const tokenMatch = frontmatter.match(/^token_count_estimate:\s*(\d+)$/m);
+    const estimated = tokenMatch ? parseInt(tokenMatch[1], 10) : Math.round(body.length / 4);
+    if (totalTokens + estimated > COMPACTED_CONTEXT_MAX_TOKEN_BUDGET) break;
+    const dateMatch = frontmatter.match(/^date:\s*(.+)$/m);
+    results.push({ date: dateMatch?.[1]?.trim() ?? "unknown", body });
+    totalTokens += estimated;
+  }
+
+  if (results.length === 0) return null;
+  const sections = results.reverse().map((r) => `--- [${r.date}] ---\n${r.body}`).join("\n\n");
+  return `<compacted-context>\n以下是本 issue 最近的历史上下文摘要，按时间从旧到新排列：\n\n${sections}\n</compacted-context>`;
+}
+
 interface ClaudeExecutionInput {
   runId: string;
   agent: AdapterExecutionContext["agent"];
@@ -198,6 +248,16 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   }
   if (wakePayloadJson) {
     env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
+  }
+  if (wakeTaskId && agentHome) {
+    const compactedContextBlock = await loadCompactedContextsForWake({
+      agentId: agent.id,
+      issueId: wakeTaskId,
+      agentHome,
+    });
+    if (compactedContextBlock) {
+      env.PAPERCLIP_COMPACTED_CONTEXTS = compactedContextBlock;
+    }
   }
   applyPaperclipWorkspaceEnv(env, {
     workspaceCwd: effectiveWorkspaceCwd,

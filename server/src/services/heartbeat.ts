@@ -94,6 +94,7 @@ import {
 import {
   getIssueContinuationSummaryDocument,
   refreshIssueContinuationSummary,
+  persistContextSnapshotToDisk,
 } from "./issue-continuation-summary.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
@@ -3242,7 +3243,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     if (!issueId) return null;
     try {
-      return await refreshIssueContinuationSummary({
+      const doc = await refreshIssueContinuationSummary({
         db,
         issueId,
         run: {
@@ -3261,6 +3262,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           adapterType: agent.adapterType,
         },
       });
+      if (doc?.body) {
+        persistContextSnapshotToDisk({
+          agentId: agent.id,
+          issueId,
+          issueIdentifier: null,
+          runId: run.id,
+          runStatus: run.status,
+          body: doc.body,
+        }).catch((err) => {
+          logger.warn({ err, runId: run.id, issueId, agentId: agent.id }, "failed to persist context snapshot to disk");
+        });
+      }
+      return doc;
     } catch (err) {
       logger.warn(
         {
@@ -5750,14 +5764,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id)
         : null;
       if (adapter.supportsLocalAgentJwt && !authToken) {
-        logger.warn(
-          {
-            companyId: agent.companyId,
-            agentId: agent.id,
-            runId: run.id,
-            adapterType: agent.adapterType,
-          },
-          "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
+        throw new Error(
+          `PAPERCLIP_AGENT_JWT_SECRET not configured — cannot start heartbeat for agent ${agent.id} (${agent.adapterType}) without PAPERCLIP_API_KEY. ` +
+            `Add PAPERCLIP_AGENT_JWT_SECRET=<secret> to ~/.paperclip/instances/default/.env and restart the server. ` +
+            `See VOG-3046 for details.`,
         );
       }
       const adapterResult = await adapter.execute({

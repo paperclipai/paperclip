@@ -1,8 +1,11 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documents, issueDocuments, issues } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import { documentService } from "./documents.js";
+import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
 export { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY };
 export const ISSUE_CONTINUATION_SUMMARY_TITLE = "Continuation Summary";
@@ -266,4 +269,94 @@ export async function refreshIssueContinuationSummary(input: {
     createdByRunId: run.id,
   });
   return result.document;
+}
+
+const CONTEXT_PERSIST_MIN_BODY_CHARS = 200;
+const CONTEXT_PERSIST_ENABLED_STATUSES = new Set(["succeeded", "failed"]);
+
+export async function persistContextSnapshotToDisk(input: {
+  agentId: string;
+  issueId: string;
+  issueIdentifier: string | null;
+  runId: string;
+  runStatus: string;
+  body: string;
+}): Promise<void> {
+  const { agentId, issueId, issueIdentifier, runId, runStatus, body } = input;
+  if (body.length < CONTEXT_PERSIST_MIN_BODY_CHARS) return;
+  if (!CONTEXT_PERSIST_ENABLED_STATUSES.has(runStatus)) return;
+
+  const date = new Date().toISOString().slice(0, 10);
+  const runIdShort = runId.slice(0, 8);
+  const fileName = `context-${date}-${runIdShort}.md`;
+  const dir = path.join(resolvePaperclipInstanceRoot(), "compacted-contexts", agentId, issueId);
+  const filePath = path.join(dir, fileName);
+
+  const tokenCountEstimate = Math.round(body.length / 4);
+  const frontmatter = [
+    "---",
+    `date: ${date}`,
+    `run_id: ${runId}`,
+    `agent_id: ${agentId}`,
+    `issue_id: ${issueId}`,
+    `issue_identifier: ${issueIdentifier ?? ""}`,
+    `run_status: ${runStatus}`,
+    `token_count_estimate: ${tokenCountEstimate}`,
+    `scope: single_issue`,
+    "---",
+    "",
+  ].join("\n");
+
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(filePath, frontmatter + body, "utf-8");
+}
+
+export async function loadCompactedContextsFromDisk(input: {
+  agentId: string;
+  issueId: string;
+  maxCount?: number;
+  maxTokenBudget?: number;
+}): Promise<Array<{ date: string; runId: string; body: string }>> {
+  const { agentId, issueId, maxCount = 3, maxTokenBudget = 6000 } = input;
+  const dir = path.join(resolvePaperclipInstanceRoot(), "compacted-contexts", agentId, issueId);
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return [];
+  }
+
+  const contextFiles = entries
+    .filter((f) => f.startsWith("context-") && f.endsWith(".md"))
+    .sort()
+    .reverse();
+
+  const results: Array<{ date: string; runId: string; body: string }> = [];
+  let totalTokens = 0;
+
+  for (const fileName of contextFiles) {
+    if (results.length >= maxCount) break;
+    const raw = await fs.readFile(path.join(dir, fileName), "utf-8").catch(() => null);
+    if (!raw) continue;
+
+    const frontmatterEnd = raw.indexOf("\n---\n", 4);
+    if (frontmatterEnd === -1) continue;
+    const frontmatter = raw.slice(0, frontmatterEnd);
+    const body = raw.slice(frontmatterEnd + 5);
+
+    const dateMatch = frontmatter.match(/^date:\s*(.+)$/m);
+    const runIdMatch = frontmatter.match(/^run_id:\s*(.+)$/m);
+    const tokenMatch = frontmatter.match(/^token_count_estimate:\s*(\d+)$/m);
+    const estimated = tokenMatch ? parseInt(tokenMatch[1], 10) : Math.round(body.length / 4);
+
+    if (totalTokens + estimated > maxTokenBudget) break;
+    results.push({
+      date: dateMatch?.[1]?.trim() ?? fileName.slice(8, 18),
+      runId: runIdMatch?.[1]?.trim() ?? "",
+      body: body.trim(),
+    });
+    totalTokens += estimated;
+  }
+
+  return results.reverse();
 }
