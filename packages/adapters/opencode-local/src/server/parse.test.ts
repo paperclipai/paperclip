@@ -198,6 +198,33 @@ describe("sanitizeModelText", () => {
     expect(sanitizeModelText(leaked)).toBeNull();
   });
 
+  // SAG-819 fixture: 8b IC (llama3.1:8b Countertop Estimator) emitted the bare
+  // {"name":...,"parameters":...} dialect with NO "type":"function" wrapper —
+  // the original INLINE_TOOL_CALL_RE missed it. Comment 72f09e77 on SAG-819.
+  it("returns null when 8b IC leaks bare {name,parameters} tool-call form (SAG-819#72f09e77)", () => {
+    const leaked =
+      'I apologize for the issue. Let me try to look up the documentation on Countertop Estimator on another platform.  \n\n{"name": "webfetch", "parameters": {"url":"https://www.google.com/search?q=Countertop+Estimator"}}';
+    expect(sanitizeModelText(leaked)).toBeNull();
+  });
+
+  it("returns null when model leaks bare {name,arguments} tool-call form", () => {
+    const leaked =
+      'Looking it up now.\n{"name": "search", "arguments": {"query": "foo"}}';
+    expect(sanitizeModelText(leaked)).toBeNull();
+  });
+
+  it("returns null when model leaks {tool,args} bridge dialect", () => {
+    const leaked = 'Running command.\n{"tool": "bash", "args": ["ls", "-la"]}';
+    expect(sanitizeModelText(leaked)).toBeNull();
+  });
+
+  it("does not over-match: prose mentioning a JSON object with a name key is preserved", () => {
+    // A legitimate status update that happens to mention the literal string
+    // {"name":"..."} but without an adjacent parameters/arguments key.
+    const text = 'Found a config entry: {"name":"prod-cluster"} in the registry.';
+    expect(sanitizeModelText(text)).toBe(text);
+  });
+
   it("drops inline tool-call blocks via parseOpenCodeJsonl (end-to-end)", () => {
     const leaked =
       'First, I need to check if there are any new comments on the issue since my last update.\n\n{"type": "function", "name": "get_issue_comments", "parameters": {"issue_id": "SAG-772"}}';
