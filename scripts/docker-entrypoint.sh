@@ -38,7 +38,7 @@ if [ ! -f "$CONFIG_PATH" ]; then
     mkdir -p "$INSTANCE_DIR/db" "$INSTANCE_DIR/logs" "$INSTANCE_DIR/data/backups" "$INSTANCE_DIR/data/storage" "$INSTANCE_DIR/secrets"
     cat > "$CONFIG_PATH" <<EOF
 {
-  "\$meta": { "version": 1, "updatedAt": "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)", "source": "docker-entrypoint" },
+  "\$meta": { "version": 1, "updatedAt": "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)", "source": "onboard" },
   "database": {
     "mode": "embedded-postgres",
     "embeddedPostgresDataDir": "$INSTANCE_DIR/db",
