@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { authApi } from "../api/auth";
+import { healthApi } from "../api/health";
 import { queryKeys } from "../lib/queryKeys";
 import { getRememberedInvitePath } from "../lib/invite-memory";
 import { Button } from "@/components/ui/button";
@@ -29,6 +30,19 @@ export function AuthPage() {
     queryFn: () => authApi.getSession(),
     retry: false,
   });
+  const { data: health, isLoading: isHealthLoading } = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    retry: false,
+  });
+  const signUpDisabled = health?.features?.authDisableSignUp === true;
+
+  useEffect(() => {
+    if (signUpDisabled && mode === "sign_up") {
+      setMode("sign_in");
+      setError(null);
+    }
+  }, [signUpDisabled, mode]);
 
   useEffect(() => {
     if (session) {
@@ -41,6 +55,9 @@ export function AuthPage() {
       if (mode === "sign_in") {
         await authApi.signInEmail({ email: email.trim(), password });
         return;
+      }
+      if (signUpDisabled) {
+        throw new Error("Account creation is disabled for this instance.");
       }
       await authApi.signUpEmail({
         name: name.trim(),
@@ -64,7 +81,7 @@ export function AuthPage() {
     password.trim().length > 0 &&
     (mode === "sign_in" || (name.trim().length > 0 && password.trim().length >= 8));
 
-  if (isSessionLoading) {
+  if (isSessionLoading || isHealthLoading) {
     return (
       <div className="fixed inset-0 flex items-center justify-center">
         <p className="text-sm text-muted-foreground">Loading…</p>
@@ -159,19 +176,21 @@ export function AuthPage() {
             </Button>
           </form>
 
-          <div className="mt-5 text-sm text-muted-foreground">
-            {mode === "sign_in" ? "Need an account?" : "Already have an account?"}{" "}
-            <button
-              type="button"
-              className="font-medium text-foreground underline underline-offset-2"
-              onClick={() => {
-                setError(null);
-                setMode(mode === "sign_in" ? "sign_up" : "sign_in");
-              }}
-            >
-              {mode === "sign_in" ? "Create one" : "Sign in"}
-            </button>
-          </div>
+          {!signUpDisabled && (
+            <div className="mt-5 text-sm text-muted-foreground">
+              {mode === "sign_in" ? "Need an account?" : "Already have an account?"}{" "}
+              <button
+                type="button"
+                className="font-medium text-foreground underline underline-offset-2"
+                onClick={() => {
+                  setError(null);
+                  setMode(mode === "sign_in" ? "sign_up" : "sign_in");
+                }}
+              >
+                {mode === "sign_in" ? "Create one" : "Sign in"}
+              </button>
+            </div>
+          )}
         </div>
       </div>
 

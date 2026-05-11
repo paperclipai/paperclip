@@ -125,6 +125,7 @@ export async function createApp(
     allowedHostnames: string[];
     bindHost: string;
     authReady: boolean;
+    authDisableSignUp: boolean;
     companyDeletionEnabled: boolean;
     instanceId?: string;
     hostVersion?: string;
@@ -184,6 +185,7 @@ export async function createApp(
       deploymentMode: opts.deploymentMode,
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
+      authDisableSignUp: opts.authDisableSignUp,
       companyDeletionEnabled: opts.companyDeletionEnabled,
     }),
   );

@@ -84,6 +84,7 @@ describe("GET /health dev-server supervisor access", () => {
           deploymentMode: "authenticated",
           deploymentExposure: "private",
           authReady: true,
+          authDisableSignUp: false,
           companyDeletionEnabled: true,
         }),
       );
@@ -98,6 +99,9 @@ describe("GET /health dev-server supervisor access", () => {
         deploymentMode: "authenticated",
         bootstrapStatus: "ready",
         bootstrapInviteActive: false,
+        features: {
+          authDisableSignUp: false,
+        },
         devServer: {
           enabled: true,
           restartRequired: true,
