@@ -49,23 +49,26 @@ describe("mission-control workflow contracts", () => {
     });
 
     expect(policy.requireValidatorPass).toBe(true);
+    expect(policy.maxDecisionAgeMinutes).toBeNull();
     expect(policy.reportToUserOnlyOn).toEqual(expect.arrayContaining(["goal_reached", "approval_required"]));
     expect(policy.ceoCanApprove).toEqual(expect.arrayContaining(["local_code_changes", "dry_runs"]));
     expect(policy.userApprovalRequired).toEqual(expect.arrayContaining(["live_external_action", "production_deploy"]));
 
-    expect(
-      missionControlCeoLoopDecisionSchema.parse({
-        version: 1,
-        iteration: 1,
-        decision: "next_iteration",
-        rationale: "Validation passed; continue with the next safe internal task.",
-        nextTask: {
-          title: "Add validator template",
-          acceptanceCriteria: ["validator-report document is produced"],
-          safeToRunWithoutUserApproval: true,
-        },
-      }).nextTask?.safeToRunWithoutUserApproval,
-    ).toBe(true);
+    const decision = missionControlCeoLoopDecisionSchema.parse({
+      version: 1,
+      iteration: 1,
+      decision: "next_iteration",
+      decisionWrittenAt: "2026-05-11T08:30:00.000Z",
+      rationale: "Validation passed; continue with the next safe internal task.",
+      nextTask: {
+        title: "Add validator template",
+        acceptanceCriteria: ["validator-report document is produced"],
+        safeToRunWithoutUserApproval: true,
+      },
+    });
+
+    expect(decision.nextTask?.safeToRunWithoutUserApproval).toBe(true);
+    expect(decision.decisionWrittenAt).toBe("2026-05-11T08:30:00.000Z");
   });
 
   it("accepts PASS / REQUEST_CHANGES / ESCALATE validator reports", () => {
@@ -297,7 +300,7 @@ describe("mission-control completion gate", () => {
     ).toMatchObject({ allowed: false, reason: "runtime_exceeded", requiredApprovalGate: "board" });
   });
 
-  it("rejects stale autonomous loop decisions before creating another iteration", () => {
+  it("rejects older autonomous loop decisions before creating another iteration", () => {
     const executionPolicy = {
       missionControl: missionControlIssuePolicySchema.parse({
         enabled: true,
@@ -337,9 +340,99 @@ describe("mission-control completion gate", () => {
       }),
     ).toMatchObject({
       allowed: false,
-      reason: "ceo_loop_iteration_mismatch",
+      reason: "ceo_loop_decision_stale",
       requiredApprovalGate: "board",
       ceoLoopDecision: { iteration: 2, decision: "next_iteration" },
+    });
+  });
+
+  it("rejects future autonomous loop decisions with a separate repair reason", () => {
+    const executionPolicy = {
+      missionControl: missionControlIssuePolicySchema.parse({
+        enabled: true,
+        riskClass: "high",
+        autonomousLoop: {
+          enabled: true,
+          controller: "CEO",
+          goal: "Build the autonomous creator traffic workflow",
+          startedAt: "2026-05-11T08:00:00.000Z",
+          iteration: 3,
+          maxIterations: 5,
+          maxRuntimeHours: 24,
+        },
+      }),
+    };
+
+    expect(
+      evaluateMissionControlAutonomousLoopGate({
+        issue: { priority: "high", executionPolicy },
+        documents: [
+          {
+            key: MISSION_CONTROL_AUTONOMOUS_LOOP_DOCUMENT_KEY,
+            body: JSON.stringify({
+              version: 1,
+              iteration: 4,
+              decision: "goal_reached",
+              rationale: "This decision belongs to a future loop iteration and must not be laundered.",
+            }),
+          },
+        ],
+        now: "2026-05-11T09:30:00.000Z",
+      }),
+    ).toMatchObject({
+      allowed: false,
+      reason: "ceo_loop_decision_from_future",
+      requiredApprovalGate: "board",
+      ceoLoopDecision: { iteration: 4, decision: "goal_reached" },
+    });
+  });
+
+  it("rejects same-iteration CEO decisions that exceed the configured freshness window", () => {
+    const executionPolicy = {
+      missionControl: missionControlIssuePolicySchema.parse({
+        enabled: true,
+        riskClass: "high",
+        autonomousLoop: {
+          enabled: true,
+          controller: "CEO",
+          goal: "Build the autonomous creator traffic workflow",
+          startedAt: "2026-05-11T08:00:00.000Z",
+          iteration: 3,
+          maxIterations: 5,
+          maxRuntimeHours: 24,
+          maxDecisionAgeMinutes: 30,
+        },
+      }),
+    };
+
+    expect(
+      evaluateMissionControlAutonomousLoopGate({
+        issue: { priority: "high", executionPolicy },
+        documents: [
+          {
+            key: MISSION_CONTROL_AUTONOMOUS_LOOP_DOCUMENT_KEY,
+            updatedAt: "2026-05-11T08:45:00.000Z",
+            body: JSON.stringify({
+              version: 1,
+              iteration: 3,
+              decision: "next_iteration",
+              decisionWrittenAt: "2026-05-11T08:45:00.000Z",
+              rationale: "This same-iteration decision has aged out.",
+              nextTask: {
+                title: "Aged-out child work",
+                acceptanceCriteria: ["should not create work from stale decision age"],
+                safeToRunWithoutUserApproval: true,
+              },
+            }),
+          },
+        ],
+        now: "2026-05-11T09:30:00.000Z",
+      }),
+    ).toMatchObject({
+      allowed: false,
+      reason: "ceo_loop_decision_stale",
+      requiredApprovalGate: "board",
+      ceoLoopDecision: { iteration: 3, decision: "next_iteration", decisionWrittenAt: "2026-05-11T08:45:00.000Z" },
     });
   });
 

@@ -138,6 +138,7 @@ export type AutonomousGoalLoopState =
       currentDecision: {
         iteration: number;
         decision: MissionControlCeoLoopDecision["decision"];
+        decisionWrittenAt: string | null;
         rationale: string;
         nextTaskTitle: string | null;
         hardGate: MissionControlCeoLoopDecision["hardGate"];
@@ -161,6 +162,8 @@ export type AutonomousGoalLoopState =
           | "repair_loop_decision"
           | "adjust_loop_limits_or_close_goal"
           | "manual_review";
+        owner: "none" | "operator" | "user";
+        metricKey: string | null;
         userVisible: boolean;
       };
       iterations: Array<{
@@ -226,15 +229,33 @@ function progressLabelFor(iteration: number, maxIterations: number | null) {
   return maxIterations ? `${iteration} / ${maxIterations}` : `${iteration}`;
 }
 
+function isDecisionRepairReason(reason: string) {
+  return reason === "invalid_ceo_loop_decision" ||
+    reason === "ceo_loop_iteration_mismatch" ||
+    reason === "ceo_loop_decision_stale" ||
+    reason === "ceo_loop_decision_from_future";
+}
+
+function safetyMetricKeyForReason(reason: string) {
+  if (reason === "ceo_loop_decision_stale" || reason === "ceo_loop_decision_from_future") {
+    return "autonomous_loop_decision_freshness_failure";
+  }
+  if (reason === "ceo_loop_iteration_mismatch") return "autonomous_loop_decision_iteration_mismatch";
+  if (reason === "invalid_ceo_loop_decision") return "autonomous_loop_decision_repair_required";
+  return null;
+}
+
 function supervisorFor(input: {
   reason: string;
   decision: MissionControlCeoLoopDecision | null;
 }): Extract<AutonomousGoalLoopState, { enabled: true }>["supervisor"] {
-  if (input.reason === "invalid_ceo_loop_decision" || input.reason === "ceo_loop_iteration_mismatch") {
+  if (isDecisionRepairReason(input.reason)) {
     return {
       attentionRequired: true,
       reason: input.reason,
       recoveryAction: "repair_loop_decision",
+      owner: "operator",
+      metricKey: safetyMetricKeyForReason(input.reason),
       userVisible: false,
     };
   }
@@ -243,6 +264,8 @@ function supervisorFor(input: {
       attentionRequired: true,
       reason: "approval_required",
       recoveryAction: "request_user_approval",
+      owner: "user",
+      metricKey: null,
       userVisible: true,
     };
   }
@@ -251,6 +274,8 @@ function supervisorFor(input: {
       attentionRequired: true,
       reason: input.reason,
       recoveryAction: "adjust_loop_limits_or_close_goal",
+      owner: "operator",
+      metricKey: "autonomous_loop_limit_attention",
       userVisible: true,
     };
   }
@@ -259,6 +284,8 @@ function supervisorFor(input: {
       attentionRequired: true,
       reason: input.reason,
       recoveryAction: "manual_review",
+      owner: "operator",
+      metricKey: "autonomous_loop_manual_review_required",
       userVisible: false,
     };
   }
@@ -267,6 +294,8 @@ function supervisorFor(input: {
       attentionRequired: true,
       reason: "blocked",
       recoveryAction: "resolve_blocker",
+      owner: "user",
+      metricKey: null,
       userVisible: true,
     };
   }
@@ -275,6 +304,8 @@ function supervisorFor(input: {
       attentionRequired: true,
       reason: "failed",
       recoveryAction: "manual_recovery",
+      owner: "user",
+      metricKey: null,
       userVisible: true,
     };
   }
@@ -282,6 +313,8 @@ function supervisorFor(input: {
     attentionRequired: false,
     reason: null,
     recoveryAction: "none",
+    owner: "none",
+    metricKey: null,
     userVisible: false,
   };
 }
@@ -291,7 +324,7 @@ function statusFor(input: {
   decision: MissionControlCeoLoopDecision | null;
   matchingChildIssue: AutonomousGoalLoopChildIssue | null;
 }): Extract<AutonomousGoalLoopState, { enabled: true }>["status"] {
-  if (input.reason === "invalid_ceo_loop_decision" || input.reason === "ceo_loop_iteration_mismatch") return "failed";
+  if (isDecisionRepairReason(input.reason)) return "failed";
   if (input.reason === "approval_required" || input.decision?.decision === "approval_required") return "approval_required";
   if (input.decision?.decision === "goal_reached") return "goal_reached";
   if (input.decision?.decision === "blocked") return "blocked";
@@ -363,6 +396,7 @@ export function buildAutonomousGoalLoopState(input: {
       ? {
           iteration: decision.iteration,
           decision: decision.decision,
+          decisionWrittenAt: decision.decisionWrittenAt ?? null,
           rationale: decision.rationale,
           nextTaskTitle: decision.nextTask?.title ?? null,
           hardGate: decision.hardGate,
@@ -488,6 +522,7 @@ export function buildAutonomousGoalLoopContinuationPlan(input: {
   const gate = evaluateMissionControlCompletionGate({
     issue: input.issue,
     documents: input.documents,
+    now: input.now,
   });
 
   if (!gate.enabled || !gate.policy?.autonomousLoop?.enabled) {
@@ -511,7 +546,7 @@ export function buildAutonomousGoalLoopContinuationPlan(input: {
     });
   }
 
-  if (gate.reason === "invalid_ceo_loop_decision" || gate.reason === "ceo_loop_iteration_mismatch") {
+  if (isDecisionRepairReason(gate.reason)) {
     return nonCreatePlan({
       action: "blocked",
       reason: gate.reason,

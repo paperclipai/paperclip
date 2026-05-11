@@ -109,6 +109,7 @@ export const missionControlAutonomousLoopPolicySchema = z
     iteration: z.number().int().nonnegative().max(1000).optional().default(0),
     maxIterations: z.number().int().positive().max(100).optional().nullable().default(null),
     maxRuntimeHours: z.number().positive().max(24 * 90).optional().nullable().default(null),
+    maxDecisionAgeMinutes: z.number().positive().max(24 * 90 * 60).optional().nullable().default(null),
     maxBudgetCents: z.number().int().positive().optional().nullable().default(null),
     requireValidatorPass: z.boolean().optional().default(true),
     reportToUserOnlyOn: z
@@ -189,6 +190,7 @@ export const missionControlCeoLoopDecisionSchema = z
     version: z.literal(1),
     iteration: z.number().int().nonnegative().max(1000),
     decision: z.enum(MISSION_CONTROL_AUTONOMOUS_LOOP_DECISIONS),
+    decisionWrittenAt: z.string().datetime().optional().nullable().default(null),
     rationale: z.string().trim().min(1).max(4000),
     nextTask: missionControlCeoLoopNextTaskSchema.optional().nullable().default(null),
     hardGate: missionControlCeoLoopHardGateSchema.optional().nullable().default(null),
@@ -327,6 +329,7 @@ export type MissionControlCompletionGateIssue = {
 export type MissionControlCompletionGateDocument = {
   key: string;
   body?: string | null;
+  updatedAt?: string | Date | null;
 };
 
 export type MissionControlAutonomousLoopGateReason =
@@ -334,6 +337,8 @@ export type MissionControlAutonomousLoopGateReason =
   | "missing_ceo_loop_decision"
   | "invalid_ceo_loop_decision"
   | "ceo_loop_iteration_mismatch"
+  | "ceo_loop_decision_stale"
+  | "ceo_loop_decision_from_future"
   | "runtime_exceeded"
   | "iteration_exceeded"
   | "approval_required"
@@ -367,6 +372,8 @@ export type MissionControlCompletionGateResult = {
     | "missing_ceo_loop_decision"
     | "invalid_ceo_loop_decision"
     | "ceo_loop_iteration_mismatch"
+    | "ceo_loop_decision_stale"
+    | "ceo_loop_decision_from_future"
     | "runtime_exceeded"
     | "iteration_exceeded"
     | "approval_required"
@@ -442,6 +449,11 @@ function parseCeoLoopDecisionFromBody(
   return INVALID_CEO_LOOP_DECISION;
 }
 
+function dateValueMs(value: string | Date | null | undefined): number {
+  if (value instanceof Date) return value.getTime();
+  return value ? Date.parse(value) : Number.NaN;
+}
+
 export function evaluateMissionControlAutonomousLoopGate(input: {
   issue: MissionControlCompletionGateIssue;
   documents: MissionControlCompletionGateDocument[];
@@ -493,7 +505,8 @@ export function evaluateMissionControlAutonomousLoopGate(input: {
   }
 
   const decisionContinuesLoop = ceoLoopDecision.decision === "next_iteration";
-  if (ceoLoopDecision.iteration !== autonomousLoopPolicy.iteration) {
+  const nowMs = dateValueMs(input.now ?? new Date());
+  if (ceoLoopDecision.iteration < autonomousLoopPolicy.iteration) {
     return {
       allowed: false,
       enabled: true,
@@ -502,11 +515,66 @@ export function evaluateMissionControlAutonomousLoopGate(input: {
       missingDocumentKeys: [],
       ceoLoopDecision,
       requiredApprovalGate: "board",
-      reason: "ceo_loop_iteration_mismatch",
+      reason: "ceo_loop_decision_stale",
     };
   }
 
-  const nowMs = input.now instanceof Date ? input.now.getTime() : Date.parse(input.now ?? new Date().toISOString());
+  if (ceoLoopDecision.iteration > autonomousLoopPolicy.iteration) {
+    return {
+      allowed: false,
+      enabled: true,
+      policy,
+      autonomousLoopPolicy,
+      missingDocumentKeys: [],
+      ceoLoopDecision,
+      requiredApprovalGate: "board",
+      reason: "ceo_loop_decision_from_future",
+    };
+  }
+
+  if (autonomousLoopPolicy.maxDecisionAgeMinutes) {
+    const decisionDocumentUpdatedAtMs = dateValueMs(decisionDocument.updatedAt);
+    if (!Number.isFinite(nowMs) || !Number.isFinite(decisionDocumentUpdatedAtMs)) {
+      return {
+        allowed: false,
+        enabled: true,
+        policy,
+        autonomousLoopPolicy,
+        missingDocumentKeys: [],
+        ceoLoopDecision,
+        requiredApprovalGate: "board",
+        reason: "ceo_loop_decision_stale",
+      };
+    }
+
+    const decisionAgeMs = nowMs - decisionDocumentUpdatedAtMs;
+    if (decisionAgeMs < 0) {
+      return {
+        allowed: false,
+        enabled: true,
+        policy,
+        autonomousLoopPolicy,
+        missingDocumentKeys: [],
+        ceoLoopDecision,
+        requiredApprovalGate: "board",
+        reason: "ceo_loop_decision_from_future",
+      };
+    }
+
+    if (decisionAgeMs > autonomousLoopPolicy.maxDecisionAgeMinutes * 60 * 1000) {
+      return {
+        allowed: false,
+        enabled: true,
+        policy,
+        autonomousLoopPolicy,
+        missingDocumentKeys: [],
+        ceoLoopDecision,
+        requiredApprovalGate: "board",
+        reason: "ceo_loop_decision_stale",
+      };
+    }
+  }
+
   const startedAtMs = autonomousLoopPolicy.startedAt ? Date.parse(autonomousLoopPolicy.startedAt) : Number.NaN;
   if (
     decisionContinuesLoop &&
@@ -597,6 +665,7 @@ export function evaluateMissionControlAutonomousLoopGate(input: {
 export function evaluateMissionControlCompletionGate(input: {
   issue: MissionControlCompletionGateIssue;
   documents: MissionControlCompletionGateDocument[];
+  now?: string | Date;
 }): MissionControlCompletionGateResult {
   const policy = readMissionControlPolicy(input.issue.executionPolicy);
   if (!policy?.enabled) {
@@ -651,6 +720,7 @@ export function evaluateMissionControlCompletionGate(input: {
     issue: input.issue,
     documents: input.documents,
     validatorVerdict,
+    now: input.now,
   });
   if (autonomousLoopGate.enabled && !autonomousLoopGate.allowed) {
     return {

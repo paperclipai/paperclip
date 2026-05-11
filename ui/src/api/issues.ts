@@ -37,6 +37,7 @@ export type AutonomousLoopState = {
   currentDecision?: {
     iteration?: number | null;
     decision?: string | null;
+    decisionWrittenAt?: string | null;
     rationale?: string | null;
     nextTaskTitle?: string | null;
   } | null;
@@ -56,6 +57,8 @@ export type AutonomousLoopState = {
     attentionRequired?: boolean;
     reason?: string | null;
     recoveryAction?: string | null;
+    owner?: "none" | "operator" | "user" | string | null;
+    metricKey?: string | null;
     userVisible?: boolean | null;
   } | null;
   observability?: {

@@ -37,12 +37,15 @@ const parentIssue = {
   },
 };
 
-function missionDocsWithDecision(decision: Record<string, unknown>) {
+function missionDocsWithDecision(
+  decision: Record<string, unknown>,
+  options: { decisionUpdatedAt?: string } = {},
+) {
   return [
     { key: "validation-contract", body: "objective/pass criteria" },
     { key: "worker-handoff", body: "completed/checks" },
     { key: "validator-report", body: "Verdict: PASS" },
-    { key: "ceo-loop-decision", body: JSON.stringify(decision) },
+    { key: "ceo-loop-decision", body: JSON.stringify(decision), updatedAt: options.decisionUpdatedAt },
   ];
 }
 
@@ -196,7 +199,7 @@ describe("autonomous goal loop continuation planning", () => {
     });
   });
 
-  it("blocks stale decisions whose iteration no longer matches the loop policy", () => {
+  it("blocks older decisions whose iteration no longer matches the loop policy", () => {
     const staleIterationIssue = {
       ...parentIssue,
       executionPolicy: {
@@ -229,7 +232,82 @@ describe("autonomous goal loop continuation planning", () => {
 
     expect(plan).toMatchObject({
       action: "blocked",
-      reason: "ceo_loop_iteration_mismatch",
+      reason: "ceo_loop_decision_stale",
+      reportToUser: false,
+    });
+  });
+
+  it("blocks future decisions whose iteration is ahead of the loop policy", () => {
+    const futureIterationIssue = {
+      ...parentIssue,
+      executionPolicy: {
+        missionControl: {
+          ...parentIssue.executionPolicy.missionControl,
+          autonomousLoop: {
+            ...parentIssue.executionPolicy.missionControl.autonomousLoop,
+            iteration: 1,
+          },
+        },
+      },
+    };
+
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: futureIterationIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 2,
+        decision: "goal_reached",
+        rationale: "This goal reached decision belongs to a future loop iteration.",
+        evidence: ["validator-report PASS"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "ceo_loop_decision_from_future",
+      reportToUser: false,
+    });
+  });
+
+  it("blocks same-iteration decisions that age past the loop freshness policy", () => {
+    const freshnessBoundIssue = {
+      ...parentIssue,
+      executionPolicy: {
+        missionControl: {
+          ...parentIssue.executionPolicy.missionControl,
+          autonomousLoop: {
+            ...parentIssue.executionPolicy.missionControl.autonomousLoop,
+            maxDecisionAgeMinutes: 30,
+          },
+        },
+      },
+    };
+
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: freshnessBoundIssue,
+      documents: missionDocsWithDecision(
+        {
+          version: 1,
+          iteration: 1,
+          decision: "next_iteration",
+          decisionWrittenAt: "2026-05-11T08:00:00.000Z",
+          rationale: "This same-iteration next step is too old to trust.",
+          nextTask: {
+            title: "Create too-old child",
+            acceptanceCriteria: ["should not be created from stale decision age"],
+            safeToRunWithoutUserApproval: true,
+          },
+          evidence: ["validator-report PASS"],
+        },
+        { decisionUpdatedAt: "2026-05-11T08:00:00.000Z" },
+      ),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "ceo_loop_decision_stale",
       reportToUser: false,
     });
   });
@@ -262,7 +340,7 @@ describe("autonomous goal loop continuation planning", () => {
 
     expect(plan).toMatchObject({
       action: "blocked",
-      reason: "ceo_loop_iteration_mismatch",
+      reason: "ceo_loop_decision_stale",
       reportToUser: false,
     });
   });
@@ -393,8 +471,10 @@ describe("autonomous goal loop continuation planning", () => {
       status: "failed",
       supervisor: {
         attentionRequired: true,
-        reason: "ceo_loop_iteration_mismatch",
+        reason: "ceo_loop_decision_stale",
         recoveryAction: "repair_loop_decision",
+        owner: "operator",
+        metricKey: "autonomous_loop_decision_freshness_failure",
         userVisible: false,
       },
     });
