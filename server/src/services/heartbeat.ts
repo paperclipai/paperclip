@@ -501,6 +501,21 @@ export function filterValidSkillMentionIds(ids: string[]): string[] {
   return ids.filter((id) => isUuidLike(id));
 }
 
+// SIE-441: a single failed/timed_out heartbeat run must not transition the
+// assigned agent to `status: error`. Errors belong to the run that produced
+// them, not the agent; otherwise one bad recovery payload (e.g. the uuid
+// crash filtered above) takes the agent's entire inbox offline until a
+// human resets it. After a run finishes, we settle the agent back to `idle`
+// when nothing else is running, regardless of outcome. The `paused` /
+// `terminated` statuses are preserved by the caller before reaching here.
+export function computeAgentStatusAfterRun(input: {
+  runningCount: number;
+  outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
+}): "running" | "idle" {
+  if (input.runningCount > 0) return "running";
+  return "idle";
+}
+
 function leaseReleaseStatusForRunStatus(
   status: string | null | undefined,
 ): Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed"> {
@@ -6199,12 +6214,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const isFirstHeartbeat = !existing.lastHeartbeatAt;
 
     const runningCount = await countRunningRunsForAgent(agentId);
-    const nextStatus =
-      runningCount > 0
-        ? "running"
-        : outcome === "succeeded" || outcome === "cancelled"
-          ? "idle"
-          : "error";
+    const nextStatus = computeAgentStatusAfterRun({
+      runningCount,
+      outcome,
+    });
 
     const updated = await db
       .update(agents)

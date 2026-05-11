@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { buildSkillMentionHref } from "@paperclipai/shared";
 import {
   applyRunScopedMentionedSkillKeys,
+  computeAgentStatusAfterRun,
   extractMentionedSkillIdsFromSources,
   filterValidSkillMentionIds,
   resolveExecutionRunAdapterConfig,
@@ -153,6 +154,37 @@ describe("filterValidSkillMentionIds (SIE-441 regression)", () => {
       ]),
     ).toEqual([]);
   });
+});
+
+describe("computeAgentStatusAfterRun (SIE-441 regression)", () => {
+  // Before the fix `finalizeAgentStatus` flipped the agent to `status: error`
+  // whenever the most recent run failed or timed out. That meant one bad
+  // recovery payload (e.g. the uuid crash above) took the entire CTO agent
+  // offline, blocking ALL of its other heartbeats until a human reset it.
+  // Errors belong to runs; the agent must stay invokable.
+  it.each(["failed", "timed_out"] as const)(
+    "does not flip the agent to error after a single %s run",
+    (outcome) => {
+      expect(
+        computeAgentStatusAfterRun({ runningCount: 0, outcome }),
+      ).toBe("idle");
+    },
+  );
+
+  it("stays running while other runs are still in flight", () => {
+    expect(
+      computeAgentStatusAfterRun({ runningCount: 2, outcome: "failed" }),
+    ).toBe("running");
+  });
+
+  it.each(["succeeded", "cancelled"] as const)(
+    "settles back to idle after a %s run with no other runs",
+    (outcome) => {
+      expect(
+        computeAgentStatusAfterRun({ runningCount: 0, outcome }),
+      ).toBe("idle");
+    },
+  );
 });
 
 describe("applyRunScopedMentionedSkillKeys", () => {
