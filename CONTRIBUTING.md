@@ -51,6 +51,10 @@ All tests must pass before a PR can be merged. Run them locally first and verify
 
 We use [Greptile](https://greptile.com) for automated code review. Your PR must achieve a **5/5 Greptile score** with **all Greptile comments addressed** before it can be merged. If Greptile leaves comments, fix or respond to each one and request a re-review.
 
+### GitHub Copilot Delegation
+
+GitHub Copilot may be used for small, well-scoped issues and review-thread fixes when the contributor follows the [GitHub Copilot Delegation Workflow](doc/GITHUB-COPILOT-WORKFLOW.md). Copilot-authored PRs still require the full PR template, targeted verification, CI, Greptile 5/5, and human or Paperclip review before merge.
+
 ## Feature Contributions
 
 We actively manage the core Paperclip feature roadmap.
