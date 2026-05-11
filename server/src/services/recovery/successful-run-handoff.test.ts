@@ -131,6 +131,13 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("hasNonTerminalChildren guard fires before hasOpenRecoveryIssue", () => {
+    expect(decide({ hasNonTerminalChildren: true, hasOpenRecoveryIssue: true })).toEqual({
+      kind: "skip",
+      reason: "delegated non-terminal children own the active execution path",
+    });
+  });
+
   it("does not queue when a successful run has no progress signal", () => {
     expect(decide({ livenessState: null, detectedProgressSummary: null })).toEqual({
       kind: "skip",

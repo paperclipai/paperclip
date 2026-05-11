@@ -324,8 +324,10 @@ export function decideSuccessfulRunHandoff(input: {
   hasQueuedWake: boolean;
   hasPendingInteractionOrApproval: boolean;
   hasExplicitBlockerPath: boolean;
-  /** True when the issue has at least one child issue in a non-terminal status (todo, in_progress, in_review, blocked).
-   * Indicates the run ended a delegation heartbeat — the orchestrator stays in_progress while children are in flight. */
+  /** True when the issue has at least one child issue in an actively-progressing status (todo, in_progress, in_review).
+   * Indicates the run ended a delegation heartbeat — the orchestrator stays in_progress while children are in flight.
+   * "blocked" is intentionally excluded: a blocked child has no guaranteed forward-progress path and should not
+   * permanently suppress corrective wakes on the parent. */
   hasNonTerminalChildren: boolean;
   hasOpenRecoveryIssue: boolean;
   hasPauseHold: boolean;

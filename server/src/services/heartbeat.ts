@@ -4177,7 +4177,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             and(
               eq(issues.companyId, issue.companyId),
               eq(issues.parentId, issue.id),
-              inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
+              inArray(issues.status, ["todo", "in_progress", "in_review"]),
               isNull(issues.hiddenAt),
             ),
           )
