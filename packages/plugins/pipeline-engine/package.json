@@ -6,7 +6,8 @@
   "description": "Deterministic YAML-defined state-machine pipeline engine for Paperclip",
   "scripts": {
     "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
-    "build": "node ./esbuild.config.mjs",
+    "build": "node ./esbuild.config.mjs && node ./scripts/build-ui.mjs",
+    "build:ui": "node ./scripts/build-ui.mjs",
     "dev": "node ./esbuild.config.mjs --watch",
     "test": "vitest run --config ./vitest.config.ts",
     "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
@@ -20,14 +21,15 @@
   "license": "MIT",
   "dependencies": {
     "@paperclipai/plugin-sdk": "workspace:*",
+    "@xyflow/react": "^12.0.0",
     "ajv": "^8.17.0",
+    "dagre": "^0.8.5",
     "handlebars": "^4.7.8",
-    "js-yaml": "^4.1.0",
     "jsonata": "^2.0.5"
   },
   "devDependencies": {
     "@paperclipai/shared": "workspace:*",
-    "@types/js-yaml": "^4.0.9",
+    "@types/dagre": "^0.7.52",
     "@types/node": "^24.6.0",
     "esbuild": "^0.27.3",
     "typescript": "^5.7.3",

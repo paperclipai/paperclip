@@ -3,9 +3,9 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 const manifest: PaperclipPluginManifestV1 = {
   id: "paperclipai.pipeline-engine",
   apiVersion: 1,
-  version: "0.1.0",
+  version: "0.2.0",
   displayName: "Pipeline Engine",
-  description: "Deterministic YAML-defined state-machine pipeline engine for orchestrating agent work.",
+  description: "Deterministic pipeline engine for orchestrating agent work.",
   author: "Paperclip",
   categories: ["automation"],
   capabilities: [
@@ -30,9 +30,14 @@ const manifest: PaperclipPluginManifestV1 = {
     "plugin.state.read",
     "plugin.state.write",
     "agents.read",
+    "ui.page.register",
+    "ui.detailTab.register",
+    "ui.sidebar.register",
+    "ui.dashboardWidget.register",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
+    ui: "./dist/ui",
   },
   instanceConfigSchema: {
     type: "object",
@@ -49,12 +54,6 @@ const manifest: PaperclipPluginManifestV1 = {
         description: "Maps label names to pipeline definition names",
         additionalProperties: { type: "string" },
       },
-      pipelines_dir: {
-        type: "string",
-        title: "Pipelines Directory",
-        description: "Path to YAML pipeline definitions (relative to workspace root)",
-        default: "pipelines",
-      },
     },
     required: ["trigger_labels"],
   },
@@ -66,6 +65,14 @@ const manifest: PaperclipPluginManifestV1 = {
     namespaceSlug: "pipeline_engine",
     migrationsDir: "migrations",
     coreReadTables: ["issues"],
+  },
+  ui: {
+    slots: [
+      { type: "page", id: "pipelines-page", displayName: "Pipelines", exportName: "PipelinesPage", routePath: "pipelines" },
+      { type: "detailTab", id: "pipeline-runs-tab", displayName: "Pipeline Runs", exportName: "PipelineRunsTab", entityTypes: ["issue"] },
+      { type: "sidebar", id: "pipelines-sidebar", displayName: "Pipelines", exportName: "PipelinesSidebar" },
+      { type: "dashboardWidget", id: "pipeline-health", displayName: "Pipeline Health", exportName: "PipelineHealthWidget" },
+    ],
   },
 };
 
