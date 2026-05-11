@@ -335,9 +335,13 @@ async function postAuditComment(toolName, parsed, blocked) {
   };
   if (runId) headers["X-Paperclip-Run-Id"] = runId;
 
+  // Bound the audit-log POST so a slow/unreachable Paperclip API can't
+  // hold up the agent's gh/git invocation indefinitely. The outer .catch
+  // in reportBlocked swallows the timeout error and the block still stands.
   await fetch(`${apiUrl.replace(/\/$/, "")}/api/issues/${encodeURIComponent(taskId)}/comments`, {
     method: "POST",
     headers,
     body,
+    signal: AbortSignal.timeout(5_000),
   });
 }
