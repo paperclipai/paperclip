@@ -206,6 +206,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       driverKey: "sandbox",
       companyId,
       environmentId,
+      issueId: null,
       config: { template: "base" },
       runId: run!.id,
       workspaceMode: "shared_workspace",
@@ -215,6 +216,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
         driverKey: "sandbox",
         companyId,
         environmentId,
+        issueId: null,
         config: { template: "base" },
         providerLeaseId: "plugin-heartbeat-lease",
         leaseMetadata: expect.objectContaining({
@@ -421,6 +423,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       driverKey: "sandbox",
       companyId,
       environmentId: newEnvironmentId,
+      issueId,
       config: { template: "new" },
       runId: run!.id,
       workspaceMode: "shared_workspace",

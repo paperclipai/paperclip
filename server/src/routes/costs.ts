@@ -145,7 +145,8 @@ export function costRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const summary = await costs.issueTreeSummary(issue.companyId, issue.id);
+    const excludeRoot = req.query.excludeRoot === "true" || req.query.excludeRoot === "1";
+    const summary = await costs.issueTreeSummary(issue.companyId, issue.id, { excludeRoot });
     res.json(summary);
   });
 
