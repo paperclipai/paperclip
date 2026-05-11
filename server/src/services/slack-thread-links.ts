@@ -3,9 +3,10 @@ import type { Db } from "@paperclipai/db";
 import { slackThreadLinks } from "@paperclipai/db";
 
 /**
- * Sentinel thrown when an upsert would relink an existing (thread_ts, channel_id)
- * pair to a different Paperclip resource. The route maps this to HTTP 409 so
- * the caller can see both the existing and requested bindings.
+ * Sentinel thrown when an upsert would relink an existing
+ * (company_id, thread_ts, channel_id) tuple to a different Paperclip resource.
+ * The route maps this to HTTP 409 so the caller can see both the existing and
+ * requested bindings.
  */
 export class SlackThreadLinkConflictError extends Error {
   readonly code = "SLACK_THREAD_LINK_CONFLICT" as const;
@@ -22,6 +23,7 @@ export class SlackThreadLinkConflictError extends Error {
 
 export interface SlackThreadLink {
   id: string;
+  companyId: string;
   threadTs: string;
   channelId: string;
   paperclipResourceType: string;
@@ -30,6 +32,7 @@ export interface SlackThreadLink {
 }
 
 export interface SlackThreadLinkInput {
+  companyId: string;
   threadTs: string;
   channelId: string;
   paperclipResourceType: string;
@@ -39,15 +42,19 @@ export interface SlackThreadLinkInput {
 export function slackThreadLinkService(db: Db) {
   return {
     /**
-     * Idempotently link a Slack thread to a Paperclip resource.
+     * Idempotently link a Slack thread to a Paperclip resource within a single
+     * company tenant.
      *
      * - First write: inserts and returns `{ row, created: true }`.
      * - Repeat write with same binding: returns existing row with `created: false`.
-     * - Repeat write with a *different* binding for the same (threadTs, channelId):
-     *   throws `SlackThreadLinkConflictError` carrying the existing row.
+     * - Repeat write with a *different* binding for the same
+     *   (companyId, threadTs, channelId): throws `SlackThreadLinkConflictError`
+     *   carrying the existing row.
      *
      * Insert-then-detect avoids a TOCTOU read-before-write under concurrent
-     * Beacon + paperclip-slack-comms writers.
+     * Beacon + paperclip-slack-comms writers. The conflict target is scoped to
+     * `companyId` so a writer in one tenant cannot observe (via conflict
+     * errors) or relink another tenant's binding.
      */
     create: async (
       input: SlackThreadLinkInput,
@@ -56,7 +63,11 @@ export function slackThreadLinkService(db: Db) {
         .insert(slackThreadLinks)
         .values(input)
         .onConflictDoNothing({
-          target: [slackThreadLinks.threadTs, slackThreadLinks.channelId],
+          target: [
+            slackThreadLinks.companyId,
+            slackThreadLinks.threadTs,
+            slackThreadLinks.channelId,
+          ],
         })
         .returning();
 
@@ -69,6 +80,7 @@ export function slackThreadLinkService(db: Db) {
         .from(slackThreadLinks)
         .where(
           and(
+            eq(slackThreadLinks.companyId, input.companyId),
             eq(slackThreadLinks.threadTs, input.threadTs),
             eq(slackThreadLinks.channelId, input.channelId),
           ),
@@ -93,19 +105,28 @@ export function slackThreadLinkService(db: Db) {
     },
 
     /**
-     * Look up a Slack thread's Paperclip binding by thread timestamp.
+     * Look up a Slack thread's Paperclip binding within a single company tenant.
      * When `channelId` is supplied, the lookup is exact (matches the unique
-     * key). When omitted, returns the most-recent binding for that thread_ts
-     * across channels — sufficient because Slack thread_ts values are unique
-     * per workspace channel and Beacon always knows the channel anyway.
+     * key). When omitted, returns the most-recent binding for that
+     * (companyId, threadTs) across channels — sufficient because Slack
+     * thread_ts values are unique per channel in a workspace and Beacon always
+     * knows the channel anyway.
      */
     findByThreadTs: async (
+      companyId: string,
       threadTs: string,
       channelId?: string,
     ): Promise<SlackThreadLink | null> => {
       const where = channelId
-        ? and(eq(slackThreadLinks.threadTs, threadTs), eq(slackThreadLinks.channelId, channelId))
-        : eq(slackThreadLinks.threadTs, threadTs);
+        ? and(
+            eq(slackThreadLinks.companyId, companyId),
+            eq(slackThreadLinks.threadTs, threadTs),
+            eq(slackThreadLinks.channelId, channelId),
+          )
+        : and(
+            eq(slackThreadLinks.companyId, companyId),
+            eq(slackThreadLinks.threadTs, threadTs),
+          );
 
       const [row] = await db
         .select()

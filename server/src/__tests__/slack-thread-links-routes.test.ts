@@ -44,8 +44,12 @@ async function createApp(actor: any) {
   return app;
 }
 
+const companyId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+const otherCompanyId = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+
 const sampleRow = {
   id: "11111111-1111-1111-1111-111111111111",
+  companyId,
   threadTs: "1714492800.012345",
   channelId: "C0AKDLS6TQU",
   paperclipResourceType: "issue",
@@ -56,7 +60,7 @@ const sampleRow = {
 const agentActor = {
   type: "agent",
   agentId: "agent-1",
-  companyId: "company-1",
+  companyId,
   source: "agent_jwt",
 };
 const boardActor = {
@@ -64,7 +68,10 @@ const boardActor = {
   userId: "user-1",
   source: "session",
   isInstanceAdmin: false,
-  companyIds: ["company-1"],
+  companyIds: [companyId],
+  memberships: [
+    { companyId, membershipRole: "admin", status: "active" },
+  ],
 };
 const anonymousActor = { type: "none", source: "none" };
 
@@ -81,7 +88,7 @@ describe("slack thread link routes", () => {
   });
 
   describe("POST /api/slack/thread-links", () => {
-    it("creates a new link and returns 201", async () => {
+    it("creates a new link and returns 201 for an agent caller (companyId auto-derived)", async () => {
       mockSlackThreadLinkService.create.mockResolvedValue({ row: sampleRow, created: true });
       const app = await createApp(agentActor);
 
@@ -97,12 +104,88 @@ describe("slack thread link routes", () => {
       expect(res.status).toBe(201);
       expect(res.body.threadTs).toBe(sampleRow.threadTs);
       expect(res.body.paperclipResourceId).toBe(sampleRow.paperclipResourceId);
+      expect(res.body.companyId).toBe(companyId);
       expect(mockSlackThreadLinkService.create).toHaveBeenCalledWith({
+        companyId,
         threadTs: sampleRow.threadTs,
         channelId: sampleRow.channelId,
         paperclipResourceType: sampleRow.paperclipResourceType,
         paperclipResourceId: sampleRow.paperclipResourceId,
       });
+    });
+
+    it("creates a new link for a board caller when companyId is supplied and access allowed", async () => {
+      mockSlackThreadLinkService.create.mockResolvedValue({ row: sampleRow, created: true });
+      const app = await createApp(boardActor);
+
+      const res = await request(app)
+        .post("/api/slack/thread-links")
+        .send({
+          companyId,
+          threadTs: sampleRow.threadTs,
+          channelId: sampleRow.channelId,
+          paperclipResourceType: sampleRow.paperclipResourceType,
+          paperclipResourceId: sampleRow.paperclipResourceId,
+        });
+
+      expect(res.status).toBe(201);
+      expect(mockSlackThreadLinkService.create).toHaveBeenCalledWith({
+        companyId,
+        threadTs: sampleRow.threadTs,
+        channelId: sampleRow.channelId,
+        paperclipResourceType: sampleRow.paperclipResourceType,
+        paperclipResourceId: sampleRow.paperclipResourceId,
+      });
+    });
+
+    it("rejects a board caller that omits companyId with 403", async () => {
+      const app = await createApp(boardActor);
+
+      const res = await request(app)
+        .post("/api/slack/thread-links")
+        .send({
+          threadTs: sampleRow.threadTs,
+          channelId: sampleRow.channelId,
+          paperclipResourceType: sampleRow.paperclipResourceType,
+          paperclipResourceId: sampleRow.paperclipResourceId,
+        });
+
+      expect(res.status).toBe(403);
+      expect(mockSlackThreadLinkService.create).not.toHaveBeenCalled();
+    });
+
+    it("rejects a board caller without access to the requested company with 403", async () => {
+      const app = await createApp(boardActor);
+
+      const res = await request(app)
+        .post("/api/slack/thread-links")
+        .send({
+          companyId: otherCompanyId,
+          threadTs: sampleRow.threadTs,
+          channelId: sampleRow.channelId,
+          paperclipResourceType: sampleRow.paperclipResourceType,
+          paperclipResourceId: sampleRow.paperclipResourceId,
+        });
+
+      expect(res.status).toBe(403);
+      expect(mockSlackThreadLinkService.create).not.toHaveBeenCalled();
+    });
+
+    it("rejects an agent caller that smuggles a different companyId with 403", async () => {
+      const app = await createApp(agentActor);
+
+      const res = await request(app)
+        .post("/api/slack/thread-links")
+        .send({
+          companyId: otherCompanyId,
+          threadTs: sampleRow.threadTs,
+          channelId: sampleRow.channelId,
+          paperclipResourceType: sampleRow.paperclipResourceType,
+          paperclipResourceId: sampleRow.paperclipResourceId,
+        });
+
+      expect(res.status).toBe(403);
+      expect(mockSlackThreadLinkService.create).not.toHaveBeenCalled();
     });
 
     it("returns 200 (not 201) when the link already exists with the same binding", async () => {
@@ -192,7 +275,7 @@ describe("slack thread link routes", () => {
   });
 
   describe("GET /api/slack/thread-links/:ts", () => {
-    it("returns the link for an authenticated agent caller", async () => {
+    it("returns the link for an authenticated agent caller (companyId auto-scoped)", async () => {
       mockSlackThreadLinkService.findByThreadTs.mockResolvedValue(sampleRow);
       const app = await createApp(agentActor);
 
@@ -200,7 +283,9 @@ describe("slack thread link routes", () => {
 
       expect(res.status).toBe(200);
       expect(res.body.paperclipResourceId).toBe(sampleRow.paperclipResourceId);
+      expect(res.body.companyId).toBe(companyId);
       expect(mockSlackThreadLinkService.findByThreadTs).toHaveBeenCalledWith(
+        companyId,
         sampleRow.threadTs,
         undefined,
       );
@@ -211,11 +296,12 @@ describe("slack thread link routes", () => {
       const app = await createApp(boardActor);
 
       const res = await request(app).get(
-        `/api/slack/thread-links/${sampleRow.threadTs}?channel_id=${sampleRow.channelId}`,
+        `/api/slack/thread-links/${sampleRow.threadTs}?channel_id=${sampleRow.channelId}&company_id=${companyId}`,
       );
 
       expect(res.status).toBe(200);
       expect(mockSlackThreadLinkService.findByThreadTs).toHaveBeenCalledWith(
+        companyId,
         sampleRow.threadTs,
         sampleRow.channelId,
       );
@@ -236,6 +322,37 @@ describe("slack thread link routes", () => {
       const res = await request(app).get(`/api/slack/thread-links/${sampleRow.threadTs}`);
 
       expect(res.status).toBe(401);
+      expect(mockSlackThreadLinkService.findByThreadTs).not.toHaveBeenCalled();
+    });
+
+    it("rejects a board caller that omits company_id with 403", async () => {
+      const app = await createApp(boardActor);
+
+      const res = await request(app).get(`/api/slack/thread-links/${sampleRow.threadTs}`);
+
+      expect(res.status).toBe(403);
+      expect(mockSlackThreadLinkService.findByThreadTs).not.toHaveBeenCalled();
+    });
+
+    it("rejects a board caller without access to the requested company with 403", async () => {
+      const app = await createApp(boardActor);
+
+      const res = await request(app).get(
+        `/api/slack/thread-links/${sampleRow.threadTs}?company_id=${otherCompanyId}`,
+      );
+
+      expect(res.status).toBe(403);
+      expect(mockSlackThreadLinkService.findByThreadTs).not.toHaveBeenCalled();
+    });
+
+    it("rejects an agent caller that smuggles a different company_id with 403", async () => {
+      const app = await createApp(agentActor);
+
+      const res = await request(app).get(
+        `/api/slack/thread-links/${sampleRow.threadTs}?company_id=${otherCompanyId}`,
+      );
+
+      expect(res.status).toBe(403);
       expect(mockSlackThreadLinkService.findByThreadTs).not.toHaveBeenCalled();
     });
 

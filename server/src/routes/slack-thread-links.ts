@@ -1,9 +1,9 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
-import { conflict, notFound } from "../errors.js";
+import { conflict, forbidden, notFound } from "../errors.js";
 import { validate } from "../middleware/validate.js";
-import { assertAuthenticated } from "./authz.js";
+import { assertAuthenticated, assertCompanyAccess } from "./authz.js";
 import { slackThreadLinkService, SlackThreadLinkConflictError } from "../services/index.js";
 
 // Slack thread timestamps look like `1234567890.123456` — a unix time in seconds
@@ -17,7 +17,11 @@ const slackIdSchema = z
   .max(64)
   .regex(/^[A-Za-z0-9._-]+$/, "Must be alphanumeric with . _ -");
 
+// Optional `companyId` on the write body. Agents derive their tenant from the
+// authenticated actor; board callers (humans, support tooling) MUST supply it
+// explicitly and pass `assertCompanyAccess`.
 const createSchema = z.object({
+  companyId: z.string().uuid().optional(),
   threadTs: slackIdSchema,
   channelId: slackIdSchema,
   paperclipResourceType: z
@@ -31,7 +35,44 @@ const createSchema = z.object({
 
 const lookupQuerySchema = z.object({
   channel_id: slackIdSchema.optional(),
+  company_id: z.string().uuid().optional(),
 });
+
+/**
+ * Resolve and authorise the tenant for a slack-thread-links request.
+ *
+ * - agent actor: tenant is fixed by `req.actor.companyId`. Any explicit value
+ *   in the body/query must match — silently overriding would let a forged body
+ *   smuggle a different tenant if the auth middleware ever loosened.
+ * - board actor: `requestedCompanyId` is required, and the actor's company
+ *   memberships are checked via `assertCompanyAccess`.
+ *
+ * `req` already passed `assertAuthenticated` at the call site, so `type:"none"`
+ * is unreachable here.
+ */
+function resolveCompanyId(req: Request, requestedCompanyId: string | undefined): string {
+  if (req.actor.type === "agent") {
+    const agentCompanyId = req.actor.companyId;
+    if (!agentCompanyId) {
+      throw forbidden("Agent actor is missing a company binding");
+    }
+    if (requestedCompanyId && requestedCompanyId !== agentCompanyId) {
+      throw forbidden("Agent key cannot access another company");
+    }
+    return agentCompanyId;
+  }
+
+  if (req.actor.type === "board") {
+    if (!requestedCompanyId) {
+      throw forbidden("companyId is required for board-token callers");
+    }
+    assertCompanyAccess(req, requestedCompanyId);
+    return requestedCompanyId;
+  }
+
+  // Defensive — assertAuthenticated already rejected `type:"none"`.
+  throw forbidden("Unsupported actor type for slack thread links");
+}
 
 export function slackThreadLinkRoutes(db: Db) {
   const router = Router();
@@ -39,8 +80,15 @@ export function slackThreadLinkRoutes(db: Db) {
 
   router.post("/slack/thread-links", validate(createSchema), async (req, res) => {
     assertAuthenticated(req);
+    const companyId = resolveCompanyId(req, req.body.companyId);
     try {
-      const { row, created } = await svc.create(req.body);
+      const { row, created } = await svc.create({
+        companyId,
+        threadTs: req.body.threadTs,
+        channelId: req.body.channelId,
+        paperclipResourceType: req.body.paperclipResourceType,
+        paperclipResourceId: req.body.paperclipResourceId,
+      });
       res.status(created ? 201 : 200).json(row);
     } catch (err) {
       if (err instanceof SlackThreadLinkConflictError) {
@@ -56,7 +104,8 @@ export function slackThreadLinkRoutes(db: Db) {
     assertAuthenticated(req);
     const ts = slackIdSchema.parse(req.params.ts);
     const query = lookupQuerySchema.parse(req.query);
-    const row = await svc.findByThreadTs(ts, query.channel_id);
+    const companyId = resolveCompanyId(req, query.company_id);
+    const row = await svc.findByThreadTs(companyId, ts, query.channel_id);
     if (!row) {
       throw notFound("Slack thread link not found");
     }

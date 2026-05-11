@@ -16519,6 +16519,12 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
         "thread_ts": {
           "name": "thread_ts",
           "type": "text",
@@ -16552,9 +16558,30 @@
         }
       },
       "indexes": {
-        "slack_thread_links_thread_channel_idx": {
-          "name": "slack_thread_links_thread_channel_idx",
+        "slack_thread_links_company_idx": {
+          "name": "slack_thread_links_company_idx",
           "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "slack_thread_links_company_thread_channel_idx": {
+          "name": "slack_thread_links_company_thread_channel_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
             {
               "expression": "thread_ts",
               "isExpression": false,
@@ -16574,7 +16601,21 @@
           "with": {}
         }
       },
-      "foreignKeys": {},
+      "foreignKeys": {
+        "slack_thread_links_company_id_companies_id_fk": {
+          "name": "slack_thread_links_company_id_companies_id_fk",
+          "tableFrom": "slack_thread_links",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
