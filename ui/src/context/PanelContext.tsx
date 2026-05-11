@@ -9,6 +9,9 @@ export interface PanelLayoutOptions {
   defaultWidth?: number;
   minWidth?: number;
   maxWidth?: number;
+  /** Below this viewport width, clamp the panel to compactMaxWidth. */
+  compactBelowViewport?: number;
+  compactMaxWidth?: number;
 }
 
 interface PanelContextValue {

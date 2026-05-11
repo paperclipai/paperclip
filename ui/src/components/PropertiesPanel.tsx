@@ -17,6 +17,8 @@ export function PropertiesPanel() {
   const defaultWidth = panelLayout.defaultWidth ?? PROPERTIES_PANEL_DEFAULT;
   const minWidth = panelLayout.minWidth ?? PROPERTIES_PANEL_MIN;
   const maxWidth = panelLayout.maxWidth ?? PROPERTIES_PANEL_MAX;
+  const compactBelowViewport = panelLayout.compactBelowViewport;
+  const compactMaxWidth = panelLayout.compactMaxWidth;
 
   return (
     <aside className="hidden md:flex border-l border-border bg-card shrink-0 h-full">
@@ -30,6 +32,8 @@ export function PropertiesPanel() {
         defaultWidth={defaultWidth}
         minWidth={minWidth}
         maxWidth={maxWidth}
+        compactBelowViewport={compactBelowViewport}
+        compactMaxWidth={compactMaxWidth}
         widthVariable="--properties-panel-width"
         className="h-full"
       >

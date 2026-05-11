@@ -54,9 +54,17 @@ type ResizableSidebarPaneProps = {
   defaultWidth?: number;
   minWidth?: number;
   maxWidth?: number;
+  /** Below this viewport width, clamp the pane to compactMaxWidth. */
+  compactBelowViewport?: number;
+  compactMaxWidth?: number;
   /** Optional CSS custom property name to expose the live pane width on :root (e.g. "--properties-panel-width"). */
   widthVariable?: string;
 };
+
+function readViewportWidth() {
+  if (typeof window === "undefined") return Number.POSITIVE_INFINITY;
+  return window.innerWidth;
+}
 
 export function ResizableSidebarPane({
   children,
@@ -68,20 +76,41 @@ export function ResizableSidebarPane({
   defaultWidth = DEFAULT_SIDEBAR_WIDTH,
   minWidth = MIN_SIDEBAR_WIDTH,
   maxWidth = MAX_SIDEBAR_WIDTH,
+  compactBelowViewport,
+  compactMaxWidth,
   widthVariable,
 }: ResizableSidebarPaneProps) {
+  const [viewportWidth, setViewportWidth] = useState(readViewportWidth);
+  const compactModeActive =
+    compactBelowViewport !== undefined
+    && compactMaxWidth !== undefined
+    && viewportWidth < compactBelowViewport;
+  const effectiveMaxWidth =
+    compactModeActive
+      ? Math.max(minWidth, Math.min(maxWidth, compactMaxWidth))
+      : maxWidth;
+  const canResizeAtCurrentViewport = effectiveMaxWidth > minWidth;
+  const fallbackWidth = clampSidebarWidth(defaultWidth, minWidth, effectiveMaxWidth);
   const [width, setWidth] = useState(() =>
-    readStoredSidebarWidth(storageKey, defaultWidth, minWidth, maxWidth),
+    readStoredSidebarWidth(storageKey, fallbackWidth, minWidth, effectiveMaxWidth),
   );
   const [isResizing, setIsResizing] = useState(false);
   const widthRef = useRef(width);
   const dragState = useRef<{ startX: number; startWidth: number } | null>(null);
 
   useEffect(() => {
-    const storedWidth = readStoredSidebarWidth(storageKey, defaultWidth, minWidth, maxWidth);
+    if (typeof window === "undefined") return;
+
+    const handleResize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  useEffect(() => {
+    const storedWidth = readStoredSidebarWidth(storageKey, fallbackWidth, minWidth, effectiveMaxWidth);
     widthRef.current = storedWidth;
     setWidth(storedWidth);
-  }, [storageKey, defaultWidth, minWidth, maxWidth]);
+  }, [storageKey, fallbackWidth, minWidth, effectiveMaxWidth]);
 
   const visibleWidth = open ? width : 0;
   const paneStyle = useMemo(
@@ -100,12 +129,14 @@ export function ResizableSidebarPane({
 
   const commitWidth = useCallback(
     (nextWidth: number) => {
-      const clamped = clampSidebarWidth(nextWidth, minWidth, maxWidth);
+      const clamped = clampSidebarWidth(nextWidth, minWidth, effectiveMaxWidth);
       widthRef.current = clamped;
       setWidth(clamped);
-      writeStoredSidebarWidth(storageKey, clamped, minWidth, maxWidth);
+      if (!compactModeActive) {
+        writeStoredSidebarWidth(storageKey, clamped, minWidth, maxWidth);
+      }
     },
-    [storageKey, minWidth, maxWidth],
+    [storageKey, minWidth, maxWidth, effectiveMaxWidth, compactModeActive],
   );
 
   const handlePointerDown = useCallback(
@@ -128,11 +159,11 @@ export function ResizableSidebarPane({
       // For a right-side pane the handle is on the left edge, so dragging left increases width.
       const directional = side === "right" ? -delta : delta;
       const nextWidth = dragState.current.startWidth + directional;
-      const clamped = clampSidebarWidth(nextWidth, minWidth, maxWidth);
+      const clamped = clampSidebarWidth(nextWidth, minWidth, effectiveMaxWidth);
       widthRef.current = clamped;
       setWidth(clamped);
     },
-    [side, minWidth, maxWidth],
+    [side, minWidth, effectiveMaxWidth],
   );
 
   const endResize = useCallback(() => {
@@ -140,12 +171,14 @@ export function ResizableSidebarPane({
 
     dragState.current = null;
     setIsResizing(false);
-    writeStoredSidebarWidth(storageKey, widthRef.current, minWidth, maxWidth);
-  }, [storageKey, minWidth, maxWidth]);
+    if (!compactModeActive) {
+      writeStoredSidebarWidth(storageKey, widthRef.current, minWidth, maxWidth);
+    }
+  }, [storageKey, minWidth, maxWidth, compactModeActive]);
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
-      if (!open || !resizable) return;
+      if (!open || !resizable || !canResizeAtCurrentViewport) return;
 
       // Match drag semantics: on a right-side pane, ArrowLeft grows the pane.
       const growKey = side === "right" ? "ArrowLeft" : "ArrowRight";
@@ -162,10 +195,10 @@ export function ResizableSidebarPane({
         commitWidth(minWidth);
       } else if (event.key === "End") {
         event.preventDefault();
-        commitWidth(maxWidth);
+        commitWidth(effectiveMaxWidth);
       }
     },
-    [commitWidth, open, resizable, side, width, minWidth, maxWidth],
+    [commitWidth, open, resizable, side, width, minWidth, effectiveMaxWidth, canResizeAtCurrentViewport],
   );
 
   return (
@@ -178,13 +211,13 @@ export function ResizableSidebarPane({
       style={paneStyle}
     >
       {children}
-      {resizable && open ? (
+      {resizable && open && canResizeAtCurrentViewport ? (
         <div
           role="separator"
           aria-label="Resize sidebar"
           aria-orientation="vertical"
           aria-valuemin={minWidth}
-          aria-valuemax={maxWidth}
+          aria-valuemax={effectiveMaxWidth}
           aria-valuenow={width}
           tabIndex={0}
           className={cn(

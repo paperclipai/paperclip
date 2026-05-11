@@ -820,6 +820,8 @@ export function RoutineDetail() {
       defaultWidth: 400,
       minWidth: 320,
       maxWidth: 640,
+      compactBelowViewport: 1024,
+      compactMaxWidth: 320,
     });
     return () => closePanel();
   }, [activityTabsPanel, closePanel, openPanel]);
