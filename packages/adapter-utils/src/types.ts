@@ -64,7 +64,13 @@ export interface AdapterRuntimeServiceReport {
   healthStatus?: "unknown" | "healthy" | "unhealthy";
 }
 
-export type AdapterExecutionErrorFamily = "transient_upstream";
+/**
+ * - `transient_upstream`: 5xx, network blips, per-minute rate limits — dispatcher MAY retry
+ *   on a short backoff using `retryNotBefore` as the soft threshold.
+ * - `quota_exhausted` (ADR-001 D2): subscription/billing/session quota window hit —
+ *   dispatcher MUST NOT retry; pauses the company until `retryNotBefore` + grace.
+ */
+export type AdapterExecutionErrorFamily = "transient_upstream" | "quota_exhausted";
 
 export interface AdapterExecutionResult {
   exitCode: number | null;

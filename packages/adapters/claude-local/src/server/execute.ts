@@ -50,8 +50,10 @@ import {
   parseClaudeStreamJson,
   describeClaudeFailure,
   detectClaudeLoginRequired,
+  extractClaudeQuotaResetAt,
   extractClaudeRetryNotBefore,
   isClaudeMaxTurnsResult,
+  isClaudeQuotaExhaustedError,
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
 } from "./parse.js";
@@ -790,27 +792,40 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     if (!parsed) {
       const fallbackErrorMessage = parseFallbackErrorMessage(proc);
+      const classifierInput = {
+        parsed: null,
+        stdout: proc.stdout,
+        stderr: proc.stderr,
+        errorMessage: fallbackErrorMessage,
+      };
+      const failed = (proc.exitCode ?? 0) !== 0;
+      const quotaExhausted =
+        failed && !loginMeta.requiresLogin && isClaudeQuotaExhaustedError(classifierInput);
+      const quotaResetAt = quotaExhausted ? extractClaudeQuotaResetAt(classifierInput) : null;
       const transientUpstream =
+        !quotaExhausted &&
+        failed &&
         !loginMeta.requiresLogin &&
-        (proc.exitCode ?? 0) !== 0 &&
-        isClaudeTransientUpstreamError({
-          parsed: null,
-          stdout: proc.stdout,
-          stderr: proc.stderr,
-          errorMessage: fallbackErrorMessage,
-        });
+        isClaudeTransientUpstreamError(classifierInput);
       const transientRetryNotBefore = transientUpstream
-        ? extractClaudeRetryNotBefore({
-            parsed: null,
-            stdout: proc.stdout,
-            stderr: proc.stderr,
-            errorMessage: fallbackErrorMessage,
-          })
+        ? extractClaudeRetryNotBefore(classifierInput)
         : null;
       const errorCode = loginMeta.requiresLogin
         ? "claude_auth_required"
+        : quotaExhausted
+        ? "claude_quota_exhausted"
         : transientUpstream
         ? "claude_transient_upstream"
+        : null;
+      const errorFamily = quotaExhausted
+        ? "quota_exhausted"
+        : transientUpstream
+        ? "transient_upstream"
+        : null;
+      const retryNotBefore = quotaResetAt
+        ? quotaResetAt.toISOString()
+        : transientRetryNotBefore
+        ? transientRetryNotBefore.toISOString()
         : null;
       return {
         exitCode: proc.exitCode,
@@ -818,16 +833,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timedOut: false,
         errorMessage: fallbackErrorMessage,
         errorCode,
-        errorFamily: transientUpstream ? "transient_upstream" : null,
-        retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
+        errorFamily,
+        retryNotBefore,
         errorMeta,
         resultJson: {
           stdout: proc.stdout,
           stderr: proc.stderr,
-          ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
-          ...(transientRetryNotBefore
-            ? { retryNotBefore: transientRetryNotBefore.toISOString() }
-            : {}),
+          ...(errorFamily ? { errorFamily } : {}),
+          ...(retryNotBefore ? { retryNotBefore } : {}),
+          ...(quotaResetAt ? { quotaResetAt: quotaResetAt.toISOString() } : {}),
           ...(transientRetryNotBefore
             ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() }
             : {}),
@@ -871,36 +885,52 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const errorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
-    const transientUpstream =
+    const classifierInput = {
+      parsed,
+      stdout: proc.stdout,
+      stderr: proc.stderr,
+      errorMessage,
+    };
+    const quotaExhausted =
       failed &&
       !loginMeta.requiresLogin &&
       !clearSessionForMaxTurns &&
-      isClaudeTransientUpstreamError({
-        parsed,
-        stdout: proc.stdout,
-        stderr: proc.stderr,
-        errorMessage,
-      });
+      isClaudeQuotaExhaustedError(classifierInput);
+    const quotaResetAt = quotaExhausted ? extractClaudeQuotaResetAt(classifierInput) : null;
+    const transientUpstream =
+      !quotaExhausted &&
+      failed &&
+      !loginMeta.requiresLogin &&
+      !clearSessionForMaxTurns &&
+      isClaudeTransientUpstreamError(classifierInput);
     const transientRetryNotBefore = transientUpstream
-      ? extractClaudeRetryNotBefore({
-          parsed,
-          stdout: proc.stdout,
-          stderr: proc.stderr,
-          errorMessage,
-        })
+      ? extractClaudeRetryNotBefore(classifierInput)
       : null;
     const resolvedErrorCode = loginMeta.requiresLogin
       ? "claude_auth_required"
       : failed && clearSessionForMaxTurns
       ? "max_turns_exhausted"
+      : quotaExhausted
+      ? "claude_quota_exhausted"
       : transientUpstream
       ? "claude_transient_upstream"
+      : null;
+    const resolvedErrorFamily = quotaExhausted
+      ? "quota_exhausted"
+      : transientUpstream
+      ? "transient_upstream"
+      : null;
+    const resolvedRetryNotBefore = quotaResetAt
+      ? quotaResetAt.toISOString()
+      : transientRetryNotBefore
+      ? transientRetryNotBefore.toISOString()
       : null;
     const mergedResultJson: Record<string, unknown> = {
       ...parsed,
       ...(failed && clearSessionForMaxTurns ? { stopReason: "max_turns_exhausted" } : {}),
-      ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
-      ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+      ...(resolvedErrorFamily ? { errorFamily: resolvedErrorFamily } : {}),
+      ...(resolvedRetryNotBefore ? { retryNotBefore: resolvedRetryNotBefore } : {}),
+      ...(quotaResetAt ? { quotaResetAt: quotaResetAt.toISOString() } : {}),
       ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
     };
 
@@ -910,8 +940,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       errorMessage,
       errorCode: resolvedErrorCode,
-      errorFamily: transientUpstream ? "transient_upstream" : null,
-      retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
+      errorFamily: resolvedErrorFamily,
+      retryNotBefore: resolvedRetryNotBefore,
       errorMeta,
       usage,
       sessionId: resolvedSessionId,
