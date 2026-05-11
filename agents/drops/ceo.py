@@ -214,6 +214,9 @@ def _slim_products(prods: list) -> list:
             "why":                   str(p.get("why", ""))[:100],
             "target_audience":       str(p.get("target_audience", ""))[:80],
             "yt_demand":             p.get("yt_demand", "unknown"),
+            # Imagen real del proveedor CJ — fluye hasta el Web Designer
+            "image_url":             p.get("image_url", ""),
+            "cj_url":                p.get("cj_url", ""),
         })
     return result
 
@@ -406,6 +409,19 @@ def main():
         return
 
     winner_name = winner["name"]
+
+    # Recuperar image_url del proveedor CJ — buscar en products original por nombre
+    if not winner.get("image_url"):
+        for p in products:
+            if p.get("image_url") and (
+                p["name"].lower()[:30] in winner_name.lower() or
+                winner_name.lower()[:30] in p["name"].lower()
+            ):
+                winner["image_url"] = p["image_url"]
+                winner["cj_url"]    = p.get("cj_url", "")
+                print(f"  🖼️  Imagen CJ recuperada para winner: {winner['image_url'][:60]}", flush=True)
+                break
+
     print(f"  🏆 Ganador: {winner_name} (score={winner['score']}, rec={winner['recommendation']})",
           flush=True)
 
