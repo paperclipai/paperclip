@@ -551,29 +551,71 @@
     {
       "idx": 78,
       "version": "7",
-      "when": 1777384535071,
-      "tag": "0078_heartbeat_run_cancel_source",
+      "when": 1778004024976,
+      "tag": "0078_white_darwin",
       "breakpoints": true
     },
     {
       "idx": 79,
       "version": "7",
-      "when": 1777384535072,
-      "tag": "0079_agent_wakeup_request_idempotency",
+      "when": 1777821410992,
+      "tag": "0079_company_search_document_indexes",
       "breakpoints": true
     },
     {
       "idx": 80,
       "version": "7",
-      "when": 1777384535073,
-      "tag": "0080_issue_comment_idempotency",
+      "when": 1777849000000,
+      "tag": "0080_company_search_fuzzystrmatch",
       "breakpoints": true
     },
     {
       "idx": 81,
       "version": "7",
+      "when": 1778067785040,
+      "tag": "0081_optimal_dormammu",
+      "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1778067785041,
+      "tag": "0082_dry_vision",
+      "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1778074536410,
+      "tag": "0083_company_secret_provider_configs",
+      "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1777384535071,
+      "tag": "0084_heartbeat_run_cancel_source",
+      "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1777384535072,
+      "tag": "0085_agent_wakeup_request_idempotency",
+      "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1777384535073,
+      "tag": "0086_issue_comment_idempotency",
+      "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
       "when": 1746182400000,
-      "tag": "0081_plugin_config_runtime",
+      "tag": "0087_plugin_config_runtime",
       "breakpoints": true
     }
   ]

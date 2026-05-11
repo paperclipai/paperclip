@@ -356,6 +356,20 @@ describe("MarkdownBody", () => {
     expect(html).toContain('style="overflow-wrap:anywhere;word-break:break-word"');
   });
 
+  it("renders markdown tables in a horizontally scrollable region", () => {
+    const html = renderMarkdown([
+      "| Time UTC | Source | Finding | Stalled leaf | Escalation |",
+      "| --- | --- | --- | --- | --- |",
+      "| 2026-04-30T14:31:35Z | PAP-2505 | in_review_without_action_path | PAP-2779 | PAP-2910 |",
+    ].join("\n"));
+
+    expect(html).toContain('class="paperclip-markdown-table-scroll"');
+    expect(html).toContain('aria-label="Scrollable table"');
+    expect(html).toContain('tabindex="0"');
+    expect(html).toContain("<table>");
+    expect(html).toContain('style="overflow-wrap:anywhere;word-break:normal"');
+  });
+
   it("opens external links in a new tab with safe rel attributes", () => {
     const html = renderMarkdown("[docs](https://example.com/docs)");
 

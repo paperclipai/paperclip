@@ -2189,6 +2189,14 @@ export function agentRoutes(
       lastHeartbeatAt: null,
     });
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
+    const agentEnv = asRecord(agent.adapterConfig)?.env;
+    if (agentEnv) {
+      await secretsSvc.syncEnvBindingsForTarget?.(
+        companyId,
+        { targetType: "agent", targetId: agent.id },
+        agentEnv,
+      );
+    }
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -2665,6 +2673,14 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
+    if (touchesAdapterConfiguration) {
+      const agentEnv = asRecord(agent.adapterConfig)?.env;
+      await secretsSvc.syncEnvBindingsForTarget?.(
+        agent.companyId,
+        { targetType: "agent", targetId: agent.id },
+        agentEnv,
+      );
+    }
 
     await logActivity(db, {
       companyId: agent.companyId,
@@ -2883,7 +2899,25 @@ export function agentRoutes(
     res.json({ ok: true });
   });
 
-  router.post("/agents/:id/wakeup", validate(wakeAgentSchema), async (req, res) => {
+  // Shared handler body for the wakeup-style endpoints. The two routes differ
+  // only in:
+  //  - `source` — the modern /wakeup endpoint reads it from the request body
+  //    (timer|assignment|on_demand|automation) while the legacy
+  //    /heartbeat/invoke endpoint hardcodes "on_demand", since it has only
+  //    ever produced on-demand invocations.
+  //  - skipped-response shape — the modern endpoint surfaces the rich
+  //    SkippedWakeupResponse; the legacy endpoint stays on the simpler
+  //    { status: "skipped" } shape for backward compat.
+  type HeartbeatSource = "timer" | "assignment" | "on_demand" | "automation";
+  type WakeupRouteOpts = {
+    source: HeartbeatSource | undefined;
+    skippedResponse: (agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) => unknown | Promise<unknown>;
+  };
+  const handleWakeupRoute = async (
+    req: Request,
+    res: Response,
+    opts: WakeupRouteOpts,
+  ): Promise<void> => {
     const id = req.params.id as string;
     const agent = await svc.getById(id);
     if (!agent) {
@@ -2902,7 +2936,7 @@ export function agentRoutes(
     }
 
     const run = await heartbeat.wakeup(id, {
-      source: req.body.source,
+      source: opts.source,
       triggerDetail: req.body.triggerDetail ?? "manual",
       reason: req.body.reason ?? null,
       payload: req.body.payload ?? null,
@@ -2917,7 +2951,7 @@ export function agentRoutes(
     });
 
     if (!run) {
-      res.status(202).json(await buildSkippedWakeupResponse(agent, req.body.payload ?? null));
+      res.status(202).json(await opts.skippedResponse(agent));
       return;
     }
 
@@ -2935,9 +2969,23 @@ export function agentRoutes(
     });
 
     res.status(202).json(run);
+  };
+
+  router.post("/agents/:id/wakeup", validate(wakeAgentSchema), async (req, res) => {
+    await handleWakeupRoute(req, res, {
+      source: req.body.source,
+      skippedResponse: (agent) => buildSkippedWakeupResponse(agent, req.body.payload ?? null),
+    });
   });
 
   router.post("/agents/:id/heartbeat/invoke", async (req, res) => {
+    // Legacy endpoint. Hardcodes `source: "on_demand"` (the prior behavior
+    // before the wakeup/invoke convergence). Reads scope fields directly off
+    // the body without `validate(wakeAgentSchema)` because callers — including
+    // the e2e suite — post an empty body, and the schema rejects undefined
+    // / missing bodies. Only forwards fields the caller actually supplied so
+    // an empty body produces the original fixed-arg `heartbeat.invoke()`
+    // shape exactly.
     const id = req.params.id as string;
     const agent = await svc.getById(id);
     if (!agent) {
@@ -2955,19 +3003,37 @@ export function agentRoutes(
       await assertBoardCanManageAgentsForCompany(req, agent.companyId);
     }
 
-    const run = await heartbeat.invoke(
-      id,
-      "on_demand",
-      {
-        triggeredBy: req.actor.type,
-        actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
-      },
-      "manual",
-      {
-        actorType: req.actor.type === "agent" ? "agent" : "user",
-        actorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
-      },
-    );
+    const body = (req.body ?? {}) as Partial<{
+      reason: unknown;
+      payload: unknown;
+      idempotencyKey: unknown;
+      forceFreshSession: unknown;
+      triggerDetail: unknown;
+    }>;
+    const contextSnapshot: Record<string, unknown> = {
+      triggeredBy: req.actor.type,
+      actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
+    };
+    if (body.forceFreshSession === true) {
+      contextSnapshot.forceFreshSession = true;
+    }
+    const wakeOpts: Parameters<typeof heartbeat.wakeup>[1] = {
+      source: "on_demand",
+      triggerDetail: typeof body.triggerDetail === "string" ? body.triggerDetail as "manual" | "system" | "ping" | "callback" : "manual",
+      requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
+      requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
+      contextSnapshot,
+    };
+    if (typeof body.reason === "string" && body.reason.length > 0) {
+      wakeOpts.reason = body.reason;
+    }
+    if (body.payload && typeof body.payload === "object" && !Array.isArray(body.payload)) {
+      wakeOpts.payload = body.payload as Record<string, unknown>;
+    }
+    if (typeof body.idempotencyKey === "string" && body.idempotencyKey.length > 0) {
+      wakeOpts.idempotencyKey = body.idempotencyKey;
+    }
+    const run = await heartbeat.wakeup(id, wakeOpts);
 
     if (!run) {
       res.status(202).json({ status: "skipped" });
