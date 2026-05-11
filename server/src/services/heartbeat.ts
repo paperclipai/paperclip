@@ -159,7 +159,7 @@ import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
-import { extractSkillMentionIds } from "@paperclipai/shared";
+import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
 import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
@@ -461,11 +461,13 @@ async function resolveRunScopedMentionedSkillKeys(input: {
         eq(issueComments.companyId, input.companyId),
       ),
     );
-  const mentionedSkillIds = extractMentionedSkillIdsFromSources([
-    issue.title,
-    issue.description ?? "",
-    ...comments.map((comment) => comment.body),
-  ]);
+  const mentionedSkillIds = filterValidSkillMentionIds(
+    extractMentionedSkillIdsFromSources([
+      issue.title,
+      issue.description ?? "",
+      ...comments.map((comment) => comment.body),
+    ]),
+  );
   if (mentionedSkillIds.length === 0) return [];
 
   const skillRows = await input.db
@@ -484,6 +486,33 @@ async function resolveRunScopedMentionedSkillKeys(input: {
   return mentionedSkillIds
     .map((skillId) => skillKeyById.get(skillId) ?? null)
     .filter((skillKey): skillKey is string => Boolean(skillKey));
+}
+
+// SIE-441: `skill://...` mention hrefs are parsed by `parseSkillMentionHref`
+// as opaque strings, so authors can (and do) embed slug-style references like
+// `skill://paperclip-create-agent/references/agents/coder.md` in issue bodies.
+// `companySkills.id` is a `uuid` column, so feeding a non-UUID slug into the
+// `inArray(companySkills.id, ...)` lookup causes Postgres to raise `22P02
+// invalid input syntax for type uuid` and crashes the entire heartbeat run.
+// Skill mentions must reference a real company-skill UUID to resolve; filter
+// non-UUIDs out here so the lookup is safe and unresolved mentions are
+// silently ignored (the harness then proceeds without injecting them).
+export function filterValidSkillMentionIds(ids: string[]): string[] {
+  return ids.filter((id) => isUuidLike(id));
+}
+
+// SIE-441: a single failed/timed_out heartbeat run must not transition the
+// assigned agent to `status: error`. Errors belong to the run that produced
+// them, not the agent; otherwise one bad recovery payload (e.g. the uuid
+// crash filtered above) takes the agent's entire inbox offline until a
+// human resets it. After a run finishes, we settle the agent back to `idle`
+// when nothing else is running, regardless of outcome. The `paused` /
+// `terminated` statuses are preserved by the caller before reaching here.
+export function computeAgentStatusAfterRun(input: {
+  runningCount: number;
+}): "running" | "idle" {
+  if (input.runningCount > 0) return "running";
+  return "idle";
 }
 
 function leaseReleaseStatusForRunStatus(
@@ -6184,12 +6213,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const isFirstHeartbeat = !existing.lastHeartbeatAt;
 
     const runningCount = await countRunningRunsForAgent(agentId);
-    const nextStatus =
-      runningCount > 0
-        ? "running"
-        : outcome === "succeeded" || outcome === "cancelled"
-          ? "idle"
-          : "error";
+    const nextStatus = computeAgentStatusAfterRun({ runningCount });
 
     const updated = await db
       .update(agents)

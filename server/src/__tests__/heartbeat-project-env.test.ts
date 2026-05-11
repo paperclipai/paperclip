@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import { buildSkillMentionHref } from "@paperclipai/shared";
 import {
   applyRunScopedMentionedSkillKeys,
+  computeAgentStatusAfterRun,
   extractMentionedSkillIdsFromSources,
+  filterValidSkillMentionIds,
   resolveExecutionRunAdapterConfig,
 } from "../services/heartbeat.ts";
 
@@ -111,6 +113,61 @@ describe("extractMentionedSkillIdsFromSources", () => {
         `Duplicate mention [/release-changelog](${releaseHref})`,
       ]),
     ).toEqual(["skill-1", "skill-2"]);
+  });
+});
+
+describe("filterValidSkillMentionIds (SIE-441 regression)", () => {
+  // Reproduces the SIE-439 state shape: a hire-approval comment on the issue
+  // contained `[…](skill://paperclip-create-agent/references/agents/coder.md)`.
+  // Before the fix the slug-style id was forwarded to
+  // `inArray(companySkills.id, …)` against a `uuid` column, which Postgres
+  // rejected as `22P02 invalid input syntax for type uuid` and crashed the
+  // recovery continuation run.
+  it("drops non-UUID skill mention ids so they never reach the uuid lookup", () => {
+    const slugHref = buildSkillMentionHref(
+      "paperclip-create-agent/references/agents/coder.md",
+    );
+    const validHref = buildSkillMentionHref(
+      "550e8400-e29b-41d4-a716-446655440000",
+    );
+
+    const extracted = extractMentionedSkillIdsFromSources([
+      `Use [coder template](${slugHref}) please.`,
+      `Reference skill [/skill](${validHref}).`,
+    ]);
+    expect(extracted).toEqual([
+      "paperclip-create-agent/references/agents/coder.md",
+      "550e8400-e29b-41d4-a716-446655440000",
+    ]);
+
+    expect(filterValidSkillMentionIds(extracted)).toEqual([
+      "550e8400-e29b-41d4-a716-446655440000",
+    ]);
+  });
+
+  it("returns an empty list when every mention is non-UUID (no DB query needed)", () => {
+    expect(
+      filterValidSkillMentionIds([
+        "paperclip-create-agent/references/agents/coder.md",
+        "paperclip/paperclip-create-agent",
+        "",
+      ]),
+    ).toEqual([]);
+  });
+});
+
+describe("computeAgentStatusAfterRun (SIE-441 regression)", () => {
+  // Before the fix `finalizeAgentStatus` flipped the agent to `status: error`
+  // whenever the most recent run failed or timed out. That meant one bad
+  // recovery payload (e.g. the uuid crash above) took the entire CTO agent
+  // offline, blocking ALL of its other heartbeats until a human reset it.
+  // Errors belong to runs; the agent must stay invokable.
+  it("settles the agent back to idle after a run finishes, regardless of outcome", () => {
+    expect(computeAgentStatusAfterRun({ runningCount: 0 })).toBe("idle");
+  });
+
+  it("stays running while other runs are still in flight", () => {
+    expect(computeAgentStatusAfterRun({ runningCount: 2 })).toBe("running");
   });
 });
 
