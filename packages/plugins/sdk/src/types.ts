@@ -1602,6 +1602,64 @@ export interface PluginStreamsClient {
  *
  * @see PLUGIN_SPEC.md §14 — SDK Surface
  */
+// ---------------------------------------------------------------------------
+// Container engine client (ctx.containers) — requires "containers.manage"
+// ---------------------------------------------------------------------------
+
+export type ContainerStatus =
+  | "created"
+  | "running"
+  | "paused"
+  | "restarting"
+  | "removing"
+  | "exited"
+  | "dead";
+
+export type ContainerErrorCode =
+  | "engine_disabled"
+  | "engine_unavailable"
+  | "not_owned"
+  | "not_found"
+  | "image_denied"
+  | "pull_failed"
+  | "quota_exceeded"
+  | "exec_timeout"
+  | "oom_killed"
+  | "cleanup_failure";
+
+export interface ContainerStartOpts {
+  image: string;
+  cmd?: string[];
+  env?: Record<string, string>;
+  memoryMb?: number;
+  maxLifetimeSec?: number;
+  labels?: Record<string, string>;
+}
+
+export interface ContainerExecResult {
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  truncated: boolean;
+}
+
+export interface ContainerDetail {
+  containerId: string;
+  image: string;
+  status: string;
+  createdAt: string;
+  labels: Record<string, string>;
+}
+
+export interface PluginContainersClient {
+  start(opts: ContainerStartOpts): Promise<{ containerId: string }>;
+  stop(containerId: string): Promise<void>;
+  kill(containerId: string): Promise<void>;
+  exec(containerId: string, cmd: string[], opts?: { timeoutMs?: number; env?: Record<string, string> }): Promise<ContainerExecResult>;
+  list(opts?: { status?: string }): Promise<ContainerDetail[]>;
+  inspect(containerId: string): Promise<ContainerDetail | null>;
+}
+
 export interface PluginContext {
   /** The plugin's manifest as validated at install time. */
   manifest: PaperclipPluginManifestV1;
@@ -1680,4 +1738,7 @@ export interface PluginContext {
 
   /** Structured logger. Output is captured and surfaced in the plugin health dashboard. */
   logger: PluginLogger;
+
+  /** Start and manage host-managed containers. Requires `containers.manage`. */
+  containers: PluginContainersClient;
 }

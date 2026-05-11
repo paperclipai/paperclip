@@ -58,6 +58,10 @@ import { createPluginHostServiceCleanup } from "./services/plugin-host-service-c
 import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
+import { createContainerService } from "./services/container-service.js";
+import { createDockerDriver } from "./services/container-docker-driver.js";
+import { containerProbeRoutes } from "./routes/container-probe.js";
+import { instanceSettingsService } from "./services/index.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
 
 type UiMode = "none" | "static" | "vite-dev";
@@ -175,6 +179,29 @@ export async function createApp(
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
 
+  // Container engine setup — read once at startup; driver and service are long-lived
+  const generalSettings = await instanceSettingsService(db).getGeneral();
+  const containerEngineSettings = generalSettings.containerEngine;
+  const dockerDriver =
+    containerEngineSettings.driver !== "disabled"
+      ? createDockerDriver({
+          cliBin: containerEngineSettings.driver,
+          networkMode: containerEngineSettings.networkMode,
+          allowRootUser: containerEngineSettings.allowRootUser,
+        })
+      : null;
+  const containerService = dockerDriver
+    ? createContainerService({
+        driver: dockerDriver,
+        concurrencyPerPlugin: containerEngineSettings.concurrencyPerPlugin,
+        maxLifetimeSec: containerEngineSettings.maxLifetimeSecMax,
+        memoryMbMax: containerEngineSettings.memoryMbMax,
+      })
+    : null;
+  if (containerService) {
+    await containerService.onStartup();
+  }
+
   // Mount API routes
   const api = Router();
   api.use(boardMutationGuard());
@@ -211,6 +238,13 @@ export async function createApp(
   api.use(sidebarPreferenceRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
+  api.use(
+    containerProbeRoutes({
+      probe: dockerDriver
+        ? () => dockerDriver.probe()
+        : async () => ({ ok: false, error: "Container engine disabled" }),
+    }),
+  );
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
@@ -263,6 +297,7 @@ export async function createApp(
         };
         const services = buildHostServices(db, pluginId, manifest.id, eventBus, notifyWorker, {
           pluginWorkerManager: workerManager,
+          containerService: containerService ?? undefined,
           manifest,
         });
         hostServicesDisposers.set(pluginId, () => services.dispose());

@@ -1120,6 +1120,56 @@ export interface WorkerToHostMethods {
     },
     result: Goal,
   ];
+
+  // Containers (requires containers.manage capability)
+  "containers.start": [
+    params: {
+      image: string;
+      cmd?: string[];
+      env?: Record<string, string>;
+      memoryMb?: number;
+      maxLifetimeSec?: number;
+      labels?: Record<string, string>;
+    },
+    result: { containerId: string },
+  ];
+  "containers.stop": [
+    params: { containerId: string },
+    result: void,
+  ];
+  "containers.kill": [
+    params: { containerId: string },
+    result: void,
+  ];
+  "containers.exec": [
+    params: {
+      containerId: string;
+      cmd: string[];
+      timeoutMs?: number;
+      env?: Record<string, string>;
+    },
+    result: { exitCode: number | null; stdout: string; stderr: string; truncated: boolean },
+  ];
+  "containers.list": [
+    params: { status?: string },
+    result: Array<{
+      containerId: string;
+      image: string;
+      status: string;
+      createdAt: string;
+      labels: Record<string, string>;
+    }>,
+  ];
+  "containers.inspect": [
+    params: { containerId: string },
+    result: {
+      containerId: string;
+      image: string;
+      status: string;
+      createdAt: string;
+      labels: Record<string, string>;
+    } | null,
+  ];
 }
 
 /** Union of all worker→host method names. */

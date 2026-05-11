@@ -1123,6 +1123,44 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
+      containers: {
+        async start(opts) {
+          return callHost("containers.start", {
+            image: opts.image,
+            cmd: opts.cmd,
+            env: opts.env,
+            memoryMb: opts.memoryMb,
+            maxLifetimeSec: opts.maxLifetimeSec,
+            labels: opts.labels,
+          });
+        },
+
+        async stop(containerId) {
+          await callHost("containers.stop", { containerId });
+        },
+
+        async kill(containerId) {
+          await callHost("containers.kill", { containerId });
+        },
+
+        async exec(containerId, cmd, opts) {
+          return callHost("containers.exec", {
+            containerId,
+            cmd,
+            timeoutMs: opts?.timeoutMs,
+            env: opts?.env,
+          });
+        },
+
+        async list(opts) {
+          return callHost("containers.list", { status: opts?.status });
+        },
+
+        async inspect(containerId) {
+          return callHost("containers.inspect", { containerId });
+        },
+      },
+
       logger: {
         info(message: string, meta?: Record<string, unknown>): void {
           notifyHost("log", { level: "info", message, meta });

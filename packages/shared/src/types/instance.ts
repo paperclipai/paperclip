@@ -19,11 +19,21 @@ export const DEFAULT_BACKUP_RETENTION: BackupRetentionPolicy = {
   monthlyMonths: 1,
 };
 
+export interface ContainerEngineSettings {
+  driver: "disabled" | "docker" | "podman";
+  networkMode: "none" | "bridge";
+  allowRootUser: boolean;
+  memoryMbMax: number;
+  maxLifetimeSecMax: number;
+  concurrencyPerPlugin: number;
+}
+
 export interface InstanceGeneralSettings {
   censorUsernameInLogs: boolean;
   keyboardShortcuts: boolean;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
+  containerEngine: ContainerEngineSettings;
 }
 
 export interface InstanceExperimentalSettings {

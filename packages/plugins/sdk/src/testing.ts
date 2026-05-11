@@ -2025,6 +2025,51 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         logs.push({ level: "debug", message, meta });
       },
     },
+    containers: (() => {
+      const containerRegistry = new Map<string, { image: string; status: string; createdAt: string; labels: Record<string, string> }>();
+      return {
+        async start(opts) {
+          requireCapability(manifest, capabilitySet, "containers.manage");
+          const containerId = randomUUID();
+          const safeLabels: Record<string, string> = {};
+          for (const [k, v] of Object.entries(opts.labels ?? {})) {
+            if (!k.startsWith("paperclip.")) safeLabels[k] = v;
+          }
+          containerRegistry.set(containerId, {
+            image: opts.image,
+            status: "running",
+            createdAt: new Date().toISOString(),
+            labels: safeLabels,
+          });
+          return { containerId };
+        },
+        async stop(containerId) {
+          requireCapability(manifest, capabilitySet, "containers.manage");
+          const entry = containerRegistry.get(containerId);
+          if (entry) entry.status = "exited";
+        },
+        async kill(containerId) {
+          requireCapability(manifest, capabilitySet, "containers.manage");
+          containerRegistry.delete(containerId);
+        },
+        async exec(_containerId, _cmd, _opts) {
+          requireCapability(manifest, capabilitySet, "containers.manage");
+          return { exitCode: 0, stdout: "", stderr: "", truncated: false };
+        },
+        async list(opts) {
+          requireCapability(manifest, capabilitySet, "containers.manage");
+          return Array.from(containerRegistry.entries())
+            .filter(([, c]) => !opts?.status || c.status === opts.status)
+            .map(([containerId, c]) => ({ containerId, ...c }));
+        },
+        async inspect(containerId) {
+          requireCapability(manifest, capabilitySet, "containers.manage");
+          const entry = containerRegistry.get(containerId);
+          if (!entry) return null;
+          return { containerId, ...entry };
+        },
+      };
+    })(),
   };
 
   const harness: TestHarness = {

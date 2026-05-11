@@ -252,6 +252,16 @@ export interface HostServices {
     create(params: WorkerToHostMethods["goals.create"][0]): Promise<WorkerToHostMethods["goals.create"][1]>;
     update(params: WorkerToHostMethods["goals.update"][0]): Promise<WorkerToHostMethods["goals.update"][1]>;
   };
+
+  /** Provides all 6 `containers.*` methods. Requires `containers.manage`. */
+  containers: {
+    start(params: WorkerToHostMethods["containers.start"][0]): Promise<WorkerToHostMethods["containers.start"][1]>;
+    stop(params: WorkerToHostMethods["containers.stop"][0]): Promise<void>;
+    kill(params: WorkerToHostMethods["containers.kill"][0]): Promise<void>;
+    exec(params: WorkerToHostMethods["containers.exec"][0]): Promise<WorkerToHostMethods["containers.exec"][1]>;
+    list(params: WorkerToHostMethods["containers.list"][0]): Promise<WorkerToHostMethods["containers.list"][1]>;
+    inspect(params: WorkerToHostMethods["containers.inspect"][0]): Promise<WorkerToHostMethods["containers.inspect"][1]>;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -425,6 +435,14 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "goals.get": "goals.read",
   "goals.create": "goals.create",
   "goals.update": "goals.update",
+
+  // Containers
+  "containers.start": "containers.manage",
+  "containers.stop": "containers.manage",
+  "containers.kill": "containers.manage",
+  "containers.exec": "containers.manage",
+  "containers.list": "containers.manage",
+  "containers.inspect": "containers.manage",
 };
 
 // ---------------------------------------------------------------------------
@@ -762,6 +780,26 @@ export function createHostClientHandlers(
     }),
     "goals.update": gated("goals.update", async (params) => {
       return services.goals.update(params);
+    }),
+
+    // Containers
+    "containers.start": gated("containers.start", async (params) => {
+      return services.containers.start(params);
+    }),
+    "containers.stop": gated("containers.stop", async (params) => {
+      return services.containers.stop(params);
+    }),
+    "containers.kill": gated("containers.kill", async (params) => {
+      return services.containers.kill(params);
+    }),
+    "containers.exec": gated("containers.exec", async (params) => {
+      return services.containers.exec(params);
+    }),
+    "containers.list": gated("containers.list", async (params) => {
+      return services.containers.list(params);
+    }),
+    "containers.inspect": gated("containers.inspect", async (params) => {
+      return services.containers.inspect(params);
     }),
   };
 }

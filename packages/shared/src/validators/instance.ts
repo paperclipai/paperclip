@@ -24,6 +24,15 @@ export const backupRetentionPolicySchema = z.object({
   monthlyMonths: presetSchema(MONTHLY_RETENTION_PRESETS, "monthlyMonths").default(DEFAULT_BACKUP_RETENTION.monthlyMonths),
 });
 
+const containerEngineSettingsSchema = z.object({
+  driver: z.enum(["disabled", "docker", "podman"]).default("disabled"),
+  networkMode: z.enum(["none", "bridge"]).default("none"),
+  allowRootUser: z.boolean().default(false),
+  memoryMbMax: z.number().int().min(128).max(65536).default(4096),
+  maxLifetimeSecMax: z.number().int().min(60).max(86400).default(86400),
+  concurrencyPerPlugin: z.number().int().min(1).max(100).default(10),
+});
+
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
   keyboardShortcuts: z.boolean().default(false),
@@ -31,9 +40,16 @@ export const instanceGeneralSettingsSchema = z.object({
     DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   ),
   backupRetention: backupRetentionPolicySchema.default(DEFAULT_BACKUP_RETENTION),
+  containerEngine: containerEngineSettingsSchema.default({}),
 }).strict();
 
-export const patchInstanceGeneralSettingsSchema = instanceGeneralSettingsSchema.partial();
+export const patchInstanceGeneralSettingsSchema = z.object({
+  censorUsernameInLogs: z.boolean().optional(),
+  keyboardShortcuts: z.boolean().optional(),
+  feedbackDataSharingPreference: feedbackDataSharingPreferenceSchema.optional(),
+  backupRetention: backupRetentionPolicySchema.partial().optional(),
+  containerEngine: containerEngineSettingsSchema.partial().optional(),
+});
 
 export const instanceExperimentalSettingsSchema = z.object({
   enableEnvironments: z.boolean().default(false),
