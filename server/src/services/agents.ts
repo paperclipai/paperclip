@@ -709,6 +709,15 @@ export function agentService(db: Db) {
       return chain;
     },
 
+    hasDirectReports: async (managerAgentId: string) => {
+      const rows = await db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.reportsTo, managerAgentId), ne(agents.status, "terminated")))
+        .limit(1);
+      return rows.length > 0;
+    },
+
     runningForAgent: (agentId: string) =>
       db
         .select()

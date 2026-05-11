@@ -58,7 +58,12 @@ export interface AgentInstructionsBundle {
 
 export interface AgentAccessState {
   canAssignTasks: boolean;
-  taskAssignSource: "explicit_grant" | "agent_creator" | "ceo_role" | "none";
+  taskAssignSource:
+    | "explicit_grant"
+    | "agent_creator"
+    | "ceo_role"
+    | "reporting_chain"
+    | "none";
   membership: CompanyMembership | null;
   grants: PrincipalPermissionGrant[];
 }
