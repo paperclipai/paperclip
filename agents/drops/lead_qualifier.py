@@ -99,7 +99,9 @@ Responde SOLO con JSON:
       "suggested_price_eur": 39.99,
       "supplier_cost_eur": 8.50,
       "est_margin_pct": 65,
-      "est_monthly_revenue_eur": 2400
+      "est_monthly_revenue_eur": 2400,
+      "image_url": "copia EXACTA del campo image_url del producto original si existe, si no deja vacío",
+      "cj_url": "copia EXACTA del campo cj_url del producto original si existe, si no deja vacío"
     }}
   ]
 }}"""

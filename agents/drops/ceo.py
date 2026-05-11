@@ -436,17 +436,27 @@ def main():
 
     winner_name = winner["name"]
 
-    # Recuperar image_url del proveedor CJ — buscar en products original por nombre
-    if not winner.get("image_url"):
+    # Recuperar image_url: 1) del qualifier output, 2) fuzzy match, 3) top CJ product
+    if not winner.get("image_url") or not winner["image_url"].startswith("http"):
+        # Intento 1: fuzzy match por nombre
         for p in products:
-            if p.get("image_url") and (
+            if p.get("image_url") and p["image_url"].startswith("http") and (
                 p["name"].lower()[:30] in winner_name.lower() or
                 winner_name.lower()[:30] in p["name"].lower()
             ):
                 winner["image_url"] = p["image_url"]
                 winner["cj_url"]    = p.get("cj_url", "")
-                print(f"  🖼️  Imagen CJ recuperada para winner: {winner['image_url'][:60]}", flush=True)
+                print(f"  🖼️  Imagen CJ (fuzzy match): {winner['image_url'][:60]}", flush=True)
                 break
+
+        # Intento 2: tomar la imagen del primer producto CJ disponible
+        if not winner.get("image_url") or not winner["image_url"].startswith("http"):
+            for p in products:
+                if p.get("image_url") and p["image_url"].startswith("http") and p.get("source") == "cj_dropshipping":
+                    winner["image_url"] = p["image_url"]
+                    winner["cj_url"]    = p.get("cj_url", "")
+                    print(f"  🖼️  Imagen CJ (primer CJ disponible): {winner['image_url'][:60]}", flush=True)
+                    break
 
     print(f"  🏆 Ganador: {winner_name} (score={winner['score']}, rec={winner['recommendation']})",
           flush=True)
