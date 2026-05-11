@@ -239,12 +239,11 @@ def main():
         "summary":   {"launch": len(launch), "test": len(test), "skip": len(skip)},
         "top_pick":  qualified[0] if qualified else None,
     }
-    lines.append("```json")
-    lines.append(json.dumps(output_json, indent=2, ensure_ascii=False))
-    lines.append("```")
+    json_block = "```json\n" + json.dumps(output_json, indent=2, ensure_ascii=False) + "\n```"
 
-    output = "\n".join(lines)
-    print(output, flush=True)
+    # JSON PRIMERO — así el CEO puede parsearlo aunque el output sea truncado
+    output = json_block + "\n\n" + "\n".join(lines)
+    print(output[:500], flush=True)
     post_issue_result(output)
 
 
