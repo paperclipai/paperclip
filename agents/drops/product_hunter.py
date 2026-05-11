@@ -414,12 +414,14 @@ def fetch_cj_products(niche: str, cj_key: str, limit: int = 8) -> list:
         )
         with urllib.request.urlopen(req, timeout=15) as r:
             auth_data = json.loads(r.read().decode("utf-8"))
+        print(f"  🔐 CJ auth response: result={auth_data.get('result')} msg={auth_data.get('message','?')}", flush=True)
         if not auth_data.get("result"):
-            print(f"  ⚠️  CJ auth failed: {auth_data.get('message','?')}", flush=True)
+            print(f"  ⚠️  CJ auth failed: {json.dumps(auth_data)[:200]}", flush=True)
             return []
         token = auth_data["data"]["accessToken"]
+        print(f"  ✅ CJ token OK: {token[:12]}...", flush=True)
     except Exception as e:
-        print(f"  ⚠️  CJ token error: {e}", flush=True)
+        print(f"  ⚠️  CJ token error: {type(e).__name__}: {e}", flush=True)
         return []
 
     # 2. Buscar productos
@@ -457,11 +459,15 @@ def fetch_cj_products(niche: str, cj_key: str, limit: int = 8) -> list:
         with urllib.request.urlopen(req, timeout=15) as r:
             data = json.loads(r.read().decode("utf-8"))
 
+        print(f"  📡 CJ response: result={data.get('result')} msg={data.get('message','?')} code={data.get('code','?')}", flush=True)
         if not data.get("result"):
-            print(f"  ⚠️  CJ search failed: {data.get('message','?')}", flush=True)
+            print(f"  ⚠️  CJ search failed full: {json.dumps(data)[:300]}", flush=True)
             return []
 
-        raw = data.get("data", {}).get("list", [])
+        data_obj = data.get("data") or {}
+        print(f"  📦 CJ data keys: {list(data_obj.keys()) if isinstance(data_obj, dict) else type(data_obj).__name__}", flush=True)
+        raw = data_obj.get("list", []) if isinstance(data_obj, dict) else []
+        print(f"  📦 CJ raw products: {len(raw)}", flush=True)
         products = []
         for p in raw[:limit]:
             # CJ puede devolver precio como "16.95 -- 22.97" (rango) — tomar el menor
