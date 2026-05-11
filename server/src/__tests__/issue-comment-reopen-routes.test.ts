@@ -14,6 +14,7 @@ const mockIssueService = vi.hoisted(() => ({
   getWakeableParentAfterChildCompletion: vi.fn(),
 }));
 const mockListMissionControlCompletionDocuments = vi.hoisted(() => vi.fn());
+const mockListAutonomousGoalLoopWatchdogPreview = vi.hoisted(() => vi.fn());
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
@@ -104,6 +105,10 @@ vi.mock("../services/heartbeat.js", () => ({
 
 vi.mock("../services/mission-control-gates.js", () => ({
   listMissionControlCompletionDocuments: mockListMissionControlCompletionDocuments,
+}));
+
+vi.mock("../services/autonomous-loop-watchdog-preview.js", () => ({
+  listAutonomousGoalLoopWatchdogPreview: mockListAutonomousGoalLoopWatchdogPreview,
 }));
 
 vi.mock("../services/instance-settings.js", () => ({
@@ -306,6 +311,15 @@ describe.sequential("issue comment reopen routes", () => {
     mockIssueService.list.mockResolvedValue([]);
     mockListMissionControlCompletionDocuments.mockReset();
     mockListMissionControlCompletionDocuments.mockResolvedValue([]);
+    mockListAutonomousGoalLoopWatchdogPreview.mockReset();
+    mockListAutonomousGoalLoopWatchdogPreview.mockResolvedValue({
+      companyId: "company-1",
+      mode: "preview",
+      readOnly: true,
+      generatedAt: "2026-05-11T10:00:00.000Z",
+      totalIssuesScanned: 0,
+      candidates: [],
+    });
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.hasPermission.mockResolvedValue(false);
@@ -340,6 +354,73 @@ describe.sequential("issue comment reopen routes", () => {
         agent: { id: reference },
       };
     });
+  });
+
+  it("serves read-only autonomous loop watchdog previews for operators", async () => {
+    mockListAutonomousGoalLoopWatchdogPreview.mockResolvedValue({
+      companyId: "company-1",
+      mode: "preview",
+      readOnly: true,
+      generatedAt: "2026-05-11T10:00:00.000Z",
+      totalIssuesScanned: 2,
+      candidates: [
+        {
+          id: "issue-1:repair_loop_decision:ceo_loop_decision_stale",
+          kind: "loop_decision_repair",
+          severity: "high",
+          owner: "operator",
+          metricKey: "autonomous_loop_decision_freshness_failure",
+          issueId: "issue-1",
+          identifier: "PAP-581",
+          title: "Autonomous loop goal",
+          status: "in_progress",
+          reason: "ceo_loop_decision_stale",
+          recoveryAction: "repair_loop_decision",
+          recommendedAction: "Review and rewrite the ceo-loop-decision document.",
+          userVisible: false,
+          generatedAt: "2026-05-11T10:00:00.000Z",
+        },
+      ],
+    });
+
+    const res = await request(await installActor(createApp()))
+      .get("/api/companies/company-1/autonomous-loop-watchdog/preview?limit=25")
+      .send();
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      companyId: "company-1",
+      mode: "preview",
+      readOnly: true,
+      totalIssuesScanned: 2,
+      candidates: [
+        expect.objectContaining({
+          owner: "operator",
+          kind: "loop_decision_repair",
+          recoveryAction: "repair_loop_decision",
+        }),
+      ],
+    });
+    expect(mockListAutonomousGoalLoopWatchdogPreview).toHaveBeenCalledWith(mockDb, "company-1", { limit: 25 });
+  });
+
+  it("rejects non-board actors for autonomous loop watchdog previews", async () => {
+    const res = await request(await installActor(createApp(), agentActor()))
+      .get("/api/companies/company-1/autonomous-loop-watchdog/preview")
+      .send();
+
+    expect(res.status).toBe(403);
+    expect(mockListAutonomousGoalLoopWatchdogPreview).not.toHaveBeenCalled();
+  });
+
+  it("validates autonomous loop watchdog preview limits", async () => {
+    const res = await request(await installActor(createApp()))
+      .get("/api/companies/company-1/autonomous-loop-watchdog/preview?limit=101")
+      .send();
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid limit");
+    expect(mockListAutonomousGoalLoopWatchdogPreview).not.toHaveBeenCalled();
   });
 
   it("serves derived autonomous loop state for the issue detail panel", async () => {

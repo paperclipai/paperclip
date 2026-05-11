@@ -87,6 +87,7 @@ import {
   continueAutonomousGoalLoopFromDecision,
   summarizeAutonomousGoalLoopContinuationOutcome,
 } from "../services/autonomous-goal-loop-continuation.js";
+import { listAutonomousGoalLoopWatchdogPreview } from "../services/autonomous-loop-watchdog-preview.js";
 import { listMissionControlCompletionDocuments } from "../services/mission-control-gates.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
@@ -1366,6 +1367,21 @@ export function issueRoutes(
     }
     const result = await getSearchService().search(companyId, query);
     res.json(result);
+  });
+
+  router.get("/companies/:companyId/autonomous-loop-watchdog/preview", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const limitParsed = z.coerce.number().int().min(1).max(100).optional().safeParse(req.query.limit);
+    if (!limitParsed.success) {
+      res.status(400).json({ error: "Invalid limit", details: limitParsed.error.issues });
+      return;
+    }
+    const preview = await listAutonomousGoalLoopWatchdogPreview(db, companyId, {
+      limit: limitParsed.data,
+    });
+    res.json(preview);
   });
 
   router.get("/companies/:companyId/issues", async (req, res) => {
