@@ -394,11 +394,11 @@ function DiffPill({ kind }: { kind: "differs" | "only-here" }) {
 function ColumnLabel({ tone, title }: { tone: "amber" | "emerald"; title: string }) {
   const cls =
     tone === "amber"
-      ? "border-amber-500/40 bg-amber-500/10 text-amber-200"
-      : "border-emerald-500/40 bg-emerald-500/10 text-emerald-200";
+      ? "border-amber-400/60 bg-amber-500/20 text-amber-50"
+      : "border-emerald-400/60 bg-emerald-500/20 text-emerald-50";
   return (
     <div
-      className={`rounded-md border px-3 py-1.5 text-[11px] font-medium uppercase tracking-[0.16em] ${cls}`}
+      className={`rounded-md border px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] ${cls}`}
     >
       {title}
     </div>
@@ -613,8 +613,7 @@ function RevisionPreview({
     if (!currentRevision) return "same";
     const other = otherTriggerById.get(trigger.id);
     if (!other) return "only-here";
-    const sameSummary = summarizeTriggerSnapshot(trigger) === summarizeTriggerSnapshot(other);
-    return sameSummary && trigger.enabled === other.enabled ? "same" : "differs";
+    return JSON.stringify(other) === JSON.stringify(trigger) ? "same" : "differs";
   };
 
   const variableStatus = (variable: RoutineVariable): "same" | "differs" | "only-here" => {
