@@ -9,6 +9,7 @@ export default defineConfig({
       "packages/adapters/acpx-local",
       "packages/adapters/claude-local",
       "packages/adapters/codex-local",
+      "packages/adapters/cursor-cloud",
       "packages/adapters/cursor-local",
       "packages/adapters/gemini-local",
       "packages/adapters/opencode-local",
