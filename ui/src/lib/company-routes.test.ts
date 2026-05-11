@@ -20,4 +20,16 @@ describe("company routes", () => {
       "/execution-workspaces/workspace-123",
     );
   });
+
+  it("treats deliverables paths as board routes that need a company prefix", () => {
+    expect(isBoardPathWithoutPrefix("/deliverables")).toBe(true);
+    expect(extractCompanyPrefixFromPath("/deliverables")).toBeNull();
+    expect(applyCompanyPrefix("/deliverables", "TES")).toBe("/TES/deliverables");
+    expect(applyCompanyPrefix("/deliverables/deliverable-123", "TES")).toBe(
+      "/TES/deliverables/deliverable-123",
+    );
+    expect(toCompanyRelativePath("/TES/deliverables/deliverable-123")).toBe(
+      "/deliverables/deliverable-123",
+    );
+  });
 });

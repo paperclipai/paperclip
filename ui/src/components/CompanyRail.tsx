@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from "react";
-import { Paperclip, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
   DndContext,
@@ -63,7 +63,13 @@ function SortableCompanyItem({
   };
 
   return (
-    <div ref={setNodeRef} style={style} {...attributes} {...listeners} className="overflow-visible">
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      className="overflow-visible"
+    >
       <Tooltip delayDuration={300}>
         <TooltipTrigger asChild>
           <a
@@ -82,13 +88,14 @@ function SortableCompanyItem({
             <div
               className={cn(
                 "absolute left-[-14px] w-1 rounded-r-full bg-foreground transition-[height] duration-150",
-                isSelected
-                  ? "h-5"
-                  : "h-0 group-hover:h-2"
+                isSelected ? "h-5" : "h-0 group-hover:h-2",
               )}
             />
             <div
-              className={cn("relative overflow-visible transition-transform duration-150", isDragging && "scale-105")}
+              className={cn(
+                "relative overflow-visible transition-transform duration-150",
+                isDragging && "scale-105",
+              )}
             >
               <CompanyPatternIcon
                 companyName={company.name}
@@ -139,7 +146,10 @@ export function CompanyRail() {
     queryFn: () => authApi.getSession(),
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
-  const companyIds = useMemo(() => sidebarCompanies.map((company) => company.id), [sidebarCompanies]);
+  const companyIds = useMemo(
+    () => sidebarCompanies.map((company) => company.id),
+    [sidebarCompanies],
+  );
 
   const liveRunsQueries = useQueries({
     queries: companyIds.map((companyId) => ({
@@ -180,7 +190,7 @@ export function CompanyRail() {
     // Keep sidebar reordering mouse-only so touch input can scroll/tap without drag affordances.
     useSensor(MouseSensor, {
       activationConstraint: { distance: 8 },
-    })
+    }),
   );
 
   const handleDragEnd = useCallback(
@@ -195,18 +205,12 @@ export function CompanyRail() {
 
       persistOrder(arrayMove(ids, oldIndex, newIndex));
     },
-    [orderedCompanies, persistOrder]
+    [orderedCompanies, persistOrder],
   );
 
   return (
-    <div className="flex flex-col items-center w-[72px] shrink-0 h-full bg-background border-r border-border">
-      {/* Paperclip icon - aligned with top sections (implied line, no visible border) */}
-      <div className="flex items-center justify-center h-12 w-full shrink-0">
-        <Paperclip className="h-5 w-5 text-foreground" />
-      </div>
-
-      {/* Company list */}
-      <div className="flex-1 flex flex-col items-center gap-2 py-3 w-full overflow-y-auto overflow-x-hidden scrollbar-none">
+    <div className="brand-shell flex h-full w-[84px] shrink-0 flex-col items-center border-r border-border/60 bg-background/95">
+      <div className="flex w-full flex-1 flex-col items-center gap-3 overflow-y-auto overflow-x-hidden py-3 scrollbar-none">
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
@@ -221,8 +225,12 @@ export function CompanyRail() {
                 key={company.id}
                 company={company}
                 isSelected={company.id === highlightedCompanyId}
-                hasLiveAgents={hasLiveAgentsByCompanyId.get(company.id) ?? false}
-                hasUnreadInbox={hasUnreadInboxByCompanyId.get(company.id) ?? false}
+                hasLiveAgents={
+                  hasLiveAgentsByCompanyId.get(company.id) ?? false
+                }
+                hasUnreadInbox={
+                  hasUnreadInboxByCompanyId.get(company.id) ?? false
+                }
                 onSelect={() => {
                   setSelectedCompanyId(company.id);
                   if (isInstanceRoute) {
@@ -235,16 +243,14 @@ export function CompanyRail() {
         </DndContext>
       </div>
 
-      {/* Separator before add button */}
-      <div className="w-8 h-px bg-border mx-auto shrink-0" />
+      <div className="mx-auto h-px w-10 shrink-0 bg-border/70" />
 
-      {/* Add company button */}
       <div className="flex items-center justify-center py-2 shrink-0">
         <Tooltip delayDuration={300}>
           <TooltipTrigger asChild>
             <button
               onClick={() => openOnboarding()}
-              className="flex items-center justify-center w-11 h-11 rounded-[22px] hover:rounded-[14px] border-2 border-dashed border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground transition-[border-color,color,border-radius] duration-150"
+              className="flex h-11 w-11 items-center justify-center rounded-[18px] border border-dashed border-border/80 bg-muted/30 text-muted-foreground transition-[border-color,color,transform] duration-150 hover:-translate-y-0.5 hover:border-primary/40 hover:text-primary"
               aria-label="Add company"
             >
               <Plus className="h-5 w-5" />

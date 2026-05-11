@@ -15,6 +15,7 @@ import {
 import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { useSidebar } from "../context/SidebarContext";
+import { CompanyPatternIcon } from "./CompanyPatternIcon";
 
 interface SidebarCompanyMenuProps {
   open?: boolean;
@@ -53,19 +54,25 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"
-          className="h-auto flex-1 justify-start gap-1 px-2 py-1.5 text-left"
+          className="h-auto flex-1 justify-start gap-2 rounded-2xl border border-border bg-muted/30 px-2.5 py-2 text-left hover:bg-muted/50"
           aria-label={selectedCompany ? `Open ${selectedCompany.name} menu` : "Open company menu"}
           disabled={!selectedCompany}
         >
           <span className="flex min-w-0 flex-1 items-center gap-2">
-            {selectedCompany?.brandColor ? (
-              <span
-                className="size-4 shrink-0 rounded-sm"
-                style={{ backgroundColor: selectedCompany.brandColor }}
-              />
-            ) : null}
-            <span className="truncate text-sm font-bold text-foreground">
-              {selectedCompany?.name ?? "Select company"}
+            <CompanyPatternIcon
+              companyName={selectedCompany?.name ?? "Bizbox"}
+              logoUrl={selectedCompany?.logoUrl}
+              brandColor={selectedCompany?.brandColor}
+              className="h-8 w-8 rounded-xl text-sm"
+              logoFit="contain"
+            />
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-semibold text-foreground">
+                {selectedCompany?.name ?? "Select company"}
+              </span>
+              <span className="block truncate text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                {selectedCompany?.issuePrefix ?? "No company selected"}
+              </span>
             </span>
           </span>
           <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
