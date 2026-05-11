@@ -24,6 +24,63 @@ def load_reference_landings() -> str:
         return ""
 
 
+def fetch_unsplash_fallback(product_name: str) -> dict:
+    """
+    Genera URLs de Unsplash Source basadas en keywords del producto.
+    No requiere API key — funciona desde cualquier IP.
+    Las URLs son consistentes por seed (misma imagen cada vez).
+    """
+    name_lower = product_name.lower()
+
+    # Keywords específicas por tipo de producto
+    if any(w in name_lower for w in ["perro", "dog", "mascota", "pet", "gato", "cat", "collar", "arnes", "arnés"]):
+        hero_kw    = "dog,pet,happy,owner"
+        product_kw = "dog,collar,pet,accessory"
+        context_kw = "dog,walking,lifestyle"
+    elif any(w in name_lower for w in ["cocina", "kitchen", "gadget", "blender", "licuadora"]):
+        hero_kw    = "kitchen,cooking,modern"
+        product_kw = "kitchen,gadget,appliance"
+        context_kw = "cooking,food,kitchen"
+    elif any(w in name_lower for w in ["fitness", "gym", "banda", "ejercicio", "deporte", "sport"]):
+        hero_kw    = "fitness,workout,home"
+        product_kw = "fitness,exercise,sport"
+        context_kw = "workout,gym,training"
+    elif any(w in name_lower for w in ["consola", "gaming", "retro", "game", "juego"]):
+        hero_kw    = "gaming,retro,console"
+        product_kw = "gaming,handheld,device"
+        context_kw = "gaming,playing,tech"
+    elif any(w in name_lower for w in ["belleza", "beauty", "crema", "serum", "skincare", "piel"]):
+        hero_kw    = "skincare,beauty,woman"
+        product_kw = "beauty,cosmetic,skincare"
+        context_kw = "woman,beauty,routine"
+    else:
+        words = [w for w in product_name.split()[:3] if len(w) > 3]
+        hero_kw    = ",".join(words) + ",lifestyle"
+        product_kw = ",".join(words)
+        context_kw = ",".join(words) + ",person"
+
+    base = "https://source.unsplash.com/featured"
+    hero_urls    = [f"{base}/1200x600/?{hero_kw}"]
+    product_urls = [
+        f"{base}/800x600/?{product_kw},1",
+        f"{base}/800x600/?{product_kw},2",
+        f"{base}/800x600/?{product_kw},3",
+    ]
+    context_urls = [
+        f"{base}/800x600/?{context_kw},lifestyle",
+        f"{base}/800x600/?{context_kw},real",
+    ]
+
+    all_urls = hero_urls + product_urls + context_urls
+    print(f"  ✅ Unsplash fallback: {len(all_urls)} URLs generadas", flush=True)
+    return {
+        "hero":    hero_urls,
+        "product": product_urls,
+        "context": context_urls,
+        "all":     all_urls,
+    }
+
+
 def fetch_pexels_images(product_name: str, pexels_key: str) -> dict:
     """
     Busca imágenes en Pexels para el producto.
@@ -374,9 +431,12 @@ Responde SOLO con JSON:
 
     print(f"  ✅ Skill context: {len(skill_context)} chars", flush=True)
 
-    # ── PASO 0a: Imágenes de Pexels ───────────────────────────────────────────
-    print(f"\n🖼️  Buscando imágenes en Pexels para: {name}", flush=True)
-    images = fetch_pexels_images(name, pexels_key)
+    # ── PASO 0a: Imágenes (Pexels → Unsplash fallback) ───────────────────────
+    print(f"\n🖼️  Buscando imágenes para: {name}", flush=True)
+    images = fetch_pexels_images(name, pexels_key) if pexels_key else {}
+    if not images.get("all"):
+        print(f"  ℹ️  Pexels no disponible — usando Unsplash", flush=True)
+        images = fetch_unsplash_fallback(name)
     hero_imgs    = images.get("hero", []) if images else []
     hero_img     = hero_imgs[0] if hero_imgs else ""
     product_imgs = images.get("product", []) if images else []
