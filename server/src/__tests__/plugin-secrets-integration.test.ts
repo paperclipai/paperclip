@@ -8,6 +8,7 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { companies, companySecrets, createDb } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -147,5 +148,37 @@ describeWithDb("secretService.listPluginOwned() — Tier 2 integration", () => {
     expect(rows).toHaveLength(2);
     expect(rows[0].id).toBe(second.id);
     expect(rows[1].id).toBe(first.id);
+  });
+
+  it("excludes deleted plugin-owned secrets", async () => {
+    const cid = await seedCompany();
+    const svc = secretService(db);
+
+    const active = await svc.create(
+      cid,
+      { name: "ACTIVE_TOKEN", provider: "local_encrypted", value: "active" },
+      { userId: "plugin:com.example.active", agentId: null },
+    );
+    const tombstoned = await svc.create(
+      cid,
+      { name: "DELETED_TOKEN", provider: "local_encrypted", value: "deleted" },
+      { userId: "plugin:com.example.deleted", agentId: null },
+    );
+
+    await db
+      .update(companySecrets)
+      .set({
+        key: `${tombstoned.name.toLowerCase()}__deleted__${tombstoned.id}`,
+        name: `${tombstoned.name}__deleted__${tombstoned.id}`,
+        status: "deleted",
+        deletedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(companySecrets.id, tombstoned.id));
+
+    const rows = await svc.listPluginOwned();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(active.id);
+    expect(rows[0].status).not.toBe("deleted");
   });
 });

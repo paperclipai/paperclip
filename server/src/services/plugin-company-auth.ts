@@ -5,12 +5,12 @@ import { pluginCompanySettings } from "@paperclipai/db";
 /**
  * Asserts that a plugin is authorized to operate within the given company.
  *
- * Authorization model (opt-in): a plugin may write/delete secrets for a company
- * only when an explicit `plugin_company_settings` row exists with `enabled = true`.
- * No row → denied (the plugin has not been authorized for this company).
+ * Authorization model: a plugin may write/delete secrets for a company unless
+ * an explicit `plugin_company_settings` row disables it.
+ * No row → authorized (default company behavior).
  * Row with `enabled = false` → denied.
  *
- * Throws if the plugin has no authorization row or is explicitly disabled.
+ * Throws if the plugin is explicitly disabled for the company.
  */
 export async function assertPluginAuthorizedForCompany(
   db: Db,
@@ -28,7 +28,7 @@ export async function assertPluginAuthorizedForCompany(
     )
     .then((rows) => rows[0] ?? null);
 
-  if (row === null || !row.enabled) {
+  if (row !== null && !row.enabled) {
     throw new Error(
       `Plugin is not authorized for company ${companyId}`,
     );

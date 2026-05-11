@@ -1450,7 +1450,10 @@ export function secretService(db: Db) {
       db
         .select()
         .from(companySecrets)
-        .where(like(companySecrets.createdByUserId, "plugin:%"))
+        .where(and(
+          like(companySecrets.createdByUserId, "plugin:%"),
+          ne(companySecrets.status, "deleted"),
+        ))
         .orderBy(desc(companySecrets.createdAt)),
 
     getById,

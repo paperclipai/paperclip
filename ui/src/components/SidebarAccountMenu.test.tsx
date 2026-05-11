@@ -116,4 +116,51 @@ describe("SidebarAccountMenu", () => {
       root.unmount();
     });
   });
+
+  it("clears cached instance-admin and plugin-secret data on sign out", async () => {
+    mockAuthApi.signOut.mockResolvedValue(undefined);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(["access", "current-board-access"], { isInstanceAdmin: true });
+    queryClient.setQueryData(["instance", "plugin-secrets"], [
+      { id: "secret-1", name: "PLUGIN_TOKEN", createdByUserId: "plugin:gitea" },
+    ]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAccountMenu
+            deploymentMode="authenticated"
+            instanceSettingsTarget="/instance/settings/general"
+            version="1.2.3"
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const trigger = container.querySelector('button[aria-label="Open account menu"]');
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const signOutButton = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Sign out"));
+    await act(async () => {
+      signOutButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockAuthApi.signOut).toHaveBeenCalled();
+    expect(queryClient.getQueryData(["access", "current-board-access"])).toBeUndefined();
+    expect(queryClient.getQueryData(["instance", "plugin-secrets"])).toBeUndefined();
+    expect(queryClient.getQueryData(["auth", "session"])?.user.id).toBe("user-1");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });
