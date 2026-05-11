@@ -62,13 +62,23 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
-async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 3_000) {
+async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await fn()) return true;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   return fn();
+}
+
+async function waitForValue<T>(fn: () => Promise<T | null | undefined>, timeoutMs = 10_000): Promise<T | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await fn();
+    if (value != null) return value;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return (await fn()) ?? undefined;
 }
 
 describeEmbeddedPostgres("subscription-included heartbeat budget accounting", () => {
@@ -141,15 +151,19 @@ describeEmbeddedPostgres("subscription-included heartbeat budget accounting", ()
     const run = await heartbeatService(db).invoke(agentId, "on_demand", {}, "manual");
     expect(run).not.toBeNull();
 
-    await waitForCondition(async () => {
+    const completed = await waitForCondition(async () => {
       const [row] = await db
         .select({ status: heartbeatRuns.status })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, run!.id));
       return row?.status === "succeeded";
     });
+    expect(completed).toBe(true);
 
-    const [event] = await db.select().from(costEvents).where(eq(costEvents.agentId, agentId));
+    const event = await waitForValue(async () => {
+      const [row] = await db.select().from(costEvents).where(eq(costEvents.agentId, agentId));
+      return row;
+    });
     expect(event).toMatchObject({
       billingType: "subscription_included",
       biller: "codex",
