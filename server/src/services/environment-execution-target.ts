@@ -46,6 +46,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
     }
 
     const parsed = await resolveEnvironmentDriverConfigForRuntime(input.db, input.companyId, {
+      id: input.environment.id,
       driver: input.environment.driver as "sandbox",
       config: parseObject(input.environment.config),
     });
@@ -119,6 +120,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
   }
 
   const parsed = await resolveEnvironmentDriverConfigForRuntime(input.db, input.companyId, {
+    id: input.environment.id,
     driver: input.environment.driver as "ssh",
     config: parseObject(input.environment.config),
   });
