@@ -4,6 +4,7 @@ export const DATA_KEYS = {
   LIST_RUNS: "list-runs",
   GET_RUN: "get-run",
   LIST_AGENTS: "list-agents",
+  LIST_SCHEMAS: "list-schemas",
 } as const;
 
 export const ACTION_KEYS = {

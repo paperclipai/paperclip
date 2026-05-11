@@ -71,12 +71,13 @@ function EdgeInspector({ edge, stageIds, onUpdate, onDelete }: EdgeInspectorProp
 interface StageFormProps {
   stage: StageDefinition;
   agents: AgentItem[];
+  schemas: string[];
   stageIds: string[];
   onChange: (updated: StageDefinition, oldId?: string) => void;
   onDelete: (id: string) => void;
 }
 
-function StageForm({ stage, agents, stageIds, onChange, onDelete }: StageFormProps) {
+function StageForm({ stage, agents, schemas, stageIds, onChange, onDelete }: StageFormProps) {
   const update = (patch: Partial<StageDefinition>) =>
     onChange({ ...stage, ...patch } as StageDefinition, patch.id !== undefined ? stage.id : undefined);
 
@@ -154,12 +155,16 @@ function StageForm({ stage, agents, stageIds, onChange, onDelete }: StageFormPro
 
       {(stage.type === "worker" || stage.type === "classifier") && (
         <FieldGroup label="Output Schema">
-          <input
-            style={inputStyle}
+          <select
+            style={selectStyle}
             value={stage.output_schema ?? ""}
             onChange={(e) => update({ output_schema: e.target.value || undefined } as Partial<StageDefinition>)}
-            placeholder="e.g. implementation-output"
-          />
+          >
+            <option value="">— No schema —</option>
+            {schemas.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
         </FieldGroup>
       )}
 
@@ -282,7 +287,9 @@ export function StageInspector({
 }: StageInspectorProps) {
   const { companyId } = useHostContext();
   const { data: agentsData } = usePluginData<ListAgentsResult>(DATA_KEYS.LIST_AGENTS, { companyId });
+  const { data: schemasData } = usePluginData<{ schemas: string[] }>(DATA_KEYS.LIST_SCHEMAS, {});
   const agents = agentsData?.agents ?? [];
+  const schemas = schemasData?.schemas ?? [];
 
   return (
     <div
@@ -300,7 +307,7 @@ export function StageInspector({
       {selectedEdge ? (
         <EdgeInspector edge={selectedEdge} stageIds={stageIds} onUpdate={onEdgeUpdate} onDelete={onEdgeDelete} />
       ) : selectedStage ? (
-        <StageForm stage={selectedStage} agents={agents} stageIds={stageIds} onChange={onStageChange} onDelete={onStageDelete} />
+        <StageForm stage={selectedStage} agents={agents} schemas={schemas} stageIds={stageIds} onChange={onStageChange} onDelete={onStageDelete} />
       ) : (
         <div style={{ color: "#6b7280", fontSize: 12, textAlign: "center", marginTop: 48, lineHeight: 1.6 }}>
           Click a stage node or edge to inspect and edit its properties.

@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { readdirSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   definePlugin,
   runWorker,
@@ -599,6 +602,19 @@ const plugin = definePlugin({
       if (!companyId) return { agents: [] };
       const agents = await ctx.agents.list({ companyId });
       return { agents };
+    });
+
+    ctx.data.register("list-schemas", async () => {
+      const schemasDir = resolve(dirname(fileURLToPath(import.meta.url)), "../schemas");
+      try {
+        const files = readdirSync(schemasDir);
+        const schemas = files
+          .filter((f) => f.endsWith(".json"))
+          .map((f) => f.replace(/\.json$/, ""));
+        return { schemas };
+      } catch {
+        return { schemas: [] };
+      }
     });
 
     // Action handlers for UI
