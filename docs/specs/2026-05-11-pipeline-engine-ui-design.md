@@ -13,17 +13,19 @@ An n8n-style visual UI for the pipeline-engine plugin that enables creating, edi
 
 ## Goals
 
-1. **Visual pipeline builder** — drag-and-drop canvas for authoring pipeline DAGs that serialize to the existing YAML format
-2. **Execution replay** — click into any run and see per-stage status, output, errors, and timing on the canvas
-3. **Run management** — trigger pipelines manually, cancel stuck runs, view history
-4. **At-a-glance health** — dashboard widget showing active/stuck/completed run counts
+1. **Visual pipeline builder** — drag-and-drop canvas for authoring pipeline DAGs, stored as JSON
+2. **Edge-based routing model** — conditions, branching, and error routing all live on edges (n8n-style)
+3. **Execution replay** — click into any run and see per-stage status, output, errors, and timing on the canvas
+4. **Run management** — trigger pipelines manually, cancel stuck runs, view history
+5. **At-a-glance health** — dashboard widget showing active/stuck/completed run counts
 
 ## Non-goals
 
-- Replacing the YAML-based trigger system (label-matching stays)
+- YAML as a pipeline format (replaced by JSON — drop `js-yaml` dependency)
+- File-based pipeline definitions in workspace repos (issue #2 is superseded by this design)
 - Real-time collaborative editing
 - Pipeline versioning/diffing UI (future)
-- Sub-pipeline materialization UI (backend not yet implemented — `handleCheckpointCompletion` logs "not yet supported")
+- Sub-pipeline materialization UI (backend not yet implemented)
 - Approval gate interactive UI (backend `requires_approval` field exists but is not wired)
 
 ---
@@ -75,19 +77,19 @@ packages/plugins/pipeline-engine/
 
 | Key | Params | Returns | Source |
 |---|---|---|---|
-| `list-pipelines` | `{ companyId }` | `Array<{ name, description, trigger, stageCount, yaml }>` | `plugin_state` yaml keys |
-| `get-pipeline` | `{ companyId, pipelineName }` | `PipelineDefinition` (parsed YAML) | `plugin_state` |
+| `list-pipelines` | `{ companyId }` | `Array<PipelineDefinition>` | `plugin_state` keys matching `pipeline:*` |
+| `get-pipeline` | `{ companyId, pipelineName }` | `PipelineDefinition` (JSON) | `plugin_state` key `pipeline:{name}` |
 | `list-runs` | `{ companyId, issueId?, status?, limit? }` | `Array<PipelineRun>` | `pipeline_runs` table (**new query method needed in StateMachine**) |
-| `get-run` | `{ runId }` | `{ run: PipelineRun, stages: PipelineStage[], pipelineDef: PipelineDefinition }` | Existing `getRun` + `getRunStages` + `JSON.parse(run.pipelineYaml)` (stored as JSON despite column name) |
+| `get-run` | `{ runId }` | `{ run: PipelineRun, stages: PipelineStage[], pipelineDef: PipelineDefinition }` | Existing `getRun` + `getRunStages` + `JSON.parse(run.pipelineYaml)` |
 | `list-agents` | `{ companyId }` | `Array<{ id, name }>` | `ctx.agents.list()` (same interface as `Dispatcher.agents`) |
 
 ### New Action Handlers (ctx.actions.register)
 
 | Key | Params | Effect |
 |---|---|---|
-| `save-pipeline` | `{ companyId, name, description, trigger, stages, edges, positions }` | Collapse `edges` into `stages[].depends_on`, serialize to YAML, store in `plugin_state` as `yaml:{name}`, store `positions` as `positions:{name}`, update `trigger_labels` config, **reload in-memory `pipelines` array and `TriggerMatcher`** |
+| `save-pipeline` | `{ companyId, pipeline: PipelineDefinition }` | Store full JSON in `plugin_state` as `pipeline:{name}`, update `trigger_labels` config from `pipeline.trigger.label`, **reload in-memory `pipelines` array and `TriggerMatcher`** |
 | `delete-pipeline` | `{ companyId, pipelineName }` | Remove from `plugin_state`, remove from `trigger_labels`, reload in-memory state |
-| `trigger-run` | `{ companyId, pipelineName, issueId }` | Look up pipeline from in-memory `pipelines` array (which includes both config-bootstrapped and UI-saved pipelines), call `materializePipeline()` |
+| `trigger-run` | `{ companyId, pipelineName, issueId }` | Look up pipeline from in-memory `pipelines` array, call `materializePipeline()` |
 | `cancel-run` | `{ companyId, runId }` | Set run status to `cancelled` (new status, see below), bulk-update all `pending`/`running` stages to `skipped` (**new StateMachine method: `cancelRun`**) |
 
 **New `PipelineRunStatus` value:** Add `"cancelled"` to the union type in `types.ts`. This distinguishes user-initiated cancellation from pipeline failure. The DB column is `TEXT` so no migration needed.
@@ -272,57 +274,105 @@ Simple link with DAG icon (same SVG as paperclip-dag) pointing to `/:companyPref
 
 ---
 
-## Canvas → YAML Serialization
+## Pipeline Definition Format (JSON)
 
-The builder stores pipelines in the same format the engine already consumes:
+The UI and engine share a single JSON format. No YAML. The visual canvas is the canonical editor; the JSON is what gets stored and executed.
 
-```yaml
-name: feature-pipeline
-description: End-to-end feature development workflow
-trigger:
-  label: pipeline:feature
-stages:
-  - id: spec-review
-    type: worker
-    agent_role: reviewer
-    output_schema: schemas/spec-review-output.json
-    checkpoint: true
-  - id: decomposition
-    type: worker
-    agent_role: architect
-    depends_on: [spec-review]
-    output_schema: schemas/decomposition-output.json
-  - id: implementation
-    type: parallel_fan_out
-    agent_role: developer
-    depends_on: [decomposition]
-    per_task: true
-    fan_in: all_complete
-  - id: validation
-    type: worker
-    agent_role: validator
-    depends_on: [implementation]
-    on_failure:
-      retry_with:
-        goto: implementation
-        body: "Fix: {{output.issues}}"
-        max_retries: 2
+### Schema
+
+```typescript
+interface PipelineDefinition {
+  name: string;
+  description: string;
+  trigger: { label: string };
+  stages: StageDefinition[];
+  edges: EdgeDefinition[];
+  positions: Record<string, { x: number; y: number }>;  // canvas layout
+}
+
+interface StageDefinition {
+  id: string;
+  type: "worker" | "classifier" | "parallel_fan_out" | "gate" | "sub-pipeline";
+  // Type-specific fields:
+  agent_role?: string;           // worker, classifier
+  output_schema?: string;        // worker, classifier
+  timeout?: string;              // all types
+  checkpoint?: boolean;          // all types
+  fan_in?: "all_complete" | "first_complete";  // parallel_fan_out, gate
+  per_task?: boolean;            // parallel_fan_out, sub-pipeline
+  ordering?: string;             // parallel_fan_out, sub-pipeline
+  pipeline?: string;             // sub-pipeline
+  requires_approval?: boolean;   // gate (future)
+  retry?: {                      // node-level retry config
+    max_retries: number;
+    body?: string;               // Handlebars template
+  };
+}
+
+interface EdgeDefinition {
+  id: string;
+  from: string;                  // source stage id
+  to: string;                    // target stage id
+  type?: "default" | "error";    // default = forward flow, error = failure routing
+  when?: string;                 // condition expression (only on default edges)
+  label?: string;                // display label on canvas
+}
 ```
 
-**Serialization logic:**
-- Canvas nodes → `stages[]` with `id`, `type`, and type-specific fields
-- Canvas edges → collapsed into `depends_on[]` arrays on target nodes (edges are NOT stored separately in YAML)
-- Pipeline metadata → top-level `name`, `description`, `trigger`
-- Node positions stored in `plugin_state` as `positions:{pipelineName}` with format `Record<string, { x: number; y: number }>` (nodeId → position)
-- `description` defaults to `""` if left blank (required field in `PipelineDefinition`)
+### Example
 
-**Deserialization (load existing):**
-- Parse YAML → nodes (one per stage, all top-level — `parallel_fan_out.stages[]` inline children are NOT supported on the canvas; they render as a single fan-out node)
-- Build edges from `depends_on` references
-- Load positions from `plugin_state` `positions:{name}` key
-- Apply dagre auto-layout if no saved positions exist
+```json
+{
+  "name": "feature-pipeline",
+  "description": "End-to-end feature development workflow",
+  "trigger": { "label": "pipeline:feature" },
+  "stages": [
+    { "id": "spec-review", "type": "worker", "agent_role": "reviewer", "output_schema": "schemas/spec-review-output.json", "checkpoint": true },
+    { "id": "classify", "type": "classifier", "agent_role": "architect", "output_schema": "schemas/classify-output.json" },
+    { "id": "implement", "type": "worker", "agent_role": "developer", "retry": { "max_retries": 2, "body": "Fix: {{output.issues}}" } },
+    { "id": "hotfix", "type": "worker", "agent_role": "developer" },
+    { "id": "validate", "type": "worker", "agent_role": "validator" }
+  ],
+  "edges": [
+    { "id": "e1", "from": "spec-review", "to": "classify" },
+    { "id": "e2", "from": "classify", "to": "implement", "when": "output.type == 'feature'", "label": "feature" },
+    { "id": "e3", "from": "classify", "to": "hotfix", "when": "output.type == 'bug'", "label": "bug" },
+    { "id": "e4", "from": "implement", "to": "validate" },
+    { "id": "e5", "from": "validate", "to": "implement", "type": "error", "label": "retry" }
+  ],
+  "positions": {
+    "spec-review": { "x": 300, "y": 100 },
+    "classify": { "x": 300, "y": 250 },
+    "implement": { "x": 200, "y": 400 },
+    "hotfix": { "x": 450, "y": 400 },
+    "validate": { "x": 200, "y": 550 }
+  }
+}
+```
 
-**Important:** `pipeline_runs.pipeline_yaml` column stores JSON (via `JSON.stringify`), NOT actual YAML. The `get-run` handler must use `JSON.parse()`, not `js-yaml.load()`. The `plugin_state` `yaml:{name}` key stores actual YAML text (via `js-yaml.dump()` during `save-pipeline`).
+### How the engine uses edges
+
+The current router derives "ready stages" from `depends_on`. The new router works differently:
+
+1. **Forward edges** (`type: "default"` or omitted): a stage is ready when ALL its incoming forward edges have their source stage completed AND the edge's `when` condition (if any) evaluates to true against the source's output.
+2. **Error edges** (`type: "error"`): when a stage fails and has retry config, the engine follows the error edge to determine the retry target. The target stage is reset and re-dispatched with the retry body template.
+3. **Stage with no incoming edges**: starts immediately (root node).
+4. **Stage with multiple incoming edges**: waits for all sources to complete (AND semantics by default; `fan_in: "first_complete"` changes to OR).
+5. **Conditional branches**: if a stage has multiple outgoing forward edges with `when` conditions, only edges whose condition evaluates true are followed. Stages reachable only via false-condition edges are marked `skipped`.
+
+### Storage
+
+- **Plugin state key**: `pipeline:{name}` — stores the full JSON definition
+- **Pipeline runs**: `pipeline_runs.pipeline_yaml` column stores this JSON (snapshotted at materialization time)
+- **No separate positions key** — positions are embedded in the definition
+
+### Migration from current format
+
+The existing `depends_on` + `condition` + `on_failure` model is replaced. A one-time migration transforms existing pipelines:
+- `depends_on: [a, b]` on stage X → edges `{ from: "a", to: "X" }` and `{ from: "b", to: "X" }`
+- `condition` on stage X → `when` on the incoming edge
+- `on_failure.retry_with.goto: Y` → error edge `{ from: "X", to: "Y", type: "error" }` + `retry` config on stage X
+- `skip_if` on stage X → removed (unreachable nodes simply have no active edge path)
 
 ---
 
@@ -332,6 +382,10 @@ stages:
 - `@xyflow/react` — ReactFlow canvas
 - `dagre` — auto-layout algorithm
 - `@types/dagre` — types
+
+**Removed packages:**
+- `js-yaml` — no longer needed (pipelines are JSON, not YAML)
+- `@types/js-yaml` — removed with js-yaml
 
 **Build:**
 - New `esbuild.ui.config.mjs` that bundles `src/ui/index.tsx` to `dist/ui/index.js`
@@ -358,19 +412,47 @@ stages:
 │  ctx.actions.register("save-pipeline", ...)                 │
 │  ctx.stream.emit("run-progress", ...)                       │
 │                                                              │
+│  Router (rewritten: edge-based traversal)                   │
 │  StateMachine ←→ PostgreSQL (pipeline_runs, pipeline_stages)│
-│  plugin_state  ←→ YAML definitions                          │
+│  plugin_state  ←→ JSON pipeline definitions                 │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
+## Engine Refactoring (Router + Types)
+
+The current router (`router.ts`) uses `depends_on` to derive ready stages. It must be rewritten for edge-based traversal:
+
+**Current `types.ts` changes:**
+- Remove `depends_on`, `condition`, `skip_if`, `on_failure` from `StageDefinition`
+- Add `retry?: { max_retries: number; body?: string }` to `StageDefinition`
+- Add `EdgeDefinition` type (as defined above)
+- Add `edges` and `positions` to `PipelineDefinition`
+
+**Current `router.ts` rewrite:**
+- `getReadyStages()` → traverse forward edges from completed stages, evaluate `when` conditions
+- `getSkippedStages()` → stages reachable only via edges with false `when` conditions
+- `evaluateFailure()` → find error edge from failed stage, check retry config
+
+**Current `dag-parser.ts` rewrite:**
+- `parsePipeline()` → `JSON.parse()` + validate structure (drop `js-yaml`)
+- `validateDAG()` → validate edges reference existing stage IDs, check for cycles
+
+**Current `expression-engine.ts`:**
+- `buildExpressionContext()` → keep, but adapt to work with edge `when` expressions
+- Edge `when` expressions evaluate against the **source stage's output** (e.g., `output.type == 'feature'`)
+
+**Current `trigger-matcher.ts`:**
+- Keep as-is — still matches issue labels to `pipeline.trigger.label`
+
 ## Testing Strategy
 
-- **Unit tests:** Serialization/deserialization (canvas model ↔ YAML) roundtrip
+- **Unit tests:** Edge-based router (ready stages, skipped stages, error routing)
+- **Unit tests:** Pipeline definition validation (cycles, dangling edges, missing stages)
 - **Unit tests:** Data/action handlers with mocked DB
 - **Storybook stories:** StageNode in each type + status variant, StagePalette, StageInspector per type
-- **Integration scenario:** Create pipeline in UI → verify YAML in plugin_state → trigger run → verify stages advance → verify replay shows correct status
+- **Integration scenario:** Create pipeline in UI → verify JSON in plugin_state → trigger run → verify stages advance via edges → verify replay shows correct status
 
 ---
 
@@ -402,7 +484,10 @@ AND NOT EXISTS (
 
 ## Resolved Decisions
 
-1. **Node positions** — stored in `plugin_state` as `positions:{pipelineName}`, format: `Record<string, {x: number, y: number}>`. Written on save alongside YAML.
-2. **Approval gates** — UI shows gate nodes with a "requires approval" badge but the interactive approve/reject buttons are deferred until the backend implements `requires_approval` handling. Gate conditions are auto-evaluated as today.
-3. **Sub-pipeline drill-in** — UI shows sub-pipeline nodes as non-expandable (disabled "Drill in" button) until `handleCheckpointCompletion` implements sub-pipeline materialization.
-4. **`parallel_fan_out` inline stages** — NOT represented as nested nodes on the canvas. The fan-out node is a single card; its inline `stages[]` field is not editable in the visual builder (use YAML directly for that advanced case). The canvas only supports the `parallel_fan_out` as a single dispatchable unit with `per_task` and `fan_in` config.
+1. **Node positions** — embedded in the pipeline definition JSON (`positions` field). No separate storage key.
+2. **Pipeline format** — pure JSON, no YAML. `js-yaml` dependency removed. The UI is the primary authoring tool.
+3. **Routing model** — edge-based. `depends_on`, `condition`, `skip_if`, `on_failure` removed from stages. All routing through `edges[]` array.
+4. **Retry model** — retry config (max_retries, body) lives on the stage. Error routing (where to retry) is an `on: error` edge. Matches n8n's split of retry config vs error routing.
+5. **Approval gates** — UI shows gate nodes with a "requires approval" badge but the interactive approve/reject buttons are deferred until the backend implements `requires_approval` handling.
+6. **Sub-pipeline drill-in** — UI shows sub-pipeline nodes as non-expandable (disabled "Drill in" button) until backend implements sub-pipeline materialization.
+7. **`parallel_fan_out` inline stages** — NOT represented as nested nodes on the canvas. The fan-out node is a single card; its inline `stages[]` field is removed from the type (fan-out dispatches its `agent_role` with `per_task`/`fan_in` config).
