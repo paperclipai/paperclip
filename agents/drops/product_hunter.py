@@ -576,6 +576,30 @@ def main():
     print(f"\n🤖 Analizando {len(all_products)} señales con LLM...", flush=True)
     products = enrich_with_llm(all_products, niche, yt_signals, api_key, extra_context=cj_context) if api_key else all_products
 
+    # Re-atachar image_url de CJ — el LLM borra las URLs al reescribir productos
+    if cj_products:
+        cj_image_map = {}
+        for p in cj_products:
+            if p.get("image_url") and p["image_url"].startswith("http"):
+                # Indexar por palabras clave del nombre (primeras 3 palabras)
+                key = " ".join(p["name"].lower().split()[:3])
+                cj_image_map[key] = {"image_url": p["image_url"], "cj_url": p.get("cj_url", "")}
+
+        for enriched in products:
+            if enriched.get("image_url"):
+                continue  # ya tiene imagen
+            name_lower = enriched.get("name", "").lower()
+            # Buscar match en el mapa de CJ
+            for cj_key_name, cj_data in cj_image_map.items():
+                if any(w in name_lower for w in cj_key_name.split() if len(w) > 3):
+                    enriched["image_url"] = cj_data["image_url"]
+                    enriched["cj_url"]    = cj_data["cj_url"]
+                    enriched["source"]    = "cj_dropshipping"
+                    break
+
+        attached = sum(1 for p in products if p.get("image_url"))
+        print(f"  🖼️  CJ images re-attached: {attached}/{len(products)}", flush=True)
+
     # Ordenar por score
     if products and isinstance(products[0], dict) and "score" in products[0]:
         products.sort(key=lambda p: p.get("score", 0), reverse=True)
@@ -616,14 +640,17 @@ def main():
     # JSON slim para el siguiente agente (Ad Spy / Lead Qualifier)
     slim_products = [
         {
-            "name":                p.get("name", ""),
-            "score":               p.get("score", 0),
-            "est_margin_pct":      p.get("est_margin_pct", 0),
-            "competition":         p.get("competition", "Med"),
-            "suggested_price_eur": p.get("suggested_price_eur", 0),
+            "name":                  p.get("name", ""),
+            "score":                 p.get("score", 0),
+            "est_margin_pct":        p.get("est_margin_pct", 0),
+            "competition":           p.get("competition", "Med"),
+            "suggested_price_eur":   p.get("suggested_price_eur", 0),
             "supplier_est_cost_eur": p.get("supplier_est_cost_eur", 0),
-            "why":                 p.get("why", "")[:120],
-            "yt_demand":           p.get("yt_demand", "unknown"),
+            "why":                   p.get("why", "")[:120],
+            "yt_demand":             p.get("yt_demand", "unknown"),
+            "image_url":             p.get("image_url", ""),
+            "cj_url":                p.get("cj_url", ""),
+            "source":                p.get("source", ""),
         }
         for p in products[:10]
     ]
