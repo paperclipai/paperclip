@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Syncs local fork master with paperclipai/paperclip upstream/master.
 # Fast-forward: merges directly and pushes. Non-FF: opens chore/sync-YYYYMMDD branch.
+# By default, brings local feature branches forward after master is current.
 # Posts result as a comment on the Paperclip issue ($PAPERCLIP_TASK_ID).
 
 set -euo pipefail
@@ -8,9 +9,130 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATE="$(date +%Y%m%d)"
 BRANCH="chore/sync-${DATE}"
+UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
+ORIGIN_REMOTE="${ORIGIN_REMOTE:-origin}"
+UPSTREAM_REF="${UPSTREAM_REF:-${UPSTREAM_REMOTE}/master}"
+LOCAL_REF="${LOCAL_REF:-master}"
+SYNC_FEATURES_SPEC="${SYNC_FEATURES:-all}"
+SYNC_FEATURES_EXPLICIT="0"
+EXCLUDE_FEATURES_SPEC="${EXCLUDE_FEATURES:-}"
+FEATURE_MODE="${SYNC_FEATURE_MODE:-rebase}"
+PUSH_FEATURES="${SYNC_PUSH_FEATURES:-1}"
+EXCLUDED_FEATURES_FILE=""
 
 log() { echo "[sync-upstream] $*"; }
 die() { log "ERROR: $*"; exit 1; }
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/sync-upstream.sh [options]
+
+Sync master with upstream/master. By default, local feature branches are rebased
+onto master after master is current, then pushed with --force-with-lease.
+
+Options:
+  --sync-features [all|branch[,branch...]]
+      Update selected local feature branches after master is current.
+      This is enabled by default with "all".
+
+  --feature-branches branch[,branch...]
+      Alias for --sync-features with an explicit branch list. Explicitly listed
+      branches are tried even if a previous auto-run excluded them after conflict.
+
+  --no-sync-features
+      Only sync master; do not update feature branches.
+
+  --exclude-features branch[,branch...]
+      Skip specific branches during this run.
+
+  --feature-mode merge|rebase
+      How to bring feature branches forward. Default: rebase.
+
+  --push-features
+      Push updated feature branches. This is the default.
+      Rebase mode uses --force-with-lease.
+
+  --no-push-features
+      Do not push updated feature branches.
+
+  --local-ref branch
+      Local base branch to sync. Default: master.
+
+  --upstream-ref ref
+      Upstream ref to merge into the local base. Default: upstream/master.
+
+  -h, --help
+      Show this help.
+
+Examples:
+  scripts/sync-upstream.sh
+  scripts/sync-upstream.sh --no-sync-features
+  scripts/sync-upstream.sh --exclude-features feat/a,tik-1300-fix
+  scripts/sync-upstream.sh --feature-branches feat/a,tik-1300-fix
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --sync-features)
+      if [[ $# -gt 1 && "${2:-}" != --* ]]; then
+        SYNC_FEATURES_SPEC="$2"
+        [[ "$2" == "all" ]] || SYNC_FEATURES_EXPLICIT="1"
+        shift 2
+      else
+        SYNC_FEATURES_SPEC="all"
+        shift
+      fi
+      ;;
+    --feature-branches)
+      [[ $# -gt 1 ]] || die "--feature-branches requires a branch list"
+      SYNC_FEATURES_SPEC="$2"
+      SYNC_FEATURES_EXPLICIT="1"
+      shift 2
+      ;;
+    --no-sync-features)
+      SYNC_FEATURES_SPEC=""
+      shift
+      ;;
+    --exclude-features)
+      [[ $# -gt 1 ]] || die "--exclude-features requires a branch list"
+      EXCLUDE_FEATURES_SPEC="$2"
+      shift 2
+      ;;
+    --feature-mode)
+      [[ $# -gt 1 ]] || die "--feature-mode requires merge or rebase"
+      FEATURE_MODE="$2"
+      shift 2
+      ;;
+    --push-features)
+      PUSH_FEATURES="1"
+      shift
+      ;;
+    --no-push-features)
+      PUSH_FEATURES="0"
+      shift
+      ;;
+    --local-ref)
+      [[ $# -gt 1 ]] || die "--local-ref requires a branch name"
+      LOCAL_REF="$2"
+      shift 2
+      ;;
+    --upstream-ref)
+      [[ $# -gt 1 ]] || die "--upstream-ref requires a ref"
+      UPSTREAM_REF="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "Unknown option: $1"
+      ;;
+  esac
+done
+
+[[ "$FEATURE_MODE" == "merge" || "$FEATURE_MODE" == "rebase" ]] || die "--feature-mode must be merge or rebase"
 
 # Paperclip comment helper (requires PAPERCLIP_* env vars)
 post_comment() {
@@ -52,64 +174,267 @@ update_issue() {
   [[ "$http_code" =~ ^2 ]] || log "Warning: issue update returned HTTP $http_code"
 }
 
+ensure_clean_worktree() {
+  git diff --quiet || die "Working tree has unstaged changes; commit or stash before syncing."
+  git diff --cached --quiet || die "Index has staged changes; commit or stash before syncing."
+}
+
+list_contains() {
+  local needle="$1"
+  local list="$2"
+  printf '%s\n' "$list" | tr ',' '\n' | awk 'NF { print $0 }' | grep -Fxq "$needle"
+}
+
+is_feature_excluded() {
+  local branch="$1"
+
+  if [[ -n "$EXCLUDE_FEATURES_SPEC" ]] && list_contains "$branch" "$EXCLUDE_FEATURES_SPEC"; then
+    return 0
+  fi
+
+  if [[ "$SYNC_FEATURES_EXPLICIT" != "1" && -f "$EXCLUDED_FEATURES_FILE" ]] && grep -Fxq "$branch" "$EXCLUDED_FEATURES_FILE"; then
+    return 0
+  fi
+
+  return 1
+}
+
+mark_feature_excluded() {
+  local branch="$1"
+  [[ -n "$EXCLUDED_FEATURES_FILE" ]] || return 0
+  touch "$EXCLUDED_FEATURES_FILE"
+  grep -Fxq "$branch" "$EXCLUDED_FEATURES_FILE" || printf '%s\n' "$branch" >> "$EXCLUDED_FEATURES_FILE"
+}
+
+clear_feature_excluded() {
+  local branch="$1"
+  local tmp
+  [[ -n "$EXCLUDED_FEATURES_FILE" && -f "$EXCLUDED_FEATURES_FILE" ]] || return 0
+  tmp="$(mktemp)"
+  grep -Fxv "$branch" "$EXCLUDED_FEATURES_FILE" > "$tmp" || true
+  mv "$tmp" "$EXCLUDED_FEATURES_FILE"
+}
+
+feature_branches() {
+  if [[ -z "$SYNC_FEATURES_SPEC" ]]; then
+    return 0
+  fi
+
+  if [[ "$SYNC_FEATURES_SPEC" == "all" ]]; then
+    local branch
+    git for-each-ref --format='%(refname:short)' refs/heads | while read -r branch; do
+      [[ -n "$branch" ]] || continue
+      [[ "$branch" != "$LOCAL_REF" ]] || continue
+      [[ ! "$branch" =~ ^chore/sync-[0-9]{8}$ ]] || continue
+      is_feature_excluded "$branch" && continue
+      printf '%s\n' "$branch"
+    done
+    return 0
+  fi
+
+  printf '%s\n' "$SYNC_FEATURES_SPEC" | tr ',' '\n' | awk 'NF { print $0 }' | while read -r branch; do
+    [[ -n "$branch" ]] || continue
+    if [[ -n "$EXCLUDE_FEATURES_SPEC" ]] && list_contains "$branch" "$EXCLUDE_FEATURES_SPEC"; then
+      continue
+    fi
+    printf '%s\n' "$branch"
+  done
+}
+
+push_feature_branch() {
+  local branch="$1"
+  local upstream_ref remote remote_branch
+  upstream_ref="$(git rev-parse --abbrev-ref "${branch}@{upstream}" 2>/dev/null || true)"
+
+  if [[ -n "$upstream_ref" ]]; then
+    remote="${upstream_ref%%/*}"
+    remote_branch="${upstream_ref#*/}"
+    if [[ "$remote_branch" == "$LOCAL_REF" && "$branch" != "$LOCAL_REF" ]]; then
+      remote="$ORIGIN_REMOTE"
+      remote_branch="$branch"
+    fi
+    if [[ "$FEATURE_MODE" == "rebase" ]]; then
+      git push --force-with-lease "$remote" "HEAD:${remote_branch}" 2>&1
+    else
+      git push "$remote" "HEAD:${remote_branch}" 2>&1
+    fi
+  else
+    if [[ "$FEATURE_MODE" == "rebase" ]]; then
+      git push --force-with-lease -u "$ORIGIN_REMOTE" "HEAD:${branch}" 2>&1
+    else
+      git push -u "$ORIGIN_REMOTE" "$branch" 2>&1
+    fi
+  fi
+}
+
+sync_feature_branches() {
+  local base_ref="$1"
+  local original_branch="$2"
+  local branch before after merge_output conflicts push_output updated_count skipped_count failed_count summary
+  updated_count=0
+  skipped_count=0
+  failed_count=0
+  summary=""
+
+  mapfile -t branches < <(feature_branches)
+  if [[ "${#branches[@]}" -eq 0 ]]; then
+    FEATURE_SUMMARY="No eligible feature branches to sync."
+    log "$FEATURE_SUMMARY"
+    return 0
+  fi
+
+  log "Syncing ${#branches[@]} feature branch(es) onto $base_ref with $FEATURE_MODE..."
+
+  for branch in "${branches[@]}"; do
+    git show-ref --verify --quiet "refs/heads/${branch}" || die "Feature branch not found locally: $branch"
+    [[ "$branch" != "$LOCAL_REF" ]] || die "Refusing to sync base branch as a feature branch: $branch"
+
+    log "Updating feature branch $branch..."
+    git checkout "$branch" 2>&1
+    before="$(git rev-parse --short HEAD)"
+
+    if git merge-base --is-ancestor "$base_ref" "$branch"; then
+      clear_feature_excluded "$branch"
+      skipped_count=$((skipped_count + 1))
+      summary+="\n- ${branch}: already contains ${base_ref} (${before})"
+      continue
+    fi
+
+    set +e
+    if [[ "$FEATURE_MODE" == "rebase" ]]; then
+      merge_output="$(git rebase "$base_ref" 2>&1)"
+    else
+      merge_output="$(git merge --no-edit "$base_ref" 2>&1)"
+    fi
+    local result=$?
+    set -e
+
+    if [[ "$result" -ne 0 ]]; then
+      conflicts="$(git diff --name-only --diff-filter=U 2>/dev/null | head -20 || true)"
+      if [[ "$FEATURE_MODE" == "rebase" ]]; then
+        git rebase --abort 2>/dev/null || true
+      else
+        git merge --abort 2>/dev/null || true
+      fi
+      mark_feature_excluded "$branch"
+      failed_count=$((failed_count + 1))
+      summary+="\n- ${branch}: conflict/problem; aborted and marked excluded for future auto-runs"
+      summary+="\n  Conflicts: ${conflicts:-none reported}"
+      summary+="\n  Retry explicitly with --feature-branches ${branch} after resolving or when you want to force another attempt."
+      continue
+    fi
+
+    after="$(git rev-parse --short HEAD)"
+    clear_feature_excluded "$branch"
+    updated_count=$((updated_count + 1))
+    summary+="\n- ${branch}: ${before} -> ${after}"
+
+    if [[ "$PUSH_FEATURES" == "1" ]]; then
+      log "Pushing feature branch $branch..."
+      set +e
+      push_output="$(push_feature_branch "$branch" 2>&1)"
+      local push_result=$?
+      set -e
+
+      if [[ "$push_result" -ne 0 ]]; then
+        mark_feature_excluded "$branch"
+        failed_count=$((failed_count + 1))
+        summary+="\n- ${branch}: rebased locally, but push failed; marked excluded for future auto-runs"
+        summary+="\n  Push output: ${push_output:-none}"
+        summary+="\n  Retry explicitly with --feature-branches ${branch} after checking the remote."
+        continue
+      fi
+
+      summary+=" (pushed)"
+    fi
+  done
+
+  [[ -n "$original_branch" ]] && git checkout "$original_branch" 2>&1 || true
+
+  FEATURE_SUMMARY="$(printf 'Feature branches updated: %s, already current: %s, excluded after problems: %s.%b' "$updated_count" "$skipped_count" "$failed_count" "$summary")"
+  log "$FEATURE_SUMMARY"
+}
+
 cd "$REPO_ROOT"
 
-log "Fetching upstream..."
-git fetch upstream 2>&1
+ensure_clean_worktree
+ORIGINAL_BRANCH="$(git branch --show-current || true)"
+EXCLUDED_FEATURES_FILE="$(git rev-parse --git-path paperclip-sync-excluded-features)"
 
-UPSTREAM_REF="upstream/master"
-LOCAL_REF="master"
+log "Fetching remotes..."
+git fetch "$UPSTREAM_REMOTE" 2>&1
+git fetch "$ORIGIN_REMOTE" 2>&1
 
 # Get commit counts for diff summary
 LOCAL_SHA="$(git rev-parse "$LOCAL_REF")"
 UPSTREAM_SHA="$(git rev-parse "$UPSTREAM_REF")"
+BASE_READY_FOR_FEATURES="0"
+FEATURE_SUMMARY=""
+ISSUE_STATUS="done"
 
 if [[ "$LOCAL_SHA" == "$UPSTREAM_SHA" ]]; then
   log "Already up-to-date with $UPSTREAM_REF — nothing to do."
-  update_issue "done" "$(printf 'Sync upstream: already up-to-date with %s (%s). No merge needed.' "$UPSTREAM_REF" "${UPSTREAM_SHA:0:8}")"
-  exit 0
-fi
-
-COMMITS_AHEAD="$(git rev-list --count "$LOCAL_REF...$UPSTREAM_REF" 2>/dev/null || echo 0)"
-DIFF_STAT="$(git diff --stat "$LOCAL_REF" "$UPSTREAM_REF" 2>/dev/null | tail -1 || echo '(diff unavailable)')"
-
-log "Upstream is $COMMITS_AHEAD commits ahead. Attempting fast-forward merge..."
-
-git checkout master
-
-if git merge --ff-only "$UPSTREAM_REF" 2>&1; then
-  NEW_SHA="$(git rev-parse HEAD)"
-  log "Fast-forward succeeded. Pushing to origin..."
-  git push origin master 2>&1
-
-  SUMMARY="$(printf '## Sync upstream: fast-forward OK ✓\n\n- Upstream: %s → %s\n- Commits merged: %s\n- Diff: %s\n\nPushed to origin/master.' \
-    "${LOCAL_SHA:0:8}" "${NEW_SHA:0:8}" "$COMMITS_AHEAD" "$DIFF_STAT")"
-
-  log "Done. $SUMMARY"
-  update_issue "done" "$SUMMARY"
+  BASE_READY_FOR_FEATURES="1"
 else
-  log "Fast-forward not possible — creating branch $BRANCH for manual merge."
-  git checkout -b "$BRANCH" 2>&1 || git checkout "$BRANCH"
+  read -r LOCAL_ONLY UPSTREAM_ONLY < <(git rev-list --left-right --count "$LOCAL_REF...$UPSTREAM_REF" 2>/dev/null || echo "0 0")
+  DIFF_STAT="$(git diff --stat "$LOCAL_REF" "$UPSTREAM_REF" 2>/dev/null | tail -1 || echo '(diff unavailable)')"
 
-  # Attempt merge (may produce conflicts)
-  MERGE_OUTPUT="$(git merge "$UPSTREAM_REF" 2>&1 || true)"
-  CONFLICTS="$(git diff --name-only --diff-filter=U 2>/dev/null | head -20 || echo '')"
+  log "$UPSTREAM_REF is ${UPSTREAM_ONLY} commit(s) ahead; $LOCAL_REF is ${LOCAL_ONLY} commit(s) ahead. Attempting fast-forward merge..."
 
-  if [[ -z "$CONFLICTS" ]]; then
-    git push origin "$BRANCH" 2>&1
-    SUMMARY="$(printf '## Sync upstream: non-FF merge on branch %s\n\nMerge completed without conflicts — PR required to land on master.\n\n- Branch: %s\n- Commits: %s\n- Diff: %s\n\nPush output:\n```\n%s\n```' \
-      "$BRANCH" "$BRANCH" "$COMMITS_AHEAD" "$DIFF_STAT" "$MERGE_OUTPUT")"
-    log "Non-FF merge done, pushed $BRANCH"
-    update_issue "in_review" "$SUMMARY"
+  git checkout "$LOCAL_REF" 2>&1
+
+  if git merge --ff-only "$UPSTREAM_REF" 2>&1; then
+    NEW_SHA="$(git rev-parse HEAD)"
+    log "Fast-forward succeeded. Pushing to $ORIGIN_REMOTE..."
+    git push "$ORIGIN_REMOTE" "$LOCAL_REF" 2>&1
+    BASE_READY_FOR_FEATURES="1"
+
+    SUMMARY="$(printf '## Sync upstream: fast-forward OK ✓\n\n- Upstream: %s → %s\n- Commits merged: %s\n- Diff: %s\n\nPushed to %s/%s.' \
+      "${LOCAL_SHA:0:8}" "${NEW_SHA:0:8}" "$UPSTREAM_ONLY" "$DIFF_STAT" "$ORIGIN_REMOTE" "$LOCAL_REF")"
+
+    log "Done. $SUMMARY"
   else
-    CONFLICT_LIST="$(printf '%s' "$CONFLICTS" | awk '{print "- " $0}' | head -20)"
-    git merge --abort 2>/dev/null || true
-    git checkout master
-    git branch -D "$BRANCH" 2>/dev/null || true
-    SUMMARY="$(printf '## Sync upstream: KONFLIKT — manuelle Auflösung erforderlich\n\n- Konflikte in %s Dateien:\n%s\n\nDiff zum Upstream:\n- Commits: %s\n- Stat: %s' \
-      "$(echo "$CONFLICTS" | wc -l | tr -d ' ')" "$CONFLICT_LIST" "$COMMITS_AHEAD" "$DIFF_STAT")"
-    log "Merge conflicts detected. Manual resolution required."
-    update_issue "blocked" "$SUMMARY"
-    exit 1
+    log "Fast-forward not possible — creating branch $BRANCH for manual merge."
+    git checkout -b "$BRANCH" 2>&1 || git checkout "$BRANCH"
+
+    # Attempt merge (may produce conflicts)
+    MERGE_OUTPUT="$(git merge "$UPSTREAM_REF" 2>&1 || true)"
+    CONFLICTS="$(git diff --name-only --diff-filter=U 2>/dev/null | head -20 || echo '')"
+
+    if [[ -z "$CONFLICTS" ]]; then
+      git push "$ORIGIN_REMOTE" "$BRANCH" 2>&1
+      SUMMARY="$(printf '## Sync upstream: non-FF merge on branch %s\n\nMerge completed without conflicts — PR required to land on %s.\n\n- Branch: %s\n- Upstream commits: %s\n- Local-only commits: %s\n- Diff: %s\n\nPush output:\n```\n%s\n```' \
+        "$BRANCH" "$LOCAL_REF" "$BRANCH" "$UPSTREAM_ONLY" "$LOCAL_ONLY" "$DIFF_STAT" "$MERGE_OUTPUT")"
+      log "Non-FF merge done, pushed $BRANCH"
+      ISSUE_STATUS="in_review"
+      update_issue "in_review" "$SUMMARY"
+    else
+      CONFLICT_LIST="$(printf '%s' "$CONFLICTS" | awk '{print "- " $0}' | head -20)"
+      git merge --abort 2>/dev/null || true
+      git checkout "$LOCAL_REF" 2>&1
+      git branch -D "$BRANCH" 2>/dev/null || true
+      SUMMARY="$(printf '## Sync upstream: KONFLIKT — manuelle Auflösung erforderlich\n\n- Konflikte in %s Dateien:\n%s\n\nDiff zum Upstream:\n- Upstream commits: %s\n- Local-only commits: %s\n- Stat: %s' \
+        "$(echo "$CONFLICTS" | wc -l | tr -d ' ')" "$CONFLICT_LIST" "$UPSTREAM_ONLY" "$LOCAL_ONLY" "$DIFF_STAT")"
+      log "Merge conflicts detected. Manual resolution required."
+      update_issue "blocked" "$SUMMARY"
+      exit 1
+    fi
   fi
 fi
+
+if [[ -n "$SYNC_FEATURES_SPEC" ]]; then
+  if [[ "$BASE_READY_FOR_FEATURES" == "1" ]]; then
+    sync_feature_branches "$LOCAL_REF" "$ORIGINAL_BRANCH"
+    SUMMARY="$(printf '%s\n\n## Feature branch sync\n\n%s' "${SUMMARY:-Sync upstream: already up-to-date with ${UPSTREAM_REF} (${UPSTREAM_SHA:0:8}). No merge needed.}" "$FEATURE_SUMMARY")"
+  else
+    FEATURE_SUMMARY="Feature branch sync skipped because ${LOCAL_REF} was not updated directly. Merge ${BRANCH} first, then rerun with --sync-features."
+    log "$FEATURE_SUMMARY"
+    SUMMARY="$(printf '%s\n\n## Feature branch sync\n\n%s' "$SUMMARY" "$FEATURE_SUMMARY")"
+  fi
+fi
+
+if [[ -z "${SUMMARY:-}" ]]; then
+  SUMMARY="$(printf 'Sync upstream: already up-to-date with %s (%s). No merge needed.' "$UPSTREAM_REF" "${UPSTREAM_SHA:0:8}")"
+fi
+
+update_issue "$ISSUE_STATUS" "$SUMMARY"
