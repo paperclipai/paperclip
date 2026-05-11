@@ -431,9 +431,26 @@ Responde SOLO con JSON:
 
     print(f"  ✅ Skill context: {len(skill_context)} chars", flush=True)
 
-    # ── PASO 0a: Imágenes (Pexels → Unsplash fallback) ───────────────────────
+    # ── PASO 0a: Imágenes (CJ real → Pexels → Unsplash fallback) ────────────
     print(f"\n🖼️  Buscando imágenes para: {name}", flush=True)
-    images = fetch_pexels_images(name, pexels_key) if pexels_key else {}
+
+    # Prioridad 1: imagen real del proveedor CJ (si viene en el JSON del producto)
+    cj_image = product.get("image_url", "")
+    images = {}
+    if cj_image and cj_image.startswith("http"):
+        print(f"  ✅ Imagen real CJ: {cj_image[:60]}", flush=True)
+        images = {
+            "hero":    [cj_image],
+            "product": [cj_image],
+            "context": [],
+            "all":     [cj_image],
+        }
+
+    # Prioridad 2: Pexels API
+    if not images.get("all") and pexels_key:
+        images = fetch_pexels_images(name, pexels_key)
+
+    # Prioridad 3: Unsplash fallback
     if not images.get("all"):
         print(f"  ℹ️  Pexels no disponible — usando Unsplash", flush=True)
         images = fetch_unsplash_fallback(name)

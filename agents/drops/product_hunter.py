@@ -424,16 +424,29 @@ def fetch_cj_products(niche: str, cj_key: str, limit: int = 8) -> list:
 
     # 2. Buscar productos
     try:
-        # CJ busca mejor en inglés — traducir keywords básicas
+        # CJ requiere inglés — traducción ampliada
         kw_map = {
-            "perro": "dog", "gato": "cat", "mascota": "pet",
-            "collar": "collar", "arnés": "harness", "correa": "leash",
+            "perro": "dog", "gato": "cat", "mascota": "pet", "mascotás": "pet",
+            "collar": "collar", "arnés": "harness", "arnes": "harness", "correa": "leash",
             "cocina": "kitchen", "hogar": "home", "fitness": "fitness",
             "deporte": "sport", "gadget": "gadget", "led": "led",
+            "humidificador": "humidifier", "soporte": "stand",
+            "mochila": "backpack", "bolsa": "bag", "rodillo": "roller",
+            "masaje": "massage", "facial": "facial", "cuarzo": "quartz",
+            "portátil": "portable", "portatil": "portable",
+            "recargable": "rechargeable", "inalámbrico": "wireless",
+            "luminoso": "light", "impermeable": "waterproof",
+            "para perros": "dog", "para gatos": "cat",
+            "de escritorio": "desktop", "de viaje": "travel",
         }
         query = niche.lower()
         for es, en in kw_map.items():
             query = query.replace(es, en)
+        # Limpiar: quitar artículos y preposiciones en español que quedaron
+        for word in ["para", "de", "del", "con", "sin", "los", "las", "el", "la", "un", "una"]:
+            query = re.sub(rf'\b{word}\b', '', query)
+        query = re.sub(r'\s+', ' ', query).strip()
+        print(f"  🔑 CJ keyword: '{query}'", flush=True)
 
         params = urllib.parse.urlencode({"keyWord": query, "page": 1, "size": limit})
         req = urllib.request.Request(
