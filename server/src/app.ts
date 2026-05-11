@@ -1236,6 +1236,28 @@ TIKTOK_OPEN_ID=${openId}
     }
   });
 
+  // ── Grant instance admin role to a user ──────────────────────────────────────
+  // Usage: GET /api/internal/grant-instance-admin?userId=X&secret=Y
+  app.get("/api/internal/grant-instance-admin", async (req, res) => {
+    const secret = (req.query.secret as string) ?? "";
+    const expectedSecret = (process.env.BETTER_AUTH_SECRET ?? "").slice(0, 16);
+    if (!secret || !expectedSecret || secret !== expectedSecret) {
+      res.status(403).json({ error: "forbidden" }); return;
+    }
+    const userId = (req.query.userId as string) ?? "";
+    if (!userId) { res.status(400).json({ error: "userId required" }); return; }
+    try {
+      const { instanceUserRoles } = await import("@paperclipai/db");
+      await (db as any)
+        .insert(instanceUserRoles)
+        .values({ userId, role: "instance_admin" })
+        .onConflictDoNothing();
+      res.json({ ok: true, userId, role: "instance_admin" });
+    } catch (err: unknown) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // ── Fix trading agent scripts in DiscontrolsBags ────────────────────────────
   // Usage: GET /api/internal/fix-trading-scripts?secret=<first-16-chars-BETTER_AUTH_SECRET>
   app.get("/api/internal/fix-trading-scripts", async (req, res) => {
