@@ -47,7 +47,7 @@ async function run() {
   const parsed = tool === "gh" ? parseGhArgs(realArgs) : parseGitArgs(realArgs);
 
   if (parsed.scanTargets.length === 0) {
-    return execReal(tool, parsed);
+    return execReal(tool, parsed, { stdinBuffer: null });
   }
 
   const leakCheckScript = process.env.PAPERCLIP_LEAK_CHECK_SCRIPT ?? "";
@@ -58,12 +58,23 @@ async function run() {
     process.exit(71);
   }
 
-  // Resolve each scan target to a text body.
+  // Resolve each scan target to a text body. If any target is "stdin" we
+  // drain stdin once and reuse the captured buffer for all stdin targets;
+  // on the clean path we re-feed this buffer to the real tool because the
+  // parent's stdin has already been consumed.
+  let stdinBuffer = null;
   const resolved = [];
   for (const target of parsed.scanTargets) {
     try {
-      const text = await resolveTargetToText(target);
-      resolved.push({ target, text });
+      if (target.kind === "stdin") {
+        if (stdinBuffer === null) {
+          stdinBuffer = await readAllStdin();
+        }
+        resolved.push({ target, text: stdinBuffer });
+      } else {
+        const text = await resolveTargetToText(target);
+        resolved.push({ target, text });
+      }
     } catch (err) {
       process.stderr.write(
         `paperclip leak-check shim: could not read scan target "${target.source}": ${err?.message || String(err)}\n`,
@@ -75,7 +86,7 @@ async function run() {
   // Empty-body targets (e.g. an empty --body "") pass through.
   const nonEmpty = resolved.filter(({ text }) => text.length > 0);
   if (nonEmpty.length === 0) {
-    return execReal(tool, parsed);
+    return execReal(tool, parsed, { stdinBuffer });
   }
 
   const overrideEnv = (process.env.PAPERCLIP_LEAK_OVERRIDE ?? "").trim() === "1";
@@ -90,7 +101,7 @@ async function run() {
   }
 
   if (blocked.length === 0) {
-    return execReal(tool, parsed);
+    return execReal(tool, parsed, { stdinBuffer });
   }
 
   await reportBlocked(tool, parsed, blocked);
@@ -189,10 +200,17 @@ function resolveRealTool(toolName) {
  * inherited stdio + exitCode propagation rather than execve since Node has
  * no execve binding.
  *
+ * If the original invocation pulled its body from stdin (e.g.
+ * `gh pr create --body-file -`, `git commit -F -`), our parent has already
+ * drained stdin into the leak-checker. We re-feed the captured buffer to
+ * the spawned real tool via a piped stdin so the real tool sees the
+ * original body bytes intact; otherwise the published body would be empty.
+ *
  * @param {"gh"|"git"} toolName
  * @param {import("./parse.mjs").ParsedShimRequest} parsed
+ * @param {{ stdinBuffer: string | null }} opts
  */
-async function execReal(toolName, parsed) {
+async function execReal(toolName, parsed, opts) {
   const realBin = resolveRealTool(toolName);
   if (!realBin) {
     process.stderr.write(
@@ -203,10 +221,21 @@ async function execReal(toolName, parsed) {
   // We deliberately pass realArgs without the --allow-leak-OK flag (parse.mjs
   // stripped it) since real gh/git would reject it.
   const args = process.argv.slice(3).filter((a) => a !== "--allow-leak-OK");
+  const stdinBuffer = opts?.stdinBuffer ?? null;
+  const stdio = stdinBuffer !== null
+    ? ["pipe", "inherit", "inherit"]
+    : "inherit";
   const child = spawn(realBin, args, {
-    stdio: "inherit",
+    stdio,
     env: process.env,
   });
+  if (stdinBuffer !== null && child.stdin) {
+    child.stdin.on("error", () => {
+      // EPIPE: real tool may close stdin early (e.g. usage error). Ignore;
+      // the exit code propagation below reports the actual failure.
+    });
+    child.stdin.end(stdinBuffer);
+  }
   child.on("exit", (code, signal) => {
     if (signal) {
       process.kill(process.pid, signal);

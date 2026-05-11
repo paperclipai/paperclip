@@ -94,6 +94,14 @@ describe("leak-check shim end-to-end", () => {
           `printf 'FAKE-${tool} ARGV: ' >> ${shellQuote(logFile)}`,
           `printf '%s ' "$@" >> ${shellQuote(logFile)}`,
           `printf '\\n' >> ${shellQuote(logFile)}`,
+          // If anything is piped on stdin, record `STDIN[<len>]:<body>` so
+          // tests can assert the real tool received the body. When stdin
+          // is a TTY (no pipe), this is skipped to keep the no-stdin
+          // tests' log content unchanged.
+          "if [ ! -t 0 ]; then",
+          "  STDIN_BODY=\"$(cat)\"",
+          `  printf 'STDIN[%d]:%s\\n' "${'$'}{#STDIN_BODY}" "$STDIN_BODY" >> ${shellQuote(logFile)}`,
+          "fi",
           "exit 0",
         ].join("\n"),
         { mode: 0o755 },
@@ -176,6 +184,63 @@ describe("leak-check shim end-to-end", () => {
       const log = await tryReadFile(logFile);
       // Real gh should NOT have been invoked.
       expect(log).toBe("");
+    } finally {
+      await setup.cleanup();
+    }
+  });
+
+  it("forwards a clean body delivered via --body-file - (stdin) intact to the real tool", async () => {
+    // Regression: the shim drains stdin to run leak-check; without
+    // re-piping the captured text to the spawned real tool, the real
+    // tool reads an empty stdin and publishes an empty body. This test
+    // pins the behavior so it can't silently re-break.
+    const scriptPath = await writeFakeLeakCheck();
+    const { dir: fakeTools, logFile } = await writeFakeTools();
+    const setup = await prepareLeakCheckShimDir({ runId: "test-stdin-passthrough", scriptPath });
+    try {
+      const cleanBody = "Migrated cache to LRU. No leak markers in this body.";
+      const result = runShim({
+        tool: "gh",
+        argv: ["pr", "create", "--body-file", "-"],
+        shimDir: setup.shimDir,
+        fakeToolsDir: fakeTools,
+        scriptPath,
+        stdin: cleanBody,
+      });
+      expect(result.status).toBe(0);
+      // Real (fake) gh was invoked and saw the body on stdin — our fake
+      // tools record argv only, so extend the fake gh to also dump stdin
+      // length into the log so we can assert the body made it through.
+      const { readFile } = await import("node:fs/promises");
+      const log = await readFile(logFile, "utf8");
+      expect(log).toContain("FAKE-gh ARGV: pr create --body-file -");
+      // Verify the stdin content reached the real tool by checking the
+      // stdin-capture marker the fake tool writes.
+      expect(log).toContain(`STDIN[${cleanBody.length}]:${cleanBody}`);
+    } finally {
+      await setup.cleanup();
+    }
+  });
+
+  it("forwards a clean body delivered via git commit -F - intact to the real tool", async () => {
+    const scriptPath = await writeFakeLeakCheck();
+    const { dir: fakeTools, logFile } = await writeFakeTools();
+    const setup = await prepareLeakCheckShimDir({ runId: "test-git-stdin", scriptPath });
+    try {
+      const cleanBody = "fix(thing): clean message body, no leak markers.";
+      const result = runShim({
+        tool: "git",
+        argv: ["commit", "-F", "-"],
+        shimDir: setup.shimDir,
+        fakeToolsDir: fakeTools,
+        scriptPath,
+        stdin: cleanBody,
+      });
+      expect(result.status).toBe(0);
+      const { readFile } = await import("node:fs/promises");
+      const log = await readFile(logFile, "utf8");
+      expect(log).toContain("FAKE-git ARGV: commit -F -");
+      expect(log).toContain(`STDIN[${cleanBody.length}]:${cleanBody}`);
     } finally {
       await setup.cleanup();
     }
