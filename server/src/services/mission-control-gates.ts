@@ -25,9 +25,11 @@ export function assertMissionControlCompletionGate(input: {
     reason: gate.reason,
     missingDocumentKeys: gate.missingDocumentKeys,
     validatorVerdict: gate.validatorVerdict,
+    ceoLoopDecision: gate.ceoLoopDecision,
     requiredApprovalGate: gate.requiredApprovalGate,
     requiredDocumentKeys: gate.policy?.requiredDocumentKeys ?? [],
     acceptedValidatorVerdicts: gate.policy?.acceptedValidatorVerdicts ?? ["PASS"],
+    autonomousLoop: gate.policy?.autonomousLoop ?? null,
   });
 }
 

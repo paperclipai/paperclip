@@ -36,6 +36,190 @@ const textArraySchema = z.array(z.string().trim().min(1));
 const nonEmptyTextArraySchema = textArraySchema.default([]);
 const requiredTextArraySchema = textArraySchema.min(1);
 
+export const MISSION_CONTROL_AUTONOMOUS_LOOP_DOCUMENT_KEY = "ceo-loop-decision" as const;
+
+export const MISSION_CONTROL_AUTONOMOUS_LOOP_DECISIONS = [
+  "next_iteration",
+  "goal_reached",
+  "blocked",
+  "approval_required",
+  "failed",
+] as const;
+export type MissionControlAutonomousLoopDecision =
+  (typeof MISSION_CONTROL_AUTONOMOUS_LOOP_DECISIONS)[number];
+
+export const MISSION_CONTROL_AUTONOMOUS_LOOP_STATES = [
+  "goal_created",
+  "planning",
+  "executing",
+  "validating",
+  "ceo_review",
+  "next_iteration",
+  "goal_reached",
+  "blocked",
+  "approval_required",
+  "failed",
+] as const;
+export type MissionControlAutonomousLoopState =
+  (typeof MISSION_CONTROL_AUTONOMOUS_LOOP_STATES)[number];
+
+export const MISSION_CONTROL_AUTONOMOUS_LOOP_REPORT_EVENTS = [
+  "goal_reached",
+  "blocker",
+  "approval_required",
+  "budget_exceeded",
+  "runtime_exceeded",
+  "iteration_exceeded",
+  "repeated_failure",
+  "elevated_risk",
+] as const;
+export type MissionControlAutonomousLoopReportEvent =
+  (typeof MISSION_CONTROL_AUTONOMOUS_LOOP_REPORT_EVENTS)[number];
+
+export const MISSION_CONTROL_AUTONOMOUS_LOOP_CEO_APPROVALS = [
+  "research",
+  "specs",
+  "local_code_changes",
+  "tests",
+  "paperclip_comments",
+  "dry_runs",
+] as const;
+export type MissionControlAutonomousLoopCeoApproval =
+  (typeof MISSION_CONTROL_AUTONOMOUS_LOOP_CEO_APPROVALS)[number];
+
+export const MISSION_CONTROL_AUTONOMOUS_LOOP_USER_APPROVALS = [
+  "live_external_action",
+  "destructive_action",
+  "production_deploy",
+  "protected_branch_merge",
+  "spend_money",
+  "account_or_proxy_change",
+] as const;
+export type MissionControlAutonomousLoopUserApproval =
+  (typeof MISSION_CONTROL_AUTONOMOUS_LOOP_USER_APPROVALS)[number];
+
+export const missionControlAutonomousLoopPolicySchema = z
+  .object({
+    enabled: z.boolean().optional().default(false),
+    controller: z.literal("CEO").optional().default("CEO"),
+    goal: z.string().trim().min(1).optional().nullable().default(null),
+    state: z.enum(MISSION_CONTROL_AUTONOMOUS_LOOP_STATES).optional().default("goal_created"),
+    startedAt: z.string().datetime().optional().nullable().default(null),
+    iteration: z.number().int().nonnegative().max(1000).optional().default(0),
+    maxIterations: z.number().int().positive().max(100).optional().nullable().default(null),
+    maxRuntimeHours: z.number().positive().max(24 * 90).optional().nullable().default(null),
+    maxBudgetCents: z.number().int().positive().optional().nullable().default(null),
+    requireValidatorPass: z.boolean().optional().default(true),
+    reportToUserOnlyOn: z
+      .array(z.enum(MISSION_CONTROL_AUTONOMOUS_LOOP_REPORT_EVENTS))
+      .optional()
+      .default(["goal_reached", "blocker", "approval_required", "runtime_exceeded", "iteration_exceeded"]),
+    ceoCanApprove: z
+      .array(z.enum(MISSION_CONTROL_AUTONOMOUS_LOOP_CEO_APPROVALS))
+      .optional()
+      .default(["research", "specs", "local_code_changes", "tests", "paperclip_comments", "dry_runs"]),
+    userApprovalRequired: z
+      .array(z.enum(MISSION_CONTROL_AUTONOMOUS_LOOP_USER_APPROVALS))
+      .optional()
+      .default([
+        "live_external_action",
+        "destructive_action",
+        "production_deploy",
+        "protected_branch_merge",
+        "spend_money",
+        "account_or_proxy_change",
+      ]),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (!value.enabled) return;
+    if (!value.goal) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Autonomous loops require a goal", path: ["goal"] });
+    }
+    if (!value.startedAt) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Autonomous loops require startedAt for runtime limits",
+        path: ["startedAt"],
+      });
+    }
+    if (!value.maxIterations) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Autonomous loops require maxIterations",
+        path: ["maxIterations"],
+      });
+    }
+    if (!value.maxRuntimeHours) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Autonomous loops require maxRuntimeHours",
+        path: ["maxRuntimeHours"],
+      });
+    }
+  });
+export type MissionControlAutonomousLoopPolicy = z.infer<typeof missionControlAutonomousLoopPolicySchema>;
+
+const missionControlCeoLoopNextTaskSchema = z
+  .object({
+    title: z.string().trim().min(1).max(240),
+    description: z.string().trim().min(1).max(20000).optional().nullable().default(null),
+    acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).min(1).max(20),
+    assigneeHint: z.string().trim().min(1).max(160).optional().nullable().default(null),
+    safeToRunWithoutUserApproval: z.boolean(),
+  })
+  .strict();
+
+const missionControlCeoLoopHardGateSchema = z
+  .object({
+    required: z.boolean(),
+    reason: z.string().trim().min(1).max(4000).optional().nullable().default(null),
+    category: z.enum(MISSION_CONTROL_AUTONOMOUS_LOOP_USER_APPROVALS).optional().nullable().default(null),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.required && !value.reason) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Required hard gates need a reason", path: ["reason"] });
+    }
+  });
+
+export const missionControlCeoLoopDecisionSchema = z
+  .object({
+    version: z.literal(1),
+    iteration: z.number().int().nonnegative().max(1000),
+    decision: z.enum(MISSION_CONTROL_AUTONOMOUS_LOOP_DECISIONS),
+    rationale: z.string().trim().min(1).max(4000),
+    nextTask: missionControlCeoLoopNextTaskSchema.optional().nullable().default(null),
+    hardGate: missionControlCeoLoopHardGateSchema.optional().nullable().default(null),
+    validatorVerdict: z.enum(MISSION_CONTROL_VALIDATOR_VERDICTS).optional().nullable().default(null),
+    evidence: nonEmptyTextArraySchema,
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.decision === "next_iteration" && !value.nextTask) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "next_iteration decisions require nextTask",
+        path: ["nextTask"],
+      });
+    }
+    if (value.decision === "approval_required" && !value.hardGate?.required) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "approval_required decisions require a hardGate",
+        path: ["hardGate"],
+      });
+    }
+    if (value.nextTask && !value.nextTask.safeToRunWithoutUserApproval && value.decision !== "approval_required") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Unsafe next tasks must use approval_required",
+        path: ["nextTask", "safeToRunWithoutUserApproval"],
+      });
+    }
+  });
+export type MissionControlCeoLoopDecision = z.infer<typeof missionControlCeoLoopDecisionSchema>;
+
 export const missionControlIssuePolicySchema = z
   .object({
     enabled: z.boolean().optional().default(false),
@@ -49,6 +233,7 @@ export const missionControlIssuePolicySchema = z
     maxIterations: z.number().int().positive().max(20).optional().nullable().default(null),
     liveActionGate: z.enum(MISSION_CONTROL_APPROVAL_GATES).optional().default("board"),
     destructiveActionGate: z.enum(MISSION_CONTROL_APPROVAL_GATES).optional().default("board"),
+    autonomousLoop: missionControlAutonomousLoopPolicySchema.optional().nullable().default(null),
   })
   .strict();
 export type MissionControlIssuePolicy = z.infer<typeof missionControlIssuePolicySchema>;
@@ -143,14 +328,48 @@ export type MissionControlCompletionGateDocument = {
   body?: string | null;
 };
 
+export type MissionControlAutonomousLoopGateReason =
+  | "autonomous_loop_disabled"
+  | "missing_ceo_loop_decision"
+  | "invalid_ceo_loop_decision"
+  | "runtime_exceeded"
+  | "iteration_exceeded"
+  | "approval_required"
+  | "validator_pass_required"
+  | "autonomous_loop_not_complete"
+  | "allowed";
+
+export type MissionControlAutonomousLoopGateResult = {
+  allowed: boolean;
+  enabled: boolean;
+  policy: MissionControlIssuePolicy | null;
+  autonomousLoopPolicy: MissionControlAutonomousLoopPolicy | null;
+  missingDocumentKeys: string[];
+  ceoLoopDecision: MissionControlCeoLoopDecision | null;
+  requiredApprovalGate: MissionControlApprovalGate;
+  reason: MissionControlAutonomousLoopGateReason;
+};
+
 export type MissionControlCompletionGateResult = {
   allowed: boolean;
   enabled: boolean;
   policy: MissionControlIssuePolicy | null;
   missingDocumentKeys: string[];
   validatorVerdict: MissionControlValidatorVerdict | null;
+  ceoLoopDecision: MissionControlCeoLoopDecision | null;
   requiredApprovalGate: MissionControlApprovalGate;
-  reason: "mission_control_disabled" | "missing_documents" | "validator_not_passed" | "allowed";
+  reason:
+    | "mission_control_disabled"
+    | "missing_documents"
+    | "validator_not_passed"
+    | "missing_ceo_loop_decision"
+    | "invalid_ceo_loop_decision"
+    | "runtime_exceeded"
+    | "iteration_exceeded"
+    | "approval_required"
+    | "validator_pass_required"
+    | "autonomous_loop_not_complete"
+    | "allowed";
 };
 
 function readMissionControlPolicy(executionPolicy: unknown): MissionControlIssuePolicy | null {
@@ -198,6 +417,167 @@ function parseValidatorReportFromBody(body: string | null | undefined): MissionC
   };
 }
 
+const INVALID_CEO_LOOP_DECISION = "__invalid_ceo_loop_decision__" as const;
+
+function parseCeoLoopDecisionFromBody(
+  body: string | null | undefined,
+): MissionControlCeoLoopDecision | typeof INVALID_CEO_LOOP_DECISION | null {
+  if (!body?.trim()) return null;
+  const trimmed = body.trim();
+  const candidates = [trimmed];
+  const fenced = /```(?:json)?\s*([\s\S]*?)\s*```/i.exec(trimmed);
+  if (fenced?.[1]) candidates.unshift(fenced[1].trim());
+  for (const candidate of candidates) {
+    try {
+      const parsedJson = JSON.parse(candidate);
+      const parsedDecision = missionControlCeoLoopDecisionSchema.safeParse(parsedJson);
+      if (parsedDecision.success) return parsedDecision.data;
+    } catch {
+      // Fall through to invalid; CEO loop decisions must be structured JSON.
+    }
+  }
+  return INVALID_CEO_LOOP_DECISION;
+}
+
+export function evaluateMissionControlAutonomousLoopGate(input: {
+  issue: MissionControlCompletionGateIssue;
+  documents: MissionControlCompletionGateDocument[];
+  validatorVerdict?: MissionControlValidatorVerdict | null;
+  now?: string | Date;
+}): MissionControlAutonomousLoopGateResult {
+  const policy = readMissionControlPolicy(input.issue.executionPolicy);
+  const autonomousLoopPolicy = policy?.autonomousLoop ?? null;
+  if (!policy?.enabled || !autonomousLoopPolicy?.enabled) {
+    return {
+      allowed: true,
+      enabled: false,
+      policy: policy?.enabled ? policy : null,
+      autonomousLoopPolicy: null,
+      missingDocumentKeys: [],
+      ceoLoopDecision: null,
+      requiredApprovalGate: "none",
+      reason: "autonomous_loop_disabled",
+    };
+  }
+
+  const docsByKey = new Map(input.documents.map((doc) => [doc.key.trim().toLowerCase(), doc]));
+  const decisionDocument = docsByKey.get(MISSION_CONTROL_AUTONOMOUS_LOOP_DOCUMENT_KEY);
+  if (!decisionDocument) {
+    return {
+      allowed: false,
+      enabled: true,
+      policy,
+      autonomousLoopPolicy,
+      missingDocumentKeys: [MISSION_CONTROL_AUTONOMOUS_LOOP_DOCUMENT_KEY],
+      ceoLoopDecision: null,
+      requiredApprovalGate: "board",
+      reason: "missing_ceo_loop_decision",
+    };
+  }
+
+  const ceoLoopDecision = parseCeoLoopDecisionFromBody(decisionDocument.body);
+  if (!ceoLoopDecision || ceoLoopDecision === INVALID_CEO_LOOP_DECISION) {
+    return {
+      allowed: false,
+      enabled: true,
+      policy,
+      autonomousLoopPolicy,
+      missingDocumentKeys: [],
+      ceoLoopDecision: null,
+      requiredApprovalGate: "board",
+      reason: "invalid_ceo_loop_decision",
+    };
+  }
+
+  const decisionContinuesLoop = ceoLoopDecision.decision === "next_iteration";
+  const nowMs = input.now instanceof Date ? input.now.getTime() : Date.parse(input.now ?? new Date().toISOString());
+  const startedAtMs = autonomousLoopPolicy.startedAt ? Date.parse(autonomousLoopPolicy.startedAt) : Number.NaN;
+  if (
+    decisionContinuesLoop &&
+    autonomousLoopPolicy.maxRuntimeHours &&
+    Number.isFinite(nowMs) &&
+    Number.isFinite(startedAtMs) &&
+    nowMs - startedAtMs > autonomousLoopPolicy.maxRuntimeHours * 60 * 60 * 1000
+  ) {
+    return {
+      allowed: false,
+      enabled: true,
+      policy,
+      autonomousLoopPolicy,
+      missingDocumentKeys: [],
+      ceoLoopDecision,
+      requiredApprovalGate: "board",
+      reason: "runtime_exceeded",
+    };
+  }
+
+  if (
+    decisionContinuesLoop &&
+    autonomousLoopPolicy.maxIterations &&
+    autonomousLoopPolicy.iteration >= autonomousLoopPolicy.maxIterations
+  ) {
+    return {
+      allowed: false,
+      enabled: true,
+      policy,
+      autonomousLoopPolicy,
+      missingDocumentKeys: [],
+      ceoLoopDecision,
+      requiredApprovalGate: "board",
+      reason: "iteration_exceeded",
+    };
+  }
+
+  if (ceoLoopDecision.hardGate?.required || ceoLoopDecision.decision === "approval_required") {
+    return {
+      allowed: false,
+      enabled: true,
+      policy,
+      autonomousLoopPolicy,
+      missingDocumentKeys: [],
+      ceoLoopDecision,
+      requiredApprovalGate: "board",
+      reason: "approval_required",
+    };
+  }
+
+  if (ceoLoopDecision.decision === "goal_reached") {
+    if (autonomousLoopPolicy.requireValidatorPass && input.validatorVerdict !== "PASS") {
+      return {
+        allowed: false,
+        enabled: true,
+        policy,
+        autonomousLoopPolicy,
+        missingDocumentKeys: [],
+        ceoLoopDecision,
+        requiredApprovalGate: "validator",
+        reason: "validator_pass_required",
+      };
+    }
+    return {
+      allowed: true,
+      enabled: true,
+      policy,
+      autonomousLoopPolicy,
+      missingDocumentKeys: [],
+      ceoLoopDecision,
+      requiredApprovalGate: "none",
+      reason: "allowed",
+    };
+  }
+
+  return {
+    allowed: false,
+    enabled: true,
+    policy,
+    autonomousLoopPolicy,
+    missingDocumentKeys: [],
+    ceoLoopDecision,
+    requiredApprovalGate: "none",
+    reason: "autonomous_loop_not_complete",
+  };
+}
+
 export function evaluateMissionControlCompletionGate(input: {
   issue: MissionControlCompletionGateIssue;
   documents: MissionControlCompletionGateDocument[];
@@ -210,6 +590,7 @@ export function evaluateMissionControlCompletionGate(input: {
       policy: null,
       missingDocumentKeys: [],
       validatorVerdict: null,
+      ceoLoopDecision: null,
       requiredApprovalGate: "none",
       reason: "mission_control_disabled",
     };
@@ -231,6 +612,7 @@ export function evaluateMissionControlCompletionGate(input: {
       policy,
       missingDocumentKeys,
       validatorVerdict,
+      ceoLoopDecision: null,
       requiredApprovalGate,
       reason: "missing_documents",
     };
@@ -243,8 +625,30 @@ export function evaluateMissionControlCompletionGate(input: {
       policy,
       missingDocumentKeys: [],
       validatorVerdict,
+      ceoLoopDecision: null,
       requiredApprovalGate,
       reason: "validator_not_passed",
+    };
+  }
+
+  const autonomousLoopGate = evaluateMissionControlAutonomousLoopGate({
+    issue: input.issue,
+    documents: input.documents,
+    validatorVerdict,
+  });
+  if (autonomousLoopGate.enabled && !autonomousLoopGate.allowed) {
+    return {
+      allowed: false,
+      enabled: true,
+      policy,
+      missingDocumentKeys: autonomousLoopGate.missingDocumentKeys,
+      validatorVerdict,
+      ceoLoopDecision: autonomousLoopGate.ceoLoopDecision,
+      requiredApprovalGate: autonomousLoopGate.requiredApprovalGate,
+      reason:
+        autonomousLoopGate.reason === "autonomous_loop_disabled"
+          ? "autonomous_loop_not_complete"
+          : autonomousLoopGate.reason,
     };
   }
 
@@ -254,6 +658,7 @@ export function evaluateMissionControlCompletionGate(input: {
     policy,
     missingDocumentKeys: [],
     validatorVerdict,
+    ceoLoopDecision: autonomousLoopGate.ceoLoopDecision,
     requiredApprovalGate,
     reason: "allowed",
   };
