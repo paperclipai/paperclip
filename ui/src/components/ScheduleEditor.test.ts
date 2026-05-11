@@ -73,6 +73,11 @@ describe("parseCronToPreset", () => {
       expect(parseCronToPreset("0 9 * * 1,3,5").preset).toBe("custom");
     });
 
+    it("routes hourly-on-weekdays schedules to custom to preserve the stored expression", () => {
+      expect(getScheduleEditorPresetForTest("5 * * * 1-5")).toBe("custom");
+      expect(roundTripCronForTest("5 * * * 1-5")).toBe("5 * * * 1-5");
+    });
+
     it("routes non-wildcard month field to custom", () => {
       // None of the presets encode a month, so even a single numeric month
       // must fall through to custom to avoid being silently dropped.
@@ -128,8 +133,8 @@ describe("describeSchedule", () => {
     expect(describeSchedule("not a cron")).toBe("not a cron");
   });
 
-  it("falls back to the default 10:00 AM preset for an empty cron", () => {
-    expect(describeSchedule("")).toBe("Every day at 10:00 AM");
+  it("falls back to the default 10:00 preset for an empty cron", () => {
+    expect(describeSchedule("")).toBe("Every day at 10:00");
   });
 });
 

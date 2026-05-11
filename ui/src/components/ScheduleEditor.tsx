@@ -305,6 +305,9 @@ function parseCronToEditorState(cron: string): EditorState {
   if (/^\d+$/.test(m) && h === "*" && dom === "*" && dow === "*") {
     return { ...DEFAULT_STATE, preset: "hourly", minutePast: parseInt(m, 10) };
   }
+  if (/^\d+$/.test(m) && h === "*" && dom === "*" && dow !== "*") {
+    return { ...DEFAULT_STATE, preset: "custom", custom: cron };
+  }
 
   // every N hours
   const hourStep = h.match(/^\*\/(\d+)$/);
@@ -424,7 +427,7 @@ function buildCronFromState(s: EditorState): string {
  * expression when it can't confidently describe the schedule.
  */
 export function describeSchedule(cron: string): string {
-  if (!cron || !cron.trim()) return "Every day at 10:00 AM";
+  if (!cron || !cron.trim()) return "Every day at 10:00";
   const fields = cron.trim().split(/\s+/);
   if (fields.length !== 5) return cron;
   const [m, h, dom, mon, dow] = fields;

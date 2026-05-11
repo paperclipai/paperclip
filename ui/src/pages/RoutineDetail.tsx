@@ -363,6 +363,11 @@ export function RoutineDetail() {
       });
     },
   });
+  const saveRoutineRef = useRef(saveRoutine);
+
+  useEffect(() => {
+    saveRoutineRef.current = saveRoutine;
+  }, [saveRoutine]);
 
   const runRoutine = useMutation({
     mutationFn: (data?: RoutineRunDialogSubmitData) =>
@@ -734,8 +739,9 @@ export function RoutineDetail() {
               if (routineDefaults) setEditDraft(routineDefaults);
             }}
             onSaveEdits={() => {
-              if (!saveRoutine.isPending && editDraft.title.trim()) {
-                saveRoutine.mutate();
+              const currentSave = saveRoutineRef.current;
+              if (!currentSave.isPending && editDraft.title.trim()) {
+                currentSave.mutate();
               }
             }}
             agents={agentById}
@@ -799,8 +805,6 @@ export function RoutineDetail() {
     routineDefaults,
     routineRuns,
     routineId,
-    saveRoutine.isPending,
-    saveRoutine.mutate,
     setActiveTab,
     togglingTriggerId,
     updateTrigger.mutate,
