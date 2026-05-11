@@ -676,6 +676,7 @@ export class GatewayWsClient {
   ): Promise<Record<string, unknown> | null> {
     this.intentionalClose = false;
     this.resetChallengeLifecycle();
+    this.challengePromise.catch(() => {});
     this.ws = new WebSocket(this.opts.url, {
       headers: this.opts.headers,
       maxPayload: 25 * 1024 * 1024,

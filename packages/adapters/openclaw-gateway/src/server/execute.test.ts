@@ -72,4 +72,36 @@ describe("GatewayWsClient", () => {
       client.close();
     }
   });
+
+  it("rejects connect challenge failures without unhandled rejections", async () => {
+    const { url, wss } = await createServer();
+    servers.push(wss);
+
+    wss.on("connection", (socket) => {
+      socket.terminate();
+    });
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+
+    const client = new GatewayWsClient({
+      url,
+      headers: {},
+      onEvent: () => {},
+      onLog: async () => {},
+    });
+
+    try {
+      await expect(client.connect(() => ({ role: "operator" }), 1_000)).rejects.toThrow("gateway closed");
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      client.close();
+    }
+  });
 });
