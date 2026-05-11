@@ -50,6 +50,7 @@ import type {
 } from "./routes/instance-database-backups.js";
 import { createExecutionTargetRegistry } from "./adapters/execution-target-registry.js";
 import { registerKubernetesExecutionTargetDriver } from "./adapters/execution-targets/kubernetes.js";
+import { buildAdapterManagedWorkspaceRequestJson } from "./adapters/execution-targets/workspace-strategy-json.js";
 import { clusterConnectionsService } from "./services/cluster-connections.js";
 import { getSecretProvider } from "./secrets/provider-registry.js";
 import { bootstrapTokensService } from "./services/bootstrap-tokens.js";
@@ -664,7 +665,7 @@ export async function startServer(): Promise<StartedServer> {
         image: target.imageOverride ?? `${imageRegistry}/agent-runtime-claude:v1`,
         initImage: `${imageRegistry}/agent-runtime-base:v1`,
         paperclipPublicUrl: connection.paperclipPublicUrl ?? process.env.PAPERCLIP_API_URL ?? "",
-        workspaceStrategyJson: JSON.stringify({ kind: "ephemeral" }),
+        workspaceStrategyJson: buildAdapterManagedWorkspaceRequestJson(),
         workspaceStrategyKey: "ephemeral",
       };
     },

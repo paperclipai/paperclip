@@ -4,9 +4,9 @@ import { join } from "node:path";
 import {
   executeWorkspaceStrategy,
   realGitRunner,
-  type WorkspaceRealizationRequest,
 } from "@paperclipai/workspace-strategy";
 import { createGitCredentialsClient } from "./git-credentials.js";
+import { parseRequest } from "./parse-request.js";
 
 async function exchangeBootstrapToken(input: { paperclipPublicUrl: string; bootstrapToken: string }): Promise<string> {
   const res = await fetch(`${input.paperclipPublicUrl}/api/agent-auth/exchange`, {
@@ -18,17 +18,6 @@ async function exchangeBootstrapToken(input: { paperclipPublicUrl: string; boots
   const body = (await res.json()) as { runJwt?: string };
   if (!body.runJwt) throw new Error("exchange response missing runJwt");
   return body.runJwt;
-}
-
-function parseRequest(json: string): WorkspaceRealizationRequest {
-  const parsed = JSON.parse(json) as WorkspaceRealizationRequest;
-  if (parsed.version !== 1) {
-    throw new Error(`PAPERCLIP_WORKSPACE_REQUEST: unsupported version ${parsed.version}`);
-  }
-  if (!parsed.source || typeof parsed.source.strategy !== "string") {
-    throw new Error("PAPERCLIP_WORKSPACE_REQUEST: missing source.strategy");
-  }
-  return parsed;
 }
 
 async function main() {
