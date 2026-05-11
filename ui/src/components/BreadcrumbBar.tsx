@@ -1,4 +1,4 @@
-import { Fragment, useMemo } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { Link } from "@/lib/router";
 import {
   BellRing,
@@ -88,6 +88,15 @@ export function BreadcrumbBar() {
   const { breadcrumbs, mobileToolbar } = useBreadcrumbs();
   const { toggleSidebar, isMobile } = useSidebar();
   const { selectedCompanyId, selectedCompany } = useCompany();
+  const [isLgUp, setIsLgUp] = useState(() => window.innerWidth >= 1024);
+
+  useEffect(() => {
+    const mql = window.matchMedia("(min-width: 1024px)");
+    const onChange = (event: MediaQueryListEvent) => setIsLgUp(event.matches);
+    setIsLgUp(mql.matches);
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, []);
 
   const globalToolbarSlotContext = useMemo(
     () => ({
@@ -151,12 +160,11 @@ export function BreadcrumbBar() {
     </div>
   );
 
-  const showBreadcrumbs =
-    breadcrumbs.length > 0 &&
-    !(
-      breadcrumbs.length === 1 &&
-      TOP_LEVEL_BREADCRUMB_LABELS.has(breadcrumbs[0]?.label ?? "")
-    );
+  const isSingleTopLevelBreadcrumb =
+    breadcrumbs.length === 1 &&
+    TOP_LEVEL_BREADCRUMB_LABELS.has(breadcrumbs[0]?.label ?? "");
+
+  const showBreadcrumbs = breadcrumbs.length > 0 && !(isLgUp && isSingleTopLevelBreadcrumb);
 
   return (
     <div className="brand-shell flex h-16 shrink-0 items-center gap-3 border-b border-border/70 px-4 md:px-6">
