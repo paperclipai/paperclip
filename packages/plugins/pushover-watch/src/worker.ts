@@ -1,26 +1,44 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
+import type { PluginConfig } from "./config-schema.js";
+import { bootstrapCompany } from "./bootstrap.js";
+import {
+  handleIssueUpdated,
+  handleCommentCreated,
+  handleApprovalCreated,
+} from "./triggers.js";
 
 const plugin = definePlugin({
   async setup(ctx) {
-    ctx.events.on("issue.created", async (event) => {
-      const issueId = event.entityId ?? "unknown";
-      await ctx.state.set({ scopeKind: "issue", scopeId: issueId, stateKey: "seen" }, true);
-      ctx.logger.info("Observed issue.created", { issueId });
+    const config = (await ctx.config.get()) as PluginConfig | null;
+    if (!config || !config.companies?.length) {
+      ctx.logger.warn("pushover_watch_no_companies_configured");
+      return;
+    }
+
+    const enabledCompanyIds = new Set(
+      config.companies.filter((c) => c.enabled !== false).map((c) => c.companyId),
+    );
+
+    for (const company of config.companies) {
+      if (company.enabled === false) continue;
+      await bootstrapCompany(ctx, company);
+    }
+
+    ctx.events.on("issue.updated", async (event) => {
+      if (!enabledCompanyIds.has(event.companyId)) return;
+      await handleIssueUpdated(ctx, config, event as any);
     });
 
-    ctx.data.register("health", async () => {
-      return { status: "ok", checkedAt: new Date().toISOString() };
+    ctx.events.on("issue.comment.created", async (event) => {
+      if (!enabledCompanyIds.has(event.companyId)) return;
+      await handleCommentCreated(ctx, config, event as any);
     });
 
-    ctx.actions.register("ping", async () => {
-      ctx.logger.info("Ping action invoked");
-      return { pong: true, at: new Date().toISOString() };
+    ctx.events.on("approval.created", async (event) => {
+      if (!enabledCompanyIds.has(event.companyId)) return;
+      await handleApprovalCreated(ctx, config, event as any);
     });
   },
-
-  async onHealth() {
-    return { status: "ok", message: "Plugin worker is running" };
-  }
 });
 
 export default plugin;
