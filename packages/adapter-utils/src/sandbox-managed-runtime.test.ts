@@ -84,7 +84,7 @@ describe("sandbox managed runtime", () => {
         await rm(remotePath, { recursive: true, force: true });
       },
       run: async (command) => {
-        await execFile("sh", ["-lc", command], {
+        await execFile("sh", ["-c", command], {
           maxBuffer: 32 * 1024 * 1024,
         });
       },

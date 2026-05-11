@@ -231,6 +231,36 @@ function formatIssueLinksForComment(relations: Array<{ identifier?: string | nul
     .join(", ");
 }
 
+function unwrapDatabaseConflictError(error: unknown) {
+  if (!error || typeof error !== "object") return null;
+
+  const candidate = error as {
+    code?: string;
+    constraint?: string;
+    constraint_name?: string;
+    message?: string;
+    cause?: unknown;
+  };
+
+  if (
+    typeof candidate.code === "string" ||
+    typeof candidate.constraint === "string" ||
+    typeof candidate.constraint_name === "string"
+  ) {
+    return candidate;
+  }
+
+  const cause = candidate.cause;
+  if (!cause || typeof cause !== "object") return candidate;
+
+  return cause as {
+    code?: string;
+    constraint?: string;
+    constraint_name?: string;
+    message?: string;
+  };
+}
+
 function isAgentInvokable(agent: typeof agents.$inferSelect | null | undefined) {
   return Boolean(agent && !["paused", "terminated", "pending_approval"].includes(agent.status));
 }
@@ -928,21 +958,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   function isUniqueStaleRunEvaluationConflict(error: unknown) {
-    if (!error || typeof error !== "object") return false;
-    const maybe = error as { code?: string; constraint?: string; message?: string };
+    const maybe = unwrapDatabaseConflictError(error);
+    if (!maybe) return false;
     return maybe.code === "23505" &&
       (
         maybe.constraint === "issues_active_stale_run_evaluation_uq" ||
+        maybe.constraint_name === "issues_active_stale_run_evaluation_uq" ||
         typeof maybe.message === "string" && maybe.message.includes("issues_active_stale_run_evaluation_uq")
       );
   }
 
   function isUniqueStrandedIssueRecoveryConflict(error: unknown) {
-    if (!error || typeof error !== "object") return false;
-    const maybe = error as { code?: string; constraint?: string; message?: string };
+    const maybe = unwrapDatabaseConflictError(error);
+    if (!maybe) return false;
     return maybe.code === "23505" &&
       (
         maybe.constraint === "issues_active_stranded_issue_recovery_uq" ||
+        maybe.constraint_name === "issues_active_stranded_issue_recovery_uq" ||
         typeof maybe.message === "string" && maybe.message.includes("issues_active_stranded_issue_recovery_uq")
       );
   }
@@ -1313,6 +1345,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
+  function isStrandedIssueRecoveryIssue(issue: typeof issues.$inferSelect) {
+    return issue.originKind === STRANDED_ISSUE_RECOVERY_ORIGIN_KIND;
+  }
+
+  async function buildNestedStrandedRecoveryLine(issue: typeof issues.$inferSelect, prefix: string) {
+    const sourceIssueId = readNonEmptyString(issue.originId);
+    const sourceIssue = sourceIssueId
+      ? await db
+        .select({ id: issues.id, identifier: issues.identifier })
+        .from(issues)
+        .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, sourceIssueId)))
+        .then((rows) => rows[0] ?? null)
+      : null;
+    const sourceLine = sourceIssue
+      ? `- Original source issue: ${issueUiLink(sourceIssue, prefix)}`
+      : sourceIssueId
+        ? `- Original source issue: \`${sourceIssueId}\``
+        : "- Original source issue: unknown";
+
+    return [
+      "",
+      "- Nested recovery: suppressed because this issue is already a `stranded_issue_recovery` issue.",
+      sourceLine,
+      "- Next action: the assigned recovery owner or board operator should fix the runtime/adapter problem, resolve or reassign the original source issue, then mark this recovery issue done or cancelled.",
+    ].join("\n");
+  }
+
   async function resolveStrandedIssueRecoveryOwnerAgentId(issue: typeof issues.$inferSelect) {
     const candidateIds: string[] = [];
     if (issue.assigneeAgentId) {
@@ -1623,21 +1682,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
-    if (isStrandedIssueRecoveryIssue(input.issue)) {
-      return escalateStrandedRecoveryIssueInPlace({
+    const nestedRecoverySuppressed = isStrandedIssueRecoveryIssue(input.issue);
+    let recoveryIssue: typeof issues.$inferSelect | null = null;
+    if (!nestedRecoverySuppressed) {
+      recoveryIssue = await ensureStrandedIssueRecoveryIssue({
         issue: input.issue,
         previousStatus: input.previousStatus,
         latestRun: input.latestRun,
+        recoveryCause: input.recoveryCause,
+        successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
       });
     }
-
-    const recoveryIssue = await ensureStrandedIssueRecoveryIssue({
-      issue: input.issue,
-      previousStatus: input.previousStatus,
-      latestRun: input.latestRun,
-      recoveryCause: input.recoveryCause,
-      successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
-    });
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
     const nextBlockerIds = recoveryIssue
       ? [...new Set([...blockerIds, recoveryIssue.id])]
@@ -1667,18 +1722,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         missingDisposition: input.successfulRunHandoffEvidence.missingDisposition,
       });
     }
-    const recoveryLine = recoveryIssue
-      ? [
+    let recoveryLine: string;
+    if (nestedRecoverySuppressed) {
+      recoveryLine = await buildNestedStrandedRecoveryLine(input.issue, prefix);
+    } else if (recoveryIssue) {
+      recoveryLine = [
         "",
         `- Recovery issue: ${issueUiLink({ identifier: recoveryIssue.identifier, id: recoveryIssue.id }, prefix)}`,
         `- Recovery owner: ${agentUiLink(recoveryOwner, prefix)}`,
         "- Next action: the recovery owner should either restore a live execution path or record the manual resolution, then mark the recovery issue done.",
-      ].join("\n")
-      : [
+      ].join("\n");
+    } else {
+      recoveryLine = [
         "",
         "- Recovery issue: none created because Paperclip could not find an invokable manager, creator, or executive owner with budget available.",
         "- Next action: a board operator should assign an invokable recovery owner, fix the agent/runtime state, or record an intentional manual resolution.",
       ].join("\n");
+    }
 
     if (notice) {
       await issuesSvc.addComment(input.issue.id, notice.body, {}, {
@@ -1713,6 +1773,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         latestRunStatus: input.latestRun?.status ?? null,
         latestRunErrorCode: input.latestRun?.errorCode ?? null,
         recoveryIssueId: recoveryIssue?.id ?? null,
+        nestedRecoverySuppressed,
         blockerIssueIds: nextBlockerIds,
       },
     });
@@ -2768,6 +2829,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   return {
     buildRunOutputSilence,
+    escalateStrandedRecoveryIssueInPlace,
     escalateStrandedAssignedIssue,
     recordWatchdogDecision,
     scanSilentActiveRuns,

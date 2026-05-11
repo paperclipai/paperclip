@@ -228,7 +228,10 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
     driver: "ssh",
 
     async acquireRunLease(input) {
-      const parsed = await resolveEnvironmentDriverConfigForRuntime(db, input.companyId, input.environment);
+      const parsed = await resolveEnvironmentDriverConfigForRuntime(db, input.companyId, input.environment, {
+        issueId: input.issueId,
+        heartbeatRunId: input.heartbeatRunId,
+      });
       if (parsed.driver !== "ssh") {
         throw new Error(`Expected SSH environment config for driver "${input.environment.driver}".`);
       }
@@ -346,6 +349,7 @@ function createSandboxEnvironmentDriver(
     const metadataConfig = sandboxConfigFromLeaseMetadataLoose(input.lease);
     if (metadataConfig && metadataConfig.provider === input.provider) {
       const parsed = await resolveEnvironmentDriverConfigForRuntime(db, input.lease.companyId, {
+        id: input.environment.id,
         driver: "sandbox",
         config: sandboxConfigForLeaseMetadata(metadataConfig),
       });
@@ -381,7 +385,10 @@ function createSandboxEnvironmentDriver(
 
     async acquireRunLease(input) {
       const storedParsed = parseEnvironmentDriverConfig(input.environment);
-      const parsed = await resolveEnvironmentDriverConfigForRuntime(db, input.companyId, input.environment);
+      const parsed = await resolveEnvironmentDriverConfigForRuntime(db, input.companyId, input.environment, {
+        issueId: input.issueId,
+        heartbeatRunId: input.heartbeatRunId,
+      });
       if (parsed.driver !== "sandbox" || storedParsed.driver !== "sandbox") {
         throw new Error(`Expected sandbox environment config for driver "${input.environment.driver}".`);
       }
@@ -562,6 +569,7 @@ function createSandboxEnvironmentDriver(
 
       const parsed = metadataConfig
         ? await resolveEnvironmentDriverConfigForRuntime(db, input.lease.companyId, {
+            id: input.environment.id,
             driver: "sandbox",
             config: metadataConfig as unknown as Record<string, unknown>,
           })

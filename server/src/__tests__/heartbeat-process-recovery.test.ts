@@ -2080,6 +2080,83 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain(`Recovery issue: [${recovery.identifier}]`);
   });
 
+  it("blocks an already stranded recovery issue without creating a recovery child", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      retryReason: "assignment_recovery",
+    });
+    const sourceIssueId = randomUUID();
+    const sourceRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      title: "Original source issue",
+      status: "blocked",
+      priority: "medium",
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+    await db
+      .update(issues)
+      .set({
+        title: "Recover stalled issue from previous adapter failure",
+        parentId: sourceIssueId,
+        originKind: "stranded_issue_recovery",
+        originId: sourceIssueId,
+        originRunId: sourceRunId,
+        originFingerprint: [
+          "stranded_issue_recovery",
+          companyId,
+          sourceIssueId,
+          sourceRunId,
+        ].join(":"),
+      })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveryIssues).toHaveLength(1);
+    expect(recoveryIssues[0]).toMatchObject({
+      id: issueId,
+      status: "blocked",
+      parentId: sourceIssueId,
+      originId: sourceIssueId,
+      originRunId: sourceRunId,
+    });
+    expect(recoveryIssues[0]?.checkoutRunId).toBeNull();
+    expect(recoveryIssues[0]?.executionRunId).toBeNull();
+
+    const blockerRelations = await db
+      .select()
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.relatedIssueId, issueId),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+    expect(blockerRelations).toHaveLength(0);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("stopped automatic stranded-work recovery");
+    expect(comments[0]?.body).toContain("recovery issues do not create nested `stranded_issue_recovery` issues");
+    expect(comments[0]?.body).toContain(`Recovery issue: [${recoveryIssues[0]?.identifier}]`);
+    expect(comments[0]?.body).toContain("Next action:");
+  });
+
   it("assigns open unassigned blockers back to their creator agent", async () => {
     const companyId = randomUUID();
     const creatorAgentId = randomUUID();

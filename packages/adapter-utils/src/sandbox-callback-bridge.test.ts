@@ -46,7 +46,7 @@ describe("sandbox callback bridge", () => {
         if (
           input.stdin != null &&
           (input.command === "sh" || input.command === "bash") &&
-          args[0] === "-lc" &&
+          (args[0] === "-c" || args[0] === "-lc") &&
           typeof args[1] === "string"
         ) {
           env.PAPERCLIP_TEST_STDIN = input.stdin;
@@ -508,7 +508,7 @@ describe("sandbox callback bridge", () => {
       authorizeRequest: async () => null,
       handleRequest: async (request) => {
         seenRequestIds.push(request.id);
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await new Promise((resolve) => setTimeout(resolve, 250));
         return {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -551,7 +551,7 @@ describe("sandbox callback bridge", () => {
       error: "Bridge worker stopped before request could be handled.",
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await new Promise((resolve) => setTimeout(resolve, 300));
 
     await expect(readdir(directories.responsesDir)).resolves.toEqual([]);
     await expect(

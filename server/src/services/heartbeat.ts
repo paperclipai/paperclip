@@ -105,6 +105,7 @@ import {
   issueTreeControlService,
 } from "./issue-tree-control.js";
 import {
+  continuationSummaryParksExecutor,
   getIssueContinuationSummaryDocument,
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
@@ -328,17 +329,44 @@ type RuntimeConfigSecretResolver = Pick<
 
 export async function resolveExecutionRunAdapterConfig(input: {
   companyId: string;
+  agentId?: string | null;
+  issueId?: string | null;
+  heartbeatRunId?: string | null;
+  projectId?: string | null;
   executionRunConfig: Record<string, unknown>;
   projectEnv: unknown;
   secretsSvc: RuntimeConfigSecretResolver;
 }) {
-  const { config: resolvedConfig, secretKeys } = await input.secretsSvc.resolveAdapterConfigForRuntime(
+  const { config: resolvedConfig, secretKeys, manifest } = await input.secretsSvc.resolveAdapterConfigForRuntime(
     input.companyId,
     input.executionRunConfig,
+    input.agentId
+      ? {
+          consumerType: "agent",
+          consumerId: input.agentId,
+          actorType: "agent",
+          actorId: input.agentId,
+          issueId: input.issueId ?? null,
+          heartbeatRunId: input.heartbeatRunId ?? null,
+        }
+      : undefined,
   );
   const projectEnvResolution = input.projectEnv
-    ? await input.secretsSvc.resolveEnvBindings(input.companyId, input.projectEnv)
-    : { env: {}, secretKeys: new Set<string>() };
+    ? await input.secretsSvc.resolveEnvBindings(
+        input.companyId,
+        input.projectEnv,
+        input.projectId
+          ? {
+              consumerType: "project",
+              consumerId: input.projectId,
+              actorType: "agent",
+              actorId: input.agentId ?? null,
+              issueId: input.issueId ?? null,
+              heartbeatRunId: input.heartbeatRunId ?? null,
+            }
+          : undefined,
+      )
+    : { env: {}, secretKeys: new Set<string>(), manifest: [] };
   if (Object.keys(projectEnvResolution.env).length > 0) {
     resolvedConfig.env = {
       ...parseObject(resolvedConfig.env),
@@ -348,7 +376,11 @@ export async function resolveExecutionRunAdapterConfig(input: {
       secretKeys.add(key);
     }
   }
-  return { resolvedConfig, secretKeys };
+  return {
+    resolvedConfig,
+    secretKeys,
+    secretManifest: [...(manifest ?? []), ...(projectEnvResolution.manifest ?? [])],
+  };
 }
 
 export function extractMentionedSkillIdsFromSources(
@@ -5948,7 +5980,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           | "issue_terminal_status"
           | "issue_not_in_progress"
           | "issue_execution_lock_changed"
-          | "issue_review_participant_changed";
+          | "issue_review_participant_changed"
+          | "issue_continuation_waiting_on_review";
         details: Record<string, unknown>;
       };
 
@@ -5981,7 +6014,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const wakeCommentId = deriveCommentId(context, null);
     const isInteractionWake = allowsIssueInteractionWake(context);
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
+    const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
+
+    if (
+      issue.status === "in_progress" &&
+      !wakeCommentId &&
+      (wakeReason === "issue_continuation_needed" || retryReason === "issue_continuation_needed")
+    ) {
+      const queuedWake = parseObject(context.paperclipWake);
+      const queuedContinuationSummary =
+        readNonEmptyString(parseObject(context.paperclipContinuationSummary).body) ??
+        readNonEmptyString(parseObject(queuedWake.continuationSummary).body);
+      const currentContinuationSummary = queuedContinuationSummary
+        ? null
+        : await getIssueContinuationSummaryDocument(db, issueId);
+      const continuationSummaryBody = queuedContinuationSummary ?? currentContinuationSummary?.body ?? null;
+      if (continuationSummaryParksExecutor(continuationSummaryBody)) {
+        return {
+          stale: true,
+          errorCode: "issue_continuation_waiting_on_review",
+          reason:
+            "Cancelled because the continuation summary says the executor should wait for reviewer feedback or approval before more work starts",
+          details: {
+            issueId,
+            wakeReason,
+            retryReason,
+            nextAction: continuationSummaryBody,
+          },
+        };
+      }
+    }
 
     if (issue.assigneeAgentId !== run.agentId && !isInteractionWake) {
       return {
@@ -6792,6 +6855,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const projectContext = executionProjectId
       ? await db
           .select({
+            id: projects.id,
             executionWorkspacePolicy: projects.executionWorkspacePolicy,
             env: projects.env,
           })
@@ -6997,12 +7061,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
-    const { resolvedConfig, secretKeys } = await resolveExecutionRunAdapterConfig({
+    const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
       companyId: agent.companyId,
+      agentId: agent.id,
+      issueId,
+      heartbeatRunId: run.id,
+      projectId: projectContext?.id ?? null,
       executionRunConfig,
       projectEnv: projectContext?.env ?? null,
       secretsSvc,
     });
+    if (secretManifest.length > 0) {
+      context.paperclipSecrets = {
+        manifest: secretManifest,
+      };
+    } else {
+      delete context.paperclipSecrets;
+    }
     const runScopedMentionedSkillKeys = await resolveRunScopedMentionedSkillKeys({
       db,
       companyId: agent.companyId,
@@ -8342,8 +8417,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "released" as const };
       }
 
+      if (issue.originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery) {
+        return {
+          kind: "blocked_recovery_in_place" as const,
+          issue,
+          previousStatus: issue.status,
+        };
+      }
+
       const shouldBlockImmediately =
-        issue.originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery ||
         !recoveryAgentInvokable ||
         !recoveryAgent ||
         didAutomaticRecoveryFail(run, issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed");
@@ -8439,6 +8521,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         previousStatus: promotionResult.previousStatus as "todo" | "in_progress",
         latestRun: run,
         comment: promotionResult.comment,
+      });
+      return;
+    }
+
+    if (promotionResult?.kind === "blocked_recovery_in_place") {
+      await recovery.escalateStrandedRecoveryIssueInPlace({
+        issue: promotionResult.issue,
+        previousStatus: promotionResult.previousStatus as "todo" | "in_progress",
+        latestRun: run,
       });
       return;
     }

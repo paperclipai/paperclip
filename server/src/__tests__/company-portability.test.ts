@@ -497,6 +497,70 @@ describe("company portability", () => {
     expect(asTextFile(exported.files[".paperclip.yaml"])).toContain("requireBoardApprovalForNewAgents: true");
   });
 
+  it("exports legacy inline sensitive env values as declarations without values", async () => {
+    const portability = companyPortabilityService({} as any);
+    agentSvc.list.mockResolvedValue([
+      {
+        id: "agent-inline-secret",
+        name: "InlineSecretAgent",
+        status: "idle",
+        role: "engineer",
+        title: null,
+        icon: null,
+        reportsTo: null,
+        capabilities: null,
+        adapterType: "codex_local",
+        adapterConfig: {
+          env: {
+            OPENAI_API_KEY: "sk-inline-secret-value",
+            NODE_ENV: {
+              type: "plain",
+              value: "development",
+            },
+          },
+        },
+        runtimeConfig: {},
+        budgetMonthlyCents: 0,
+        permissions: {
+          canCreateAgents: false,
+        },
+        metadata: null,
+      },
+    ]);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+    });
+
+    const serialized = JSON.stringify(exported);
+    expect(serialized).not.toContain("sk-inline-secret-value");
+    expect(exported.manifest.envInputs).toContainEqual({
+      key: "OPENAI_API_KEY",
+      description: "Optional default for OPENAI_API_KEY on agent inlinesecretagent",
+      agentSlug: "inlinesecretagent",
+      projectSlug: null,
+      kind: "secret",
+      requirement: "optional",
+      defaultValue: "",
+      portability: "portable",
+    });
+    expect(exported.manifest.envInputs).toContainEqual({
+      key: "NODE_ENV",
+      description: "Optional default for NODE_ENV on agent inlinesecretagent",
+      agentSlug: "inlinesecretagent",
+      projectSlug: null,
+      kind: "plain",
+      requirement: "optional",
+      defaultValue: "development",
+      portability: "portable",
+    });
+  });
+
   it("exports default sidebar order into the Paperclip extension and manifest", async () => {
     const portability = companyPortabilityService({} as any);
 

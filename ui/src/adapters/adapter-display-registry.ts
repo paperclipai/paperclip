@@ -98,6 +98,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Local Cursor agent",
     icon: MousePointer2,
   },
+  cursor_cloud: {
+    label: "Cursor Cloud",
+    description: "Managed remote Cursor agent",
+    icon: MousePointer2,
+  },
   openclaw_gateway: {
     label: "OpenClaw Gateway",
     description: "Invoke OpenClaw via gateway protocol",
