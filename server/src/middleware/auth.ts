@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import type { Request, RequestHandler } from "express";
+import type { Request, RequestHandler, Response } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentApiKeys, agents, authUsers, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
@@ -8,6 +8,37 @@ import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
+import { assertCompanyNotPaused, CompanyPausedError } from "../services/company-quota-pause.js";
+
+const COMPANY_PAUSE_GUARDED_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+/**
+ * ADR-001 D3: short-circuit write requests authenticated with an agent token
+ * (JWT or API key) while the company is under a quota-driven auto-pause.
+ * Human users (board sessions, owner) bypass this gate so a manual unpause
+ * path is always available. Reads (GET/HEAD) are allowed through so an agent
+ * can still poll its inbox and resume cleanly once the pause window expires.
+ */
+async function enforceCompanyPauseForAgentWrites(
+  db: Db,
+  req: Request,
+  res: Response,
+): Promise<boolean> {
+  if (req.actor.type !== "agent") return true;
+  if (!COMPANY_PAUSE_GUARDED_METHODS.has(req.method.toUpperCase())) return true;
+  const companyId = req.actor.companyId;
+  if (!companyId) return true;
+  try {
+    await assertCompanyNotPaused(db, companyId);
+    return true;
+  } catch (err) {
+    if (err instanceof CompanyPausedError) {
+      res.status(err.status).json({ error: err.message, details: err.details });
+      return false;
+    }
+    throw err;
+  }
+}
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -166,6 +197,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         runId: runIdHeader || claims.run_id || undefined,
         source: "agent_jwt",
       };
+      if (!(await enforceCompanyPauseForAgentWrites(db, req, _res))) return;
       next();
       return;
     }
@@ -195,6 +227,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       source: "agent_key",
     };
 
+    if (!(await enforceCompanyPauseForAgentWrites(db, req, _res))) return;
     next();
   };
 }

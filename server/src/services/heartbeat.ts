@@ -43,6 +43,7 @@ import {
   workspaceOperations,
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
+import { applyCompanyQuotaPause } from "./company-quota-pause.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
@@ -255,7 +256,28 @@ function readHeartbeatRunErrorFamily(
   if (run.errorCode === "codex_transient_upstream" || run.errorCode === "claude_transient_upstream") {
     return "transient_upstream";
   }
+  if (run.errorCode === "claude_quota_exhausted") {
+    return "quota_exhausted";
+  }
   return null;
+}
+
+function readQuotaExhaustedContractFromRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
+) {
+  if (readHeartbeatRunErrorFamily(run) !== "quota_exhausted") return null;
+  const resultJson = parseObject(run.resultJson);
+  const resetCandidate =
+    resultJson.quotaResetAt ?? resultJson.retryNotBefore ?? resultJson.transientRetryNotBefore;
+  if (!(typeof resetCandidate === "string" || typeof resetCandidate === "number" || resetCandidate instanceof Date)) {
+    return null;
+  }
+  const parsedReset = new Date(resetCandidate);
+  if (Number.isNaN(parsedReset.getTime())) return null;
+  return {
+    errorFamily: "quota_exhausted" as const,
+    resetAt: parsedReset,
+  };
 }
 
 function isMaxTurnExhaustionRun(
@@ -7910,8 +7932,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             });
           }
-        } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
-          await scheduleBoundedRetryForRun(livenessRun, agent);
+        } else if (outcome === "failed") {
+          const quotaContract = readQuotaExhaustedContractFromRun(livenessRun);
+          if (quotaContract) {
+            const pauseResult = await applyCompanyQuotaPause({
+              db,
+              companyId: agent.companyId,
+              resetAt: quotaContract.resetAt,
+              runId: livenessRun.id,
+            });
+            await appendRunEvent(livenessRun, await nextRunEventSeq(livenessRun.id), {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "warn",
+              message: pauseResult.applied
+                ? `Company paused until ${pauseResult.pausedUntil.toISOString()} after claude_quota_exhausted`
+                : `Company already paused past ${pauseResult.pausedUntil.toISOString()}; leaving existing window in place`,
+              payload: {
+                errorFamily: "quota_exhausted",
+                pausedUntil: pauseResult.pausedUntil.toISOString(),
+                pausedReason: pauseResult.pausedReason,
+                resetAt: quotaContract.resetAt.toISOString(),
+                applied: pauseResult.applied,
+              },
+            });
+          } else if (readTransientRecoveryContractFromRun(livenessRun)) {
+            await scheduleBoundedRetryForRun(livenessRun, agent);
+          }
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);

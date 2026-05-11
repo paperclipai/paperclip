@@ -80,6 +80,7 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { assertCompanyNotPaused, CompanyPausedError } from "../services/company-quota-pause.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
@@ -3449,6 +3450,24 @@ export function issueRoutes(
               : "Project is paused",
         });
         return;
+      }
+    }
+
+    // ADR-001 D3: block agent-driven checkouts while the company is under a
+    // quota-driven auto-pause. Human users (including the owner) skip this gate
+    // so they can still operate the UI during a paused window.
+    if (req.actor.type === "agent") {
+      try {
+        await assertCompanyNotPaused(db, issue.companyId);
+      } catch (err) {
+        if (err instanceof CompanyPausedError) {
+          res.status(err.status).json({
+            error: err.message,
+            details: err.details,
+          });
+          return;
+        }
+        throw err;
       }
     }
 
