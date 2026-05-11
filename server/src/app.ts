@@ -1203,13 +1203,17 @@ TIKTOK_OPEN_ID=${openId}
         .select({ id: companiesTable.id, name: companiesTable.name })
         .from(companiesTable);
 
+      const { and: _and } = await import("drizzle-orm");
       const results: Record<string, string> = {};
       for (const company of companies) {
-        // Check if membership already exists
+        // Check if membership exists FOR THIS SPECIFIC COMPANY
         const existing = await (db as any)
           .select({ id: companyMemberships.id })
           .from(companyMemberships)
-          .where(eq(companyMemberships.principalId, userId))
+          .where(_and(
+            eq(companyMemberships.principalId, userId),
+            eq(companyMemberships.companyId, company.id),
+          ))
           .limit(1)
           .then((r: any[]) => r[0] ?? null);
 
