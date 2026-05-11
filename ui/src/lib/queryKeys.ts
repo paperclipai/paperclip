@@ -150,6 +150,10 @@ export const queryKeys = {
   sidebarBadges: (companyId: string) => ["sidebar-badges", companyId] as const,
   inboxDismissals: (companyId: string) => ["inbox-dismissals", companyId] as const,
   activity: (companyId: string) => ["activity", companyId] as const,
+  autonomousLoopWatchdog: {
+    preview: (companyId: string, limit: number) =>
+      ["autonomous-loop-watchdog", "preview", companyId, limit] as const,
+  },
   costs: (companyId: string, from?: string, to?: string) =>
     ["costs", companyId, from, to] as const,
   usageByProvider: (companyId: string, from?: string, to?: string) =>
