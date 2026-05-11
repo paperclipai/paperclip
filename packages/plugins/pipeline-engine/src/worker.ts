@@ -42,6 +42,37 @@ async function loadPipelines(ctx: PluginContext): Promise<PipelineDefinition[]> 
   return loaded;
 }
 
+async function buildStageContext(
+  ctx: PluginContext,
+  parentIssueId: string,
+  companyId: string,
+  stageDef: StageDefinition,
+  stageRows: Array<{ stageId: string; status: string; output: Record<string, unknown> | null }>,
+): Promise<string> {
+  const sections: string[] = [];
+
+  const parentIssue = await ctx.issues.get(parentIssueId, companyId);
+  if (parentIssue) {
+    sections.push(`## Original Request\n\n**${parentIssue.title}**\n\n${parentIssue.description ?? ""}`);
+  }
+
+  const deps = "depends_on" in stageDef ? stageDef.depends_on : undefined;
+  if (deps && deps.length > 0) {
+    const upstreamOutputs: string[] = [];
+    for (const depId of deps) {
+      const depRow = stageRows.find((s) => s.stageId === depId);
+      if (depRow?.output) {
+        upstreamOutputs.push(`### ${depId} output\n\n\`\`\`json\n${JSON.stringify(depRow.output, null, 2)}\n\`\`\``);
+      }
+    }
+    if (upstreamOutputs.length > 0) {
+      sections.push(`## Upstream Stage Results\n\n${upstreamOutputs.join("\n\n")}`);
+    }
+  }
+
+  return sections.join("\n\n---\n\n");
+}
+
 async function handleIssueEvent(ctx: PluginContext, event: PluginEvent): Promise<void> {
   const issueId = event.entityId;
   if (!issueId) return;
@@ -179,11 +210,13 @@ async function advancePipeline(
         if (!claimed) continue;
 
         try {
+          const context = await buildStageContext(ctx, run.parentIssueId, companyId, stageDef, currentRows);
           const result = await dispatcher.dispatch({
             pipelineRunId: runId,
             stage: stageDef,
             companyId,
             parentIssueId: run.parentIssueId,
+            context,
           });
           await stateMachine.setStageSubIssueId(stageRow.id, result.issueId);
 
@@ -449,7 +482,7 @@ const plugin = definePlugin({
     const config = (await ctx.config.get()) as unknown as PipelineEngineConfig;
 
     stateMachine = new StateMachine(ctx.db as any);
-    dispatcher = new Dispatcher(ctx.issues as any, config.role_mapping ?? {}, ctx.manifest.id);
+    dispatcher = new Dispatcher(ctx.issues as any, config.role_mapping ?? {}, ctx.manifest.id, ctx.agents);
     router = new Router();
 
     pipelines = await loadPipelines(ctx);
@@ -501,7 +534,7 @@ const plugin = definePlugin({
     pipelines = await loadPipelines(pluginCtx);
     triggerMatcher = new TriggerMatcher(pipelines);
     const config = newConfig as unknown as PipelineEngineConfig;
-    dispatcher = new Dispatcher(pluginCtx.issues as any, config.role_mapping ?? {}, pluginCtx.manifest.id);
+    dispatcher = new Dispatcher(pluginCtx.issues as any, config.role_mapping ?? {}, pluginCtx.manifest.id, pluginCtx.agents);
     pluginCtx.logger.info("Pipeline engine config reloaded", { pipelineCount: pipelines.length });
   },
 

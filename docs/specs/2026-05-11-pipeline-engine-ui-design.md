@@ -102,9 +102,13 @@ packages/plugins/pipeline-engine/
 
 Emit calls are added to `advancePipeline()`, `handleCommentEvent()`, and `handleStageFailure()`.
 
-> **SDK verification needed:** `ctx.stream.emit()` is used in the paperclip-dag plugin. Confirm it's available in the plugin SDK version used by pipeline-engine. If not available, fall back to polling via `usePluginData` with a short refetch interval.
+> **SDK confirmed:** `ctx.stream.emit()` and `usePluginStream()` are available in the plugin SDK (exported from `@paperclipai/plugin-sdk/ui`). No fallback needed.
 
 ### Manifest Changes
+
+Update manifest `description` from "Deterministic YAML-defined state-machine pipeline engine..." to "Deterministic pipeline engine for orchestrating agent work."
+
+Remove `pipelines_dir` from `instanceConfigSchema.properties` (file-based definitions are superseded by UI-authored JSON).
 
 ```typescript
 entrypoints: {
@@ -362,13 +366,14 @@ The current router derives "ready stages" from `depends_on`. The new router work
 
 ### Storage
 
-- **Plugin state key**: `pipeline:{name}` — stores the full JSON definition
-- **Pipeline runs**: `pipeline_runs.pipeline_yaml` column stores this JSON (snapshotted at materialization time)
+- **Plugin state key**: `pipeline:{name}` — stores the full JSON definition (renamed from current `yaml:{name}` key — migration must rename existing keys)
+- **Pipeline runs**: `pipeline_runs.pipeline_yaml` column stores this JSON (snapshotted at materialization time). Column retains the `pipeline_yaml` name for backwards compatibility despite now storing JSON.
 - **No separate positions key** — positions are embedded in the definition
 
 ### Migration from current format
 
 The existing `depends_on` + `condition` + `on_failure` model is replaced. A one-time migration transforms existing pipelines:
+- **State key rename**: `yaml:{name}` → `pipeline:{name}` (iterate all `plugin_state` keys matching `yaml:*`, rename and re-store as JSON)
 - `depends_on: [a, b]` on stage X → edges `{ from: "a", to: "X" }` and `{ from: "b", to: "X" }`
 - `condition` on stage X → `when` on the incoming edge
 - `on_failure.retry_with.goto: Y` → error edge `{ from: "X", to: "Y", type: "error" }` + `retry` config on stage X
@@ -382,6 +387,9 @@ The existing `depends_on` + `condition` + `on_failure` model is replaced. A one-
 - `@xyflow/react` — ReactFlow canvas
 - `dagre` — auto-layout algorithm
 - `@types/dagre` — types
+
+**Retained packages:**
+- `handlebars` — still needed for retry body template rendering (`template-engine.ts`)
 
 **Removed packages:**
 - `js-yaml` — no longer needed (pipelines are JSON, not YAML)
@@ -441,10 +449,16 @@ The current router (`router.ts`) uses `depends_on` to derive ready stages. It mu
 
 **Current `expression-engine.ts`:**
 - `buildExpressionContext()` → keep, but adapt to work with edge `when` expressions
-- Edge `when` expressions evaluate against the **source stage's output** (e.g., `output.type == 'feature'`)
+- Edge `when` expressions evaluate against the **source stage's output** (e.g., `output.type == 'feature'`), but the full `ExpressionContext` (all stages, pipeline meta, env) remains available for complex conditions
 
 **Current `trigger-matcher.ts`:**
 - Keep as-is — still matches issue labels to `pipeline.trigger.label`
+
+**Current `worker.ts` refactoring:**
+The worker has three call sites that directly use `depends_on`-based logic and must be rewritten for edge-based traversal:
+- `buildStageContext()` — uses `stageDef.depends_on` to find upstream outputs. Rewrite: traverse incoming edges to find source stages.
+- `handleCheckpointCompletion()` — uses `s.depends_on.includes(checkpointStageDef.id)` to find downstream stages. Rewrite: find outgoing edges from the checkpoint stage.
+- `handleStageFailure()` — builds adjacency map from `s.depends_on` for `resetDownstreamStages`. Rewrite: build adjacency from `pipeline.edges` (forward edges only).
 
 ## Testing Strategy
 
@@ -461,7 +475,7 @@ The current router (`router.ts`) uses `depends_on` to derive ready stages. It mu
 | Method | Signature | Purpose |
 |---|---|---|
 | `listRuns` | `(companyId, opts?: { issueId?, status?, limit? })` → `PipelineRun[]` | Multi-run listing with filters |
-| `cancelRun` | `(runId)` → void | Set run to `cancelled`, bulk-set pending/running stages to `skipped` |
+| `cancelRun` | `(runId)` → void | Set run to `cancelled`, bulk-set pending/running stages to `skipped`, release advisory lock if held |
 
 ## New PipelineRunStatus Value
 
@@ -487,7 +501,11 @@ AND NOT EXISTS (
 1. **Node positions** — embedded in the pipeline definition JSON (`positions` field). No separate storage key.
 2. **Pipeline format** — pure JSON, no YAML. `js-yaml` dependency removed. The UI is the primary authoring tool.
 3. **Routing model** — edge-based. `depends_on`, `condition`, `skip_if`, `on_failure` removed from stages. All routing through `edges[]` array.
-4. **Retry model** — retry config (max_retries, body) lives on the stage. Error routing (where to retry) is an `on: error` edge. Matches n8n's split of retry config vs error routing.
+4. **Retry model** — retry config (max_retries, body) lives on the stage. Error routing (where to retry) is an `on: error` edge. Matches n8n's split of retry config vs error routing. `handlebars` dependency retained for body template rendering.
 5. **Approval gates** — UI shows gate nodes with a "requires approval" badge but the interactive approve/reject buttons are deferred until the backend implements `requires_approval` handling.
 6. **Sub-pipeline drill-in** — UI shows sub-pipeline nodes as non-expandable (disabled "Drill in" button) until backend implements sub-pipeline materialization.
 7. **`parallel_fan_out` inline stages** — NOT represented as nested nodes on the canvas. The fan-out node is a single card; its inline `stages[]` field is removed from the type (fan-out dispatches its `agent_role` with `per_task`/`fan_in` config).
+8. **DB column name** — `pipeline_runs.pipeline_yaml` column retains its name despite now storing JSON. Renaming would require a migration for no functional benefit.
+9. **Expression scope** — edge `when` conditions receive the full `ExpressionContext` (all stages, pipeline meta, env) but are documented as evaluating against the source stage's output for simplicity. Complex cross-stage conditions are supported.
+10. **State key rename** — existing `yaml:{name}` keys migrate to `pipeline:{name}` as part of the format migration.
+11. **`pipelines_dir` removal** — config field removed from manifest; file-based pipeline definitions are superseded by UI-authored JSON.

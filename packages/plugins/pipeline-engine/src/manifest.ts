@@ -29,6 +29,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "database.namespace.write",
     "plugin.state.read",
     "plugin.state.write",
+    "agents.read",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
@@ -55,7 +56,7 @@ const manifest: PaperclipPluginManifestV1 = {
         default: "pipelines",
       },
     },
-    required: ["role_mapping", "trigger_labels"],
+    required: ["trigger_labels"],
   },
   apiRoutes: [
     { routeKey: "run-status", method: "GET", path: "/runs/:runId", auth: "board-or-agent", capability: "api.routes.register" },

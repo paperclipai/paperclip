@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string"
+    },
+    "pr_url": {
+      "type": "string"
+    },
+    "pr_number": {
+      "type": "number"
+    },
+    "branch": {
+      "type": "string"
+    },
+    "ci_status": {
+      "type": "string"
+    },
+    "review_requested": {
+      "type": "boolean"
+    },
+    "summary": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}

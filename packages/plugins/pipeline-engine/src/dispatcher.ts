@@ -1,6 +1,10 @@
 import type { CreateIssueInput, DispatchRequest, RoleMapping, WakeupOptions } from "./types.js";
 import { loadSchema } from "./output-parser.js";
 
+export interface AgentsClient {
+  list(input: { companyId: string; status?: string; limit?: number; offset?: number }): Promise<Array<{ id: string; name: string }>>;
+}
+
 export interface IssuesClient {
   create(input: CreateIssueInput): Promise<{ id: string }>;
   requestWakeup(issueId: string, companyId: string, options: WakeupOptions): Promise<{ queued: boolean }>;
@@ -14,11 +18,18 @@ export interface DispatchResult {
   wakeupQueued: boolean;
 }
 
+function normalizeRoleName(name: string): string {
+  return name.toLowerCase().replace(/[-_\s]/g, "");
+}
+
 export class Dispatcher {
+  private agentNameCache = new Map<string, Map<string, string>>();
+
   constructor(
     private issues: IssuesClient,
     private roleMapping: RoleMapping,
     private pluginId: string,
+    private agents?: AgentsClient,
   ) {}
 
   async dispatch(request: DispatchRequest): Promise<DispatchResult> {
@@ -26,11 +37,7 @@ export class Dispatcher {
 
     const agentRole = "agent_role" in stage ? stage.agent_role : undefined;
 
-    if (agentRole && !this.roleMapping[agentRole]) {
-      throw new Error(`CONFIGURATION_ERROR: no agent mapped for role "${agentRole}"`);
-    }
-
-    const agentId = agentRole ? this.roleMapping[agentRole] : undefined;
+    const agentId = agentRole ? await this.resolveAgent(agentRole, companyId) : undefined;
 
     const outputSchema = "output_schema" in stage ? stage.output_schema : undefined;
     const outputInstructions = this.buildOutputInstructions(outputSchema);
@@ -60,6 +67,33 @@ export class Dispatcher {
     });
 
     return { issueId: issue.id, wakeupQueued: wakeup.queued };
+  }
+
+  private async resolveAgent(agentRole: string, companyId: string): Promise<string> {
+    if (this.roleMapping[agentRole]) {
+      return this.roleMapping[agentRole];
+    }
+
+    if (!this.agents) {
+      throw new Error(`CONFIGURATION_ERROR: no agent mapped for role "${agentRole}"`);
+    }
+
+    let nameMap = this.agentNameCache.get(companyId);
+    if (!nameMap) {
+      const agents = await this.agents.list({ companyId });
+      nameMap = new Map<string, string>();
+      for (const agent of agents) {
+        nameMap.set(normalizeRoleName(agent.name), agent.id);
+      }
+      this.agentNameCache.set(companyId, nameMap);
+    }
+
+    const normalized = normalizeRoleName(agentRole);
+    const agentId = nameMap.get(normalized);
+    if (!agentId) {
+      throw new Error(`CONFIGURATION_ERROR: no agent mapped for role "${agentRole}" (no match by name either)`);
+    }
+    return agentId;
   }
 
   private buildOutputInstructions(outputSchema: string | undefined): string {
