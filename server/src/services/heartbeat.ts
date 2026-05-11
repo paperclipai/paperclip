@@ -6683,6 +6683,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
+  // Cooldown map: at most one run_loop_suspected event per
+  // (agentId, issueId, wakeReason) per detection window. Without this, the
+  // detector re-emits on every dispatch tick once the threshold is crossed.
+  const lastRunLoopSignalEmittedAtMs = new Map<string, number>();
+
+  function runLoopSignalKey(agentId: string, issueId: string | null, wakeReason: string | null): string {
+    return `${agentId}|${issueId ?? ""}|${wakeReason ?? ""}`;
+  }
+
   async function maybeEmitRunLoopSignal(agent: typeof agents.$inferSelect) {
     try {
       const windowStart = new Date(Date.now() - LOOP_DETECTOR_WINDOW_SEC * 1000);
@@ -6703,6 +6712,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         now: new Date(),
       });
       if (!signal) return;
+
+      const key = runLoopSignalKey(signal.agentId, signal.issueId, signal.wakeReason);
+      const nowMs = Date.now();
+      const lastEmittedAt = lastRunLoopSignalEmittedAtMs.get(key);
+      if (lastEmittedAt !== undefined && nowMs - lastEmittedAt < signal.windowSec * 1000) {
+        return;
+      }
+      // Opportunistic pruning to keep the cooldown map bounded under long
+      // uptimes — drop entries older than 2x the window.
+      const pruneOlderThan = nowMs - 2 * signal.windowSec * 1000;
+      for (const [k, t] of lastRunLoopSignalEmittedAtMs) {
+        if (t < pruneOlderThan) lastRunLoopSignalEmittedAtMs.delete(k);
+      }
+      lastRunLoopSignalEmittedAtMs.set(key, nowMs);
 
       logger.warn(
         {
