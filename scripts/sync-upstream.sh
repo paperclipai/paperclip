@@ -365,9 +365,9 @@ log "Fetching remotes..."
 git fetch "$UPSTREAM_REMOTE" 2>&1
 git fetch "$ORIGIN_REMOTE" 2>&1
 
-# Get commit counts for diff summary
 LOCAL_SHA="$(git rev-parse "$LOCAL_REF")"
 UPSTREAM_SHA="$(git rev-parse "$UPSTREAM_REF")"
+read -r LOCAL_ONLY UPSTREAM_ONLY < <(git rev-list --left-right --count "$LOCAL_REF...$UPSTREAM_REF" 2>/dev/null || echo "0 0")
 BASE_READY_FOR_FEATURES="0"
 FEATURE_SUMMARY=""
 ISSUE_STATUS="done"
@@ -375,8 +375,10 @@ ISSUE_STATUS="done"
 if [[ "$LOCAL_SHA" == "$UPSTREAM_SHA" ]]; then
   log "Already up-to-date with $UPSTREAM_REF — nothing to do."
   BASE_READY_FOR_FEATURES="1"
+elif git merge-base --is-ancestor "$UPSTREAM_REF" "$LOCAL_REF"; then
+  log "$LOCAL_REF already contains $UPSTREAM_REF; local fork is ${LOCAL_ONLY} commit(s) ahead."
+  BASE_READY_FOR_FEATURES="1"
 else
-  read -r LOCAL_ONLY UPSTREAM_ONLY < <(git rev-list --left-right --count "$LOCAL_REF...$UPSTREAM_REF" 2>/dev/null || echo "0 0")
   DIFF_STAT="$(git diff --stat "$LOCAL_REF" "$UPSTREAM_REF" 2>/dev/null | tail -1 || echo '(diff unavailable)')"
 
   log "$UPSTREAM_REF is ${UPSTREAM_ONLY} commit(s) ahead; $LOCAL_REF is ${LOCAL_ONLY} commit(s) ahead. Attempting fast-forward merge..."
@@ -425,7 +427,7 @@ fi
 if [[ -n "$SYNC_FEATURES_SPEC" ]]; then
   if [[ "$BASE_READY_FOR_FEATURES" == "1" ]]; then
     sync_feature_branches "$LOCAL_REF" "$ORIGINAL_BRANCH"
-    SUMMARY="$(printf '%s\n\n## Feature branch sync\n\n%s' "${SUMMARY:-Sync upstream: already up-to-date with ${UPSTREAM_REF} (${UPSTREAM_SHA:0:8}). No merge needed.}" "$FEATURE_SUMMARY")"
+    SUMMARY="$(printf '%s\n\n## Feature branch sync\n\n%s' "${SUMMARY:-Sync upstream: ${LOCAL_REF} already contains ${UPSTREAM_REF} (${UPSTREAM_SHA:0:8}). No merge needed.}" "$FEATURE_SUMMARY")"
   else
     FEATURE_SUMMARY="Feature branch sync skipped because ${LOCAL_REF} was not updated directly. Merge ${BRANCH} first, then rerun with --sync-features."
     log "$FEATURE_SUMMARY"
