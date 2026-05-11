@@ -30,16 +30,29 @@ const SYSTEM_PROMPT_ECHO_PATTERNS: RegExp[] = [
 // Match full <tag>…</tag> blocks for known internal-reasoning wrappers.
 const INTERNAL_XML_BLOCK_RE = /<(analysis|thinking|antml:thinking|antml:function_calls)>[\s\S]*?<\/\1>/gi;
 
-// Detect JSON tool-call objects embedded mid-text (e.g. Llama-70b emitting
-// prose then {"type":"function",...} when it can't use the structured channel).
-const INLINE_TOOL_CALL_RE = /\{\s*"type"\s*:\s*"function"/i;
+// Detect JSON tool-call objects embedded mid-text. Models leak several dialects
+// when they can't use the structured channel — broadened from the original
+// {"type":"function",...} form after SAG-819#72f09e77 (8b IC leaked the bare
+// {"name":"webfetch","parameters":{...}} shape that the narrower detector missed).
+const INLINE_TOOL_CALL_PATTERNS: RegExp[] = [
+  // OpenAI-style: {"type":"function", ...}
+  /\{\s*"type"\s*:\s*"function"/i,
+  // Bare-name dialect (Llama/Qwen 8b): {"name":"<ident>", ..., "parameters"|"arguments": ...}
+  /\{\s*"name"\s*:\s*"[A-Za-z_][\w.\-]*"[\s\S]{0,200}?"(?:parameters|arguments)"\s*:/i,
+  // OpenCode bridge dialect: {"tool":"<ident>", ..., "args"|"input": ...}
+  /\{\s*"tool"\s*:\s*"[A-Za-z_][\w.\-]*"[\s\S]{0,200}?"(?:args|input|arguments|parameters)"\s*:/i,
+];
+
+function hasInlineToolCall(text: string): boolean {
+  return INLINE_TOOL_CALL_PATTERNS.some((re) => re.test(text));
+}
 
 export function sanitizeModelText(text: string): string | null {
   if (isPureJson(text)) return null;
   if (SYSTEM_PROMPT_ECHO_PATTERNS.some((re) => re.test(text.trimStart()))) return null;
   // Drop blocks where the model slipped an inline text-mode tool call anywhere
   // in the text — the prose that precedes the JSON is also internal reasoning.
-  if (INLINE_TOOL_CALL_RE.test(text)) return null;
+  if (hasInlineToolCall(text)) return null;
   const stripped = text.replace(INTERNAL_XML_BLOCK_RE, "").trim();
   return stripped.length > 0 ? stripped : null;
 }
