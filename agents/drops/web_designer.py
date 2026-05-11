@@ -477,24 +477,21 @@ Responde SOLO con JSON:
     images = {}
 
     if cj_image and cj_image.startswith("http"):
-        print(f"  ✅ Imagen real CJ (hero): {cj_image[:60]}", flush=True)
-        # Buscar imágenes adicionales en Openverse para el grid
-        search_context = f"{name} {issue_title}".strip()
-        openverse_imgs = fetch_openverse_images(search_context)
-        product_grid   = openverse_imgs.get("product", []) + openverse_imgs.get("context", [])
+        print(f"  ✅ Imagen real CJ (hero only): {cj_image[:60]}", flush=True)
+        # Solo hero — sin grid de fotos adicionales
         images = {
             "hero":    [cj_image],
-            "product": product_grid[:3] if product_grid else [cj_image],
-            "context": openverse_imgs.get("context", []),
-            "all":     [cj_image] + product_grid[:4],
+            "product": [],
+            "context": [],
+            "all":     [cj_image],
         }
     # Prioridad 2: Pexels API
     elif pexels_key:
         images = fetch_pexels_images(name, pexels_key)
 
-    # Prioridad 3: Openverse para todo
+    # Prioridad 3: Openverse solo si no hay imagen CJ
     if not images.get("all"):
-        print(f"  ℹ️  Pexels no disponible — usando Openverse", flush=True)
+        print(f"  ℹ️  Sin imagen CJ — usando Openverse", flush=True)
         search_context = f"{name} {issue_title}".strip()
         images = fetch_openverse_images(search_context)
     hero_imgs    = images.get("hero", []) if images else []
@@ -582,10 +579,10 @@ COPY GENERADO:
 {structure[:2500]}
 
 REGLAS DE IMÁGENES:
-{"- USA las imágenes de Pexels proporcionadas arriba en las secciones correspondientes" if images.get("all") else "- Usa placeholders descriptivos: <img src='https://via.placeholder.com/800x400?text=Producto' alt='...'>"}
-- Hero section: imagen grande (100% ancho, 500px altura mínima) con overlay oscuro y texto encima
-- Sección de producto: 2-3 imágenes en grid
-- NO dejes secciones sin imágenes — usa las URLs proporcionadas
+{"- Hero: usa la imagen real del producto como fondo del hero (background-image con overlay oscuro semitransparente). NUNCA uses otras URLs que no sean las proporcionadas." if images.get("hero") else "- Sin imagen de producto disponible — usa un hero con gradiente CSS oscuro profesional, sin img tags"}
+{"- Grid de producto: NO uses imágenes adicionales. En su lugar usa CARDS CSS con iconos emoji grandes (2-3 cards) destacando las características principales del producto. Ejemplo: card con emoji 📱, título y descripción." if not images.get("product") else "- Grid: usa las imágenes del producto proporcionadas"}
+- NO inventes URLs de imágenes ni uses placeholders como via.placeholder.com
+- NO pongas img tags sin URL real — mejor sin imagen que con imagen rota
 
 Genera HTML completo con:
 - <head> con meta tags, Google Fonts (Inter o Poppins)

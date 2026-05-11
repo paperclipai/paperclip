@@ -91,11 +91,24 @@ def fetch_cj_image_for_winner(winner_name: str) -> str:
             return ""
 
         products = data.get("data", {}).get("list", [])
+        # Extraer keywords del winner para validar relevancia
+        winner_words = set(w.lower() for w in winner_name.split() if len(w) > 3)
+        # Excluir stopwords comunes
+        stopwords = {"para", "con", "portátil", "portatil", "inteligente", "generación",
+                     "modelo", "versión", "anti", "ultra", "mini", "pro", "plus"}
+        winner_words -= stopwords
+
         for p in products:
-            img = p.get("productImage") or p.get("bigImage") or ""
-            if img and img.startswith("http"):
-                print(f"  🖼️  CJ imagen para winner '{winner_name[:30]}': {img[:60]}", flush=True)
-                return img
+            img      = p.get("productImage") or p.get("bigImage") or ""
+            p_name   = (p.get("productNameEn") or p.get("productName") or "").lower()
+            if not img or not img.startswith("http"):
+                continue
+            # Validar que el producto CJ tiene alguna relación con el winner
+            if winner_words and not any(w in p_name for w in winner_words):
+                print(f"  ⚠️  CJ product '{p_name[:40]}' no relacionado con winner — skip", flush=True)
+                continue
+            print(f"  🖼️  CJ imagen para winner '{winner_name[:30]}': {img[:60]}", flush=True)
+            return img
     except Exception as e:
         print(f"  ⚠️  CJ winner image search: {e}", flush=True)
 
