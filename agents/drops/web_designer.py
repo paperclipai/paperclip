@@ -24,35 +24,71 @@ def load_reference_landings() -> str:
         return ""
 
 
-def fetch_picsum_fallback(product_name: str) -> dict:
+def fetch_openverse_images(product_name: str) -> dict:
     """
-    Genera URLs de Picsum Photos — funciona desde cualquier IP, sin API key.
-    Usa seeds basados en el producto para consistencia (misma imagen cada ejecución).
-    picsum.photos es un servicio activo y confiable (no deprecado).
+    Busca imágenes relevantes en Openverse (WordPress Foundation).
+    - Sin API key requerida
+    - Funciona desde cualquier IP incluyendo Railway
+    - Busca por keyword → fotos reales relacionadas con el producto
+    - Licencias Creative Commons (uso libre)
+    API: https://api.openverse.org/v1/images/?q=QUERY
     """
-    import hashlib
-    # Generar seeds numéricos consistentes a partir del nombre del producto
-    base_seed = int(hashlib.md5(product_name.encode()).hexdigest(), 16) % 1000
-
-    hero_urls    = [f"https://picsum.photos/seed/{base_seed}/1200/600"]
-    product_urls = [
-        f"https://picsum.photos/seed/{base_seed + 1}/800/600",
-        f"https://picsum.photos/seed/{base_seed + 2}/800/600",
-        f"https://picsum.photos/seed/{base_seed + 3}/800/600",
-    ]
-    context_urls = [
-        f"https://picsum.photos/seed/{base_seed + 4}/800/600",
-        f"https://picsum.photos/seed/{base_seed + 5}/800/600",
-    ]
-
-    all_urls = hero_urls + product_urls + context_urls
-    print(f"  ✅ Picsum fallback: {len(all_urls)} URLs (seed base: {base_seed})", flush=True)
-    return {
-        "hero":    hero_urls,
-        "product": product_urls,
-        "context": context_urls,
-        "all":     all_urls,
+    # Traducir keywords al inglés para mejor resultado
+    kw_map = {
+        "perro": "dog", "gato": "cat", "mascota": "pet",
+        "collar": "collar", "arnés": "harness", "arnes": "harness",
+        "soporte": "stand holder", "portátil": "portable laptop",
+        "humidificador": "humidifier", "mochila": "backpack",
+        "cocina": "kitchen", "fitness": "fitness workout",
+        "masaje": "massage", "facial": "facial skincare",
+        "magnético": "magnetic", "coche": "car",
+        "consola": "gaming console", "inalámbrico": "wireless",
+        "recargable": "rechargeable", "led": "led light",
+        "para": "", "con": "", "de": "", "el": "", "la": "",
     }
+    query = product_name.lower()
+    for es, en in kw_map.items():
+        query = query.replace(es, en)
+    query = " ".join(query.split()[:4]).strip()  # max 4 palabras
+    print(f"  🔍 Openverse query: '{query}'", flush=True)
+
+    try:
+        params = urllib.parse.urlencode({
+            "q":         query,
+            "page_size": 6,
+            "license_type": "commercial",
+        })
+        req = urllib.request.Request(
+            f"https://api.openverse.org/v1/images/?{params}",
+            headers={
+                "User-Agent": "DiscontrolDrops/1.0 (dropshipping tool)",
+                "Accept":     "application/json",
+            },
+            method="GET"
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8"))
+
+        results = data.get("results", [])
+        urls = [r["url"] for r in results if r.get("url")]
+
+        if urls:
+            print(f"  ✅ Openverse: {len(urls)} imágenes relevantes para '{query}'", flush=True)
+            return {
+                "hero":    urls[:1],
+                "product": urls[1:4],
+                "context": urls[4:6],
+                "all":     urls,
+            }
+    except Exception as e:
+        print(f"  ⚠️  Openverse error: {e}", flush=True)
+
+    # Último fallback: Picsum con seed consistente
+    import hashlib
+    base_seed = int(hashlib.md5(product_name.encode()).hexdigest(), 16) % 1000
+    urls = [f"https://picsum.photos/seed/{base_seed + i}/800/600" for i in range(6)]
+    print(f"  ℹ️  Picsum fallback (seed {base_seed})", flush=True)
+    return {"hero": urls[:1], "product": urls[1:4], "context": urls[4:6], "all": urls}
 
 
 def fetch_pexels_images(product_name: str, pexels_key: str) -> dict:
@@ -426,8 +462,8 @@ Responde SOLO con JSON:
 
     # Prioridad 3: Unsplash fallback
     if not images.get("all"):
-        print(f"  ℹ️  Pexels no disponible — usando Picsum", flush=True)
-        images = fetch_picsum_fallback(name)
+        print(f"  ℹ️  Pexels no disponible — usando Openverse", flush=True)
+        images = fetch_openverse_images(name)
     hero_imgs    = images.get("hero", []) if images else []
     hero_img     = hero_imgs[0] if hero_imgs else ""
     product_imgs = images.get("product", []) if images else []
