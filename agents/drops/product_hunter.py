@@ -471,8 +471,10 @@ def fetch_cj_products(niche: str, cj_key: str, limit: int = 8) -> list:
         if raw:
             sample = raw[0]
             print(f"  🔍 CJ sample fields: {list(sample.keys())[:15]}", flush=True)
-            print(f"  🔍 CJ sample bigImage: {sample.get('bigImage','MISSING')[:80] if sample.get('bigImage') else 'EMPTY/MISSING'}", flush=True)
-            print(f"  🔍 CJ sample name: {sample.get('nameEn','?')[:60]}", flush=True)
+            img = sample.get('productImage') or sample.get('bigImage') or sample.get('imageUrl') or ''
+            name = sample.get('productNameEn') or sample.get('productName') or sample.get('nameEn') or ''
+            print(f"  🔍 CJ sample productImage: '{img[:80] if img else 'EMPTY'}'", flush=True)
+            print(f"  🔍 CJ sample productNameEn: '{name[:60] if name else 'EMPTY'}'", flush=True)
         products = []
         for p in raw[:limit]:
             # CJ puede devolver precio como "16.95 -- 22.97" (rango) — tomar el menor
