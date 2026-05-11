@@ -33,8 +33,10 @@ export async function sendPushover(
   });
 
   if (!res.ok) {
-    ctx.logger.warn("pushover_send_failed", { status: res.status });
+    const body = await res.text().catch(() => "");
+    ctx.logger.warn("pushover_send_failed", { status: res.status, body: body.slice(0, 500) });
     return { ok: false, status: res.status };
   }
+  ctx.logger.info("pushover_send_ok", { status: res.status, title: params.title });
   return { ok: true, status: res.status };
 }

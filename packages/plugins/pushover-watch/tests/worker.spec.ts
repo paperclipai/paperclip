@@ -79,21 +79,27 @@ describe("pushover-watch worker integration", () => {
       new Response(JSON.stringify({ status: 1 }), { status: 200 }),
     );
 
-    // Run setup — this bootstraps the company (seeds iss-1 prev state) and
-    // registers event listeners.
+    // Run setup — this bootstraps the company (seeds iss-1 prev state via
+    // ctx.issues.list) and registers event listeners.
     await plugin.definition.setup(harness.ctx);
+
+    // After bootstrap, the event handler calls ctx.issues.get to fetch the
+    // current issue state. Stub it to return the post-transition state (done).
+    vi.spyOn(harness.ctx.issues, "get").mockResolvedValue({
+      id: "iss-1",
+      companyId: WHI,
+      status: "done",
+      assigneeAgentId: CEO,
+      assigneeUserId: null,
+      identifier: "WHI-42",
+      title: "Cleanup",
+      updatedAt: new Date(),
+    } as any);
 
     // Emit issue.updated: status transitions from in_progress → done (T1).
     await harness.emit(
       "issue.updated",
-      {
-        id: "iss-1",
-        identifier: "WHI-42",
-        title: "Cleanup",
-        status: "done",
-        assigneeAgentId: CEO,
-        assigneeUserId: null,
-      },
+      { status: "done" }, // delta payload only — handler trusts ctx.issues.get
       {
         companyId: WHI,
         entityId: "iss-1",

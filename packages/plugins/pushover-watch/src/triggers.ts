@@ -72,20 +72,39 @@ export async function handleIssueUpdated(
   const issueId = event.entityId;
   if (!issueId) return;
 
+  // The event payload only carries the delta (changed fields). Fetch the full
+  // current issue state so we know assignee, title etc. regardless of which
+  // fields were in this particular update.
+  const issue = await ctx.issues.get(issueId, event.companyId);
+  if (!issue) {
+    ctx.logger.warn("pushover_watch_issue_not_found", { issueId, companyId: event.companyId });
+    return;
+  }
+
   const prev = (await ctx.state.get(issueStateKey(issueId))) as CachedIssueState | null;
 
   const next: CachedIssueState = {
-    status: event.payload.status,
-    assigneeAgentId: event.payload.assigneeAgentId,
-    assigneeUserId: event.payload.assigneeUserId,
+    status: issue.status as CachedIssueState["status"],
+    assigneeAgentId: issue.assigneeAgentId ?? null,
+    assigneeUserId: issue.assigneeUserId ?? null,
     updatedAt: event.occurredAt,
   };
 
   await ctx.state.set(issueStateKey(issueId), next);
 
+  ctx.logger.info("pushover_watch_issue_event", {
+    issueId,
+    identifier: issue.identifier,
+    prevStatus: prev?.status ?? null,
+    nextStatus: next.status,
+    assigneeAgentId: next.assigneeAgentId,
+    assigneeUserId: next.assigneeUserId,
+  });
+
   if (!prev) return; // unknown issue — seed only, no notification
 
-  const url = issueUrl(config, company, event.payload.identifier);
+  const url = issueUrl(config, company, issue.identifier);
+  const title = issue.title ?? "";
 
   // T1: CEO/CHO done
   if (matchesT1(prev, next, company.topAgentIds)) {
@@ -93,8 +112,8 @@ export async function handleIssueUpdated(
     await dispatch(ctx, config, {
       userKey,
       appToken,
-      title: `[${company.issuePrefix}] CEO erledigt: ${truncate(event.payload.title, 80)}`,
-      message: event.payload.title,
+      title: `[${company.issuePrefix}] CEO erledigt: ${truncate(title, 80)}`,
+      message: title,
       url,
       urlTitle: "In Paperclip öffnen",
       priority: 0,
@@ -108,8 +127,8 @@ export async function handleIssueUpdated(
     await dispatch(ctx, config, {
       userKey,
       appToken,
-      title: `[${company.issuePrefix}] Review-Handover: ${truncate(event.payload.title, 80)}`,
-      message: event.payload.title,
+      title: `[${company.issuePrefix}] Review-Handover: ${truncate(title, 80)}`,
+      message: title,
       url,
       urlTitle: "In Paperclip öffnen",
       priority: 0,
@@ -126,7 +145,7 @@ export async function handleIssueUpdated(
     await dispatch(ctx, config, {
       userKey,
       appToken,
-      title: `[${company.issuePrefix}] Blockiert, braucht dich: ${truncate(event.payload.title, 80)}`,
+      title: `[${company.issuePrefix}] Blockiert, braucht dich: ${truncate(title, 80)}`,
       message: truncate(latest.body, 200),
       url,
       urlTitle: "In Paperclip öffnen",
@@ -153,19 +172,43 @@ export async function handleCommentCreated(
   const company = findCompany(config, event.companyId);
   if (!company) return;
 
-  if (event.payload.authorUserId === config.boardUserId) return; // ignore self-mentions
-  if (!commentMentionsUser(event.payload.body, config.boardUserId)) return;
+  // The event payload from the activity log carries activity details, not the
+  // full comment record. Resolve the comment + parent issue via the API to get
+  // the body, author, and issue context we need.
+  const commentId = event.entityId;
+  if (!commentId) return;
 
-  const url = issueUrl(config, company, event.payload.issueIdentifier);
+  const issueId = (event.payload as { issueId?: string }).issueId
+    ?? (event.payload as { parentEntityId?: string }).parentEntityId;
+  if (!issueId) {
+    ctx.logger.info("pushover_watch_comment_no_issueid", { commentId, payload: event.payload });
+    return;
+  }
+
+  const [issue, comments] = await Promise.all([
+    ctx.issues.get(issueId, event.companyId),
+    ctx.issues.listComments(issueId, event.companyId),
+  ]);
+  if (!issue) return;
+
+  const comment = comments.find((c) => c.id === commentId);
+  if (!comment) return;
+
+  if (comment.authorUserId === config.boardUserId) return; // ignore self-mentions
+  if (typeof comment.body !== "string") return;
+  if (!commentMentionsUser(comment.body, config.boardUserId)) return;
+
+  const url = issueUrl(config, company, issue.identifier);
   const { userKey, appToken } = await resolveCredentials(ctx, config);
-  const authorLabel =
-    event.payload.authorAgentId ? `Agent ${event.payload.authorAgentId.slice(0, 8)}` : "jemand";
+  const authorLabel = comment.authorAgentId
+    ? `Agent ${comment.authorAgentId.slice(0, 8)}`
+    : "jemand";
 
   await dispatch(ctx, config, {
     userKey,
     appToken,
-    title: `[${company.issuePrefix}] @-Mention von ${authorLabel}: ${truncate(event.payload.issueTitle ?? "", 60)}`,
-    message: truncate(event.payload.body, 200),
+    title: `[${company.issuePrefix}] @-Mention von ${authorLabel}: ${truncate(issue.title ?? "", 60)}`,
+    message: truncate(comment.body, 200),
     url,
     urlTitle: "In Paperclip öffnen",
     priority: 0,
