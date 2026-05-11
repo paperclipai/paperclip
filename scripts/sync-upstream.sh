@@ -276,7 +276,10 @@ sync_feature_branches() {
   failed_count=0
   summary=""
 
-  mapfile -t branches < <(feature_branches)
+  local branches=()
+  while IFS= read -r branch; do
+    branches+=("$branch")
+  done < <(feature_branches)
   if [[ "${#branches[@]}" -eq 0 ]]; then
     FEATURE_SUMMARY="No eligible feature branches to sync."
     log "$FEATURE_SUMMARY"
