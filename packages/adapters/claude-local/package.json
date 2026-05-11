@@ -46,7 +46,7 @@
     "skills"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-shim-assets.mjs",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "probe:quota": "pnpm exec tsx src/cli/quota-probe.ts --json",

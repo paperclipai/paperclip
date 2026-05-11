@@ -40,6 +40,7 @@ import {
   refreshPaperclipWorkspaceEnvForExecution,
   renderTemplate,
   renderPaperclipWakePrompt,
+  resolvePaperclipInstanceRootForAdapter,
   rewriteWorkspaceCwdEnvVarsForExecution,
   shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
@@ -60,6 +61,12 @@ import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
+import {
+  prepareLeakCheckShimDir,
+  prependPath,
+  resolveLeakCheckScript,
+  type LeakCheckShimSetup,
+} from "./leak-check/host.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -423,6 +430,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ),
   );
   const billingType = resolveClaudeBillingType(effectiveEnv);
+  const leakCheck = await setupLeakCheckShim({
+    runId,
+    companyId: agent.companyId,
+    config,
+    env,
+    loggedEnv,
+    executionTargetIsRemote,
+    onLog,
+  });
+  if (leakCheck.setup) {
+    leakCheck.applyToEnv(env);
+    leakCheck.applyToEnv(loggedEnv);
+  }
   const claudeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = new Set(resolveClaudeDesiredSkillNames(config, claudeSkillEntries));
   // When instructionsFilePath is configured, build a stable content-addressed
@@ -957,5 +977,73 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
       await restoreRemoteWorkspace();
     }
+    if (leakCheck.setup) {
+      await leakCheck.setup.cleanup();
+    }
+  }
+}
+
+interface LeakCheckShimWiring {
+  setup: LeakCheckShimSetup | null;
+  applyToEnv: (target: Record<string, string>) => void;
+}
+
+async function setupLeakCheckShim(input: {
+  runId: string;
+  companyId: string;
+  config: Record<string, unknown>;
+  env: Record<string, string>;
+  loggedEnv: Record<string, string>;
+  executionTargetIsRemote: boolean;
+  onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+}): Promise<LeakCheckShimWiring> {
+  const noop: LeakCheckShimWiring = { setup: null, applyToEnv: () => {} };
+  const leakCheckCfg = parseObject((input.config as Record<string, unknown>).leakCheck);
+  if (asBoolean(leakCheckCfg.disabled, false)) {
+    return noop;
+  }
+  // v1 only intercepts local execution. Remote sandbox interception is
+  // a follow-up (the shim materials would need to ride the runtime-asset
+  // sync path).
+  if (input.executionTargetIsRemote) {
+    return noop;
+  }
+  const explicitScriptPath = asString(leakCheckCfg.scriptPath, "").trim();
+  const instanceRoot = resolvePaperclipInstanceRootForAdapter({
+    homeDir: process.env.PAPERCLIP_HOME ?? undefined,
+    instanceId: process.env.PAPERCLIP_INSTANCE_ID ?? undefined,
+    env: process.env,
+  });
+  const scriptPath = explicitScriptPath
+    ? explicitScriptPath
+    : await resolveLeakCheckScript({
+        instanceRoot,
+        companyId: input.companyId,
+      });
+  if (!scriptPath) {
+    return noop;
+  }
+  try {
+    const setup = await prepareLeakCheckShimDir({
+      runId: input.runId,
+      scriptPath,
+    });
+    await input.onLog(
+      "stdout",
+      `[paperclip] Leak-check shim active for ${input.companyId} (script: ${scriptPath}).\n`,
+    );
+    const applyToEnv = (target: Record<string, string>) => {
+      target.PATH = prependPath(target.PATH ?? process.env.PATH, setup.shimDir);
+      target.PAPERCLIP_LEAK_CHECK_SCRIPT = setup.scriptPath;
+      target.PAPERCLIP_LEAK_CHECK_SHIM_DIR = setup.shimDir;
+    };
+    return { setup, applyToEnv };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    await input.onLog(
+      "stderr",
+      `[paperclip] Failed to set up leak-check shim: ${reason}. Run will proceed without leak-check protection.\n`,
+    );
+    return noop;
   }
 }
