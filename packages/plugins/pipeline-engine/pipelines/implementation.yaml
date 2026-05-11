@@ -1,0 +1,8 @@
+name: implementation
+description: Implement a single task from spec
+
+stages:
+  - id: implement
+    type: worker
+    agent_role: code-writer
+    output_schema: implementation-output

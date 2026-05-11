@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["status", "files_changed", "branch", "summary"],
+  "properties": {
+    "status": { "type": "string", "enum": ["complete", "blocked", "partial"] },
+    "files_changed": { "type": "array", "items": { "type": "string" } },
+    "branch": { "type": "string" },
+    "summary": { "type": "string" },
+    "blockers": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": false
+}

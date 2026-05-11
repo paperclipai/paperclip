@@ -1,0 +1,81 @@
+name: feature
+description: Full feature development — spec → decompose → test → implement → review → validate → merge
+
+trigger:
+  label: "pipeline:feature"
+
+stages:
+  - id: spec-review
+    type: classifier
+    agent_role: spec-reviewer
+    output_schema: spec-review-output
+
+  - id: decompose
+    type: classifier
+    agent_role: decomposer
+    depends_on: [spec-review]
+    condition: "stages.spec_review.output.status == 'approved'"
+    output_schema: decomposition-output
+    checkpoint: true
+
+  - id: write-tests
+    type: sub-pipeline
+    pipeline: test-writing
+    per_task: true
+    ordering: from_output
+    depends_on: [decompose]
+
+  - id: implement
+    type: sub-pipeline
+    pipeline: implementation
+    per_task: true
+    ordering: from_output
+    depends_on: [write-tests]
+
+  - id: validate
+    type: worker
+    agent_role: validator
+    depends_on: [implement]
+    fan_in: all_complete
+    output_schema: validation-output
+    timeout: 15m
+    on_failure:
+      retry_with:
+        goto: implement
+        body: "Fix validation failures: {{ output.errors }}"
+        max_retries: 3
+
+  - id: review
+    type: parallel_fan_out
+    depends_on: [validate]
+    condition: "stages.validate.output.status == 'pass'"
+    stages:
+      - id: code-review
+        type: classifier
+        agent_role: code-reviewer
+        output_schema: review-output
+      - id: security-review
+        type: classifier
+        agent_role: security-reviewer
+        output_schema: review-output
+      - id: architecture-review
+        type: classifier
+        agent_role: architecture-reviewer
+        output_schema: review-output
+
+  - id: review-gate
+    type: gate
+    depends_on: [review]
+    fan_in: all_complete
+    condition: "all(s.output.decision == 'approve' for s in stages.review.stages)"
+    on_failure:
+      retry_with:
+        goto: implement
+        body: "Address review findings: {{ output.findings }}"
+        max_retries: 2
+
+  - id: merge
+    type: worker
+    agent_role: pr-manager
+    depends_on: [review-gate]
+    output_schema: merge-output

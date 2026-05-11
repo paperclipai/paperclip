@@ -1,0 +1,36 @@
+{
+  "name": "@paperclipai/plugin-pipeline-engine",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Deterministic YAML-defined state-machine pipeline engine for Paperclip",
+  "scripts": {
+    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "build": "node ./esbuild.config.mjs",
+    "dev": "node ./esbuild.config.mjs --watch",
+    "test": "vitest run --config ./vitest.config.ts",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js"
+  },
+  "keywords": ["paperclip", "plugin", "pipeline", "orchestration"],
+  "author": "Paperclip",
+  "license": "MIT",
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
+    "ajv": "^8.17.0",
+    "handlebars": "^4.7.8",
+    "js-yaml": "^4.1.0",
+    "jsonata": "^2.0.5"
+  },
+  "devDependencies": {
+    "@paperclipai/shared": "workspace:*",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^24.6.0",
+    "esbuild": "^0.27.3",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}
