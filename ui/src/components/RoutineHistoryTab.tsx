@@ -172,7 +172,7 @@ export function RoutineHistoryTab({
 
   if (revisionsQuery.isLoading) {
     return (
-      <div className="grid gap-5 md:grid-cols-[300px_minmax(0,1fr)]">
+      <div className="grid gap-5">
         <div className="space-y-2">
           {Array.from({ length: 5 }).map((_, idx) => (
             <Skeleton key={idx} className="h-10 w-full" />
@@ -204,7 +204,7 @@ export function RoutineHistoryTab({
   const onlyBootstrapRevision = revisions.length <= 1;
 
   return (
-    <div className="grid gap-5 md:grid-cols-[300px_minmax(0,1fr)]">
+    <div className="grid gap-5">
       <RevisionList
         revisions={visibleRevisions}
         latestRevisionId={routine.latestRevisionId}
@@ -316,7 +316,7 @@ function HistoricalPreviewBanner({
 }) {
   return (
     <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="flex flex-col gap-3">
         <div className="space-y-1">
           <p className="text-sm font-medium text-amber-200">
             Viewing revision {revisionNumber} (read-only)
@@ -355,7 +355,7 @@ function ConflictBanner({
   const fieldsText = formatDirtyFieldList(labels);
   return (
     <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="flex flex-col gap-3">
         <div className="space-y-1">
           <p className="text-sm font-medium text-amber-200">Unsaved routine edits</p>
           <p className="text-xs text-muted-foreground">
@@ -577,7 +577,7 @@ function RevisionPreview({
         <p className="pb-2 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
           Structured fields
         </p>
-        <div className="grid gap-3 md:grid-cols-2 divide-y md:divide-y-0 divide-border">
+        <div className="grid gap-3 divide-y divide-border">
           {fieldRows.map((row) => (
             <div key={row.key} className="space-y-1 p-2">
               <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{row.label}</p>

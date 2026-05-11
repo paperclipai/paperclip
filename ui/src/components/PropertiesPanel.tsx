@@ -1,7 +1,11 @@
 import { X } from "lucide-react";
 import { usePanel } from "../context/PanelContext";
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { ResizableSidebarPane } from "./ResizableSidebarPane";
+
+const PROPERTIES_PANEL_DEFAULT = 400;
+const PROPERTIES_PANEL_MIN = 320;
+const PROPERTIES_PANEL_MAX = 640;
 
 export function PropertiesPanel() {
   const { panelContent, panelVisible, setPanelVisible } = usePanel();
@@ -9,21 +13,29 @@ export function PropertiesPanel() {
   if (!panelContent) return null;
 
   return (
-    <aside
-      className="hidden md:flex border-l border-border bg-card flex-col shrink-0 overflow-hidden transition-[width,opacity] duration-200 ease-in-out h-full"
-      style={{ width: panelVisible ? 320 : 0, opacity: panelVisible ? 1 : 0 }}
-    >
-      <div className="w-80 flex-1 flex flex-col min-w-[320px] min-h-0">
-        <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-          <span className="text-sm font-medium">Properties</span>
-          <Button variant="ghost" size="icon-xs" onClick={() => setPanelVisible(false)}>
-            <X className="h-4 w-4" />
-          </Button>
+    <aside className="hidden md:flex border-l border-border bg-card shrink-0 h-full">
+      <ResizableSidebarPane
+        open={panelVisible}
+        resizable
+        side="right"
+        storageKey="paperclip.properties.width"
+        defaultWidth={PROPERTIES_PANEL_DEFAULT}
+        minWidth={PROPERTIES_PANEL_MIN}
+        maxWidth={PROPERTIES_PANEL_MAX}
+        className="h-full"
+      >
+        <div className="flex h-full w-full flex-col min-h-0">
+          <div className="flex items-center justify-between px-4 py-2 border-b border-border">
+            <span className="text-sm font-medium">Properties</span>
+            <Button variant="ghost" size="icon-xs" onClick={() => setPanelVisible(false)}>
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+          <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
+            <div className="p-4 min-w-0">{panelContent}</div>
+          </div>
         </div>
-        <ScrollArea className="flex-1">
-          <div className="p-4 w-[320px] max-w-[320px] min-w-0">{panelContent}</div>
-        </ScrollArea>
-      </div>
+      </ResizableSidebarPane>
     </aside>
   );
 }

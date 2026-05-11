@@ -592,7 +592,7 @@ export function RoutineDetail() {
     if (!routine) return null;
     return (
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-3 min-w-0">
-        <TabsList variant="line" className="w-full justify-start gap-1 h-auto flex-wrap">
+        <TabsList variant="line" className="w-full justify-start gap-1 overflow-x-auto">
           <TabsTrigger value="triggers" className="gap-1.5 flex-none px-2">
             <Clock3 className="h-3.5 w-3.5" />
             Triggers
