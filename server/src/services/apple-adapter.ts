@@ -2,6 +2,7 @@ import {
   appleAdapterAccountMetadataSchema,
   appleAdapterBoundaryOptionsSchema,
   appleAdapterDeviceMetadataSchema,
+  appleAdapterLookupInputSchema,
   type AppleAdapterAccountMetadata,
   type AppleAdapterBoundaryOptions,
   type AppleAdapterDeviceMetadata,
@@ -91,16 +92,36 @@ async function withTimeout<T>(
   run: (context: { signal: AbortSignal }) => Promise<T>,
 ): Promise<T> {
   const controller = new AbortController();
-  let timeout: NodeJS.Timeout | null = setTimeout(() => controller.abort(), timeoutMs);
+  let timeout: NodeJS.Timeout | null = null;
+  const timeoutError = () => new AppleAdapterError(`Apple adapter operation timed out after ${timeoutMs}ms.`, {
+    code: "timeout",
+    transient: true,
+  });
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      reject(timeoutError());
+      controller.abort();
+    }, timeoutMs);
+  });
+
   try {
-    return await run({ signal: controller.signal });
+    return await Promise.race([
+      run({ signal: controller.signal }).catch((err) => {
+        if (controller.signal.aborted) {
+          throw new AppleAdapterError(`Apple adapter operation timed out after ${timeoutMs}ms.`, {
+            code: "timeout",
+            transient: true,
+            cause: err,
+          });
+        }
+        throw err;
+      }),
+      timeoutPromise,
+    ]);
   } catch (err) {
     if (controller.signal.aborted) {
-      throw new AppleAdapterError(`Apple adapter operation timed out after ${timeoutMs}ms.`, {
-        code: "timeout",
-        transient: true,
-        cause: err,
-      });
+      if (err instanceof AppleAdapterError && err.code === "timeout") throw err;
+      throw timeoutError();
     }
     throw err;
   } finally {
@@ -147,10 +168,18 @@ async function executeWithBoundary<T>(
 export function createAppleAdapter(transport: AppleAdapterTransport): AppleAdapter {
   return {
     getAccountMetadata(input, options) {
-      return executeWithBoundary(options, (context) => transport.getAccountMetadata(input, context));
+      const parsedInput = appleAdapterLookupInputSchema.parse(input);
+      return executeWithBoundary(options, async (context) =>
+        appleAdapterAccountMetadataSchema.parse(await transport.getAccountMetadata(parsedInput, context))
+      );
     },
     listDeviceMetadata(input, options) {
-      return executeWithBoundary(options, (context) => transport.listDeviceMetadata(input, context));
+      const parsedInput = appleAdapterLookupInputSchema.parse(input);
+      return executeWithBoundary(options, async (context) =>
+        (await transport.listDeviceMetadata(parsedInput, context)).map((device) =>
+          appleAdapterDeviceMetadataSchema.parse(device)
+        )
+      );
     },
   };
 }

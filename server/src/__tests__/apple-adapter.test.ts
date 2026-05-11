@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   AppleAdapterError,
+  type AppleAdapterTransport,
+  createAppleAdapter,
   createMockAppleAdapter,
 } from "../services/apple-adapter.js";
 
@@ -65,5 +67,48 @@ describe("Apple adapter interface mock baseline", () => {
       transient: true,
     } satisfies Partial<AppleAdapterError>);
   });
-});
 
+  it("enforces timeout at the boundary for a non-cooperative transport", async () => {
+    const transport: AppleAdapterTransport = {
+      getAccountMetadata: async () => new Promise(() => {}),
+      listDeviceMetadata: async () => [],
+    };
+    const adapter = createAppleAdapter(transport);
+    const startedAt = performance.now();
+
+    await expect(adapter.getAccountMetadata(lookupInput, {
+      retry: { maxAttempts: 1, baseDelayMs: 0 },
+      timeoutMs: 20,
+    })).rejects.toMatchObject({
+      name: "AppleAdapterError",
+      code: "timeout",
+      transient: true,
+    } satisfies Partial<AppleAdapterError>);
+
+    expect(performance.now() - startedAt).toBeLessThan(250);
+  });
+
+  it("retries timeout failures from non-cooperative transports", async () => {
+    let attempts = 0;
+    const transport: AppleAdapterTransport = {
+      async getAccountMetadata() {
+        attempts += 1;
+        if (attempts === 1) return new Promise(() => {});
+        return {
+          accountId: "retry-success",
+          fetchedAt: "2026-01-01T00:00:00.000Z",
+        };
+      },
+      listDeviceMetadata: async () => [],
+    };
+    const adapter = createAppleAdapter(transport);
+
+    await expect(adapter.getAccountMetadata(lookupInput, {
+      retry: { maxAttempts: 2, baseDelayMs: 0 },
+      timeoutMs: 20,
+    })).resolves.toMatchObject({
+      accountId: "retry-success",
+    });
+    expect(attempts).toBe(2);
+  });
+});
