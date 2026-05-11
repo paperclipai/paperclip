@@ -59,8 +59,8 @@ describe("dag-parser", () => {
         description: "test",
         trigger: { label: "test" },
         stages: [
-          { id: "a", type: "worker", depends_on: ["b"] },
-          { id: "b", type: "worker", depends_on: ["a"] },
+          { id: "a", type: "worker", agent_role: "x", depends_on: ["b"] },
+          { id: "b", type: "worker", agent_role: "x", depends_on: ["a"] },
         ],
       };
       const result = validateDAG(cyclic);
@@ -74,7 +74,7 @@ describe("dag-parser", () => {
         description: "test",
         trigger: { label: "test" },
         stages: [
-          { id: "a", type: "worker", depends_on: ["nonexistent"] },
+          { id: "a", type: "worker", agent_role: "x", depends_on: ["nonexistent"] },
         ],
       };
       const result = validateDAG(badRef);
@@ -88,8 +88,8 @@ describe("dag-parser", () => {
         description: "test",
         trigger: { label: "test" },
         stages: [
-          { id: "a", type: "worker" },
-          { id: "a", type: "classifier" },
+          { id: "a", type: "worker", agent_role: "x" },
+          { id: "a", type: "classifier", agent_role: "y" },
         ],
       };
       const result = validateDAG(dupes);

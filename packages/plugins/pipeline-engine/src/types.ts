@@ -14,24 +14,54 @@ export interface OnFailure {
   };
 }
 
-export interface StageDefinition {
+interface BaseStage {
   id: string;
-  type: StageType;
-  agent_role?: string;
   depends_on?: string[];
   condition?: string;
   skip_if?: string;
-  output_schema?: string;
-  checkpoint?: boolean;
-  fan_in?: FanInStrategy;
   timeout?: string;
   on_failure?: OnFailure;
+  checkpoint?: boolean;
+}
+
+export interface WorkerStage extends BaseStage {
+  type: "worker";
+  agent_role: string;
+  output_schema?: string;
+  fan_in?: FanInStrategy;
   per_task?: boolean;
   ordering?: string;
-  pipeline?: string;
-  requires_approval?: boolean;
-  stages?: StageDefinition[];
 }
+
+export interface ClassifierStage extends BaseStage {
+  type: "classifier";
+  agent_role: string;
+  output_schema?: string;
+}
+
+export interface ParallelFanOutStage extends BaseStage {
+  type: "parallel_fan_out";
+  agent_role?: string;
+  stages?: StageDefinition[];
+  fan_in?: FanInStrategy;
+  per_task?: boolean;
+  ordering?: string;
+}
+
+export interface GateStage extends BaseStage {
+  type: "gate";
+  fan_in?: FanInStrategy;
+  requires_approval?: boolean;
+}
+
+export interface SubPipelineStage extends BaseStage {
+  type: "sub-pipeline";
+  pipeline: string;
+  per_task?: boolean;
+  ordering?: string;
+}
+
+export type StageDefinition = WorkerStage | ClassifierStage | ParallelFanOutStage | GateStage | SubPipelineStage;
 
 export interface PipelineTrigger {
   label: string;
@@ -108,8 +138,30 @@ export interface DispatchRequest {
   context?: string;
 }
 
-export interface ParsedOutput {
-  valid: boolean;
-  data: Record<string, unknown> | null;
-  error?: string;
+export type ParsedOutput =
+  | { valid: true; data: Record<string, unknown> }
+  | { valid: false; data: null; error: string };
+
+export type FailureAction =
+  | { action: "goto"; targetStageId: string; body: string }
+  | { action: "escalate" };
+
+export interface CreateIssueInput {
+  companyId: string;
+  parentId: string;
+  title: string;
+  description: string;
+  status: string;
+  priority: string;
+  assigneeAgentId?: string;
+  billingCode?: string;
+  originKind?: string;
+  originId?: string;
+  inheritExecutionWorkspaceFromIssueId?: string;
+}
+
+export interface WakeupOptions {
+  reason: string;
+  contextSource: string;
+  idempotencyKey: string;
 }

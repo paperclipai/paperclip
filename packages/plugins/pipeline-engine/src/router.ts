@@ -1,12 +1,6 @@
 import { evaluateCondition, buildExpressionContext } from "./expression-engine.js";
 import { renderTemplate } from "./template-engine.js";
-import type { PipelineDefinition, PipelineStage, StageDefinition } from "./types.js";
-
-export interface FailureAction {
-  action: "goto" | "escalate";
-  targetStageId?: string;
-  body?: string;
-}
+import type { FailureAction, PipelineDefinition, PipelineStage, StageDefinition } from "./types.js";
 
 export class Router {
   async getReadyStages(
@@ -117,7 +111,12 @@ export class Router {
       return { action: "escalate" };
     }
 
-    const renderedBody = renderTemplate(body, { output: stageRow.output ?? {} });
+    let renderedBody: string;
+    try {
+      renderedBody = renderTemplate(body, { output: stageRow.output ?? {} });
+    } catch {
+      renderedBody = body;
+    }
     return { action: "goto", targetStageId: goto, body: renderedBody };
   }
 

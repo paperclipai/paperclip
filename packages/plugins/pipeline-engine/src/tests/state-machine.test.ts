@@ -59,16 +59,33 @@ describe("state-machine", () => {
   });
 
   describe("updateStageStatus", () => {
-    it("sets status and timestamps", async () => {
-      await sm.updateStageStatus("stage-1", "running");
-      const sql = db.execute.mock.calls[0][0] as string;
-      expect(sql).toContain("started_at");
-    });
-
     it("sets completed_at for terminal states", async () => {
       await sm.updateStageStatus("stage-1", "completed");
       const sql = db.execute.mock.calls[0][0] as string;
       expect(sql).toContain("completed_at");
+    });
+
+    it("does not set completed_at for running status", async () => {
+      await sm.updateStageStatus("stage-1", "running");
+      const sql = db.execute.mock.calls[0][0] as string;
+      expect(sql).not.toContain("completed_at");
+    });
+  });
+
+  describe("claimStageForDispatch", () => {
+    it("returns true when stage is pending", async () => {
+      db.query.mockResolvedValueOnce([{ id: "stage-1" }]);
+      const claimed = await sm.claimStageForDispatch("stage-1");
+      expect(claimed).toBe(true);
+      const sql = db.query.mock.calls[0][0] as string;
+      expect(sql).toContain("status = 'pending'");
+      expect(sql).toContain("started_at");
+    });
+
+    it("returns false when stage is not pending", async () => {
+      db.query.mockResolvedValueOnce([]);
+      const claimed = await sm.claimStageForDispatch("stage-1");
+      expect(claimed).toBe(false);
     });
   });
 

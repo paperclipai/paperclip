@@ -10,18 +10,25 @@ const JSON_FENCE_RE = /```json\s*\n([\s\S]*?)\n```/;
 const ajv = new (Ajv2020 as any)({ allErrors: true });
 const schemaCache = new Map<string, object>();
 
-export function extractOutput(commentBody: string): Record<string, unknown> | null {
+export interface ExtractResult {
+  found: boolean;
+  data: Record<string, unknown> | null;
+  parseError?: string;
+}
+
+export function extractOutput(commentBody: string): ExtractResult {
   const sentinelIdx = commentBody.indexOf(SENTINEL);
-  if (sentinelIdx === -1) return null;
+  if (sentinelIdx === -1) return { found: false, data: null };
 
   const afterSentinel = commentBody.slice(sentinelIdx + SENTINEL.length);
   const match = afterSentinel.match(JSON_FENCE_RE);
-  if (!match) return null;
+  if (!match) return { found: false, data: null };
 
   try {
-    return JSON.parse(match[1]) as Record<string, unknown>;
-  } catch {
-    return null;
+    const data = JSON.parse(match[1]) as Record<string, unknown>;
+    return { found: true, data };
+  } catch (e) {
+    return { found: true, data: null, parseError: `JSON parse failed: ${(e as Error).message}` };
   }
 }
 
@@ -34,9 +41,17 @@ export function setSchemasDir(dir: string): void {
 export function loadSchema(schemaName: string): object {
   if (schemaCache.has(schemaName)) return schemaCache.get(schemaName)!;
 
-  const baseDir = schemasBaseDir ?? resolve(dirname(fileURLToPath(import.meta.url)), "schemas");
+  const baseDir = schemasBaseDir ?? resolve(dirname(fileURLToPath(import.meta.url)), "../schemas");
   const schemaPath = resolve(baseDir, `${schemaName}.json`);
-  const schema = JSON.parse(readFileSync(schemaPath, "utf-8")) as object;
+
+  let content: string;
+  try {
+    content = readFileSync(schemaPath, "utf-8");
+  } catch (e) {
+    throw new Error(`Schema "${schemaName}" not found at ${schemaPath}. Check the output_schema field in your pipeline definition.`);
+  }
+
+  const schema = JSON.parse(content) as object;
   schemaCache.set(schemaName, schema);
   return schema;
 }

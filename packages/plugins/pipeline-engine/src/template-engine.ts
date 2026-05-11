@@ -1,19 +1,18 @@
 import Handlebars from "handlebars";
 
-// Register a helper that JSON-serializes non-primitive values so that
-// nested objects and arrays are readable rather than "[object Object]".
-Handlebars.registerHelper("helperMissing", function (...args: unknown[]) {
-  // helperMissing is called for undefined variables; return empty string.
+const missingVars: string[] = [];
+
+Handlebars.registerHelper("helperMissing", function (this: unknown, ...args: unknown[]) {
+  const options = args[args.length - 1] as { name?: string };
+  if (options?.name) {
+    missingVars.push(options.name);
+  }
   return "";
 });
 
-// Override the default toString behaviour for objects by wrapping the
-// context values before compilation.
 function serializeValues(value: unknown): unknown {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) {
-    // If the array contains plain objects, JSON-serialize it; otherwise
-    // let Handlebars join the primitives with commas (default behaviour).
     if (value.some((v) => v !== null && typeof v === "object")) {
       return JSON.stringify(value);
     }
@@ -30,7 +29,13 @@ function serializeValues(value: unknown): unknown {
 }
 
 export function renderTemplate(template: string, context: Record<string, unknown>): string {
+  missingVars.length = 0;
   const serialized = serializeValues(context) as Record<string, unknown>;
   const compiled = Handlebars.compile(template, { noEscape: true });
-  return compiled(serialized);
+  const result = compiled(serialized);
+  return result;
+}
+
+export function getLastMissingVars(): string[] {
+  return [...missingVars];
 }

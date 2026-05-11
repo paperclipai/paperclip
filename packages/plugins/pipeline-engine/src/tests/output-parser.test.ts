@@ -20,20 +20,24 @@ describe("output-parser", () => {
 
 Some more text.`;
       const result = extractOutput(body);
-      expect(result).not.toBeNull();
-      expect(result!.status).toBe("pass");
+      expect(result.found).toBe(true);
+      expect(result.data).not.toBeNull();
+      expect(result.data!.status).toBe("pass");
     });
 
-    it("returns null for comment without sentinel", () => {
+    it("returns found:false for comment without sentinel", () => {
       const body = `\`\`\`json\n{ "status": "pass" }\n\`\`\``;
       const result = extractOutput(body);
-      expect(result).toBeNull();
+      expect(result.found).toBe(false);
+      expect(result.data).toBeNull();
     });
 
-    it("returns null for invalid JSON after sentinel", () => {
+    it("returns parseError for invalid JSON after sentinel", () => {
       const body = `<!-- pipeline-output -->\n\`\`\`json\n{ invalid json }\n\`\`\``;
       const result = extractOutput(body);
-      expect(result).toBeNull();
+      expect(result.found).toBe(true);
+      expect(result.data).toBeNull();
+      expect(result.parseError).toBeDefined();
     });
 
     it("handles multiline JSON", () => {
@@ -47,8 +51,8 @@ Some more text.`;
 }
 \`\`\``;
       const result = extractOutput(body);
-      expect(result).not.toBeNull();
-      expect(result!.files_changed).toHaveLength(2);
+      expect(result.found).toBe(true);
+      expect(result.data!.files_changed).toHaveLength(2);
     });
   });
 
@@ -70,7 +74,9 @@ Some more text.`;
       const data = { status: "invalid_value" };
       const result = validateOutput(data, schema);
       expect(result.valid).toBe(false);
-      expect(result.error).toBeDefined();
+      if (!result.valid) {
+        expect(result.error).toBeDefined();
+      }
     });
   });
 });

@@ -64,7 +64,7 @@ function flattenStages(stages: StageDefinition[]): StageDefinition[] {
   const result: StageDefinition[] = [];
   for (const stage of stages) {
     result.push(stage);
-    if (stage.stages) {
+    if ("stages" in stage && stage.stages) {
       result.push(...flattenStages(stage.stages));
     }
   }

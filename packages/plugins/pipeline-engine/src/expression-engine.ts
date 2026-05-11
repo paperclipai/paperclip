@@ -1,10 +1,28 @@
 import jsonata from "jsonata";
 import type { ExpressionContext, PipelineStage, StageStatus } from "./types.js";
 
+const BLOCKED_FUNCTIONS = ["$eval", "$string", "$number", "$boolean", "$keys", "$lookup", "$environment"];
+const EVALUATION_TIMEOUT_MS = 2000;
+
 export async function evaluateCondition(expression: string, context: ExpressionContext): Promise<boolean> {
   const normalized = normalizeExpression(expression);
+
+  for (const fn of BLOCKED_FUNCTIONS) {
+    if (normalized.includes(fn)) {
+      throw new Error(`Expression contains blocked function "${fn}": ${expression}`);
+    }
+  }
+
   const expr = jsonata(normalized);
-  const result = await expr.evaluate(context);
+  expr.assign("$eval", undefined);
+  expr.assign("$environment", undefined);
+
+  const result = await Promise.race([
+    expr.evaluate(context),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`Expression evaluation timed out after ${EVALUATION_TIMEOUT_MS}ms: ${expression}`)), EVALUATION_TIMEOUT_MS),
+    ),
+  ]);
   return Boolean(result);
 }
 

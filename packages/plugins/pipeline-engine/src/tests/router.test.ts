@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Router } from "../router.js";
-import type { PipelineDefinition, PipelineStage, StageDefinition, StageStatus } from "../types.js";
+import type { FailureAction, PipelineDefinition, PipelineStage, StageDefinition, StageStatus } from "../types.js";
 
 const featurePipeline: PipelineDefinition = {
   name: "feature",
@@ -85,8 +85,10 @@ describe("router", () => {
       targetRow.retryCount = 0;
       const result = router.evaluateFailure(stageDef, stageRow, targetRow);
       expect(result.action).toBe("goto");
-      expect(result.targetStageId).toBe("implement");
-      expect(result.body).toContain("test failed");
+      if (result.action === "goto") {
+        expect(result.targetStageId).toBe("implement");
+        expect(result.body).toContain("test failed");
+      }
     });
 
     it("returns escalate when target stage max retries exceeded", () => {

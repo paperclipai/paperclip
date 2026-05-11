@@ -1,8 +1,8 @@
-import type { DispatchRequest, RoleMapping } from "./types.js";
+import type { CreateIssueInput, DispatchRequest, RoleMapping, WakeupOptions } from "./types.js";
 
-interface IssuesClient {
-  create(input: Record<string, unknown>): Promise<{ id: string }>;
-  requestWakeup(issueId: string, companyId: string, options: Record<string, unknown>): Promise<{ queued: boolean }>;
+export interface IssuesClient {
+  create(input: CreateIssueInput): Promise<{ id: string }>;
+  requestWakeup(issueId: string, companyId: string, options: WakeupOptions): Promise<{ queued: boolean }>;
   documents: {
     upsert(input: Record<string, unknown>): Promise<void>;
   };
@@ -23,11 +23,13 @@ export class Dispatcher {
   async dispatch(request: DispatchRequest): Promise<DispatchResult> {
     const { pipelineRunId, stage, companyId, parentIssueId, context } = request;
 
-    if (stage.agent_role && !this.roleMapping[stage.agent_role]) {
-      throw new Error(`CONFIGURATION_ERROR: no agent mapped for role "${stage.agent_role}"`);
+    const agentRole = "agent_role" in stage ? stage.agent_role : undefined;
+
+    if (agentRole && !this.roleMapping[agentRole]) {
+      throw new Error(`CONFIGURATION_ERROR: no agent mapped for role "${agentRole}"`);
     }
 
-    const agentId = stage.agent_role ? this.roleMapping[stage.agent_role] : undefined;
+    const agentId = agentRole ? this.roleMapping[agentRole] : undefined;
 
     const description = context
       ? `## Pipeline Stage: ${stage.id}\n\n${context}`

@@ -17,6 +17,38 @@ export class StateMachine {
     return `${this.db.namespace}.${name}`;
   }
 
+  async tryAdvisoryLock(runId: string): Promise<boolean> {
+    const lockKey = this.hashRunId(runId);
+    const rows = await this.db.query<{ locked: boolean }>(
+      `SELECT pg_try_advisory_lock($1) as locked`,
+      [lockKey],
+    );
+    return rows[0]?.locked ?? false;
+  }
+
+  async releaseAdvisoryLock(runId: string): Promise<void> {
+    const lockKey = this.hashRunId(runId);
+    await this.db.execute(`SELECT pg_advisory_unlock($1)`, [lockKey]);
+  }
+
+  private hashRunId(runId: string): number {
+    let hash = 0;
+    for (let i = 0; i < runId.length; i++) {
+      const char = runId.charCodeAt(i);
+      hash = ((hash << 5) - hash + char) | 0;
+    }
+    return hash;
+  }
+
+  async claimStageForDispatch(stageRowId: string): Promise<boolean> {
+    const rows = await this.db.query<{ id: string }>(
+      `UPDATE ${this.table("pipeline_stages")} SET status = 'running', started_at = NOW()
+       WHERE id = $1 AND status = 'pending' RETURNING id`,
+      [stageRowId],
+    );
+    return rows.length > 0;
+  }
+
   async createRun(input: {
     id: string;
     companyId: string;
@@ -48,11 +80,9 @@ export class StateMachine {
   }
 
   async updateStageStatus(stageRowId: string, status: StageStatus): Promise<void> {
-    const isStarting = status === "running";
     const isTerminal = status === "completed" || status === "failed" || status === "skipped";
 
     let sql = `UPDATE ${this.table("pipeline_stages")} SET status = $1`;
-    if (isStarting) sql += `, started_at = NOW()`;
     if (isTerminal) sql += `, completed_at = NOW()`;
     sql += ` WHERE id = $2`;
 

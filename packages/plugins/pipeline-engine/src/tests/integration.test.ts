@@ -82,12 +82,13 @@ describe("integration: end-to-end pipeline flow", () => {
     expect(dispatchResult.issueId).toBe("issue-1");
 
     const commentBody = `Done reviewing.\n\n<!-- pipeline-output -->\n\`\`\`json\n{"status": "approved", "completeness_score": 0.95}\n\`\`\``;
-    const output = extractOutput(commentBody);
-    expect(output).not.toBeNull();
-    expect(output!.status).toBe("approved");
+    const extraction = extractOutput(commentBody);
+    expect(extraction.found).toBe(true);
+    expect(extraction.data).not.toBeNull();
+    expect(extraction.data!.status).toBe("approved");
 
     const schema = loadSchema("spec-review-output");
-    const validated = validateOutput(output!, schema);
+    const validated = validateOutput(extraction.data!, schema);
     expect(validated.valid).toBe(true);
 
     const afterSpecReview: PipelineStage[] = [
@@ -103,8 +104,10 @@ describe("integration: end-to-end pipeline flow", () => {
     const implementTargetRow = { ...initialStages[1], status: "completed" as const, retryCount: 0 };
     const failureAction = router.evaluateFailure(pipeline.stages[2], failedValidateStage, implementTargetRow);
     expect(failureAction.action).toBe("goto");
-    expect(failureAction.targetStageId).toBe("implement");
-    expect(failureAction.body).toContain("test_a failed");
+    if (failureAction.action === "goto") {
+      expect(failureAction.targetStageId).toBe("implement");
+      expect(failureAction.body).toContain("test_a failed");
+    }
 
     const maxRetriedTarget = { ...implementTargetRow, retryCount: 2 };
     const escalateAction = router.evaluateFailure(pipeline.stages[2], failedValidateStage, maxRetriedTarget);
