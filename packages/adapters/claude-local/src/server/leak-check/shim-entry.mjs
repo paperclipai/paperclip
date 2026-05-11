@@ -95,6 +95,17 @@ async function run() {
   const blocked = [];
   for (const { target, text } of nonEmpty) {
     const verdict = await runLeakCheck(leakCheckScript, text, { allowOverride });
+    if (verdict.kind === "error") {
+      // bash itself failed to spawn (ENOENT/EACCES on the bash binary,
+      // policy script with a corrupt shebang, etc). Refuse to publish.
+      // existsSync(leakCheckScript) only proves the file exists, not that
+      // the interpreter is callable.
+      process.stderr.write(
+        `paperclip leak-check shim: policy script failed to run — refusing to publish. ${verdict.message}\n`,
+      );
+      if (verdict.stderr) process.stderr.write(verdict.stderr);
+      process.exit(73);
+    }
     if (verdict.kind === "blocked") {
       blocked.push({ target, text, verdict });
     }
