@@ -2553,6 +2553,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         previousStatus: input.issue.status,
       },
     });
+    // TODO(WEI-574): emit a counter for liveness blocker updates tagged by findingState and previousStatus.
 
     return updated;
   }
@@ -2720,6 +2721,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       ownerSelectionReason: ownerSelection.reason,
       wakeupRunId: wake?.id ?? null,
     }, "created issue graph liveness escalation");
+    // TODO(WEI-574): emit liveness escalation metrics for created/reused/skipped outcomes and owner selection reason.
 
     return { kind: "created" as const, escalationIssueId: escalation.id };
   }
