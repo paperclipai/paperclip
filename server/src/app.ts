@@ -1187,6 +1187,51 @@ TIKTOK_OPEN_ID=${openId}
     }
   });
 
+  // ── Restore user memberships to all companies ────────────────────────────────
+  // Usage: GET /api/internal/restore-user-access?userId=X&secret=Y
+  app.get("/api/internal/restore-user-access", async (req, res) => {
+    const secret = (req.query.secret as string) ?? "";
+    const expectedSecret = (process.env.BETTER_AUTH_SECRET ?? "").slice(0, 16);
+    if (!secret || !expectedSecret || secret !== expectedSecret) {
+      res.status(403).json({ error: "forbidden" }); return;
+    }
+    const userId = (req.query.userId as string) ?? "";
+    if (!userId) { res.status(400).json({ error: "userId required" }); return; }
+    try {
+      // Get all companies
+      const companies = await (db as any)
+        .select({ id: companiesTable.id, name: companiesTable.name })
+        .from(companiesTable);
+
+      const results: Record<string, string> = {};
+      for (const company of companies) {
+        // Check if membership already exists
+        const existing = await (db as any)
+          .select({ id: companyMemberships.id })
+          .from(companyMemberships)
+          .where(eq(companyMemberships.principalId, userId))
+          .limit(1)
+          .then((r: any[]) => r[0] ?? null);
+
+        if (!existing) {
+          await (db as any).insert(companyMemberships).values({
+            companyId:      company.id,
+            principalType:  "user",
+            principalId:    userId,
+            status:         "active",
+            membershipRole: "admin",
+          });
+          results[company.name] = "granted";
+        } else {
+          results[company.name] = "already_exists";
+        }
+      }
+      res.json({ ok: true, userId, results });
+    } catch (err: unknown) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // ── Fix trading agent scripts in DiscontrolsBags ────────────────────────────
   // Usage: GET /api/internal/fix-trading-scripts?secret=<first-16-chars-BETTER_AUTH_SECRET>
   app.get("/api/internal/fix-trading-scripts", async (req, res) => {
