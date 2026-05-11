@@ -204,6 +204,16 @@ These rules exist because agents have caused real damage by improvising around C
 
 5. **Seeding is a CLI operation.** When asked to seed a worktree database from the main instance, use `worktree reseed` or recreate with `worktree:make --seed-mode full`. Read `doc/DEVELOPING.md` for the full option tables. Never attempt manual database copying.
 
+6. **Never install system packages.** If a required tool (e.g. `tmux`, `pnpm`,
+   `bfg`) is missing, STOP immediately. Set the task to `blocked`, report the
+   missing tool name in a comment, and do NOT run `brew install`, `npm install -g`,
+   `pip install`, `apt install`, or any other package manager. Ask the board to
+   install it manually.
+
+7. **Verify tool availability before use.** Before running any command that
+   depends on an external tool, check with `which <tool>`. If the tool is absent,
+   apply rule 6 — do NOT attempt to install it.
+
 ## Persistent Dev Servers (for Manual Testing)
 
 When an agent needs to start a dev server that outlives the current heartbeat — for example, so a human or QA agent can manually test against it — the server process **must** be launched in a detached session. A process started directly from a heartbeat shell is killed when the heartbeat exits.
