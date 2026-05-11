@@ -17,6 +17,16 @@ function buildCompletedStdout(summary = "done"): string {
   ].join("\n");
 }
 
+function buildFailedStdout(message = "boom"): string {
+  return [
+    JSON.stringify({ type: "thread.started", thread_id: "thread_test" }),
+    JSON.stringify({
+      type: "turn.failed",
+      error: { message },
+    }),
+  ].join("\n");
+}
+
 function buildProcessResult(
   overrides: Partial<{
     exitCode: number | null;
@@ -215,5 +225,57 @@ describe("codex execute terminal cleanup", () => {
     expect(result.errorMessage).toBeNull();
     expect(result.sessionId).toBe("thread_test");
     expect(result.summary).toBe("done");
+  });
+
+  it("preserves parsed turn.failed errors when cleanup exits via SIGTERM", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-terminal-failed-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const codexHomeDir = path.join(rootDir, "codex-home");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(codexHomeDir, { recursive: true });
+    await writeFile(path.join(codexHomeDir, "auth.json"), "{}", "utf8");
+
+    runChildProcess.mockResolvedValueOnce(buildProcessResult({
+      exitCode: null,
+      signal: "SIGTERM",
+      stdout: buildFailedStdout("resume failed"),
+    }));
+
+    const result = await execute({
+      runId: "run-terminal-failed",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "CodexCoder",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "codex",
+        env: {
+          CODEX_HOME: codexHomeDir,
+        },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(result.exitCode).toBeNull();
+    expect(result.signal).toBe("SIGTERM");
+    expect(result.timedOut).toBe(false);
+    expect(result.errorMessage).toBe("resume failed");
+    expect(result.sessionId).toBe("thread_test");
   });
 });

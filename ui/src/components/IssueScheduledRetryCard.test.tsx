@@ -205,10 +205,12 @@ describe("IssueScheduledRetryCard", () => {
       getRetryNowButton()!.click();
     });
     await flushAll();
-    const band = container.querySelector('[data-testid="issue-scheduled-retry-error-band"]');
-    expect(band).not.toBeNull();
-    expect((band?.textContent ?? "")).toContain("Server error");
-    expect(getRetryNowButton()!.disabled).toBe(false);
+    await vi.waitFor(() => {
+      const band = container.querySelector('[data-testid="issue-scheduled-retry-error-band"]');
+      expect(band).not.toBeNull();
+      expect((band?.textContent ?? "")).toContain("Server error");
+      expect(getRetryNowButton()!.disabled).toBe(false);
+    });
   });
 
   it("surfaces gate-suppressed outcome via the inline error band", async () => {
@@ -220,9 +222,11 @@ describe("IssueScheduledRetryCard", () => {
       getRetryNowButton()!.click();
     });
     await flushAll();
-    const band = container.querySelector('[data-testid="issue-scheduled-retry-error-band"]');
-    expect(band).not.toBeNull();
-    expect((band?.textContent ?? "")).toContain("Promotion suppressed");
-    expect(getRetryNowButton()!.disabled).toBe(false);
+    await vi.waitFor(() => {
+      const band = container.querySelector('[data-testid="issue-scheduled-retry-error-band"]');
+      expect(band).not.toBeNull();
+      expect((band?.textContent ?? "")).toContain("Promotion suppressed");
+      expect(getRetryNowButton()!.disabled).toBe(false);
+    });
   });
 });

@@ -750,6 +750,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const terminalResultType = attempt.parsed.terminalResultType ?? null;
     const completedTurn = terminalResultType === "completed";
+    const failedTurn = terminalResultType === "failed";
     const normalizedExitCode = completedTurn ? 0 : attempt.proc.exitCode;
     const normalizedSignal = completedTurn ? null : attempt.proc.signal;
     const canFallbackToRuntimeSession = !isRetry && !forceFreshSession;
@@ -797,7 +798,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       signal: normalizedSignal,
       timedOut: false,
       errorMessage:
-        completedTurn || (normalizedExitCode ?? 0) === 0
+        completedTurn || (!failedTurn && (normalizedExitCode ?? 0) === 0)
           ? null
           : fallbackErrorMessage,
       errorCode:
