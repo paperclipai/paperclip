@@ -110,6 +110,8 @@ const mockRoutineService = vi.hoisted(() => ({
   getTrigger: vi.fn(),
   updateTrigger: vi.fn(),
   deleteTrigger: vi.fn(),
+  deleteRoutine: vi.fn(),
+  hasActiveRun: vi.fn(),
   rotateTriggerSecret: vi.fn(),
   runRoutine: vi.fn(),
   firePublicTrigger: vi.fn(),
@@ -466,5 +468,113 @@ describe("routine routes", () => {
       runId: null,
     });
     expect(mockTrackRoutineCreated).toHaveBeenCalledWith(expect.anything());
+  });
+
+  describe("DELETE /api/routines/:id", () => {
+    it("returns 204 on successful deletion by admin board user", async () => {
+      mockRoutineService.hasActiveRun.mockResolvedValue(false);
+      mockRoutineService.deleteRoutine.mockResolvedValue(true);
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      });
+
+      const res = await request(app).delete(`/api/routines/${routineId}`);
+
+      expect(res.status).toBe(204);
+      expect(mockRoutineService.deleteRoutine).toHaveBeenCalledWith(routineId);
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "routine.deleted",
+          entityType: "routine",
+          entityId: routineId,
+        }),
+      );
+    });
+
+    it("returns 404 when routine does not exist", async () => {
+      mockRoutineService.get.mockResolvedValue(null);
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      });
+
+      const res = await request(app).delete(`/api/routines/${routineId}`);
+
+      expect(res.status).toBe(404);
+      expect(mockRoutineService.deleteRoutine).not.toHaveBeenCalled();
+    });
+
+    it("returns 403 when called by an agent (even assignee)", async () => {
+      const app = await createApp({
+        type: "agent",
+        agentId,
+        companyIds: [companyId],
+      });
+
+      const res = await request(app).delete(`/api/routines/${routineId}`);
+
+      expect(res.status).toBe(403);
+      expect(mockRoutineService.deleteRoutine).not.toHaveBeenCalled();
+    });
+
+    it("returns 403 when board user lacks tasks:assign permission", async () => {
+      mockAccessService.canUser.mockResolvedValue(false);
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "session",
+        isInstanceAdmin: false,
+        companyIds: [companyId],
+      });
+
+      const res = await request(app).delete(`/api/routines/${routineId}`);
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("tasks:assign");
+      expect(mockRoutineService.deleteRoutine).not.toHaveBeenCalled();
+    });
+
+    it("returns 409 when routine has active runs", async () => {
+      mockRoutineService.hasActiveRun.mockResolvedValue(true);
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      });
+
+      const res = await request(app).delete(`/api/routines/${routineId}`);
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toContain("active runs");
+      expect(mockRoutineService.deleteRoutine).not.toHaveBeenCalled();
+    });
+
+    it("allows deletion when board user has tasks:assign permission", async () => {
+      mockAccessService.canUser.mockResolvedValue(true);
+      mockRoutineService.hasActiveRun.mockResolvedValue(false);
+      mockRoutineService.deleteRoutine.mockResolvedValue(true);
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "session",
+        isInstanceAdmin: false,
+        companyIds: [companyId],
+      });
+
+      const res = await request(app).delete(`/api/routines/${routineId}`);
+
+      expect(res.status).toBe(204);
+      expect(mockRoutineService.deleteRoutine).toHaveBeenCalledWith(routineId);
+    });
   });
 });

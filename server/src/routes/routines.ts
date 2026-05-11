@@ -238,6 +238,43 @@ export function routineRoutes(
     res.json(result);
   });
 
+  router.delete("/routines/:id", async (req, res) => {
+    const routine = await svc.get(req.params.id as string);
+    if (!routine) {
+      res.status(404).json({ error: "Routine not found" });
+      return;
+    }
+    assertCompanyAccess(req, routine.companyId);
+    if (req.actor.type !== "board") {
+      throw forbidden("Only board users can delete routines");
+    }
+    if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+      const allowed = await access.canUser(routine.companyId, req.actor.userId, "tasks:assign");
+      if (!allowed) {
+        throw forbidden("Missing permission: tasks:assign");
+      }
+    }
+    const hasActive = await svc.hasActiveRun(routine.id);
+    if (hasActive) {
+      res.status(409).json({ error: "Cannot delete routine with active runs" });
+      return;
+    }
+    await svc.deleteRoutine(routine.id);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: routine.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "routine.deleted",
+      entityType: "routine",
+      entityId: routine.id,
+      details: { title: routine.title },
+    });
+    res.status(204).end();
+  });
+
   router.get("/routines/:id/runs", async (req, res) => {
     const routine = await svc.get(req.params.id as string);
     if (!routine) {
