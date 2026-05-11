@@ -80,6 +80,52 @@ describe("runtime API discovery", () => {
     ]);
   });
 
+  it("uses the loopback bind host before allowed hostnames for local runtime URLs", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: null,
+        allowedHostnames: ["cb-threadripper.tail3a8e2d.ts.net"],
+        bindHost: "127.0.0.1",
+        port: 3100,
+      }),
+    ).toBe("http://127.0.0.1:3100");
+  });
+
+  it("keeps allowed hostnames ahead of non-loopback bind hosts for primary runtime URLs", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: null,
+        allowedHostnames: ["paperclip.example.test"],
+        bindHost: "192.168.6.178",
+        port: 3100,
+      }),
+    ).toBe("http://paperclip.example.test:3100");
+  });
+
+  it("skips allowed hostnames when building candidates for loopback-bound runtimes", () => {
+    expect(
+      buildRuntimeApiCandidateUrls({
+        authPublicBaseUrl: null,
+        allowedHostnames: ["cb-threadripper.tail3a8e2d.ts.net"],
+        bindHost: "127.0.0.1",
+        port: 3100,
+        networkInterfacesMap: {},
+      }),
+    ).toEqual(["http://127.0.0.1:3100"]);
+  });
+
+  it("keeps allowed hostnames for wildcard-bound remote-capable runtimes", () => {
+    expect(
+      buildRuntimeApiCandidateUrls({
+        authPublicBaseUrl: null,
+        allowedHostnames: ["cb-threadripper.tail3a8e2d.ts.net"],
+        bindHost: "0.0.0.0",
+        port: 3100,
+        networkInterfacesMap: {},
+      }),
+    ).toEqual(["http://cb-threadripper.tail3a8e2d.ts.net:3100"]);
+  });
+
   it("adds host.docker.internal when the explicit base URL is loopback", () => {
     expect(
       buildRuntimeApiCandidateUrls({
