@@ -383,6 +383,27 @@ export const addIssueCommentSchema = z.object({
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
 
+export const issueCommentSchema = z.object({
+  id: z.string().uuid(),
+  companyId: z.string().uuid(),
+  issueId: z.string().uuid(),
+  authorType: issueCommentAuthorTypeSchema,
+  authorAgentId: z.string().uuid().nullable(),
+  authorUserId: z.string().nullable(),
+  createdByRunId: z.string().uuid().nullable().optional(),
+  derivedAuthorAgentId: z.string().uuid().nullable().optional(),
+  derivedCreatedByRunId: z.string().uuid().nullable().optional(),
+  derivedAuthorSource: z.enum(["run_log_comment_post"]).nullable().optional(),
+  body: multilineTextSchema,
+  presentation: issueCommentPresentationSchema.nullable(),
+  metadata: issueCommentMetadataSchema.nullable(),
+  followUpRequested: z.boolean().optional(),
+  createdAt: z.coerce.date(),
+  updatedAt: z.coerce.date(),
+});
+
+export type IssueComment = z.infer<typeof issueCommentSchema>;
+
 export const issueThreadInteractionStatusSchema = z.enum(ISSUE_THREAD_INTERACTION_STATUSES);
 export const issueThreadInteractionKindSchema = z.enum(ISSUE_THREAD_INTERACTION_KINDS);
 export const issueThreadInteractionContinuationPolicySchema = z.enum(

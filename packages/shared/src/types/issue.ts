@@ -399,6 +399,10 @@ export interface IssueComment {
   authorType: IssueCommentAuthorType;
   authorAgentId: string | null;
   authorUserId: string | null;
+  createdByRunId?: string | null;
+  derivedAuthorAgentId?: string | null;
+  derivedCreatedByRunId?: string | null;
+  derivedAuthorSource?: "run_log_comment_post" | null;
   body: string;
   presentation: IssueCommentPresentation | null;
   metadata: IssueCommentMetadata | null;
