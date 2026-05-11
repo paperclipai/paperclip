@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import {
+  AssigneePicker,
+  ProjectPicker,
   useHostContext,
+  useHostNavigation,
   usePluginAction,
   usePluginData,
   usePluginStream,
@@ -247,14 +250,6 @@ const mutedTextStyle: CSSProperties = {
   opacity: 0.72,
   lineHeight: 1.45,
 };
-
-function hostPath(companyPrefix: string | null | undefined, suffix: string): string {
-  return companyPrefix ? `/${companyPrefix}${suffix}` : suffix;
-}
-
-function pluginPagePath(companyPrefix: string | null | undefined): string {
-  return hostPath(companyPrefix, `/${PAGE_ROUTE}`);
-}
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -521,6 +516,7 @@ function CompactSurfaceSummary({ label, entityType }: { label: string; entityTyp
 function KitchenSinkPageWidgets({ context }: { context: PluginPageProps["context"] }) {
   const overview = usePluginOverview(context.companyId);
   const toast = usePluginToast();
+  const hostNavigation = useHostNavigation();
   const emitDemoEvent = usePluginAction("emit-demo-event");
   const startProgressStream = usePluginAction("start-progress-stream");
   const writeMetric = usePluginAction("write-metric");
@@ -591,7 +587,7 @@ function KitchenSinkPageWidgets({ context }: { context: PluginPageProps["context
                 tone: "info",
                 action: {
                   label: "Go",
-                  href: hostPath(context.companyPrefix, "/dashboard"),
+                  href: hostNavigation.resolveHref("/dashboard"),
                 },
               })}
           >
@@ -1079,6 +1075,7 @@ function KitchenSinkCompanyCrudDemo({ context }: { context: PluginPageProps["con
 }
 
 function KitchenSinkTopRow({ context }: { context: PluginPageProps["context"] }) {
+  const hostNavigation = useHostNavigation();
   return (
     <div
       style={{
@@ -1098,8 +1095,8 @@ function KitchenSinkTopRow({ context }: { context: PluginPageProps["context"] })
           <div style={mutedTextStyle}>
             The company sidebar entry opens this route directly, so the plugin feels like a first-class company page instead of a settings subpage.
           </div>
-          <a href={pluginPagePath(context.companyPrefix)} style={{ fontSize: "12px" }}>
-            {pluginPagePath(context.companyPrefix)}
+          <a {...hostNavigation.linkProps(`/${PAGE_ROUTE}`)} style={{ fontSize: "12px" }}>
+            {hostNavigation.resolveHref(`/${PAGE_ROUTE}`)}
           </a>
         </Section>
         <Section title="Paperclip Animation">
@@ -1193,6 +1190,7 @@ function KitchenSinkStorageDemo({ context }: { context: PluginPageProps["context
 }
 
 function KitchenSinkHostIntegrationDemo({ context }: { context: PluginPageProps["context"] }) {
+  const hostNavigation = useHostNavigation();
   const [liveRuns, setLiveRuns] = useState<HostLiveRunRecord[]>([]);
   const [recentRuns, setRecentRuns] = useState<HostHeartbeatRunRecord[]>([]);
   const [loading, setLoading] = useState(false);
@@ -1228,7 +1226,7 @@ function KitchenSinkHostIntegrationDemo({ context }: { context: PluginPageProps[
       <div style={subtleCardStyle}>
         <div style={rowStyle}>
           <strong>Company Route</strong>
-          <Pill label={pluginPagePath(context.companyPrefix)} />
+          <Pill label={hostNavigation.resolveHref(`/${PAGE_ROUTE}`)} />
         </div>
         <div style={mutedTextStyle}>
           This page is mounted as a real company route instead of living only under `/plugins/:pluginId`.
@@ -1260,7 +1258,7 @@ function KitchenSinkHostIntegrationDemo({ context }: { context: PluginPageProps[
                     </div>
                     <div>{run.id}</div>
                     {run.agentId ? (
-                      <a href={hostPath(context.companyPrefix, `/agents/${run.agentId}/runs/${run.id}`)}>
+                      <a {...hostNavigation.linkProps(`/agents/${run.agentId}/runs/${run.id}`)}>
                         Open run
                       </a>
                     ) : null}
@@ -1294,6 +1292,44 @@ function KitchenSinkHostIntegrationDemo({ context }: { context: PluginPageProps[
   );
 }
 
+function KitchenSinkSharedPickerDemo({ context }: { context: PluginPageProps["context"] }) {
+  const [assigneeValue, setAssigneeValue] = useState("");
+  const [projectId, setProjectId] = useState(context.projectId ?? "");
+
+  useEffect(() => {
+    setProjectId(context.projectId ?? "");
+  }, [context.projectId]);
+
+  return (
+    <Section title="Shared Host Pickers">
+      <div style={mutedTextStyle}>
+        These controls are imported from `@paperclipai/plugin-sdk/ui` and reuse the host's assignee and project pickers from the new issue pane.
+      </div>
+      {!context.companyId ? (
+        <div style={mutedTextStyle}>Select a company to load picker options.</div>
+      ) : (
+        <div style={subtleCardStyle}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" }}>
+            <AssigneePicker
+              companyId={context.companyId}
+              value={assigneeValue}
+              onChange={(value) => setAssigneeValue(value)}
+            />
+            <ProjectPicker
+              companyId={context.companyId}
+              value={projectId}
+              onChange={setProjectId}
+            />
+          </div>
+          <div style={{ ...mutedTextStyle, marginTop: "8px" }}>
+            Selected assignee: {assigneeValue || "none"}, selected project: {projectId || "none"}
+          </div>
+        </div>
+      )}
+    </Section>
+  );
+}
+
 function KitchenSinkEmbeddedApp({ context }: { context: PluginPageProps["context"] }) {
   return (
     <div style={{ display: "grid", gap: "14px" }}>
@@ -1301,12 +1337,14 @@ function KitchenSinkEmbeddedApp({ context }: { context: PluginPageProps["context
       <KitchenSinkStorageDemo context={context} />
       <KitchenSinkIssueCrudDemo context={context} />
       <KitchenSinkCompanyCrudDemo context={context} />
+      <KitchenSinkSharedPickerDemo context={context} />
       <KitchenSinkHostIntegrationDemo context={context} />
     </div>
   );
 }
 
 function KitchenSinkConsole({ context }: { context: { companyId: string | null; companyPrefix?: string | null; projectId?: string | null; entityId?: string | null; entityType?: string | null } }) {
+  const hostNavigation = useHostNavigation();
   const companyId = context.companyId;
   const overview = usePluginOverview(companyId);
   const [companiesLimit, setCompaniesLimit] = useState(20);
@@ -1531,10 +1569,10 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
 
       <Section title="UI Surfaces">
         <div style={rowStyle}>
-          <a href={pluginPagePath(context.companyPrefix)} style={{ fontSize: "12px" }}>Open plugin page</a>
+          <a {...hostNavigation.linkProps(`/${PAGE_ROUTE}`)} style={{ fontSize: "12px" }}>Open plugin page</a>
           {projectRef ? (
             <a
-              href={hostPath(context.companyPrefix, `/projects/${projectRef}?tab=plugin:${PLUGIN_ID}:${SLOT_IDS.projectTab}`)}
+              {...hostNavigation.linkProps(`/projects/${projectRef}?tab=plugin:${PLUGIN_ID}:${SLOT_IDS.projectTab}`)}
               style={{ fontSize: "12px" }}
             >
               Open project tab
@@ -1542,7 +1580,7 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
           ) : null}
           {selectedIssueId ? (
             <a
-              href={hostPath(context.companyPrefix, `/issues/${selectedIssueId}`)}
+              {...hostNavigation.linkProps(`/issues/${selectedIssueId}`)}
               style={{ fontSize: "12px" }}
             >
               Open selected issue
@@ -2199,6 +2237,7 @@ export function KitchenSinkSettingsPage({ context }: PluginSettingsPageProps) {
 }
 
 export function KitchenSinkDashboardWidget({ context }: PluginWidgetProps) {
+  const hostNavigation = useHostNavigation();
   const overview = usePluginOverview(context.companyId);
   const writeMetric = usePluginAction("write-metric");
 
@@ -2217,7 +2256,7 @@ export function KitchenSinkDashboardWidget({ context }: PluginWidgetProps) {
         <div>Issues: {overview.data?.counts.issues ?? 0}</div>
       </div>
       <div style={rowStyle}>
-        <a href={pluginPagePath(context.companyPrefix)} style={{ fontSize: "12px" }}>Open page</a>
+        <a {...hostNavigation.linkProps(`/${PAGE_ROUTE}`)} style={{ fontSize: "12px" }}>Open page</a>
         <button
           type="button"
           style={buttonStyle}
@@ -2234,13 +2273,14 @@ export function KitchenSinkDashboardWidget({ context }: PluginWidgetProps) {
 }
 
 export function KitchenSinkSidebarLink({ context }: PluginSidebarProps) {
+  const hostNavigation = useHostNavigation();
   const config = usePluginConfigData();
   if (config.data && config.data.showSidebarEntry === false) return null;
-  const href = pluginPagePath(context.companyPrefix);
+  const href = hostNavigation.resolveHref(`/${PAGE_ROUTE}`);
   const isActive = typeof window !== "undefined" && window.location.pathname === href;
   return (
     <a
-      href={href}
+      {...hostNavigation.linkProps(`/${PAGE_ROUTE}`)}
       aria-current={isActive ? "page" : undefined}
       className={[
         "flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors",
@@ -2267,6 +2307,7 @@ export function KitchenSinkSidebarLink({ context }: PluginSidebarProps) {
 
 export function KitchenSinkSidebarPanel() {
   const context = useHostContext();
+  const hostNavigation = useHostNavigation();
   const config = usePluginConfigData();
   const overview = usePluginOverview(context.companyId);
   if (config.data && config.data.showSidebarPanel === false) return null;
@@ -2274,17 +2315,18 @@ export function KitchenSinkSidebarPanel() {
     <div style={{ ...layoutStack, ...subtleCardStyle, fontSize: "12px" }}>
       <strong>Kitchen Sink Panel</strong>
       <div>Recent plugin records: {overview.data?.recentRecords.length ?? 0}</div>
-      <a href={pluginPagePath(context.companyPrefix)}>Open plugin page</a>
+      <a {...hostNavigation.linkProps(`/${PAGE_ROUTE}`)}>Open plugin page</a>
     </div>
   );
 }
 
 export function KitchenSinkProjectSidebarItem({ context }: PluginProjectSidebarItemProps) {
+  const hostNavigation = useHostNavigation();
   const config = usePluginConfigData();
   if (config.data && config.data.showProjectSidebarItem === false) return null;
   return (
     <a
-      href={hostPath(context.companyPrefix, `/projects/${context.entityId}?tab=plugin:${PLUGIN_ID}:${SLOT_IDS.projectTab}`)}
+      {...hostNavigation.linkProps(`/projects/${context.entityId}?tab=plugin:${PLUGIN_ID}:${SLOT_IDS.projectTab}`)}
       style={{ fontSize: "12px", textDecoration: "none" }}
     >
       Kitchen Sink

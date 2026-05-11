@@ -31,7 +31,7 @@ export function CompanySettingsSidebar() {
   });
 
   return (
-    <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
+    <aside className="w-full h-full min-h-0 border-r border-border bg-background flex flex-col">
       <div className="flex flex-col gap-1 px-3 py-3 shrink-0">
         <Link
           to="/dashboard"
@@ -69,6 +69,7 @@ export function CompanySettingsSidebar() {
             end
           />
           <SidebarNavItem to="/company/settings/invites" label="Invites" icon={MailPlus} end />
+          <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
         </div>
       </nav>
     </aside>

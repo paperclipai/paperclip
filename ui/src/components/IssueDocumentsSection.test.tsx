@@ -215,6 +215,7 @@ function createIssue(): Issue {
     title: "Plan rendering",
     description: null,
     status: "in_progress",
+    workMode: "standard",
     priority: "medium",
     assigneeAgentId: null,
     assigneeUserId: null,

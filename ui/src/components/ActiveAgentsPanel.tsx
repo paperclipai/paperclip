@@ -1,6 +1,6 @@
 import { memo, useMemo } from "react";
 import { Link } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import type { TranscriptEntry } from "../adapters";
@@ -56,19 +56,28 @@ export function ActiveAgentsPanel({
   const runs = liveRuns ?? [];
   const visibleRuns = useMemo(() => runs.slice(0, cardLimit), [cardLimit, runs]);
   const hiddenRunCount = Math.max(0, runs.length - visibleRuns.length);
-  const { data: issues } = useQuery({
-    queryKey: [...queryKeys.issues.list(companyId), "with-routine-executions"],
-    queryFn: () => issuesApi.list(companyId, { includeRoutineExecutions: true }),
-    enabled: visibleRuns.length > 0,
+  const visibleIssueIds = useMemo(
+    () => [...new Set(visibleRuns.map((run) => run.issueId).filter((issueId): issueId is string => Boolean(issueId)))],
+    [visibleRuns],
+  );
+
+  const issueQueries = useQueries({
+    queries: visibleIssueIds.map((issueId) => ({
+      queryKey: queryKeys.issues.detail(issueId),
+      queryFn: () => issuesApi.get(issueId),
+      staleTime: 30_000,
+      retry: false,
+    })),
   });
 
   const issueById = useMemo(() => {
     const map = new Map<string, Issue>();
-    for (const issue of issues ?? []) {
-      map.set(issue.id, issue);
+    for (const query of issueQueries) {
+      const issue = query.data;
+      if (issue) map.set(issue.id, issue);
     }
     return map;
-  }, [issues]);
+  }, [issueQueries]);
 
   const { transcriptByRun, hasOutputForRun } = useLiveRunTranscripts({
     runs: visibleRuns,

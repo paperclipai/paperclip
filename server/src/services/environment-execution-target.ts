@@ -58,20 +58,19 @@ export async function resolveEnvironmentExecutionTarget(input: {
         ? input.leaseMetadata.remoteCwd.trim()
         : DEFAULT_SANDBOX_REMOTE_CWD;
     const timeoutMs = "timeoutMs" in parsed.config ? parsed.config.timeoutMs : null;
-    const paperclipApiUrl =
-      typeof input.leaseMetadata?.paperclipApiUrl === "string" && input.leaseMetadata.paperclipApiUrl.trim().length > 0
-        ? input.leaseMetadata.paperclipApiUrl.trim()
+    const shellCommand =
+      input.leaseMetadata?.shellCommand === "bash" || input.leaseMetadata?.shellCommand === "sh"
+        ? input.leaseMetadata.shellCommand
         : null;
 
     return {
       kind: "remote",
       transport: "sandbox",
       providerKey: parsed.config.provider,
+      shellCommand,
       remoteCwd,
       environmentId: input.environment.id ?? null,
       leaseId: input.leaseId ?? null,
-      paperclipApiUrl,
-      paperclipTransport: paperclipApiUrl ? "direct" : "bridge",
       timeoutMs,
       runner: input.environmentRuntime && input.lease
         ? {
@@ -138,10 +137,6 @@ export async function resolveEnvironmentExecutionTarget(input: {
     environmentId: input.environment.id ?? null,
     leaseId: input.leaseId ?? null,
     remoteCwd,
-    paperclipApiUrl:
-      typeof input.leaseMetadata?.paperclipApiUrl === "string" && input.leaseMetadata.paperclipApiUrl.trim().length > 0
-        ? input.leaseMetadata.paperclipApiUrl.trim()
-        : null,
     spec: {
       host: parsed.config.host,
       port: parsed.config.port,
@@ -151,10 +146,6 @@ export async function resolveEnvironmentExecutionTarget(input: {
       knownHosts: parsed.config.knownHosts,
       strictHostKeyChecking: parsed.config.strictHostKeyChecking,
       remoteCwd,
-      paperclipApiUrl:
-        typeof input.leaseMetadata?.paperclipApiUrl === "string" && input.leaseMetadata.paperclipApiUrl.trim().length > 0
-          ? input.leaseMetadata.paperclipApiUrl.trim()
-          : null,
     },
   };
 }

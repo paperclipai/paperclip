@@ -11,7 +11,7 @@ const mockHeartbeatsApi = vi.hoisted(() => ({
 }));
 
 const mockIssuesApi = vi.hoisted(() => ({
-  list: vi.fn(),
+  get: vi.fn(),
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -55,6 +55,20 @@ async function flushReact() {
   });
 }
 
+async function waitForMicrotaskAssertion(assertion: () => void, attempts = 20) {
+  let lastError: unknown;
+  for (let index = 0; index < attempts; index += 1) {
+    await flushReact();
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
 function createRun(index: number) {
   return {
     id: `run-${index}`,
@@ -71,6 +85,37 @@ function createRun(index: number) {
   };
 }
 
+function createIssueRun(index: number, issueId: string) {
+  return {
+    ...createRun(index),
+    issueId,
+  };
+}
+
+function createIssue(id: string, identifier: string, title: string) {
+  return {
+    id,
+    companyId: "company-1",
+    identifier,
+    title,
+    description: null,
+    status: "in_progress",
+    priority: "medium",
+    assigneeAgentId: null,
+    assigneeUserId: null,
+    parentId: null,
+    projectId: null,
+    projectWorkspaceId: null,
+    executionWorkspaceId: null,
+    goalId: null,
+    labels: [],
+    blockedByIssueIds: [],
+    blocksIssueIds: [],
+    createdAt: "2026-04-24T12:00:00.000Z",
+    updatedAt: "2026-04-24T12:00:00.000Z",
+  };
+}
+
 describe("ActiveAgentsPanel", () => {
   let container: HTMLDivElement;
 
@@ -78,7 +123,7 @@ describe("ActiveAgentsPanel", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([1, 2, 3, 4, 5].map(createRun));
-    mockIssuesApi.list.mockResolvedValue([]);
+    mockIssuesApi.get.mockRejectedValue(new Error("Issue not found"));
   });
 
   afterEach(() => {
@@ -144,6 +189,44 @@ describe("ActiveAgentsPanel", () => {
       limit: 50,
     });
     expect(container.textContent).not.toContain("more active/recent");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("loads exact visible run issues so task names render even when the issue list page would miss them", async () => {
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+      createIssueRun(1, "65274215-0000-4000-8000-000000000000"),
+    ]);
+    mockIssuesApi.get.mockResolvedValue(createIssue(
+      "65274215-0000-4000-8000-000000000000",
+      "PAP-3562",
+      "Phase 4B: Implement LLM Wiki distillation UI",
+    ));
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ActiveAgentsPanel companyId="company-1" />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    await waitForMicrotaskAssertion(() => {
+      expect(mockIssuesApi.get).toHaveBeenCalledWith("65274215-0000-4000-8000-000000000000");
+      const issueLink = [...container.querySelectorAll("a")].find((anchor) =>
+        anchor.textContent?.includes("Phase 4B"),
+      );
+      expect(issueLink?.textContent).toBe("PAP-3562 - Phase 4B: Implement LLM Wiki distillation UI");
+      expect(issueLink?.getAttribute("href")).toBe("/issues/PAP-3562");
+    });
 
     await act(async () => {
       root.unmount();
