@@ -714,12 +714,17 @@ export function IssuesList({
   // re-fetch issues per status from the server so that low-priority or older issues that
   // fall outside the default 500-item server cap are still surfaced. This mirrors the
   // per-status fetching pattern used by the board view.
+  // Skip per-status fetches when a remote search is active — `filtered` uses
+  // `searchedIssues` in that case and would discard these results.
   const listStatusFilterValues = useMemo(
     () =>
-      viewState.viewMode === "list" && !searchWithinLoadedIssues && viewState.statuses.length > 0
+      viewState.viewMode === "list"
+      && !searchWithinLoadedIssues
+      && normalizedIssueSearch.length === 0
+      && viewState.statuses.length > 0
         ? viewState.statuses
         : [],
-    [searchWithinLoadedIssues, viewState.statuses, viewState.viewMode],
+    [normalizedIssueSearch, searchWithinLoadedIssues, viewState.statuses, viewState.viewMode],
   );
   const listStatusIssueQueries = useQueries({
     queries: listStatusFilterValues.map((status) => ({
@@ -727,7 +732,6 @@ export function IssuesList({
         ...queryKeys.issues.list(selectedCompanyId ?? "__no-company__"),
         "list-status",
         status,
-        normalizedIssueSearch,
         projectId ?? "__all-projects__",
         searchFilters ?? {},
         ISSUE_LIST_STATUS_RESULT_LIMIT,
@@ -736,13 +740,16 @@ export function IssuesList({
       queryFn: () =>
         issuesApi.list(selectedCompanyId!, {
           ...searchFilters,
-          ...(normalizedIssueSearch.length > 0 ? { q: normalizedIssueSearch } : {}),
           projectId,
           status,
           limit: ISSUE_LIST_STATUS_RESULT_LIMIT,
           ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
         }),
-      enabled: !!selectedCompanyId,
+      enabled:
+        !!selectedCompanyId
+        && viewState.viewMode === "list"
+        && !searchWithinLoadedIssues
+        && normalizedIssueSearch.length === 0,
       placeholderData: (previousData: Issue[] | undefined) => previousData,
     })),
   });
