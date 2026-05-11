@@ -49,6 +49,7 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     hasQueuedWake: false,
     hasPendingInteractionOrApproval: false,
     hasExplicitBlockerPath: false,
+    hasNonTerminalChildren: false,
     hasOpenRecoveryIssue: false,
     hasPauseHold: false,
     budgetBlocked: false,
@@ -120,6 +121,13 @@ describe("successful run handoff decision", () => {
     expect(decide({ hasExplicitBlockerPath: true })).toEqual({
       kind: "skip",
       reason: "explicit blocker path owns the next action",
+    });
+  });
+
+  it("does not queue when the issue has delegated non-terminal children in flight", () => {
+    expect(decide({ hasNonTerminalChildren: true })).toEqual({
+      kind: "skip",
+      reason: "delegated non-terminal children own the active execution path",
     });
   });
 
