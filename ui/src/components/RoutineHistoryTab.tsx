@@ -340,7 +340,6 @@ function RevisionSnapshotDialog({
                 <RevisionPreview
                   revision={revision}
                   currentRevision={currentRevision}
-                  isHistorical
                   agents={agents}
                   projects={projects}
                   highlighted={highlighted}
@@ -354,7 +353,6 @@ function RevisionSnapshotDialog({
                 <RevisionPreview
                   revision={currentRevision}
                   currentRevision={revision}
-                  isHistorical={false}
                   agents={agents}
                   projects={projects}
                   highlighted={false}
@@ -365,7 +363,6 @@ function RevisionSnapshotDialog({
             <RevisionPreview
               revision={revision}
               currentRevision={currentRevision}
-              isHistorical={isHistorical}
               agents={agents}
               projects={projects}
               highlighted={highlighted}
@@ -550,7 +547,6 @@ function RevisionPreview({
 }: {
   revision: RoutineRevision;
   currentRevision: RoutineRevision | null;
-  isHistorical: boolean;
   agents: AgentLookup;
   projects: ProjectLookup;
   highlighted: boolean;
