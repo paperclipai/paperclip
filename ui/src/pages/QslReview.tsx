@@ -61,13 +61,36 @@ function ApprovalLabel({ approved }: { approved: boolean | null }) {
 
 type CardStatus = "idle" | "loading" | "approved" | "denied" | "error";
 
+interface DeduplicatedIssue {
+  issue: QslIssue;
+  count: number;
+}
+
+function deduplicateIssues(issues: QslIssue[]): DeduplicatedIssue[] {
+  const groups = new Map<string, DeduplicatedIssue>();
+  for (const issue of issues) {
+    const key = [issue.title, issue.threat_category ?? "", issue.severity ?? ""].join("\0");
+    const existing = groups.get(key);
+    if (!existing) {
+      groups.set(key, { issue, count: 1 });
+    } else {
+      existing.count++;
+      if ((issue.risk_score ?? 0) > (existing.issue.risk_score ?? 0)) {
+        existing.issue = issue;
+      }
+    }
+  }
+  return Array.from(groups.values());
+}
+
 interface QslIssueCardProps {
   issue: QslIssue;
   rule?: QslRule;
+  count: number;
   onDecision: () => void;
 }
 
-function QslIssueCard({ issue, rule, onDecision }: QslIssueCardProps) {
+function QslIssueCard({ issue, rule, count, onDecision }: QslIssueCardProps) {
   const [status, setStatus] = useState<CardStatus>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -116,6 +139,11 @@ function QslIssueCard({ issue, rule, onDecision }: QslIssueCardProps) {
             {issue.risk_score != null && (
               <Badge variant="secondary" className="text-[10px]">
                 risk {issue.risk_score}
+              </Badge>
+            )}
+            {count > 1 && (
+              <Badge variant="secondary" className="text-[10px]">
+                Seen {count} times
               </Badge>
             )}
             {ruleId && (
@@ -217,6 +245,9 @@ export function QslReview() {
     queryClient.invalidateQueries({ queryKey: queryKeys.qsl.state });
   };
 
+  const rawIssues = Array.isArray(data) ? data : [];
+  const issues = useMemo(() => deduplicateIssues(rawIssues), [rawIssues]);
+
   if (isLoading) {
     return (
       <div className="space-y-3">
@@ -238,8 +269,6 @@ export function QslReview() {
     );
   }
 
-  const issues = Array.isArray(data) ? data : [];
-
   if (issues.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-center">
@@ -251,7 +280,7 @@ export function QslReview() {
 
   return (
     <div className="space-y-3">
-      {issues.map((issue, i) => {
+      {issues.map(({ issue, count }, i) => {
         const ruleId = deriveRuleId(issue);
         const rule = ruleId ? ruleLookup.get(ruleId) : undefined;
         return (
@@ -259,6 +288,7 @@ export function QslReview() {
             key={issue.id ?? i}
             issue={issue}
             rule={rule}
+            count={count}
             onDecision={refetchAll}
           />
         );
