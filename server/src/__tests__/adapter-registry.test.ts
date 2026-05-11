@@ -480,6 +480,84 @@ describe("server adapter registry", () => {
     // Auth token is still injected.
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
   });
+
+  it("uses Hermes result_json session_id as the canonical persisted session id", async () => {
+    hermesExecuteMock.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      sessionDisplayId: "20260509_110057_",
+      resultJson: {
+        session_id: "20260509_110057_fabce5",
+      },
+    });
+    const adapter = requireServerAdapter("hermes_local");
+
+    const result = await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    expect(result.sessionId).toBe("20260509_110057_fabce5");
+    expect(result.sessionDisplayId).toBe("20260509_110057_fabce5");
+    expect(result.sessionParams).toMatchObject({ sessionId: "20260509_110057_fabce5" });
+    expect(result.resultJson?.session_id).toBe("20260509_110057_fabce5");
+  });
+
+  it("clears invalid Hermes session ids parsed from CLI help text", async () => {
+    hermesExecuteMock.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      sessionId: "from",
+      sessionDisplayId: "from",
+      sessionParams: { sessionId: "from" },
+      resultJson: {
+        result: "Session not found: from\nUse a session ID from a previous CLI run (hermes sessions list).",
+        session_id: "from",
+      },
+    });
+    const adapter = requireServerAdapter("hermes_local");
+
+    const result = await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    expect(result.clearSession).toBe(true);
+    expect(result.sessionId).toBeNull();
+    expect(result.sessionDisplayId).toBeNull();
+    expect(result.sessionParams).toBeNull();
+    expect(result.resultJson?.session_id).toBeNull();
+  });
 });
 
 describe("resolveExternalAdapterRegistration", () => {

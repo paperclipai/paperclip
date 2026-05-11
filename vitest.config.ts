@@ -12,6 +12,7 @@ export default defineConfig({
       "packages/adapters/cursor-cloud",
       "packages/adapters/cursor-local",
       "packages/adapters/gemini-local",
+      "packages/adapters/openclaw-gateway",
       "packages/adapters/opencode-local",
       "packages/adapters/pi-local",
       "server",

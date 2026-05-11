@@ -170,6 +170,67 @@ function buildCursorRuntimeCommandSpec(config: Record<string, unknown>): Adapter
   };
 }
 
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+const HERMES_SESSION_ID_RE = /^\d{8}_\d{6}_[A-Za-z0-9]+$/;
+
+function readHermesSessionId(value: unknown): string | null {
+  const raw = readNonEmptyString(value);
+  return raw && HERMES_SESSION_ID_RE.test(raw) ? raw : null;
+}
+
+function normalizeHermesExecutionResult(
+  result: Awaited<ReturnType<ServerAdapterModule["execute"]>>,
+): Awaited<ReturnType<ServerAdapterModule["execute"]>> {
+  const resultJson =
+    result.resultJson && typeof result.resultJson === "object" && !Array.isArray(result.resultJson)
+      ? { ...result.resultJson }
+      : null;
+  const canonicalSessionId =
+    readHermesSessionId(resultJson?.session_id) ??
+    readHermesSessionId(result.sessionDisplayId) ??
+    readHermesSessionId(result.sessionId) ??
+    readHermesSessionId(result.sessionParams?.sessionId);
+  const emittedSessionCandidate =
+    readNonEmptyString(resultJson?.session_id) ??
+    readNonEmptyString(result.sessionDisplayId) ??
+    readNonEmptyString(result.sessionId) ??
+    readNonEmptyString(result.sessionParams?.sessionId);
+
+  if (canonicalSessionId) {
+    return {
+      ...result,
+      sessionId: canonicalSessionId,
+      sessionDisplayId: canonicalSessionId,
+      sessionParams: {
+        ...(result.sessionParams ?? {}),
+        sessionId: canonicalSessionId,
+      },
+      resultJson: {
+        ...(resultJson ?? result.resultJson ?? {}),
+        session_id: canonicalSessionId,
+      },
+    };
+  }
+
+  if (!emittedSessionCandidate) return result;
+
+  // Hermes CLI session ids are shaped like `20260509_110057_fabce5`.
+  // Do not persist helper text tokens such as `from` from
+  // "Use a session ID from a previous CLI run", or truncated ids like
+  // `20260509_110057_`; persisting them makes every continuation retry fail.
+  return {
+    ...result,
+    sessionId: null,
+    sessionDisplayId: null,
+    sessionParams: null,
+    resultJson: resultJson ? { ...resultJson, session_id: null } : result.resultJson,
+    clearSession: true,
+  };
+}
+
 function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(ctx: T): T {
   const config =
     ctx && typeof ctx === "object" && "config" in ctx && ctx.config && typeof ctx.config === "object"
@@ -407,7 +468,9 @@ const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
   execute: async (ctx) => {
     const normalizedCtx = normalizeHermesConfig(ctx);
-    if (!normalizedCtx.authToken) return executeHermesLocal(normalizedCtx);
+    if (!normalizedCtx.authToken) {
+      return normalizeHermesExecutionResult(await executeHermesLocal(normalizedCtx));
+    }
 
     const existingConfig = (normalizedCtx.agent.adapterConfig ?? {}) as Record<string, unknown>;
     const existingEnv =
@@ -451,7 +514,7 @@ const hermesLocalAdapter: ServerAdapterModule = {
       },
     };
 
-    return executeHermesLocal(patchedCtx);
+    return normalizeHermesExecutionResult(await executeHermesLocal(patchedCtx));
   },
   testEnvironment: (ctx) => hermesTestEnvironment(normalizeHermesConfig(ctx) as never),
   sessionCodec: hermesSessionCodec,

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog } from "@paperclipai/db";
+import { activityLog, heartbeatRuns } from "@paperclipai/db";
 import { PLUGIN_EVENT_TYPES, type PluginEventType } from "@paperclipai/shared";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { publishLiveEvent } from "./live-events.js";
@@ -62,6 +63,28 @@ export interface LogActivityInput {
   details?: Record<string, unknown> | null;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+async function resolveExistingRunId(db: Db, runId: string | null | undefined): Promise<string | null> {
+  const normalized = typeof runId === "string" ? runId.trim() : "";
+  if (!normalized) return null;
+  if (!UUID_RE.test(normalized)) {
+    logger.warn({ runId: normalized }, "Ignoring invalid activity run id: not a UUID");
+    return null;
+  }
+  const existing = await db
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, normalized))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!existing) {
+    logger.warn({ runId: normalized }, "Ignoring invalid activity run id: heartbeat run does not exist");
+    return null;
+  }
+  return existing.id;
+}
+
 export async function logActivity(db: Db, input: LogActivityInput) {
   const currentUserRedactionOptions = {
     enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
@@ -70,6 +93,8 @@ export async function logActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = sanitizedDetails
     ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
     : null;
+  const runId = await resolveExistingRunId(db, input.runId);
+
   await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
@@ -78,7 +103,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
+    runId,
     details: redactedDetails,
   });
 
@@ -92,7 +117,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       entityType: input.entityType,
       entityId: input.entityId,
       agentId: input.agentId ?? null,
-      runId: input.runId ?? null,
+      runId,
       details: redactedDetails,
     },
   });
@@ -111,7 +136,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       payload: {
         ...redactedDetails,
         agentId: input.agentId ?? null,
-        runId: input.runId ?? null,
+        runId,
       },
     };
     publishPluginDomainEvent(event);
