@@ -33,23 +33,29 @@ def fetch_openverse_images(product_name: str) -> dict:
     - Licencias Creative Commons (uso libre)
     API: https://api.openverse.org/v1/images/?q=QUERY
     """
-    # Traducir keywords al inglés para mejor resultado
-    kw_map = {
-        "perro": "dog", "gato": "cat", "mascota": "pet",
-        "collar": "collar", "arnés": "harness", "arnes": "harness",
-        "soporte": "stand holder", "portátil": "portable laptop",
-        "humidificador": "humidifier", "mochila": "backpack",
-        "cocina": "kitchen", "fitness": "fitness workout",
-        "masaje": "massage", "facial": "facial skincare",
-        "magnético": "magnetic", "coche": "car",
-        "consola": "gaming console", "inalámbrico": "wireless",
-        "recargable": "rechargeable", "led": "led light",
-        "para": "", "con": "", "de": "", "el": "", "la": "",
-    }
-    query = product_name.lower()
-    for es, en in kw_map.items():
-        query = query.replace(es, en)
-    query = " ".join(query.split()[:4]).strip()  # max 4 palabras
+    # Detectar categoría y usar query en inglés (Openverse solo funciona bien en inglés)
+    name_lower = product_name.lower()
+    category_queries = [
+        (["coche", "auto", "vehiculo", "consola central", "organizador coche"], "car interior organizer accessory"),
+        (["perro", "mascota", "pet", "collar", "arnes", "arnés", "correa"], "dog pet accessory"),
+        (["gato", "felino"], "cat pet accessory"),
+        (["humidificador", "humidifier", "aroma", "difusor"], "humidifier room home"),
+        (["laptop", "portatil", "portátil", "soporte laptop", "soporte ordenador"], "laptop stand desk"),
+        (["mochila", "backpack", "bolsa viaje"], "backpack travel bag"),
+        (["cocina", "kitchen", "blender", "licuadora"], "kitchen gadget cooking"),
+        (["fitness", "gym", "banda", "ejercicio", "deporte"], "fitness workout equipment"),
+        (["masaje", "facial", "skincare", "serum", "crema"], "skincare beauty product"),
+        (["gaming", "consola juegos", "retro game"], "gaming console retro"),
+        (["led", "luz", "lampara", "ring light"], "led light product"),
+        (["soporte movil", "soporte telefono", "magsafe", "magnético"], "phone holder magnetic mount"),
+        (["joya", "collar joya", "pulsera", "anillo", "colgante"], "jewelry accessory necklace"),
+        (["manta", "almohada", "cojin"], "home textile comfort"),
+    ]
+    query = "product lifestyle"  # default
+    for keywords, english_query in category_queries:
+        if any(kw in name_lower for kw in keywords):
+            query = english_query
+            break
     print(f"  🔍 Openverse query: '{query}'", flush=True)
 
     try:
