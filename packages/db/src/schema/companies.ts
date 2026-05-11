@@ -9,6 +9,15 @@ export const companies = pgTable(
     status: text("status").notNull().default("active"),
     pauseReason: text("pause_reason"),
     pausedAt: timestamp("paused_at", { withTimezone: true }),
+    // Quota-driven auto-pause (ADR-001): distinct from manual pause_reason/paused_at above,
+    // which are set by budget/admin flows. These three are set together (transaction) by the
+    // claude_local adapter when a `claude_quota_exhausted` run happens, and cleared after the
+    // canary re-entry. paused_until: when the auto-pause expires. paused_reason: machine- and
+    // human-readable, e.g. "claude_quota_exhausted:<runId>". paused_canary_at: first run after
+    // expiry that gets to probe — used by P-2 to gate re-entry.
+    pausedUntil: timestamp("paused_until", { withTimezone: true }),
+    pausedReason: text("paused_reason"),
+    pausedCanaryAt: timestamp("paused_canary_at", { withTimezone: true }),
     issuePrefix: text("issue_prefix").notNull().default("PAP"),
     issueCounter: integer("issue_counter").notNull().default(0),
     budgetMonthlyCents: integer("budget_monthly_cents").notNull().default(0),
