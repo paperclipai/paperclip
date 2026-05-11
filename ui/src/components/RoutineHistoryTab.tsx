@@ -385,7 +385,7 @@ function RevisionSnapshotDialog({
 function DiffPill({ kind }: { kind: "differs" | "only-here" }) {
   const label = kind === "differs" ? "differs" : "only here";
   return (
-    <span className="ml-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 text-[10px] uppercase tracking-[0.12em] text-amber-200">
+    <span className="ml-1 rounded-full border border-amber-400 bg-amber-300 px-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-amber-950">
       {label}
     </span>
   );
@@ -394,8 +394,8 @@ function DiffPill({ kind }: { kind: "differs" | "only-here" }) {
 function ColumnLabel({ tone, title }: { tone: "amber" | "emerald"; title: string }) {
   const cls =
     tone === "amber"
-      ? "border-amber-400/60 bg-amber-500/20 text-amber-50"
-      : "border-emerald-400/60 bg-emerald-500/20 text-emerald-50";
+      ? "border-amber-400 bg-amber-300 text-amber-950"
+      : "border-emerald-400 bg-emerald-300 text-emerald-950";
   return (
     <div
       className={`rounded-md border px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] ${cls}`}
