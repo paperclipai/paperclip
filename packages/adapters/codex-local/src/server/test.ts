@@ -203,9 +203,11 @@ export async function testEnvironment(
     if (typeof value === "string") env[key] = value;
   }
   const configuredCodexHome = isNonEmpty(env.CODEX_HOME) ? path.resolve(env.CODEX_HOME) : null;
-  const effectiveCodexHome =
-    configuredCodexHome ?? await prepareManagedCodexHome({ ...process.env, ...env }, async () => {}, ctx.companyId);
-  env.CODEX_HOME = effectiveCodexHome;
+  if (configuredCodexHome) {
+    env.CODEX_HOME = configuredCodexHome;
+  } else if (!targetIsRemote) {
+    env.CODEX_HOME = await prepareManagedCodexHome({ ...process.env, ...env }, async () => {}, ctx.companyId);
+  }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   const installCheck = await maybeRunSandboxInstallCommand({
     runId,

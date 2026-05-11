@@ -485,10 +485,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (runtimePrimaryUrl) {
     env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
   }
-  env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
   for (const [k, v] of Object.entries(envOverrides)) {
+    if (k === "CODEX_HOME") continue;
     env[k] = v;
   }
+  env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
