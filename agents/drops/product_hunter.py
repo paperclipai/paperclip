@@ -448,9 +448,9 @@ def fetch_cj_products(niche: str, cj_key: str, limit: int = 8) -> list:
         query = re.sub(r'\s+', ' ', query).strip()
         print(f"  🔑 CJ keyword: '{query}'", flush=True)
 
-        params = urllib.parse.urlencode({"keyWord": query, "page": 1, "size": limit})
+        params = urllib.parse.urlencode({"keyWord": query, "pageNum": 1, "pageSize": limit})
         req = urllib.request.Request(
-            f"{CJ_BASE}/product/listV2?{params}",
+            f"{CJ_BASE}/product/list?{params}",
             headers={"CJ-Access-Token": token, "Accept": "application/json"},
             method="GET"
         )

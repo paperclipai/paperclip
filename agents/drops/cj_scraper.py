@@ -90,11 +90,11 @@ def search_products(keyword: str, token: str, limit: int = 10) -> list:
     Devuelve lista de productos con datos reales del proveedor.
     """
     params = urllib.parse.urlencode({
-        "keyWord": keyword,
-        "page":    1,
-        "size":    min(limit, 20),
+        "keyWord":  keyword,
+        "pageNum":  1,
+        "pageSize": min(limit, 20),
     })
-    url = f"{CJ_BASE}/product/listV2?{params}"
+    url = f"{CJ_BASE}/product/list?{params}"
     req = urllib.request.Request(
         url,
         headers={"CJ-Access-Token": token, "Accept": "application/json"},
