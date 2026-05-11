@@ -304,7 +304,7 @@ function RevisionSnapshotDialog({
         } w-full max-h-[85vh] overflow-hidden flex flex-col`}
       >
         <DialogHeader>
-          <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 pr-8">
             <DialogTitle>
               {isHistorical
                 ? `Viewing revision ${revision.revisionNumber} (read-only)`
