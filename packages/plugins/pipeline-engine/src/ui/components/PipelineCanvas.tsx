@@ -453,6 +453,8 @@ export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasP
           selectedStage={selectedStage}
           selectedEdge={selectedRfEdge}
           stageIds={stages.map((s) => s.id)}
+          edges={edgeDefs}
+          currentPipelineName={name}
           onStageChange={handleStageChange}
           onStageDelete={handleStageDelete}
           onEdgeUpdate={handleEdgeUpdate}

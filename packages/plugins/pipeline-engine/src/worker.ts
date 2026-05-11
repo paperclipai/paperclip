@@ -605,16 +605,21 @@ const plugin = definePlugin({
     });
 
     ctx.data.register("list-schemas", async () => {
-      const schemasDir = resolve(dirname(fileURLToPath(import.meta.url)), "../schemas");
-      try {
-        const files = readdirSync(schemasDir);
-        const schemas = files
-          .filter((f) => f.endsWith(".json"))
-          .map((f) => f.replace(/\.json$/, ""));
-        return { schemas };
-      } catch {
-        return { schemas: [] };
+      const candidates = [
+        resolve(dirname(fileURLToPath(import.meta.url)), "../schemas"),
+        resolve(dirname(fileURLToPath(import.meta.url)), "./schemas"),
+        resolve(dirname(fileURLToPath(import.meta.url)), "../../schemas"),
+      ];
+      for (const dir of candidates) {
+        try {
+          const files = readdirSync(dir);
+          const schemas = files
+            .filter((f) => f.endsWith(".json"))
+            .map((f) => f.replace(/\.json$/, ""));
+          if (schemas.length > 0) return { schemas };
+        } catch {}
       }
+      return { schemas: [] };
     });
 
     // Action handlers for UI

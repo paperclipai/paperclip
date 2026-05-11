@@ -39,6 +39,9 @@ export function validatePipeline(
     if (stage.type === "sub-pipeline" && !stage.pipeline) {
       errors.push({ stageId: stage.id, field: "pipeline", message: `"${stage.id}" requires a pipeline reference` });
     }
+    if (stage.type === "sub-pipeline" && stage.pipeline === name) {
+      errors.push({ stageId: stage.id, field: "pipeline", message: `"${stage.id}" cannot reference itself` });
+    }
   }
 
   for (const edge of edges) {

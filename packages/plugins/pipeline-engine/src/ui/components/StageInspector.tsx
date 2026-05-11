@@ -43,7 +43,7 @@ function EdgeInspector({ edge, stageIds, onUpdate, onDelete }: EdgeInspectorProp
         <ConditionBuilder
           value={data.when ?? ""}
           onChange={(v) => onUpdate(edge.id, { when: v })}
-          stageIds={stageIds}
+          stageIds={[edge.source]}
         />
       </FieldGroup>
 
@@ -74,11 +74,12 @@ interface StageFormProps {
   schemas: string[];
   pipelineNames: string[];
   stageIds: string[];
+  upstreamStageIds: string[];
   onChange: (updated: StageDefinition, oldId?: string) => void;
   onDelete: (id: string) => void;
 }
 
-function StageForm({ stage, agents, schemas, pipelineNames, stageIds, onChange, onDelete }: StageFormProps) {
+function StageForm({ stage, agents, schemas, pipelineNames, stageIds, upstreamStageIds, onChange, onDelete }: StageFormProps) {
   const update = (patch: Partial<StageDefinition>) =>
     onChange({ ...stage, ...patch } as StageDefinition, patch.id !== undefined ? stage.id : undefined);
 
@@ -114,7 +115,7 @@ function StageForm({ stage, agents, schemas, pipelineNames, stageIds, onChange, 
         <ConditionBuilder
           value={(stage as any).condition ?? ""}
           onChange={(v) => update({ condition: v || undefined } as any)}
-          stageIds={stageIds.filter((id) => id !== stage.id)}
+          stageIds={upstreamStageIds}
         />
       </FieldGroup>
 
@@ -279,6 +280,8 @@ export interface StageInspectorProps {
   selectedStage: StageDefinition | null;
   selectedEdge: Edge | null;
   stageIds: string[];
+  edges: { from: string; to: string }[];
+  currentPipelineName: string;
   onStageChange: (updated: StageDefinition, oldId?: string) => void;
   onStageDelete: (id: string) => void;
   onEdgeUpdate: (id: string, changes: Partial<{ label: string; when: string; type: "default" | "error" }>) => void;
@@ -289,6 +292,8 @@ export function StageInspector({
   selectedStage,
   selectedEdge,
   stageIds,
+  edges: edgeDefs,
+  currentPipelineName,
   onStageChange,
   onStageDelete,
   onEdgeUpdate,
@@ -300,7 +305,7 @@ export function StageInspector({
   const { data: pipelinesData } = usePluginData<{ pipelines: { name: string }[] }>(DATA_KEYS.LIST_PIPELINES, {});
   const agents = agentsData?.agents ?? [];
   const schemas = schemasData?.schemas ?? [];
-  const pipelineNames = (pipelinesData?.pipelines ?? []).map((p) => p.name);
+  const pipelineNames = (pipelinesData?.pipelines ?? []).map((p) => p.name).filter((n) => n !== currentPipelineName);
 
   return (
     <div
@@ -318,7 +323,16 @@ export function StageInspector({
       {selectedEdge ? (
         <EdgeInspector edge={selectedEdge} stageIds={stageIds} onUpdate={onEdgeUpdate} onDelete={onEdgeDelete} />
       ) : selectedStage ? (
-        <StageForm stage={selectedStage} agents={agents} schemas={schemas} pipelineNames={pipelineNames} stageIds={stageIds} onChange={onStageChange} onDelete={onStageDelete} />
+        <StageForm
+          stage={selectedStage}
+          agents={agents}
+          schemas={schemas}
+          pipelineNames={pipelineNames}
+          stageIds={stageIds}
+          upstreamStageIds={edgeDefs.filter((e) => e.to === selectedStage.id).map((e) => e.from)}
+          onChange={onStageChange}
+          onDelete={onStageDelete}
+        />
       ) : (
         <div style={{ color: "#6b7280", fontSize: 12, textAlign: "center", marginTop: 48, lineHeight: 1.6 }}>
           Click a stage node or edge to inspect and edit its properties.
