@@ -111,6 +111,18 @@ describe("parseGitArgs", () => {
     ]);
   });
 
+  it("does not treat --exec-path as taking a value (it is a print-and-exit flag)", () => {
+    // Regression: --exec-path with no value prints the exec-path; it
+    // does NOT consume the next token. Previously parseGitArgs included
+    // it in TAKES_VALUE_GIT_OPTS, which would swallow "commit" as its
+    // value and silently pass the invocation through unscanned.
+    const parsed = parseGitArgs(["--exec-path", "commit", "-m", "Hello"]);
+    expect(parsed.subCommand).toBe("commit");
+    expect(parsed.scanTargets).toEqual([
+      { kind: "string", source: "git commit -m", value: "Hello" },
+    ]);
+  });
+
   it("skips git pre-subcommand opts like -C dir and --git-dir=", () => {
     const parsed = parseGitArgs([
       "-C",

@@ -123,9 +123,14 @@ export function parseGitArgs(argv) {
 
   // Skip git's own pre-subcommand flags (e.g. `git -C dir commit ...`,
   // `git --git-dir=.git commit ...`). These can take a value or be attached.
+  // Pre-subcommand opts that consume the next argv token as their value.
+  // --exec-path is intentionally NOT here: bare `git --exec-path` prints the
+  // path and exits, taking no separate argument. The attached-equals form
+  // `--exec-path=<path>` is handled by the generic "--foo=value" branch
+  // below.
   const TAKES_VALUE_GIT_OPTS = new Set([
     "-C", "-c", "--git-dir", "--work-tree", "--namespace",
-    "--super-prefix", "--exec-path", "--config-env",
+    "--super-prefix", "--config-env",
   ]);
   const args = [];
   for (const arg of argv) {
