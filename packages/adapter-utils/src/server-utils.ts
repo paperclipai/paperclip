@@ -111,7 +111,7 @@ export function resolvePaperclipInstanceRootForAdapter(input: {
 }
 
 export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
-  "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
+  "You are agent {{agent.id}} ({{agent.name}}). Continue your work.",
   "",
   "Execution contract:",
   "- Start actionable work in this heartbeat; do not stop at a plan unless the issue asks for planning.",
@@ -182,13 +182,13 @@ function buildManagedSkillOrigin(entry: { required?: boolean }): Pick<
   if (entry.required) {
     return {
       origin: "paperclip_required",
-      originLabel: "Required by Paperclip",
+      originLabel: "Required by Standard Power",
       readOnly: false,
     };
   }
   return {
     origin: "company_managed",
-    originLabel: "Managed by Paperclip",
+    originLabel: "Managed by Standard Power",
     readOnly: false,
   };
 }
@@ -648,7 +648,8 @@ export function renderPaperclipWakePrompt(
 
   const lines = resumedSession
       ? [
-        "## Paperclip Resume Delta",
+        "<!-- PAPERCLIP_WAKE_PAYLOAD_START -->",
+        "## Resume Delta",
         "",
         "You are resuming an existing Paperclip session.",
         "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
@@ -664,7 +665,8 @@ export function renderPaperclipWakePrompt(
         `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
       ]
     : [
-        "## Paperclip Wake Payload",
+        "<!-- PAPERCLIP_WAKE_PAYLOAD_START -->",
+        "## Wake Payload",
         "",
         "Treat this wake payload as the highest-priority change for the current heartbeat.",
         "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
@@ -848,6 +850,7 @@ export function renderPaperclipWakePrompt(
     lines.push("");
   }
 
+  lines.push("<!-- PAPERCLIP_WAKE_PAYLOAD_END -->");
   return lines.join("\n").trim();
 }
 
@@ -1446,7 +1449,7 @@ export function buildPersistentSkillSnapshot(
       state: "missing",
       sourcePath: null,
       targetPath: null,
-      detail: "Paperclip cannot find this skill in the local runtime skills directory.",
+      detail: "Standard Power cannot find this skill in the local runtime skills directory.",
       origin: "external_unknown",
       originLabel: "External or unavailable",
       readOnly: false,
@@ -1771,7 +1774,7 @@ export async function materializePaperclipSkillCopy(
     throw new Error("Refusing to materialize a skill root that is itself a symlink.");
   }
   if (!rootStat.isDirectory()) {
-    throw new Error("Paperclip skills must be directories.");
+    throw new Error("Standard Power skills must be directories.");
   }
 
   const result: MaterializedPaperclipSkillCopyResult = {
