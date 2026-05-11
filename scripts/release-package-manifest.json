@@ -95,6 +95,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/plugins/sandbox-providers/exe-dev",
+    "name": "@paperclipai/plugin-exe-dev",
+    "publishFromCi": false
+  },
+  {
     "dir": "packages/plugins/sandbox-providers/e2b",
     "name": "@paperclipai/plugin-e2b",
     "publishFromCi": true
