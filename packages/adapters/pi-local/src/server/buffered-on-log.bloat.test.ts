@@ -23,7 +23,11 @@ interface Run {
  * pipeline). Returns the persisted log path + full unfiltered stdout for
  * separate verification.
  */
-async function runFakePi(turns: number, increment: number): Promise<Run> {
+async function runFakePi(
+  turns: number,
+  increment: number,
+  options: { toolresultBytes?: number } = {},
+): Promise<Run> {
   const dir = await mkdtemp(path.join(tmpdir(), "pi-bloat-test-"));
   const persistedLogPath = path.join(dir, "run.ndjson");
   await writeFile(persistedLogPath, "");
@@ -39,12 +43,15 @@ async function runFakePi(turns: number, increment: number): Promise<Run> {
   };
   const buffered = createBufferedOnLog(onLog);
 
+  const fixtureArgs = [FIXTURE, `--turns=${turns}`, `--increment=${increment}`];
+  if (options.toolresultBytes && options.toolresultBytes > 0) {
+    fixtureArgs.push(`--toolresult-bytes=${options.toolresultBytes}`);
+  }
+
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(
-      process.execPath,
-      [FIXTURE, `--turns=${turns}`, `--increment=${increment}`],
-      { stdio: ["ignore", "pipe", "pipe"] },
-    );
+    const child = spawn(process.execPath, fixtureArgs, {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     child.stdout.on("data", (data: Buffer) => {
       fullStdoutChunks.push(data);
       // Schedule async handling without blocking the data event loop.
@@ -115,4 +122,38 @@ describe("bufferedOnLog × fake-pi-bloat fixture", () => {
       await run.cleanup();
     }
   }, 15_000);
+
+  it("bounds an oversize tool_execution_end result and strips the duplicate in turn_end", async () => {
+    // 5 MiB is 64× the 80 KiB head+tail budget — well into the regime where
+    // truncation must engage. Smaller than the 64 MiB partial-buffer cap so
+    // the line accumulates fully and the rewriter can run on it.
+    const toolresultBytes = 5 * 1024 * 1024;
+    const run = await runFakePi(1, 16, { toolresultBytes });
+    try {
+      const persistedSize = (await stat(run.persistedLogPath)).size;
+      const persisted = await readFile(run.persistedLogPath, "utf8");
+
+      // Truncation marker present, original payload size logged.
+      expect(persisted).toContain("[paperclip] dropped");
+      expect(persisted).toContain("tool_execution_end");
+      // Hard ceiling — head (64 KiB) + tail (16 KiB) + JSON overhead, one
+      // line. 200 KiB is comfortable headroom and would fail if either the
+      // tool result truncation or the turn_end strip regressed.
+      expect(persistedSize).toBeLessThan(200 * 1024);
+
+      // parsePiJsonl still recovers a single tool call with the truncated
+      // result; downstream consumers stay happy.
+      const parsed = parsePiJsonl(persisted);
+      expect(parsed.toolCalls).toHaveLength(1);
+      const call = parsed.toolCalls[0]!;
+      expect(call.toolName).toBe("Bash");
+      expect(call.isError).toBe(false);
+      expect(call.result).not.toBeNull();
+      expect(call.result!).toContain("[paperclip] dropped");
+      // 80 KiB head+tail + the marker line. Stay well under 100 KiB.
+      expect(call.result!.length).toBeLessThan(100 * 1024);
+    } finally {
+      await run.cleanup();
+    }
+  }, 30_000);
 });

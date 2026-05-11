@@ -37,3 +37,68 @@ export function isDroppableDeltaLine(line: string): boolean {
     return false;
   }
 }
+
+// Per-line cap for `tool_execution_end.result` (bash/shell tool stdout+stderr
+// captured by pi-coding-agent). Above the threshold we keep a head/tail slice
+// with a `[paperclip] dropped N bytes …` marker — matches the stderr marker
+// style in buffered-on-log.ts so the run log stays grep-friendly.
+const TOOL_RESULT_HEAD_CHARS = 64 * 1024;
+const TOOL_RESULT_TAIL_CHARS = 16 * 1024;
+const TOOL_RESULT_PASSTHROUGH_THRESHOLD =
+  TOOL_RESULT_HEAD_CHARS + TOOL_RESULT_TAIL_CHARS;
+
+function truncateToolResultString(s: string): string {
+  if (s.length <= TOOL_RESULT_PASSTHROUGH_THRESHOLD) return s;
+  const head = s.slice(0, TOOL_RESULT_HEAD_CHARS);
+  const tail = s.slice(s.length - TOOL_RESULT_TAIL_CHARS);
+  const dropped = s.length - head.length - tail.length;
+  return (
+    head +
+    `\n[paperclip] dropped ${dropped} bytes from tool result ` +
+    `(kept ${TOOL_RESULT_HEAD_CHARS}B head + ${TOOL_RESULT_TAIL_CHARS}B tail)\n` +
+    tail
+  );
+}
+
+/**
+ * Rewrites NDJSON event lines that carry bash/shell tool output:
+ *   - `tool_execution_end` with a `result` string longer than the threshold
+ *     is rewritten with the result truncated to head + marker + tail.
+ *   - `turn_end` carrying a non-empty `toolResults` array has the array
+ *     replaced with `[]` — the same payload is already in the preceding
+ *     `tool_execution_end` line (parse.ts merges by toolCallId).
+ *
+ * All other events, lines that fail JSON.parse, and shape mismatches pass
+ * through unchanged (mirrors `isDroppableDeltaLine`'s failure mode).
+ *
+ * Slicing is UTF-16 code-unit based — a multi-byte codepoint cut at the
+ * boundary becomes a lone surrogate, which `JSON.stringify` then escapes
+ * to `\uXXXX`. The output is always valid JSON.
+ */
+export function rewriteToolResultLine(line: string): string {
+  // Cheap prefilter: avoid JSON.parse for the common delta-heavy stream.
+  if (
+    !line.includes('"tool_execution_end"') &&
+    !line.includes('"turn_end"')
+  ) {
+    return line;
+  }
+  try {
+    const event = JSON.parse(line) as Record<string, unknown>;
+    if (event?.type === "tool_execution_end") {
+      if (typeof event.result !== "string") return line;
+      if (event.result.length <= TOOL_RESULT_PASSTHROUGH_THRESHOLD) return line;
+      event.result = truncateToolResultString(event.result);
+      return JSON.stringify(event);
+    }
+    if (event?.type === "turn_end") {
+      const trs = event.toolResults;
+      if (!Array.isArray(trs) || trs.length === 0) return line;
+      event.toolResults = [];
+      return JSON.stringify(event);
+    }
+    return line;
+  } catch {
+    return line;
+  }
+}

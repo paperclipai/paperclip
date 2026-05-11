@@ -194,9 +194,11 @@ describe("createBufferedOnLog", () => {
     const { captured, onLog } = captureSink();
     const { handle } = createBufferedOnLog(onLog);
 
-    // Push 9MB of pi-agent gibberish without any newline. The buffer must
-    // be dropped before it eats RAM, and a stderr alarm must fire.
-    const giant = "x".repeat(9 * 1024 * 1024);
+    // Push 65 MiB of pi-agent gibberish without any newline — above the
+    // 64 MiB MAX_LINE_BYTES cap. The buffer must be dropped before it eats
+    // RAM, and a stderr alarm must fire. (Realistic tool results below the
+    // cap get bounded by the per-line rewriteToolResultLine instead.)
+    const giant = "x".repeat(65 * 1024 * 1024);
     await handle("stdout", giant);
     // A subsequent newline-terminated line should be processable normally.
     await handle("stdout", '{"type":"agent_end","messages":[]}\n');

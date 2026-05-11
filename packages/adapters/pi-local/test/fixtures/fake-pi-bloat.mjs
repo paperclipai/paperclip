@@ -20,8 +20,13 @@ const args = Object.fromEntries(
 );
 const turns = Number.parseInt(args.turns ?? "100", 10);
 const increment = Number.parseInt(args.increment ?? "1024", 10);
+// Optional: emit a single `tool_execution_end` carrying an N-byte `result`,
+// plus the duplicate copy in `turn_end.toolResults`. Models bash/shell tool
+// output bloat. Default 0 keeps existing tests behavior-compatible.
+const toolresultBytes = Number.parseInt(args["toolresult-bytes"] ?? "0", 10);
 
 let accumulated = "";
+let toolresultPayload = "";
 
 function emit(event) {
   process.stdout.write(`${JSON.stringify(event)}\n`);
@@ -53,6 +58,23 @@ emit({
   },
 });
 
+if (toolresultBytes > 0) {
+  toolresultPayload = "y".repeat(toolresultBytes);
+  emit({
+    type: "tool_execution_start",
+    toolCallId: "tc_bloat_1",
+    toolName: "Bash",
+    args: { command: "echo big" },
+  });
+  emit({
+    type: "tool_execution_end",
+    toolCallId: "tc_bloat_1",
+    toolName: "Bash",
+    result: toolresultPayload,
+    isError: false,
+  });
+}
+
 const finalText = "Done thinking. Here is the answer.";
 emit({
   type: "turn_end",
@@ -66,7 +88,9 @@ emit({
       cost: { total: 0.001 },
     },
   },
-  toolResults: [],
+  toolResults: toolresultBytes > 0
+    ? [{ toolCallId: "tc_bloat_1", content: toolresultPayload, isError: false }]
+    : [],
 });
 
 emit({

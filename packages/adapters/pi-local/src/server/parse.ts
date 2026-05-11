@@ -4,7 +4,12 @@ import { asNumber, asString, parseJson, parseObject } from "@paperclipai/adapter
 // existing server-side imports continue to work without dragging Node-only
 // dependencies into the UI bundle. See `../pi-event-types.ts` for the
 // definitions.
-export { PI_DELTA, PI_DELTA_EVENT_TYPES, isDroppableDeltaLine } from "../pi-event-types.js";
+export {
+  PI_DELTA,
+  PI_DELTA_EVENT_TYPES,
+  isDroppableDeltaLine,
+  rewriteToolResultLine,
+} from "../pi-event-types.js";
 export type { PiDeltaEventType } from "../pi-event-types.js";
 import { PI_DELTA } from "../pi-event-types.js";
 

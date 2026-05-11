@@ -1,15 +1,19 @@
-import { isDroppableDeltaLine } from "../pi-event-types.js";
+import { isDroppableDeltaLine, rewriteToolResultLine } from "../pi-event-types.js";
 
 export type LogStream = "stdout" | "stderr";
 export type OnLog = (stream: LogStream, chunk: string) => Promise<void>;
 
 /**
  * Hard cap on the partial-line buffer. pi-coding-agent NDJSON lines are
- * typically <100KB, but the very bug this filter is fixing means deltas
- * carry the full accumulated state, and a misbehaving pi-agent could
- * emit an unbounded line. We truncate before parse to bound memory.
+ * typically <100KB, but bash/shell `tool_execution_end` lines can carry
+ * tens of MB of captured stdout, and accumulated-state delta lines have
+ * been observed at ~46MB. We must let those lines fully accumulate so the
+ * per-line filter (rewriteToolResultLine) can truncate them to 80KB head+tail
+ * before they hit disk; the cap is only a defense-in-depth backstop against
+ * a genuinely unbounded line. 64MB accommodates the realistic worst-case
+ * tool result while keeping memory bounded.
  */
-const MAX_LINE_BYTES = 8 * 1024 * 1024;
+const MAX_LINE_BYTES = 64 * 1024 * 1024;
 
 export interface BufferedOnLogHandle {
   /**
@@ -58,9 +62,13 @@ export function createBufferedOnLog(onLog: OnLog): BufferedOnLogHandle {
     // trip the cap on the aggregate buffer and lose the whole transcript.
     stdoutBuffer = lines.pop() ?? "";
 
-    for (const line of lines) {
-      if (!line) continue;
-      if (isDroppableDeltaLine(line)) continue;
+    for (const rawLine of lines) {
+      if (!rawLine) continue;
+      if (isDroppableDeltaLine(rawLine)) continue;
+      // Truncate large bash/tool result bodies and strip the duplicate copy
+      // carried in `turn_end.toolResults` — both unfiltered today, both bloat
+      // the persisted log on any verbose shell tool call.
+      const line = rewriteToolResultLine(rawLine);
       await onLog("stdout", line + "\n");
     }
 
