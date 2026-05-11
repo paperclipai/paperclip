@@ -40,7 +40,12 @@ export function PropertiesPanel() {
         <div className="flex h-full w-full flex-col min-h-0">
           <div className="flex items-center justify-between px-4 py-2 border-b border-border">
             <span className="text-sm font-medium">Properties</span>
-            <Button variant="ghost" size="icon-xs" onClick={() => setPanelVisible(false)}>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => setPanelVisible(false)}
+              aria-label="Close properties panel"
+            >
               <X className="h-4 w-4" />
             </Button>
           </div>

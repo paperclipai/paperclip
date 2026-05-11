@@ -861,7 +861,7 @@ export function RoutineDetail() {
   return (
     <div className="max-w-2xl space-y-6">
       {/* Header: editable title + actions */}
-      <div className="flex items-start gap-4">
+      <div className="flex flex-col items-stretch gap-3 min-[1120px]:flex-row min-[1120px]:items-start min-[1120px]:gap-4">
         <div className="min-w-0 flex-1 space-y-2">
           <textarea
             ref={titleInputRef}
@@ -900,7 +900,7 @@ export function RoutineDetail() {
             </Badge>
           ) : null}
         </div>
-        <div className="flex shrink-0 items-center gap-3 pt-1">
+        <div className="flex w-full shrink-0 flex-wrap items-center gap-3 pt-1 min-[1120px]:w-auto min-[1120px]:flex-nowrap">
           <RunButton
             onClick={() => {
               setRunVariablesOpen(true);
@@ -935,6 +935,7 @@ export function RoutineDetail() {
               panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
             )}
             onClick={() => setPanelVisible(true)}
+            aria-label="Show triggers, runs and activity"
             title="Show triggers, runs and activity"
           >
             <SlidersHorizontal className="h-4 w-4" />
