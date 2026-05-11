@@ -48,6 +48,36 @@ describe("buildCodexExecArgs", () => {
     ]);
   });
 
+  it("passes modelReasoningEffort to codex -c flag", () => {
+    const result = buildCodexExecArgs({ modelReasoningEffort: "high" });
+    expect(result.args).toContain("-c");
+    expect(result.args).toContain('model_reasoning_effort="high"');
+  });
+
+  it("falls back to reasoningEffort when modelReasoningEffort is absent", () => {
+    const result = buildCodexExecArgs({ reasoningEffort: "medium" });
+    expect(result.args).toContain("-c");
+    expect(result.args).toContain('model_reasoning_effort="medium"');
+  });
+
+  it("falls back to effort alias when neither modelReasoningEffort nor reasoningEffort is set", () => {
+    const result = buildCodexExecArgs({ effort: "high" });
+    expect(result.args).toContain("-c");
+    expect(result.args).toContain('model_reasoning_effort="high"');
+  });
+
+  it("prefers modelReasoningEffort over effort alias", () => {
+    const result = buildCodexExecArgs({ modelReasoningEffort: "high", effort: "low" });
+    expect(result.args).toContain('model_reasoning_effort="high"');
+    expect(result.args).not.toContain('model_reasoning_effort="low"');
+  });
+
+  it("prefers reasoningEffort over effort alias", () => {
+    const result = buildCodexExecArgs({ reasoningEffort: "medium", effort: "low" });
+    expect(result.args).toContain('model_reasoning_effort="medium"');
+    expect(result.args).not.toContain('model_reasoning_effort="low"');
+  });
+
   it("ignores fast mode for unsupported models", () => {
     const result = buildCodexExecArgs({
       model: "gpt-5.3-codex",
