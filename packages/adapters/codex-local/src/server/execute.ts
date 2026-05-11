@@ -51,7 +51,12 @@ import { isCodexLocalRoutableModel, SANDBOX_INSTALL_COMMAND } from "../index.js"
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
   /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
-const CHATGPT_UNSUPPORTED_CODEX_MODELS = new Set(["o4-mini"]);
+const CHATGPT_CODEX_COMPATIBLE_MODELS = new Set([
+  "gpt-5.5",
+  "gpt-5.4",
+  "gpt-5.3-codex-spark",
+  "codex-mini-latest",
+]);
 const CHATGPT_CODEX_CHEAP_FALLBACK_MODEL = "gpt-5.3-codex-spark";
 
 function stripCodexRolloutNoise(text: string): string {
@@ -94,12 +99,11 @@ function resolveCodexBiller(env: Record<string, string>, billingType: "api" | "s
   return billingType === "subscription" ? "chatgpt" : openAiCompatibleBiller ?? "openai";
 }
 
-function resolveCodexModelForBilling(model: string, billingType: "api" | "subscription"): string {
+export function resolveCodexModelForBilling(model: string, billingType: "api" | "subscription"): string {
   const normalizedModel = model.trim();
   if (billingType !== "subscription") return normalizedModel;
-  return CHATGPT_UNSUPPORTED_CODEX_MODELS.has(normalizedModel)
-    ? CHATGPT_CODEX_CHEAP_FALLBACK_MODEL
-    : normalizedModel;
+  if (!normalizedModel) return normalizedModel;
+  return CHATGPT_CODEX_COMPATIBLE_MODELS.has(normalizedModel) ? normalizedModel : CHATGPT_CODEX_CHEAP_FALLBACK_MODEL;
 }
 
 async function isLikelyPaperclipRepoRoot(candidate: string): Promise<boolean> {
