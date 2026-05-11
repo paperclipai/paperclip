@@ -754,10 +754,10 @@ const heartbeatRunListContextColumns = {
 } as const;
 
 const heartbeatRunListResultColumns = {
-  resultSummary: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'summary', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultSummary"),
-  resultResult: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'result', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultResult"),
-  resultMessage: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'message', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultMessage"),
-  resultError: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'error', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultError"),
+  resultSummary: sql<string | null>`${heartbeatRuns.resultJson} ->> 'summary'`.as("resultSummary"),
+  resultResult: sql<string | null>`${heartbeatRuns.resultJson} ->> 'result'`.as("resultResult"),
+  resultMessage: sql<string | null>`${heartbeatRuns.resultJson} ->> 'message'`.as("resultMessage"),
+  resultError: sql<string | null>`${heartbeatRuns.resultJson} ->> 'error'`.as("resultError"),
   resultTotalCostUsd: sql<string | null>`${heartbeatRuns.resultJson} ->> 'total_cost_usd'`.as("resultTotalCostUsd"),
   resultCostUsd: sql<string | null>`${heartbeatRuns.resultJson} ->> 'cost_usd'`.as("resultCostUsd"),
   resultCostUsdCamel: sql<string | null>`${heartbeatRuns.resultJson} ->> 'costUsd'`.as("resultCostUsdCamel"),
@@ -770,19 +770,19 @@ const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
       then ${heartbeatRuns.resultJson}
     else jsonb_strip_nulls(
       jsonb_build_object(
-        'summary', left(${heartbeatRuns.resultJson} ->> 'summary', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
-        'result', left(${heartbeatRuns.resultJson} ->> 'result', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
-        'message', left(${heartbeatRuns.resultJson} ->> 'message', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
-        'error', left(${heartbeatRuns.resultJson} ->> 'error', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
-        'stdout', left(${heartbeatRuns.resultJson} ->> 'stdout', ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}),
-        'stderr', left(${heartbeatRuns.resultJson} ->> 'stderr', ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}),
+        'summary', ${heartbeatRuns.resultJson} ->> 'summary',
+        'result', ${heartbeatRuns.resultJson} ->> 'result',
+        'message', ${heartbeatRuns.resultJson} ->> 'message',
+        'error', ${heartbeatRuns.resultJson} ->> 'error',
+        'stdout', ${heartbeatRuns.resultJson} ->> 'stdout',
+        'stderr', ${heartbeatRuns.resultJson} ->> 'stderr',
         'stdoutTruncated', case
-          when length(${heartbeatRuns.resultJson} ->> 'stdout') > ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}
+          when octet_length(${heartbeatRuns.resultJson} ->> 'stdout') > ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}
             then to_jsonb(true)
           else null
         end,
         'stderrTruncated', case
-          when length(${heartbeatRuns.resultJson} ->> 'stderr') > ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}
+          when octet_length(${heartbeatRuns.resultJson} ->> 'stderr') > ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}
             then to_jsonb(true)
           else null
         end,
@@ -1215,7 +1215,9 @@ export function summarizeHeartbeatRunListResultJson(input: {
     ["error", input.error],
   ] as const) {
     const normalized = readNonEmptyString(value);
-    if (normalized) summary[key] = normalized;
+    if (normalized) summary[key] = normalized.length > HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS
+      ? normalized.slice(0, HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS)
+      : normalized;
   }
 
   for (const [key, value] of [

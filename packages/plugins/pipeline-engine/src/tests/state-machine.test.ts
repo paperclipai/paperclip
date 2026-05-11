@@ -74,16 +74,16 @@ describe("state-machine", () => {
 
   describe("claimStageForDispatch", () => {
     it("returns true when stage is pending", async () => {
-      db.query.mockResolvedValueOnce([{ id: "stage-1" }]);
+      db.execute.mockResolvedValueOnce({ rowCount: 1 });
       const claimed = await sm.claimStageForDispatch("stage-1");
       expect(claimed).toBe(true);
-      const sql = db.query.mock.calls[0][0] as string;
+      const sql = db.execute.mock.calls[0][0] as string;
       expect(sql).toContain("status = 'pending'");
       expect(sql).toContain("started_at");
     });
 
     it("returns false when stage is not pending", async () => {
-      db.query.mockResolvedValueOnce([]);
+      db.execute.mockResolvedValueOnce({ rowCount: 0 });
       const claimed = await sm.claimStageForDispatch("stage-1");
       expect(claimed).toBe(false);
     });

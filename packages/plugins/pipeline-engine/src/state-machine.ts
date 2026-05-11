@@ -3,7 +3,7 @@ import type { PipelineRun, PipelineRunStatus, PipelineStage, StageStatus } from 
 interface DbClient {
   namespace: string;
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
-  execute(sql: string, params?: unknown[]): Promise<void>;
+  execute(sql: string, params?: unknown[]): Promise<{ rowCount?: number } | void>;
 }
 
 export class StateMachine {
@@ -28,7 +28,7 @@ export class StateMachine {
 
   async releaseAdvisoryLock(runId: string): Promise<void> {
     const lockKey = this.hashRunId(runId);
-    await this.db.execute(`SELECT pg_advisory_unlock($1)`, [lockKey]);
+    await this.db.query(`SELECT pg_advisory_unlock($1)`, [lockKey]);
   }
 
   private hashRunId(runId: string): number {
@@ -41,12 +41,12 @@ export class StateMachine {
   }
 
   async claimStageForDispatch(stageRowId: string): Promise<boolean> {
-    const rows = await this.db.query<{ id: string }>(
+    const result = await this.db.execute(
       `UPDATE ${this.table("pipeline_stages")} SET status = 'running', started_at = NOW()
-       WHERE id = $1 AND status = 'pending' RETURNING id`,
+       WHERE id = $1 AND status = 'pending'`,
       [stageRowId],
     );
-    return rows.length > 0;
+    return (result as { rowCount?: number })?.rowCount !== 0;
   }
 
   async createRun(input: {
@@ -104,9 +104,12 @@ export class StateMachine {
   }
 
   async incrementRetryCount(stageRowId: string): Promise<number> {
+    await this.db.execute(
+      `UPDATE ${this.table("pipeline_stages")} SET retry_count = retry_count + 1, status = 'pending', started_at = NULL, completed_at = NULL WHERE id = $1`,
+      [stageRowId],
+    );
     const rows = await this.db.query<{ retry_count: number }>(
-      `UPDATE ${this.table("pipeline_stages")} SET retry_count = retry_count + 1, status = 'pending', started_at = NULL, completed_at = NULL
-       RETURNING retry_count`,
+      `SELECT retry_count FROM ${this.table("pipeline_stages")} WHERE id = $1`,
       [stageRowId],
     );
     return rows[0]?.retry_count ?? 0;

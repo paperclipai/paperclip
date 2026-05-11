@@ -244,13 +244,20 @@ async function handleGateStage(
 }
 
 async function handleCommentEvent(ctx: PluginContext, event: PluginEvent): Promise<void> {
-  const payload = event.payload as { issueId?: string; body?: string; commentId?: string };
-  if (!payload.issueId || !payload.body) return;
+  const issueId = event.entityId;
+  const payload = event.payload as { commentId?: string; bodySnippet?: string };
+  if (!issueId || !payload.commentId) return;
 
-  const stageRow = await stateMachine.getStageBySubIssueId(payload.issueId);
+  const stageRow = await stateMachine.getStageBySubIssueId(issueId);
   if (!stageRow) return;
 
-  const extraction = extractOutput(payload.body);
+  const comments = await ctx.issues.listComments(issueId, event.companyId);
+  const comment = comments.find((c) => c.id === payload.commentId);
+  if (!comment) return;
+
+  const body = comment.body;
+
+  const extraction = extractOutput(body);
   if (!extraction.found) return;
 
   if (extraction.parseError) {

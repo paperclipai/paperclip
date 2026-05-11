@@ -31,9 +31,14 @@ export class Dispatcher {
 
     const agentId = agentRole ? this.roleMapping[agentRole] : undefined;
 
+    const outputSchema = "output_schema" in stage ? stage.output_schema : undefined;
+    const outputInstructions = outputSchema
+      ? `\n\n---\n### Output Format\nWhen you have completed this task, post a comment containing your structured result in this exact format:\n\n\`\`\`\n<!-- pipeline-output -->\n\\\`\\\`\\\`json\n{ ... your JSON result ... }\n\\\`\\\`\\\`\n\`\`\`\n\nThe JSON must conform to schema: \`${outputSchema}\``
+      : `\n\n---\n### Output Format\nWhen you have completed this task, post a comment containing your structured result in this exact format:\n\n\`\`\`\n<!-- pipeline-output -->\n\\\`\\\`\\\`json\n{ ... your JSON result ... }\n\\\`\\\`\\\`\n\`\`\``;
+
     const description = context
-      ? `## Pipeline Stage: ${stage.id}\n\n${context}`
-      : `## Pipeline Stage: ${stage.id}`;
+      ? `## Pipeline Stage: ${stage.id}\n\n${context}${outputInstructions}`
+      : `## Pipeline Stage: ${stage.id}${outputInstructions}`;
 
     const issue = await this.issues.create({
       companyId,
