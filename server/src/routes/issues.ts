@@ -4,7 +4,8 @@ import multer from "multer";
 import { z } from "zod";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, executionWorkspaces, issueExecutionDecisions, projectWorkspaces } from "@paperclipai/db";
+import { activityLog, agents as agentsTable, executionWorkspaces, issueExecutionDecisions, projectWorkspaces } from "@paperclipai/db";
+import { ensureCeoChatIssue } from "../services/ceo-chat.js";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
@@ -1510,6 +1511,30 @@ export function issueRoutes(
       details: { name: removed.name, color: removed.color },
     });
     res.json(removed);
+  });
+
+  router.get("/companies/:companyId/ceo-chat", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCompanyAccess(req, companyId);
+
+    const ceo = await db
+      .select({ id: agentsTable.id })
+      .from(agentsTable)
+      .where(and(eq(agentsTable.companyId, companyId), eq(agentsTable.role, "ceo")))
+      .then((rows) => rows[0] ?? null);
+    if (!ceo) {
+      throw notFound("Company has no CEO agent");
+    }
+
+    const chat = await ensureCeoChatIssue(db, companyId, ceo.id);
+    res.json({
+      issueId: chat.id,
+      companyId: chat.companyId,
+      assigneeAgentId: chat.assigneeAgentId,
+      isCeoChat: chat.isCeoChat,
+      status: chat.status,
+      title: chat.title,
+    });
   });
 
   router.get("/issues/:id/heartbeat-context", async (req, res) => {
