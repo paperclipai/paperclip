@@ -416,7 +416,7 @@ describe("renderPaperclipWakePrompt", () => {
         },
       ],
       threadMessageWindow: {
-        requestedCount: 1,
+        totalCount: 1,
         includedCount: 1,
         missingCount: 0,
       },

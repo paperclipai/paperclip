@@ -53,35 +53,7 @@ describeEmbeddedPostgres("buildPaperclipWakePayload agent thread", () => {
     const thirdMessageId = randomUUID();
     const now = new Date("2026-05-04T09:00:00.000Z");
 
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "CTO",
-      role: "cto",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
-
-    await db.insert(agentThreads).values({
-      id: threadId,
-      companyId,
-      agentId,
-      status: "active",
-      archivedAt: null,
-      lastActivityAt: now,
-      createdAt: now,
-      updatedAt: now,
-    });
+    await seedAgentThread({ db, companyId, agentId, threadId, now });
 
     await db.insert(agentThreadMessages).values({
       id: firstMessageId,
@@ -160,14 +132,146 @@ describeEmbeddedPostgres("buildPaperclipWakePayload agent thread", () => {
         },
       ],
       threadMessageWindow: {
-        requestedCount: 3,
+        totalCount: 3,
         includedCount: 3,
         missingCount: 0,
       },
       fallbackFetchNeeded: false,
     });
   });
+
+  it("marks older thread messages missing when the inline window hits the message limit", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const threadId = randomUUID();
+    const now = new Date("2026-05-04T09:00:00.000Z");
+
+    await seedAgentThread({ db, companyId, agentId, threadId, now });
+
+    const messageIds: string[] = [];
+    for (let index = 0; index < 9; index += 1) {
+      const messageId = randomUUID();
+      messageIds.push(messageId);
+      await db.insert(agentThreadMessages).values({
+        id: messageId,
+        threadId,
+        companyId,
+        role: index % 2 === 0 ? "user" : "assistant",
+        authorUserId: index % 2 === 0 ? "user-1" : null,
+        authorAgentId: index % 2 === 0 ? null : agentId,
+        producingHeartbeatRunId: null,
+        body: `message ${index + 1}`,
+        createdAt: new Date(now.getTime() + index * 60_000),
+        updatedAt: new Date(now.getTime() + index * 60_000),
+      });
+    }
+
+    const payload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: {
+        wakeReason: "agent_thread_message",
+        agentThreadId: threadId,
+        agentThreadMessageId: messageIds[8],
+      },
+    });
+
+    expect(payload?.threadMessageIds).toEqual(messageIds.slice(1));
+    expect(payload?.threadMessageWindow).toMatchObject({
+      totalCount: 9,
+      includedCount: 8,
+      missingCount: 1,
+    });
+    expect(payload?.fallbackFetchNeeded).toBe(true);
+  });
+
+  it("marks thread messages missing when the inline char budget is exhausted", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const threadId = randomUUID();
+    const now = new Date("2026-05-04T09:00:00.000Z");
+
+    await seedAgentThread({ db, companyId, agentId, threadId, now });
+
+    const messageIds = Array.from({ length: 4 }, () => randomUUID());
+    const budgetSizedBody = "a".repeat(4_000);
+
+    for (const [index, messageId] of messageIds.entries()) {
+      await db.insert(agentThreadMessages).values({
+        id: messageId,
+        threadId,
+        companyId,
+        role: index % 2 === 0 ? "user" : "assistant",
+        authorUserId: index % 2 === 0 ? "user-1" : null,
+        authorAgentId: index % 2 === 0 ? null : agentId,
+        producingHeartbeatRunId: null,
+        body: budgetSizedBody,
+        createdAt: new Date(now.getTime() + index * 60_000),
+        updatedAt: new Date(now.getTime() + index * 60_000),
+      });
+    }
+
+    const payload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: {
+        wakeReason: "agent_thread_message",
+        agentThreadId: threadId,
+        agentThreadMessageId: messageIds[3],
+      },
+    });
+
+    expect(payload?.threadMessages).toHaveLength(3);
+    expect(payload?.threadMessages[0]).toMatchObject({
+      id: messageIds[0],
+      bodyTruncated: false,
+    });
+    expect(payload?.threadMessageWindow).toMatchObject({
+      totalCount: 4,
+      includedCount: 3,
+      missingCount: 1,
+    });
+    expect(payload?.fallbackFetchNeeded).toBe(true);
+  });
 });
+
+async function seedAgentThread(input: {
+  db: ReturnType<typeof createDb>;
+  companyId: string;
+  agentId: string;
+  threadId: string;
+  now: Date;
+}) {
+  await input.db.insert(companies).values({
+    id: input.companyId,
+    name: "Paperclip",
+    issuePrefix: `T${input.companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+    requireBoardApprovalForNewAgents: false,
+  });
+
+  await input.db.insert(agents).values({
+    id: input.agentId,
+    companyId: input.companyId,
+    name: "CTO",
+    role: "cto",
+    status: "active",
+    adapterType: "codex_local",
+    adapterConfig: {},
+    runtimeConfig: {},
+    permissions: {},
+  });
+
+  await input.db.insert(agentThreads).values({
+    id: input.threadId,
+    companyId: input.companyId,
+    agentId: input.agentId,
+    status: "active",
+    archivedAt: null,
+    lastActivityAt: input.now,
+    createdAt: input.now,
+    updatedAt: input.now,
+  });
+}
 
 async function ensureAgentThreadTables(db: ReturnType<typeof createDb>) {
   await db.execute(sql.raw(`

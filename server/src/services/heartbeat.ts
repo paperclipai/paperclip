@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { and, asc, count, desc, eq, getTableColumns, gt, inArray, isNull, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -1669,6 +1669,7 @@ export async function buildPaperclipWakePayload(input: {
             authorAgentId: agentThreadMessages.authorAgentId,
             authorUserId: agentThreadMessages.authorUserId,
             createdAt: agentThreadMessages.createdAt,
+            totalCount: sql<number>`count(*) over ()`,
           })
           .from(agentThreadMessages)
           .where(
@@ -1683,19 +1684,9 @@ export async function buildPaperclipWakePayload(input: {
   const threadMessageIds = threadMessageRows.map((message) => message.id);
   const latestThreadMessageId =
     threadMessageIds[threadMessageIds.length - 1] ?? agentThreadMessageId ?? null;
-  const threadMessageTotalCount =
-    !agentThreadId
-      ? 0
-      : await input.db
-          .select({ count: count() })
-          .from(agentThreadMessages)
-          .where(
-            and(
-              eq(agentThreadMessages.companyId, input.companyId),
-              eq(agentThreadMessages.threadId, agentThreadId),
-            ),
-          )
-          .then((rows) => rows[0]?.count ?? 0);
+  const threadMessageTotalCount = threadMessageRows[0]
+    ? Number(threadMessageRows[0].totalCount)
+    : 0;
   const threadMessages: Array<Record<string, unknown>> = [];
   let remainingThreadBodyChars = MAX_INLINE_WAKE_THREAD_MESSAGE_BODY_TOTAL_CHARS;
   let missingThreadMessageCount = 0;
@@ -1816,7 +1807,7 @@ export async function buildPaperclipWakePayload(input: {
     latestThreadMessageId,
     threadMessages,
     threadMessageWindow: {
-      requestedCount: threadMessageTotalCount,
+      totalCount: threadMessageTotalCount,
       includedCount: threadMessages.length,
       missingCount: missingThreadMessageCount,
     },

@@ -614,7 +614,13 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     threadMessages,
     requestedCount: asNumber(
       commentWindow.requestedCount,
-      asNumber(threadMessageWindow.requestedCount, comments.length || commentIds.length || threadMessages.length || threadMessageIds.length),
+      asNumber(
+        threadMessageWindow.totalCount,
+        asNumber(
+          threadMessageWindow.requestedCount,
+          comments.length || commentIds.length || threadMessages.length || threadMessageIds.length,
+        ),
+      ),
     ),
     includedCount: asNumber(
       commentWindow.includedCount,
