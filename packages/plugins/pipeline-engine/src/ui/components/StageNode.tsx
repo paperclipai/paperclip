@@ -5,22 +5,21 @@ export interface StageNodeData {
   stage: StageDefinition;
   status?: StageStatus;
   subtitle?: string;
+  decisionValues?: string[];
   onSelect?: (id: string) => void;
 }
 
 const TYPE_COLORS: Record<string, string> = {
-  worker: "#3b82f6",
-  classifier: "#f59e0b",
-  parallel_fan_out: "#06b6d4",
-  gate: "#8b5cf6",
+  stage: "#3b82f6",
+  fan_out: "#06b6d4",
+  fan_in: "#8b5cf6",
   "sub-pipeline": "#22c55e",
 };
 
 const TYPE_BADGES: Record<string, string> = {
-  worker: "WRK",
-  classifier: "CLS",
-  parallel_fan_out: "FAN",
-  gate: "GTE",
+  stage: "STG",
+  fan_out: "FAN",
+  fan_in: "FIN",
   "sub-pipeline": "SUB",
 };
 
@@ -41,7 +40,9 @@ function getBorderStyle(status: StageStatus | undefined): string {
 
 export function StageNode({ data, selected, id }: NodeProps) {
   const nodeData = data as unknown as StageNodeData;
-  const { stage, status, subtitle, onSelect } = nodeData;
+  const { stage, status, subtitle, decisionValues, onSelect } = nodeData;
+  const instructions = "instructions" in stage ? stage.instructions : undefined;
+  const hasDecisionHandles = decisionValues && decisionValues.length > 0;
   const typeColor = TYPE_COLORS[stage.type] ?? "#6b7280";
   const badge = TYPE_BADGES[stage.type] ?? "???";
   const border = getBorderStyle(status);
@@ -127,6 +128,19 @@ export function StageNode({ data, selected, id }: NodeProps) {
             {status}
           </div>
         )}
+        {instructions && (
+          <div style={{
+            color: "#6b7280",
+            fontSize: 10,
+            lineHeight: 1.3,
+            overflow: "hidden",
+            display: "-webkit-box",
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: "vertical",
+          }}>
+            {instructions}
+          </div>
+        )}
       </div>
 
       {/* ReactFlow handles */}
@@ -135,11 +149,45 @@ export function StageNode({ data, selected, id }: NodeProps) {
         position={Position.Top}
         style={{ background: "#374151", border: "2px solid #6b7280", width: 10, height: 10 }}
       />
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        style={{ background: "#374151", border: "2px solid #6b7280", width: 10, height: 10 }}
-      />
+      {hasDecisionHandles ? (
+        decisionValues.map((value, idx) => (
+          <Handle
+            key={value}
+            type="source"
+            position={Position.Bottom}
+            id={value}
+            style={{
+              left: `${((idx + 1) / (decisionValues.length + 1)) * 100}%`,
+              background: "#374151",
+              border: "2px solid #6b7280",
+              width: 10,
+              height: 10,
+            }}
+          />
+        ))
+      ) : (
+        <Handle
+          type="source"
+          position={Position.Bottom}
+          style={{ background: "#374151", border: "2px solid #6b7280", width: 10, height: 10 }}
+        />
+      )}
+
+      {hasDecisionHandles && (
+        <div style={{
+          position: "absolute",
+          bottom: -18,
+          left: 0,
+          right: 0,
+          display: "flex",
+          justifyContent: "space-around",
+          pointerEvents: "none",
+        }}>
+          {decisionValues.map((value) => (
+            <span key={value} style={{ fontSize: 8, color: "#6b7280" }}>{value}</span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
