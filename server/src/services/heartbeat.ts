@@ -9608,12 +9608,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return cancelled;
   }
 
-  async function cancelActiveForAgentInternal(agentId: string, reason = "Cancelled due to agent pause") {
+  async function cancelActiveForAgentInternal(
+    agentId: string,
+    reason = "Cancelled due to agent pause",
+    options: { includeScheduledRetries?: boolean } = {},
+  ) {
     const agent = await getAgent(agentId);
+    const cancellableStatuses = options.includeScheduledRetries
+      ? CANCELLABLE_HEARTBEAT_RUN_STATUSES
+      : PAUSE_CANCELLABLE_HEARTBEAT_RUN_STATUSES;
     const runs = await db
 	      .select()
 	      .from(heartbeatRuns)
-	      .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...PAUSE_CANCELLABLE_HEARTBEAT_RUN_STATUSES])));
+	      .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...cancellableStatuses])));
 
     for (const run of runs) {
       await setRunStatus(run.id, "cancelled", {
@@ -9677,6 +9684,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             errorMessage: "Cancelled due to budget pause",
           }),
         } : {}),
+      });
+      await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+        finishedAt: new Date(),
+        error: "Cancelled due to budget pause",
       });
 
       const running = runningProcesses.get(run.id);
@@ -10046,7 +10057,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     cancelRun: (runId: string) => cancelRunInternal(runId),
 
-    cancelActiveForAgent: (agentId: string) => cancelActiveForAgentInternal(agentId),
+    cancelActiveForAgent: (
+      agentId: string,
+      options?: { includeScheduledRetries?: boolean; reason?: string },
+    ) => cancelActiveForAgentInternal(agentId, options?.reason, {
+      includeScheduledRetries: options?.includeScheduledRetries,
+    }),
 
     clearAgentEnqueueTimestamps: (agentId: string) => { enqueueTimestamps.delete(agentId); },
 

@@ -2797,7 +2797,10 @@ export function agentRoutes(
       return;
     }
 
-    await heartbeat.cancelActiveForAgent(id);
+    await heartbeat.cancelActiveForAgent(id, {
+      includeScheduledRetries: true,
+      reason: "Cancelled because the agent was terminated",
+    });
 
     await logActivity(db, {
       companyId: agent.companyId,

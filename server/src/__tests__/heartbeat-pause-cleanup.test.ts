@@ -96,6 +96,23 @@ describeWithEmbeddedPostgres("heartbeat pause cleanup", () => {
     return runId;
   }
 
+  async function seedQueuedRunWithWakeup(companyId: string, agentId: string) {
+    const wakeupId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupId,
+      companyId,
+      agentId,
+      status: "queued",
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+    });
+    const runId = await seedQueuedRun(companyId, agentId, {
+      wakeupRequestId: wakeupId,
+    });
+    return { runId, wakeupId };
+  }
+
   async function seedScheduledRetryRun(companyId: string, agentId: string) {
     const runId = randomUUID();
     const now = new Date();
@@ -130,12 +147,14 @@ describeWithEmbeddedPostgres("heartbeat pause cleanup", () => {
 
   it("cancelActiveForAgent: cancels in-flight runs when auto-pause fires", async () => {
     const { companyId, agentId } = await seedAgent();
-    const runId = await seedQueuedRun(companyId, agentId);
+    const { runId, wakeupId } = await seedQueuedRunWithWakeup(companyId, agentId);
 
     await heartbeat.cancelActiveForAgent(agentId);
 
     const [run] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const [wakeup] = await db.select({ status: agentWakeupRequests.status }).from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeupId));
     expect(run?.status).toBe("cancelled");
+    expect(wakeup?.status).toBe("cancelled");
   });
 
   it("cancelActiveForAgent: preserves scheduled retries when an agent is paused", async () => {
@@ -155,6 +174,25 @@ describeWithEmbeddedPostgres("heartbeat pause cleanup", () => {
       .where(eq(heartbeatRuns.id, retryRunId));
     expect(queuedRun?.status).toBe("cancelled");
     expect(retryRun?.status).toBe("scheduled_retry");
+  });
+
+  it("cancelActiveForAgent: cancels scheduled retries when explicitly requested for termination", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const retryRunId = await seedScheduledRetryRun(companyId, agentId);
+
+    await heartbeat.cancelActiveForAgent(agentId, {
+      includeScheduledRetries: true,
+      reason: "Cancelled because the agent was terminated",
+    });
+
+    const [retryRun] = await db
+      .select({ status: heartbeatRuns.status, error: heartbeatRuns.error })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, retryRunId));
+    expect(retryRun).toEqual({
+      status: "cancelled",
+      error: "Cancelled because the agent was terminated",
+    });
   });
 
   it("cancelBudgetScopeWork: preserves scheduled retries for company budget pauses", async () => {
