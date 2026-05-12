@@ -1,5 +1,17 @@
 # @paperclipai/adapter-claude-local
 
+## 0.4.0
+
+### Minor Changes
+
+- Add bundled Paperclip tools MCP shim wiring for Claude via per-run `--mcp-config`
+- Add `disablePluginToolsMcp` adapter config escape hatch
+
+### Patch Changes
+
+- Updated dependencies
+  - @modelcontextprotocol/sdk@^1.29.0
+
 ## 0.3.1
 
 ### Patch Changes

@@ -22,6 +22,7 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 | `graceSec` | number | No | Grace period before force-kill |
 | `maxTurnsPerRun` | number | No | Max agentic turns per heartbeat (defaults to `300`) |
 | `dangerouslySkipPermissions` | boolean | No | Skip permission prompts (default: `true`); required for headless runs where interactive approval is impossible |
+| `disablePluginToolsMcp` | boolean | No | Disable the bundled Paperclip tools MCP shim wiring (`--mcp-config`) when true; default is `false` |
 
 ## Prompt Templates
 
@@ -46,6 +47,8 @@ If resume fails with an unknown session error, the adapter automatically retries
 ## Skills Injection
 
 The adapter creates a temporary directory with symlinks to Paperclip skills and passes it via `--add-dir`. This makes skills discoverable without polluting the agent's working directory.
+
+By default the adapter also writes a per-run MCP config and starts a bundled stdio MCP shim (`paperclip-tools-mcp-shim`) so plugin-registered Paperclip tools (for example `paperclip-plugin-hindsight:hindsight_recall`) are available to Claude as native MCP tools. Set `disablePluginToolsMcp: true` to opt out.
 
 For manual local CLI usage outside heartbeat runs (for example running as `claudecoder` directly), use:
 
