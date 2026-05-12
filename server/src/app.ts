@@ -1295,6 +1295,43 @@ TIKTOK_OPEN_ID=${openId}
     }
   });
 
+  // ── Fix adapterConfig for TradingView agents in DiscontrolsBags ─────────────
+  // Updates all 6 agent scripts to their correct TradingView paths.
+  // Usage: GET /api/internal/fix-trading-adapters?secret=<first-16-chars>
+  app.get("/api/internal/fix-trading-adapters", async (req, res) => {
+    const secret = (req.query.secret as string) ?? "";
+    const expectedSecret = (process.env.BETTER_AUTH_SECRET ?? "").slice(0, 16);
+    if (!secret || !expectedSecret || secret !== expectedSecret) {
+      res.status(403).json({ error: "forbidden" });
+      return;
+    }
+    try {
+      const FIXES = [
+        { id: "41df12d7-71c4-494e-a503-d02ef88fb1d8", name: "CEO",                  script: "agents/trading/ceo.py",               timeout: 1800 },
+        { id: "6f75364c-0ab2-48ac-9144-f40578435d67", name: "Stock Analyzer",       script: "agents/trading/stock_analyzer.py",    timeout: 180  },
+        { id: "ff3e3f5f-118f-451d-b042-91ec19d0cf11", name: "Strategy Designer",    script: "agents/trading/strategy_designer.py", timeout: 300  },
+        { id: "149be654-dccb-4da3-a6c6-091c5b5fe1e6", name: "Strategy Critic",      script: "agents/trading/strategy_critic.py",   timeout: 180  },
+        { id: "61ced466-af5b-43be-a049-e94cf895274a", name: "Strategy Optimizer",   script: "agents/trading/strategy_optimizer.py",timeout: 300  },
+        { id: "74bc12a4-6928-4450-b472-2962c3516627", name: "Reporter",             script: "agents/trading/reporter.py",          timeout: 120  },
+      ];
+
+      const results: Record<string, string> = {};
+      for (const fix of FIXES) {
+        const adapterConfig = { command: "python3", args: [fix.script], cwd: "/app", timeoutSec: fix.timeout };
+        await (db as any)
+          .update(agentsTable)
+          .set({ adapterConfig, status: "idle" })
+          .where(eq(agentsTable.id, fix.id));
+        results[fix.name] = fix.script;
+        console.log(`  ✅ Fixed ${fix.name} → ${fix.script}`);
+      }
+      res.json({ ok: true, fixed: results });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: msg });
+    }
+  });
+
   // ── Quick fix: set timeoutSec on process agents by ID ───────────────────────
   // Auth: Bearer <PAPERCLIP_API_KEY>
   // Usage: GET /api/internal/fix-agent-timeout?id=<agent-id>&timeoutSec=1800
