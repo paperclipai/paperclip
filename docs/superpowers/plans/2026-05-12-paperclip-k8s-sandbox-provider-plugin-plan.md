@@ -40,7 +40,8 @@ packages/plugins/sandbox-providers/kubernetes/
 │   ├── cilium-network-policy.ts          # buildCiliumNetworkPolicyManifests (FQDN allow-list)
 │   ├── tenant-orchestrator.ts            # ensureTenant: ns + sa + role + rb + quota + lr + np
 │   ├── secret-manager.ts                 # createPerRunSecret with ownerReferences
-│   ├── job-orchestrator.ts           # create / poll / find pod / stream logs / delete batch/v1 Jobs
+│   ├── sandbox-orchestrator.ts       # SandboxOrchestrator interface (swap point for runtime backends)
+│   ├── job-orchestrator.ts           # Job-backed SandboxOrchestrator: create / poll / find pod / stream logs / delete batch/v1 Jobs
 │   ├── workspace.ts                      # workspace ConfigMap + workspace-init init container
 │   └── utils.ts                          # company-slug derivation, ULID helpers, label helpers
 ├── test/
@@ -79,7 +80,8 @@ Total estimated production LOC: ~900. Total estimated test LOC: ~1500.
 | `cilium-network-policy.ts` | 110 | CiliumNetworkPolicy YAML for FQDN-based egress (lifted from M3a) |
 | `tenant-orchestrator.ts` | 150 | ensureTenant: idempotent creation of ns + sa + role + rb + quota + lr + np |
 | `secret-manager.ts` | 80 | createPerRunSecret with ownerReferences to the owning Job |
-| `job-orchestrator.ts` | 200 | createJob / getJobStatus / findPodForJob / streamPodLogs / deleteJob / waitForJobCompletion via batch/v1 |
+| `sandbox-orchestrator.ts` | 60 | SandboxOrchestrator interface — swap point for runtime backends (Job today, Kata-FC warm pool / agent-sandbox CRD future) |
+| `job-orchestrator.ts` | 200 | Job-backed conformance to SandboxOrchestrator: createJob / getJobStatus / findPodForJob / streamPodLogs / deleteJob / waitForJobCompletion via batch/v1 |
 | `workspace.ts` | 80 | ConfigMap with workspace files; workspace-init init container spec |
 | `plugin.ts` | 180 | definePlugin wiring (acquireLease/execute/releaseLease/probe) |
 | `manifest.ts` | 100 | PaperclipPluginManifestV1 with environmentDrivers config schema |
@@ -1980,11 +1982,14 @@ git commit -m "feat(plugin-kubernetes): per-run ephemeral Secret with owner refe
 
 ## Phase 11 — Job orchestrator (1 task)
 
-### Task 12: Job create / watch / get-pod / delete
+### Task 12: SandboxOrchestrator interface + Job-backed implementation
 
 **Files:**
-- Create: `packages/plugins/sandbox-providers/kubernetes/src/job-orchestrator.ts`
+- Create: `packages/plugins/sandbox-providers/kubernetes/src/sandbox-orchestrator.ts` (interface)
+- Create: `packages/plugins/sandbox-providers/kubernetes/src/job-orchestrator.ts` (Job-backed implementation)
 - Create: `packages/plugins/sandbox-providers/kubernetes/test/unit/job-orchestrator.test.ts`
+
+**Why an interface layer:** Plugin.ts depends on `SandboxOrchestrator`, not directly on the Job functions. This is the explicit swap point: future backends (Kata-FC warm pool with pause/freeze; kubernetes-sigs/agent-sandbox CRD when it reaches Beta) are sibling files exporting an object that conforms to the same interface. To swap, change one import in plugin.ts.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2075,10 +2080,84 @@ describe("deleteJob", () => {
 Run: `pnpm test test/unit/job-orchestrator.test.ts`
 Expected: FAIL — "Cannot find module"
 
-- [ ] **Step 3: Implement `src/job-orchestrator.ts`**
+- [ ] **Step 3a: Define the interface in `src/sandbox-orchestrator.ts`**
 
 ```ts
 import type { KubeClients } from "./kube-client.js";
+
+export interface SandboxStatus {
+  phase: "Pending" | "Running" | "Succeeded" | "Failed";
+  complete: boolean;
+  active: number;
+  succeeded: number;
+  failed: number;
+  reason?: string;
+  message?: string;
+}
+
+/**
+ * Abstract interface over a sandbox runtime backend. The current implementation
+ * is Job-backed (job-orchestrator.ts). Future backends slot in by exporting an
+ * object conforming to this shape — e.g. a Kata-FC warm-pool backend that
+ * additionally implements the optional pause/resume slots, or a CRD-backed
+ * backend on kubernetes-sigs/agent-sandbox once it reaches Beta.
+ */
+export interface SandboxOrchestrator {
+  /** Provision the sandbox. Returns the runtime's stable UID. */
+  claim(
+    clients: KubeClients,
+    namespace: string,
+    manifest: Record<string, unknown>,
+  ): Promise<{ uid: string }>;
+
+  /** Read current lifecycle phase. */
+  getStatus(
+    clients: KubeClients,
+    namespace: string,
+    name: string,
+  ): Promise<SandboxStatus>;
+
+  /** Locate the pod backing this sandbox (or null if none exists yet). */
+  findPod(
+    clients: KubeClients,
+    namespace: string,
+    name: string,
+  ): Promise<string | null>;
+
+  /** Read logs from the sandbox's pod. V1: post-completion read. */
+  streamLogs(
+    clients: KubeClients,
+    namespace: string,
+    podName: string,
+    onChunk: (stream: "stdout" | "stderr", text: string) => Promise<void>,
+  ): Promise<void>;
+
+  /** Tear down the sandbox. Implementations MUST cascade-delete child resources. */
+  release(clients: KubeClients, namespace: string, name: string): Promise<void>;
+
+  /** Block until phase is Succeeded or Failed, or throw on timeout. */
+  waitForCompletion(
+    clients: KubeClients,
+    namespace: string,
+    name: string,
+    opts: { timeoutMs: number; pollMs?: number },
+  ): Promise<SandboxStatus>;
+
+  // Optional warm-pool / Kata-FC extension slots. Job-backed implementation
+  // does not provide these; runtimes that do (e.g. Kata-FC microVM pause)
+  // implement them and acquire the warm-pool capability.
+  // TODO: requires custom in-cluster controller for k8s — kubelet does not
+  // expose pause/resume at the pod level. Add when warm-pool design lands.
+  pause?(clients: KubeClients, namespace: string, name: string): Promise<void>;
+  resume?(clients: KubeClients, namespace: string, name: string): Promise<void>;
+}
+```
+
+- [ ] **Step 3b: Implement `src/job-orchestrator.ts`** as the Job-backed conformance
+
+```ts
+import type { KubeClients } from "./kube-client.js";
+import type { SandboxOrchestrator, SandboxStatus } from "./sandbox-orchestrator.js";
 
 export async function createJob(
   clients: KubeClients,
@@ -2092,15 +2171,8 @@ export async function createJob(
   return { uid };
 }
 
-export interface JobStatus {
-  phase: "Pending" | "Running" | "Succeeded" | "Failed";
-  complete: boolean;
-  active: number;
-  succeeded: number;
-  failed: number;
-  reason?: string;
-  message?: string;
-}
+// JobStatus is the Job-backed shape of SandboxStatus — they're structurally identical.
+export type JobStatus = SandboxStatus;
 
 export async function getJobStatus(
   clients: KubeClients,
@@ -2187,19 +2259,34 @@ export async function waitForJobCompletion(
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+/**
+ * Job-backed conformance to SandboxOrchestrator. Plugin.ts imports THIS value
+ * (the swap point) — to use a different backend, swap this import for another
+ * module exposing a SandboxOrchestrator-shaped default export.
+ */
+export const jobOrchestrator: SandboxOrchestrator = {
+  claim: createJob,
+  getStatus: getJobStatus,
+  findPod: findPodForJob,
+  streamLogs: streamPodLogs,
+  release: deleteJob,
+  waitForCompletion: waitForJobCompletion,
+};
 ```
 
 - [ ] **Step 4: Run test — expect PASS**
 
 Run: `pnpm test test/unit/job-orchestrator.test.ts`
-Expected: PASS (7 tests).
+Expected: PASS (7 tests). The interface declaration in `sandbox-orchestrator.ts` is pure types and adds no test surface; the Job-backed implementation's behavior is fully covered by the existing tests.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/plugins/sandbox-providers/kubernetes/src/job-orchestrator.ts \
+git add packages/plugins/sandbox-providers/kubernetes/src/sandbox-orchestrator.ts \
+        packages/plugins/sandbox-providers/kubernetes/src/job-orchestrator.ts \
         packages/plugins/sandbox-providers/kubernetes/test/unit/job-orchestrator.test.ts
-git commit -m "feat(plugin-kubernetes): Job create/status/find-pod/logs/delete/wait-for-completion"
+git commit -m "feat(plugin-kubernetes): SandboxOrchestrator interface + Job-backed implementation"
 ```
 
 ---
