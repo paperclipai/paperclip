@@ -239,5 +239,7 @@ async function ensureCiliumNetworkPolicy(
 }
 
 function isNotFound(err: unknown): boolean {
-  return typeof err === "object" && err !== null && (err as { statusCode?: number }).statusCode === 404;
+  if (typeof err !== "object" || err === null) return false;
+  const e = err as { code?: number; statusCode?: number };
+  return e.code === 404 || e.statusCode === 404;
 }
