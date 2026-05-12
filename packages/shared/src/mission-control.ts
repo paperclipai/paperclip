@@ -453,13 +453,49 @@ function requiredGateForRisk(policy: MissionControlIssuePolicy): MissionControlA
   return "lead";
 }
 
+function jsonDocumentCandidatesFromBody(body: string): string[] {
+  const trimmed = body.trim();
+  const candidates = [trimmed];
+  const pushCandidate = (candidate: string) => {
+    const normalized = candidate.trim();
+    if (!normalized || candidates.some((existing) => existing === normalized)) return;
+    candidates.push(normalized);
+  };
+
+  const fencedBlockPattern = /```(?:[\w-]+)?\s*([\s\S]*?)\s*```/gi;
+  trimmed.replace(fencedBlockPattern, (_match, fencedBody: string) => {
+    pushCandidate(fencedBody);
+    return "";
+  });
+
+  return candidates;
+}
+
+function parseMarkdownValidatorVerdict(body: string): MissionControlValidatorVerdict | null {
+  const trimmed = body.trim();
+  const exactVerdict = trimmed.toUpperCase();
+  if (exactVerdict === "PASS" || exactVerdict === "REQUEST_CHANGES" || exactVerdict === "ESCALATE") {
+    return exactVerdict as MissionControlValidatorVerdict;
+  }
+
+  const verdictPatterns = [
+    /^\s*(?:validator\s+)?verdict\s*[:=-]\s*(PASS|REQUEST_CHANGES|ESCALATE)\b/im,
+    /^\s*\|\s*(?:validator\s+)?verdict\s*\|\s*(PASS|REQUEST_CHANGES|ESCALATE)\s*\|/im,
+    /^\s*#{1,6}\s*(?:validator\s+)?verdict\s*\n\s*(PASS|REQUEST_CHANGES|ESCALATE)\b/im,
+  ];
+
+  for (const pattern of verdictPatterns) {
+    const match = trimmed.match(pattern);
+    if (match?.[1]) return match[1] as MissionControlValidatorVerdict;
+  }
+
+  return null;
+}
+
 function parseValidatorReportFromBody(body: string | null | undefined): MissionControlValidatorReport | null {
   if (!body?.trim()) return null;
   const trimmed = body.trim();
-  const candidates = [trimmed];
-  const fenced = /```(?:json)?\s*([\s\S]*?)\s*```/i.exec(trimmed);
-  if (fenced?.[1]) candidates.unshift(fenced[1].trim());
-  for (const candidate of candidates) {
+  for (const candidate of jsonDocumentCandidatesFromBody(trimmed)) {
     try {
       const parsedJson = JSON.parse(candidate);
       const parsedReport = missionControlValidatorReportSchema.safeParse(parsedJson);
@@ -468,17 +504,17 @@ function parseValidatorReportFromBody(body: string | null | undefined): MissionC
       // Markdown reports are supported below via a conservative verdict scan.
     }
   }
-  const verdictMatch = /\b(PASS|REQUEST_CHANGES|ESCALATE)\b/.exec(trimmed.toUpperCase());
-  if (!verdictMatch) return null;
+  const verdict = parseMarkdownValidatorVerdict(trimmed);
+  if (!verdict) return null;
   return {
     version: 1,
-    verdict: verdictMatch[1] as MissionControlValidatorVerdict,
-    completionScore: verdictMatch[1] === "PASS" ? 8 : 0,
+    verdict,
+    completionScore: verdict === "PASS" ? 8 : 0,
     criteriaChecked: ["markdown validator verdict present"],
     evidence: ["validator-report document body"],
     hallucinationFlags: [],
     regressionChecks: [],
-    blockingIssues: verdictMatch[1] === "PASS" ? [] : ["validator did not pass"],
+    blockingIssues: verdict === "PASS" ? [] : ["validator did not pass"],
     exactFixIfFailed: null,
   };
 }
@@ -490,10 +526,7 @@ function parseCeoLoopDecisionFromBody(
 ): MissionControlCeoLoopDecision | typeof INVALID_CEO_LOOP_DECISION | null {
   if (!body?.trim()) return null;
   const trimmed = body.trim();
-  const candidates = [trimmed];
-  const fenced = /```(?:json)?\s*([\s\S]*?)\s*```/i.exec(trimmed);
-  if (fenced?.[1]) candidates.unshift(fenced[1].trim());
-  for (const candidate of candidates) {
+  for (const candidate of jsonDocumentCandidatesFromBody(trimmed)) {
     try {
       const parsedJson = JSON.parse(candidate);
       const parsedDecision = missionControlCeoLoopDecisionSchema.safeParse(parsedJson);

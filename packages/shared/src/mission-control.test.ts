@@ -416,6 +416,117 @@ describe("mission-control completion gate", () => {
     expect(allowed.validatorVerdict).toBe("PASS");
   });
 
+  it("prefers structured validator JSON over earlier prose fences", () => {
+    const result = evaluateMissionControlCompletionGate({
+      issue: {
+        priority: "high",
+        executionPolicy: {
+          missionControl: { enabled: true, riskClass: "high" },
+        },
+      },
+      documents: [
+        { key: "validation-contract", body: "objective/pass criteria" },
+        { key: "worker-handoff", body: "completed/checks" },
+        {
+          key: "validator-report",
+          body: [
+            "The test log includes the word PASS, but it is not the verdict.",
+            "```text",
+            "PASS appears in stdout before the report JSON.",
+            "```",
+            "```json",
+            JSON.stringify({
+              version: 1,
+              verdict: "REQUEST_CHANGES",
+              completionScore: 6,
+              criteriaChecked: ["criteria checked"],
+              evidence: ["review output"],
+              blockingIssues: ["acceptance criteria not met"],
+              exactFixIfFailed: "Address the missing acceptance evidence.",
+            }),
+            "```",
+          ].join("\n"),
+        },
+      ],
+    });
+
+    expect(result.allowed).toBe(false);
+    expect(result.validatorVerdict).toBe("REQUEST_CHANGES");
+    expect(result.reason).toBe("validator_not_passed");
+  });
+
+  it("does not infer PASS from negated prose without a verdict line", () => {
+    const result = evaluateMissionControlCompletionGate({
+      issue: {
+        priority: "high",
+        executionPolicy: {
+          missionControl: { enabled: true, riskClass: "high" },
+        },
+      },
+      documents: [
+        { key: "validation-contract", body: "objective/pass criteria" },
+        { key: "worker-handoff", body: "completed/checks" },
+        {
+          key: "validator-report",
+          body: "The validator says do not PASS this work until the missing evidence is attached.",
+        },
+      ],
+    });
+
+    expect(result.allowed).toBe(false);
+    expect(result.validatorVerdict).toBeNull();
+    expect(result.reason).toBe("validator_not_passed");
+  });
+
+  it("parses CEO loop decision JSON after non-json fenced output", () => {
+    const executionPolicy = {
+      missionControl: missionControlIssuePolicySchema.parse({
+        enabled: true,
+        riskClass: "high",
+        autonomousLoop: {
+          enabled: true,
+          controller: "CEO",
+          goal: "Build the autonomous creator traffic workflow",
+          startedAt: "2026-05-11T08:00:00.000Z",
+          iteration: 2,
+          maxIterations: 5,
+          maxRuntimeHours: 24,
+        },
+      }),
+    };
+
+    const result = evaluateMissionControlAutonomousLoopGate({
+      issue: { priority: "high", executionPolicy },
+      documents: [
+        {
+          key: MISSION_CONTROL_AUTONOMOUS_LOOP_DOCUMENT_KEY,
+          updatedAt: "2026-05-11T08:30:00.000Z",
+          body: [
+            "Review notes before the machine-readable decision:",
+            "```text",
+            "stdout: previous iteration checks passed",
+            "```",
+            "```json",
+            JSON.stringify({
+              version: 1,
+              iteration: 2,
+              decision: "goal_reached",
+              rationale: "Validator passed and all pass criteria are satisfied.",
+              evidence: ["final validation evidence"],
+            }),
+            "```",
+          ].join("\n"),
+        },
+      ],
+      validatorVerdict: "PASS",
+      now: "2026-05-11T08:45:00.000Z",
+    });
+
+    expect(result.allowed).toBe(true);
+    expect(result.reason).toBe("allowed");
+    expect(result.ceoLoopDecision?.decision).toBe("goal_reached");
+  });
+
   it("blocks autonomous loop completion until the CEO decision reaches the goal", () => {
     const executionPolicy = {
       missionControl: missionControlIssuePolicySchema.parse({
