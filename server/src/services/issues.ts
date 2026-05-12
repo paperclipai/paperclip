@@ -3709,7 +3709,14 @@ export function issueService(db: Db) {
       if (tokens.size === 0 && explicitAgentMentionIds.length === 0) return [];
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
-      const resolved = new Set<string>(explicitAgentMentionIds);
+      // Filter explicit mention IDs against the company's agents to drop bogus IDs
+      // (e.g. literal `agent://id` placeholders in example markdown) before they
+      // reach `heartbeat.wakeup`, where a non-UUID would raise a PostgresError.
+      const validAgentIds = new Set(rows.map((row) => row.id));
+      const resolved = new Set<string>();
+      for (const mentionedId of explicitAgentMentionIds) {
+        if (validAgentIds.has(mentionedId)) resolved.add(mentionedId);
+      }
       for (const agent of rows) {
         if (tokens.has(agent.name.toLowerCase())) {
           resolved.add(agent.id);
