@@ -31,6 +31,21 @@ describe("kubernetesProviderConfigSchema", () => {
     ).toThrow();
   });
 
+  it("bounds namespacePrefix and companySlug so their combination fits a Kubernetes namespace", () => {
+    expect(() =>
+      parseKubernetesProviderConfig({ inCluster: true, namespacePrefix: "a".repeat(21) }),
+    ).toThrow();
+    expect(() =>
+      parseKubernetesProviderConfig({ inCluster: true, companySlug: "a".repeat(44) }),
+    ).toThrow();
+  });
+
+  it("rejects whitespace-only kubeconfig", () => {
+    expect(() =>
+      parseKubernetesProviderConfig({ inCluster: false, kubeconfig: "   " }),
+    ).toThrow(/requires one of `inCluster` or `kubeconfig`/);
+  });
+
   it("rejects egressAllowCidrs entries that are not valid CIDR", () => {
     expect(() =>
       parseKubernetesProviderConfig({ inCluster: true, egressAllowCidrs: ["not-a-cidr"] }),

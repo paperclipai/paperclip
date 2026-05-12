@@ -34,15 +34,18 @@ const manifest: PaperclipPluginManifestV1 = {
           kubeconfig: {
             type: "string",
             format: "secret-ref",
+            pattern: "\\S",
             description:
               "Inline kubeconfig YAML. Paste a kubeconfig or an existing Paperclip secret reference; pasted values are stored as company secrets.",
           },
           namespacePrefix: {
             type: "string",
+            maxLength: 20,
             description: "Prefix for the per-company tenant namespace (default: paperclip-).",
           },
           companySlug: {
             type: "string",
+            maxLength: 43,
             description: "Override the auto-derived company slug used in the tenant namespace name.",
           },
           imageRegistry: {
@@ -111,7 +114,10 @@ const manifest: PaperclipPluginManifestV1 = {
           },
         },
         anyOf: [
-          { required: ["inCluster"] },
+          {
+            properties: { inCluster: { const: true } },
+            required: ["inCluster"],
+          },
           { required: ["kubeconfig"] },
         ],
       },
