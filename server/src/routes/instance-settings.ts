@@ -150,6 +150,7 @@ export function instanceSettingsRoutes(db: Db) {
 
   router.get("/instance/secrets/plugin", async (req, res) => {
     assertCanManageInstanceSettings(req);
+    res.set("Cache-Control", "no-store");
     const rows = await secrets.listPluginOwned();
     res.json(rows);
   });
