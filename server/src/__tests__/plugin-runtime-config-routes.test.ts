@@ -117,6 +117,8 @@ describe.sequential("GET /api/plugins/:pluginId/runtime-config", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRegistry.getByKey.mockResolvedValue(null);
+    mockLogActivity.mockResolvedValue(undefined);
+    mockLifecycle.restartWorker.mockResolvedValue(undefined);
   });
 
   it("returns 404 when plugin not found", async () => {
@@ -172,6 +174,8 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRegistry.getByKey.mockResolvedValue(null);
+    mockLogActivity.mockResolvedValue(undefined);
+    mockLifecycle.restartWorker.mockResolvedValue(undefined);
   });
 
   it("rejects non-admin board users with 403", async () => {
@@ -191,7 +195,7 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
   it("clears runtime config and returns 204 for instance admins", async () => {
     readyPlugin();
     mockRuntimeConfig.clearRuntime.mockResolvedValue(undefined);
-    mockWorkerManager.getWorker.mockReturnValue(undefined);
+    mockWorkerManager.isRunning.mockReturnValue(false);
     const app = await createApp(boardActor({ isInstanceAdmin: true }));
 
     const res = await request(app).delete(`/api/plugins/${pluginId}/runtime-config`);
@@ -202,7 +206,7 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
   it("restarts a running worker after runtime config is cleared", async () => {
     readyPlugin();
     mockRuntimeConfig.clearRuntime.mockResolvedValue(undefined);
-    mockWorkerManager.getWorker.mockReturnValue({});
+    mockWorkerManager.isRunning.mockReturnValue(true);
     mockLifecycle.restartWorker.mockResolvedValue(undefined);
     const app = await createApp(boardActor({ isInstanceAdmin: true }));
 
@@ -215,7 +219,7 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
   it("still returns 204 if the runtime config restart fails after clearing", async () => {
     readyPlugin();
     mockRuntimeConfig.clearRuntime.mockResolvedValue(undefined);
-    mockWorkerManager.getWorker.mockReturnValue({});
+    mockWorkerManager.isRunning.mockReturnValue(true);
     mockLifecycle.restartWorker.mockRejectedValue(new Error("restart failed"));
     const app = await createApp(boardActor({ isInstanceAdmin: true }));
 
@@ -225,29 +229,47 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
     expect(mockWorkerManager.call).not.toHaveBeenCalled();
   });
 
-  it("restarts a starting worker after runtime config is cleared", async () => {
+  it("does not restart a non-running worker after runtime config is cleared", async () => {
     readyPlugin();
     mockRuntimeConfig.clearRuntime.mockResolvedValue(undefined);
-    mockWorkerManager.getWorker.mockReturnValue({ status: "starting" });
+    mockWorkerManager.isRunning.mockReturnValue(false);
     mockLifecycle.restartWorker.mockResolvedValue(undefined);
     const app = await createApp(boardActor({ isInstanceAdmin: true }));
 
     const res = await request(app).delete(`/api/plugins/${pluginId}/runtime-config`);
     expect(res.status).toBe(204);
-    expect(mockLifecycle.restartWorker).toHaveBeenCalledWith(pluginId);
+    expect(mockLifecycle.restartWorker).not.toHaveBeenCalled();
   });
 
-  it("restarts even when audit logging fails after clearing runtime config", async () => {
+  it("returns 500 when audit logging fails after clearing runtime config", async () => {
     readyPlugin();
     mockRuntimeConfig.clearRuntime.mockResolvedValue(undefined);
-    mockWorkerManager.getWorker.mockReturnValue({});
+    mockWorkerManager.isRunning.mockReturnValue(true);
     mockLifecycle.restartWorker.mockResolvedValue(undefined);
     mockLogActivity.mockRejectedValue(new Error("audit failed"));
     const app = await createApp(boardActor({ isInstanceAdmin: true }));
 
     const res = await request(app).delete(`/api/plugins/${pluginId}/runtime-config`);
-    expect(res.status).toBe(204);
+    expect(res.status).toBe(500);
     expect(mockLifecycle.restartWorker).toHaveBeenCalledWith(pluginId);
+  });
+
+  it("resolves plugin keys before clearing runtime config", async () => {
+    readyPluginByKey();
+    mockRuntimeConfig.clearRuntime.mockResolvedValue(undefined);
+    mockWorkerManager.isRunning.mockReturnValue(false);
+    const app = await createApp(boardActor({ isInstanceAdmin: true }));
+
+    const res = await request(app).delete("/api/plugins/paperclip.example/runtime-config");
+    expect(res.status).toBe(204);
+    expect(mockRuntimeConfig.clearRuntime).toHaveBeenCalledWith(pluginId);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        entityId: pluginId,
+        details: expect.objectContaining({ pluginId, pluginKey: "paperclip.example" }),
+      }),
+    );
   });
 
   it("rejects non-board actors with 403", async () => {

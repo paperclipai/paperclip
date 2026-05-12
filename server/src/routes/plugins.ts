@@ -2142,7 +2142,7 @@ export function pluginRoutes(
     const svc = createPluginRuntimeConfigService(db);
     await svc.clearRuntime(plugin.id);
 
-    if (bridgeDeps?.workerManager.getWorker(plugin.id)) {
+    if (bridgeDeps?.workerManager.isRunning(plugin.id)) {
       try {
         await lifecycle.restartWorker(plugin.id);
       } catch {
@@ -2150,14 +2150,10 @@ export function pluginRoutes(
       }
     }
 
-    try {
-      await logPluginMutationActivity(req, "plugin.runtime-config.cleared", plugin.id, {
+    await logPluginMutationActivity(req, "plugin.runtime-config.cleared", plugin.id, {
       pluginId: plugin.id,
       pluginKey: plugin.pluginKey,
-      });
-    } catch {
-      // Runtime config is cleared and any live worker was already bounced.
-    }
+    });
     res.status(204).end();
   });
 
