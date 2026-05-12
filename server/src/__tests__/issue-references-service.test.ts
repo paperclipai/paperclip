@@ -175,6 +175,59 @@ describeEmbeddedPostgres("issueReferenceService", () => {
     expect(pap3?.sources.map((source) => source.label)).toEqual(["description"]);
   });
 
+  it("keeps comment reference sync idempotent when retries overlap", async () => {
+    const companyId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const targetIssueId = randomUUID();
+    const commentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip Concurrent Refs",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: sourceIssueId,
+        companyId,
+        title: "Source",
+        status: "todo",
+        priority: "medium",
+        identifier: "PCR-1",
+      },
+      {
+        id: targetIssueId,
+        companyId,
+        title: "Target",
+        status: "todo",
+        priority: "medium",
+        identifier: "PCR-2",
+      },
+    ]);
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId: sourceIssueId,
+      body: "Retry note for PCR-2.",
+    });
+
+    await Promise.all([
+      refs.syncComment(commentId),
+      refs.syncComment(commentId),
+      refs.syncComment(commentId),
+    ]);
+
+    const mentions = await db.select().from(issueReferenceMentions);
+    expect(mentions).toHaveLength(1);
+    expect(mentions[0]).toMatchObject({
+      sourceIssueId,
+      targetIssueId,
+      sourceKind: "comment",
+      sourceRecordId: commentId,
+    });
+  });
+
   it("backfills existing references for a company without requiring write-time sync", async () => {
     const companyId = randomUUID();
     const sourceIssueId = randomUUID();

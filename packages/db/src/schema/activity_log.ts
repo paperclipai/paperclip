@@ -26,5 +26,8 @@ export const activityLog = pgTable(
     commentAddedCommentIdUq: uniqueIndex("activity_log_comment_added_comment_id_uq")
       .on(table.action, table.entityType, table.entityId, sql`(${table.details} ->> 'commentId')`)
       .where(sql`${table.action} in ('issue.comment_added', 'approval.comment_added') and ${table.details} ? 'commentId'`),
+    threadInteractionExpiredInteractionIdUq: uniqueIndex("activity_log_thread_interaction_expired_interaction_id_uq")
+      .on(table.action, table.entityType, table.entityId, sql`(${table.details} ->> 'interactionId')`)
+      .where(sql`${table.action} = 'issue.thread_interaction_expired' and ${table.details} ? 'interactionId'`),
   }),
 );

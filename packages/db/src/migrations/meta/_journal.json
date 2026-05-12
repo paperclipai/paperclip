@@ -610,6 +610,13 @@
       "when": 1777384535075,
       "tag": "0086_activity_comment_idempotency",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1777384535076,
+      "tag": "0087_activity_interaction_expiry_idempotency",
+      "breakpoints": true
     }
   ]
 }

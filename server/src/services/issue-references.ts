@@ -163,7 +163,7 @@ export function issueReferenceService(db: Db) {
     });
 
     if (values.length > 0) {
-      await dbOrTx.insert(issueReferenceMentions).values(values);
+      await dbOrTx.insert(issueReferenceMentions).values(values).onConflictDoNothing();
     }
   }
 

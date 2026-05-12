@@ -722,6 +722,19 @@ describe.sequential("issue comment reopen routes", () => {
       enumerable: false,
     });
     mockIssueService.addComment.mockResolvedValue(dedupedComment);
+    mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([
+      {
+        id: "interaction-expired",
+        kind: "request_confirmation",
+        status: "expired",
+        result: { version: 1, outcome: "superseded_by_comment", commentId: "comment-deduped-direct" },
+      },
+    ]);
+    mockLogActivity.mockImplementation(async (_db, input) => {
+      if (input.action === "issue.thread_interaction_expired") {
+        throw Object.assign(new Error("duplicate"), { code: "23505" });
+      }
+    });
 
     const res = await request(await installActor(createApp(), {
       type: "board",
@@ -749,6 +762,14 @@ describe.sequential("issue comment reopen routes", () => {
       issue,
       dedupedComment,
       expect.any(Object),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.thread_interaction_expired",
+        entityId: issue.id,
+        details: expect.objectContaining({ interactionId: "interaction-expired" }),
+      }),
     );
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });

@@ -897,24 +897,30 @@ export function issueRoutes(
     source: string;
   }) {
     for (const interaction of input.interactions) {
-      await logActivity(db, {
-        companyId: input.issue.companyId,
-        actorType: input.actor.actorType,
-        actorId: input.actor.actorId,
-        agentId: input.actor.agentId,
-        runId: input.actor.runId,
-        action: "issue.thread_interaction_expired",
-        entityType: "issue",
-        entityId: input.issue.id,
-        details: {
-          identifier: input.issue.identifier ?? null,
-          interactionId: interaction.id,
-          interactionKind: interaction.kind,
-          interactionStatus: interaction.status,
-          source: input.source,
-          result: interaction.result ?? null,
-        },
-      });
+      try {
+        await logActivity(db, {
+          companyId: input.issue.companyId,
+          actorType: input.actor.actorType,
+          actorId: input.actor.actorId,
+          agentId: input.actor.agentId,
+          runId: input.actor.runId,
+          action: "issue.thread_interaction_expired",
+          entityType: "issue",
+          entityId: input.issue.id,
+          details: {
+            identifier: input.issue.identifier ?? null,
+            interactionId: interaction.id,
+            interactionKind: interaction.kind,
+            interactionStatus: interaction.status,
+            source: input.source,
+            result: interaction.result ?? null,
+          },
+        });
+      } catch (err) {
+        if (!isUniqueViolation(err)) {
+          throw err;
+        }
+      }
     }
   }
 

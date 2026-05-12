@@ -847,6 +847,27 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       },
       resolvedByUserId: "local-board",
     });
+
+    const replayed = await interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: commentId,
+      authorUserId: "local-board",
+    }, {
+      userId: "local-board",
+    });
+
+    expect(replayed).toHaveLength(1);
+    expect(replayed[0]).toMatchObject({
+      id: created.id,
+      status: "expired",
+      result: {
+        version: 1,
+        outcome: "superseded_by_comment",
+        commentId,
+      },
+    });
   });
 
   it("expires request confirmations when the watched issue document revision changes", async () => {
