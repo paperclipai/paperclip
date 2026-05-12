@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
+import { agents as agentsTable, clickupBridges, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -46,6 +46,7 @@ import {
   companySkillService,
   budgetService,
   heartbeatService,
+  clickupBridgeService,
   ISSUE_LIST_DEFAULT_LIMIT,
   issueApprovalService,
   issueService,
@@ -88,6 +89,7 @@ import { getTelemetryClient } from "../telemetry.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
+const CLICKUP_ACTIVE_BRIDGE_STATUSES = ["pending_clickup_task", "waiting_for_agent_reply"] as const;
 
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
@@ -115,6 +117,71 @@ export function agentRoutes(db: Db) {
     const adapter = findActiveServerAdapter(adapterType);
     if (adapter?.supportsInstructionsBundle !== undefined) return adapter.supportsInstructionsBundle;
     return DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES.has(adapterType);
+  }
+
+  async function listClickUpPollingRuns(input: {
+    companyId: string;
+    issueId?: string;
+    agentId?: string;
+  }) {
+    return db
+      .selectDistinctOn([clickupBridges.id], {
+        id: heartbeatRuns.id,
+        status: sql<string>`'running'`.as("status"),
+        invocationSource: heartbeatRuns.invocationSource,
+        triggerDetail: sql<string>`'clickup_bridge_polling'`.as("triggerDetail"),
+        startedAt: heartbeatRuns.startedAt,
+        finishedAt: sql<Date | null>`null`.as("finishedAt"),
+        createdAt: heartbeatRuns.createdAt,
+        agentId: heartbeatRuns.agentId,
+        agentName: agentsTable.name,
+        adapterType: agentsTable.adapterType,
+        livenessState: heartbeatRuns.livenessState,
+        livenessReason: sql<string>`'ClickUp bridge is polling for external replies.'`.as("livenessReason"),
+        continuationAttempt: heartbeatRuns.continuationAttempt,
+        lastUsefulActionAt: sql<Date | null>`coalesce(${clickupBridges.lastPolledAt}, ${heartbeatRuns.lastUsefulActionAt})`.as("lastUsefulActionAt"),
+        nextAction: sql<string>`
+          case
+            when ${clickupBridges.nextPollAt} is not null
+              then 'Polling ClickUp for external replies. Next check at ' || to_char(${clickupBridges.nextPollAt}, 'YYYY-MM-DD HH24:MI:SS TZ')
+            else 'Polling ClickUp for external replies.'
+          end
+        `.as("nextAction"),
+        issueId: sql<string | null>`
+          case
+            when ${clickupBridges.sourceType} = 'issue' then ${clickupBridges.sourceId}
+            else null
+          end
+        `.as("issueId"),
+        agentThreadId: sql<string | null>`
+          case
+            when ${clickupBridges.sourceType} = 'agent_thread' then ${clickupBridges.sourceId}
+            else null
+          end
+        `.as("agentThreadId"),
+      })
+      .from(clickupBridges)
+      .innerJoin(
+        heartbeatRuns,
+        and(
+          eq(heartbeatRuns.companyId, clickupBridges.companyId),
+          eq(heartbeatRuns.agentId, clickupBridges.agentId),
+          sql`${heartbeatRuns.resultJson} ->> 'clickupBridgeId' = ${clickupBridges.id}::text`,
+        ),
+      )
+      .innerJoin(agentsTable, eq(heartbeatRuns.agentId, agentsTable.id))
+      .where(
+        and(
+          eq(clickupBridges.companyId, input.companyId),
+          eq(heartbeatRuns.companyId, input.companyId),
+          inArray(clickupBridges.status, [...CLICKUP_ACTIVE_BRIDGE_STATUSES]),
+          ...(input.issueId
+            ? [eq(clickupBridges.sourceType, "issue"), eq(clickupBridges.sourceId, input.issueId)]
+            : []),
+          ...(input.agentId ? [eq(clickupBridges.agentId, input.agentId)] : []),
+        ),
+      )
+      .orderBy(clickupBridges.id, desc(heartbeatRuns.createdAt), desc(clickupBridges.updatedAt));
   }
 
   /** Resolve the adapter config key for the instructions file path. */
@@ -688,14 +755,43 @@ export function agentRoutes(db: Db) {
     return privateKey.export({ type: "pkcs8", format: "pem" }).toString();
   }
 
-  function ensureGatewayDeviceKey(
+  function normalizeOpenClawGatewayUrl(value: unknown): string | null {
+    const raw = asNonEmptyString(value);
+    if (!raw) return null;
+    try {
+      const parsed = new URL(raw);
+      parsed.hash = "";
+      parsed.search = "";
+      parsed.pathname = parsed.pathname.replace(/\/+$/, "") || "/";
+      return parsed.toString();
+    } catch {
+      return raw.trim();
+    }
+  }
+
+  async function ensureGatewayDeviceKey(
+    companyId: string,
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
-  ): Record<string, unknown> {
+  ): Promise<Record<string, unknown>> {
     if (adapterType !== "openclaw_gateway") return adapterConfig;
     const disableDeviceAuth = parseBooleanLike(adapterConfig.disableDeviceAuth);
     if (disableDeviceAuth !== false) return adapterConfig;
     if (asNonEmptyString(adapterConfig.devicePrivateKeyPem)) return adapterConfig;
+
+    const targetUrl = normalizeOpenClawGatewayUrl(adapterConfig.url);
+    if (targetUrl) {
+      const existingAgents = await svc.list(companyId);
+      for (const existingAgent of existingAgents) {
+        if (existingAgent.adapterType !== "openclaw_gateway") continue;
+        const existingConfig = asRecord(existingAgent.adapterConfig) ?? {};
+        if (normalizeOpenClawGatewayUrl(existingConfig.url) !== targetUrl) continue;
+        const sharedDeviceKey = asNonEmptyString(existingConfig.devicePrivateKeyPem);
+        if (!sharedDeviceKey) continue;
+        return { ...adapterConfig, devicePrivateKeyPem: sharedDeviceKey };
+      }
+    }
+
     return { ...adapterConfig, devicePrivateKeyPem: generateEd25519PrivateKeyPem() };
   }
 
@@ -714,17 +810,17 @@ export function agentRoutes(db: Db) {
       if (!hasBypassFlag) {
         next.dangerouslyBypassApprovalsAndSandbox = DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
       }
-      return ensureGatewayDeviceKey(adapterType, next);
+      return next;
     }
     if (adapterType === "gemini_local" && !asNonEmptyString(next.model)) {
       next.model = DEFAULT_GEMINI_LOCAL_MODEL;
-      return ensureGatewayDeviceKey(adapterType, next);
+      return next;
     }
     // OpenCode requires explicit model selection — no default
     if (adapterType === "cursor" && !asNonEmptyString(next.model)) {
       next.model = DEFAULT_CURSOR_LOCAL_MODEL;
     }
-    return ensureGatewayDeviceKey(adapterType, next);
+    return next;
   }
 
   async function assertAdapterConfigConstraints(
@@ -1654,9 +1750,13 @@ export function agentRoutes(db: Db) {
       req,
       (hireInput.adapterConfig ?? {}) as Record<string, unknown>,
     );
-    const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
+    const requestedAdapterConfig = await ensureGatewayDeviceKey(
+      companyId,
       hireInput.adapterType,
-      ((hireInput.adapterConfig ?? {}) as Record<string, unknown>),
+      applyCreateDefaultsByAdapterType(
+        hireInput.adapterType,
+        ((hireInput.adapterConfig ?? {}) as Record<string, unknown>),
+      ),
     );
     const persistedRequestedAdapterConfig =
       hireInput.adapterType === "openclaw_gateway"
@@ -1852,9 +1952,13 @@ export function agentRoutes(db: Db) {
       req,
       (createInput.adapterConfig ?? {}) as Record<string, unknown>,
     );
-    const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
+    const requestedAdapterConfig = await ensureGatewayDeviceKey(
+      companyId,
       createInput.adapterType,
-      ((createInput.adapterConfig ?? {}) as Record<string, unknown>),
+      applyCreateDefaultsByAdapterType(
+        createInput.adapterType,
+        ((createInput.adapterConfig ?? {}) as Record<string, unknown>),
+      ),
     );
     const persistedRequestedAdapterConfig =
       createInput.adapterType === "openclaw_gateway"
@@ -2899,12 +3003,22 @@ export function agentRoutes(db: Db) {
       ...(agentIdFilter ? [eq(heartbeatRuns.agentId, agentIdFilter)] : []),
     ];
 
-    const liveRuns = await db
+    const heartbeatLiveRuns = await db
       .select(columns)
       .from(heartbeatRuns)
       .innerJoin(agentsTable, eq(heartbeatRuns.agentId, agentsTable.id))
       .where(and(...baseConditions))
       .orderBy(desc(heartbeatRuns.createdAt));
+
+    const issueIdsWithExecutionRuns = new Set(
+      heartbeatLiveRuns
+        .map((run) => run.issueId)
+        .filter((issueId): issueId is string => typeof issueId === "string" && issueId.length > 0),
+    );
+    const clickupLiveRuns = (await listClickUpPollingRuns({ companyId, agentId: agentIdFilter }))
+      .filter((run) => !run.issueId || !issueIdsWithExecutionRuns.has(run.issueId));
+    const liveRuns = [...heartbeatLiveRuns, ...clickupLiveRuns]
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
     if (minCount > 0 && liveRuns.length < minCount) {
       const activeIds = liveRuns.map((r) => r.id);
@@ -2928,6 +3042,45 @@ export function agentRoutes(db: Db) {
     }
 
     res.json(liveRuns);
+  });
+
+  router.post("/companies/:companyId/clickup-bridges/:bridgeId/retry", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    const bridgeId = req.params.bridgeId as string;
+    assertCompanyAccess(req, companyId);
+
+    const [bridge] = await db
+      .select({ id: clickupBridges.id })
+      .from(clickupBridges)
+      .where(and(eq(clickupBridges.id, bridgeId), eq(clickupBridges.companyId, companyId)))
+      .limit(1);
+
+    if (!bridge) {
+      res.status(404).json({ error: "ClickUp bridge not found" });
+      return;
+    }
+
+    const retried = await clickupBridgeService(db).retryBridge(bridgeId);
+    if (!retried) {
+      res.status(409).json({ error: "ClickUp bridge is not failed or closed" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "clickup_bridge.retried",
+      entityType: "clickup_bridge",
+      entityId: bridgeId,
+      details: { status: retried.status },
+    });
+
+    res.json({ ok: true, bridge: retried });
   });
 
   router.get("/heartbeat-runs/:runId", async (req, res) => {
@@ -3059,7 +3212,7 @@ export function agentRoutes(db: Db) {
     }
     assertCompanyAccess(req, issue.companyId);
 
-    const liveRuns = await db
+    const heartbeatLiveRuns = await db
       .select({
         id: heartbeatRuns.id,
         status: heartbeatRuns.status,
@@ -3087,6 +3240,12 @@ export function agentRoutes(db: Db) {
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt));
+
+    const clickupLiveRuns = heartbeatLiveRuns.length === 0
+      ? await listClickUpPollingRuns({ companyId: issue.companyId, issueId: issue.id })
+      : [];
+    const liveRuns = [...heartbeatLiveRuns, ...clickupLiveRuns]
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
     res.json(liveRuns);
   });
@@ -3118,6 +3277,13 @@ export function agentRoutes(db: Db) {
       const candidateIssueId = asNonEmptyString(candidateRun?.issueId);
       if (candidateRun && candidateIssueId === issue.id) {
         run = candidateRun;
+      }
+    }
+    if (!run) {
+      const [clickupRun] = await listClickUpPollingRuns({ companyId: issue.companyId, issueId: issue.id });
+      if (clickupRun) {
+        res.json(clickupRun);
+        return;
       }
     }
     if (!run) {

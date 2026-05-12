@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import {
   applyBuilderProposalSchema,
   createBuilderSessionSchema,
@@ -91,6 +91,39 @@ function tokenFromAuthorizationHeader(value: string | null) {
   return match?.[1]?.trim() || value.trim() || null;
 }
 
+function parseBooleanLike(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (value === 1) return true;
+    if (value === 0) return false;
+    return null;
+  }
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on") {
+    return true;
+  }
+  if (normalized === "false" || normalized === "0" || normalized === "no" || normalized === "off") {
+    return false;
+  }
+  return null;
+}
+
+function generateEd25519PrivateKeyPem(): string {
+  const { privateKey } = generateKeyPairSync("ed25519");
+  return privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+}
+
+function ensureGatewayDeviceKey(adapterConfig: Record<string, unknown>): Record<string, unknown> {
+  const disableDeviceAuth = parseBooleanLike(adapterConfig.disableDeviceAuth);
+  if (disableDeviceAuth !== false) return adapterConfig;
+  if (asNonEmptyString(adapterConfig.devicePrivateKeyPem)) return adapterConfig;
+  return {
+    ...adapterConfig,
+    devicePrivateKeyPem: generateEd25519PrivateKeyPem(),
+  };
+}
+
 function extractOpenClawAuthToken(adapterConfig: Record<string, unknown>) {
   const explicit = asNonEmptyString(adapterConfig.authToken) ?? asNonEmptyString(adapterConfig.token);
   if (explicit) return explicit;
@@ -142,7 +175,7 @@ async function persistBuilderSecrets(params: {
 
   if (params.adapterType === "openclaw_gateway") {
     const plainToken = extractOpenClawAuthToken(params.adapterConfig);
-    const sanitized = sanitizeOpenClawAdapterConfig(params.adapterConfig);
+    const sanitized = ensureGatewayDeviceKey(sanitizeOpenClawAdapterConfig(params.adapterConfig));
     const existingRef = asRecord(params.existingSettings?.adapterConfig)?.authTokenRef;
     const requestedRef = sanitized.authTokenRef ?? existingRef;
 

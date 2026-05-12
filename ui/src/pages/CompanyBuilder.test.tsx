@@ -320,6 +320,55 @@ describe("CompanyBuilder", () => {
     });
   });
 
+  it("selects a newly created session immediately", async () => {
+    const newSessionCreatedAt = new Date("2026-05-06T10:00:00.000Z");
+    const newSession: BuilderSession = {
+      ...sessionsState[0],
+      id: "session-2",
+      title: "Fresh plan",
+      createdAt: newSessionCreatedAt,
+      updatedAt: newSessionCreatedAt,
+    };
+    const newSessionDetail: BuilderSessionDetail = {
+      ...newSession,
+      messages: [],
+    };
+
+    mockBuilderApi.createSession.mockImplementationOnce(async () => {
+      sessionsState = [newSession, ...sessionsState];
+      return { session: newSession };
+    });
+    mockBuilderApi.getSession.mockImplementation(async (_companyId?: string, sessionId?: string) => ({
+      session: sessionId === newSession.id
+        ? { ...newSessionDetail, messages: [] }
+        : {
+            ...sessionDetailState,
+            messages: [...sessionDetailState.messages],
+          },
+    }));
+
+    const { root } = await renderCompanyBuilder(container);
+    const newButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("New"),
+    );
+    expect(newButton).not.toBeUndefined();
+
+    await act(async () => {
+      newButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+    await flushReact();
+
+    expect(mockBuilderApi.createSession).toHaveBeenCalledWith("company-1", {});
+    expect(container.textContent).toContain("Fresh plan");
+    expect(mockBuilderApi.getSession).toHaveBeenLastCalledWith("company-1", "session-2");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("splits active and archived sessions and disables archived composer", async () => {
     sessionsState = [
       {
@@ -361,6 +410,7 @@ describe("CompanyBuilder", () => {
       (button) => button.textContent?.includes("Archived"),
     );
     expect(archivedToggle).not.toBeUndefined();
+    expect(container.querySelector('button[aria-label="Restore session"]')).toBeNull();
 
     await act(async () => {
       archivedToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -405,6 +455,16 @@ describe("CompanyBuilder", () => {
 
     expect(mockBuilderApi.archiveSession).toHaveBeenCalledWith("company-1", "session-1");
     expect(container.textContent).toContain("Archived");
+
+    const archivedToggle = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Archived"),
+    );
+    expect(archivedToggle).not.toBeUndefined();
+
+    await act(async () => {
+      archivedToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
 
     const restoreButton = container.querySelector('button[aria-label="Restore session"]');
     expect(restoreButton).not.toBeNull();

@@ -5,6 +5,7 @@ import type { ServerAdapterModule } from "../adapters/index.js";
 
 const mockAgentService = vi.hoisted(() => ({
   create: vi.fn(),
+  list: vi.fn(),
   getById: vi.fn(),
   update: vi.fn(),
 }));
@@ -197,6 +198,7 @@ describe("agent routes adapter validation", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     }));
+    mockAgentService.list.mockResolvedValue([]);
     mockAgentService.getById.mockResolvedValue(null);
     mockAgentService.update.mockImplementation(async (id: string, patch: Record<string, unknown>) => ({
       id,
@@ -346,6 +348,52 @@ describe("agent routes adapter validation", () => {
     expect(adapterConfig?.disableDeviceAuth).toBe(false);
     expect(typeof adapterConfig?.devicePrivateKeyPem).toBe("string");
     expect(String(adapterConfig?.devicePrivateKeyPem ?? "")).toContain("BEGIN PRIVATE KEY");
+  });
+
+  it("reuses OpenClaw device key from existing agent with same gateway url", async () => {
+    const sharedPem = "-----BEGIN PRIVATE KEY-----\nshared\n-----END PRIVATE KEY-----";
+    mockAgentService.list.mockResolvedValue([
+      {
+        id: "existing-1",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: "ws://citro-openclaw.internal:18789",
+          disableDeviceAuth: false,
+          devicePrivateKeyPem: sharedPem,
+        },
+      },
+    ]);
+
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter({
+      type: "openclaw_gateway",
+      execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+      testEnvironment: async () => ({
+        adapterType: "openclaw_gateway",
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+    });
+
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "CTO",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: "ws://citro-openclaw.internal:18789",
+          authToken: "gateway-token",
+          disableDeviceAuth: false,
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const adapterConfig = mockAgentService.create.mock.calls[0]?.[1]?.adapterConfig as
+      | Record<string, unknown>
+      | undefined;
+    expect(adapterConfig?.devicePrivateKeyPem).toBe(sharedPem);
   });
 
   it("persists normalized OpenClaw connection status on agent metadata", async () => {

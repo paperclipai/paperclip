@@ -365,6 +365,53 @@ describe("builder routes", () => {
     });
   });
 
+  it("generates persistent OpenClaw device key for pairing mode", async () => {
+    mockBuilderService.getSettings.mockResolvedValue(null);
+    mockBuilderService.upsertSettings.mockResolvedValue({
+      companyId,
+      adapterType: "openclaw_gateway",
+      adapterConfig: {
+        url: "wss://gateway.example",
+        disableDeviceAuth: false,
+        authTokenRef: { type: "secret_ref", secretId: "secret-1", version: "latest" },
+      },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app)
+      .put(`/api/companies/${companyId}/builder/settings`)
+      .send({
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: "wss://gateway.example",
+          authToken: "gateway-token",
+          disableDeviceAuth: false,
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockBuilderService.upsertSettings).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        adapterType: "openclaw_gateway",
+        adapterConfig: expect.objectContaining({
+          url: "wss://gateway.example",
+          disableDeviceAuth: false,
+          authTokenRef: { type: "secret_ref", secretId: "secret-1", version: "latest" },
+          devicePrivateKeyPem: expect.stringContaining("BEGIN PRIVATE KEY"),
+        }),
+      }),
+    );
+  });
+
   it("preserves stored Otto apiKeyRef when the user leaves the field blank", async () => {
     mockBuilderService.getSettings.mockResolvedValue({
       companyId,

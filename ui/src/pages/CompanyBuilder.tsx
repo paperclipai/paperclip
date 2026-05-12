@@ -1,7 +1,6 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
-  BuilderHandoffTarget,
   BuilderMessage,
   BuilderProposal,
   BuilderSession,
@@ -766,36 +765,6 @@ function RuntimeSummaryCard({
   );
 }
 
-function WorkflowCard({
-  handoff,
-}: {
-  handoff: BuilderHandoffTarget | null;
-}) {
-  return (
-    <Card className="border-border/70">
-      <CardHeader className="pb-3">
-        <CardTitle className="text-sm">Workflow</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3 text-sm text-muted-foreground">
-        <p>
-          Start work here, then continue governed or multi-step actions in the standard surface.
-        </p>
-        <p>
-          Direct actions stay inline only when the change is local and safe.
-        </p>
-        {handoff?.href ? (
-          <Button asChild size="sm" variant="outline" className="w-full">
-            <Link to={handoff.href}>
-              {handoff.label}
-              <ArrowUpRight className="h-4 w-4" />
-            </Link>
-          </Button>
-        ) : null}
-      </CardContent>
-    </Card>
-  );
-}
-
 function SessionRowAction({
   label,
   icon,
@@ -865,6 +834,15 @@ export function CompanyBuilder() {
     },
     onSuccess: async (created) => {
       if (!created) return;
+      queryClient.setQueryData<{ sessions: BuilderSession[] } | undefined>(
+        [...QUERY_KEY, "sessions", selectedCompanyId],
+        (current) => ({
+          sessions: [
+            created.session,
+            ...(current?.sessions ?? []).filter((session) => session.id !== created.session.id),
+          ],
+        }),
+      );
       setActiveSessionId(created.session.id);
       await queryClient.invalidateQueries({
         queryKey: [...QUERY_KEY, "sessions", selectedCompanyId],
@@ -885,7 +863,6 @@ export function CompanyBuilder() {
       return builderApi.archiveSession(selectedCompanyId, sessionId);
     },
     onSuccess: async () => {
-      setArchivedSectionOpen(true);
       await queryClient.invalidateQueries({
         queryKey: [...QUERY_KEY, "sessions", selectedCompanyId],
       });
@@ -940,9 +917,11 @@ export function CompanyBuilder() {
       setActiveSessionId(null);
       return;
     }
-    if (!activeSessionId || !sessions.some((session) => session.id === activeSessionId)) {
+    if (!activeSessionId) {
       setActiveSessionId(sessions[0]?.id ?? null);
+      return;
     }
+    if (!sessions.some((session) => session.id === activeSessionId)) return;
   }, [activeSessionId, sessions]);
 
   const detail = sessionDetailQuery.data?.session ?? null;
@@ -950,16 +929,6 @@ export function CompanyBuilder() {
     sessions.find((session) => session.id === activeSessionId) ?? null;
   const effectiveRuntimeConfig =
     detail?.effectiveRuntimeConfig ?? activeSession?.effectiveRuntimeConfig ?? null;
-
-  const lastHandoff = useMemo(() => {
-    if (!detail) return null;
-    const messages = [...detail.messages].reverse();
-    for (const message of messages) {
-      const handoff = message.content.toolResult?.handoff;
-      if (handoff?.href) return handoff;
-    }
-    return null;
-  }, [detail]);
 
   if (!selectedCompanyId) {
     return (
@@ -970,8 +939,8 @@ export function CompanyBuilder() {
   }
 
   return (
-    <div className="grid h-full gap-4 lg:grid-cols-[280px_minmax(0,1fr)_320px]">
-      <Card className="overflow-hidden border-border/70">
+    <div className="grid h-full gap-4 lg:grid-cols-[minmax(280px,1fr)_minmax(0,2fr)]">
+      <Card className="overflow-hidden border-border/70 lg:min-h-0">
         <CardHeader className="border-b border-border/70 pb-3">
           <div className="flex items-center justify-between gap-3">
             <CardTitle className="text-sm">Sessions</CardTitle>
@@ -985,7 +954,7 @@ export function CompanyBuilder() {
             </Button>
           </div>
         </CardHeader>
-        <CardContent className="p-0">
+        <CardContent className="p-0 lg:max-h-[calc(100vh-14rem)] lg:overflow-y-auto">
           {sessions.length === 0 ? (
             <div className="p-4 text-sm text-muted-foreground">
               No sessions yet. Start one to plan, draft, or launch company work.
@@ -1073,29 +1042,7 @@ export function CompanyBuilder() {
         </CardContent>
       </Card>
 
-      <Card className="overflow-hidden border-border/70">
-        <CardHeader className="border-b border-border/70 pb-3">
-          <CardTitle className="text-sm">
-            {activeSession ? getSessionDisplayTitle(activeSession) : "Conversation"}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="h-[78vh] p-4">
-          {detail ? (
-            <ConversationPane
-              companyId={selectedCompanyId}
-              session={detail}
-              onBusyChange={setSidebarBusy}
-            />
-          ) : (
-            <EmptyState
-              icon={Sparkles}
-              message="No session selected. Create one to start a Builder conversation."
-            />
-          )}
-        </CardContent>
-      </Card>
-
-      <div className="space-y-4">
+      <div className="grid gap-4 lg:min-h-0 lg:grid-rows-[auto_minmax(0,1fr)]">
         <RuntimeSummaryCard
           runtime={effectiveRuntimeConfig}
           messageCount={detail?.messages.length ?? 0}
@@ -1104,7 +1051,27 @@ export function CompanyBuilder() {
             return status === "pending" || status === "approved";
           }).length ?? 0}
         />
-        <WorkflowCard handoff={lastHandoff} />
+        <Card className="overflow-hidden border-border/70 lg:min-h-0">
+          <CardHeader className="border-b border-border/70 pb-3">
+            <CardTitle className="text-sm">
+              {activeSession ? getSessionDisplayTitle(activeSession) : "Conversation"}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-4 lg:h-[calc(100vh-22rem)]">
+            {detail ? (
+              <ConversationPane
+                companyId={selectedCompanyId}
+                session={detail}
+                onBusyChange={setSidebarBusy}
+              />
+            ) : (
+              <EmptyState
+                icon={Sparkles}
+                message="No session selected. Create one to start a Builder conversation."
+              />
+            )}
+          </CardContent>
+        </Card>
       </div>
     </div>
   );
