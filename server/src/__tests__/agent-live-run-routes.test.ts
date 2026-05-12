@@ -116,6 +116,33 @@ function createLiveRunsDbStub(rows: Array<Record<string, unknown>>) {
   };
 }
 
+function createIssueWorkflowDbStub(
+  runRows: Array<Record<string, unknown>>,
+  eventRows: Array<Record<string, unknown>>,
+) {
+  let selectCallCount = 0;
+  const limits: Array<ReturnType<typeof vi.fn>> = [];
+  const db = {
+    select: vi.fn().mockImplementation(() => {
+      selectCallCount += 1;
+      const rows = selectCallCount === 1 ? runRows : eventRows;
+      const limit = vi.fn(async (value: number) => rows.slice(0, value));
+      limits.push(limit);
+      return {
+        from: vi.fn().mockReturnThis(),
+        innerJoin: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        orderBy: vi.fn().mockReturnValue({
+          limit,
+          then: (resolve: (value: Array<Record<string, unknown>>) => unknown) => Promise.resolve(rows).then(resolve),
+        }),
+      };
+    }),
+  };
+
+  return { db, limits };
+}
+
 async function requestApp(
   app: express.Express,
   buildRequest: (baseUrl: string) => request.Test,
@@ -221,6 +248,99 @@ describe("agent live run routes", () => {
       invocationSource: "on_demand",
       triggerDetail: "manual",
     });
+  });
+
+  it("returns a compact workflow graph payload for issue progress polling", async () => {
+    const { db, limits } = createIssueWorkflowDbStub([
+      {
+        id: "run-1",
+        companyId: "company-1",
+        status: "running",
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        startedAt: new Date("2026-04-10T09:30:00.000Z"),
+        finishedAt: null,
+        createdAt: new Date("2026-04-10T09:29:59.000Z"),
+        agentId: "agent-1",
+        agentName: "Builder",
+        adapterType: "codex_local",
+        logBytes: 42,
+        livenessState: "healthy",
+        livenessReason: null,
+        continuationAttempt: 0,
+        lastUsefulActionAt: new Date("2026-04-10T09:31:00.000Z"),
+        nextAction: "continue",
+        lastOutputAt: new Date("2026-04-10T09:31:30.000Z"),
+        lastOutputSeq: 7,
+        lastOutputStream: "stdout",
+        lastOutputBytes: 512,
+        processStartedAt: new Date("2026-04-10T09:30:02.000Z"),
+      },
+    ], [
+      {
+        id: 42,
+        companyId: "company-1",
+        runId: "run-1",
+        agentId: "agent-1",
+        seq: 7,
+        eventType: "stdout",
+        stream: "stdout",
+        level: "info",
+        message: "working api_key=super-secret-value",
+        payload: { text: "working", apiKey: "super-secret-value" },
+        createdAt: new Date("2026-04-10T09:31:30.000Z"),
+      },
+    ]);
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/issues/pc1a2-1295/workflow"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PC1A2-1295");
+    expect(limits[0]).toHaveBeenCalledWith(10);
+    expect(limits[1]).toHaveBeenCalledWith(25);
+    expect(res.body).toMatchObject({
+      issue: {
+        id: "issue-1",
+        companyId: "company-1",
+        status: "in_progress",
+        assigneeAgentId: "agent-1",
+      },
+      summary: {
+        totalRuns: 1,
+        activeRuns: 1,
+        latestRunStatus: "running",
+        latestEventSeq: 7,
+      },
+      nodes: [
+        {
+          id: "issue:issue-1",
+          type: "issue",
+          status: "in_progress",
+          label: "PC1A2-1295",
+        },
+        {
+          id: "run:run-1",
+          type: "run",
+          status: "running",
+          label: "Builder",
+        },
+        {
+          id: "event:run-1:7",
+          type: "event",
+          status: "stdout",
+          label: "stdout #7",
+        },
+      ],
+      edges: [
+        { id: "issue:issue-1->run:run-1", source: "issue:issue-1", target: "run:run-1" },
+        { id: "run:run-1->event:run-1:7", source: "run:run-1", target: "event:run-1:7" },
+      ],
+    });
+    expect(JSON.stringify(res.body)).not.toContain("super-secret-value");
+    expect(JSON.stringify(res.body)).not.toContain("api_key");
   });
 
   it("returns a compact active run payload for issue polling", async () => {

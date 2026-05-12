@@ -3,7 +3,7 @@ import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import { ApiError } from "../api/client";
-import { issuesApi } from "../api/issues";
+import { issuesApi, type IssueWorkflow } from "../api/issues";
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
 import { heartbeatsApi, type ActiveRunForIssue, type LiveRunForIssue } from "../api/heartbeats";
@@ -917,6 +917,188 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   );
 });
 
+type IssueWorkflowCardProps = {
+  workflow: IssueWorkflow | undefined;
+  loading: boolean;
+  error: Error | null;
+};
+
+function IssueWorkflowCard({ workflow, loading, error }: IssueWorkflowCardProps) {
+  const nodes = workflow?.nodes ?? [];
+  const visibleNodes = nodes.slice(0, 8);
+  const hiddenNodeCount = Math.max(0, nodes.length - visibleNodes.length);
+  const totalRuns = workflow?.summary.totalRuns ?? 0;
+  const activeRuns = workflow?.summary.activeRuns ?? 0;
+  const latestRunStatus = workflow?.summary.latestRunStatus ?? "none";
+  const totalEvents = nodes.filter((node) => node.type === "event").length;
+  const totalEdges = workflow?.edges.length ?? 0;
+  const visibleNodeIds = useMemo(() => new Set(visibleNodes.map((node) => node.id)), [visibleNodes]);
+  const visibleEdges = useMemo(
+    () => (workflow?.edges ?? []).filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target)).slice(0, 12),
+    [visibleNodeIds, workflow?.edges],
+  );
+  const dagNodePositions = useMemo(() => {
+    const byId = new Map<string, { x: number; y: number }>();
+    const laneRows = new Map<IssueWorkflow["nodes"][number]["type"], number>();
+    visibleNodes.forEach((node) => {
+      const column = node.type === "issue" ? 0 : node.type === "run" ? 1 : 2;
+      const row = laneRows.get(node.type) ?? 0;
+      laneRows.set(node.type, row + 1);
+      byId.set(node.id, {
+        x: 100 + column * 210,
+        y: 64 + row * 72,
+      });
+    });
+    return byId;
+  }, [visibleNodes]);
+  const maxLaneRows = useMemo(() => {
+    const counts = new Map<IssueWorkflow["nodes"][number]["type"], number>();
+    visibleNodes.forEach((node) => counts.set(node.type, (counts.get(node.type) ?? 0) + 1));
+    return Math.max(1, ...counts.values());
+  }, [visibleNodes]);
+  const dagHeight = Math.max(220, 120 + Math.max(maxLaneRows - 1, 0) * 72);
+
+  return (
+    <section className="rounded-lg border border-border bg-card/60 p-3 shadow-sm" aria-label="Live Workflow">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <ListTree className="h-4 w-4 text-muted-foreground" />
+            Live Workflow
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Compact graph of issue work, runs, and recent run events.
+          </p>
+          <p className="text-[11px] text-muted-foreground">Runs {totalRuns} · Events {totalEvents} · Edges {totalEdges}</p>
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs">
+          <span className="rounded-full border border-border bg-background px-2 py-1">Runs {totalRuns}</span>
+          <span className="rounded-full border border-border bg-background px-2 py-1">Active {activeRuns}</span>
+          <span className="rounded-full border border-border bg-background px-2 py-1">Latest {latestRunStatus}</span>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="mt-3 space-y-2">
+          <Skeleton className="h-4 w-40" />
+          <Skeleton className="h-3 w-full" />
+          <Skeleton className="h-3 w-3/4" />
+        </div>
+      ) : error ? (
+        <p className="mt-3 text-xs text-destructive">Workflow graph is unavailable.</p>
+      ) : visibleNodes.length === 0 ? (
+        <p className="mt-3 text-xs text-muted-foreground">No workflow nodes have been recorded yet.</p>
+      ) : (
+        <div className="mt-3 space-y-3">
+          <div className="flex flex-wrap items-center gap-2 rounded-md border border-border/70 bg-background/70 px-3 py-2 text-[11px] text-muted-foreground">
+            <span className="font-medium text-foreground">Legend</span>
+            <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-emerald-700 dark:text-emerald-300">issue</span>
+            <span className="rounded-full border border-blue-500/40 bg-blue-500/10 px-2 py-0.5 text-blue-700 dark:text-blue-300">run</span>
+            <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-amber-700 dark:text-amber-300">event</span>
+            <span className="rounded-full border border-red-500/40 bg-red-500/10 px-2 py-0.5 text-red-700 dark:text-red-300">error</span>
+          </div>
+          <div className="overflow-x-auto rounded-lg border border-border/70 bg-background/80 p-3">
+            <svg
+              data-testid="workflow-dag-graph"
+              role="img"
+              aria-label="Workflow DAG graph"
+              viewBox={`0 0 700 ${dagHeight}`}
+              className="min-h-56 w-full min-w-[700px]"
+            >
+              <defs>
+                <marker id="workflow-dag-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+                  <path d="M0,0 L8,4 L0,8 Z" className="fill-muted-foreground" />
+                </marker>
+              </defs>
+              {visibleEdges.map((edge) => {
+                const source = dagNodePositions.get(edge.source);
+                const target = dagNodePositions.get(edge.target);
+                const sourceNode = visibleNodes.find((node) => node.id === edge.source);
+                const targetNode = visibleNodes.find((node) => node.id === edge.target);
+                if (!source || !target || !sourceNode || !targetNode) return null;
+                const edgeLabel = `${sourceNode.type} → ${targetNode.type}`;
+                const midX = (source.x + target.x) / 2;
+                const midY = (source.y + target.y) / 2 - 8;
+                return (
+                  <g key={edge.id}>
+                    <path
+                      data-testid="workflow-dag-edge"
+                      d={`M ${source.x + 64} ${source.y} C ${source.x + 124} ${source.y}, ${target.x - 124} ${target.y}, ${target.x - 64} ${target.y}`}
+                      className="fill-none stroke-muted-foreground/45"
+                      strokeWidth="2"
+                      markerEnd="url(#workflow-dag-arrow)"
+                    />
+                    <text
+                      data-testid="workflow-dag-edge-label"
+                      x={midX}
+                      y={midY}
+                      textAnchor="middle"
+                      className="fill-muted-foreground text-[9px]"
+                    >
+                      {edgeLabel}
+                    </text>
+                  </g>
+                );
+              })}
+              {visibleNodes.map((node) => {
+                const position = dagNodePositions.get(node.id);
+                if (!position) return null;
+                const fillClass = node.status === "failed" || node.status === "error"
+                  ? "fill-red-500/10 stroke-red-500/55"
+                  : node.type === "run"
+                    ? "fill-blue-500/10 stroke-blue-500/50"
+                    : node.type === "event"
+                      ? "fill-amber-500/10 stroke-amber-500/50"
+                      : "fill-emerald-500/10 stroke-emerald-500/50";
+                return (
+                  <g
+                    key={node.id}
+                    data-testid="workflow-dag-node"
+                    data-workflow-status={node.status ?? "unknown"}
+                    transform={`translate(${position.x - 64} ${position.y - 24})`}
+                  >
+                    <rect width="128" height="48" rx="12" className={fillClass} strokeWidth="1.5" />
+                    <text x="64" y="20" textAnchor="middle" className="fill-foreground text-[11px] font-semibold">
+                      {node.label.length > 18 ? `${node.label.slice(0, 15)}...` : node.label}
+                    </text>
+                    <text x="64" y="36" textAnchor="middle" className="fill-muted-foreground text-[10px]">
+                      {node.type} · {node.status ?? "unknown"}
+                    </text>
+                  </g>
+                );
+              })}
+            </svg>
+          </div>
+          <div className="space-y-2">
+            {visibleNodes.map((node, index) => (
+            <div key={node.id} className="flex items-start gap-2 text-sm">
+              <div className="flex flex-col items-center">
+                <span className={cn(
+                  "mt-0.5 flex h-6 min-w-12 items-center justify-center rounded-full border px-2 text-[10px] uppercase tracking-wide",
+                  node.type === "run" ? "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300" :
+                  node.type === "event" ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300" :
+                  "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+                )}>
+                  {node.type}
+                </span>
+                {index < visibleNodes.length - 1 ? <span className="h-4 w-px bg-border" /> : null}
+              </div>
+              <div className="min-w-0 flex-1 rounded-md border border-border/70 bg-background px-3 py-2">
+                <div className="truncate font-medium">{node.label}</div>
+                <div className="text-xs text-muted-foreground">{node.status ?? "unknown"}</div>
+              </div>
+            </div>
+          ))}
+          {hiddenNodeCount > 0 ? (
+            <p className="text-xs text-muted-foreground">+{hiddenNodeCount} more workflow nodes</p>
+          ) : null}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 type IssueDetailActivityTabProps = {
   issue: Issue;
   issueId: string;
@@ -1315,6 +1497,17 @@ export function IssueDetail() {
   });
   const resolvedHasActiveRun = issue ? shouldTrackIssueActiveRun(issue) && hasActiveRun : hasActiveRun;
   const hasLiveRuns = liveRunCount > 0 || resolvedHasActiveRun;
+  const {
+    data: issueWorkflow,
+    isLoading: issueWorkflowLoading,
+    error: issueWorkflowError,
+  } = useQuery<IssueWorkflow, Error>({
+    queryKey: queryKeys.issues.workflow(issueId!),
+    queryFn: () => issuesApi.getWorkflow(issueId!),
+    enabled: !!issueId,
+    refetchInterval: hasLiveRuns ? 3000 : 10000,
+    placeholderData: keepPreviousDataForSameQueryTail<IssueWorkflow>(issueId ?? "pending"),
+  });
   useEffect(() => {
     if (!hasLiveRuns && locallyQueuedCommentRunIds.size > 0) {
       setLocallyQueuedCommentRunIds(new Map());
@@ -3750,6 +3943,12 @@ export function IssueDetail() {
         issue={issue}
         project={resolvedProject}
         onUpdate={(data) => updateIssue.mutate(data)}
+      />
+
+      <IssueWorkflowCard
+        workflow={issueWorkflow}
+        loading={issueWorkflowLoading}
+        error={issueWorkflowError}
       />
 
       <Separator />

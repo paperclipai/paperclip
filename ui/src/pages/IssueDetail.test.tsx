@@ -6,6 +6,7 @@ import { act, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueDetail } from "./IssueDetail";
+import { createDeterministicIssueWorkflow } from "./__fixtures__/issueWorkflow";
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -27,6 +28,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   uploadAttachment: vi.fn(),
   deleteAttachment: vi.fn(),
   upsertDocument: vi.fn(),
+  getWorkflow: vi.fn(),
 }));
 
 const mockActivityApi = vi.hoisted(() => ({
@@ -781,6 +783,23 @@ describe("IssueDetail", () => {
     mockIssuesApi.listComments.mockResolvedValue([]);
     mockIssuesApi.listAttachments.mockResolvedValue([]);
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
+    mockIssuesApi.getWorkflow.mockResolvedValue({
+      issue: {
+        id: "issue-1",
+        companyId: "company-1",
+        status: "todo",
+        assigneeAgentId: null,
+        executionRunId: null,
+      },
+      summary: {
+        totalRuns: 0,
+        activeRuns: 0,
+        latestRunStatus: null,
+        latestEventSeq: null,
+      },
+      nodes: [],
+      edges: [],
+    });
     mockIssuesApi.markRead.mockResolvedValue({ id: "issue-1", lastReadAt: new Date().toISOString() });
     mockIssuesApi.getTreeControlState.mockResolvedValue({ activePauseHold: null });
     mockIssuesApi.listTreeHolds.mockResolvedValue([]);
@@ -837,6 +856,100 @@ describe("IssueDetail", () => {
     expect(container.textContent).toContain("Issue detail smoke");
     expect(container.textContent).toContain("Chat thread");
     expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+
+  it("renders a compact live workflow summary on the issue detail page", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", executionRunId: "run-1" }));
+    mockIssuesApi.getWorkflow.mockResolvedValue({
+      issue: {
+        id: "issue-1",
+        companyId: "company-1",
+        status: "in_progress",
+        assigneeAgentId: "agent-1",
+        executionRunId: "run-1",
+      },
+      summary: {
+        totalRuns: 1,
+        activeRuns: 1,
+        latestRunStatus: "running",
+        latestEventSeq: 7,
+      },
+      nodes: [
+        { id: "issue:issue-1", type: "issue", status: "in_progress", label: "PAP-1" },
+        { id: "run:run-1", type: "run", status: "running", label: "Builder" },
+        { id: "event:run-1:7", type: "event", status: "stdout", label: "stdout #7" },
+      ],
+      edges: [
+        { id: "issue:issue-1->run:run-1", source: "issue:issue-1", target: "run:run-1" },
+        { id: "run:run-1->event:run-1:7", source: "run:run-1", target: "event:run-1:7" },
+      ],
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.getWorkflow).toHaveBeenCalledWith("PAP-1");
+      expect(container.textContent).toContain("Live Workflow");
+      expect(container.textContent).toContain("Runs 1");
+      expect(container.textContent).toContain("Active 1");
+      expect(container.textContent).toContain("Latest running");
+      expect(container.textContent).toContain("Builder");
+      expect(container.textContent).toContain("stdout #7");
+      const graph = container.querySelector('[data-testid="workflow-dag-graph"]');
+      expect(graph).not.toBeNull();
+      expect(graph?.querySelectorAll('[data-testid="workflow-dag-edge"]')).toHaveLength(2);
+      expect(graph?.querySelectorAll('[data-testid="workflow-dag-node"]')).toHaveLength(3);
+      expect(graph?.textContent).toContain("PAP-1");
+    });
+  });
+
+  it("renders the deterministic workflow fixture as a compact DAG regression", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "todo" }));
+    mockIssuesApi.getWorkflow.mockResolvedValue(createDeterministicIssueWorkflow());
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    await waitForAssertion(() => {
+      const graph = container.querySelector('[data-testid="workflow-dag-graph"]');
+      expect(graph).not.toBeNull();
+      expect(container.textContent).toContain("Runs 2");
+      expect(container.textContent).toContain("Active 0");
+      expect(container.textContent).toContain("Latest failed");
+      expect(graph?.querySelectorAll('[data-testid="workflow-dag-node"]')).toHaveLength(8);
+      expect(graph?.querySelectorAll('[data-testid="workflow-dag-edge"]')).toHaveLength(7);
+      expect(graph?.querySelectorAll('[data-testid="workflow-dag-edge-label"]')).toHaveLength(7);
+      expect(graph?.querySelector('[data-testid="workflow-dag-node"][data-workflow-status="failed"]')).not.toBeNull();
+      expect(graph?.querySelector('[data-testid="workflow-dag-node"][data-workflow-status="error"]')).not.toBeNull();
+      expect(graph?.textContent).toContain("WORK-2371");
+      expect(graph?.textContent).toContain("Working QA Engi...");
+      expect(graph?.textContent).toContain("error #1");
+      expect(graph?.textContent).toContain("lifecycle #2");
+      expect(graph?.textContent).toContain("issue → run");
+      expect(graph?.textContent).toContain("run → event");
+      expect(container.textContent).toContain("Runs 2 · Events 6 · Edges 8");
+      expect(container.textContent).toContain("Legend");
+      expect(container.textContent).toContain("issue");
+      expect(container.textContent).toContain("run");
+      expect(container.textContent).toContain("event");
+      expect(container.textContent).toContain("error");
+      expect(container.textContent).toContain("+1 more workflow nodes");
+    });
   });
 
   it("passes blocker attention to the issue detail header status icon", async () => {
