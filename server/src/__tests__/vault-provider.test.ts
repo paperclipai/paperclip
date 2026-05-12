@@ -856,3 +856,79 @@ describe("resolveVersion — managed", () => {
     ).rejects.toMatchObject({ code: "not_found" });
   });
 });
+
+describe("linkExternalSecret", () => {
+  it("returns external_reference material with fingerprint and no plaintext copy", async () => {
+    const gw = fakeVaultGateway();
+    gw.store.set("secret/external/teams/platform/github", {
+      versions: [[JSON.stringify({ value: "external-v1" })]],
+    });
+    const provider = createVaultProvider({
+      config: {
+        address: "https://v",
+        namespace: null,
+        kvMount: "secret",
+        kvPathPrefix: "paperclip",
+        auth: { method: "token", role: null, saTokenPath: "/dev/null" },
+        versionRetention: 10,
+      },
+      gateway: gw.impl,
+    });
+    process.env.VAULT_TOKEN = "static";
+    const linked = await provider.linkExternalSecret({
+      externalRef: "secret/external/teams/platform/github",
+    });
+    expect((linked.material as { source: string }).source).toBe("external_reference");
+    expect(linked.externalRef).toBe("secret/external/teams/platform/github");
+    expect(JSON.stringify(linked)).not.toContain("external-v1");
+    expect(linked.fingerprintSha256).toBeTruthy();
+  });
+
+  it("rejects external refs that overlap the managed kvPathPrefix", async () => {
+    const provider = createVaultProvider({
+      config: {
+        address: "https://v",
+        namespace: null,
+        kvMount: "secret",
+        kvPathPrefix: "paperclip",
+        auth: { method: "token", role: null, saTokenPath: "/dev/null" },
+        versionRetention: 10,
+      },
+      gateway: fakeVaultGateway().impl,
+    });
+    process.env.VAULT_TOKEN = "static";
+    await expect(
+      provider.linkExternalSecret({ externalRef: "secret/paperclip/d/co/SOMETHING" }),
+    ).rejects.toThrow(/managed/);
+  });
+});
+
+describe("resolveVersion — external", () => {
+  it("reads the requested dataKey", async () => {
+    const gw = fakeVaultGateway();
+    gw.store.set("secret/external/multi", {
+      versions: [[JSON.stringify({ value: "v", token: "tok-extra" })]],
+    });
+    const provider = createVaultProvider({
+      config: {
+        address: "https://v",
+        namespace: null,
+        kvMount: "secret",
+        kvPathPrefix: "paperclip",
+        auth: { method: "token", role: null, saTokenPath: "/dev/null" },
+        versionRetention: 10,
+      },
+      gateway: gw.impl,
+    });
+    process.env.VAULT_TOKEN = "static";
+    const linked = await provider.linkExternalSecret({
+      externalRef: "secret/external/multi#token",
+    });
+    const plaintext = await provider.resolveVersion({
+      material: linked.material,
+      externalRef: linked.externalRef,
+      context: { companyId: "co", secretId: "s", secretKey: "K", version: 1 },
+    });
+    expect(plaintext).toBe("tok-extra");
+  });
+});

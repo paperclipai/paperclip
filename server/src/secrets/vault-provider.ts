@@ -395,6 +395,25 @@ function managedMaterial(input: {
   };
 }
 
+function externalReferenceMaterial(ref: ParsedExternalRef): VaultManagedMaterial {
+  return {
+    scheme: VAULT_MATERIAL_SCHEME,
+    source: "external_reference",
+    mount: ref.mount,
+    path: ref.path,
+    dataKey: ref.dataKey,
+    version: null,
+  };
+}
+
+function assertNotManagedOverlap(config: VaultProviderConfig, ref: ParsedExternalRef): void {
+  if (ref.mount === config.kvMount && (ref.path === config.kvPathPrefix || ref.path.startsWith(`${config.kvPathPrefix}/`))) {
+    throw unprocessable(
+      `vault external ref overlaps Paperclip-managed prefix '${config.kvMount}/${config.kvPathPrefix}'`,
+    );
+  }
+}
+
 function fingerprintFromVersionAndPath(mount: string, path: string, version: number): string {
   return createHash("sha256").update(`${mount}/${path}@v${version}`).digest("hex");
 }
@@ -549,8 +568,20 @@ export function createVaultProvider(
         },
       });
     },
-    async linkExternalSecret() {
-      throw new Error("linkExternalSecret not implemented yet");
+    async linkExternalSecret(input) {
+      const config = resolveConfig(input.providerConfig);
+      const parsed = parseExternalRef(input.externalRef);
+      assertNotManagedOverlap(config, parsed);
+      const fingerprint = createHash("sha256")
+        .update(`${parsed.mount}/${parsed.path}#${parsed.dataKey}`)
+        .digest("hex");
+      return {
+        material: externalReferenceMaterial(parsed),
+        valueSha256: fingerprint,
+        fingerprintSha256: fingerprint,
+        externalRef: input.externalRef,
+        providerVersionRef: input.providerVersionRef ?? null,
+      };
     },
     async resolveVersion(input) {
       const config = resolveConfig(input.providerConfig);
