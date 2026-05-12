@@ -2,7 +2,6 @@ import type { Edge } from "@xyflow/react";
 import { usePluginData, useHostContext } from "@paperclipai/plugin-sdk/ui";
 import type { StageDefinition, StageType, FanInStrategy } from "../../types.js";
 import { DATA_KEYS } from "../constants.js";
-import { ConditionBuilder } from "./ConditionBuilder.js";
 
 interface AgentItem {
   id: string;
@@ -17,12 +16,12 @@ interface ListAgentsResult {
 interface EdgeInspectorProps {
   edge: Edge;
   stageIds: string[];
-  onUpdate: (id: string, changes: Partial<{ label: string; when: string; type: "default" | "error" }>) => void;
+  onUpdate: (id: string, changes: Partial<{ label: string; sourceHandle: string; type: "default" | "error" }>) => void;
   onDelete: (id: string) => void;
 }
 
 function EdgeInspector({ edge, stageIds, onUpdate, onDelete }: EdgeInspectorProps) {
-  const data = (edge.data ?? {}) as { when?: string; type?: "default" | "error" };
+  const data = (edge.data ?? {}) as { sourceHandle?: string; type?: "default" | "error" };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -39,13 +38,13 @@ function EdgeInspector({ edge, stageIds, onUpdate, onDelete }: EdgeInspectorProp
         />
       </FieldGroup>
 
-      <FieldGroup label="Condition (when)">
-        <ConditionBuilder
-          value={data.when ?? ""}
-          onChange={(v) => onUpdate(edge.id, { when: v })}
-          stageIds={[edge.source]}
-        />
-      </FieldGroup>
+      {(edge.data as any)?.sourceHandle && (
+        <FieldGroup label="Routes on decision">
+          <div style={{ ...inputStyle, background: "#0f172a", color: "#9ca3af" }}>
+            {(edge.data as any).sourceHandle}
+          </div>
+        </FieldGroup>
+      )}
 
       <FieldGroup label="Edge type">
         <select
@@ -103,44 +102,14 @@ function StageForm({ stage, agents, schemas, pipelineNames, stageIds, upstreamSt
           value={stage.type}
           onChange={(e) => update({ type: e.target.value as StageType })}
         >
-          <option value="worker">Worker</option>
-          <option value="classifier">Classifier</option>
-          <option value="parallel_fan_out">Fan Out</option>
-          <option value="gate">Gate</option>
+          <option value="stage">Stage</option>
+          <option value="fan_out">Fan Out</option>
+          <option value="fan_in">Fan In</option>
           <option value="sub-pipeline">Sub-Pipeline</option>
         </select>
       </FieldGroup>
 
-      <FieldGroup label="Condition">
-        <ConditionBuilder
-          value={(stage as any).condition ?? ""}
-          onChange={(v) => update({ condition: v || undefined } as any)}
-          stageIds={upstreamStageIds}
-        />
-      </FieldGroup>
-
-      <FieldGroup label="Timeout">
-        <input
-          style={inputStyle}
-          value={stage.timeout ?? ""}
-          onChange={(e) => update({ timeout: e.target.value || undefined })}
-          placeholder="e.g. 30m"
-        />
-      </FieldGroup>
-
-      <FieldGroup label="Checkpoint">
-        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-          <input
-            type="checkbox"
-            checked={stage.checkpoint ?? false}
-            onChange={(e) => update({ checkpoint: e.target.checked || undefined })}
-            style={{ accentColor: "#6366f1" }}
-          />
-          <span style={{ color: "#d1d5db", fontSize: 12 }}>Enable checkpoint</span>
-        </label>
-      </FieldGroup>
-
-      {(stage.type === "worker" || stage.type === "classifier") && (
+      {(stage.type === "stage" || stage.type === "fan_out") && (
         <FieldGroup label="Agent Role">
           <select
             style={selectStyle}
@@ -155,7 +124,7 @@ function StageForm({ stage, agents, schemas, pipelineNames, stageIds, upstreamSt
         </FieldGroup>
       )}
 
-      {(stage.type === "worker" || stage.type === "classifier") && (
+      {(stage.type === "stage" || stage.type === "fan_out") && (
         <FieldGroup label="Output Schema">
           <select
             style={selectStyle}
@@ -170,13 +139,24 @@ function StageForm({ stage, agents, schemas, pipelineNames, stageIds, upstreamSt
         </FieldGroup>
       )}
 
-      {(stage.type === "parallel_fan_out" || stage.type === "gate" || stage.type === "worker") && (
+      {(stage.type === "stage" || stage.type === "fan_out") && (
+        <FieldGroup label="Instructions">
+          <textarea
+            style={{ ...inputStyle, minHeight: 120, resize: "vertical" }}
+            value={"instructions" in stage ? (stage.instructions ?? "") : ""}
+            onChange={(e) => update({ instructions: e.target.value || undefined } as any)}
+            placeholder="Agent instructions..."
+          />
+        </FieldGroup>
+      )}
+
+      {stage.type === "fan_in" && (
         <FieldGroup label="Fan-In Strategy">
           <select
             style={selectStyle}
-            value={(stage as { fan_in?: FanInStrategy }).fan_in ?? "all_complete"}
+            value={(stage as { fan_in_strategy?: FanInStrategy }).fan_in_strategy ?? "all_complete"}
             onChange={(e) =>
-              update({ fan_in: e.target.value as FanInStrategy } as Partial<StageDefinition>)
+              update({ fan_in_strategy: e.target.value as FanInStrategy } as Partial<StageDefinition>)
             }
           >
             <option value="all_complete">All Complete</option>
@@ -200,7 +180,7 @@ function StageForm({ stage, agents, schemas, pipelineNames, stageIds, upstreamSt
         </FieldGroup>
       )}
 
-      {(stage.type === "sub-pipeline" || stage.type === "worker" || stage.type === "parallel_fan_out") && (
+      {(stage.type === "sub-pipeline" || stage.type === "fan_out") && (
         <>
           <FieldGroup label="Per Task">
             <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
@@ -228,44 +208,6 @@ function StageForm({ stage, agents, schemas, pipelineNames, stageIds, upstreamSt
         </>
       )}
 
-      <div style={{ borderTop: "1px solid #374151", paddingTop: 12 }}>
-        <div style={{ color: "#9ca3af", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>
-          Retry Config
-        </div>
-        <FieldGroup label="Max Retries">
-          <input
-            type="number"
-            style={inputStyle}
-            value={stage.retry?.max_retries ?? ""}
-            min={0}
-            onChange={(e) => {
-              const val = parseInt(e.target.value, 10);
-              update({
-                retry: isNaN(val)
-                  ? undefined
-                  : { ...(stage.retry ?? {}), max_retries: val },
-              });
-            }}
-            placeholder="0"
-          />
-        </FieldGroup>
-        <FieldGroup label="Retry Body">
-          <textarea
-            style={{ ...inputStyle, height: 60, resize: "vertical" }}
-            value={stage.retry?.body ?? ""}
-            onChange={(e) =>
-              update({
-                retry: {
-                  max_retries: stage.retry?.max_retries ?? 1,
-                  body: e.target.value || undefined,
-                },
-              })
-            }
-            placeholder="Instructions for the retry attempt"
-          />
-        </FieldGroup>
-      </div>
-
       <button
         style={{ ...buttonStyle, background: "#7f1d1d", borderColor: "#991b1b" }}
         onClick={() => onDelete(stage.id)}
@@ -284,7 +226,7 @@ export interface StageInspectorProps {
   currentPipelineName: string;
   onStageChange: (updated: StageDefinition, oldId?: string) => void;
   onStageDelete: (id: string) => void;
-  onEdgeUpdate: (id: string, changes: Partial<{ label: string; when: string; type: "default" | "error" }>) => void;
+  onEdgeUpdate: (id: string, changes: Partial<{ label: string; sourceHandle: string; type: "default" | "error" }>) => void;
   onEdgeDelete: (id: string) => void;
 }
 
