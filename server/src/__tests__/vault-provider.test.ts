@@ -41,3 +41,84 @@ describe("vaultProvider", () => {
     expect(provider.id).toBe("vault");
   });
 });
+
+describe("validateConfig — address rules", () => {
+  function makeProvider() {
+    return createVaultProvider({ gateway: {} as never });
+  }
+
+  it("accepts a clean http(s) origin", async () => {
+    const provider = makeProvider();
+    const r = await provider.validateConfig({
+      providerConfig: {
+        id: "v1",
+        provider: "vault",
+        status: "ready",
+        config: { address: "https://vault.example:8200" },
+      },
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it("rejects address with embedded credentials", async () => {
+    const provider = makeProvider();
+    const r = await provider.validateConfig({
+      providerConfig: {
+        id: "v1",
+        provider: "vault",
+        status: "ready",
+        config: { address: "https://user:pass@vault.example:8200" },
+      },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.warnings.join(" ")).toMatch(/credentials/i);
+  });
+
+  it("rejects address with path/query/fragment", async () => {
+    const provider = makeProvider();
+    for (const bad of [
+      "https://vault.example/path",
+      "https://vault.example?q=1",
+      "https://vault.example#x",
+    ]) {
+      const r = await provider.validateConfig({
+        providerConfig: {
+          id: "v1",
+          provider: "vault",
+          status: "ready",
+          config: { address: bad },
+        },
+      });
+      expect(r.ok).toBe(false);
+    }
+  });
+
+  it("rejects non-http(s) schemes and unparseable addresses", async () => {
+    const provider = makeProvider();
+    for (const bad of ["file:///etc/passwd", "ftp://vault.example", "not a url"]) {
+      const r = await provider.validateConfig({
+        providerConfig: {
+          id: "v1",
+          provider: "vault",
+          status: "ready",
+          config: { address: bad },
+        },
+      });
+      expect(r.ok).toBe(false);
+    }
+  });
+
+  it("rejects missing address", async () => {
+    const provider = makeProvider();
+    const r = await provider.validateConfig({
+      providerConfig: {
+        id: "v1",
+        provider: "vault",
+        status: "ready",
+        config: {},
+      },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.warnings.join(" ")).toMatch(/address/i);
+  });
+});

@@ -39,6 +39,46 @@ export interface VaultHttpGateway {
   // Filled in over subsequent tasks.
 }
 
+function asString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function validateAddress(raw: unknown, warnings: string[]): URL | null {
+  const value = asString(raw);
+  if (!value) {
+    warnings.push("vault address is required (set vault config address or PAPERCLIP_SECRETS_VAULT_ADDR)");
+    return null;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    warnings.push(`vault address is not a valid URL: ${value}`);
+    return null;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    warnings.push(`vault address must use http(s); got ${parsed.protocol}`);
+    return null;
+  }
+  if (parsed.username || parsed.password) {
+    warnings.push("vault address must not embed credentials in the URL");
+    return null;
+  }
+  if (parsed.pathname && parsed.pathname !== "/") {
+    warnings.push(`vault address must be origin-only; got path ${parsed.pathname}`);
+    return null;
+  }
+  if (parsed.search) {
+    warnings.push("vault address must not include a query string");
+    return null;
+  }
+  if (parsed.hash) {
+    warnings.push("vault address must not include a fragment");
+    return null;
+  }
+  return parsed;
+}
+
 export function createVaultProvider(
   _options?: { config?: VaultProviderConfig; gateway?: VaultHttpGateway },
 ): SecretProviderModule {
@@ -54,8 +94,11 @@ export function createVaultProvider(
         configured: false,
       };
     },
-    async validateConfig() {
-      return { ok: false, warnings: ["validateConfig not implemented yet"] };
+    async validateConfig(input) {
+      const warnings: string[] = [];
+      const rawConfig = (input?.providerConfig?.config ?? {}) as Record<string, unknown>;
+      validateAddress(rawConfig.address, warnings);
+      return { ok: warnings.length === 0, warnings };
     },
     async createSecret() {
       throw new Error("createSecret not implemented yet");
