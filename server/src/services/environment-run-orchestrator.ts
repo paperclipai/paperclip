@@ -206,6 +206,7 @@ export function environmentRunOrchestrator(
     companyId: string;
     environment: Environment;
     issueId: string | null;
+    agentId: string;
     heartbeatRunId: string;
     persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
   }): Promise<EnvironmentRuntimeLeaseRecord> {
@@ -280,6 +281,7 @@ export function environmentRunOrchestrator(
       companyId: input.companyId,
       environment,
       issueId: input.issueId,
+      agentId: input.agentId,
       heartbeatRunId: input.heartbeatRunId,
       persistedExecutionWorkspace: input.persistedExecutionWorkspace,
     });

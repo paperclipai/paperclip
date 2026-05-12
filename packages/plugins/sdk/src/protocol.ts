@@ -379,6 +379,13 @@ export interface PluginEnvironmentLease {
 
 export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDriverBaseParams {
   runId: string;
+  /**
+   * UUID of the agent the run is being acquired for. Omitted only for ad-hoc
+   * invocations (e.g. operator-initiated environment test probes) where no
+   * agent context exists. Plugins should treat undefined as "no per-agent
+   * partitioning available" and fall back to environment-level behavior.
+   */
+  agentId?: string;
   workspaceMode?: string;
   requestedCwd?: string;
 }
