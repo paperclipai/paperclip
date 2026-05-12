@@ -73,10 +73,14 @@ vi.mock("../lib/queryKeys", () => ({
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 async function flushReact() {
-  await act(async () => {
-    await Promise.resolve();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-  });
+  // Flush multiple times to allow chained async queries to resolve
+  // (getCeoChat resolves, then CeoChatPanel mounts and listComments resolves)
+  for (let i = 0; i < 3; i++) {
+    await act(async () => {
+      await Promise.resolve();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+  }
 }
 
 function makeQueryClient() {
