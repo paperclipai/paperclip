@@ -26,6 +26,7 @@ const mockWorkerManager = vi.hoisted(() => ({
   isRunning: vi.fn(),
   call: vi.fn(),
 }));
+const mockLoggerError = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/plugin-registry.js", () => ({
   pluginRegistryService: () => mockRegistry,
@@ -46,6 +47,12 @@ vi.mock("../services/plugin-loader.js", () => ({
 
 vi.mock("../services/activity-log.js", () => ({
   logActivity: mockLogActivity,
+}));
+
+vi.mock("../middleware/logger.js", () => ({
+  logger: {
+    error: mockLoggerError,
+  },
 }));
 
 vi.mock("../services/live-events.js", () => ({
@@ -119,6 +126,7 @@ describe.sequential("GET /api/plugins/:pluginId/runtime-config", () => {
     mockRegistry.getByKey.mockResolvedValue(null);
     mockLogActivity.mockResolvedValue(undefined);
     mockLifecycle.restartWorker.mockResolvedValue(undefined);
+    mockLoggerError.mockClear();
   });
 
   it("returns 404 when plugin not found", async () => {
@@ -253,6 +261,15 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
     const res = await request(app).delete(`/api/plugins/${pluginId}/runtime-config`);
     expect(res.status).toBe(204);
     expect(mockLifecycle.restartWorker).toHaveBeenCalledWith(pluginId);
+    expect(mockLoggerError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        err: expect.any(Error),
+        pluginId,
+        pluginKey: "paperclip.example",
+      }),
+      "failed to audit plugin runtime config clear after mutation",
+    );
+    expect(JSON.stringify(mockLoggerError.mock.calls[0]?.[0])).not.toMatch(/password|secret|token|api_key/i);
   });
 
   it("resolves plugin keys before clearing runtime config", async () => {
