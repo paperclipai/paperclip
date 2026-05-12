@@ -1,5 +1,6 @@
 import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.js";
 import { asString, asNumber, parseObject } from "../utils.js";
+import { registerCallback } from "./callback.js";
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { config, runId, agent, context } = ctx;
@@ -8,6 +9,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const method = asString(config.method, "POST");
   const timeoutMs = asNumber(config.timeoutMs, 0);
+  const callbackTimeoutMs = asNumber(config.callbackTimeoutMs, 300_000);
   const headers = parseObject(config.headers) as Record<string, string>;
   const payloadTemplate = parseObject(config.payloadTemplate);
   const body = { ...payloadTemplate, agentId: agent.id, runId, context };
@@ -25,6 +27,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       body: JSON.stringify(body),
       ...(timer ? { signal: controller.signal } : {}),
     });
+
+    if (res.status === 202) {
+      return registerCallback(runId, callbackTimeoutMs);
+    }
 
     if (!res.ok) {
       throw new Error(`HTTP invoke failed with status ${res.status}`);
