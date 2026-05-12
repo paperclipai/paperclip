@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# .githooks/pre-push — i18n guardrail for the localization branch.
+# Runs check-i18n-only-diff.sh before any push on the localization branch.
+# Install: git config core.hooksPath .githooks
+set -uo pipefail
+
+current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+
+case "$current_branch" in
+  vib-1171-2652-2760-3582-localization)
+    root=$(git rev-parse --show-toplevel 2>/dev/null)
+    script="$root/scripts/check-i18n-only-diff.sh"
+    if [[ -f "$script" ]]; then
+      echo "[pre-push] Running i18n-only guardrail..."
+      # Baseline: last commit before stray-files cleanup — commits after are pure i18n-only.
+      guardrail_baseline="d1cd168d"
+      bash "$script" "${guardrail_baseline}..HEAD" || {
+        echo "[pre-push] i18n guardrail FAILED — push aborted. Fix violations above."
+        exit 1
+      }
+    fi
+    ;;
+esac
+
+exit 0

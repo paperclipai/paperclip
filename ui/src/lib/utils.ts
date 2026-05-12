@@ -1,44 +1,50 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { deriveAgentUrlKey, deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "@paperclipai/shared";
-import type { BillingType, FinanceDirection, FinanceEventKind } from "@paperclipai/shared";
+import type { BillingActivity, Issue } from "@paperclipai/shared";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export function asObject(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
+export function formatDurationMs(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+
+  if (hours > 0) {
+    return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds % 60}s`;
+  }
+  return `${seconds}s`;
 }
 
-export function asBoolean(value: unknown, fallback: boolean) {
-  return typeof value === "boolean" ? value : fallback;
+export function formatTokens(n: number): string {
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
 }
 
-export function asFiniteNumber(value: unknown, fallback: number) {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+export function formatCents(cents: number, lng = "en-US"): string {
+  return `$${(cents / 100).toLocaleString(lng, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-export function formatCents(cents: number): string {
-  return `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+export function formatNumber(n: number, lng = "en-US"): string {
+  return n.toLocaleString(lng);
 }
 
-export function formatNumber(n: number): string {
-  return n.toLocaleString("en-US");
-}
-
-export function formatDate(date: Date | string): string {
-  return new Date(date).toLocaleDateString("en-US", {
+export function formatDate(date: Date | string, lng = "en-US"): string {
+  return new Date(date).toLocaleDateString(lng, {
     month: "short",
     day: "numeric",
     year: "numeric",
   });
 }
 
-export function formatDateTime(date: Date | string): string {
-  return new Date(date).toLocaleString("en-US", {
+export function formatDateTime(date: Date | string, lng = "en-US"): string {
+  return new Date(date).toLocaleString(lng, {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -47,14 +53,14 @@ export function formatDateTime(date: Date | string): string {
   });
 }
 
-export function formatShortDate(date: Date | string): string {
-  return new Date(date).toLocaleString("en-US", {
+export function formatShortDate(date: Date | string, lng = "en-US"): string {
+  return new Date(date).toLocaleString(lng, {
     month: "short",
     day: "numeric",
   });
 }
 
-export function relativeTime(date: Date | string): string {
+export function relativeTime(date: Date | string, lng = "en-US"): string {
   const now = Date.now();
   const then = new Date(date).getTime();
   const diffSec = Math.round((now - then) / 1000);
@@ -65,157 +71,46 @@ export function relativeTime(date: Date | string): string {
   if (diffHr < 24) return `${diffHr}h ago`;
   const diffDay = Math.round(diffHr / 24);
   if (diffDay < 30) return `${diffDay}d ago`;
-  return formatDate(date);
+  return formatDate(date, lng);
 }
 
-export function formatTokens(n: number): string {
-  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return String(n);
+export function visibleRunCostUsd(run: { totalCostCents?: number | null; totalCostCentsBilled?: number | null }): number | null {
+  const cents = run.totalCostCentsBilled ?? run.totalCostCents;
+  if (typeof cents !== "number" || cents <= 0) return null;
+  return cents / 100;
 }
 
-/** Humanize a millisecond duration into a compact `1h 2m`, `45m 12s`, `12s` string. */
-export function formatDurationMs(ms: number): string {
-  if (!Number.isFinite(ms) || ms <= 0) return "0s";
-  const totalSeconds = Math.round(ms / 1000);
-  if (totalSeconds < 60) return `${totalSeconds}s`;
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  if (minutes < 60) return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  if (hours < 24) {
-    return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
-  }
-  const days = Math.floor(hours / 24);
-  const remainingHours = hours % 24;
-  return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
+export function activityCostCents(activity: BillingActivity): number {
+  return (activity.runTotalCostCentsBilled ?? 0) + (activity.overageCostCents ?? 0);
 }
 
-/** Map a raw provider slug to a display-friendly name. */
-export function providerDisplayName(provider: string): string {
-  const map: Record<string, string> = {
-    anthropic: "Anthropic",
-    aws_bedrock: "AWS Bedrock",
-    openai: "OpenAI",
-    openrouter: "OpenRouter",
-    chatgpt: "ChatGPT",
-    google: "Google",
-    cursor: "Cursor",
-    jetbrains: "JetBrains AI",
-  };
-  return map[provider.toLowerCase()] ?? provider;
-}
-
-export function billingTypeDisplayName(billingType: BillingType): string {
-  const map: Record<BillingType, string> = {
-    metered_api: "Metered API",
-    subscription_included: "Subscription",
-    subscription_overage: "Subscription overage",
-    credits: "Credits",
-    fixed: "Fixed",
-    unknown: "Unknown",
-  };
-  return map[billingType];
-}
-
-export function quotaSourceDisplayName(source: string): string {
-  const map: Record<string, string> = {
-    "anthropic-oauth": "Anthropic OAuth",
-    "claude-cli": "Claude CLI",
-    "bedrock": "AWS Bedrock",
-    "codex-rpc": "Codex app server",
-    "codex-wham": "ChatGPT WHAM",
-  };
-  return map[source] ?? source;
-}
-
-function coerceBillingType(value: unknown): BillingType | null {
-  if (
-    value === "metered_api" ||
-    value === "subscription_included" ||
-    value === "subscription_overage" ||
-    value === "credits" ||
-    value === "fixed" ||
-    value === "unknown"
-  ) {
-    return value;
-  }
-  return null;
-}
-
-function readRunCostUsd(payload: Record<string, unknown> | null): number {
-  if (!payload) return 0;
-  for (const key of ["costUsd", "cost_usd", "total_cost_usd"] as const) {
-    const value = payload[key];
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-  }
-  return 0;
-}
-
-export function visibleRunCostUsd(
-  usage: Record<string, unknown> | null,
-  result: Record<string, unknown> | null = null,
-): number {
-  const billingType = coerceBillingType(usage?.billingType) ?? coerceBillingType(result?.billingType);
-  if (billingType === "subscription_included") return 0;
-  return readRunCostUsd(usage) || readRunCostUsd(result);
-}
-
-export function financeEventKindDisplayName(eventKind: FinanceEventKind): string {
-  const map: Record<FinanceEventKind, string> = {
-    inference_charge: "Inference charge",
-    platform_fee: "Platform fee",
-    credit_purchase: "Credit purchase",
-    credit_refund: "Credit refund",
-    credit_expiry: "Credit expiry",
-    byok_fee: "BYOK fee",
-    gateway_overhead: "Gateway overhead",
-    log_storage_charge: "Log storage",
-    logpush_charge: "Logpush",
-    provisioned_capacity_charge: "Provisioned capacity",
-    training_charge: "Training",
-    custom_model_import_charge: "Custom model import",
-    custom_model_storage_charge: "Custom model storage",
-    manual_adjustment: "Manual adjustment",
-  };
-  return map[eventKind];
-}
-
-export function financeDirectionDisplayName(direction: FinanceDirection): string {
-  return direction === "credit" ? "Credit" : "Debit";
-}
-
-/** Build an issue URL using the human-readable identifier when available. */
-export function issueUrl(issue: { id: string; identifier?: string | null }): string {
-  return `/issues/${issue.identifier ?? issue.id}`;
-}
-
-/** Build an agent route URL using the short URL key when available. */
-export function agentRouteRef(agent: { id: string; urlKey?: string | null; name?: string | null }): string {
-  return agent.urlKey ?? deriveAgentUrlKey(agent.name, agent.id);
-}
-
-/** Build an agent URL using the short URL key when available. */
 export function agentUrl(agent: { id: string; urlKey?: string | null; name?: string | null }): string {
-  return `/agents/${agentRouteRef(agent)}`;
+  const key = agent.urlKey ?? (agent.name ? deriveAgentUrlKey(agent.name) : null) ?? agent.id;
+  return `/agents/${key}`;
 }
 
-/** Build a project route reference, falling back to UUID when the derived key is ambiguous. */
-export function projectRouteRef(project: { id: string; urlKey?: string | null; name?: string | null }): string {
-  const key = project.urlKey ?? deriveProjectUrlKey(project.name, project.id);
-  // Guard for rolling deploys or legacy data where the server returned a bare slug without UUID suffix.
-  if (key === normalizeProjectUrlKey(project.name) && hasNonAsciiContent(project.name)) return project.id;
-  return key;
-}
-
-/** Build a project URL using the short URL key when available. */
 export function projectUrl(project: { id: string; urlKey?: string | null; name?: string | null }): string {
-  return `/projects/${projectRouteRef(project)}`;
+  const key = project.urlKey ?? (project.name ? deriveProjectUrlKey(project.name) : null) ?? project.id;
+  return `/projects/${key}`;
 }
 
-/** Build a project workspace URL scoped under its project. */
+/** Normalizes a raw input string (e.g. from a URL or text box) into a valid URL key. */
+export function normalizeUrlKey(input: string): string {
+  return normalizeProjectUrlKey(input);
+}
+
+/** True if the string contains characters outside the ASCII range. */
+export function hasNonAscii(input: string): boolean {
+  return hasNonAsciiContent(input);
+}
+
+/** Returns the project-relative URL for a project workspace. */
+export function projectWorkspacePath(project: { id: string; urlKey?: string | null; name?: string | null }, workspaceId: string): string {
+  const pUrl = projectUrl(project);
+  return `${pUrl}/workspaces/${workspaceId}`;
+}
+
+/** Returns the absolute URL for a project workspace, including the domain if needed, though typically just the full app URL scoped under its project. */
 export function projectWorkspaceUrl(
   project: { id: string; urlKey?: string | null; name?: string | null },
   workspaceId: string,

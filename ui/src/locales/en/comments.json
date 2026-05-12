@@ -1,0 +1,57 @@
+{
+  "copy_action": {
+    "copied": "Copied",
+    "copy_failed": "Copy failed",
+    "copy": "Copy",
+    "copy_as_markdown": "Copy comment as markdown"
+  },
+  "status": {
+    "queued": "Queued",
+    "follow_up": "Follow-up",
+    "queueing": "Queueing...",
+    "sending": "Sending..."
+  },
+  "metadata": {
+    "status_label": "Status",
+    "assignee_label": "Assignee",
+    "run_label": "run",
+    "environment_label": "Environment",
+    "provider_label": "Provider",
+    "lease_label": "Lease",
+    "failure_prefix": "Failure: "
+  },
+  "queued_comments_header": "Queued Comments ({{count}})",
+  "interrupt_action": {
+    "interrupting": "Interrupting...",
+    "interrupt": "Interrupt"
+  },
+  "comment_input_placeholder": "Leave a comment...",
+  "attach_image": "Attach image",
+  "no_assignee": "No assignee",
+  "search_assignees": "Search assignees...",
+  "no_assignees_found": "No assignees found.",
+  "comment_button": "Comment",
+  "posting": "Posting...",
+  "you": "You",
+  "timeline_header": "Timeline ({{count}})",
+  "timeline_empty": "No timeline entries yet.",
+  "copied": "Copied",
+  "copy_failed": "Copy failed",
+  "copy": "Copy",
+  "copy_comment_as_markdown": "Copy comment as markdown",
+  "queued": "Queued",
+  "follow_up": "Follow-up",
+  "queueing": "Queueing...",
+  "sending": "Sending...",
+  "assignee": "Assignee",
+  "run": "run",
+  "environment": "Environment",
+  "provider": "Provider",
+  "lease": "Lease",
+  "failure": "Failure:",
+  "queued_comments": "Queued Comments ({{count}})",
+  "interrupting": "Interrupting...",
+  "interrupt": "Interrupt",
+  "leave_a_comment": "Leave a comment...",
+  "comment": "Comment"
+}
