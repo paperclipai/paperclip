@@ -93,6 +93,41 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     });
   });
 
+  it("refreshes identifier-keyed issue approval queries for approval creation", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "approval",
+        entityId: "approval-1",
+        action: "approval.created",
+        details: {
+          issueIds: ["11111111-1111-4111-8111-111111111111"],
+          linkedIssueIds: ["11111111-1111-4111-8111-111111111111"],
+          issueRefs: [
+            {
+              id: "11111111-1111-4111-8111-111111111111",
+              identifier: "PAP-760",
+            },
+          ],
+        },
+      },
+      { userId: null, agentId: null },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.approvals("PAP-760"),
+    });
+  });
+
   it("refreshes linked issue approval queries for legacy approval activity details", () => {
     const invalidations: unknown[] = [];
     const queryClient = {

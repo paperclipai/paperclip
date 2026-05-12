@@ -2159,6 +2159,9 @@ export function buildHostServices(
         if (params.issueId && row) {
           await issueApprovals.link(params.issueId, row.id);
         }
+        const linkedIssues = row ? await issueApprovals.listIssuesForApproval(row.id) : [];
+        const issueIds = linkedIssues.map((issue) => issue.id);
+        const issueRefs = linkedIssues.map((issue) => ({ id: issue.id, identifier: issue.identifier ?? null }));
 
         await logActivity(db, {
           companyId,
@@ -2173,7 +2176,9 @@ export function buildHostServices(
             type: row!.type,
             sourcePluginId: pluginId,
             sourcePluginKey: pluginKey,
-            issueIds: params.issueId ? [params.issueId] : [],
+            issueIds,
+            linkedIssueIds: issueIds,
+            issueRefs,
             initiatingActorType: params.actorAgentId ? "agent" : "plugin",
             initiatingActorId: params.actorAgentId ?? pluginId,
             ...(params.actorRunId ? { initiatingRunId: params.actorRunId } : {}),

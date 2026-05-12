@@ -120,6 +120,9 @@ export function approvalRoutes(
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
     }
+    const linkedIssueDetails = uniqueIssueIds.length > 0
+      ? linkedIssueActivityDetails(await listLinkedIssueRefs(approval.id))
+      : { issueIds: [], linkedIssueIds: [], issueRefs: [] };
 
     await logActivity(db, {
       companyId,
@@ -129,7 +132,7 @@ export function approvalRoutes(
       action: "approval.created",
       entityType: "approval",
       entityId: approval.id,
-      details: { type: approval.type, issueIds: uniqueIssueIds },
+      details: { type: approval.type, ...linkedIssueDetails },
     });
 
     res.status(201).json(redactApprovalPayload(approval));
