@@ -66,42 +66,100 @@ describe("buildInvocationEnvForLogs", () => {
 });
 
 describe("buildPaperclipEnv", () => {
-  it("prefers the local listen host and port over inherited runtime api env", () => {
-    const originalRuntimeApiUrl = process.env.PAPERCLIP_RUNTIME_API_URL;
-    const originalApiUrl = process.env.PAPERCLIP_API_URL;
-    const originalListenHost = process.env.PAPERCLIP_LISTEN_HOST;
-    const originalListenPort = process.env.PAPERCLIP_LISTEN_PORT;
+  function withPaperclipApiEnv(
+    env: Partial<Record<"PAPERCLIP_RUNTIME_API_URL" | "PAPERCLIP_API_URL" | "PAPERCLIP_LISTEN_HOST" | "PAPERCLIP_LISTEN_PORT" | "HOST", string>>,
+    run: () => void,
+  ) {
+    const originalValues = {
+      PAPERCLIP_RUNTIME_API_URL: process.env.PAPERCLIP_RUNTIME_API_URL,
+      PAPERCLIP_API_URL: process.env.PAPERCLIP_API_URL,
+      PAPERCLIP_LISTEN_HOST: process.env.PAPERCLIP_LISTEN_HOST,
+      PAPERCLIP_LISTEN_PORT: process.env.PAPERCLIP_LISTEN_PORT,
+      HOST: process.env.HOST,
+    };
 
     try {
-      process.env.PAPERCLIP_RUNTIME_API_URL = "http://192.168.0.33:3100";
-      process.env.PAPERCLIP_API_URL = "http://192.168.0.33:3100";
-      process.env.PAPERCLIP_LISTEN_HOST = "127.0.0.1";
-      process.env.PAPERCLIP_LISTEN_PORT = "3100";
+      for (const [key, value] of Object.entries(env)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
 
-      expect(
-        buildPaperclipEnv({
-          id: "agent-1",
-          companyId: "company-1",
-        }),
-      ).toMatchObject({
-        PAPERCLIP_AGENT_ID: "agent-1",
-        PAPERCLIP_COMPANY_ID: "company-1",
-        PAPERCLIP_API_URL: "http://127.0.0.1:3100",
-        PAPERCLIP_RUNTIME_API_URL: "http://127.0.0.1:3100",
-      });
+      run();
     } finally {
-      if (originalRuntimeApiUrl === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
-      else process.env.PAPERCLIP_RUNTIME_API_URL = originalRuntimeApiUrl;
-
-      if (originalApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
-      else process.env.PAPERCLIP_API_URL = originalApiUrl;
-
-      if (originalListenHost === undefined) delete process.env.PAPERCLIP_LISTEN_HOST;
-      else process.env.PAPERCLIP_LISTEN_HOST = originalListenHost;
-
-      if (originalListenPort === undefined) delete process.env.PAPERCLIP_LISTEN_PORT;
-      else process.env.PAPERCLIP_LISTEN_PORT = originalListenPort;
+      for (const [key, value] of Object.entries(originalValues)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
     }
+  }
+
+  it("prefers the local listen host and port over inherited runtime api env", () => {
+    withPaperclipApiEnv(
+      {
+        PAPERCLIP_RUNTIME_API_URL: "http://192.168.0.33:3100",
+        PAPERCLIP_API_URL: "http://192.168.0.33:3100",
+        PAPERCLIP_LISTEN_HOST: "127.0.0.1",
+        PAPERCLIP_LISTEN_PORT: "3100",
+      },
+      () => {
+        expect(
+          buildPaperclipEnv({
+            id: "agent-1",
+            companyId: "company-1",
+          }),
+        ).toMatchObject({
+          PAPERCLIP_AGENT_ID: "agent-1",
+          PAPERCLIP_COMPANY_ID: "company-1",
+          PAPERCLIP_API_URL: "http://127.0.0.1:3100",
+          PAPERCLIP_RUNTIME_API_URL: "http://127.0.0.1:3100",
+        });
+      },
+    );
+  });
+
+  it("preserves the inherited runtime api url when listen host is absent", () => {
+    withPaperclipApiEnv(
+      {
+        PAPERCLIP_RUNTIME_API_URL: "http://192.168.0.33:4100",
+        PAPERCLIP_API_URL: "http://192.168.0.33:4100",
+        PAPERCLIP_LISTEN_HOST: undefined,
+        PAPERCLIP_LISTEN_PORT: "3100",
+        HOST: "192.168.0.33",
+      },
+      () => {
+        expect(
+          buildPaperclipEnv({
+            id: "agent-1",
+            companyId: "company-1",
+          }),
+        ).toMatchObject({
+          PAPERCLIP_API_URL: "http://192.168.0.33:4100",
+          PAPERCLIP_RUNTIME_API_URL: "http://192.168.0.33:4100",
+        });
+      },
+    );
+  });
+
+  it("falls back to the inherited runtime api url when listen vars are unset", () => {
+    withPaperclipApiEnv(
+      {
+        PAPERCLIP_RUNTIME_API_URL: "http://10.0.0.25:4100",
+        PAPERCLIP_API_URL: "http://10.0.0.25:4100",
+        PAPERCLIP_LISTEN_HOST: undefined,
+        PAPERCLIP_LISTEN_PORT: undefined,
+      },
+      () => {
+        expect(
+          buildPaperclipEnv({
+            id: "agent-1",
+            companyId: "company-1",
+          }),
+        ).toMatchObject({
+          PAPERCLIP_API_URL: "http://10.0.0.25:4100",
+          PAPERCLIP_RUNTIME_API_URL: "http://10.0.0.25:4100",
+        });
+      },
+    );
   });
 });
 
