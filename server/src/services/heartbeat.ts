@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNotNull, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -2308,6 +2308,7 @@ export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeSe
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
+  runtimeReaper?: { maxRuntimeMs: number; graceMs: number };
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
@@ -2339,6 +2340,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const recovery = recoveryService(db, { enqueueWakeup });
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
+  const defaultRuntimeReaper = options.runtimeReaper ?? { maxRuntimeMs: 15 * 60_000, graceMs: 30_000 };
 
   async function releaseEnvironmentLeasesForRun(input: {
     runId: string;
@@ -5787,6 +5789,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return null;
     }
 
+    const killed = await killStalePriorRunsForAgent(run.agentId, defaultRuntimeReaper);
+    if (killed > 0) {
+      logger.warn({ agentId: run.agentId, killedRuns: killed, runId: run.id }, "pre-heartbeat guard killed stale prior runs");
+    }
+
     const context = parseObject(run.contextSnapshot);
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
       issueId: readNonEmptyString(context.issueId),
@@ -6569,6 +6576,102 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
     }
     return { reaped: reaped.length, runIds: reaped };
+  }
+
+  async function terminateRunAsOrphanReaped(opts: {
+    run: typeof heartbeatRuns.$inferSelect;
+    adapterType: string;
+    adapterConfig: Record<string, unknown>;
+    graceMs: number;
+    maxRuntimeMs: number;
+  }) {
+    const { run, adapterType, adapterConfig, graceMs, maxRuntimeMs } = opts;
+    await terminateHeartbeatRunProcess({ pid: run.processPid, processGroupId: run.processGroupId, graceMs });
+    const now = new Date();
+    const startedAt = run.processStartedAt;
+    const etimeMs = startedAt ? now.getTime() - new Date(startedAt).getTime() : null;
+    const message = `Runtime reaper killed pid ${run.processPid ?? "?"} after ${etimeMs != null ? Math.round(etimeMs / 1000) : "?"}s (limit ${Math.round(maxRuntimeMs / 1000)}s)`;
+    let finalizedRun = await setRunStatus(run.id, "failed", {
+      error: message,
+      errorCode: "orphan_reaped_by_runtime",
+      finishedAt: now,
+      resultJson: mergeRunStopMetadataForAgent(
+        { adapterType, adapterConfig },
+        "failed",
+        { resultJson: parseObject(run.resultJson), errorCode: "orphan_reaped_by_runtime", errorMessage: message },
+      ),
+    });
+    await setWakeupStatus(run.wakeupRequestId, "failed", { finishedAt: now, error: message });
+    if (!finalizedRun) finalizedRun = await getRun(run.id);
+    if (!finalizedRun) return;
+    finalizedRun = await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson)) ?? finalizedRun;
+    await releaseEnvironmentLeasesForRun({
+      runId: finalizedRun.id,
+      companyId: finalizedRun.companyId,
+      agentId: finalizedRun.agentId,
+      status: finalizedRun.status,
+      failureReason: finalizedRun.error ?? undefined,
+    });
+    await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "error",
+      message,
+      payload: {
+        ...(run.processPid ? { processPid: run.processPid } : {}),
+        ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
+        ...(etimeMs != null ? { etimeMs } : {}),
+        maxRuntimeMs,
+      },
+    });
+    await releaseIssueExecutionAndPromote(finalizedRun);
+    await finalizeAgentStatus(run.agentId, "failed");
+    runningProcesses.delete(run.id);
+    await startNextQueuedRunForAgent(run.agentId);
+  }
+
+  async function reapStaleRunningRuns(opts?: { maxRuntimeMs?: number; graceMs?: number }) {
+    const maxRuntimeMs = opts?.maxRuntimeMs ?? defaultRuntimeReaper.maxRuntimeMs;
+    const graceMs = opts?.graceMs ?? defaultRuntimeReaper.graceMs;
+    const cutoff = new Date(Date.now() - maxRuntimeMs);
+    const stale = await db
+      .select({ run: heartbeatRuns, adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(and(
+        eq(heartbeatRuns.status, "running"),
+        isNotNull(heartbeatRuns.processStartedAt),
+        lt(heartbeatRuns.processStartedAt, cutoff),
+      ));
+    const reaped: string[] = [];
+    for (const { run, adapterType, adapterConfig } of stale) {
+      await terminateRunAsOrphanReaped({ run, adapterType, adapterConfig, graceMs, maxRuntimeMs });
+      reaped.push(run.id);
+    }
+    if (reaped.length > 0) {
+      logger.warn({ reapedCount: reaped.length, runIds: reaped, maxRuntimeMs }, "reaped stale running heartbeat runs");
+    }
+    return { reaped: reaped.length, runIds: reaped };
+  }
+
+  async function killStalePriorRunsForAgent(agentId: string, opts?: { maxRuntimeMs?: number; graceMs?: number }) {
+    const maxRuntimeMs = opts?.maxRuntimeMs ?? defaultRuntimeReaper.maxRuntimeMs;
+    const graceMs = opts?.graceMs ?? defaultRuntimeReaper.graceMs;
+    const cutoff = new Date(Date.now() - maxRuntimeMs);
+    const stale = await db
+      .select({ run: heartbeatRuns, adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(and(
+        eq(heartbeatRuns.agentId, agentId),
+        eq(heartbeatRuns.status, "running"),
+        isNotNull(heartbeatRuns.processStartedAt),
+        lt(heartbeatRuns.processStartedAt, cutoff),
+      ));
+    for (const { run, adapterType, adapterConfig } of stale) {
+      await terminateRunAsOrphanReaped({ run, adapterType, adapterConfig, graceMs, maxRuntimeMs });
+    }
+    return stale.length;
   }
 
   async function resumeQueuedRuns() {
@@ -9687,6 +9790,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reportRunActivity: clearDetachedRunWarning,
 
     reapOrphanedRuns,
+
+    reapStaleRunningRuns,
+
+    killStalePriorRunsForAgent,
 
     promoteDueScheduledRetries,
     retryScheduledRetryNow,
