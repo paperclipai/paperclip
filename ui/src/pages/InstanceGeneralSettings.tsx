@@ -1,11 +1,16 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { PatchInstanceGeneralSettings, BackupRetentionPolicy } from "@paperclipai/shared";
+import type {
+  PatchInstanceGeneralSettings,
+  BackupRetentionPolicy,
+  RecoveryProtectionSettings,
+} from "@paperclipai/shared";
 import {
   DAILY_RETENTION_PRESETS,
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_RECOVERY_PROTECTION_SETTINGS,
 } from "@paperclipai/shared";
 import { LogOut, SlidersHorizontal } from "lucide-react";
 import { authApi } from "@/api/auth";
@@ -81,6 +86,8 @@ export function InstanceGeneralSettings() {
   const keyboardShortcuts = generalQuery.data?.keyboardShortcuts === true;
   const feedbackDataSharingPreference = generalQuery.data?.feedbackDataSharingPreference ?? "prompt";
   const backupRetention: BackupRetentionPolicy = generalQuery.data?.backupRetention ?? DEFAULT_BACKUP_RETENTION;
+  const recoveryProtection: RecoveryProtectionSettings =
+    generalQuery.data?.recoveryProtection ?? DEFAULT_RECOVERY_PROTECTION_SETTINGS;
 
   return (
     <div className="max-w-4xl space-y-6">
@@ -274,6 +281,47 @@ export function InstanceGeneralSettings() {
       </section>
 
       <section className="rounded-xl border border-border bg-card p-5">
+        <div className="space-y-5">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Recovery protection</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Bound automatic continuation recovery so issues that keep cycling are blocked for operator review
+              instead of requeued indefinitely.
+            </p>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <InstanceNumberField
+              label="Continuation cap"
+              description="Maximum continuation retries in the window"
+              value={recoveryProtection.continuationDailyCap}
+              min={1}
+              max={500}
+              disabled={updateGeneralMutation.isPending}
+              onCommit={(v) =>
+                updateGeneralMutation.mutate({
+                  recoveryProtection: { ...recoveryProtection, continuationDailyCap: v },
+                })
+              }
+            />
+            <InstanceNumberField
+              label="Continuation window"
+              description="Hours"
+              value={recoveryProtection.continuationDailyWindowHours}
+              min={1}
+              max={24 * 30}
+              disabled={updateGeneralMutation.isPending}
+              onCommit={(v) =>
+                updateGeneralMutation.mutate({
+                  recoveryProtection: { ...recoveryProtection, continuationDailyWindowHours: v },
+                })
+              }
+            />
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
         <div className="space-y-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">AI feedback sharing</h2>
@@ -377,6 +425,85 @@ function StatusBox({ label, value }: { label: string; value: string }) {
     <div className="rounded-lg border border-border bg-background px-3 py-3">
       <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
       <div className="mt-2 text-sm font-medium">{value}</div>
+    </div>
+  );
+}
+
+function InstanceNumberField({
+  label,
+  description,
+  value,
+  min,
+  max,
+  disabled,
+  onCommit,
+}: {
+  label: string;
+  description: string;
+  value: number;
+  min: number;
+  max: number;
+  disabled: boolean;
+  onCommit: (v: number) => void;
+}) {
+  const inputId = useId();
+  const errorId = `${inputId}-error`;
+  const [draft, setDraft] = useState<string>(String(value));
+  const trimmedDraft = draft.trim();
+  const parsedDraft = Number(trimmedDraft);
+  const invalidDraft =
+    trimmedDraft === "" ||
+    !/^\d+$/.test(trimmedDraft) ||
+    Number.isNaN(parsedDraft) ||
+    parsedDraft < min ||
+    parsedDraft > max;
+  const errorMessage = invalidDraft ? `Enter a whole number from ${min} to ${max}.` : null;
+
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  function handleBlur() {
+    if (invalidDraft) {
+      return;
+    }
+    if (parsedDraft !== value) {
+      onCommit(parsedDraft);
+    }
+  }
+
+  return (
+    <div className="space-y-1">
+      <label htmlFor={inputId} className="text-sm font-medium">{label}</label>
+      <p className="text-xs text-muted-foreground">{description}</p>
+      <input
+        id={inputId}
+        type="number"
+        min={min}
+        max={max}
+        step={1}
+        value={draft}
+        disabled={disabled}
+        aria-invalid={invalidDraft}
+        aria-describedby={errorMessage ? errorId : undefined}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={handleBlur}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          if (e.key === "Escape") setDraft(String(value));
+        }}
+        className={cn(
+          "w-full rounded-md border border-border bg-background px-3 py-2 text-sm",
+          "focus:outline-none focus:ring-1 focus:ring-foreground/30",
+          "disabled:cursor-not-allowed disabled:opacity-60",
+          invalidDraft && "border-destructive focus:ring-destructive/30",
+        )}
+      />
+      {errorMessage ? (
+        <p id={errorId} className="text-xs text-destructive">
+          {errorMessage}
+        </p>
+      ) : null}
     </div>
   );
 }

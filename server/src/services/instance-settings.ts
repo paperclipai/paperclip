@@ -3,6 +3,7 @@ import { companies, instanceSettings } from "@paperclipai/db";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_RECOVERY_PROTECTION_SETTINGS,
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   instanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
@@ -25,6 +26,7 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       feedbackDataSharingPreference:
         parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
       backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
+      recoveryProtection: parsed.data.recoveryProtection ?? DEFAULT_RECOVERY_PROTECTION_SETTINGS,
     };
   }
   return {
@@ -32,6 +34,7 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
     keyboardShortcuts: false,
     feedbackDataSharingPreference: DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
     backupRetention: DEFAULT_BACKUP_RETENTION,
+    recoveryProtection: DEFAULT_RECOVERY_PROTECTION_SETTINGS,
   };
 }
 
@@ -122,9 +125,18 @@ export function instanceSettingsService(db: Db) {
 
     updateGeneral: async (patch: PatchInstanceGeneralSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
+      const currentGeneral = normalizeGeneralSettings(current.general);
       const nextGeneral = normalizeGeneralSettings({
-        ...normalizeGeneralSettings(current.general),
+        ...currentGeneral,
         ...patch,
+        ...(patch.recoveryProtection
+          ? {
+              recoveryProtection: {
+                ...currentGeneral.recoveryProtection,
+                ...patch.recoveryProtection,
+              },
+            }
+          : {}),
       });
       const now = new Date();
       const [updated] = await db
