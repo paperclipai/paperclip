@@ -1,0 +1,14 @@
+# Vallely inventory quality audit.
+# Runs daily at 7:20 AM Central, writes a Markdown report, and comments on the configured
+# Paperclip issue when stale inventory or missing photos exceed 5%.
+#
+# Required alert env:
+#   PAPERCLIP_API_URL
+#   PAPERCLIP_API_KEY
+#   VALLELY_INVENTORY_ALERT_ISSUE_ID
+#
+# Optional:
+#   VALLELY_INVENTORY_ALERT_CTO_AGENT_ID
+#   PAPERCLIP_RUN_ID
+#
+20 7 * * * cd /Users/ai_agent_paralles/.paperclip/instances/default/workspaces/5e176133-9730-4a71-af1d-56bcec02147e/paperclip && node scripts/vallely-inventory-audit.mjs --output reports/vallely-inventory-feed-audit.md >> /Users/ai_agent_paralles/.paperclip/instances/default/logs/vallely-inventory-audit.log 2>&1
