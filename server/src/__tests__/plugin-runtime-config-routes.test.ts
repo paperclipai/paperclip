@@ -60,6 +60,7 @@ vi.mock("../services/live-events.js", () => ({
 }));
 
 const pluginId = "11111111-1111-4111-8111-111111111111";
+const SENSITIVE_RUNTIME_CONFIG_PATTERN = /password|secret|token|api[_-]?key|clientSecret|privateKey|values|configJson/i;
 
 function boardActor(overrides: Record<string, unknown> = {}) {
   return {
@@ -220,8 +221,18 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
 
     const res = await request(app).delete(`/api/plugins/${pluginId}/runtime-config`);
     expect(res.status).toBe(204);
+    expect(mockRuntimeConfig.clearRuntime.mock.invocationCallOrder[0]).toBeLessThan(
+      mockLifecycle.restartWorker.mock.invocationCallOrder[0],
+    );
     expect(mockLifecycle.restartWorker).toHaveBeenCalledWith(pluginId);
     expect(mockWorkerManager.call).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "plugin.runtime-config.cleared",
+        entityId: pluginId,
+      }),
+    );
   });
 
   it("still returns 204 if the runtime config restart fails after clearing", async () => {
@@ -269,7 +280,7 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
       }),
       "failed to audit plugin runtime config clear after mutation",
     );
-    expect(JSON.stringify(mockLoggerError.mock.calls[0]?.[0])).not.toMatch(/password|secret|token|api_key/i);
+    expect(JSON.stringify(mockLoggerError.mock.calls)).not.toMatch(SENSITIVE_RUNTIME_CONFIG_PATTERN);
   });
 
   it("resolves plugin keys before clearing runtime config", async () => {
@@ -340,10 +351,8 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
 
     for (const call of mockLogActivity.mock.calls) {
       const details = call[1]?.details ?? {};
-      expect(JSON.stringify(details)).not.toMatch(/password|secret|token|api_key/i);
-      // No raw values object — only metadata (pluginId, pluginKey)
-      expect(details).not.toHaveProperty("values");
-      expect(details).not.toHaveProperty("configJson");
+      expect(Object.keys(details).sort()).toEqual(["pluginId", "pluginKey"]);
+      expect(JSON.stringify(call)).not.toMatch(SENSITIVE_RUNTIME_CONFIG_PATTERN);
     }
   });
 
