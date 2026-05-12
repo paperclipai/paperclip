@@ -3766,11 +3766,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     runId: string,
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+    currentStatuses?: readonly string[],
   ) {
     const updated = await db
       .update(heartbeatRuns)
       .set({ status, ...patch, updatedAt: new Date() })
-      .where(eq(heartbeatRuns.id, runId))
+      .where(
+        currentStatuses
+          ? and(eq(heartbeatRuns.id, runId), inArray(heartbeatRuns.status, [...currentStatuses]))
+          : eq(heartbeatRuns.id, runId),
+      )
       .returning()
       .then((rows) => rows[0] ?? null);
 
@@ -5952,6 +5957,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return deferred;
   }
 
+  async function cancelIfRetryDeferralDidNotAlreadyWin(runId: string, reason: string) {
+    return cancelRunInternal(runId, reason, {
+      cancellableStatuses: PAUSE_CANCELLABLE_HEARTBEAT_RUN_STATUSES,
+    });
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -5961,7 +5972,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     if (agent.status === "paused" && agent.pauseReason === "budget" && isScheduledRetryRun(run)) {
       if (!(await deferQueuedScheduledRetry(run, "Scheduled retry deferred because budget policy paused the agent"))) {
-        await cancelRunInternal(run.id, "Cancelled because the agent is not invokable");
+        await cancelIfRetryDeferralDidNotAlreadyWin(run.id, "Cancelled because the agent is not invokable");
       }
       return null;
     }
@@ -5978,7 +5989,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (budgetBlock) {
       if (isScheduledRetryRun(run)) {
         if (!(await deferQueuedScheduledRetry(run, budgetBlock.reason))) {
-          await cancelRunInternal(run.id, budgetBlock.reason);
+          await cancelIfRetryDeferralDidNotAlreadyWin(run.id, budgetBlock.reason);
         }
         return null;
       }
@@ -9558,11 +9569,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return wakeupIds.length;
   }
 
-  async function cancelRunInternal(runId: string, reason = "Cancelled by control plane") {
+  async function cancelRunInternal(
+    runId: string,
+    reason = "Cancelled by control plane",
+    options: {
+      cancellableStatuses?: readonly (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number][];
+    } = {},
+  ) {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
-    if (!CANCELLABLE_HEARTBEAT_RUN_STATUSES.includes(run.status as (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number])) return run;
+    const cancellableStatuses = options.cancellableStatuses ?? CANCELLABLE_HEARTBEAT_RUN_STATUSES;
+    if (!cancellableStatuses.includes(run.status as (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number])) return run;
     const agent = await getAgent(run.agentId);
+
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: new Date(),
+      error: reason,
+      errorCode: "cancelled",
+      ...(agent ? {
+        resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
+          resultJson: parseObject(run.resultJson),
+          errorCode: "cancelled",
+          errorMessage: reason,
+        }),
+      } : {}),
+    }, cancellableStatuses);
+    if (!cancelled) return getRun(runId);
 
     const running = runningProcesses.get(run.id);
     if (running) {
@@ -9577,19 +9609,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         processGroupId: run.processGroupId,
       });
     }
-
-    const cancelled = await setRunStatus(run.id, "cancelled", {
-      finishedAt: new Date(),
-      error: reason,
-      errorCode: "cancelled",
-      ...(agent ? {
-        resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
-          resultJson: parseObject(run.resultJson),
-          errorCode: "cancelled",
-          errorMessage: reason,
-        }),
-      } : {}),
-    });
 
     await setWakeupStatus(run.wakeupRequestId, "cancelled", {
       finishedAt: new Date(),
@@ -9678,7 +9697,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           continue;
         }
       }
-      await setRunStatus(run.id, "cancelled", {
+      const cancelled = await setRunStatus(run.id, "cancelled", {
         finishedAt: new Date(),
         error: "Cancelled due to budget pause",
         errorCode: "cancelled",
@@ -9689,7 +9708,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             errorMessage: "Cancelled due to budget pause",
           }),
         } : {}),
-      });
+      }, PAUSE_CANCELLABLE_HEARTBEAT_RUN_STATUSES);
+      if (!cancelled) continue;
       await setWakeupStatus(run.wakeupRequestId, "cancelled", {
         finishedAt: new Date(),
         error: "Cancelled due to budget pause",
@@ -9741,7 +9761,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           continue;
         }
       }
-      await cancelRunInternal(run.id, "Cancelled due to budget pause");
+      await cancelRunInternal(run.id, "Cancelled due to budget pause", {
+        cancellableStatuses: PAUSE_CANCELLABLE_HEARTBEAT_RUN_STATUSES,
+      });
     }
 
     await cancelPendingWakeupsForBudgetScope(scope);
