@@ -10,8 +10,36 @@ import type { Db } from "@paperclipai/db";
 import { qslFindings } from "@paperclipai/db";
 import { createHash } from "node:crypto";
 
-export type ReviewState = "new" | "recurring" | "acknowledged" | "accepted_risk" | "suppressed" | "escalated";
+export type ReviewState =
+  | "new"
+  | "recurring"
+  | "pending_review"
+  | "approved"
+  | "denied"
+  | "accepted_risk"
+  | "suppressed"
+  | "escalated";
+
 export type ReviewDecision = "approved" | "denied" | null;
+
+/** States that belong in the active review queue. */
+export const ACTIVE_REVIEW_STATES: ReadonlySet<string> = new Set([
+  "new",
+  "recurring",
+  "pending_review",
+]);
+
+/** All valid review states. */
+export const ALL_REVIEW_STATES: readonly string[] = [
+  "new",
+  "recurring",
+  "pending_review",
+  "approved",
+  "denied",
+  "accepted_risk",
+  "suppressed",
+  "escalated",
+];
 
 export interface QslBridgeIssue {
   id?: string;
@@ -159,7 +187,12 @@ export function qslReviewService(db: Db) {
       filter?: { reviewState?: string },
     ): Promise<QslFinding[]> {
       const conditions = [eq(qslFindings.companyId, companyId)];
-      if (filter?.reviewState) {
+      if (filter?.reviewState === "active") {
+        // Active queue: new + recurring + pending_review
+        conditions.push(
+          sql`${qslFindings.reviewState} IN ('new', 'recurring', 'pending_review')`,
+        );
+      } else if (filter?.reviewState) {
         conditions.push(eq(qslFindings.reviewState, filter.reviewState));
       }
 
@@ -205,7 +238,7 @@ export function qslReviewService(db: Db) {
 
       const currentHistory = (existing.reviewHistory ?? []) as Array<Record<string, unknown>>;
 
-      const newState: string = decision === "approved" ? "acknowledged" : "suppressed";
+      const newState: string = decision === "approved" ? "approved" : "denied";
 
       const [updated] = await db
         .update(qslFindings)

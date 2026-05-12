@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { qslReviewService, type QslBridgeIssue } from "../services/qsl-review.js";
+import { qslReviewService, ALL_REVIEW_STATES, type QslBridgeIssue } from "../services/qsl-review.js";
 
 const ALLOWED_FILES = new Set(["manifest", "state", "issues", "approvals"]);
 
@@ -168,9 +168,8 @@ export function qslBridgeRoutes(db?: Db) {
     const findingId = req.params.id;
     const { state, notes } = req.body;
 
-    const validStates = ["new", "recurring", "acknowledged", "accepted_risk", "suppressed", "escalated"];
-    if (!validStates.includes(state)) {
-      res.status(400).json({ error: `state must be one of: ${validStates.join(", ")}` });
+    if (!ALL_REVIEW_STATES.includes(state)) {
+      res.status(400).json({ error: `state must be one of: ${ALL_REVIEW_STATES.join(", ")}` });
       return;
     }
 

@@ -8,13 +8,16 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ShieldAlert, CheckCircle2, XCircle, Clock, Eye, AlertTriangle, ArrowUpRight } from "lucide-react";
 
-type ReviewFilter = "all" | "new" | "recurring" | "acknowledged" | "suppressed" | "accepted_risk" | "escalated";
+type ReviewFilter = "all" | "active" | "new" | "recurring" | "pending_review" | "approved" | "denied" | "suppressed" | "accepted_risk" | "escalated";
 
 const FILTER_OPTIONS: { value: ReviewFilter; label: string }[] = [
+  { value: "active", label: "Active Queue" },
   { value: "all", label: "All" },
   { value: "new", label: "New" },
   { value: "recurring", label: "Recurring" },
-  { value: "acknowledged", label: "Acknowledged" },
+  { value: "pending_review", label: "Pending Review" },
+  { value: "approved", label: "Approved" },
+  { value: "denied", label: "Denied" },
   { value: "suppressed", label: "Suppressed" },
   { value: "accepted_risk", label: "Accepted Risk" },
   { value: "escalated", label: "Escalated" },
@@ -26,8 +29,12 @@ function reviewStateBadge(state: string) {
       return <Badge variant="destructive" className="text-[10px]">New</Badge>;
     case "recurring":
       return <Badge className="text-[10px] bg-amber-500 hover:bg-amber-600">Recurring</Badge>;
-    case "acknowledged":
-      return <Badge variant="outline" className="text-[10px] border-green-500 text-green-600">Acknowledged</Badge>;
+    case "pending_review":
+      return <Badge className="text-[10px] bg-blue-500 hover:bg-blue-600">Pending Review</Badge>;
+    case "approved":
+      return <Badge variant="outline" className="text-[10px] border-green-500 text-green-600">Approved</Badge>;
+    case "denied":
+      return <Badge variant="outline" className="text-[10px] border-red-500 text-red-600">Denied</Badge>;
     case "suppressed":
       return <Badge variant="secondary" className="text-[10px]">Suppressed</Badge>;
     case "accepted_risk":
@@ -214,19 +221,19 @@ function FindingCard({ finding, rule, companyId, onDecision }: FindingCardProps)
           )}
 
           {/* State actions */}
-          {!["suppressed", "escalated"].includes(finding.reviewState) && (
-            <div className="flex items-center gap-1">
-              {finding.reviewState !== "accepted_risk" && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-6 px-2 text-[10px]"
-                  disabled={status === "loading"}
-                  onClick={() => stateMutation.mutate("accepted_risk")}
-                >
-                  Accept Risk
-                </Button>
-              )}
+          <div className="flex items-center gap-1">
+            {!["approved", "denied", "suppressed", "escalated"].includes(finding.reviewState) && finding.reviewState !== "accepted_risk" && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 px-2 text-[10px]"
+                disabled={status === "loading"}
+                onClick={() => stateMutation.mutate("accepted_risk")}
+              >
+                Accept Risk
+              </Button>
+            )}
+            {!["suppressed"].includes(finding.reviewState) && (
               <Button
                 size="sm"
                 variant="ghost"
@@ -236,6 +243,8 @@ function FindingCard({ finding, rule, companyId, onDecision }: FindingCardProps)
               >
                 Suppress
               </Button>
+            )}
+            {!["escalated"].includes(finding.reviewState) && (
               <Button
                 size="sm"
                 variant="ghost"
@@ -246,8 +255,8 @@ function FindingCard({ finding, rule, companyId, onDecision }: FindingCardProps)
                 <ArrowUpRight className="h-3 w-3 mr-0.5" />
                 Escalate
               </Button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
 
@@ -262,7 +271,7 @@ export function QslReview() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
-  const [filter, setFilter] = useState<ReviewFilter>("all");
+  const [filter, setFilter] = useState<ReviewFilter>("active");
 
   useEffect(() => {
     setBreadcrumbs([{ label: "QSL Review" }]);
@@ -342,7 +351,7 @@ export function QslReview() {
             onClick={() => setFilter(opt.value)}
           >
             {opt.label}
-            {filter === "all" && opt.value !== "all" && counts[opt.value] ? (
+            {(filter === "all" || filter === "active") && !["all", "active"].includes(opt.value) && counts[opt.value] ? (
               <span className="ml-1 text-[10px] opacity-70">({counts[opt.value]})</span>
             ) : null}
           </Button>
@@ -353,7 +362,7 @@ export function QslReview() {
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <ShieldAlert className="h-8 w-8 text-muted-foreground/30 mb-3" />
           <p className="text-sm text-muted-foreground">
-            {filter === "all" ? "No QSL findings to review." : `No ${filter} findings.`}
+            {filter === "active" ? "No active findings in the review queue." : filter === "all" ? "No QSL findings." : `No ${filter.replace("_", " ")} findings.`}
           </p>
         </div>
       ) : (
