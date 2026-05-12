@@ -60,6 +60,10 @@ import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
+import {
+  preparePaperclipToolsMcp,
+  type PreparedPaperclipToolsMcp,
+} from "./paperclip-tools-mcp.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -459,6 +463,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const claudeConfigSeedDir = useManagedRemoteClaudeConfig
     ? await prepareClaudeConfigSeed(process.env, onLog, agent.companyId)
     : null;
+  const disablePluginToolsMcp = asBoolean(config.disablePluginToolsMcp, false);
+  const paperclipToolsMcp = await preparePaperclipToolsMcp({
+    runId,
+    command,
+    resolvedCommand,
+    executionTargetIsRemote,
+    disabled: disablePluginToolsMcp,
+  });
+  if (paperclipToolsMcp.warning) {
+    await onLog("stderr", `[paperclip] ${paperclipToolsMcp.warning}\n`);
+  }
+  let preparedPaperclipMcp: PreparedPaperclipToolsMcp = paperclipToolsMcp.prepared;
   const preparedExecutionTargetRuntime = executionTargetIsRemote
     ? await (async () => {
         await onLog(
@@ -485,6 +501,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 localDir: claudeConfigSeedDir,
                 followSymlinks: true,
               }]
+              : []),
+            ...(preparedPaperclipMcp && preparedPaperclipMcp.kind === "remote"
+              ? [preparedPaperclipMcp.asset]
               : []),
           ],
         });
@@ -555,6 +574,44 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onLog,
       },
     );
+  }
+  let mcpConfigArgPath: string | null = null;
+  if (preparedPaperclipMcp) {
+    if (preparedPaperclipMcp.kind === "local") {
+      mcpConfigArgPath = preparedPaperclipMcp.mcpConfigPath;
+    } else if (preparedPaperclipMcp.kind === "remote") {
+      const remoteAssetDir =
+        preparedExecutionTargetRuntime?.assetDirs[preparedPaperclipMcp.remoteAssetKey] ??
+        (remoteClaudeRuntimeRoot
+          ? path.posix.join(remoteClaudeRuntimeRoot, preparedPaperclipMcp.remoteAssetKey)
+          : null);
+      if (!remoteAssetDir) {
+        await onLog(
+          "stderr",
+          `[paperclip] Skipping paperclip-tools MCP wiring: could not resolve remote asset directory for "${preparedPaperclipMcp.remoteAssetKey}".\n`,
+        );
+        await preparedPaperclipMcp.cleanup();
+        preparedPaperclipMcp = null;
+      } else {
+        const remoteMcpConfigPath = path.posix.join(remoteAssetDir, "paperclip-tools-mcp.json");
+        const contents = preparedPaperclipMcp.buildRemoteMcpConfigContents(remoteAssetDir);
+        const encoded = Buffer.from(contents, "utf8").toString("base64");
+        await runAdapterExecutionTargetShellCommand(
+          runId,
+          executionTarget,
+          `mkdir -p ${shellQuote(remoteAssetDir)} && ` +
+            `printf '%s' ${shellQuote(encoded)} | base64 -d > ${shellQuote(remoteMcpConfigPath)}`,
+          {
+            cwd,
+            env,
+            timeoutSec: Math.max(timeoutSec, 15),
+            graceSec,
+            onLog,
+          },
+        );
+        mcpConfigArgPath = remoteMcpConfigPath;
+      }
+    }
   }
   let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
   if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
@@ -685,6 +742,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--append-system-prompt-file", attemptInstructionsFilePath);
     }
     args.push("--add-dir", effectivePromptBundleAddDir);
+    if (mcpConfigArgPath) args.push("--mcp-config", mcpConfigArgPath);
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };
@@ -956,6 +1014,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
       );
       await restoreRemoteWorkspace();
+    }
+    if (preparedPaperclipMcp) {
+      await preparedPaperclipMcp.cleanup().catch(() => undefined);
     }
   }
 }
