@@ -12,6 +12,7 @@ import type {
   IssueComment,
   IssueDocument,
   IssueLabel,
+  IssueRetryNowResponse,
   IssueThreadInteraction,
   IssueTreeControlPreview,
   IssueTreeHold,
@@ -129,6 +130,8 @@ export const issuesApi = {
   releaseTreeHold: (id: string, holdId: string, data: ReleaseIssueTreeHold) =>
     api.post<IssueTreeHold>(`/issues/${id}/tree-holds/${holdId}/release`, data),
   checkMonitorNow: (id: string) => api.post<{ ok: true }>(`/issues/${id}/monitor/check-now`, {}),
+  retryScheduledRetryNow: (id: string) =>
+    api.post<IssueRetryNowResponse>(`/issues/${id}/scheduled-retry/retry-now`, {}),
   remove: (id: string) => api.delete<Issue>(`/issues/${id}`),
   checkout: (id: string, agentId: string) =>
     api.post<Issue>(`/issues/${id}/checkout`, {

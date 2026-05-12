@@ -1,5 +1,6 @@
 import express from "express";
 import request from "supertest";
+import { getTableName } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.ts";
 
@@ -265,6 +266,76 @@ describe("issue activity event routes", () => {
       );
     });
   }, 15_000);
+
+  it("logs readable workspace change activity details for issue updates", async () => {
+    const previousProjectWorkspaceId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const nextExecutionWorkspaceId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const issue = {
+      ...makeIssue(),
+      projectId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      projectWorkspaceId: previousProjectWorkspaceId,
+      executionWorkspaceId: null,
+      executionWorkspacePreference: "shared_workspace",
+      executionWorkspaceSettings: { mode: "shared_workspace" },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const dbMock = {
+      select: vi.fn(() => ({
+        from: (table: unknown) => ({
+          where: async () => {
+            const tableName = getTableName(table as Parameters<typeof getTableName>[0]);
+            if (tableName === "project_workspaces") {
+              return [{ id: previousProjectWorkspaceId, name: "Main workspace" }];
+            }
+            if (tableName === "execution_workspaces") {
+              return [{ id: nextExecutionWorkspaceId, name: "Feature workspace" }];
+            }
+            return [];
+          },
+        }),
+      })),
+    };
+
+    const res = await request(await createApp(dbMock))
+      .patch(`/api/issues/${issue.id}`)
+      .send({ executionWorkspaceId: nextExecutionWorkspaceId });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "issue.updated",
+          details: expect.objectContaining({
+            executionWorkspaceId: nextExecutionWorkspaceId,
+            workspaceChange: {
+              from: {
+                label: "Main workspace",
+                projectWorkspaceId: previousProjectWorkspaceId,
+                executionWorkspaceId: null,
+                mode: "shared_workspace",
+              },
+              to: {
+                label: "Feature workspace",
+                projectWorkspaceId: previousProjectWorkspaceId,
+                executionWorkspaceId: nextExecutionWorkspaceId,
+                mode: "shared_workspace",
+              },
+            },
+            _previous: expect.objectContaining({
+              executionWorkspaceId: null,
+            }),
+          }),
+        }),
+      );
+    });
+  });
 
   it("logs successful_run_handoff_resolved when an in_progress issue transitions to done with a pending required handoff", async () => {
     const issue = { ...makeIssue(), status: "in_progress" };

@@ -579,8 +579,22 @@
     {
       "idx": 82,
       "version": "7",
+      "when": 1778067785041,
+      "tag": "0082_dry_vision",
+      "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1778074536410,
+      "tag": "0083_company_secret_provider_configs",
+      "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
       "when": 1774562236209,
-      "tag": "0082_lonely_talos",
+      "tag": "0084_lonely_talos",
       "breakpoints": true
     }
   ]
