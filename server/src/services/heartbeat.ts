@@ -145,6 +145,11 @@ import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import {
+  isWakeupIdempotencyConflict,
+  normalizeWakeupIdempotencyKey,
+  resolveIdempotentWakeupHit,
+} from "./heartbeat-wakeup-idempotency.js";
+import {
   redactCurrentUserText,
   redactCurrentUserValue,
   type CurrentUserRedactionOptions,
@@ -1032,6 +1037,67 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
+
+async function findExistingIdempotentWakeup(
+  client: any,
+  input: {
+    companyId: string;
+    agentId: string;
+    idempotencyKey: string;
+  },
+): Promise<{ run: typeof heartbeatRuns.$inferSelect | null } | null> {
+  const wakeup = await client
+    .select()
+    .from(agentWakeupRequests)
+    .where(
+      and(
+        eq(agentWakeupRequests.companyId, input.companyId),
+        eq(agentWakeupRequests.agentId, input.agentId),
+        eq(agentWakeupRequests.idempotencyKey, input.idempotencyKey),
+      ),
+    )
+    .orderBy(asc(agentWakeupRequests.createdAt))
+    .limit(1)
+    .then((rows: Array<typeof agentWakeupRequests.$inferSelect>) => rows[0] ?? null);
+
+  if (!wakeup) return null;
+  const run = wakeup.runId
+    ? await client
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, wakeup.runId)))
+      .limit(1)
+      .then((rows: Array<typeof heartbeatRuns.$inferSelect>) => rows[0] ?? null)
+    : null;
+  return { run };
+}
+
+async function resolveExistingIdempotentWakeupAfterConflict(
+  client: any,
+  input: {
+    companyId: string;
+    agentId: string;
+    idempotencyKey: string | null;
+  },
+  error: unknown,
+): Promise<typeof heartbeatRuns.$inferSelect | null | undefined> {
+  if (!input.idempotencyKey || !isWakeupIdempotencyConflict(error)) return undefined;
+  const decision = resolveIdempotentWakeupHit(
+    await findExistingIdempotentWakeup(client, {
+      companyId: input.companyId,
+      agentId: input.agentId,
+      idempotencyKey: input.idempotencyKey,
+    }),
+  );
+  return decision.kind === "hit" ? decision.run : undefined;
+}
+
+type EnqueueWakeupOutcome =
+  | { kind: "idempotent"; run: typeof heartbeatRuns.$inferSelect | null }
+  | { kind: "skipped" }
+  | { kind: "deferred" }
+  | { kind: "coalesced"; run: typeof heartbeatRuns.$inferSelect }
+  | { kind: "queued"; run: typeof heartbeatRuns.$inferSelect };
 
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
   return MODEL_PROFILE_KEYS.includes(value as ModelProfileKey)
@@ -8540,6 +8606,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const contextSnapshot: Record<string, unknown> = { ...(opts.contextSnapshot ?? {}) };
     const reason = opts.reason ?? null;
     const payload = opts.payload ?? null;
+    const idempotencyKey = normalizeWakeupIdempotencyKey(opts.idempotencyKey);
     const {
       contextSnapshot: enrichedContextSnapshot,
       issueIdFromPayload,
@@ -8556,6 +8623,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+
+    if (idempotencyKey) {
+      const decision = resolveIdempotentWakeupHit(
+        await findExistingIdempotentWakeup(db, {
+          companyId: agent.companyId,
+          agentId,
+          idempotencyKey,
+        }),
+      );
+      if (decision.kind === "hit") return decision.run;
+    }
+
     const explicitResumeSession = await resolveExplicitResumeSessionOverride(agent, payload, taskKey);
     if (explicitResumeSession) {
       enrichedContextSnapshot.resumeFromRunId = explicitResumeSession.resumeFromRunId;
@@ -8579,19 +8658,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const continuationAttempt = readContinuationAttempt(enrichedContextSnapshot.livenessContinuationAttempt);
 
     const writeSkippedRequest = async (skipReason: string) => {
-      await db.insert(agentWakeupRequests).values({
-        companyId: agent.companyId,
-        agentId,
-        source,
-        triggerDetail,
-        reason: skipReason,
-        payload,
-        status: "skipped",
-        requestedByActorType: opts.requestedByActorType ?? null,
-        requestedByActorId: opts.requestedByActorId ?? null,
-        idempotencyKey: opts.idempotencyKey ?? null,
-        finishedAt: new Date(),
-      });
+      try {
+        await db.insert(agentWakeupRequests).values({
+          companyId: agent.companyId,
+          agentId,
+          source,
+          triggerDetail,
+          reason: skipReason,
+          payload,
+          status: "skipped",
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey,
+          finishedAt: new Date(),
+        });
+      } catch (error) {
+        const existing = await resolveExistingIdempotentWakeupAfterConflict(
+          db,
+          { companyId: agent.companyId, agentId, idempotencyKey },
+          error,
+        );
+        if (existing !== undefined) return;
+        throw error;
+      }
     };
 
     let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
@@ -8687,10 +8776,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // same issue workspace while the assignee already has a live run.
       const agentNameKey = normalizeAgentNameKey(agent.name);
 
-      const outcome = await db.transaction(async (tx) => {
-        await tx.execute(
-          sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
-        );
+      let outcome: EnqueueWakeupOutcome;
+      try {
+        outcome = await db.transaction(async (tx): Promise<EnqueueWakeupOutcome> => {
+          await tx.execute(
+            sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
+          );
+
+        if (idempotencyKey) {
+          const decision = resolveIdempotentWakeupHit(
+            await findExistingIdempotentWakeup(tx, {
+              companyId: agent.companyId,
+              agentId,
+              idempotencyKey,
+            }),
+          );
+          if (decision.kind === "hit") return { kind: "idempotent" as const, run: decision.run };
+        }
 
         const issue = await tx
           .select({
@@ -8716,7 +8818,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
+            idempotencyKey,
             finishedAt: new Date(),
           });
           return { kind: "skipped" as const };
@@ -8919,7 +9021,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
+            idempotencyKey,
             finishedAt: new Date(),
           });
           return { kind: "skipped" as const };
@@ -8967,7 +9069,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               coalescedCount: 1,
               requestedByActorType: opts.requestedByActorType ?? null,
               requestedByActorId: opts.requestedByActorId ?? null,
-              idempotencyKey: opts.idempotencyKey ?? null,
+              idempotencyKey,
               runId: mergedRun.id,
               finishedAt: new Date(),
             });
@@ -9032,7 +9134,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "deferred_issue_execution",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
+            idempotencyKey,
           });
 
           return { kind: "deferred" as const };
@@ -9050,7 +9152,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "queued",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
+            idempotencyKey,
           })
           .returning()
           .then((rows) => rows[0]);
@@ -9083,9 +9185,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // doesn't start it). It will be stamped in claimQueuedRun() once the run
         // transitions to "running" — Fix A (lazy locking).
 
-        return { kind: "queued" as const, run: newRun };
-      });
+          return { kind: "queued" as const, run: newRun };
+        });
+      } catch (error) {
+        const existing = await resolveExistingIdempotentWakeupAfterConflict(
+          db,
+          { companyId: agent.companyId, agentId, idempotencyKey },
+          error,
+        );
+        if (existing !== undefined) return existing;
+        throw error;
+      }
 
+      if (outcome.kind === "idempotent") return outcome.run;
       if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);
@@ -9139,74 +9251,109 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         coalescedTargetRun.contextSnapshot,
         enrichedContextSnapshot,
       );
-      const mergedRun = await db
-        .update(heartbeatRuns)
-        .set({
-          contextSnapshot: mergedContextSnapshot,
-          updatedAt: new Date(),
-        })
-        .where(eq(heartbeatRuns.id, coalescedTargetRun.id))
-        .returning()
-        .then((rows) => rows[0] ?? coalescedTargetRun);
+      const mergedRun = await db.transaction(async (tx) => {
+        await tx.insert(agentWakeupRequests).values({
+          companyId: agent.companyId,
+          agentId,
+          source,
+          triggerDetail,
+          reason,
+          payload,
+          status: "coalesced",
+          coalescedCount: 1,
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey,
+          runId: coalescedTargetRun.id,
+          finishedAt: new Date(),
+        });
 
-      await db.insert(agentWakeupRequests).values({
-        companyId: agent.companyId,
-        agentId,
-        source,
-        triggerDetail,
-        reason,
-        payload,
-        status: "coalesced",
-        coalescedCount: 1,
-        requestedByActorType: opts.requestedByActorType ?? null,
-        requestedByActorId: opts.requestedByActorId ?? null,
-        idempotencyKey: opts.idempotencyKey ?? null,
-        runId: mergedRun.id,
-        finishedAt: new Date(),
+        return tx
+          .update(heartbeatRuns)
+          .set({
+            contextSnapshot: mergedContextSnapshot,
+            updatedAt: new Date(),
+          })
+          .where(eq(heartbeatRuns.id, coalescedTargetRun.id))
+          .returning()
+          .then((rows) => rows[0] ?? coalescedTargetRun);
+      }).catch(async (error) => {
+        const existing = await resolveExistingIdempotentWakeupAfterConflict(
+          db,
+          { companyId: agent.companyId, agentId, idempotencyKey },
+          error,
+        );
+        if (existing !== undefined) return existing;
+        throw error;
       });
       return mergedRun;
     }
 
-    const wakeupRequest = await db
-      .insert(agentWakeupRequests)
-      .values({
-        companyId: agent.companyId,
-        agentId,
-        source,
-        triggerDetail,
-        reason,
-        payload,
-        status: "queued",
-        requestedByActorType: opts.requestedByActorType ?? null,
-        requestedByActorId: opts.requestedByActorId ?? null,
-        idempotencyKey: opts.idempotencyKey ?? null,
-      })
-      .returning()
-      .then((rows) => rows[0]);
+    if (idempotencyKey) {
+      const decision = resolveIdempotentWakeupHit(
+        await findExistingIdempotentWakeup(db, {
+          companyId: agent.companyId,
+          agentId,
+          idempotencyKey,
+        }),
+      );
+      if (decision.kind === "hit") return decision.run;
+    }
 
-    const newRun = await db
-      .insert(heartbeatRuns)
-      .values({
-        companyId: agent.companyId,
-        agentId,
-        invocationSource: source,
-        triggerDetail,
-        status: "queued",
-        wakeupRequestId: wakeupRequest.id,
-        contextSnapshot: enrichedContextSnapshot,
-        sessionIdBefore: sessionBefore,
-        continuationAttempt,
-      })
-      .returning()
-      .then((rows) => rows[0]);
+    const newRun = await db.transaction(async (tx) => {
+      const wakeupRequest = await tx
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: agent.companyId,
+          agentId,
+          source,
+          triggerDetail,
+          reason,
+          payload,
+          status: "queued",
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey,
+        })
+        .returning()
+        .then((rows) => rows[0]);
 
-    await db
-      .update(agentWakeupRequests)
-      .set({
-        runId: newRun.id,
-        updatedAt: new Date(),
-      })
-      .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+      const insertedRun = await tx
+        .insert(heartbeatRuns)
+        .values({
+          companyId: agent.companyId,
+          agentId,
+          invocationSource: source,
+          triggerDetail,
+          status: "queued",
+          wakeupRequestId: wakeupRequest.id,
+          contextSnapshot: enrichedContextSnapshot,
+          sessionIdBefore: sessionBefore,
+          continuationAttempt,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      await tx
+        .update(agentWakeupRequests)
+        .set({
+          runId: insertedRun.id,
+          updatedAt: new Date(),
+        })
+        .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+      return insertedRun;
+    }).catch(async (error) => {
+      const existing = await resolveExistingIdempotentWakeupAfterConflict(
+        db,
+        { companyId: agent.companyId, agentId, idempotencyKey },
+        error,
+      );
+      if (existing !== undefined) return existing;
+      throw error;
+    });
+
+    if (!newRun) return null;
 
     publishLiveEvent({
       companyId: newRun.companyId,
