@@ -1,17 +1,22 @@
 /**
- * `@paperclipai/credential-broker-builtin` — default credential broker plugin for Paperclip.
+ * `@paperclipai/credential-broker-builtin` — default credential broker plugin
+ * for Paperclip.
  *
- * **M1 placeholder.** Full implementation lands in M2 per the design spec
- * (`docs/superpowers/specs/2026-05-12-credential-broker-design.md` §3) and
- * the M2 implementation plan.
- *
- * Until M2 ships, this package exists so that the workspace resolves
- * cleanly and consumers can take the dependency without breakage.
- * No broker is registered; `resolveCredentialBroker()` on the server
- * returns `undefined`, and the smart resolver falls back to env delivery.
+ * Importing this module's side-effect entry from server startup
+ * (`@paperclipai/credential-broker-builtin/register`) calls
+ * `registerCredentialBroker()` so the server's broker registry resolves to
+ * the built-in implementation. Importing from this entrypoint without the
+ * /register subpath does not self-register — callers can construct
+ * `createBuiltinBroker` directly for tests.
  */
 
-export const PACKAGE_NAME = "@paperclipai/credential-broker-builtin";
+export { createBuiltinBroker, registerBuiltinCredentialBroker } from "./broker.js";
+export type { BuiltinBroker, BuiltinBrokerOptions } from "./broker.js";
+export { createSessionStore } from "./session-store.js";
+export type { SessionStore, BrokerSession, HostRule } from "./session-store.js";
+export { createSessionCa } from "./ca.js";
+export type { SessionCa } from "./ca.js";
+export { createProxyListener } from "./proxy-listener.js";
+export type { ProxyListener, ProxyLogEntry, ProxyLogger } from "./proxy-listener.js";
 
-/** Surface-stable placeholder constant; will be replaced by `registerBuiltinCredentialBroker()` in M2. */
-export const PACKAGE_STATUS = "m1-placeholder" as const;
+export const PACKAGE_NAME = "@paperclipai/credential-broker-builtin";
