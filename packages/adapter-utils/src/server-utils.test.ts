@@ -7,6 +7,7 @@ import {
   applyPaperclipWorkspaceEnv,
   appendWithByteCap,
   buildInvocationEnvForLogs,
+  buildPaperclipEnv,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   materializePaperclipSkillCopy,
   refreshPaperclipWorkspaceEnvForExecution,
@@ -61,6 +62,46 @@ describe("buildInvocationEnvForLogs", () => {
     expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(
       "env OPENAI_API_KEY=***REDACTED*** custom-acp --token ***REDACTED***",
     );
+  });
+});
+
+describe("buildPaperclipEnv", () => {
+  it("prefers the local listen host and port over inherited runtime api env", () => {
+    const originalRuntimeApiUrl = process.env.PAPERCLIP_RUNTIME_API_URL;
+    const originalApiUrl = process.env.PAPERCLIP_API_URL;
+    const originalListenHost = process.env.PAPERCLIP_LISTEN_HOST;
+    const originalListenPort = process.env.PAPERCLIP_LISTEN_PORT;
+
+    try {
+      process.env.PAPERCLIP_RUNTIME_API_URL = "http://192.168.0.33:3100";
+      process.env.PAPERCLIP_API_URL = "http://192.168.0.33:3100";
+      process.env.PAPERCLIP_LISTEN_HOST = "127.0.0.1";
+      process.env.PAPERCLIP_LISTEN_PORT = "3100";
+
+      expect(
+        buildPaperclipEnv({
+          id: "agent-1",
+          companyId: "company-1",
+        }),
+      ).toMatchObject({
+        PAPERCLIP_AGENT_ID: "agent-1",
+        PAPERCLIP_COMPANY_ID: "company-1",
+        PAPERCLIP_API_URL: "http://127.0.0.1:3100",
+        PAPERCLIP_RUNTIME_API_URL: "http://127.0.0.1:3100",
+      });
+    } finally {
+      if (originalRuntimeApiUrl === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
+      else process.env.PAPERCLIP_RUNTIME_API_URL = originalRuntimeApiUrl;
+
+      if (originalApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
+      else process.env.PAPERCLIP_API_URL = originalApiUrl;
+
+      if (originalListenHost === undefined) delete process.env.PAPERCLIP_LISTEN_HOST;
+      else process.env.PAPERCLIP_LISTEN_HOST = originalListenHost;
+
+      if (originalListenPort === undefined) delete process.env.PAPERCLIP_LISTEN_PORT;
+      else process.env.PAPERCLIP_LISTEN_PORT = originalListenPort;
+    }
   });
 });
 
