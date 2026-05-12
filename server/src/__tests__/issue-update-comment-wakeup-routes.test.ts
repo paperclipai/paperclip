@@ -395,4 +395,49 @@ describe("issue update comment wakeups", () => {
       }),
     ));
   });
+
+  it("does not let assignee mentions overwrite reopen wakeup keys on deduped retries", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "done",
+    });
+    const updated = { ...existing, status: "todo" };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.findMentionedAgents.mockResolvedValue([ASSIGNEE_AGENT_ID]);
+    const dedupedComment = {
+      id: "comment-deduped-reopen-mentioned",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "@Engineer please revise this",
+    };
+    Object.defineProperty(dedupedComment, "wasInserted", {
+      value: false,
+      enumerable: false,
+    });
+    mockIssueService.addComment.mockResolvedValue(dedupedComment);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        status: "todo",
+        comment: "@Engineer please revise this",
+      });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        reason: "issue_reopened_via_comment",
+        idempotencyKey: `issue-comment-wakeup:${existing.id}:comment-deduped-reopen-mentioned:${ASSIGNEE_AGENT_ID}:issue_reopened_via_comment`,
+      }),
+    ));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        reason: "issue_comment_mentioned",
+      }),
+    );
+  });
 });

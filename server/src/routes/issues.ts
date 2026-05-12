@@ -3231,7 +3231,15 @@ export function issueRoutes(
           wakeup.payload && typeof wakeup.payload === "object" && typeof wakeup.payload.issueId === "string"
             ? wakeup.payload.issueId
             : issue.id;
-        wakeups.set(`${agentId}:${wakeIssueId}`, { agentId, wakeup });
+        const key = `${agentId}:${wakeIssueId}`;
+        const existingWakeup = wakeups.get(key);
+        if (
+          existingWakeup?.wakeup.reason === "issue_reopened_via_comment" &&
+          wakeup.reason === "issue_comment_mentioned"
+        ) {
+          return;
+        }
+        wakeups.set(key, { agentId, wakeup });
       };
 
       if (executionStageWakeup) {
