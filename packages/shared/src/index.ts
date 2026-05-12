@@ -667,7 +667,12 @@ export {
 } from "./execution-workspace-guards.js";
 
 export {
+  WORKSPACE_ROOT_PLAN_LINK_ERROR,
+  containsWorkspaceRootPlanLinks,
   instanceGeneralSettingsSchema,
+  isWorkspaceRootPlanLinkTarget,
+  normalizeEscapedLineBreaks,
+  paperclipTextSurfaceSchema,
   patchInstanceGeneralSettingsSchema,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,

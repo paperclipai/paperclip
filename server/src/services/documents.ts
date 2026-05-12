@@ -1,7 +1,12 @@
 import { and, asc, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
-import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
+import {
+  WORKSPACE_ROOT_PLAN_LINK_ERROR,
+  containsWorkspaceRootPlanLinks,
+  isSystemIssueDocumentKey,
+  issueDocumentKeySchema,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 
 function normalizeDocumentKey(key: string) {
@@ -15,6 +20,12 @@ function normalizeDocumentKey(key: string) {
 
 function isUniqueViolation(error: unknown): boolean {
   return !!error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "23505";
+}
+
+function assertNoWorkspaceRootPlanLinks(value: string | null | undefined) {
+  if (containsWorkspaceRootPlanLinks(value)) {
+    throw unprocessable(WORKSPACE_ROOT_PLAN_LINK_ERROR);
+  }
 }
 
 export function extractLegacyPlanBody(description: string | null | undefined) {
@@ -181,6 +192,7 @@ export function documentService(db: Db) {
       createdByRunId?: string | null;
     }) => {
       const key = normalizeDocumentKey(input.key);
+      assertNoWorkspaceRootPlanLinks(input.body);
       const issue = await db
         .select({ id: issues.id, companyId: issues.companyId })
         .from(issues)
@@ -399,6 +411,7 @@ export function documentService(db: Db) {
             currentRevisionId: existing.latestRevisionId,
           });
         }
+        assertNoWorkspaceRootPlanLinks(revision.body);
 
         const now = new Date();
         const nextRevisionNumber = existing.latestRevisionNumber + 1;
