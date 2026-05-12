@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.20
 # Oxford overlay: adds Playwright/Chromium to the upstream paperclip prod image.
 # Bump UPSTREAM_IMAGE and PLAYWRIGHT_VERSION in lockstep with upstream releases.
-ARG UPSTREAM_IMAGE=ghcr.io/paperclipai/paperclip:latest
+ARG UPSTREAM_IMAGE=ghcr.io/misterbusiness1/paperclip:latest
 FROM ${UPSTREAM_IMAGE}
 
 ARG PLAYWRIGHT_VERSION=1.58.2
