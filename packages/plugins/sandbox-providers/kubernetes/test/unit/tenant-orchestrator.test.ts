@@ -24,6 +24,7 @@ function makeMockClients() {
       createNamespacedLimitRange: track("LimitRange"),
       replaceNamespacedLimitRange: track("LimitRangeReplace"),
       readNamespace: vi.fn().mockRejectedValue({ code: 404 }),
+      replaceNamespace: track("NamespaceReplace"),
     },
     rbac: {
       readNamespacedRole: vi.fn().mockRejectedValue({ code: 404 }),
@@ -97,17 +98,39 @@ describe("ensureTenant", () => {
     expect(sa.metadata.annotations["eks.amazonaws.com/role-arn"]).toBe("arn:aws:iam::123:role/paperclip");
   });
 
-  it("does not recreate a namespace that already exists", async () => {
+  it("reconciles a namespace that already exists", async () => {
     const clients = makeMockClients();
-    clients.core.readNamespace.mockResolvedValue({ body: { metadata: { name: baseInput.namespace } } });
+    clients.core.readNamespace.mockResolvedValue({
+      metadata: {
+        name: baseInput.namespace,
+        resourceVersion: "rv-namespace",
+        labels: { "operator.example.com/team": "infra" },
+      },
+    });
     await ensureTenant(clients as never, baseInput);
     expect(clients.core.createNamespace).not.toHaveBeenCalled();
+    expect(clients.core.replaceNamespace).toHaveBeenCalledWith({
+      name: baseInput.namespace,
+      body: expect.objectContaining({
+        metadata: expect.objectContaining({
+          resourceVersion: "rv-namespace",
+          labels: expect.objectContaining({
+            "operator.example.com/team": "infra",
+            "paperclip.io/company-id": baseInput.companyId,
+            "paperclip.io/managed-by": "paperclip-k8s-plugin",
+            "pod-security.kubernetes.io/enforce": "restricted",
+            "pod-security.kubernetes.io/audit": "restricted",
+            "pod-security.kubernetes.io/warn": "restricted",
+          }),
+        }),
+      }),
+    });
   });
 
   it("reconciles existing managed resources with the latest desired manifests", async () => {
     const clients = makeMockClients();
     const existing = { metadata: { resourceVersion: "rv-1" } };
-    clients.core.readNamespace.mockResolvedValue({ metadata: { name: baseInput.namespace } });
+    clients.core.readNamespace.mockResolvedValue({ metadata: { name: baseInput.namespace, resourceVersion: "rv-ns" } });
     clients.core.readNamespacedServiceAccount.mockResolvedValue(existing);
     clients.rbac.readNamespacedRole.mockResolvedValue(existing);
     clients.rbac.readNamespacedRoleBinding.mockResolvedValue(existing);
@@ -140,6 +163,18 @@ describe("ensureTenant", () => {
       }),
     );
     expect(clients.networking.replaceNamespacedNetworkPolicy).toHaveBeenCalled();
+    expect(clients.core.replaceNamespace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({
+          metadata: expect.objectContaining({
+            resourceVersion: "rv-ns",
+            labels: expect.objectContaining({
+              "pod-security.kubernetes.io/enforce": "restricted",
+            }),
+          }),
+        }),
+      }),
+    );
   });
 
   it("removes stale standard egress NetworkPolicy when cilium mode is selected", async () => {
@@ -155,6 +190,9 @@ describe("ensureTenant", () => {
     const clients = makeMockClients();
     const existing = { metadata: { resourceVersion: "rv-race" } };
     clients.core.createNamespace.mockRejectedValueOnce({ code: 409 });
+    clients.core.readNamespace
+      .mockRejectedValueOnce({ code: 404 })
+      .mockResolvedValue({ metadata: { resourceVersion: "rv-namespace-race" } });
     clients.core.readNamespacedServiceAccount
       .mockRejectedValueOnce({ code: 404 })
       .mockResolvedValue(existing);
@@ -163,6 +201,13 @@ describe("ensureTenant", () => {
     await ensureTenant(clients as never, baseInput);
 
     expect(clients.core.createNamespace).toHaveBeenCalled();
+    expect(clients.core.replaceNamespace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({
+          metadata: expect.objectContaining({ resourceVersion: "rv-namespace-race" }),
+        }),
+      }),
+    );
     expect(clients.core.replaceNamespacedServiceAccount).toHaveBeenCalledWith(
       expect.objectContaining({
         body: expect.objectContaining({

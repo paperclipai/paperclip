@@ -41,32 +41,46 @@ export async function ensureTenant(clients: KubeClients, input: EnsureTenantInpu
 }
 
 async function ensureNamespace(clients: KubeClients, input: EnsureTenantInput): Promise<void> {
+  const manifest = buildNamespaceManifest(input);
   try {
-    await clients.core.readNamespace({ name: input.namespace });
+    const existing = await clients.core.readNamespace({ name: input.namespace });
+    await clients.core.replaceNamespace({
+      name: input.namespace,
+      body: withResourceVersion(buildNamespaceManifest(input, existing), existing) as never,
+    });
     return;
   } catch (err) {
     if (!isNotFound(err)) throw err;
   }
   try {
-    await clients.core.createNamespace({
-      body: {
-        apiVersion: "v1",
-        kind: "Namespace",
-        metadata: {
-          name: input.namespace,
-          labels: {
-            "paperclip.io/company-id": input.companyId,
-            "paperclip.io/managed-by": "paperclip-k8s-plugin",
-            "pod-security.kubernetes.io/enforce": "restricted",
-            "pod-security.kubernetes.io/audit": "restricted",
-            "pod-security.kubernetes.io/warn": "restricted",
-          },
-        },
-      },
-    });
+    await clients.core.createNamespace({ body: manifest });
   } catch (err) {
     if (!isAlreadyExists(err)) throw err;
+    const existing = await clients.core.readNamespace({ name: input.namespace });
+    await clients.core.replaceNamespace({
+      name: input.namespace,
+      body: withResourceVersion(buildNamespaceManifest(input, existing), existing) as never,
+    });
   }
+}
+
+function buildNamespaceManifest(input: EnsureTenantInput, existing?: unknown): Record<string, unknown> {
+  const existingLabels = (existing as { metadata?: { labels?: Record<string, string> } })?.metadata?.labels ?? {};
+  return {
+    apiVersion: "v1",
+    kind: "Namespace",
+    metadata: {
+      name: input.namespace,
+      labels: {
+        ...existingLabels,
+        "paperclip.io/company-id": input.companyId,
+        "paperclip.io/managed-by": "paperclip-k8s-plugin",
+        "pod-security.kubernetes.io/enforce": "restricted",
+        "pod-security.kubernetes.io/audit": "restricted",
+        "pod-security.kubernetes.io/warn": "restricted",
+      },
+    },
+  };
 }
 
 async function ensureServiceAccount(clients: KubeClients, input: EnsureTenantInput): Promise<void> {
