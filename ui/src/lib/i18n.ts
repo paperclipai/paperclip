@@ -111,6 +111,38 @@ export function formatPriorityLabel(priority: string): string {
   return PRIORITY_ZH[priority] ?? titleCaseUnderscores(priority);
 }
 
+export function formatAgentStatus(status: string): string {
+  return AGENT_STATUS[status] ?? titleCaseUnderscores(status);
+}
+
+export function formatRunStatus(status: string): string {
+  return RUN_STATUS[status] ?? formatBadgeStatus(status);
+}
+
+const AGENT_ROLE_ZH: Record<string, string> = {
+  ceo: "CEO",
+  cto: "CTO",
+  cmo: "CMO",
+  cfo: "CFO",
+  security: "安全",
+  engineer: "工程师",
+  designer: "设计",
+  pm: "产品经理",
+  qa: "测试",
+  devops: "运维",
+  researcher: "研究",
+  general: "通用",
+};
+
+export function formatAgentRole(role: string): string {
+  return AGENT_ROLE_ZH[role] ?? titleCaseUnderscores(role);
+}
+
+/** UI helper — adapter id 仍显示为原始字符串 */
+export function formatAdapterTypeLabel(adapterType: string): string {
+  return adapterType;
+}
+
 // ——— Run ledger / liveness (heartbeat UI) ———
 
 export type LivenessCopyZh = { label: string; description: string };
@@ -182,7 +214,7 @@ export const RETRY_BADGE_ZH = {
 
 export const runRetryUi = {
   attemptLabel: (n: number) => `第 ${n} 次尝试`,
-  manualInterventionPhrase: "Manual intervention required",
+  manualInterventionPhrase: "需要人工介入",
 } as const;
 
 // ——— Navigation & common pages ———
@@ -467,6 +499,7 @@ export const newIssue = {
 
 export const newAgent = {
   title: "添加智能体",
+  dialogHeader: "添加智能体",
   recommendBody:
     "建议由 CEO 负责智能体配置 — 他们了解组织结构，能设置汇报关系、权限与适配器。",
   askCeo: "请 CEO 创建新智能体",
@@ -474,20 +507,217 @@ export const newAgent = {
   back: "返回",
   chooseAdapter: "选择适配器类型以进行高级设置。",
   recommended: "推荐",
+  ceoIssueTitle: "请创建新智能体",
+  ceoIssueDescription: "（在此描述你想要的智能体类型）",
 } as const;
 
 export const sidebarCompany = {
   selectWorkspace: "选择工作区",
   openSwitcher: "打开工作区切换",
+  switchWorkspaceTitle: "切换工作区",
+  openSwitcherNamed: (name: string) => `打开 ${name} 工作区切换`,
+  openSwitcherGeneric: "打开工作区切换",
+  selectPrompt: "选择工作区",
+  reorderTeam: (name: string) => `调整 ${name} 的顺序`,
   edit: "编辑",
   done: "完成",
   noWorkspaces: "暂无工作区",
   addCompany: "添加团队…",
   invite: "邀请成员",
+  inviteGeneric: "邀请成员",
   inviteTo: (name: string) => `邀请加入 ${name}`,
   companySettings: "团队设置",
   signingOut: "正在退出…",
   signOut: "退出登录",
+} as const;
+
+export const sidebarAgents = {
+  section: "智能体",
+  newAgentAria: "新建智能体",
+  menuAria: "智能体区域操作",
+  browse: "浏览智能体",
+  sortLabel: "智能体排序",
+  sortTop: "置顶顺序",
+  sortAlphabetical: "按名称",
+  sortRecent: "最近活跃",
+  edit: "编辑智能体",
+  pause: "暂停智能体",
+  resume: "恢复智能体",
+  updating: "更新中…",
+  budgetPaused: "预算已暂停",
+  budgetPausedTitle: "因预算限制已暂停",
+  liveRuns: (n: number) => `${n} 个进行中`,
+  actionsAria: (name: string) => `操作：${name}`,
+  toastPaused: "已暂停智能体",
+  toastResumed: "已恢复智能体",
+  toastPauseErr: "无法暂停智能体",
+  toastResumeErr: "无法恢复智能体",
+  budgetMarker: "因预算已暂停",
+} as const;
+
+export const sidebarProjects = {
+  section: "项目",
+  newProjectAria: "新建项目",
+  menuAria: "项目区域操作",
+  browse: "浏览项目",
+  sortLabel: "项目排序",
+  sortTop: "置顶顺序",
+  sortAlphabetical: "按名称",
+  sortRecent: "最近更新",
+  budgetPausedTitle: "因预算已暂停",
+} as const;
+
+export const issueTreeControl = {
+  subtreePause: "暂停子树",
+  subtreeResume: "恢复子树",
+  subtreeCancel: "取消子树",
+  subtreeRestore: "恢复子树事务",
+  leafPause: "暂停此事务",
+  leafResume: "恢复工作",
+  helpSubtreePause: "暂停本子树内活动执行，直至手动恢复。",
+  helpSubtreeResume: "解除子树暂停，使被挂起的工作可以继续。",
+  helpSubtreeCancel: "取消子树中未结束事务，并尽量停止排队/进行中的运行。",
+  helpSubtreeRestore: "恢复本子树操作中取消的事务，以便继续工作。",
+  helpLeafPause: "暂停此事务上的活动执行，直至手动恢复。",
+  helpLeafResume: "解除暂停挂起，使此事务可继续。",
+  preview403: "仅董事会成员可预览子树控制。",
+  preview409: "子树状态已变更，预览已过期。请重试刷新。",
+  preview422: "当前所选事务无法执行此子树操作。",
+  previewLoadFailed: "无法加载预览。",
+} as const;
+
+export const issueDetailActors = {
+  system: "系统",
+  board: "董事会",
+  unknown: "未知",
+} as const;
+
+export const agentDetailUi = {
+  invocation: "调用",
+  adapter: "适配器",
+  workingDir: "工作目录",
+  command: "命令",
+  commandNotes: "命令说明",
+  prompt: "提示词",
+  context: "上下文",
+  environment: "环境",
+  loadingLog: "正在加载日志…",
+  noLogLines: "暂无持久化日志行",
+  stderrExcerpt: "stderr 摘录",
+  stdoutExcerpt: "stdout 摘录",
+  worktreeSetup: "工作区准备",
+  provision: "供给",
+  teardown: "拆除",
+  worktreeCleanup: "工作区清理",
+  assignTask: "分配任务",
+  live: "实时",
+  pendingApproval: "此智能体待董事会审批，暂不可调用。",
+  approveAgent: "批准智能体",
+  recentIssues: "最近事务",
+  noRecentIssues: "暂无相关事务",
+  costs: "用量与费用",
+  inputTokens: "输入 token",
+  outputTokens: "输出 token",
+  cachedTokens: "缓存 token",
+  totalCost: "总费用",
+  date: "日期",
+  runId: "运行",
+  input: "输入",
+  output: "输出",
+  cost: "费用",
+  apiKeys: "API 密钥",
+  noConfigRevisions: "尚无配置修订。",
+  branch: "分支",
+  baseRef: "基线引用",
+  worktreePath: "Worktree",
+  repoRoot: "仓库根目录",
+  cleanup: "清理动作",
+  sourceTimer: "定时",
+  sourceAssignment: "分配",
+  sourceOnDemand: "按需",
+  sourceAutomation: "自动化",
+  details: "详情",
+  waitingTranscript: "等待转写…",
+  noTranscriptPersisted: "此运行尚无持久化转写。",
+  permissionsTitle: "权限",
+  canCreateAgentsLabel: "可创建新智能体",
+  canCreateAgentsHint: "允许此智能体创建或雇佣其他智能体并隐式分配任务。",
+  canAssignTasksLabel: "可分配任务",
+  taskAssignHintCeo: "CEO 智能体自动启用。",
+  taskAssignHintAgentCreator: "在可创建新智能体时自动启用。",
+  taskAssignHintExplicit: "已通过公司显式授权启用。",
+  taskAssignHintDisabled: "除非显式授权，否则禁用。",
+  filesHeading: "文件",
+  fileCreate: "创建",
+  fileCancel: "取消",
+  virtualFileBadge: "虚拟文件",
+  virtualFileTooltip: "旧版内联提示词：此废弃虚拟文件保留原 promptTemplate 内容。",
+  entryBadge: "入口",
+  skillView: "查看",
+  skillLocationPrefix: "位置：",
+  importSkillsFirst: "请先将技能导入公司库，再在此处挂载。",
+  requiredByPaperclip: "Paperclip 要求",
+  userInstalledSkillsBanner: (n: number) => `（${n}）用户自行安装，非 Paperclip 管理`,
+  missingSkillsTitle: "所需技能在公司库中缺失",
+  skillsApplied: "已应用技能",
+  selectedSkills: "已选技能",
+  failedUpdateSkills: "无法更新技能",
+  unsupportedSkillHint: "请在适配器中直接管理技能。",
+  noRunsYet: "尚无运行记录。",
+  backToRuns: "返回运行列表",
+  sessionLabel: "会话",
+  sessionChanged: "（已变更）",
+  sessionBefore: "之前",
+  sessionAfter: "之后",
+  sessionIdShort: "ID",
+  clearSessionConfirm: (n: number) =>
+    n === 1
+      ? "清除此运行所触及的 1 个事务的会话？"
+      : `清除此运行所触及的 ${n} 个事务的会话？`,
+  clearingSession: "正在清除会话…",
+  clearSessionForIssues: "清除这些事务的会话",
+  failedClearSessions: "无法清除会话",
+  issuesTouched: (n: number) => `触及的事务（${n}）`,
+  stderrHeading: "stderr",
+  stdoutHeading: "stdout",
+  loadingRunLogs: "正在加载运行日志…",
+  noLogEvents: "暂无日志事件。",
+  failureDetails: "失败详情",
+  errorPrefix: "错误：",
+  adapterResultJson: "适配器 result JSON",
+  eventsCount: (n: number) => `事件（${n}）`,
+  transcriptCount: (n: number) => `转写（${n}）`,
+  transcriptModeNice: "友好",
+  transcriptModeRaw: "原始",
+  jumpToLive: "跳到实时",
+  loadMoreLog: "加载更多日志",
+  loadingShort: "加载中…",
+  showingLogProgress: (shownKb: string, totalKb?: string) =>
+    totalKb ? `已显示前 ${shownKb} KB，共 ${totalKb} KB` : `已显示前 ${shownKb} KB`,
+  workspaceLogHide: "隐藏完整日志",
+  workspaceLogShow: "显示完整日志",
+  workspaceLogLoadFailed: "无法加载工作区操作日志",
+  workspaceSectionCount: (n: number) => `工作区（${n}）`,
+  workspaceCreatedThisRun: "由此运行创建",
+  workspaceReused: "复用已有工作区",
+  timeRangeTo: "至",
+  apiKeyCreatedBanner: "API 密钥已创建 — 请立即复制，之后不再显示。",
+  hide: "隐藏",
+  show: "显示",
+  copy: "复制",
+  copied: "已复制",
+  dismiss: "关闭",
+  createApiKeySection: "创建 API 密钥",
+  apiKeyAuthDescription: "API 密钥用于此智能体向 Paperclip 服务器认证调用。",
+  keyNamePlaceholder: "密钥名称（如 production）",
+  createKeyButton: "创建",
+  loadingKeys: "正在加载密钥…",
+  noActiveApiKeys: "暂无有效 API 密钥。",
+  activeKeysTitle: "有效密钥",
+  revokedKeysTitle: "已撤销密钥",
+  keyCreated: "创建于",
+  keyRevoked: "已撤销于",
+  revokeKey: "撤销",
 } as const;
 
 export const issueBreadcrumb = {
@@ -504,6 +734,11 @@ export const issueFilters = {
 
 export const mobileNav = {
   create: "新建",
+  home: "主页",
+  issues: "事务",
+  agents: "智能体",
+  inbox: "收件箱",
+  ariaNav: "底部导航",
 } as const;
 
 export const runLedger = {
@@ -547,6 +782,62 @@ export const runLedger = {
   minutes: (n: number) => `${n} 分钟`,
   hours: (n: number) => `${n} 小时`,
   hoursMinutes: (h: number, m: number) => `${h} 小时 ${m} 分钟`,
+  ariaSection: "事务运行账本",
+  childSummaryActive: (active: number, done: number, cancelled: number) =>
+    `${active} 个进行中，${done} 已完成，${cancelled} 已取消`,
+  childSummaryTerminal: (total: number, done: number, cancelled: number) =>
+    `全部 ${total} 个已结束（${done} 完成，${cancelled} 取消）`,
+  moreChildren: (n: number) => `另有 ${n} 个`,
+  watchdogStaleTitle: "停滞运行告警",
+  watchdogSilenceTitle: "输出静默监控",
+  silentForPrefix: "最近活跃运行已静默",
+  silentExtended: "较长时间",
+  reviewLinkForRecovery: "查看恢复上下文。",
+  snoozeReasonLedger: "从事务运行账本推迟",
+  dismissReasonLedger: "从事务运行账本标记误报",
+  toastWatchdogFailed: "看门狗决策未记录",
+  watchdog403: "仅董事会或指定的恢复责任人可记录看门狗决策。",
+  watchdogGenericError: "无法记录看门狗决策。",
+  emptyFeedWithActivity: "有历史后，运行与活动将显示在此。",
+  emptyFeedLegacy: "关联到该事务的历史运行将显示在此（即使无活跃度元数据）。",
+  runLabel: "运行",
+  byAgent: "由",
+  liveChip: "实时",
+  exhaustedChip: "已耗尽",
+  elapsed: "耗时",
+  lastUsefulAction: "最近有效动作",
+  stopColumn: "停止",
+  unknownDuration: "未知",
+  retryOfRun: "重试来源运行",
+  nextActionPrefix: "下一步：",
+  olderItemsHidden: (n: number) => `另有 ${n} 条较早记录未显示`,
+  runningNowBy: (agent: string) => `${agent} 正在运行`,
+  queuedFor: (agent: string) => `排队中：${agent}`,
+  autoRetryScheduledFor: (agent: string) => `已为 ${agent} 安排自动重试`,
+  genericStatusBy: (status: string, agent: string) => `${status} · ${agent}`,
+  stopTimeout: (sec: string) => `超时（${sec}）`,
+  stopTimeoutShort: "超时",
+  stopMaxTurns: "已达最大轮次",
+  stopBudgetPaused: "预算已暂停",
+  stopCancelled: "已取消",
+  stopPausedByBoard: "董事会暂停",
+  stopProcessLost: "进程丢失",
+  stopAdapterFailed: "适配器失败",
+  stopCompleted: (time?: string) => (time ? `已完成（${time}）` : "已完成"),
+  cheapFallbackPrimary: "Cheap 配置已回退到主模型",
+  profileUnavailable: (name: string) => `${name} 配置不可用`,
+  modelProfileLineRequested: (v: string) => `请求：${v}`,
+  modelProfileLineApplied: (v: string) => `应用：${v}`,
+  modelProfileLineSource: (v: string) => `来源：${v}`,
+  modelProfileLineFallback: (v: string) => `回退：${v}`,
+  durationSeconds: (s: number) => `${s} 秒`,
+  durationMinutesSeconds: (m: number, s: number) => (s > 0 ? `${m} 分 ${s} 秒` : `${m} 分钟`),
+  durationHours: (h: number) => `${h} 小时`,
+  durationHoursMinutes: (h: number, m: number) =>
+    m > 0 ? `${h} 小时 ${m} 分钟` : `${h} 小时`,
+  modelProfileEqual: (r: string) => `模型：${r}`,
+  modelProfileArrow: (a: string, b: string) => `模型：${a} → ${b}`,
+  modelProfileUnavailable: (r: string) => `模型：${r}（不可用）`,
 } as const;
 
 /** Blocked state detail for StatusIcon (parity with former English helper). */

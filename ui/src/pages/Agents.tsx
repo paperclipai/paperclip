@@ -181,6 +181,8 @@ export function Agents() {
           {!forceListView && (
             <div className="flex items-center border border-border">
               <button
+                type="button"
+                title={agentsPage.list}
                 className={cn(
                   "p-1.5 transition-colors",
                   effectiveView === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
@@ -190,6 +192,8 @@ export function Agents() {
                 <List className="h-3.5 w-3.5" />
               </button>
               <button
+                type="button"
+                title={agentsPage.tree}
                 className={cn(
                   "p-1.5 transition-colors",
                   effectiveView === "org" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"

@@ -30,6 +30,11 @@ function joinFragments(parts: Array<string | null>) {
   return filtered.length > 0 ? filtered.join(" · ") : null;
 }
 
+function needsManualInterventionPhrase(exhaustedReason: string) {
+  return /manual intervention required/i.test(exhaustedReason)
+    || exhaustedReason.includes(runRetryUi.manualInterventionPhrase);
+}
+
 export function formatRetryReason(reason: string | null | undefined) {
   const normalized = readNonEmptyString(reason);
   if (!normalized) return null;
@@ -75,7 +80,7 @@ export function describeRunRetryState(run: RetryAwareRun): RunRetryStateSummary 
       badgeLabel: isMaxTurnContinuation ? RETRY_BADGE_ZH.continuationExhausted : RETRY_BADGE_ZH.retryExhausted,
       tone: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
       detail: joinFragments([attemptLabel, reasonLabel, RETRY_BADGE_ZH.automaticRetriesExhausted]),
-      secondary: exhaustedReason.includes(runRetryUi.manualInterventionPhrase)
+      secondary: needsManualInterventionPhrase(exhaustedReason)
         ? exhaustedReason
         : `${exhaustedReason} 需要人工介入。`,
       retryOfRunId,

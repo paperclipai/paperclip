@@ -21,6 +21,7 @@ import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, projectRouteRef } from "../lib/utils";
 import { useProjectOrder } from "../hooks/useProjectOrder";
+import { sidebarProjects } from "../lib/i18n";
 import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
 import { SidebarSection, type SidebarSectionRadioChoice } from "./SidebarSection";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
@@ -37,9 +38,9 @@ import type { Project } from "@paperclipai/shared";
 type ProjectSidebarSlot = ReturnType<typeof usePluginSlots>["slots"][number];
 
 const PROJECT_SORT_CHOICES: SidebarSectionRadioChoice[] = [
-  { value: "top", label: "Top" },
-  { value: "alphabetical", label: "Alphabetical" },
-  { value: "recent", label: "Recent" },
+  { value: "top", label: sidebarProjects.sortTop },
+  { value: "alphabetical", label: sidebarProjects.sortAlphabetical },
+  { value: "recent", label: sidebarProjects.sortRecent },
 ];
 
 type ProjectItemProps = {
@@ -110,7 +111,7 @@ function ProjectItem({
           style={{ backgroundColor: project.color ?? "#6366f1" }}
         />
         <span className="flex-1 truncate">{project.name}</span>
-        {project.pauseReason === "budget" ? <BudgetSidebarMarker title="Project paused by budget" /> : null}
+        {project.pauseReason === "budget" ? <BudgetSidebarMarker title={sidebarProjects.budgetPausedTitle} /> : null}
       </NavLink>
       {projectSidebarSlots.length > 0 && (
         <div className="ml-5 flex flex-col gap-0.5">
@@ -291,20 +292,20 @@ export function SidebarProjects() {
 
   return (
     <SidebarSection
-      label="Projects"
+      label={sidebarProjects.section}
       collapsible={{ open, onOpenChange: setOpen }}
       headerAction={{
-        ariaLabel: "New project",
+        ariaLabel: sidebarProjects.newProjectAria,
         icon: Plus,
         onClick: openNewProject,
       }}
       menu={{
-        ariaLabel: "Projects section actions",
+        ariaLabel: sidebarProjects.menuAria,
         actions: [
-          { type: "item", label: "Browse projects", icon: FolderOpen, href: "/projects" },
+          { type: "item", label: sidebarProjects.browse, icon: FolderOpen, href: "/projects" },
           { type: "separator" },
         ],
-        radioLabel: "Project sort",
+        radioLabel: sidebarProjects.sortLabel,
         radioChoices: PROJECT_SORT_CHOICES,
         radioValue: sortMode,
         onRadioValueChange: persistSortMode,
