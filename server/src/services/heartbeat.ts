@@ -3568,7 +3568,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const sessionCwd = readNonEmptyString(previousSessionParams?.cwd);
-    if (sessionCwd) {
+    // Reject session-resume cwds that point at system tmp roots. Some
+    // remote adapters previously persisted the *pod* cwd (e.g. "/tmp")
+    // into sessionParams; if we naively used it as the host workspace
+    // cwd we would walk and tar the entire host /tmp.
+    const SYSTEM_ROOTS = new Set(["/", "/tmp", "/var", "/var/tmp", "/usr", "/etc", "/private", "/private/tmp"]);
+    const sessionCwdLooksUnsafe = sessionCwd
+      ? SYSTEM_ROOTS.has(sessionCwd.replace(/\/+$/, ""))
+      : false;
+    if (sessionCwd && !sessionCwdLooksUnsafe) {
       const sessionCwdExists = await fs
         .stat(sessionCwd)
         .then((stats) => stats.isDirectory())

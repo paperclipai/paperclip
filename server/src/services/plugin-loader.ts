@@ -1820,10 +1820,29 @@ export function pluginLoader(
         databaseNamespace,
         hostHandlers,
         autoRestart: true,
-        env: {
-          PAPERCLIP_DEPLOYMENT_MODE: instanceInfo.deploymentMode ?? "",
-          PAPERCLIP_DEPLOYMENT_EXPOSURE: instanceInfo.deploymentExposure ?? "",
-        },
+        env: (() => {
+          const baseEnv: Record<string, string> = {
+            PAPERCLIP_DEPLOYMENT_MODE: instanceInfo.deploymentMode ?? "",
+            PAPERCLIP_DEPLOYMENT_EXPOSURE: instanceInfo.deploymentExposure ?? "",
+          };
+          // Adapter env keys (model-provider API keys) are propagated from the
+          // server's environment so sandbox-provider plugins can inject them
+          // into per-run pod Secrets. Plugins NEVER see other host env vars.
+          const ADAPTER_ENV_PASSTHROUGH = [
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GEMINI_API_KEY",
+            "OPENROUTER_API_KEY",
+          ];
+          for (const key of ADAPTER_ENV_PASSTHROUGH) {
+            const value = process.env[key];
+            if (value && value.trim().length > 0) {
+              baseEnv[key] = value;
+            }
+          }
+          return baseEnv;
+        })(),
       };
 
       // Repo-local plugin installs can resolve workspace TS sources at runtime
