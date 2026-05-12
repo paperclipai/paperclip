@@ -477,14 +477,16 @@ Responde SOLO con JSON:
     images = {}
 
     if cj_image and cj_image.startswith("http"):
-        print(f"  ✅ Imagen real CJ (hero only): {cj_image[:60]}", flush=True)
-        # Solo hero — sin grid de fotos adicionales
+        print(f"  ✅ Imagen real producto (hero): {cj_image[:60]}", flush=True)
+        # Imágenes extra de Serper para el grid (si las hay)
+        extra = [u for u in product.get("extra_image_urls", []) if u.startswith("http")]
         images = {
             "hero":    [cj_image],
-            "product": [],
-            "context": [],
-            "all":     [cj_image],
+            "product": extra[:3] if extra else [],
+            "context": extra[3:5] if len(extra) > 3 else [],
+            "all":     [cj_image] + extra[:4],
         }
+        print(f"  🖼️  Grid: {len(extra[:3])} imágenes adicionales", flush=True)
     # Prioridad 2: Pexels API
     elif pexels_key:
         images = fetch_pexels_images(name, pexels_key)

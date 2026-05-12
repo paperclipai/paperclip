@@ -34,6 +34,45 @@ from api_client import post_issue_result, post_issue_comment, resolve_issue_cont
 sys.stdout.reconfigure(encoding="utf-8")
 
 
+def fetch_serper_images(product_name: str, num: int = 5) -> list:
+    """
+    Busca imágenes del producto en Google via Serper API.
+    Devuelve lista de URLs de imágenes reales del producto.
+    Serper: https://serper.dev — 2500 búsquedas gratis/mes
+    """
+    serper_key = os.environ.get("SERPER_API_KEY", "").strip()
+    if not serper_key:
+        return []
+
+    try:
+        payload = json.dumps({
+            "q":  product_name,
+            "gl": "es",
+            "hl": "es",
+            "num": num,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            "https://google.serper.dev/images",
+            data=payload,
+            headers={
+                "X-API-KEY":    serper_key,
+                "Content-Type": "application/json",
+            },
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8"))
+
+        images = data.get("images", [])
+        urls   = [img["imageUrl"] for img in images if img.get("imageUrl")]
+        print(f"  🔍 Serper: {len(urls)} imágenes para '{product_name[:40]}'", flush=True)
+        return urls[:num]
+
+    except Exception as e:
+        print(f"  ⚠️  Serper error: {e}", flush=True)
+        return []
+
+
 def fetch_cj_image_for_winner(winner_name: str) -> str:
     """
     Búsqueda dirigida en CJ para obtener imagen del producto ganador.
@@ -517,7 +556,16 @@ def main():
 
     winner_name = winner["name"]
 
-    # Búsqueda dirigida en CJ con el nombre exacto del winner
+    # ── Búsqueda de imágenes reales del producto ─────────────────────────────
+    # Prioridad 1: Serper (Google Images) — imágenes reales del producto exacto
+    if not winner.get("image_url") or not winner["image_url"].startswith("http"):
+        serper_imgs = fetch_serper_images(winner_name, num=5)
+        if serper_imgs:
+            winner["image_url"]       = serper_imgs[0]
+            winner["extra_image_urls"] = serper_imgs[1:]
+            print(f"  🖼️  Serper: {len(serper_imgs)} imágenes para '{winner_name[:40]}'", flush=True)
+
+    # Prioridad 2: CJ directo si Serper no encontró nada
     if not winner.get("image_url") or not winner["image_url"].startswith("http"):
         cj_img = fetch_cj_image_for_winner(winner_name)
         if cj_img:
