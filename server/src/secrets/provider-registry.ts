@@ -1,11 +1,11 @@
 import type { SecretProvider, SecretProviderDescriptor } from "@paperclipai/shared";
+import { awsSecretsManagerProvider } from "./aws-secrets-manager-provider.js";
 import { localEncryptedProvider } from "./local-encrypted-provider.js";
 import {
-  awsSecretsManagerProvider,
   gcpSecretManagerProvider,
   vaultProvider,
 } from "./external-stub-providers.js";
-import type { SecretProviderModule } from "./types.js";
+import type { SecretProviderHealthCheck, SecretProviderModule } from "./types.js";
 import { unprocessable } from "../errors.js";
 
 const providers: SecretProviderModule[] = [
@@ -26,5 +26,9 @@ export function getSecretProvider(id: SecretProvider): SecretProviderModule {
 }
 
 export function listSecretProviders(): SecretProviderDescriptor[] {
-  return providers.map((provider) => provider.descriptor);
+  return providers.map((provider) => provider.descriptor());
+}
+
+export async function checkSecretProviders(): Promise<SecretProviderHealthCheck[]> {
+  return Promise.all(providers.map((provider) => provider.healthCheck()));
 }

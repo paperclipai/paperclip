@@ -1,4 +1,8 @@
 import type {
+  IssueCommentAuthorType,
+  IssueCommentMetadataRowType,
+  IssueCommentPresentationKind,
+  IssueCommentPresentationTone,
   IssueExecutionMonitorClearReason,
   IssueExecutionMonitorKind,
   IssueExecutionMonitorRecoveryPolicy,
@@ -11,6 +15,11 @@ import type {
   IssueExecutionStateStatus,
   IssueOriginKind,
   IssuePriority,
+  IssueRecoveryActionKind,
+  IssueRecoveryActionOutcome,
+  IssueRecoveryActionOwnerType,
+  IssueRecoveryActionStatus,
+  IssueWorkMode,
   ModelProfileKey,
   IssueThreadInteractionContinuationPolicy,
   IssueThreadInteractionKind,
@@ -21,6 +30,8 @@ import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
 import type { IssueWorkProduct } from "./work-product.js";
+
+export type { IssueWorkMode };
 
 export interface IssueAncestorProject {
   id: string;
@@ -124,6 +135,7 @@ export interface IssueRelationIssueSummary {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   terminalBlockers?: IssueRelationIssueSummary[];
+  activeRecoveryAction?: IssueRecoveryAction | null;
 }
 
 export type IssueBlockerAttentionState = "none" | "covered" | "stalled" | "needs_attention";
@@ -160,6 +172,75 @@ export interface IssueProductivityReview {
   noCommentStreak: number | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface IssueRecoveryAction {
+  id: string;
+  companyId: string;
+  sourceIssueId: string;
+  recoveryIssueId: string | null;
+  kind: IssueRecoveryActionKind;
+  status: IssueRecoveryActionStatus;
+  ownerType: IssueRecoveryActionOwnerType;
+  ownerAgentId: string | null;
+  ownerUserId: string | null;
+  previousOwnerAgentId: string | null;
+  returnOwnerAgentId: string | null;
+  cause: string;
+  fingerprint: string;
+  evidence: Record<string, unknown>;
+  nextAction: string;
+  wakePolicy: Record<string, unknown> | null;
+  monitorPolicy: Record<string, unknown> | null;
+  attemptCount: number;
+  maxAttempts: number | null;
+  timeoutAt: Date | string | null;
+  lastAttemptAt: Date | string | null;
+  outcome: IssueRecoveryActionOutcome | null;
+  resolutionNote: string | null;
+  resolvedAt: Date | string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
+export type SuccessfulRunHandoffStateKind = "required" | "resolved" | "escalated";
+
+export interface SuccessfulRunHandoffState {
+  state: SuccessfulRunHandoffStateKind;
+  required: boolean;
+  sourceRunId: string | null;
+  correctiveRunId: string | null;
+  assigneeAgentId: string | null;
+  detectedProgressSummary: string | null;
+  createdAt: Date | string | null;
+}
+
+export type IssueScheduledRetryStatus = "scheduled_retry" | "queued" | "running" | "cancelled";
+
+export interface IssueScheduledRetry {
+  runId: string;
+  status: IssueScheduledRetryStatus;
+  agentId: string;
+  agentName: string | null;
+  retryOfRunId: string | null;
+  scheduledRetryAt: Date | string | null;
+  scheduledRetryAttempt: number;
+  scheduledRetryReason: string | null;
+  retryExhaustedReason?: string | null;
+  error?: string | null;
+  errorCode?: string | null;
+}
+
+export type IssueRetryNowOutcome =
+  | "promoted"
+  | "already_promoted"
+  | "no_scheduled_retry"
+  | "gate_suppressed";
+
+export interface IssueRetryNowResponse {
+  outcome: IssueRetryNowOutcome;
+  message: string;
+  scheduledRetry: IssueScheduledRetry | null;
 }
 
 export interface IssueRelation {
@@ -286,6 +367,7 @@ export interface Issue {
   title: string;
   description: string | null;
   status: IssueStatus;
+  workMode: IssueWorkMode;
   priority: IssuePriority;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -324,6 +406,9 @@ export interface Issue {
   blocks?: IssueRelationIssueSummary[];
   blockerAttention?: IssueBlockerAttention;
   productivityReview?: IssueProductivityReview | null;
+  activeRecoveryAction?: IssueRecoveryAction | null;
+  successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  scheduledRetry?: IssueScheduledRetry | null;
   relatedWork?: IssueRelatedWorkSummary;
   referencedIssueIdentifiers?: string[];
   planDocument?: IssueDocument | null;
@@ -346,12 +431,86 @@ export interface IssueComment {
   id: string;
   companyId: string;
   issueId: string;
+  authorType: IssueCommentAuthorType;
   authorAgentId: string | null;
   authorUserId: string | null;
+  createdByRunId?: string | null;
+  derivedAuthorAgentId?: string | null;
+  derivedCreatedByRunId?: string | null;
+  derivedAuthorSource?: "run_log_comment_post" | null;
   body: string;
+  presentation: IssueCommentPresentation | null;
+  metadata: IssueCommentMetadata | null;
   followUpRequested?: boolean;
   createdAt: Date;
   updatedAt: Date;
+}
+
+interface IssueCommentMetadataRowBase {
+  type: IssueCommentMetadataRowType;
+  label?: string | null;
+}
+
+export interface IssueCommentMetadataTextRow extends IssueCommentMetadataRowBase {
+  type: "text";
+  text: string;
+}
+
+export interface IssueCommentMetadataCodeRow extends IssueCommentMetadataRowBase {
+  type: "code";
+  code: string;
+  language?: string | null;
+}
+
+export interface IssueCommentMetadataKeyValueRow extends IssueCommentMetadataRowBase {
+  type: "key_value";
+  label: string;
+  value: string;
+}
+
+export interface IssueCommentMetadataIssueLinkRow extends IssueCommentMetadataRowBase {
+  type: "issue_link";
+  issueId?: string | null;
+  identifier?: string | null;
+  title?: string | null;
+}
+
+export interface IssueCommentMetadataAgentLinkRow extends IssueCommentMetadataRowBase {
+  type: "agent_link";
+  agentId: string;
+  name?: string | null;
+}
+
+export interface IssueCommentMetadataRunLinkRow extends IssueCommentMetadataRowBase {
+  type: "run_link";
+  runId: string;
+  title?: string | null;
+}
+
+export type IssueCommentMetadataRow =
+  | IssueCommentMetadataTextRow
+  | IssueCommentMetadataCodeRow
+  | IssueCommentMetadataKeyValueRow
+  | IssueCommentMetadataIssueLinkRow
+  | IssueCommentMetadataAgentLinkRow
+  | IssueCommentMetadataRunLinkRow;
+
+export interface IssueCommentMetadataSection {
+  title?: string | null;
+  rows: IssueCommentMetadataRow[];
+}
+
+export interface IssueCommentMetadata {
+  version: 1;
+  sourceRunId?: string | null;
+  sections: IssueCommentMetadataSection[];
+}
+
+export interface IssueCommentPresentation {
+  kind: IssueCommentPresentationKind;
+  tone: IssueCommentPresentationTone;
+  title?: string | null;
+  detailsDefaultOpen: boolean;
 }
 
 export interface IssueThreadInteractionActorFields {
@@ -368,6 +527,7 @@ export interface SuggestedTaskDraft {
   title: string;
   description?: string | null;
   priority?: IssuePriority | null;
+  workMode?: IssueWorkMode | null;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
   projectId?: string | null;

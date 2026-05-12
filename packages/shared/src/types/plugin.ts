@@ -16,7 +16,20 @@ import type {
   PluginDatabaseMigrationStatus,
   PluginDatabaseNamespaceMode,
   PluginDatabaseNamespaceStatus,
+  AgentAdapterType,
+  AgentRole,
+  AgentStatus,
+  IssuePriority,
+  ProjectStatus,
+  RoutineCatchUpPolicy,
+  RoutineConcurrencyPolicy,
+  RoutineStatus,
+  IssueSurfaceVisibility,
 } from "../constants.js";
+import type { Agent } from "./agent.js";
+import type { CompanySkill } from "./company-skill.js";
+import type { Project } from "./project.js";
+import type { Routine, RoutineTrigger, RoutineVariable } from "./routine.js";
 
 // ---------------------------------------------------------------------------
 // JSON Schema placeholder – plugins declare config schemas as JSON Schema
@@ -114,6 +127,206 @@ export interface PluginEnvironmentDriverDeclaration {
 }
 
 /**
+ * Declares a normal Paperclip agent that a plugin can provision and later
+ * resolve by stable key within each company.
+ */
+export interface PluginManagedAgentDeclaration {
+  /** Stable identifier for this managed agent, unique within the plugin. */
+  agentKey: string;
+  /** Suggested visible agent name. */
+  displayName: string;
+  /** Optional suggested role. Defaults to `general`. */
+  role?: AgentRole | string;
+  /** Optional suggested title shown in agent surfaces. */
+  title?: string | null;
+  /** Optional icon for agent list/detail surfaces. */
+  icon?: string | null;
+  /** Suggested capability summary for the agent. */
+  capabilities?: string | null;
+  /** Suggested adapter type. Defaults to `process`. */
+  adapterType?: AgentAdapterType | string;
+  /**
+   * Optional ordered list of compatible adapter types. When present, the host
+   * prefers the most-used compatible adapter already configured in the company,
+   * falling back to `adapterType`.
+   */
+  adapterPreference?: Array<AgentAdapterType | string>;
+  /** Suggested adapter configuration. */
+  adapterConfig?: Record<string, unknown>;
+  /** Suggested Paperclip runtime configuration. */
+  runtimeConfig?: Record<string, unknown>;
+  /** Suggested permissions object. Normalized by the host on create/reset. */
+  permissions?: Record<string, unknown>;
+  /** Suggested starting status when no board approval is required. */
+  status?: Extract<AgentStatus, "idle" | "paused">;
+  /** Suggested monthly budget in cents. */
+  budgetMonthlyCents?: number;
+  /** Optional managed instructions content or pointer metadata for plugin UI. */
+  instructions?: {
+    entryFile?: string;
+    content?: string;
+    files?: Record<string, string>;
+    assetPath?: string;
+  };
+}
+
+/**
+ * Declares a company-scoped local folder a trusted plugin wants the operator
+ * to configure. The host treats this as a generic filesystem root: plugin
+ * code may request required relative folders/files, then use SDK helpers for
+ * path-safe reads and atomic writes under that root.
+ */
+export interface PluginLocalFolderDeclaration {
+  /** Stable identifier for this folder, unique within the plugin. */
+  folderKey: string;
+  /** Human-readable name shown in plugin settings. */
+  displayName: string;
+  /** Optional operator-facing description. */
+  description?: string;
+  /** Access level requested by the plugin. Defaults to `readWrite`. */
+  access?: "read" | "readWrite";
+  /** Relative directories expected to exist under the configured root. */
+  requiredDirectories?: string[];
+  /** Relative files expected to exist under the configured root. */
+  requiredFiles?: string[];
+}
+
+/**
+ * Declares a normal Paperclip project that a plugin can provision and later
+ * resolve by stable key within each company.
+ */
+export interface PluginManagedProjectDeclaration {
+  /** Stable identifier for this managed project, unique within the plugin. */
+  projectKey: string;
+  /** Suggested visible project name. */
+  displayName: string;
+  /** Suggested project description. */
+  description?: string | null;
+  /** Suggested starting status. Defaults to `in_progress`. */
+  status?: ProjectStatus;
+  /** Suggested project color. Defaults to the normal project palette. */
+  color?: string | null;
+  /** Optional plugin-specific defaults retained for reset/reconcile UI. */
+  settings?: Record<string, unknown>;
+}
+
+export interface PluginManagedSkillFileDeclaration {
+  /** Relative path inside the skill folder, for example `references/guide.md`. */
+  path: string;
+  /** File contents written when the skill is installed or reset. */
+  content: string;
+}
+
+/**
+ * Declares a company skill that a plugin can install into each company's
+ * skills library and later resolve by stable key.
+ */
+export interface PluginManagedSkillDeclaration {
+  /** Stable identifier for this managed skill, unique within the plugin. */
+  skillKey: string;
+  /** Suggested visible skill name. */
+  displayName: string;
+  /** Suggested skill slug. Defaults to `skillKey`. */
+  slug?: string;
+  /** Suggested skill description. */
+  description?: string | null;
+  /** Full `SKILL.md` contents. Defaults to generated markdown from display metadata. */
+  markdown?: string;
+  /** Additional files installed with the skill. */
+  files?: PluginManagedSkillFileDeclaration[];
+}
+
+export type PluginManagedResourceKind = "agent" | "project" | "routine" | "skill";
+
+export interface PluginManagedResourceRef {
+  pluginKey?: string;
+  resourceKind: PluginManagedResourceKind;
+  resourceKey: string;
+}
+
+export interface PluginManagedRoutineDeclaration {
+  /** Stable identifier for this managed routine, unique within the plugin. */
+  routineKey: string;
+  /** Suggested routine title template. */
+  title: string;
+  /** Suggested routine description template. */
+  description?: string | null;
+  /** Stable managed agent reference for the default assignee. */
+  assigneeRef?: PluginManagedResourceRef | null;
+  /** Stable managed project reference for routine-created issues. */
+  projectRef?: PluginManagedResourceRef | null;
+  /** Optional goal id to set on the routine in this company. */
+  goalId?: string | null;
+  /** Suggested starting status. Defaults to `paused` when no assignee is resolved, otherwise `active`. */
+  status?: RoutineStatus;
+  /** Suggested issue priority. Defaults to `medium`. */
+  priority?: IssuePriority;
+  /** Suggested concurrency behavior. Defaults to core routine default. */
+  concurrencyPolicy?: RoutineConcurrencyPolicy;
+  /** Suggested missed-trigger behavior. Defaults to core routine default. */
+  catchUpPolicy?: RoutineCatchUpPolicy;
+  /** Suggested routine variables. */
+  variables?: RoutineVariable[];
+  /** Suggested triggers created when the routine is first reconciled. */
+  triggers?: Array<Pick<RoutineTrigger, "kind" | "label" | "enabled" | "cronExpression" | "timezone" | "signingMode" | "replayWindowSec">>;
+  /** Defaults for issues created by this routine. */
+  issueTemplate?: {
+    surfaceVisibility?: IssueSurfaceVisibility;
+    originId?: string | null;
+    billingCode?: string | null;
+  };
+}
+
+export interface PluginManagedAgentResolution {
+  pluginKey: string;
+  resourceKind: "agent";
+  resourceKey: string;
+  companyId: string;
+  agentId: string | null;
+  agent: Agent | null;
+  status: "missing" | "resolved" | "created" | "relinked" | "reset";
+  approvalId?: string | null;
+  defaultDrift?: {
+    entryFile: string;
+    changedFiles: string[];
+  } | null;
+}
+
+export interface PluginManagedProjectResolution {
+  pluginKey: string;
+  resourceKind: "project";
+  resourceKey: string;
+  companyId: string;
+  projectId: string | null;
+  project: Project | null;
+  status: "missing" | "resolved" | "created" | "relinked" | "reset";
+}
+
+export interface PluginManagedRoutineResolution {
+  pluginKey: string;
+  resourceKind: "routine";
+  resourceKey: string;
+  companyId: string;
+  routineId: string | null;
+  routine: Routine | null;
+  status: "missing" | "missing_refs" | "resolved" | "created" | "relinked" | "reset";
+  missingRefs?: PluginManagedResourceRef[];
+}
+
+export interface PluginManagedSkillResolution {
+  pluginKey: string;
+  resourceKind: "skill";
+  resourceKey: string;
+  companyId: string;
+  skillId: string | null;
+  skill: CompanySkill | null;
+  status: "missing" | "resolved" | "created" | "relinked" | "reset";
+  defaultDrift?: {
+    changedFiles: string[];
+  } | null;
+}
+
+/**
  * Declares a UI extension slot the plugin fills with a React component.
  *
  * @see PLUGIN_SPEC.md §19 — UI Extension Model
@@ -133,7 +346,7 @@ export interface PluginUiSlotDeclaration {
    */
   entityTypes?: PluginUiSlotEntityType[];
   /**
-   * Optional company-scoped route segment for page slots.
+   * Optional company-scoped route segment for page and routeSidebar slots.
    * Example: `kitchensink` becomes `/:companyPrefix/kitchensink`.
    */
   routePath?: string;
@@ -322,6 +535,16 @@ export interface PaperclipPluginManifestV1 {
   apiRoutes?: PluginApiRouteDeclaration[];
   /** Environment drivers this plugin contributes. Requires `environment.drivers.register` capability. */
   environmentDrivers?: PluginEnvironmentDriverDeclaration[];
+  /** Suggested company-scoped agents this plugin can provision and resolve by stable key. */
+  agents?: PluginManagedAgentDeclaration[];
+  /** Suggested company-scoped projects this plugin can provision and resolve by stable key. */
+  projects?: PluginManagedProjectDeclaration[];
+  /** Suggested company-scoped routines this plugin can provision and resolve by stable key. */
+  routines?: PluginManagedRoutineDeclaration[];
+  /** Suggested company skills this plugin can install and resolve by stable key. */
+  skills?: PluginManagedSkillDeclaration[];
+  /** Trusted local folders this plugin can configure and access by stable key. */
+  localFolders?: PluginLocalFolderDeclaration[];
   /**
    * Legacy top-level launcher declarations.
    * Prefer `ui.launchers` for new manifests.
@@ -452,6 +675,22 @@ export interface PluginConfig {
   /** Timestamp when the config row was created. */
   createdAt: Date;
   /** Timestamp of the most recent config update. */
+  updatedAt: Date;
+}
+
+/**
+ * Company-scoped plugin settings row. This is intentionally generic; plugin
+ * features such as local folders live inside `settingsJson` under namespaced
+ * keys instead of requiring feature-specific database columns.
+ */
+export interface PluginCompanySettings {
+  id: string;
+  companyId: string;
+  pluginId: string;
+  enabled: boolean;
+  settingsJson: Record<string, unknown>;
+  lastError: string | null;
+  createdAt: Date;
   updatedAt: Date;
 }
 

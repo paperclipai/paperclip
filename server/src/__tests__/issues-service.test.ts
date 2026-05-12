@@ -24,7 +24,12 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { instanceSettingsService } from "../services/instance-settings.ts";
-import { clampIssueListLimit, ISSUE_LIST_MAX_LIMIT, issueService } from "../services/issues.ts";
+import {
+  clampIssueListLimit,
+  deriveIssueCommentRunLogAttribution,
+  ISSUE_LIST_MAX_LIMIT,
+  issueService,
+} from "../services/issues.ts";
 import { buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -35,6 +40,69 @@ describe("issue list limit helpers", () => {
     expect(clampIssueListLimit(0)).toBe(1);
     expect(clampIssueListLimit(25.9)).toBe(25);
     expect(clampIssueListLimit(ISSUE_LIST_MAX_LIMIT + 10)).toBe(ISSUE_LIST_MAX_LIMIT);
+  });
+});
+
+describe("deriveIssueCommentRunLogAttribution", () => {
+  it("recovers agent attribution from run logs that printed the posted comment id", () => {
+    const commentId = randomUUID();
+    const runId = randomUUID();
+    const agentId = randomUUID();
+
+    const derived = deriveIssueCommentRunLogAttribution(
+      [
+        {
+          id: commentId,
+          authorAgentId: null,
+          authorUserId: "user-1",
+          createdByRunId: null,
+          createdAt: new Date("2026-05-11T18:55:40.090Z"),
+        },
+      ],
+      [
+        {
+          runId,
+          agentId,
+          createdAt: new Date("2026-05-11T18:51:56.246Z"),
+          startedAt: new Date("2026-05-11T18:51:56.257Z"),
+          finishedAt: new Date("2026-05-11T18:55:45.600Z"),
+          logContent: `comment id: ${commentId}\n`,
+        },
+      ],
+    );
+
+    expect(derived.get(commentId)).toEqual({
+      derivedAuthorAgentId: agentId,
+      derivedCreatedByRunId: runId,
+      derivedAuthorSource: "run_log_comment_post",
+    });
+  });
+
+  it("does not rewrite comments without exact run-log proof", () => {
+    const commentId = randomUUID();
+    const derived = deriveIssueCommentRunLogAttribution(
+      [
+        {
+          id: commentId,
+          authorAgentId: null,
+          authorUserId: "user-1",
+          createdByRunId: null,
+          createdAt: new Date("2026-05-11T18:55:40.090Z"),
+        },
+      ],
+      [
+        {
+          runId: randomUUID(),
+          agentId: randomUUID(),
+          createdAt: new Date("2026-05-11T18:51:56.246Z"),
+          startedAt: new Date("2026-05-11T18:51:56.257Z"),
+          finishedAt: new Date("2026-05-11T18:55:45.600Z"),
+          logContent: "posted results without echoing the comment id",
+        },
+      ],
+    );
+
+    expect(derived.has(commentId)).toBe(false);
   });
 });
 
@@ -655,6 +723,143 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
     expect(executionResult.map((issue) => issue.id)).toEqual([executionLinkedIssueId]);
     expect(projectResult.map((issue) => issue.id).sort()).toEqual([executionLinkedIssueId, projectLinkedIssueId].sort());
+  });
+
+  it("hides plugin operation issues from default lists and inbox-style filters while preserving explicit retrieval", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const projectId = randomUUID();
+    const normalIssueId = randomUUID();
+    const pluginVisibleIssueId = randomUUID();
+    const operationIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Plugin Runner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Plugin operations",
+      status: "in_progress",
+    });
+    await db.insert(issues).values([
+      {
+        id: normalIssueId,
+        companyId,
+        title: "Normal issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: pluginVisibleIssueId,
+        companyId,
+        title: "Plugin-visible issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        originKind: "plugin:paperclip.missions:feature",
+      },
+      {
+        id: operationIssueId,
+        companyId,
+        projectId,
+        title: "Plugin operation issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        originKind: "plugin:paperclip.missions:operation",
+        originId: "mission-alpha:operation-1",
+      },
+    ]);
+
+    const defaultIssueIds = (await svc.list(companyId)).map((issue) => issue.id);
+    expect(defaultIssueIds).toContain(normalIssueId);
+    expect(defaultIssueIds).toContain(pluginVisibleIssueId);
+    expect(defaultIssueIds).not.toContain(operationIssueId);
+
+    const inboxIssueIds = (await svc.list(companyId, {
+      assigneeAgentId: agentId,
+      status: "todo,in_progress,blocked",
+      includeRoutineExecutions: true,
+    })).map((issue) => issue.id);
+    expect(inboxIssueIds).toContain(normalIssueId);
+    expect(inboxIssueIds).not.toContain(operationIssueId);
+
+    await expect(svc.list(companyId, { originKind: "plugin:paperclip.missions:operation" }))
+      .resolves.toEqual([expect.objectContaining({ id: operationIssueId })]);
+    await expect(svc.list(companyId, { originId: "mission-alpha:operation-1" }))
+      .resolves.toEqual([expect.objectContaining({ id: operationIssueId })]);
+
+    const projectIssueIds = (await svc.list(companyId, { projectId })).map((issue) => issue.id);
+    expect(projectIssueIds).toContain(operationIssueId);
+
+    const advancedIssueIds = (await svc.list(companyId, { includePluginOperations: true })).map((issue) => issue.id);
+    expect(advancedIssueIds).toContain(operationIssueId);
+  });
+
+  it("excludes plugin operation issues from unread inbox counts", async () => {
+    const companyId = randomUUID();
+    const userId = "board-user";
+    const otherUserId = "other-user";
+    const normalIssueId = randomUUID();
+    const operationIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: normalIssueId,
+        companyId,
+        title: "Normal touched issue",
+        status: "todo",
+        priority: "medium",
+        createdByUserId: userId,
+      },
+      {
+        id: operationIssueId,
+        companyId,
+        title: "Plugin operation touched issue",
+        status: "todo",
+        priority: "medium",
+        createdByUserId: userId,
+        originKind: "plugin:paperclip.missions:operation",
+      },
+    ]);
+    await db.insert(issueComments).values([
+      {
+        companyId,
+        issueId: normalIssueId,
+        authorUserId: otherUserId,
+        body: "Unread normal update.",
+      },
+      {
+        companyId,
+        issueId: operationIssueId,
+        authorUserId: otherUserId,
+        body: "Unread operation update.",
+      },
+    ]);
+
+    await expect(svc.countUnreadTouchedByUser(companyId, userId, "todo")).resolves.toBe(1);
   });
 
   it("hides archived inbox issues until new external activity arrives", async () => {
