@@ -721,6 +721,16 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
 
   it("logs activity when plugin host services create and cancel approvals", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Approval target",
+      status: "todo",
+      priority: "medium",
+      identifier: `${issuePrefix(companyId)}-approval`,
+      assigneeAgentId: agentId,
+    });
     const pluginRecordId = randomUUID();
     await db.insert(plugins).values({
       id: pluginRecordId,
@@ -754,6 +764,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     const created = await services.approvals.create({
       companyId,
       prompt: "Approve mission launch.",
+      issueId,
       actorAgentId: agentId,
       actorRunId: runId,
     });
@@ -779,6 +790,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
           details: expect.objectContaining({
             sourcePluginId: pluginRecordId,
             sourcePluginKey: "paperclip.missions",
+            issueIds: [issueId],
             initiatingActorType: "agent",
             initiatingActorId: agentId,
             initiatingRunId: runId,
@@ -792,7 +804,10 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
           details: expect.objectContaining({
             sourcePluginId: pluginRecordId,
             sourcePluginKey: "paperclip.missions",
+            issueIds: [issueId],
             reason: "mission withdrawn",
+            status: "cancelled",
+            decisionNote: "mission withdrawn",
           }),
         }),
       ]),

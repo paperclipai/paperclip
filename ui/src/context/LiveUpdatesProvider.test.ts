@@ -15,6 +15,44 @@ import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  it("refreshes approval detail and linked issue approval queries for approval activity", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "approval",
+        entityId: "approval-1",
+        action: "approval.cancelled",
+        details: { issueIds: ["issue-1"] },
+      },
+      { userId: null, agentId: null },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.approvals.list("company-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.approvals.detail("approval-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.approvals.issues("approval-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.detail("issue-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.approvals("issue-1"),
+    });
+  });
+
   it("refreshes touched inbox queries and only the changed issue data for issue updates", () => {
     const invalidations: unknown[] = [];
     const queryClient = {

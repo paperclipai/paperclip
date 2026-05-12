@@ -717,6 +717,18 @@ function invalidateActivityQueries(
 
   if (entityType === "approval") {
     queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(companyId) });
+    if (entityId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.detail(entityId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.issues(entityId) });
+    }
+    const details = payload.details;
+    const issueIds = details && typeof details === "object" && Array.isArray((details as { issueIds?: unknown }).issueIds)
+      ? (details as { issueIds: unknown[] }).issueIds.filter((issueId): issueId is string => typeof issueId === "string")
+      : [];
+    for (const issueId of issueIds) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.approvals(issueId) });
+    }
     return;
   }
 

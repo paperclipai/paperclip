@@ -2253,6 +2253,8 @@ export function buildHostServices(
         const cancelResult = await approvalsService.cancel(params.approvalId, params.reason);
         if (cancelResult) {
           const now = cancelResult.decidedAt?.toISOString() ?? new Date().toISOString();
+          const linkedIssues = await issueApprovals.listIssuesForApproval(cancelResult.id);
+          const issueIds = linkedIssues.map((issue) => issue.id);
           await logActivity(db, {
             companyId,
             actorType: "plugin",
@@ -2264,7 +2266,12 @@ export function buildHostServices(
               type: cancelResult.type,
               sourcePluginId: pluginId,
               sourcePluginKey: pluginKey,
+              issueIds,
               reason: params.reason ?? null,
+              status: "cancelled",
+              decisionNote: params.reason ?? null,
+              decidedByUserId: null,
+              decidedAt: now,
             },
           });
           if (notifyWorker) {
