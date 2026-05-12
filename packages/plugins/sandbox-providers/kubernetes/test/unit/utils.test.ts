@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { deriveCompanySlug, deriveNamespaceName, newRunUlidDns, paperclipLabels } from "../../src/utils.js";
 
 describe("deriveCompanySlug", () => {
@@ -27,6 +27,13 @@ describe("newRunUlidDns", () => {
   it("produces a DNS-safe 26-char lowercase id", () => {
     const id = newRunUlidDns();
     expect(id).toMatch(/^[a-z0-9]{26}$/);
+  });
+
+  it("does not use Math.random for the random suffix", () => {
+    const spy = vi.spyOn(Math, "random");
+    newRunUlidDns(() => 1);
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 });
 

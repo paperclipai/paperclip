@@ -182,6 +182,10 @@ const plugin = definePlugin({
     const adapterDefaultsForWarn = getAdapterDefaults(config.adapterType);
     const totalFqdnsForWarn = [...adapterDefaultsForWarn.allowFqdns, ...config.egressAllowFqdns];
     if (config.egressMode === "standard" && totalFqdnsForWarn.length > 0) {
+      // The SDK does not currently thread ctx.logger into environment hooks.
+      // Keep this explicit so operators still see the standard-mode egress
+      // trade-off in raw worker logs.
+      // eslint-disable-next-line no-console
       console.warn(
         `[plugin-kubernetes] egressMode=standard cannot enforce FQDN-based egress rules for ${totalFqdnsForWarn.join(", ")}. Agent pods will get public IPv4 HTTPS egress with private/link-local ranges excluded. Switch egressMode to "cilium" for exact FQDN enforcement.`,
       );

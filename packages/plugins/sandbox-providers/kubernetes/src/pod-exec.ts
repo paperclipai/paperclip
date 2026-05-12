@@ -44,7 +44,22 @@ export async function execInPod(
 
   return await new Promise<{ exitCode: number; stdout: string; stderr: string }>(
     (resolve, reject) => {
-      exec
+      let settled = false;
+      const finish = (result: { exitCode: number; stdout: string; stderr: string }) => {
+        if (settled) return;
+        settled = true;
+        resolve(result);
+      };
+      const finishWithTransportFailure = (message: string) => {
+        const separator = stderrData.length > 0 && !stderrData.endsWith("\n") ? "\n" : "";
+        finish({
+          exitCode: 1,
+          stdout: stdoutData,
+          stderr: `${stderrData}${separator}${message}`,
+        });
+      };
+
+      const websocketPromise = exec
         .exec(
           namespace,
           podName,
@@ -57,7 +72,7 @@ export async function execInPod(
           (status) => {
             // status.status is "Success" | "Failure"
             if (status.status === "Success") {
-              resolve({ exitCode: 0, stdout: stdoutData, stderr: stderrData });
+              finish({ exitCode: 0, stdout: stdoutData, stderr: stderrData });
               return;
             }
             // On failure, the exit code surfaces via
@@ -70,10 +85,26 @@ export async function execInPod(
             const exitCode = exitCodeCause?.message
               ? Number(exitCodeCause.message)
               : 1;
-            resolve({ exitCode, stdout: stdoutData, stderr: stderrData });
+            finish({ exitCode, stdout: stdoutData, stderr: stderrData });
           },
-        )
-        .catch(reject);
+        );
+
+      websocketPromise
+        .then((ws) => {
+          ws.on("close", (code: number, reason: Buffer) => {
+            if (settled) return;
+            const reasonText = reason.length > 0 ? `: ${reason.toString("utf-8")}` : "";
+            finishWithTransportFailure(`Kubernetes exec websocket closed before status frame (${code})${reasonText}`);
+          });
+          ws.on("error", (err: Error) => {
+            if (settled) return;
+            finishWithTransportFailure(`Kubernetes exec websocket failed before status frame: ${err.message}`);
+          });
+        })
+        .catch((err) => {
+          if (settled) return;
+          reject(err);
+        });
     },
   );
 }
