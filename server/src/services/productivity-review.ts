@@ -7,7 +7,9 @@ import {
   costEvents,
   heartbeatRuns,
   issueComments,
+  issueLabels,
   issues,
+  labels,
   projects,
 } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
@@ -37,6 +39,25 @@ const MAX_CANDIDATE_ISSUES = 250;
 const MAX_RUNS_FOR_STREAK = 100;
 const MAX_PARENT_WALK_DEPTH = 25;
 export const PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX = "Productivity review evidence refreshed.";
+
+// Label names that exempt an issue from automatic scanners that would otherwise
+// fire on intentionally long-running issues (monthly audit logs, weekly soak
+// umbrellas, etc.). Applies to both `reconcileProductivityReviews` and the
+// stranded-issue recovery scanner in `services/recovery/service.ts`.
+export const LONG_RUNNING_EXEMPT_LABEL_NAMES = [
+  "long-running-by-design",
+  "monthly-audit",
+] as const;
+
+export function longRunningExemptLabelNotExistsClause() {
+  return sql`not exists (
+    select 1
+    from ${issueLabels}
+    inner join ${labels} on ${labels.id} = ${issueLabels.labelId}
+    where ${issueLabels.issueId} = ${issues.id}
+      and ${labels.name} in (${sql.join(LONG_RUNNING_EXEMPT_LABEL_NAMES.map((name) => sql`${name}`), sql`, `)})
+  )`;
+}
 
 type IssueRow = typeof issues.$inferSelect;
 type AgentRow = typeof agents.$inferSelect;
@@ -776,6 +797,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           inArray(issues.status, ["todo", "in_progress"]),
           sql`${issues.assigneeAgentId} is not null`,
           sql`${issues.originKind} <> ${PRODUCTIVITY_REVIEW_ORIGIN_KIND}`,
+          longRunningExemptLabelNotExistsClause(),
         ),
       )
       .orderBy(asc(issues.updatedAt), asc(issues.id))
