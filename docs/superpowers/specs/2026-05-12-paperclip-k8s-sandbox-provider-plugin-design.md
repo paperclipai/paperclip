@@ -2,15 +2,17 @@
 
 **Status:** Approved 2026-05-12. Implementation plan to follow.
 
-**Architectural foundation:** [`kubernetes-sigs/agent-sandbox`](https://github.com/kubernetes-sigs/agent-sandbox) — a CNCF SIG Apps project providing the `Sandbox` CRD + controller. **Validated on kind on 2026-05-12:** `kubectl apply -f <agent-sandbox manifest>` followed by a test Sandbox CR produces a Ready pod in ~5 seconds, single-node, arm64, no special runtime requirements.
+**Architectural foundation:** stable Kubernetes core APIs — `batch/v1` `Job`, `core/v1` `Pod`/`Secret`/`Namespace`/`ServiceAccount`/`ResourceQuota`/`LimitRange`, `rbac.authorization.k8s.io/v1` `Role`/`RoleBinding`, `networking.k8s.io/v1` `NetworkPolicy` (with optional `CiliumNetworkPolicy` for FQDN egress). No CRDs, no custom operator install, no alpha APIs.
 
-The paperclip plugin uses agent-sandbox's CRDs instead of calling the k8s API directly. This drops plugin LOC from ~2.5k to ~800-1000 and offloads the runtime layer to a CNCF-maintained project (Apache 2.0, 2.1k stars, AI-agent-purpose-built).
+**Why not [`kubernetes-sigs/agent-sandbox`](https://github.com/kubernetes-sigs/agent-sandbox)?** The CNCF SIG Apps `Sandbox` CRD is purpose-built for AI agents and was validated working on kind on 2026-05-12 (Ready pod in ~5s). However, it is still `v1alpha1` with open breaking-change issues (e.g. #746 proposing removal of automatic Service creation). The Beta milestone exists upstream but has no due date, no assignee — realistic timeline is months, not weeks. Building paperclip's production sandbox runtime on an alpha CRD with no compatibility guarantees is unacceptable risk. We revisit when agent-sandbox reaches Beta.
+
+The plugin drives `Job` directly. The Job + Pod surface is GA, stable since k8s 1.0/1.21 respectively, and every cluster has it. Plugin LOC stays comparable to the agent-sandbox-backed approach (~2.5k) because we own the lifecycle code (create / watch / log / cleanup) instead of delegating it to a controller — but in exchange we get full version compatibility with k8s 1.27+ and zero CRD-install operational burden.
 
 **Branch:** `feat/k8s-sandbox-plugin` (fresh off `origin/master`).
 
 **Supersedes:**
 - `2026-05-12-paperclip-daytona-helm-bundle-design.md` — Daytona-bundled-Helm pivot rejected after spike (10 distinct blockers, see "Why this design" below)
-- `2026-05-08-paperclip-cloud-adapter-design.md` and downstream M-stack milestones (M3a, M3b). The M-stack PRs (#5556, #5558, #5565, #5576) are deferred; their hardened patterns (Cilium DSL, image allow-list, security baseline) lift into the plugin where they're additive to agent-sandbox's baseline.
+- `2026-05-08-paperclip-cloud-adapter-design.md` and downstream M-stack milestones (M3a, M3b). The M-stack PRs (#5556, #5558, #5565, #5576) are deferred; their hardened patterns (Cilium DSL, image allow-list, security baseline) lift into the plugin where they're the security baseline.
 
 ## Why this design
 
@@ -33,7 +35,9 @@ Three rounds of design exploration converged on this approach:
 
 The 10th finding made the Daytona-bundled path architecturally incompatible with paperclip's primary use case (dev on laptop with kind, production on standard managed k8s).
 
-**3. This design — B2 plugin path** — extract the M-stack's k8s logic into a `packages/plugins/sandbox-providers/kubernetes/` plugin. Paperclip-server stops touching the k8s API directly. The plugin uses standard k8s pods (no Sysbox / DinD), works on single-node clusters, and reuses the security hardening from M3a/M3b.
+**3. This design — B2 plugin path on stable k8s primitives** — extract the M-stack's k8s logic into a `packages/plugins/sandbox-providers/kubernetes/` plugin that drives `batch/v1` `Job`s. Paperclip-server stops touching the k8s API directly. The plugin uses standard k8s pods (no Sysbox / DinD), works on single-node clusters, and reuses the security hardening from M3a/M3b. No CRDs and no operator install required — every cluster running k8s 1.27+ supports this out of the box.
+
+An intermediate iteration of this design built on `kubernetes-sigs/agent-sandbox` to offload lifecycle to the upstream controller. We pivoted away because that CRD is still `v1alpha1` with active breaking-change proposals (issue #746) and no concrete Beta timeline. The cost of owning Job lifecycle directly (a few hundred LOC of poll-and-watch glue) is well worth the stability and operational simplicity of standing on GA APIs.
 
 The plugin pattern matches the existing `daytona` and `e2b` sandbox-provider plugins in the repo (same `PluginEnvironment*` interface). Paperclip-core becomes sandbox-provider-agnostic.
 
@@ -97,7 +101,7 @@ packages/
             │   ├── tenant-orchestrator.ts      # ensureTenant: ns + quota + policy + RBAC
             │   ├── network-policy.ts           # Cilium DSL → CNP YAML; fallback NetworkPolicy
             │   ├── pod-spec-builder.ts         # adapter-specific pod spec assembly
-            │   ├── job-runner.ts               # Job-based run execution, log streaming
+            │   ├── job-orchestrator.ts        # batch/v1 Job: create / poll status / find pod / stream logs / delete / wait
             │   ├── probe-runner.ts             # transient probe Pod
             │   ├── secret-manager.ts           # ephemeral per-run Secret lifecycle
             │   ├── image-allowlist.ts          # validate target.imageOverride against allowlist
