@@ -78,6 +78,60 @@ export function approvalService(db: Db) {
     );
   }
 
+  /**
+   * Compute a fingerprint for duplicate detection based on approval type,
+   * target system, and requested action extracted from the payload.
+   */
+  function computeApprovalFingerprint(type: string, payload: Record<string, unknown>): string {
+    const parts: string[] = [type];
+
+    // Extract target system / action from payload fields commonly set by agents
+    const title = typeof payload.title === "string" ? payload.title : "";
+    const action = typeof payload.recommendedAction === "string" ? payload.recommendedAction : "";
+
+    // Normalize: lowercase, collapse whitespace, strip UUIDs and timestamps
+    const normalize = (s: string) =>
+      s.toLowerCase()
+        .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, "")
+        .replace(/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}[^\s]*/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    parts.push(normalize(title));
+
+    // Extract key identifiers from the action text (wallet addresses, ports, IPs)
+    const identifiers = action.match(/\b(0x[0-9a-fA-F]{6,}|5[A-Za-z0-9]{47}|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|port \d+)\b/gi) ?? [];
+    parts.push(...identifiers.map((id) => id.toLowerCase()));
+
+    return parts.join("|");
+  }
+
+  /**
+   * Find a pending/revision_requested approval in the same company that
+   * matches by type + payload fingerprint (target system + requested action).
+   */
+  async function findDuplicate(
+    companyId: string,
+    type: string,
+    payload: Record<string, unknown>,
+  ): Promise<ApprovalRecord | null> {
+    const fingerprint = computeApprovalFingerprint(type, payload);
+    const pending = await db
+      .select()
+      .from(approvals)
+      .where(and(eq(approvals.companyId, companyId), inArray(approvals.status, resolvableStatuses)));
+
+    for (const existing of pending) {
+      const existingPayload = (existing.payload ?? {}) as Record<string, unknown>;
+      const existingFingerprint = computeApprovalFingerprint(existing.type, existingPayload);
+      if (existingFingerprint === fingerprint) {
+        return existing;
+      }
+    }
+
+    return null;
+  }
+
   return {
     list: (companyId: string, status?: string) => {
       const conditions = [eq(approvals.companyId, companyId)];
@@ -92,12 +146,34 @@ export function approvalService(db: Db) {
         .where(eq(approvals.id, id))
         .then((rows) => rows[0] ?? null),
 
-    create: (companyId: string, data: Omit<typeof approvals.$inferInsert, "companyId">) =>
-      db
+    findDuplicate,
+
+    create: async (companyId: string, data: Omit<typeof approvals.$inferInsert, "companyId">) => {
+      // Deduplication: if a pending approval matches by type + payload fingerprint,
+      // mark the new one as cancelled/superseded instead of creating a duplicate.
+      const payload = (data.payload ?? {}) as Record<string, unknown>;
+      const duplicate = await findDuplicate(companyId, data.type ?? "request_board_approval", payload);
+      if (duplicate) {
+        const superseded = await db
+          .insert(approvals)
+          .values({
+            ...data,
+            companyId,
+            status: "cancelled",
+            decisionNote: `Superseded by existing approval ${duplicate.id} (duplicate detection)`,
+            decidedAt: new Date(),
+          })
+          .returning()
+          .then((rows) => rows[0]);
+        return superseded;
+      }
+
+      return db
         .insert(approvals)
         .values({ ...data, companyId })
         .returning()
-        .then((rows) => rows[0]),
+        .then((rows) => rows[0]);
+    },
 
     approve: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
       const { approval: updated, applied } = await resolveApproval(
