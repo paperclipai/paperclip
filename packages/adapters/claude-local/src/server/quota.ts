@@ -10,6 +10,10 @@ const execFileAsync = promisify(execFile);
 const CLAUDE_USAGE_SOURCE_OAUTH = "anthropic-oauth";
 const CLAUDE_USAGE_SOURCE_CLI = "claude-cli";
 
+// Keychain service name used by the `claude` CLI when it stores credentials on macOS.
+// Verified against `security find-generic-password -s "Claude Code-credentials" -a "$USER"`.
+const CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials";
+
 export function claudeConfigDir(): string {
   const fromEnv = process.env.CLAUDE_CONFIG_DIR;
   if (typeof fromEnv === "string" && fromEnv.trim().length > 0) return fromEnv.trim();
@@ -85,13 +89,9 @@ function trimToLatestUsagePanel(text: string): string | null {
   return tail;
 }
 
-async function readClaudeTokenFromFile(credPath: string): Promise<string | null> {
-  let raw: string;
-  try {
-    raw = await fs.readFile(credPath, "utf8");
-  } catch {
-    return null;
-  }
+/** Pure parser shared by the file and Keychain readers. The two sources store the
+ * same JSON shape — the Keychain entry is literally the contents of `.credentials.json`. */
+export function parseClaudeCredentialsPayload(raw: string): string | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -104,6 +104,66 @@ async function readClaudeTokenFromFile(credPath: string): Promise<string | null>
   if (typeof oauth !== "object" || oauth === null) return null;
   const token = (oauth as Record<string, unknown>)["accessToken"];
   return typeof token === "string" && token.length > 0 ? token : null;
+}
+
+async function readClaudeTokenFromFile(credPath: string): Promise<string | null> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(credPath, "utf8");
+  } catch {
+    return null;
+  }
+  return parseClaudeCredentialsPayload(raw);
+}
+
+/** Runs a command and returns stdout. Injectable so tests can stub the macOS
+ * `security` invocation without spawning real processes. */
+export type CommandRunner = (
+  file: string,
+  args: readonly string[],
+  options?: { timeout?: number },
+) => Promise<{ stdout: string }>;
+
+const defaultRunCommand: CommandRunner = async (file, args, options) => {
+  const { stdout } = await execFileAsync(file, args, {
+    timeout: options?.timeout ?? 5_000,
+    maxBuffer: 1024 * 1024,
+  });
+  return { stdout };
+};
+
+export interface ReadKeychainOptions {
+  platform?: NodeJS.Platform;
+  account?: string;
+  service?: string;
+  runCommand?: CommandRunner;
+}
+
+/** Reads the Claude OAuth credentials JSON from the macOS Keychain entry that the
+ * `claude` CLI writes when the user logs in via claude.ai on macOS. Returns null on
+ * non-darwin platforms, when the entry is missing, or when the payload isn't shaped
+ * like a credentials blob. Never throws — Keychain absence is a normal state. */
+export async function readClaudeTokenFromKeychain(
+  options: ReadKeychainOptions = {},
+): Promise<string | null> {
+  const platform = options.platform ?? process.platform;
+  if (platform !== "darwin") return null;
+
+  const account = options.account ?? process.env.USER ?? os.userInfo().username;
+  if (!account) return null;
+
+  const service = options.service ?? CLAUDE_KEYCHAIN_SERVICE;
+  const run = options.runCommand ?? defaultRunCommand;
+
+  let stdout: string;
+  try {
+    const result = await run("security", ["find-generic-password", "-s", service, "-a", account, "-w"]);
+    stdout = result.stdout;
+  } catch {
+    return null;
+  }
+
+  return parseClaudeCredentialsPayload(stdout.trim());
 }
 
 interface ClaudeAuthStatus {
@@ -137,13 +197,19 @@ function describeClaudeSubscriptionAuth(status: ClaudeAuthStatus | null): string
     : "Claude is logged in via claude.ai";
 }
 
-export async function readClaudeToken(): Promise<string | null> {
+export interface ReadClaudeTokenOptions {
+  /** Optional Keychain reader override; useful for tests. Defaults to the real macOS Keychain. */
+  readKeychain?: (options?: ReadKeychainOptions) => Promise<string | null>;
+}
+
+export async function readClaudeToken(options: ReadClaudeTokenOptions = {}): Promise<string | null> {
   const configDir = claudeConfigDir();
   for (const filename of [".credentials.json", "credentials.json"]) {
     const token = await readClaudeTokenFromFile(path.join(configDir, filename));
     if (token) return token;
   }
-  return null;
+  const readKeychain = options.readKeychain ?? readClaudeTokenFromKeychain;
+  return readKeychain();
 }
 
 interface AnthropicUsageWindow {
@@ -424,6 +490,17 @@ export function parseClaudeCliUsageText(text: string): QuotaWindow[] {
   return windows;
 }
 
+// ---------------------------------------------------------------------------
+// Claude CLI `/usage` TTY scrape — DIAGNOSTIC USE ONLY.
+//
+// The functions below shell out to `script -q` to drive the `claude` TUI and
+// scrape the rendered `/usage` panel. They are NOT used by the production
+// quota-polling path (`getQuotaWindows`) because the TTY pipeline is brittle
+// and produces shell-quoted error strings that surface as scary UI errors.
+// They remain exported so the diagnostic CLI (`src/cli/quota-probe.ts`) can
+// still gather forensic data when a support engineer asks for `--raw-cli`.
+// ---------------------------------------------------------------------------
+
 function quoteForShell(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
@@ -473,49 +550,64 @@ export async function fetchClaudeCliQuota(): Promise<QuotaWindow[]> {
   return parseClaudeCliUsageText(rawText);
 }
 
-function formatProviderError(source: string, error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return `${source}: ${message}`;
+export interface GetQuotaWindowsOptions {
+  readAuthStatus?: () => Promise<ClaudeAuthStatus | null>;
+  readToken?: () => Promise<string | null>;
+  fetchOauthQuota?: (token: string) => Promise<QuotaWindow[]>;
+  env?: NodeJS.ProcessEnv;
 }
 
-export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
+const TOKEN_UNAVAILABLE_MESSAGE =
+  "Quota polling unavailable: no Claude OAuth token in ~/.claude/.credentials.json or macOS Keychain. " +
+  "If you only use the `claude` CLI on macOS, this is expected — the CLI keeps the token in Keychain " +
+  "but Paperclip only reads it from there on macOS hosts.";
+
+export async function getQuotaWindows(options: GetQuotaWindowsOptions = {}): Promise<ProviderQuotaResult> {
+  const env = options.env ?? process.env;
+  const envHas = (key: string): boolean => {
+    const value = env[key];
+    return typeof value === "string" && value.trim().length > 0;
+  };
+
   if (
-    process.env.CLAUDE_CODE_USE_BEDROCK === "1" ||
-    process.env.CLAUDE_CODE_USE_BEDROCK === "true" ||
-    hasNonEmptyProcessEnv("ANTHROPIC_BEDROCK_BASE_URL")
+    env.CLAUDE_CODE_USE_BEDROCK === "1" ||
+    env.CLAUDE_CODE_USE_BEDROCK === "true" ||
+    envHas("ANTHROPIC_BEDROCK_BASE_URL")
   ) {
     return { provider: "anthropic", source: "bedrock", ok: true, windows: [] };
   }
 
-  const authStatus = await readClaudeAuthStatus();
-  const authDescription = describeClaudeSubscriptionAuth(authStatus);
-  const token = await readClaudeToken();
+  const readAuthStatus = options.readAuthStatus ?? readClaudeAuthStatus;
+  const readToken = options.readToken ?? readClaudeToken;
+  const fetchOauthQuota = options.fetchOauthQuota ?? fetchClaudeQuota;
 
-  const errors: string[] = [];
+  const authStatus = await readAuthStatus();
+  const authDescription = describeClaudeSubscriptionAuth(authStatus);
+  const token = await readToken();
 
   if (token) {
     try {
-      const windows = await fetchClaudeQuota(token);
+      const windows = await fetchOauthQuota(token);
       return { provider: "anthropic", source: CLAUDE_USAGE_SOURCE_OAUTH, ok: true, windows };
     } catch (error) {
-      errors.push(formatProviderError("Anthropic OAuth usage", error));
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        provider: "anthropic",
+        ok: false,
+        error: authDescription
+          ? `${authDescription}, but the Anthropic usage API call failed: ${message}`
+          : `Anthropic usage API call failed: ${message}`,
+        windows: [],
+      };
     }
   }
 
-  try {
-    const windows = await fetchClaudeCliQuota();
-    return { provider: "anthropic", source: CLAUDE_USAGE_SOURCE_CLI, ok: true, windows };
-  } catch (error) {
-    errors.push(formatProviderError("Claude CLI /usage", error));
-  }
-
-  if (hasNonEmptyProcessEnv("ANTHROPIC_API_KEY") && !authDescription) {
+  if (envHas("ANTHROPIC_API_KEY") && !authDescription) {
     return {
       provider: "anthropic",
       ok: false,
       error:
-        errors[0]
-        ?? "ANTHROPIC_API_KEY is set and no local Claude subscription session is available for quota polling",
+        "ANTHROPIC_API_KEY is set and no local Claude subscription session is available for quota polling",
       windows: [],
     };
   }
@@ -524,10 +616,7 @@ export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
     return {
       provider: "anthropic",
       ok: false,
-      error:
-        errors.length > 0
-          ? `${authDescription}, but quota polling failed (${errors.join("; ")})`
-          : `${authDescription}, but Paperclip could not load subscription quota data`,
+      error: `${authDescription}, but ${TOKEN_UNAVAILABLE_MESSAGE.charAt(0).toLowerCase()}${TOKEN_UNAVAILABLE_MESSAGE.slice(1)}`,
       windows: [],
     };
   }
@@ -535,7 +624,7 @@ export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
   return {
     provider: "anthropic",
     ok: false,
-    error: errors[0] ?? "no local claude auth token",
+    error: TOKEN_UNAVAILABLE_MESSAGE,
     windows: [],
   };
 }
