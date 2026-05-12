@@ -88,6 +88,12 @@ export function buildNetworkPolicyManifests(input: BuildNetworkPolicyInput): Rec
           ],
           ports: [{ protocol: "TCP", port: 3100 }],
         },
+        // NOTE: operator-supplied CIDRs are intentionally NOT port-scoped —
+        // operators may need them for non-HTTP services (e.g. private VCS
+        // mirrors, S3 endpoints, internal artifact registries). Operators
+        // should keep CIDRs as specific as possible. For HTTP/HTTPS-only
+        // LLM endpoints, the public-IPv4 fallback below is port-scoped
+        // (TCP 80/443).
         ...input.egressAllowCidrs.map((cidr) => ({
           to: [{ ipBlock: { cidr } }],
         })),

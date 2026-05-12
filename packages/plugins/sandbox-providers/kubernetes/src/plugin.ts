@@ -89,10 +89,21 @@ function generateBootstrapToken(): string {
   return randomBytes(32).toString("hex");
 }
 
-// Singleton — one interceptor instance per plugin worker process. State is
-// keyed by remote `<TARGET>.paperclip-upload.b64` path so concurrent uploads
-// don't collide. See upload-interceptor.ts for protocol details.
-const uploadInterceptor = new FastUploadInterceptor();
+// One FastUploadInterceptor instance per active lease. Scoping per lease
+// prevents `releaseLease` from wiping in-flight upload buffers belonging to
+// other concurrent leases — a single shared singleton would do exactly that
+// on `reset()`. The Map is keyed by `providerLeaseId`; entries are lazily
+// created in `onEnvironmentExecute` and removed in `onEnvironmentReleaseLease`.
+const uploadInterceptorsByLease = new Map<string, FastUploadInterceptor>();
+
+function getOrCreateUploadInterceptor(leaseId: string): FastUploadInterceptor {
+  let interceptor = uploadInterceptorsByLease.get(leaseId);
+  if (!interceptor) {
+    interceptor = new FastUploadInterceptor();
+    uploadInterceptorsByLease.set(leaseId, interceptor);
+  }
+  return interceptor;
+}
 
 // In-memory cache of sandbox CR names we've already observed reaching the
 // Ready condition during the current plugin-worker lifetime. The k8s
@@ -369,12 +380,10 @@ const plugin = definePlugin({
     const releaseOrchestrator =
       leaseBackend === "sandbox-cr" ? sandboxCrOrchestrator : jobOrchestrator;
 
-    // Drop any in-flight FastUploadInterceptor buffers associated with this
-    // lease. If a lease is torn down mid-upload (timeout, crash, cancel) the
-    // buffered b64 chunks would otherwise linger in worker memory until the
-    // worker exits. Each entry is capped at 100MB but a burst of aborted
-    // uploads could still push the heap meaningfully.
-    uploadInterceptor.reset();
+    // Drop the FastUploadInterceptor associated with THIS lease (only).
+    // Each lease has its own interceptor instance via uploadInterceptorsByLease,
+    // so unrelated concurrent leases keep their in-flight buffers intact.
+    uploadInterceptorsByLease.delete(params.providerLeaseId);
     readySandboxesByLease.delete(params.providerLeaseId);
 
     try {
@@ -507,7 +516,7 @@ const plugin = definePlugin({
           ? args[1]
           : null;
       if (shellScript) {
-        const decision = uploadInterceptor.decide(shellScript);
+        const decision = getOrCreateUploadInterceptor(lease.providerLeaseId).decide(shellScript);
         if (decision.action === "ack") {
           return {
             exitCode: 0,

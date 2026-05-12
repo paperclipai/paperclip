@@ -264,7 +264,17 @@ export async function waitForSandboxReady(
         `Sandbox ${namespace}/${name} failed: ${mapped.reason ?? (failedCondition?.reason as string) ?? "unknown reason"} — ${mapped.message ?? (failedCondition?.message as string) ?? ""}`,
       );
     }
-    // Pending or Terminating — keep polling
+    if (phase === "Terminating") {
+      // A Sandbox being torn down will never transition to Ready. Polling
+      // until the deadline would burn the full timeoutMs (potentially
+      // 30+ minutes) before throwing a generic timeout. Fail fast instead
+      // so the caller can surface a clear "the lease is being released"
+      // error and decide whether to retry against a fresh Sandbox.
+      throw new Error(
+        `Sandbox ${namespace}/${name} is Terminating — cannot wait for Ready`,
+      );
+    }
+    // Pending — keep polling
     await sleep(pollMs);
   }
 
