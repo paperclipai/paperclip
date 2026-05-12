@@ -134,7 +134,7 @@ def main():
         max_tokens  = 2000,
         temperature = 0.3,
         title       = "StrategyOptimizer",
-        model       = "anthropic/claude-sonnet-4-6",
+        model       = "anthropic/claude-3-5-haiku",
         timeout     = 90,
     )
 

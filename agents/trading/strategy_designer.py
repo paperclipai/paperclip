@@ -74,19 +74,23 @@ def extract_stock_data(raw: str) -> dict:
 
 
 def main():
+    print("🎨 Strategy Designer arrancando...", flush=True)
     os.environ["PAPERCLIP_COMPANY_ID"] = "866b74e7-79a7-4166-9f9f-025faa751aa1"
     api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not api_key:
-        print("ERROR: OPENROUTER_API_KEY no configurada", file=sys.stderr)
-        sys.exit(1)
+        print("ERROR: OPENROUTER_API_KEY no configurada", flush=True)
+        post_issue_result("❌ Strategy Designer: OPENROUTER_API_KEY no configurada.")
+        return
 
     issue_title, issue_body = resolve_issue_context()
     raw = issue_body if issue_body else (issue_title or "")
+    print(f"   Input: {len(raw)} chars", flush=True)
 
     data = extract_stock_data(raw)
+    print(f"   Ticker extraído: {data.get('ticker', 'NONE')}", flush=True)
     if not data.get("ticker"):
         post_issue_result("❌ Strategy Designer: no se pudo leer los datos del Stock Analyzer.")
-        sys.exit(1)
+        return
 
     ticker    = data.get("ticker", "STOCK")
     style     = data.get("style", "momentum")
@@ -114,7 +118,7 @@ def main():
         max_tokens  = 2000,
         temperature = 0.4,
         title       = f"StrategyDesigner-{ticker}",
-        model       = "anthropic/claude-sonnet-4-6",
+        model       = "anthropic/claude-3-5-haiku",
         timeout     = 90,
     )
 
