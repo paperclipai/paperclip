@@ -212,6 +212,7 @@ export interface AdapterSkillSnapshot {
   supported: boolean;
   mode: AdapterSkillSyncMode;
   desiredSkills: string[];
+  excludedSkills?: string[];
   entries: AdapterSkillEntry[];
   warnings: string[];
 }

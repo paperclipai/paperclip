@@ -1194,12 +1194,14 @@ export function agentRoutes(
   function buildUnsupportedSkillSnapshot(
     adapterType: string,
     desiredSkills: string[] = [],
+    excludedSkills: string[] = [],
   ): AgentSkillSnapshot {
     return {
       adapterType,
       supported: false,
       mode: "unsupported",
       desiredSkills,
+      excludedSkills,
       entries: [],
       warnings: ["This adapter does not implement skill sync yet."],
     };
@@ -1241,6 +1243,7 @@ export function agentRoutes(
     adapterType: string,
     adapterConfig: Record<string, unknown>,
     requestedDesiredSkills: string[] | undefined,
+    excludedSkills?: string[],
   ) {
     if (!requestedDesiredSkills) {
       return {
@@ -1257,13 +1260,14 @@ export function agentRoutes(
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
       materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
     });
+    const excludedSet = new Set(excludedSkills ?? []);
     const requiredSkills = runtimeSkillEntries
-      .filter((entry) => entry.required)
+      .filter((entry) => entry.required && !excludedSet.has(entry.key))
       .map((entry) => entry.key);
     const desiredSkills = Array.from(new Set([...requiredSkills, ...resolvedRequestedSkills]));
 
     return {
-      adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, desiredSkills),
+      adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, desiredSkills, excludedSkills),
       desiredSkills,
       runtimeSkillEntries,
     };
@@ -1482,8 +1486,9 @@ export function agentRoutes(
       const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId, {
         materializeMissing: false,
       });
-      const requiredSkills = runtimeSkillEntries.filter((entry) => entry.required).map((entry) => entry.key);
-      res.json(buildUnsupportedSkillSnapshot(agent.adapterType, Array.from(new Set([...requiredSkills, ...preference.desiredSkills]))));
+      const excludedSet = new Set(preference.excludedSkills);
+      const requiredSkills = runtimeSkillEntries.filter((entry) => entry.required && !excludedSet.has(entry.key)).map((entry) => entry.key);
+      res.json(buildUnsupportedSkillSnapshot(agent.adapterType, Array.from(new Set([...requiredSkills, ...preference.desiredSkills])), preference.excludedSkills));
       return;
     }
 
@@ -1524,6 +1529,13 @@ export function agentRoutes(
             .filter(Boolean),
         ),
       );
+      const excludedSkills = Array.from(
+        new Set(
+          ((req.body.excludedSkills as string[] | undefined) ?? [])
+            .map((value) => value.trim())
+            .filter(Boolean),
+        ),
+      );
       const {
         adapterConfig: nextAdapterConfig,
         desiredSkills,
@@ -1533,6 +1545,7 @@ export function agentRoutes(
         agent.adapterType,
         agent.adapterConfig as Record<string, unknown>,
         requestedSkills,
+        excludedSkills,
       );
       if (!desiredSkills || !runtimeSkillEntries) {
         throw unprocessable("Skill sync requires desiredSkills.");
@@ -1575,7 +1588,7 @@ export function agentRoutes(
               adapterType: updated.adapterType,
               config: runtimeSkillConfig,
             })
-          : buildUnsupportedSkillSnapshot(updated.adapterType, desiredSkills);
+          : buildUnsupportedSkillSnapshot(updated.adapterType, desiredSkills, excludedSkills);
 
       await logActivity(db, {
         companyId: updated.companyId,
@@ -2270,8 +2283,10 @@ export function agentRoutes(
       return;
     }
 
-    const effectiveCanAssignTasks =
-      agent.role === "ceo" || Boolean(agent.permissions?.canCreateAgents) || req.body.canAssignTasks;
+    const isPipelineWorker = Boolean(agent.permissions?.pipelineWorker);
+    const effectiveCanAssignTasks = isPipelineWorker
+      ? false
+      : (agent.role === "ceo" || Boolean(agent.permissions?.canCreateAgents) || req.body.canAssignTasks);
     await access.ensureMembership(agent.companyId, "agent", agent.id, "member", "active");
     await access.setPrincipalPermission(
       agent.companyId,
@@ -2281,6 +2296,69 @@ export function agentRoutes(
       effectiveCanAssignTasks,
       req.actor.type === "board" ? (req.actor.userId ?? null) : null,
     );
+
+    const wasPipelineWorker = Boolean(existing.permissions?.pipelineWorker);
+    if (isPipelineWorker !== wasPipelineWorker) {
+      const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId, {
+        materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(agent.adapterType),
+      });
+
+      const PAPERCLIP_ORCHESTRATION_KEYS = new Set([
+        "paperclipai/paperclip/paperclip",
+        "paperclipai/paperclip/paperclip-create-agent",
+        "paperclipai/paperclip/paperclip-create-plugin",
+        "paperclipai/paperclip/paperclip-dev",
+        "paperclipai/paperclip/para-memory-files",
+        "paperclipai/paperclip/paperclip-converting-plans-to-tasks",
+        "paperclipai/paperclip/diagnose-why-work-stopped",
+        "paperclipai/paperclip/terminal-bench-loop",
+      ]);
+      const paperclipSkillKeys = runtimeSkillEntries
+        .filter((entry) => PAPERCLIP_ORCHESTRATION_KEYS.has(entry.key))
+        .map((entry) => entry.key);
+
+      let desiredSkills: string[];
+      let excludedSkills: string[];
+
+      const pipelineWorkerEntry = runtimeSkillEntries
+        .find((entry) => entry.key === "paperclipai/paperclip/pipeline-worker");
+
+      const currentPreference = readPaperclipSkillSyncPreference(
+        agent.adapterConfig as Record<string, unknown>,
+      );
+      const orchestrationAndPipelineKeys = new Set([
+        ...paperclipSkillKeys,
+        pipelineWorkerEntry?.key,
+      ].filter(Boolean) as string[]);
+      const existingNonPaperclipSkills = currentPreference.desiredSkills
+        .filter((key) => !orchestrationAndPipelineKeys.has(key));
+
+      if (isPipelineWorker) {
+        excludedSkills = paperclipSkillKeys;
+        desiredSkills = [
+          ...(pipelineWorkerEntry ? [pipelineWorkerEntry.key] : []),
+          ...existingNonPaperclipSkills,
+        ];
+      } else {
+        excludedSkills = [];
+        desiredSkills = [...paperclipSkillKeys, ...existingNonPaperclipSkills];
+      }
+
+      const { adapterConfig: nextAdapterConfig } = await resolveDesiredSkillAssignment(
+        agent.companyId,
+        agent.adapterType,
+        agent.adapterConfig as Record<string, unknown>,
+        desiredSkills,
+        excludedSkills,
+      );
+      await svc.update(agent.id, { adapterConfig: nextAdapterConfig }, {
+        recordRevision: {
+          createdByAgentId: null,
+          createdByUserId: req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+          source: "pipeline-worker-toggle",
+        },
+      });
+    }
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -2295,6 +2373,7 @@ export function agentRoutes(
       details: {
         canCreateAgents: agent.permissions?.canCreateAgents ?? false,
         canAssignTasks: effectiveCanAssignTasks,
+        pipelineWorker: isPipelineWorker,
       },
     });
 

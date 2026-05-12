@@ -36,10 +36,12 @@ export interface AgentSkillSnapshot {
   supported: boolean;
   mode: AgentSkillSyncMode;
   desiredSkills: string[];
+  excludedSkills?: string[];
   entries: AgentSkillEntry[];
   warnings: string[];
 }
 
 export interface AgentSkillSyncRequest {
   desiredSkills: string[];
+  excludedSkills?: string[];
 }

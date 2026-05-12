@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "classification": {
+      "type": "string"
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "reasoning": {
+      "type": "string"
+    },
+    "context": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

@@ -7,6 +7,7 @@ import type {
 } from "@paperclipai/adapter-utils";
 import {
   readPaperclipRuntimeSkillEntries,
+  readPaperclipSkillSyncPreference,
   resolvePaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
 
@@ -58,11 +59,13 @@ async function buildCodexSkillSnapshot(
 
   entries.sort((left, right) => left.key.localeCompare(right.key));
 
+  const preference = readPaperclipSkillSyncPreference(config);
   return {
     adapterType: "codex_local",
     supported: true,
     mode: "ephemeral",
     desiredSkills,
+    excludedSkills: preference.excludedSkills,
     entries,
     warnings,
   };

@@ -1,0 +1,57 @@
+name: bug
+description: Bug fix — decompose → fix+test → review → validate → merge
+
+trigger:
+  label: "pipeline:bug"
+
+stages:
+  - id: decompose
+    type: classifier
+    agent_role: decomposer
+    output_schema: decomposition-output
+    checkpoint: true
+
+  - id: write-tests
+    type: sub-pipeline
+    pipeline: test-writing
+    per_task: true
+    ordering: from_output
+    depends_on: [decompose]
+
+  - id: fix
+    type: sub-pipeline
+    pipeline: implementation
+    per_task: true
+    ordering: from_output
+    depends_on: [write-tests]
+
+  - id: validate
+    type: worker
+    agent_role: validator
+    depends_on: [fix]
+    fan_in: all_complete
+    output_schema: validation-output
+    on_failure:
+      retry_with:
+        goto: fix
+        body: "Fix still failing: {{ output.errors }}"
+        max_retries: 3
+
+  - id: review
+    type: classifier
+    agent_role: code-reviewer
+    depends_on: [validate]
+    condition: "stages.validate.output.status == 'pass'"
+    output_schema: review-output
+    on_failure:
+      retry_with:
+        goto: fix
+        body: "Review findings: {{ output.findings }}"
+        max_retries: 2
+
+  - id: merge
+    type: worker
+    agent_role: pr-manager
+    depends_on: [review]
+    condition: "stages.review.output.decision == 'approve'"
+    output_schema: merge-output

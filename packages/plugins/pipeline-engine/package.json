@@ -1,0 +1,40 @@
+{
+  "name": "@paperclipai/plugin-pipeline-engine",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Deterministic edge-based state-machine pipeline engine for Paperclip",
+  "scripts": {
+    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "build": "node ./esbuild.config.mjs && node ./scripts/build-ui.mjs",
+    "build:ui": "node ./scripts/build-ui.mjs",
+    "dev": "node ./esbuild.config.mjs --watch",
+    "test": "vitest run --config ./vitest.config.ts",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js"
+  },
+  "keywords": ["paperclip", "plugin", "pipeline", "orchestration"],
+  "author": "Paperclip",
+  "license": "MIT",
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
+    "@xyflow/react": "^12.4.0",
+    "ajv": "^8.17.0",
+    "dagre": "^0.8.5",
+    "handlebars": "^4.7.8",
+    "jsonata": "^2.0.5"
+  },
+  "devDependencies": {
+    "@paperclipai/shared": "workspace:*",
+    "@types/dagre": "^0.7.52",
+    "@types/node": "^24.6.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "esbuild": "^0.27.3",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

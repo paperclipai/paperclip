@@ -1537,10 +1537,11 @@ export async function readPaperclipSkillMarkdown(
 export function readPaperclipSkillSyncPreference(config: Record<string, unknown>): {
   explicit: boolean;
   desiredSkills: string[];
+  excludedSkills: string[];
 } {
   const raw = config.paperclipSkillSync;
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return { explicit: false, desiredSkills: [] };
+    return { explicit: false, desiredSkills: [], excludedSkills: [] };
   }
   const syncConfig = raw as Record<string, unknown>;
   const desiredValues = syncConfig.desiredSkills;
@@ -1550,9 +1551,17 @@ export function readPaperclipSkillSyncPreference(config: Record<string, unknown>
         .map((value) => value.trim())
         .filter(Boolean)
     : [];
+  const excludedValues = syncConfig.excludedSkills;
+  const excluded = Array.isArray(excludedValues)
+    ? excludedValues
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.trim())
+        .filter(Boolean)
+    : [];
   return {
     explicit: Object.prototype.hasOwnProperty.call(raw, "desiredSkills"),
     desiredSkills: Array.from(new Set(desired)),
+    excludedSkills: Array.from(new Set(excluded)),
   };
 }
 
@@ -1584,21 +1593,27 @@ export function resolvePaperclipDesiredSkillNames(
   availableEntries: Array<{ key: string; runtimeName?: string | null; required?: boolean }>,
 ): string[] {
   const preference = readPaperclipSkillSyncPreference(config);
+  const excludedSet = new Set(
+    preference.excludedSkills.map((ref) =>
+      canonicalizeDesiredPaperclipSkillReference(ref, availableEntries) || ref,
+    ),
+  );
   const requiredSkills = availableEntries
-    .filter((entry) => entry.required)
+    .filter((entry) => entry.required && !excludedSet.has(entry.key))
     .map((entry) => entry.key);
   if (!preference.explicit) {
     return Array.from(new Set(requiredSkills));
   }
   const desiredSkills = preference.desiredSkills
     .map((reference) => canonicalizeDesiredPaperclipSkillReference(reference, availableEntries))
-    .filter(Boolean);
+    .filter((key) => Boolean(key) && !excludedSet.has(key));
   return Array.from(new Set([...requiredSkills, ...desiredSkills]));
 }
 
 export function writePaperclipSkillSyncPreference(
   config: Record<string, unknown>,
   desiredSkills: string[],
+  excludedSkills?: string[],
 ): Record<string, unknown> {
   const next = { ...config };
   const raw = next.paperclipSkillSync;
@@ -1613,6 +1628,14 @@ export function writePaperclipSkillSyncPreference(
         .filter(Boolean),
     ),
   );
+  if (excludedSkills !== undefined) {
+    const excluded = excludedSkills.filter((v) => v.trim()).map((v) => v.trim());
+    if (excluded.length > 0) {
+      current.excludedSkills = Array.from(new Set(excluded));
+    } else {
+      delete current.excludedSkills;
+    }
+  }
   next.paperclipSkillSync = current;
   return next;
 }

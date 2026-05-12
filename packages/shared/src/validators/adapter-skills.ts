@@ -50,6 +50,7 @@ export const agentSkillSnapshotSchema = z.object({
 
 export const agentSkillSyncSchema = z.object({
   desiredSkills: z.array(z.string().min(1)),
+  excludedSkills: z.array(z.string().min(1)).optional(),
 });
 
 export type AgentSkillSync = z.infer<typeof agentSkillSyncSchema>;

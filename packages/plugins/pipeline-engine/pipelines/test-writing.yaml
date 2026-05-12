@@ -1,0 +1,8 @@
+name: test-writing
+description: Write tests for a single task from spec
+
+stages:
+  - id: write-tests
+    type: worker
+    agent_role: test-writer
+    output_schema: implementation-output

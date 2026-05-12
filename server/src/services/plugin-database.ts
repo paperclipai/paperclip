@@ -125,7 +125,7 @@ function extractQualifiedRefs(statement: string): SqlRef[] {
   const refs: SqlRef[] = [];
   const patterns = [
     /\b(from|join|references|into|update)\s+"?([A-Za-z_][A-Za-z0-9_]*)"?\."?([A-Za-z_][A-Za-z0-9_]*)"?/gi,
-    /\b(alter\s+table|create\s+table|create\s+view|drop\s+table|truncate\s+table)\s+(?:if\s+(?:not\s+)?exists\s+)?"?([A-Za-z_][A-Za-z0-9_]*)"?\."?([A-Za-z_][A-Za-z0-9_]*)"?/gi,
+    /\b(alter\s+table|create\s+table|create\s+view|drop\s+table|truncate\s+table|create\s+(?:unique\s+)?index\s+\S+\s+on)\s+(?:if\s+(?:not\s+)?exists\s+)?"?([A-Za-z_][A-Za-z0-9_]*)"?\."?([A-Za-z_][A-Za-z0-9_]*)"?/gi,
   ];
 
   for (const pattern of patterns) {
