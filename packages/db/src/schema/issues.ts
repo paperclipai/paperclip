@@ -69,7 +69,6 @@ export const issues = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    companyStatusIdx: index("issues_company_status_idx").on(table.companyId, table.status),
     companyStatusUpdatedIdx: index("issues_company_status_updated_idx").on(
       table.companyId,
       table.status,

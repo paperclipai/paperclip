@@ -1,4 +1,5 @@
 CREATE INDEX IF NOT EXISTS "issues_company_status_updated_idx" ON "issues" USING btree ("company_id","status","updated_at" DESC);--> statement-breakpoint
+DROP INDEX IF EXISTS "issues_company_status_idx";--> statement-breakpoint
 DROP INDEX IF EXISTS "issues_company_parent_idx";--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "issues_company_hidden_priority_updated_idx" ON "issues" USING btree (
   "company_id",
@@ -22,4 +23,5 @@ CREATE INDEX IF NOT EXISTS "heartbeat_runs_company_agent_status_created_idx" ON 
 CREATE INDEX IF NOT EXISTS "heartbeat_runs_company_agent_context_issue_idx" ON "heartbeat_runs" USING btree ("company_id","agent_id",(("context_snapshot" ->> 'issueId')));--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "heartbeat_runs_company_agent_context_task_idx" ON "heartbeat_runs" USING btree ("company_id","agent_id",(("context_snapshot" ->> 'taskId')));--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "heartbeat_runs_company_agent_context_task_key_idx" ON "heartbeat_runs" USING btree ("company_id","agent_id",(("context_snapshot" ->> 'taskKey')));--> statement-breakpoint
+DROP INDEX IF EXISTS "agent_wakeup_requests_company_agent_status_idx";--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "agent_wakeup_requests_company_agent_status_requested_idx" ON "agent_wakeup_requests" USING btree ("company_id","agent_id","status","requested_at" DESC);

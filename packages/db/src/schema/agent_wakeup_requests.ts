@@ -26,11 +26,6 @@ export const agentWakeupRequests = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    companyAgentStatusIdx: index("agent_wakeup_requests_company_agent_status_idx").on(
-      table.companyId,
-      table.agentId,
-      table.status,
-    ),
     companyAgentStatusRequestedIdx: index("agent_wakeup_requests_company_agent_status_requested_idx").on(
       table.companyId,
       table.agentId,
