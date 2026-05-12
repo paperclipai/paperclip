@@ -98,6 +98,7 @@ export interface HostServices {
     list(params: WorkerToHostMethods["localFolders.list"][0]): Promise<WorkerToHostMethods["localFolders.list"][1]>;
     readText(params: WorkerToHostMethods["localFolders.readText"][0]): Promise<WorkerToHostMethods["localFolders.readText"][1]>;
     writeTextAtomic(params: WorkerToHostMethods["localFolders.writeTextAtomic"][0]): Promise<WorkerToHostMethods["localFolders.writeTextAtomic"][1]>;
+    deleteFile(params: WorkerToHostMethods["localFolders.deleteFile"][0]): Promise<WorkerToHostMethods["localFolders.deleteFile"][1]>;
   };
 
   /** Provides `state.get`, `state.set`, `state.delete`. */
@@ -187,6 +188,13 @@ export interface HostServices {
     managedReset(params: WorkerToHostMethods["routines.managed.reset"][0]): Promise<WorkerToHostMethods["routines.managed.reset"][1]>;
     managedUpdate(params: WorkerToHostMethods["routines.managed.update"][0]): Promise<WorkerToHostMethods["routines.managed.update"][1]>;
     managedRun(params: WorkerToHostMethods["routines.managed.run"][0]): Promise<WorkerToHostMethods["routines.managed.run"][1]>;
+  };
+
+  /** Provides `skills.managed.*`. */
+  skills: {
+    managedGet(params: WorkerToHostMethods["skills.managed.get"][0]): Promise<WorkerToHostMethods["skills.managed.get"][1]>;
+    managedReconcile(params: WorkerToHostMethods["skills.managed.reconcile"][0]): Promise<WorkerToHostMethods["skills.managed.reconcile"][1]>;
+    managedReset(params: WorkerToHostMethods["skills.managed.reset"][0]): Promise<WorkerToHostMethods["skills.managed.reset"][1]>;
   };
 
   /** Provides issue read/write, relation, checkout, wakeup, summary, comment methods. */
@@ -313,6 +321,7 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "localFolders.list": "local.folders",
   "localFolders.readText": "local.folders",
   "localFolders.writeTextAtomic": "local.folders",
+  "localFolders.deleteFile": "local.folders",
 
   // State
   "state.get": "plugin.state.read",
@@ -367,6 +376,9 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
     "routines.managed.reset": "routines.managed",
     "routines.managed.update": "routines.managed",
     "routines.managed.run": "routines.managed",
+    "skills.managed.get": "skills.managed",
+    "skills.managed.reconcile": "skills.managed",
+    "skills.managed.reset": "skills.managed",
 
   // Issues
   "issues.list": "issues.read",
@@ -501,6 +513,9 @@ export function createHostClientHandlers(
     "localFolders.writeTextAtomic": gated("localFolders.writeTextAtomic", async (params) => {
       return services.localFolders.writeTextAtomic(params);
     }),
+    "localFolders.deleteFile": gated("localFolders.deleteFile", async (params) => {
+      return services.localFolders.deleteFile(params);
+    }),
 
     // State
     "state.get": gated("state.get", async (params) => {
@@ -618,6 +633,17 @@ export function createHostClientHandlers(
     }),
     "routines.managed.run": gated("routines.managed.run", async (params) => {
       return services.routines.managedRun(params);
+    }),
+
+    // Skills
+    "skills.managed.get": gated("skills.managed.get", async (params) => {
+      return services.skills.managedGet(params);
+    }),
+    "skills.managed.reconcile": gated("skills.managed.reconcile", async (params) => {
+      return services.skills.managedReconcile(params);
+    }),
+    "skills.managed.reset": gated("skills.managed.reset", async (params) => {
+      return services.skills.managedReset(params);
     }),
 
     // Issues

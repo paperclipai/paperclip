@@ -65,6 +65,7 @@ describe("issue validators", () => {
       },
       metadata: {
         version: 1,
+        sourceRunId: "11111111-1111-4111-8111-111111111111",
         sections: [
           {
             title: "Evidence",
@@ -79,6 +80,7 @@ describe("issue validators", () => {
     });
 
     expect(parsed.presentation?.detailsDefaultOpen).toBe(false);
+    expect(parsed.metadata?.sourceRunId).toBe("11111111-1111-4111-8111-111111111111");
     expect(parsed.metadata?.sections[0]?.rows).toHaveLength(3);
   });
 
@@ -125,6 +127,19 @@ describe("issue validators", () => {
     });
 
     expect(parsed.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
+  });
+
+  it("defaults omitted create status to todo when an assignee is present", () => {
+    expect(createIssueSchema.parse({
+      title: "Assigned work",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+    }).status).toBe("todo");
+    expect(createIssueSchema.parse({ title: "Unassigned work" }).status).toBe("backlog");
+    expect(createIssueSchema.parse({
+      title: "Deliberately parked",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      status: "backlog",
+    }).status).toBe("backlog");
   });
 
   it("defaults issue work mode to standard and accepts planning", () => {

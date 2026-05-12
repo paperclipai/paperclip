@@ -181,6 +181,34 @@ export interface SuccessfulRunHandoffState {
   createdAt: Date | string | null;
 }
 
+export type IssueScheduledRetryStatus = "scheduled_retry" | "queued" | "running" | "cancelled";
+
+export interface IssueScheduledRetry {
+  runId: string;
+  status: IssueScheduledRetryStatus;
+  agentId: string;
+  agentName: string | null;
+  retryOfRunId: string | null;
+  scheduledRetryAt: Date | string | null;
+  scheduledRetryAttempt: number;
+  scheduledRetryReason: string | null;
+  retryExhaustedReason?: string | null;
+  error?: string | null;
+  errorCode?: string | null;
+}
+
+export type IssueRetryNowOutcome =
+  | "promoted"
+  | "already_promoted"
+  | "no_scheduled_retry"
+  | "gate_suppressed";
+
+export interface IssueRetryNowResponse {
+  outcome: IssueRetryNowOutcome;
+  message: string;
+  scheduledRetry: IssueScheduledRetry | null;
+}
+
 export interface IssueRelation {
   id: string;
   companyId: string;
@@ -345,6 +373,7 @@ export interface Issue {
   blockerAttention?: IssueBlockerAttention;
   productivityReview?: IssueProductivityReview | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  scheduledRetry?: IssueScheduledRetry | null;
   relatedWork?: IssueRelatedWorkSummary;
   referencedIssueIdentifiers?: string[];
   planDocument?: IssueDocument | null;
@@ -370,6 +399,10 @@ export interface IssueComment {
   authorType: IssueCommentAuthorType;
   authorAgentId: string | null;
   authorUserId: string | null;
+  createdByRunId?: string | null;
+  derivedAuthorAgentId?: string | null;
+  derivedCreatedByRunId?: string | null;
+  derivedAuthorSource?: "run_log_comment_post" | null;
   body: string;
   presentation: IssueCommentPresentation | null;
   metadata: IssueCommentMetadata | null;
@@ -434,6 +467,7 @@ export interface IssueCommentMetadataSection {
 
 export interface IssueCommentMetadata {
   version: 1;
+  sourceRunId?: string | null;
   sections: IssueCommentMetadataSection[];
 }
 
