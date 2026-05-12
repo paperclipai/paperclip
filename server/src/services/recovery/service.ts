@@ -54,6 +54,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { buildRecoveryPlanDraft } from "./recovery-plan-draft.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
@@ -1444,6 +1445,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         `- Missing disposition: \`${missingDisposition}\``,
         "- Suggested manager action: choose and record a valid issue disposition without copying transcript content.",
         "",
+        buildRecoveryPlanDraft({ cause: SUCCESSFUL_RUN_MISSING_STATE_REASON }),
+        "",
         "## Required Action",
         "",
         "- Inspect the source issue and run metadata, not raw transcript excerpts.",
@@ -1471,6 +1474,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       "## Ownership",
       "",
       "- Selected owner: the first invokable manager/creator/executive candidate with budget available.",
+      "",
+      buildRecoveryPlanDraft({ cause: "stranded_assigned_issue" }),
       "",
       "## Required Action",
       "",

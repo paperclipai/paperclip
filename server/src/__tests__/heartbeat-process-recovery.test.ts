@@ -724,6 +724,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(recovery.title).toContain("Recover stalled issue");
     expect(recovery.description).toContain(`Previous source status: \`${input.previousStatus}\``);
     expect(recovery.description).toContain(`Retry reason: \`${input.retryReason}\``);
+    expect(recovery.description).toContain("## Recovery Plan Draft");
+    expect(recovery.description).toContain("- [ ] Triage: inspect the latest run, retry history, and source issue state without copying raw transcripts or secrets.");
+    expect(recovery.description).toContain("- [ ] Repair: fix the runtime/adapter failure, reassign the source issue, or convert it into a clear manual-review or blocker state.");
+    expect(recovery.description).toContain("- [ ] Validation: confirm the source issue has a live execution path, explicit waiting path, or intentional terminal disposition.");
     expect(recovery.description).toContain("Fix the runtime/adapter problem");
 
     const relation = await db
@@ -1616,6 +1620,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(recovery?.description).toContain(`Source run: [\`${sourceRunId}\`]`);
     expect(recovery?.description).toContain("Missing disposition: `clear_next_step`");
     expect(recovery?.description).toContain("Source assignee: [CodexCoder]");
+    expect(recovery?.description).toContain("## Recovery Plan Draft");
+    expect(recovery?.description).toContain("- [ ] Triage: inspect the source issue, run metadata, and retry history without copying raw transcripts or secrets.");
+    expect(recovery?.description).toContain("- [ ] Repair: record exactly one valid disposition for the source issue");
+    expect(recovery?.description).toContain("- [ ] Validation: attach evidence that the chosen disposition satisfies acceptance criteria or names a first-class blocker.");
     expect(recovery?.description).not.toContain("sk-test-successful-handoff-secret");
 
     const sourceIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
@@ -1698,6 +1706,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
     expect(recovery?.description).toContain("Latest handoff run status: `succeeded`");
     expect(recovery?.description).toContain("Suggested");
+    expect(recovery?.description).toContain("## Recovery Plan Draft");
   });
 
   it("clears the detached warning when the run reports activity again", async () => {
