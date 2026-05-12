@@ -2159,14 +2159,21 @@ export function buildHostServices(
         if (params.issueId && row) {
           await issueApprovals.link(params.issueId, row.id);
         }
-        let linkedIssues = row ? await issueApprovals.listIssuesForApproval(row.id) : [];
-        if (params.issueId && linkedIssues.length === 0) {
-          logger.warn(
-            { approvalId: row?.id, issueId: params.issueId },
-            "plugin approval activity linked issue refs empty after link",
-          );
-          linkedIssues = [{ id: params.issueId, identifier: null } as typeof linkedIssues[number]];
-        }
+	        let linkedIssues: Array<{ id: string; identifier?: string | null }> = [];
+	        if (row) {
+	          try {
+	            linkedIssues = await issueApprovals.listIssuesForApproval(row.id);
+	          } catch (err) {
+	            logger.warn({ err, approvalId: row.id, issueId: params.issueId }, "failed to read plugin approval linked issue refs for activity");
+	          }
+	        }
+	        if (params.issueId && !linkedIssues.some((issue) => issue.id === params.issueId)) {
+	          logger.warn(
+	            { approvalId: row?.id, issueId: params.issueId },
+	            "plugin approval activity linked issue refs empty after link",
+	          );
+	          linkedIssues = [...linkedIssues, { id: params.issueId, identifier: null }];
+	        }
         const issueIds = linkedIssues.map((issue) => issue.id);
         const issueRefs = linkedIssues.map((issue) => ({ id: issue.id, identifier: issue.identifier ?? null }));
 
@@ -2265,7 +2272,12 @@ export function buildHostServices(
         const cancelResult = await approvalsService.cancel(params.approvalId, params.reason);
         if (cancelResult) {
           const now = cancelResult.decidedAt?.toISOString() ?? new Date().toISOString();
-          const linkedIssues = await issueApprovals.listIssuesForApproval(cancelResult.id);
+	          let linkedIssues: Array<{ id: string; identifier?: string | null }> = [];
+	          try {
+	            linkedIssues = await issueApprovals.listIssuesForApproval(cancelResult.id);
+	          } catch (err) {
+	            logger.warn({ err, approvalId: cancelResult.id }, "failed to read plugin approval linked issue refs for cancellation activity");
+	          }
           const issueIds = linkedIssues.map((issue) => issue.id);
           const issueRefs = linkedIssues.map((issue) => ({ id: issue.id, identifier: issue.identifier ?? null }));
           await logActivity(db, {

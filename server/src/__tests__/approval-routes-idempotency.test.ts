@@ -233,6 +233,53 @@ describe("approval routes idempotent retries", () => {
     expect(mockApprovalService.approve).toHaveBeenCalledWith("approval-4", "user-1", "ship it");
   });
 
+  it("does not fail approval after mutation if linked issue refs cannot be read", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-linked-fail",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+    mockIssueApprovalService.listIssuesForApproval.mockRejectedValue(new Error("read failed"));
+    mockApprovalService.approve.mockResolvedValue({
+      approval: {
+        id: "approval-linked-fail",
+        companyId: "company-1",
+        type: "hire_agent",
+        status: "approved",
+        payload: {},
+        requestedByAgentId: "agent-1",
+      },
+      applied: true,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-linked-fail/approve")
+      .send({ decisionNote: "ship it" });
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.approve).toHaveBeenCalledWith("approval-linked-fail", "user-1", "ship it");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "approval.approved",
+        details: expect.objectContaining({
+          issueIds: [],
+          issueRefs: [],
+        }),
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({
+        reason: "approval_approved",
+        payload: expect.objectContaining({ issueIds: [] }),
+      }),
+    );
+  });
+
   it("derives approval attribution from the authenticated actor on reject", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-5",
@@ -346,6 +393,49 @@ describe("approval routes idempotent retries", () => {
             {
               id: "00000000-0000-0000-0000-000000000001",
               identifier: "PAP-approval",
+            },
+          ],
+        }),
+      }),
+    );
+  });
+
+  it("falls back to requested issue ids when created approval issue ref read is partial", async () => {
+    mockApprovalService.create.mockResolvedValue({
+      id: "approval-1",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: {},
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-04-06T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-06T00:00:00.000Z"),
+    });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([]);
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        issueIds: ["00000000-0000-0000-0000-000000000001"],
+        payload: { title: "Approve hosting spend" },
+      });
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "approval.created",
+        details: expect.objectContaining({
+          issueIds: ["00000000-0000-0000-0000-000000000001"],
+          issueRefs: [
+            {
+              id: "00000000-0000-0000-0000-000000000001",
+              identifier: null,
             },
           ],
         }),

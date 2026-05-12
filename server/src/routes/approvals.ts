@@ -40,9 +40,32 @@ export function approvalRoutes(
   const secretsSvc = secretService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
-  async function listLinkedIssueRefs(approvalId: string) {
-    const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approvalId);
-    return linkedIssues.map((issue) => ({ id: issue.id, identifier: issue.identifier ?? null }));
+  async function listLinkedIssueRefs(
+    approvalId: string,
+    fallbackIssueIds: string[] = [],
+    context: Record<string, unknown> = {},
+  ) {
+    try {
+      const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approvalId);
+      const refs = linkedIssues.map((issue) => ({ id: issue.id, identifier: issue.identifier ?? null }));
+      const seen = new Set(refs.map((issue) => issue.id));
+      for (const issueId of fallbackIssueIds) {
+        if (!seen.has(issueId)) refs.push({ id: issueId, identifier: null });
+      }
+      if (fallbackIssueIds.length > 0 && refs.length > linkedIssues.length) {
+        logger.warn(
+          { approvalId, issueIds: fallbackIssueIds, ...context },
+          "approval activity linked issue refs partial after link",
+        );
+      }
+      return refs;
+    } catch (err) {
+      logger.warn(
+        { err, approvalId, issueIds: fallbackIssueIds, ...context },
+        "failed to read approval linked issue refs for activity",
+      );
+      return fallbackIssueIds.map((id) => ({ id, identifier: null }));
+    }
   }
 
   function linkedIssueActivityDetails(issueRefs: Array<{ id: string; identifier: string | null }>) {
@@ -120,9 +143,9 @@ export function approvalRoutes(
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
     }
-    let linkedIssueDetails = uniqueIssueIds.length > 0
-      ? linkedIssueActivityDetails(await listLinkedIssueRefs(approval.id))
-      : { issueIds: [], linkedIssueIds: [], issueRefs: [] };
+	    let linkedIssueDetails = uniqueIssueIds.length > 0
+	      ? linkedIssueActivityDetails(await listLinkedIssueRefs(approval.id, uniqueIssueIds, { action: "approval.created" }))
+	      : { issueIds: [], linkedIssueIds: [], issueRefs: [] };
     if (uniqueIssueIds.length > 0 && linkedIssueDetails.issueIds.length === 0) {
       logger.warn({ approvalId: approval.id, issueIds: uniqueIssueIds }, "approval activity linked issue refs empty after link");
       linkedIssueDetails = linkedIssueActivityDetails(uniqueIssueIds.map((id) => ({ id, identifier: null })));
@@ -160,12 +183,12 @@ export function approvalRoutes(
     if (!(await requireApprovalAccess(req, id))) {
       res.status(404).json({ error: "Approval not found" });
       return;
-    }
-    const decidedByUserId = req.actor.userId ?? "board";
-    const { approval, applied } = await svc.approve(id, decidedByUserId, req.body.decisionNote);
-
-    if (applied) {
-      const linkedIssueRefs = await listLinkedIssueRefs(approval.id);
+	    }
+	    const decidedByUserId = req.actor.userId ?? "board";
+	    const { approval, applied } = await svc.approve(id, decidedByUserId, req.body.decisionNote);
+	
+	    if (applied) {
+	      const linkedIssueRefs = await listLinkedIssueRefs(approval.id, [], { action: "approval.approved", phase: "after" });
       const linkedIssueDetails = linkedIssueActivityDetails(linkedIssueRefs);
       const linkedIssueIds = linkedIssueDetails.issueIds;
       const primaryIssueId = linkedIssueIds[0] ?? null;
@@ -270,12 +293,12 @@ export function approvalRoutes(
     if (!(await requireApprovalAccess(req, id))) {
       res.status(404).json({ error: "Approval not found" });
       return;
-    }
-    const decidedByUserId = req.actor.userId ?? "board";
-    const { approval, applied } = await svc.reject(id, decidedByUserId, req.body.decisionNote);
-
-    if (applied) {
-      const linkedIssueRefs = await listLinkedIssueRefs(approval.id);
+	    }
+	    const decidedByUserId = req.actor.userId ?? "board";
+	    const { approval, applied } = await svc.reject(id, decidedByUserId, req.body.decisionNote);
+	
+	    if (applied) {
+	      const linkedIssueRefs = await listLinkedIssueRefs(approval.id, [], { action: "approval.rejected", phase: "after" });
       const linkedIssueDetails = linkedIssueActivityDetails(linkedIssueRefs);
       if (approval.sourcePluginId && options.pluginWorkerManager) {
         const worker = options.pluginWorkerManager.getWorker(approval.sourcePluginId);
@@ -313,10 +336,15 @@ export function approvalRoutes(
       if (!(await requireApprovalAccess(req, id))) {
         res.status(404).json({ error: "Approval not found" });
         return;
-      }
-      const decidedByUserId = req.actor.userId ?? "board";
-      const approval = await svc.requestRevision(id, decidedByUserId, req.body.decisionNote);
-      const linkedIssueDetails = linkedIssueActivityDetails(await listLinkedIssueRefs(approval.id));
+	      }
+	      const decidedByUserId = req.actor.userId ?? "board";
+	      const linkedIssueRefsBefore = await listLinkedIssueRefs(id, [], { action: "approval.revision_requested", phase: "before" });
+	      const approval = await svc.requestRevision(id, decidedByUserId, req.body.decisionNote);
+	      const linkedIssueDetails = linkedIssueActivityDetails(
+	        linkedIssueRefsBefore.length > 0
+	          ? linkedIssueRefsBefore
+	          : await listLinkedIssueRefs(approval.id, [], { action: "approval.revision_requested", phase: "after" }),
+	      );
 
       await logActivity(db, {
         companyId: approval.companyId,
@@ -355,8 +383,13 @@ export function approvalRoutes(
           )
         : req.body.payload
       : undefined;
-    const approval = await svc.resubmit(id, normalizedPayload);
-    const linkedIssueDetails = linkedIssueActivityDetails(await listLinkedIssueRefs(approval.id));
+	    const linkedIssueRefsBefore = await listLinkedIssueRefs(id, [], { action: "approval.resubmitted", phase: "before" });
+	    const approval = await svc.resubmit(id, normalizedPayload);
+	    const linkedIssueDetails = linkedIssueActivityDetails(
+	      linkedIssueRefsBefore.length > 0
+	        ? linkedIssueRefsBefore
+	        : await listLinkedIssueRefs(approval.id, [], { action: "approval.resubmitted", phase: "after" }),
+	    );
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: approval.companyId,
