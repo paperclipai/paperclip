@@ -50,7 +50,8 @@ export function InstanceSettings() {
     queryFn: () => accessApi.getCurrentBoardAccess(),
   });
 
-  const isInstanceAdmin = boardAccessQuery.data?.isInstanceAdmin ?? false;
+  const canViewPluginSecrets = (boardAccessQuery.data?.isInstanceAdmin ?? false)
+    || boardAccessQuery.data?.source === "local_implicit";
 
   const heartbeatsQuery = useQuery({
     queryKey: queryKeys.instance.schedulerHeartbeats,
@@ -62,7 +63,7 @@ export function InstanceSettings() {
     queryKey: queryKeys.instance.pluginSecrets,
     queryFn: () => instanceSettingsApi.listPluginSecrets(),
     refetchInterval: 30_000,
-    enabled: isInstanceAdmin,
+    enabled: canViewPluginSecrets,
   });
 
   const toggleMutation = useMutation({
@@ -304,7 +305,7 @@ export function InstanceSettings() {
         )}
       </div>
 
-      {isInstanceAdmin && (
+      {canViewPluginSecrets && (
       <div className="space-y-4">
         <div className="space-y-2">
           <div className="flex items-center gap-2">
