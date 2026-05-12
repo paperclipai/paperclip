@@ -58,7 +58,6 @@ export type AutonomousLoopState = {
     reason?: string | null;
     recoveryAction?: string | null;
     owner?: "none" | "operator" | "user" | string | null;
-    metricKey?: string | null;
     userVisible?: boolean | null;
   } | null;
   observability?: {

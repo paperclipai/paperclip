@@ -22,7 +22,6 @@ export type AutonomousGoalLoopWatchdogPreviewCandidate = {
   kind: AutonomousGoalLoopWatchdogPreviewCandidateKind;
   severity: "low" | "medium" | "high";
   owner: "operator";
-  metricKey: string | null;
   issueId: string;
   identifier: string | null;
   title: string;
@@ -126,7 +125,6 @@ export function buildAutonomousGoalLoopWatchdogPreview(input: {
       kind: candidateKindFor(state.supervisor.recoveryAction),
       severity: severityFor(state.supervisor.recoveryAction),
       owner: "operator",
-      metricKey: state.supervisor.metricKey,
       issueId: item.issue.id,
       identifier: item.issue.identifier ?? null,
       title: item.issue.title,

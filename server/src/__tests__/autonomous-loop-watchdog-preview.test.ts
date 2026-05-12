@@ -84,13 +84,13 @@ describe("autonomous loop watchdog preview", () => {
         kind: "loop_decision_repair",
         severity: "high",
         owner: "operator",
-        metricKey: "autonomous_loop_decision_freshness_failure",
         issueId: "parent-issue-1",
         reason: "ceo_loop_decision_stale",
         recoveryAction: "repair_loop_decision",
         userVisible: false,
       }),
     ]);
+    expect(preview.candidates[0]).not.toHaveProperty("metricKey");
     expect(preview.candidates[0]?.recommendedAction).toContain("ceo-loop-decision");
   });
 
@@ -142,11 +142,11 @@ describe("autonomous loop watchdog preview", () => {
         kind: "loop_manual_review",
         severity: "medium",
         owner: "operator",
-        metricKey: "autonomous_loop_manual_review_required",
         reason: "missing_ceo_loop_decision",
         recoveryAction: "manual_review",
         userVisible: false,
       }),
     ]);
+    expect(preview.candidates[0]).not.toHaveProperty("metricKey");
   });
 });

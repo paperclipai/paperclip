@@ -105,7 +105,6 @@ describe("AutonomousLoopWatchdog page", () => {
           kind: "loop_decision_repair",
           severity: "high",
           owner: "operator",
-          metricKey: "autonomous_loop_decision_freshness_failure",
           issueId: "issue-1",
           identifier: "PAP-581",
           title: "Autonomous loop goal",
@@ -121,7 +120,6 @@ describe("AutonomousLoopWatchdog page", () => {
           kind: "manual_review",
           severity: "medium",
           owner: "operator",
-          metricKey: "autonomous_loop_missing_decision",
           issueId: "issue-2",
           identifier: null,
           title: "Identifierless loop",
@@ -146,7 +144,8 @@ describe("AutonomousLoopWatchdog page", () => {
       expect(container.textContent).toContain("PAP-581");
       expect(container.textContent).toContain("ceo_loop_decision_stale");
       expect(container.textContent).toContain("repair_loop_decision");
-      expect(container.textContent).toContain("autonomous_loop_decision_freshness_failure");
+      expect(container.textContent).not.toContain("autonomous_loop_decision_freshness_failure");
+      expect(container.textContent).not.toContain("Metric");
       expect(container.textContent).toContain("Internal repair");
       expect(container.textContent).toContain("Review and rewrite the ceo-loop-decision document.");
     });

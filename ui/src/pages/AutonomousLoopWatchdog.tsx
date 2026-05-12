@@ -64,10 +64,6 @@ function CandidateCard({ candidate }: { candidate: AutonomousLoopWatchdogCandida
           <dd className="mt-1 font-mono text-xs text-foreground">{candidate.recoveryAction ?? "manual_review"}</dd>
         </div>
         <div>
-          <dt className="text-xs uppercase tracking-wide text-muted-foreground">Metric</dt>
-          <dd className="mt-1 font-mono text-xs text-foreground">{candidate.metricKey ?? "not_set"}</dd>
-        </div>
-        <div>
           <dt className="text-xs uppercase tracking-wide text-muted-foreground">Generated</dt>
           <dd className="mt-1 text-xs text-foreground">{candidate.generatedAt}</dd>
         </div>

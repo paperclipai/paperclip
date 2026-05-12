@@ -167,7 +167,6 @@ export type AutonomousGoalLoopState =
           | "adjust_loop_limits_or_close_goal"
           | "manual_review";
         owner: "none" | "operator" | "user";
-        metricKey: string | null;
         userVisible: boolean;
       };
       iterations: Array<{
@@ -307,16 +306,6 @@ function isDecisionRepairReason(reason: string) {
     reason === "ceo_loop_decision_from_future";
 }
 
-function safetyMetricKeyForReason(reason: string) {
-  if (reason === "ceo_loop_decision_stale" || reason === "ceo_loop_decision_from_future") {
-    return "autonomous_loop_decision_freshness_failure";
-  }
-  if (reason === "ceo_loop_iteration_mismatch") return "autonomous_loop_decision_iteration_mismatch";
-  if (reason === "invalid_ceo_loop_decision") return "autonomous_loop_decision_repair_required";
-  if (reason === "ceo_self_attestation_conflict") return "autonomous_loop_ceo_self_attestation_conflict";
-  return null;
-}
-
 function supervisorFor(input: {
   reason: string;
   decision: MissionControlCeoLoopDecision | null;
@@ -327,7 +316,6 @@ function supervisorFor(input: {
       reason: input.reason,
       recoveryAction: "repair_loop_decision",
       owner: "operator",
-      metricKey: safetyMetricKeyForReason(input.reason),
       userVisible: false,
     };
   }
@@ -337,7 +325,6 @@ function supervisorFor(input: {
       reason: "ceo_self_attestation_conflict",
       recoveryAction: "request_user_approval",
       owner: "user",
-      metricKey: safetyMetricKeyForReason(input.reason),
       userVisible: true,
     };
   }
@@ -347,7 +334,6 @@ function supervisorFor(input: {
       reason: "approval_required",
       recoveryAction: "request_user_approval",
       owner: "user",
-      metricKey: null,
       userVisible: true,
     };
   }
@@ -357,7 +343,6 @@ function supervisorFor(input: {
       reason: input.reason,
       recoveryAction: "adjust_loop_limits_or_close_goal",
       owner: "operator",
-      metricKey: "autonomous_loop_limit_attention",
       userVisible: true,
     };
   }
@@ -367,7 +352,6 @@ function supervisorFor(input: {
       reason: input.reason,
       recoveryAction: "manual_review",
       owner: "operator",
-      metricKey: "autonomous_loop_manual_review_required",
       userVisible: false,
     };
   }
@@ -377,7 +361,6 @@ function supervisorFor(input: {
       reason: "blocked",
       recoveryAction: "resolve_blocker",
       owner: "user",
-      metricKey: null,
       userVisible: true,
     };
   }
@@ -387,7 +370,6 @@ function supervisorFor(input: {
       reason: "failed",
       recoveryAction: "manual_recovery",
       owner: "user",
-      metricKey: null,
       userVisible: true,
     };
   }
@@ -396,7 +378,6 @@ function supervisorFor(input: {
     reason: null,
     recoveryAction: "none",
     owner: "none",
-    metricKey: null,
     userVisible: false,
   };
 }

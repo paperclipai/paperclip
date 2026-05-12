@@ -542,10 +542,10 @@ describe("autonomous goal loop continuation planning", () => {
         reason: "ceo_self_attestation_conflict",
         recoveryAction: "request_user_approval",
         owner: "user",
-        metricKey: "autonomous_loop_ceo_self_attestation_conflict",
         userVisible: true,
       },
     });
+    expect(state.supervisor).not.toHaveProperty("metricKey");
   });
 
   it("renders stale approval decisions as an internal repair state", () => {
@@ -588,10 +588,10 @@ describe("autonomous goal loop continuation planning", () => {
         reason: "ceo_loop_decision_stale",
         recoveryAction: "repair_loop_decision",
         owner: "operator",
-        metricKey: "autonomous_loop_decision_freshness_failure",
         userVisible: false,
       },
     });
+    expect(state.supervisor).not.toHaveProperty("metricKey");
   });
 
   it("marks approval and blocked loop states for supervisor attention", () => {

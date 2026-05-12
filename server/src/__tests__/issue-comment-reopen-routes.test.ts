@@ -394,7 +394,6 @@ describe.sequential("issue comment reopen routes", () => {
           kind: "loop_decision_repair",
           severity: "high",
           owner: "operator",
-          metricKey: "autonomous_loop_decision_freshness_failure",
           issueId: "issue-1",
           identifier: "PAP-581",
           title: "Autonomous loop goal",

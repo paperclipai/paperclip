@@ -5,7 +5,6 @@ export type AutonomousLoopWatchdogCandidate = {
   kind: string;
   severity: "low" | "medium" | "high" | "critical" | string;
   owner: "operator" | "user" | "none" | string;
-  metricKey: string | null;
   issueId: string;
   identifier: string | null;
   title: string | null;

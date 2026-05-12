@@ -289,7 +289,7 @@ function IssueAutonomousLoopPanel({ state }: { state?: AutonomousLoopState | nul
       </div>
 
       {state.supervisor?.attentionRequired ? (
-        <div className="grid gap-2 rounded-md border border-amber-200 bg-amber-50/60 px-3 py-2 text-sm dark:border-amber-900/60 dark:bg-amber-950/20 sm:grid-cols-3">
+        <div className="grid gap-2 rounded-md border border-amber-200 bg-amber-50/60 px-3 py-2 text-sm dark:border-amber-900/60 dark:bg-amber-950/20 sm:grid-cols-2">
           <div>
             <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Repair owner</div>
             <div className="font-mono text-foreground">{state.supervisor.owner ?? "operator"}</div>
@@ -298,12 +298,6 @@ function IssueAutonomousLoopPanel({ state }: { state?: AutonomousLoopState | nul
             <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Repair action</div>
             <div className="font-mono text-foreground">{state.supervisor.recoveryAction ?? "manual_review"}</div>
           </div>
-          {state.supervisor.metricKey ? (
-            <div>
-              <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Metric key</div>
-              <div className="font-mono text-foreground">{state.supervisor.metricKey}</div>
-            </div>
-          ) : null}
         </div>
       ) : null}
 
