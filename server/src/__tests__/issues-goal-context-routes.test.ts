@@ -15,6 +15,7 @@ const mockIssueService = vi.hoisted(() => ({
   listProductivityReviews: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
   listAttachments: vi.fn(),
+  countAgentComments: vi.fn(),
 }));
 
 const mockProjectService = vi.hoisted(() => ({
@@ -30,6 +31,7 @@ const mockGoalService = vi.hoisted(() => ({
 const mockDocumentsService = vi.hoisted(() => ({
   getIssueDocumentPayload: vi.fn(),
   getIssueDocumentByKey: vi.fn(),
+  listIssueDocuments: vi.fn(),
 }));
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
@@ -191,8 +193,14 @@ describe.sequential("issue goal context routes", () => {
     mockIssueService.listProductivityReviews.mockResolvedValue(new Map());
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
     mockIssueService.listAttachments.mockResolvedValue([]);
-    mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({});
+    mockIssueService.countAgentComments.mockResolvedValue(0);
+    mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({
+      planDocument: null,
+      documentSummaries: [],
+      legacyPlanDocument: null,
+    });
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue(null);
+    mockDocumentsService.listIssueDocuments.mockResolvedValue([]);
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
     mockDb.select.mockReturnValue({
       from: vi.fn(() => ({
