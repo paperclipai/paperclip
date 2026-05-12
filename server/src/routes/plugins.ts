@@ -79,6 +79,7 @@ import {
   PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
 } from "../services/plugin-secrets-handler.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 
 /** UI slot declaration extracted from plugin manifest */
 type PluginUiSlotDeclaration = NonNullable<NonNullable<PaperclipPluginManifestV1["ui"]>["slots"]>[number];
@@ -2150,10 +2151,17 @@ export function pluginRoutes(
       }
     }
 
-    await logPluginMutationActivity(req, "plugin.runtime-config.cleared", plugin.id, {
-      pluginId: plugin.id,
-      pluginKey: plugin.pluginKey,
-    });
+    try {
+      await logPluginMutationActivity(req, "plugin.runtime-config.cleared", plugin.id, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+      });
+    } catch (err) {
+      logger.error(
+        { err, pluginId: plugin.id, pluginKey: plugin.pluginKey },
+        "failed to audit plugin runtime config clear after mutation",
+      );
+    }
     res.status(204).end();
   });
 

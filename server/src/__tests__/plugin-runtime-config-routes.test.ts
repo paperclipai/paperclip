@@ -232,6 +232,7 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
   it("does not restart a non-running worker after runtime config is cleared", async () => {
     readyPlugin();
     mockRuntimeConfig.clearRuntime.mockResolvedValue(undefined);
+    mockWorkerManager.getWorker.mockReturnValue({ status: "stopping" });
     mockWorkerManager.isRunning.mockReturnValue(false);
     mockLifecycle.restartWorker.mockResolvedValue(undefined);
     const app = await createApp(boardActor({ isInstanceAdmin: true }));
@@ -241,7 +242,7 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
     expect(mockLifecycle.restartWorker).not.toHaveBeenCalled();
   });
 
-  it("returns 500 when audit logging fails after clearing runtime config", async () => {
+  it("returns 204 when audit logging fails after clearing runtime config", async () => {
     readyPlugin();
     mockRuntimeConfig.clearRuntime.mockResolvedValue(undefined);
     mockWorkerManager.isRunning.mockReturnValue(true);
@@ -250,7 +251,7 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
     const app = await createApp(boardActor({ isInstanceAdmin: true }));
 
     const res = await request(app).delete(`/api/plugins/${pluginId}/runtime-config`);
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(204);
     expect(mockLifecycle.restartWorker).toHaveBeenCalledWith(pluginId);
   });
 
@@ -270,6 +271,19 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
         details: expect.objectContaining({ pluginId, pluginKey: "paperclip.example" }),
       }),
     );
+  });
+
+  it("resolves scoped package plugin keys before clearing runtime config", async () => {
+    readyPluginByKey("@paperclip/example");
+    mockRuntimeConfig.clearRuntime.mockResolvedValue(undefined);
+    mockWorkerManager.isRunning.mockReturnValue(false);
+    const app = await createApp(boardActor({ isInstanceAdmin: true }));
+
+    const res = await request(app).delete("/api/plugins/%40paperclip%2Fexample/runtime-config");
+    expect(res.status).toBe(204);
+    expect(mockRegistry.getById).not.toHaveBeenCalled();
+    expect(mockRegistry.getByKey).toHaveBeenCalledWith("@paperclip/example");
+    expect(mockRuntimeConfig.clearRuntime).toHaveBeenCalledWith(pluginId);
   });
 
   it("rejects non-board actors with 403", async () => {
