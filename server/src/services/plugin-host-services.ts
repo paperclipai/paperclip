@@ -2159,15 +2159,13 @@ export function buildHostServices(
         if (params.issueId && row) {
           await issueApprovals.link(params.issueId, row.id);
         }
-        let linkedIssues: Awaited<ReturnType<typeof issueApprovals.listIssuesForApproval>> = [];
-        try {
-          linkedIssues = row ? await issueApprovals.listIssuesForApproval(row.id) : [];
-        } catch (err) {
+        let linkedIssues = row ? await issueApprovals.listIssuesForApproval(row.id) : [];
+        if (params.issueId && linkedIssues.length === 0) {
           logger.warn(
-            { err, approvalId: row?.id, fallbackIssueId: params.issueId ?? null },
-            "failed to load linked issue refs for plugin approval creation activity",
+            { approvalId: row?.id, issueId: params.issueId },
+            "plugin approval activity linked issue refs empty after link",
           );
-          linkedIssues = params.issueId ? [{ id: params.issueId, identifier: null } as typeof linkedIssues[number]] : [];
+          linkedIssues = [{ id: params.issueId, identifier: null } as typeof linkedIssues[number]];
         }
         const issueIds = linkedIssues.map((issue) => issue.id);
         const issueRefs = linkedIssues.map((issue) => ({ id: issue.id, identifier: issue.identifier ?? null }));
@@ -2267,15 +2265,7 @@ export function buildHostServices(
         const cancelResult = await approvalsService.cancel(params.approvalId, params.reason);
         if (cancelResult) {
           const now = cancelResult.decidedAt?.toISOString() ?? new Date().toISOString();
-          let linkedIssues: Awaited<ReturnType<typeof issueApprovals.listIssuesForApproval>> = [];
-          try {
-            linkedIssues = await issueApprovals.listIssuesForApproval(cancelResult.id);
-          } catch (err) {
-            logger.warn(
-              { err, approvalId: cancelResult.id },
-              "failed to load linked issue refs for plugin approval cancellation activity",
-            );
-          }
+          const linkedIssues = await issueApprovals.listIssuesForApproval(cancelResult.id);
           const issueIds = linkedIssues.map((issue) => issue.id);
           const issueRefs = linkedIssues.map((issue) => ({ id: issue.id, identifier: issue.identifier ?? null }));
           await logActivity(db, {

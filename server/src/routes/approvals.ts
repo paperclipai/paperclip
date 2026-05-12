@@ -40,14 +40,9 @@ export function approvalRoutes(
   const secretsSvc = secretService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
-  async function listLinkedIssueRefs(approvalId: string, fallbackIssueIds: string[] = []) {
-    try {
-      const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approvalId);
-      return linkedIssues.map((issue) => ({ id: issue.id, identifier: issue.identifier ?? null }));
-    } catch (err) {
-      logger.warn({ err, approvalId, fallbackIssueIds }, "failed to load linked issue refs for approval activity");
-      return fallbackIssueIds.map((id) => ({ id, identifier: null }));
-    }
+  async function listLinkedIssueRefs(approvalId: string) {
+    const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approvalId);
+    return linkedIssues.map((issue) => ({ id: issue.id, identifier: issue.identifier ?? null }));
   }
 
   function linkedIssueActivityDetails(issueRefs: Array<{ id: string; identifier: string | null }>) {
@@ -125,9 +120,13 @@ export function approvalRoutes(
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
     }
-    const linkedIssueDetails = uniqueIssueIds.length > 0
-      ? linkedIssueActivityDetails(await listLinkedIssueRefs(approval.id, uniqueIssueIds))
+    let linkedIssueDetails = uniqueIssueIds.length > 0
+      ? linkedIssueActivityDetails(await listLinkedIssueRefs(approval.id))
       : { issueIds: [], linkedIssueIds: [], issueRefs: [] };
+    if (uniqueIssueIds.length > 0 && linkedIssueDetails.issueIds.length === 0) {
+      logger.warn({ approvalId: approval.id, issueIds: uniqueIssueIds }, "approval activity linked issue refs empty after link");
+      linkedIssueDetails = linkedIssueActivityDetails(uniqueIssueIds.map((id) => ({ id, identifier: null })));
+    }
 
     await logActivity(db, {
       companyId,

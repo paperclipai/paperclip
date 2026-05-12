@@ -93,6 +93,45 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     });
   });
 
+  it("uses cached issue identity when approval activity only carries issue ids", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+      getQueryCache: () => ({
+        findAll: () => [
+          {
+            state: {
+              data: {
+                id: "11111111-1111-4111-8111-111111111111",
+                identifier: "PAP-761",
+              },
+            },
+          },
+        ],
+      }),
+      getQueriesData: () => [],
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "approval",
+        entityId: "approval-1",
+        action: "approval.created",
+        details: { issueIds: ["11111111-1111-4111-8111-111111111111"] },
+      },
+      { userId: null, agentId: null },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.approvals("PAP-761"),
+    });
+  });
+
   it("refreshes identifier-keyed issue approval queries for approval creation", () => {
     const invalidations: unknown[] = [];
     const queryClient = {

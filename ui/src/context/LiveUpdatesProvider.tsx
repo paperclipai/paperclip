@@ -1,5 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
-import { useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type InfiniteData, type Query, type QueryClient } from "@tanstack/react-query";
 import type { Agent, Issue, IssueComment, LiveEvent } from "@paperclipai/shared";
 import type { RunForIssue } from "../api/activity";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
@@ -38,6 +38,33 @@ function readString(value: unknown): string | null {
 function readRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+}
+
+function addIssueCacheRefs(queryClient: QueryClient, issueRefs: Set<string>) {
+  const cachedIssues = new Map<string, Issue>();
+  const client = queryClient as QueryClient & {
+    getQueryCache?: QueryClient["getQueryCache"];
+    getQueriesData?: QueryClient["getQueriesData"];
+  };
+  client.getQueryCache?.().findAll({ queryKey: ["issues", "detail"] }).forEach((query: Query) => {
+    const issue = query.state.data as Issue | undefined;
+    if (issue?.id) cachedIssues.set(issue.id, issue);
+    if (issue?.identifier) cachedIssues.set(issue.identifier, issue);
+  });
+  const issueLists = client.getQueriesData?.<Issue[]>({ queryKey: ["issues"] }) ?? [];
+  for (const [queryKey, data] of issueLists) {
+    if (!Array.isArray(data)) continue;
+    if (Array.isArray(queryKey) && queryKey[2] === "approvals") continue;
+    for (const issue of data) {
+      if (issue?.id) cachedIssues.set(issue.id, issue);
+      if (issue?.identifier) cachedIssues.set(issue.identifier, issue);
+    }
+  }
+  for (const ref of Array.from(issueRefs)) {
+    const issue = cachedIssues.get(ref);
+    if (issue?.id) issueRefs.add(issue.id);
+    if (issue?.identifier) issueRefs.add(issue.identifier);
+  }
 }
 
 function shortId(value: string) {
@@ -743,6 +770,7 @@ function invalidateActivityQueries(
         if (typeof identifier === "string") issueRefs.add(identifier);
       }
     }
+    addIssueCacheRefs(queryClient, issueRefs);
     for (const issueRef of issueRefs) {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.approvals(issueRef) });
