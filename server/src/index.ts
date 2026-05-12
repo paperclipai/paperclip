@@ -34,6 +34,9 @@ import {
   instanceSettingsService,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
+  createIssueFinalDeliveryDbStore,
+  createIssueFinalDeliveryTransportFromEnv,
+  startIssueFinalDeliveryWorker,
 } from "./services/index.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
@@ -656,6 +659,28 @@ export async function startServer(): Promise<StartedServer> {
     resolveSessionFromHeaders,
   });
 
+  const finalDeliveryWorkerFlag = process.env.PAPERCLIP_FINAL_DELIVERY_WORKER_ENABLED?.trim().toLowerCase();
+  const finalDeliveryWorkerEnabled = finalDeliveryWorkerFlag === "true" || finalDeliveryWorkerFlag === "1";
+  const finalDeliveryTransport = finalDeliveryWorkerEnabled
+    ? createIssueFinalDeliveryTransportFromEnv(process.env)
+    : null;
+  const finalDeliveryWorker = finalDeliveryTransport
+    ? startIssueFinalDeliveryWorker({
+      store: createIssueFinalDeliveryDbStore(db as any),
+      transport: finalDeliveryTransport,
+      intervalMs: readPositiveIntegerEnv(["PAPERCLIP_FINAL_DELIVERY_WORKER_INTERVAL_MS", "PAPERCLIP_FINAL_DELIVERY_POLL_INTERVAL_MS"], 30_000),
+      limit: readPositiveIntegerEnv(["PAPERCLIP_FINAL_DELIVERY_WORKER_BATCH_SIZE", "PAPERCLIP_FINAL_DELIVERY_BATCH_SIZE"], 25),
+      maxAttempts: readPositiveIntegerEnv(["PAPERCLIP_FINAL_DELIVERY_WORKER_MAX_ATTEMPTS", "PAPERCLIP_FINAL_DELIVERY_MAX_ATTEMPTS"], 5),
+      retryBaseMs: readPositiveIntegerEnv(["PAPERCLIP_FINAL_DELIVERY_WORKER_RETRY_BASE_MS", "PAPERCLIP_FINAL_DELIVERY_RETRY_BASE_MS"], 60_000),
+      logger,
+    })
+    : null;
+  if (finalDeliveryWorker) {
+    logger.info("Final delivery worker enabled");
+  } else if (finalDeliveryWorkerFlag === "true" || finalDeliveryWorkerFlag === "1") {
+    logger.warn("Final delivery worker requested but Telegram/Slack token is not configured");
+  }
+
   void reconcilePersistedRuntimeServicesOnStartup(db as any)
     .then((result) => {
       if (result.reconciled > 0) {
@@ -878,6 +903,10 @@ export async function startServer(): Promise<StartedServer> {
         await telemetryClient.flush();
       }
 
+      if (finalDeliveryWorker) {
+        finalDeliveryWorker.stop();
+      }
+
       if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
         logger.info({ signal }, "Stopping embedded PostgreSQL");
         try {
@@ -905,6 +934,18 @@ export async function startServer(): Promise<StartedServer> {
     apiUrl: configuredApiUrl,
     databaseUrl: activeDatabaseConnectionString,
   };
+}
+
+function readPositiveIntegerEnv(names: string | string[], fallback: number): number {
+  const candidates = Array.isArray(names) ? names : [names];
+  for (const name of candidates) {
+    const raw = process.env[name]?.trim();
+    if (!raw) continue;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) continue;
+    return Math.floor(parsed);
+  }
+  return fallback;
 }
 
 function isMainModule(metaUrl: string): boolean {

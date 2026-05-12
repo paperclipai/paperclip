@@ -185,6 +185,7 @@ export type IssueThreadInteractionKind = (typeof ISSUE_THREAD_INTERACTION_KINDS)
 
 export const ISSUE_THREAD_INTERACTION_STATUSES = [
   "pending",
+  "sending",
   "accepted",
   "rejected",
   "answered",

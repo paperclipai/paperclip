@@ -622,10 +622,18 @@ export const issueFinalDeliveryPayloadSchema = z.object({
 
 export const issueFinalDeliveryResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["delivered", "failed", "skipped"]),
+  outcome: z.enum(["sending", "delivered", "failed", "skipped"]),
   deliveredAt: z.string().datetime().nullable().optional(),
   externalMessageId: z.string().trim().max(255).nullable().optional(),
   error: z.string().trim().max(4000).nullable().optional(),
+  attemptCount: z.number().int().min(0).optional().default(0),
+  lastAttemptAt: z.string().datetime().nullable().optional(),
+  nextAttemptAt: z.string().datetime().nullable().optional(),
+  retryable: z.boolean().optional(),
+  terminal: z.boolean().optional(),
+  claimToken: z.string().trim().max(120).nullable().optional(),
+  claimedAt: z.string().datetime().nullable().optional(),
+  claimExpiresAt: z.string().datetime().nullable().optional(),
 });
 export type IssueFinalDeliveryArtifact = z.infer<typeof issueFinalDeliveryArtifactSchema>;
 export type IssueFinalDeliveryPayload = z.infer<typeof issueFinalDeliveryPayloadSchema>;

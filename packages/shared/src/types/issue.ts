@@ -654,10 +654,18 @@ export interface IssueFinalDeliveryPayload {
 
 export interface IssueFinalDeliveryResult {
   version: 1;
-  outcome: "delivered" | "failed" | "skipped";
+  outcome: "sending" | "delivered" | "failed" | "skipped";
   deliveredAt?: string | null;
   externalMessageId?: string | null;
   error?: string | null;
+  attemptCount?: number;
+  lastAttemptAt?: string | null;
+  nextAttemptAt?: string | null;
+  retryable?: boolean;
+  terminal?: boolean;
+  claimToken?: string | null;
+  claimedAt?: string | null;
+  claimExpiresAt?: string | null;
 }
 
 export interface IssueThreadInteractionBase extends IssueThreadInteractionActorFields {

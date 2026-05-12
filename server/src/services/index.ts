@@ -22,6 +22,12 @@ export {
 } from "./issues.js";
 export { issueThreadInteractionService } from "./issue-thread-interactions.js";
 export { issueFinalDeliveryService } from "./final-delivery.js";
+export {
+  createIssueFinalDeliveryDbStore,
+  createIssueFinalDeliverySender,
+  createIssueFinalDeliveryTransportFromEnv,
+  startIssueFinalDeliveryWorker,
+} from "./final-delivery-sender.js";
 export { issueTreeControlService } from "./issue-tree-control.js";
 export { issueApprovalService } from "./issue-approvals.js";
 export { issueReferenceService } from "./issue-references.js";
