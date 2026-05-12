@@ -11,55 +11,41 @@ import {
   type Edge,
   type Connection,
 } from "@xyflow/react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { usePluginAction, usePluginData } from "@paperclipai/plugin-sdk/ui";
 import { StagePalette } from "./StagePalette.js";
 import { StageNode, type StageNodeData } from "./StageNode.js";
 import { StageInspector } from "./StageInspector.js";
 import { useAutoLayout } from "../hooks/useAutoLayout.js";
-import { ACTION_KEYS } from "../constants.js";
+import { ACTION_KEYS, DATA_KEYS } from "../constants.js";
 import { validatePipeline, ValidationErrorsPanel, type ValidationError } from "./ValidationErrors.js";
+import { getDecisionEnumValues, type JsonSchema } from "../../schema-utils.js";
 import type { PipelineDefinition, StageDefinition, StageType, EdgeDefinition } from "../../types.js";
 
 const NODE_TYPES = { stage: StageNode };
-
-function buildNodes(pipeline: PipelineDefinition) {
-  return pipeline.stages.map((stage) => {
-    const pos = pipeline.positions?.[stage.id] ?? { x: 0, y: 0 };
-    return {
-      id: stage.id,
-      type: "stage" as const,
-      position: pos,
-      data: { stage } as unknown as StageNodeData,
-    };
-  });
-}
 
 function buildEdges(pipeline: PipelineDefinition): Edge[] {
   return (pipeline.edges ?? []).map((e) => ({
     id: e.id,
     source: e.from,
     target: e.to,
-    label: e.label,
-    data: { when: e.when, type: e.type },
-    style: { stroke: e.type === "error" ? "#ef4444" : "#374151", strokeWidth: 2 },
+    sourceHandle: e.sourceHandle ?? null,
+    label: e.sourceHandle ?? e.label,
+    data: { type: e.type, sourceHandle: e.sourceHandle },
+    style: { stroke: e.type === "error" ? "#ef4444" : "#4b5563", strokeWidth: 2 },
     animated: false,
   }));
 }
 
 function stageDefaults(type: StageType, id: string): StageDefinition {
   switch (type) {
-    case "worker":
-      return { id, type: "worker", agent_role: "" };
-    case "classifier":
-      return { id, type: "classifier", agent_role: "" };
-    case "parallel_fan_out":
-      return { id, type: "parallel_fan_out" };
-    case "gate":
-      return { id, type: "gate" };
+    case "stage":
+      return { id, type: "stage", agent_role: "" };
+    case "fan_out":
+      return { id, type: "fan_out" };
+    case "fan_in":
+      return { id, type: "fan_in", fan_in_strategy: "all_complete" };
     case "sub-pipeline":
       return { id, type: "sub-pipeline", pipeline: "" };
-    default:
-      return { id, type: "worker", agent_role: "" };
   }
 }
 
@@ -80,6 +66,20 @@ export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasP
   }, []);
 
   const savePipeline = usePluginAction(ACTION_KEYS.SAVE_PIPELINE);
+
+  // Fetch schema contents for decision enum values
+  const { data: schemaContents } = usePluginData<{ schemas: Record<string, JsonSchema> }>(
+    DATA_KEYS.LIST_SCHEMA_CONTENTS, {}
+  );
+
+  const decisionMap = useMemo(() => {
+    const map: Record<string, string[]> = {};
+    if (!schemaContents?.schemas) return map;
+    for (const [name, schema] of Object.entries(schemaContents.schemas)) {
+      map[name] = getDecisionEnumValues(schema);
+    }
+    return map;
+  }, [schemaContents]);
 
   // Local copies of pipeline metadata
   const [name, setName] = useState(pipeline.name);
@@ -106,13 +106,17 @@ export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasP
 
   // Build RF nodes/edges from canonical state
   const rfNodes = useMemo(() =>
-    stages.map((stage) => ({
-      id: stage.id,
-      type: "stage" as const,
-      position: positions[stage.id] ?? { x: 0, y: 0 },
-      data: { stage, selected: stage.id === selectedStageId, onSelect: handleNodeSelect } as unknown as StageNodeData,
-    })),
-    [stages, positions, selectedStageId, handleNodeSelect],
+    stages.map((stage) => {
+      const schemaName = "output_schema" in stage ? stage.output_schema : undefined;
+      const decisionValues = schemaName ? decisionMap[schemaName] ?? [] : [];
+      return {
+        id: stage.id,
+        type: "stage" as const,
+        position: positions[stage.id] ?? { x: 0, y: 0 },
+        data: { stage, decisionValues, selected: stage.id === selectedStageId, onSelect: handleNodeSelect } as unknown as StageNodeData,
+      };
+    }),
+    [stages, positions, selectedStageId, handleNodeSelect, decisionMap],
   );
 
   const rfEdges = useMemo<Edge[]>(() =>
@@ -120,8 +124,9 @@ export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasP
       id: e.id,
       source: e.from,
       target: e.to,
-      label: e.label,
-      data: { when: e.when, type: e.type },
+      sourceHandle: e.sourceHandle ?? null,
+      label: e.sourceHandle ?? e.label,
+      data: { type: e.type, sourceHandle: e.sourceHandle },
       style: { stroke: e.type === "error" ? "#ef4444" : "#4b5563", strokeWidth: 2 },
       selected: e.id === selectedEdgeId,
     })),
@@ -147,10 +152,11 @@ export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasP
   const handleConnect = useCallback(
     (connection: Connection) => {
       const newEdge: EdgeDefinition = {
-        id: `e-${connection.source}-${connection.target}`,
+        id: `e-${connection.source}-${connection.target}-${Date.now()}`,
         from: connection.source ?? "",
         to: connection.target ?? "",
         type: "default",
+        sourceHandle: connection.sourceHandle ?? undefined,
       };
       setEdgeDefs((prev) => [...prev, newEdge]);
       setEdges((eds) =>
@@ -218,7 +224,7 @@ export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasP
           id,
           type: "stage" as const,
           position: pos,
-          data: { stage: newStage, onSelect: handleNodeSelect } as unknown as StageNodeData,
+          data: { stage: newStage, decisionValues: [], onSelect: handleNodeSelect } as unknown as StageNodeData,
         } as unknown as Node,
       ]);
     },
@@ -257,10 +263,12 @@ export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasP
       setSelectedStageId(newId);
     }
 
+    const schemaName = "output_schema" in updated ? updated.output_schema : undefined;
+    const dv = schemaName ? decisionMap[schemaName] ?? [] : [];
     setNodes((nds) =>
       nds.map((n) =>
         n.id === prevId
-          ? ({ ...n, id: newId, data: { ...n.data, stage: updated, onSelect: handleNodeSelect } as unknown as StageNodeData } as unknown as Node)
+          ? ({ ...n, id: newId, data: { ...n.data, stage: updated, decisionValues: dv, onSelect: handleNodeSelect } as unknown as StageNodeData } as unknown as Node)
           : n,
       ),
     );
@@ -270,7 +278,7 @@ export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasP
         return { ...rest, [newId]: pos };
       });
     }
-  }, [setNodes, setEdges, handleNodeSelect]);
+  }, [setNodes, setEdges, handleNodeSelect, decisionMap]);
 
   const handleStageDelete = useCallback((id: string) => {
     setStages((prev) => prev.filter((s) => s.id !== id));
@@ -281,12 +289,10 @@ export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasP
   }, [setNodes, setEdges]);
 
   const handleEdgeUpdate = useCallback(
-    (id: string, changes: Partial<{ label: string; when: string; type: "default" | "error" }>) => {
+    (id: string, changes: Partial<{ label: string; sourceHandle: string; type: "default" | "error" }>) => {
       setEdgeDefs((prev) =>
         prev.map((e) =>
-          e.id === id
-            ? { ...e, ...("label" in changes ? { label: changes.label } : {}), ...("when" in changes ? { when: changes.when } : {}), ...("type" in changes ? { type: changes.type } : {}) }
-            : e,
+          e.id === id ? { ...e, ...changes } : e,
         ),
       );
       setEdges((eds) =>
@@ -295,6 +301,7 @@ export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasP
             ? {
                 ...e,
                 ...(changes.label !== undefined ? { label: changes.label } : {}),
+                ...(changes.sourceHandle !== undefined ? { sourceHandle: changes.sourceHandle, label: changes.sourceHandle } : {}),
                 ...(changes.type !== undefined
                   ? { style: { stroke: changes.type === "error" ? "#ef4444" : "#4b5563", strokeWidth: 2 } }
                   : {}),
