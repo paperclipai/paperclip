@@ -1,0 +1,49 @@
+{
+  "section": {
+    "work": "Work",
+    "company": "Company",
+    "projects": "Projects",
+    "agents": "Agents"
+  },
+  "item": {
+    "newIssue": "New Issue",
+    "newProject": "New project",
+    "newAgent": "New agent",
+    "pauseAgent": "Pause agent",
+    "resumeAgent": "Resume agent",
+    "updatingAgent": "Updating...",
+    "budgetPaused": "Budget paused",
+    "agentPausedByBudget": "Agent paused by budget",
+    "chat": "Chat",
+    "dashboard": "Dashboard",
+    "inbox": "Inbox",
+    "issues": "Issues",
+    "routines": "Routines",
+    "goals": "Goals",
+    "workspaces": "Workspaces",
+    "approvals": "Approvals",
+    "myIssues": "My Issues",
+    "context": "Context",
+    "org": "Org",
+    "orgChart": "Org Chart",
+    "skills": "Skills",
+    "costs": "Costs",
+    "activity": "Activity",
+    "settings": "Settings",
+    "companySettings": "Company settings",
+    "instanceSettings": "Instance settings",
+    "profile": "Profile",
+    "plugins": "Plugins",
+    "adapters": "Adapters",
+    "search": "Search",
+    "board": "Board"
+  },
+  "badge": {
+    "live": "live",
+    "running": "running"
+  },
+  "common": {
+    "openExternal": "Open in new tab",
+    "back": "Back"
+  }
+}

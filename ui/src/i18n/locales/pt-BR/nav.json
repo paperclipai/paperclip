@@ -1,0 +1,49 @@
+{
+  "section": {
+    "work": "Trabalho",
+    "company": "Empresa",
+    "projects": "Projetos",
+    "agents": "Agentes"
+  },
+  "item": {
+    "newIssue": "Nova tarefa",
+    "newProject": "Novo projeto",
+    "newAgent": "Novo agente",
+    "pauseAgent": "Pausar agente",
+    "resumeAgent": "Retomar agente",
+    "updatingAgent": "Atualizando...",
+    "budgetPaused": "Pausado por orçamento",
+    "agentPausedByBudget": "Agente pausado por orçamento",
+    "chat": "Chat",
+    "dashboard": "Painel",
+    "inbox": "Caixa de entrada",
+    "issues": "Tarefas",
+    "routines": "Rotinas",
+    "goals": "Metas",
+    "workspaces": "Workspaces",
+    "approvals": "Aprovações",
+    "myIssues": "Minhas tarefas",
+    "context": "Contexto",
+    "org": "Organograma",
+    "orgChart": "Organograma",
+    "skills": "Habilidades",
+    "costs": "Custos",
+    "activity": "Atividade",
+    "settings": "Configurações",
+    "companySettings": "Configurações da empresa",
+    "instanceSettings": "Configurações da instância",
+    "profile": "Perfil",
+    "plugins": "Plugins",
+    "adapters": "Adaptadores",
+    "search": "Buscar",
+    "board": "Quadro"
+  },
+  "badge": {
+    "live": "ao vivo",
+    "running": "rodando"
+  },
+  "common": {
+    "openExternal": "Abrir em nova aba",
+    "back": "Voltar"
+  }
+}
