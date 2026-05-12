@@ -1,0 +1,20 @@
+{
+  "name": "paperclip-telegram-bridge",
+  "version": "0.0.1",
+  "description": "Mattclaw Telegram <-> Paperclip bridge. Phase 1A scaffold.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "grammy": "^1.30.0",
+    "gray-matter": "^4.0.3"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.5.0"
+  }
+}
