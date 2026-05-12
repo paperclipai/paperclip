@@ -171,16 +171,20 @@ export function approvalRoutes(
       linkedIssueDetails = linkedIssueActivityDetails(uniqueIssueIds.map((id) => ({ id, identifier: null })));
     }
 
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      action: "approval.created",
-      entityType: "approval",
-      entityId: approval.id,
-      details: { type: approval.type, ...linkedIssueDetails },
-    });
+    try {
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "approval.created",
+        entityType: "approval",
+        entityId: approval.id,
+        details: { type: approval.type, ...linkedIssueDetails },
+      });
+    } catch (err) {
+      logger.warn({ err, approvalId: approval.id }, "failed to log approval creation activity");
+    }
 
     res.status(201).json(redactApprovalPayload(approval));
   });

@@ -534,6 +534,46 @@ describe("approval routes idempotent retries", () => {
     );
   });
 
+  it("does not fail approval creation when activity logging fails", async () => {
+    mockApprovalService.create.mockResolvedValue({
+      id: "approval-create-audit-fail",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: { title: "Approve hosting spend" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-04-06T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-06T00:00:00.000Z"),
+    });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+      {
+        id: "00000000-0000-0000-0000-000000000001",
+        identifier: "PAP-approval",
+      },
+    ]);
+    mockLogActivity.mockRejectedValue(new Error("audit unavailable"));
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        issueIds: ["00000000-0000-0000-0000-000000000001"],
+        payload: { title: "Approve hosting spend" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockApprovalService.create).toHaveBeenCalled();
+    expect(mockIssueApprovalService.linkManyForApproval).toHaveBeenCalledWith(
+      "approval-create-audit-fail",
+      ["00000000-0000-0000-0000-000000000001"],
+      { agentId: "agent-1", userId: null },
+    );
+  });
+
   it("falls back to requested issue ids when created approval issue ref read is partial", async () => {
     mockApprovalService.create.mockResolvedValue({
       id: "approval-1",
