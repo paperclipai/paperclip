@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       upstream_image:
-        description: 'Upstream image tag (e.g. ghcr.io/paperclipai/paperclip:latest)'
+        description: 'Upstream image tag (e.g. ghcr.io/misterbusiness1/paperclip:latest)'
         required: false
-        default: 'ghcr.io/paperclipai/paperclip:latest'
+        default: 'ghcr.io/misterbusiness1/paperclip:latest'
       playwright_version:
         description: 'Playwright version (must match upstream)'
         required: false
@@ -33,8 +33,7 @@ jobs:
       - name: Set image tag
         id: tag
         run: |
-          UPSTREAM="${{ inputs.upstream_image || 'ghcr.io/paperclipai/paperclip:latest' }}"
-          # Extract a short identifier from the upstream tag
+          UPSTREAM="${{ inputs.upstream_image || 'ghcr.io/misterbusiness1/paperclip:latest' }}"
           TAG_PART=$(echo "$UPSTREAM" | cut -d: -f2 | tr '/' '-')
           echo "tag=${TAG_PART}-pwfix" >> "$GITHUB_OUTPUT"
           echo "image=ghcr.io/${{ github.repository_owner }}/paperclip-prod:${TAG_PART}-pwfix" >> "$GITHUB_OUTPUT"
@@ -57,7 +56,7 @@ jobs:
           push: true
           tags: ${{ steps.tag.outputs.image }}
           build-args: |
-            UPSTREAM_IMAGE=${{ inputs.upstream_image || 'ghcr.io/paperclipai/paperclip:latest' }}
+            UPSTREAM_IMAGE=${{ inputs.upstream_image || 'ghcr.io/misterbusiness1/paperclip:latest' }}
             PLAYWRIGHT_VERSION=${{ inputs.playwright_version || '1.58.2' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
