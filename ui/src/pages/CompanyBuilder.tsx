@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   BuilderMessage,
@@ -466,6 +466,7 @@ function ConversationPane({
   const [pendingUserText, setPendingUserText] = useState<string | null>(null);
   const [pendingAssistant, setPendingAssistant] = useState(false);
   const [streamMessages, setStreamMessages] = useState<BuilderMessage[]>([]);
+  const transcriptRef = useRef<HTMLDivElement | null>(null);
 
   const sessionQueryKey = [...QUERY_KEY, "session", companyId, session.id] as const;
   const proposalsQueryKey = [...QUERY_KEY, "proposals", companyId, session.id] as const;
@@ -505,6 +506,12 @@ function ConversationPane({
     setPendingAssistant(false);
     setStreamMessages([]);
   }, [session.id]);
+
+  useEffect(() => {
+    const transcript = transcriptRef.current;
+    if (!transcript) return;
+    transcript.scrollTo({ top: transcript.scrollHeight, behavior: "auto" });
+  }, [displayedMessages, pendingAssistant, pendingUserText, session.id]);
 
   const submitInput = () => {
     const text = input.trim();
@@ -599,7 +606,10 @@ function ConversationPane({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex-1 space-y-4 overflow-y-auto pr-2">
+      <div
+        ref={transcriptRef}
+        className="flex-1 space-y-4 overflow-y-auto pr-2"
+      >
         {isArchived ? (
           <div className="rounded-xl border border-border/70 bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
             Archived sessions are read-only until restored.
@@ -1044,22 +1054,14 @@ export function CompanyBuilder() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 lg:min-h-0 lg:grid-rows-[auto_minmax(0,1fr)]">
-        <RuntimeSummaryCard
-          runtime={effectiveRuntimeConfig}
-          messageCount={detail?.messages.length ?? 0}
-          pendingProposals={detail?.messages.filter((message) => {
-            const status = message.content.toolResult?.proposalStatus;
-            return status === "pending" || status === "approved";
-          }).length ?? 0}
-        />
+      <div className="grid gap-4 lg:min-h-0 lg:grid-rows-[minmax(0,1fr)_auto]">
         <Card className="overflow-hidden border-border/70 lg:min-h-0">
           <CardHeader className="border-b border-border/70 pb-3">
             <CardTitle className="text-sm">
               {activeSession ? getSessionDisplayTitle(activeSession) : "Conversation"}
             </CardTitle>
           </CardHeader>
-          <CardContent className="p-4 lg:h-[calc(100vh-22rem)]">
+          <CardContent className="p-4 lg:h-[calc(100vh-18rem)]">
             {detail ? (
               <ConversationPane
                 companyId={selectedCompanyId}
@@ -1074,6 +1076,14 @@ export function CompanyBuilder() {
             )}
           </CardContent>
         </Card>
+        <RuntimeSummaryCard
+          runtime={effectiveRuntimeConfig}
+          messageCount={detail?.messages.length ?? 0}
+          pendingProposals={detail?.messages.filter((message) => {
+            const status = message.content.toolResult?.proposalStatus;
+            return status === "pending" || status === "approved";
+          }).length ?? 0}
+        />
       </div>
     </div>
   );

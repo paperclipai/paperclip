@@ -189,6 +189,8 @@ vi.mock("@/components/ApprovalPayload", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+const mockScrollTo = vi.hoisted(() => vi.fn());
+
 async function flushReact() {
   await act(async () => {
     await Promise.resolve();
@@ -255,6 +257,10 @@ describe("CompanyBuilder", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    Object.defineProperty(HTMLDivElement.prototype, "scrollTo", {
+      configurable: true,
+      value: mockScrollTo,
+    });
     sessionsState = [
       {
         id: "session-1",
@@ -314,6 +320,46 @@ describe("CompanyBuilder", () => {
     expect(container.textContent).toContain("gpt-current");
     expect(container.textContent).toContain("Open Builder settings");
     expect(container.querySelector('[data-testid="agent-config-form"]')).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("anchors the transcript to the latest message by default", async () => {
+    sessionDetailState = {
+      ...sessionDetailState,
+      messages: [
+        {
+          id: "msg-1",
+          companyId: "company-1",
+          sessionId: "session-1",
+          sequence: 1,
+          role: "user",
+          content: { text: "First message" },
+          inputTokens: 0,
+          outputTokens: 0,
+          costCents: 0,
+          createdAt,
+        },
+        {
+          id: "msg-2",
+          companyId: "company-1",
+          sessionId: "session-1",
+          sequence: 2,
+          role: "assistant",
+          content: { text: "Latest message" },
+          inputTokens: 0,
+          outputTokens: 0,
+          costCents: 0,
+          createdAt,
+        },
+      ],
+    };
+
+    const { root } = await renderCompanyBuilder(container);
+
+    expect(mockScrollTo).toHaveBeenCalled();
 
     await act(async () => {
       root.unmount();
