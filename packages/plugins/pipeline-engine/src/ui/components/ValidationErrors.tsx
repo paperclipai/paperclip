@@ -11,6 +11,7 @@ export function validatePipeline(
   name: string,
   stages: StageDefinition[],
   edges: EdgeDefinition[],
+  decisionMap?: Record<string, string[]>,
 ): ValidationError[] {
   const errors: ValidationError[] = [];
 
@@ -32,7 +33,7 @@ export function validatePipeline(
     }
     ids.add(stage.id);
 
-    if ((stage.type === "worker" || stage.type === "classifier") && !stage.agent_role) {
+    if (stage.type === "stage" && !stage.agent_role) {
       errors.push({ stageId: stage.id, field: "agent_role", message: `"${stage.id}" requires an agent role` });
     }
 
@@ -50,6 +51,29 @@ export function validatePipeline(
     }
     if (!ids.has(edge.to)) {
       errors.push({ edgeId: edge.id, field: "to", message: `Edge "${edge.id}" references missing stage "${edge.to}"` });
+    }
+  }
+
+  if (decisionMap) {
+    for (const stage of stages) {
+      if (stage.type !== "stage") continue;
+      const schemaName = stage.output_schema;
+      if (!schemaName) continue;
+      const enumValues = decisionMap[schemaName];
+      if (!enumValues || enumValues.length === 0) continue;
+
+      const outgoingEdges = edges.filter((e) => e.from === stage.id && e.type !== "error");
+      const coveredValues = new Set(outgoingEdges.map((e) => e.sourceHandle).filter(Boolean));
+
+      for (const value of enumValues) {
+        if (!coveredValues.has(value)) {
+          errors.push({
+            stageId: stage.id,
+            field: "edges",
+            message: `Missing outgoing edge for decision "${value}" on "${stage.id}"`,
+          });
+        }
+      }
     }
   }
 

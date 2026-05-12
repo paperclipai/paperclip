@@ -326,7 +326,7 @@ export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasP
   const [validationErrors, setValidationErrors] = useState<ValidationError[]>([]);
 
   const handleSave = useCallback(async () => {
-    const errors = validatePipeline(name, stages, edgeDefs);
+    const errors = validatePipeline(name, stages, edgeDefs, decisionMap);
     if (errors.length > 0) {
       setValidationErrors(errors);
       return;
