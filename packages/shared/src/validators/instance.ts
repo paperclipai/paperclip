@@ -31,6 +31,18 @@ export const instanceGeneralSettingsSchema = z.object({
     DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   ),
   backupRetention: backupRetentionPolicySchema.default(DEFAULT_BACKUP_RETENTION),
+  /**
+   * Paperclip user ID of the board member who receives outbound notifier
+   * messages. When set, overrides the DINAR_USER_ID env var in the
+   * telegram-bot so operators can update the target via the board UI without
+   * touching /etc/paperclip/telegram-bot.env (F-116).
+   */
+  notifierBoardUserId: z.string().optional(),
+  /**
+   * Telegram chat ID that receives outbound notifier messages. When set,
+   * overrides the DINAR_TG_CHAT_ID env var (F-116).
+   */
+  notifierBoardChatId: z.string().optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = instanceGeneralSettingsSchema.partial();

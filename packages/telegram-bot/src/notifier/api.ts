@@ -7,6 +7,11 @@ import type {
   IssueRef,
 } from "./types.js";
 
+export type NotifierTargetOverride = {
+  notifierBoardUserId?: string;
+  notifierBoardChatId?: string;
+};
+
 export type NotifierApiOptions = {
   baseUrl: string;
   apiKey: string;
@@ -146,5 +151,27 @@ export class NotifierApi {
         i.originId === routineId &&
         (statuses.length === 0 || (i.status != null && statuses.includes(i.status))),
     );
+  }
+
+  /**
+   * Fetches the instance general settings from the Paperclip API and returns
+   * any notifier target overrides stored there (F-116). Returns an empty
+   * object if the endpoint fails or the fields are absent — the caller falls
+   * back to env vars in that case.
+   */
+  async getInstanceGeneralSettings(): Promise<NotifierTargetOverride> {
+    try {
+      const settings = await this.get<Record<string, unknown>>("/api/instance/settings/general", {});
+      return {
+        notifierBoardUserId: typeof settings.notifierBoardUserId === "string"
+          ? settings.notifierBoardUserId
+          : undefined,
+        notifierBoardChatId: typeof settings.notifierBoardChatId === "string"
+          ? settings.notifierBoardChatId
+          : undefined,
+      };
+    } catch {
+      return {};
+    }
   }
 }

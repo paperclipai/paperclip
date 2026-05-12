@@ -91,6 +91,21 @@ export async function main(): Promise<void> {
       apiKey: config.paperclipBotApiKey,
       companyId: config.paperclipCompanyId,
     });
+
+    // F-116: resolve notifier target from Paperclip DB first; fall back to env.
+    // Board operators can update instance settings via the UI without touching
+    // the static env file at /etc/paperclip/telegram-bot.env.
+    const dbOverride = await notifierApi.getInstanceGeneralSettings();
+    const dinarUserId = dbOverride.notifierBoardUserId ?? config.notifier.dinarUserId;
+    const dinarChatId = dbOverride.notifierBoardChatId ?? config.notifier.dinarChatId;
+    if (dbOverride.notifierBoardUserId || dbOverride.notifierBoardChatId) {
+      console.log("[notifier] target resolved from instance settings (DB)", {
+        userId: dinarUserId,
+        chatId: dinarChatId,
+        source: "db",
+      });
+    }
+
     const dedup = new NotifierDedup({ filePath: config.notifier.dedupFilePath });
     notifier = new NotifierPoller({
       api: notifierApi,
@@ -100,8 +115,8 @@ export async function main(): Promise<void> {
         const msg = await bot.telegram.sendMessage(chatId, text);
         return { message_id: msg.message_id };
       },
-      dinarUserId: config.notifier.dinarUserId,
-      dinarChatId: config.notifier.dinarChatId,
+      dinarUserId,
+      dinarChatId,
       intervalMs: config.notifier.intervalMs,
       weeklyDigestRoutineId: config.notifier.weeklyDigestRoutineId ?? null,
       logger: {
