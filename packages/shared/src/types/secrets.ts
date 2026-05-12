@@ -33,8 +33,18 @@ export interface EnvSecretRefBinding {
   version?: SecretVersionSelector;
 }
 
+export interface EnvOAuthTokenBinding {
+  type: "oauth_token";
+  connectionId: string;
+  field: "access"; // future: "refresh" | "account_id"
+}
+
 // Backward-compatible: legacy plaintext string values are still accepted.
-export type EnvBinding = string | EnvPlainBinding | EnvSecretRefBinding;
+export type EnvBinding =
+  | string
+  | EnvPlainBinding
+  | EnvSecretRefBinding
+  | EnvOAuthTokenBinding;
 
 export type AgentEnvConfig = Record<string, EnvBinding>;
 
