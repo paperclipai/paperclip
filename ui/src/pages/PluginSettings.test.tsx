@@ -401,4 +401,82 @@ describe("PluginSettings", () => {
       root.unmount();
     });
   });
+
+  it("allows local implicit operators to clear runtime config", async () => {
+    mockPluginsApi.get.mockResolvedValue(basePlugin({
+      status: "ready",
+      manifestJson: {
+        displayName: "Runtime Plugin",
+        version: "0.1.0",
+        description: "Runtime config plugin.",
+        author: "Paperclip",
+        capabilities: [],
+      },
+    }));
+    mockPluginsApi.getRuntimeConfig.mockResolvedValue({
+      values: { mode: "paused" },
+      revision: "7",
+    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
+      isInstanceAdmin: false,
+      userId: "user-1",
+      boardUserId: "board-user-1",
+      localBoard: true,
+      source: "local_implicit",
+    });
+
+    const root = await renderSettings(container);
+
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Status")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const clearButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent === "Clear Runtime Config");
+    expect(clearButton).toBeTruthy();
+
+    await act(async () => {
+      clearButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockPluginsApi.clearRuntimeConfig).toHaveBeenCalledWith("plugin-1");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows runtime config fetch errors instead of the empty state", async () => {
+    mockPluginsApi.get.mockResolvedValue(basePlugin({
+      status: "ready",
+      manifestJson: {
+        displayName: "Runtime Plugin",
+        version: "0.1.0",
+        description: "Runtime config plugin.",
+        author: "Paperclip",
+        capabilities: [],
+      },
+    }));
+    mockPluginsApi.getRuntimeConfig.mockRejectedValue(new Error("forbidden"));
+
+    const root = await renderSettings(container);
+
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Status")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Failed to load runtime config: forbidden");
+    expect(container.textContent).not.toContain("No runtime config stored.");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });

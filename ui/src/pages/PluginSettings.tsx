@@ -113,10 +113,15 @@ export function PluginSettings() {
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
   });
-  const isInstanceAdmin = boardAccess?.isInstanceAdmin ?? false;
+  const canClearRuntimeConfig = boardAccess?.source === "local_implicit" || (boardAccess?.isInstanceAdmin ?? false);
 
   const queryClient = useQueryClient();
-  const { data: runtimeConfigData, isLoading: runtimeConfigLoading } = useQuery({
+  const {
+    data: runtimeConfigData,
+    error: runtimeConfigError,
+    isError: runtimeConfigIsError,
+    isLoading: runtimeConfigLoading,
+  } = useQuery({
     queryKey: ["plugins", pluginId, "runtime-config"],
     queryFn: () => pluginsApi.getRuntimeConfig(pluginId!),
     enabled: !!pluginId,
@@ -596,6 +601,10 @@ export function PluginSettings() {
                 <CardContent className="space-y-3">
                   {runtimeConfigLoading ? (
                     <p className="text-sm text-muted-foreground">Loading...</p>
+                  ) : runtimeConfigIsError ? (
+                    <p className="text-sm text-destructive">
+                      Failed to load runtime config: {runtimeConfigError instanceof Error ? runtimeConfigError.message : "Unknown error"}
+                    </p>
                   ) : runtimeConfigData && Object.keys(runtimeConfigData.values).length > 0 ? (
                     <pre className="max-h-48 overflow-y-auto rounded bg-muted px-3 py-2 text-xs font-mono text-foreground/85 whitespace-pre-wrap break-all">
                       {JSON.stringify(runtimeConfigData.values, null, 2)}
@@ -603,7 +612,7 @@ export function PluginSettings() {
                   ) : (
                     <p className="text-sm text-muted-foreground italic">No runtime config stored.</p>
                   )}
-                  {isInstanceAdmin && runtimeConfigData && Object.keys(runtimeConfigData.values).length > 0 && (
+                  {canClearRuntimeConfig && runtimeConfigData && Object.keys(runtimeConfigData.values).length > 0 && (
                     <Button
                       variant="destructive"
                       size="sm"
