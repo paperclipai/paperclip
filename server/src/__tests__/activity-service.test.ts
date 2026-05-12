@@ -18,6 +18,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { activityService } from "../services/activity.ts";
+import { logActivity } from "../services/activity-log.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -115,6 +116,33 @@ describeEmbeddedPostgres("activity service", () => {
     const result = await activityService(db).list({ companyId, limit: 2 });
 
     expect(result.map((event) => event.action)).toEqual(["test.newest", "test.middle"]);
+  });
+
+  it("logs activity with a null run id when the provided run id does not exist", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await expect(
+      logActivity(db, {
+        companyId,
+        actorType: "agent",
+        actorId: "agent-1",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: randomUUID(),
+        runId: randomUUID(),
+      }),
+    ).resolves.toBeUndefined();
+
+    const rows = await db.select().from(activityLog);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.runId).toBeNull();
   });
 
   it("returns compact usage and result summaries for issue runs", async () => {
