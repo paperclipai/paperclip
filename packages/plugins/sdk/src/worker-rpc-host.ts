@@ -277,6 +277,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     fn: (params: unknown, runCtx: ToolRunContext) => Promise<ToolResult>;
   }>();
 
+  // WS-1: before-run gate handler (set via ctx.runs.onBeforeRun, cleared on worker restart)
+  let beforeRunHandler: ((params: import("./types.js").BeforeRunParams) => Promise<import("./types.js").BeforeRunResult>) | null = null;
+
   // Agent session event callbacks (populated by sendMessage, cleared by close)
   const sessionEventCallbacks = new Map<string, (event: AgentSessionEvent) => void>();
 
@@ -1137,6 +1140,19 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           notifyHost("log", { level: "debug", message, meta });
         },
       },
+      runs: {
+        onBeforeRun(handler) {
+          beforeRunHandler = handler;
+          // Notify the host to register this worker as a gate. The host enforces
+          // the run.gate capability check and rejects if the plugin lacks it.
+          void callHost("runs.registerBeforeRunHandler", {}).catch((err) => {
+            notifyHost("log", {
+              level: "error",
+              message: `Failed to register beforeRun handler: ${err instanceof Error ? err.message : String(err)}`,
+            });
+          });
+        },
+      },
     };
   }
 
@@ -1235,6 +1251,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
       case "environmentExecute":
         return handleEnvironmentExecute(params as PluginEnvironmentExecuteParams);
+
+      case "beforeRun":
+        return handleBeforeRun(params as import("./types.js").BeforeRunParams);
 
       default:
         throw Object.assign(
@@ -1483,6 +1502,13 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       throw methodNotImplemented("environmentExecute");
     }
     return plugin.definition.onEnvironmentExecute(params);
+  }
+
+  async function handleBeforeRun(params: import("./types.js").BeforeRunParams): Promise<import("./types.js").BeforeRunResult> {
+    if (!beforeRunHandler) {
+      return { veto: false };
+    }
+    return beforeRunHandler(params);
   }
 
   // -----------------------------------------------------------------------

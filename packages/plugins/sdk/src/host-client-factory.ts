@@ -252,6 +252,12 @@ export interface HostServices {
     create(params: WorkerToHostMethods["goals.create"][0]): Promise<WorkerToHostMethods["goals.create"][1]>;
     update(params: WorkerToHostMethods["goals.update"][0]): Promise<WorkerToHostMethods["goals.update"][1]>;
   };
+  /** Provides `runs.registerBeforeRunHandler`. */
+  runs: {
+    registerBeforeRunHandler(
+      params: WorkerToHostMethods["runs.registerBeforeRunHandler"][0],
+    ): Promise<WorkerToHostMethods["runs.registerBeforeRunHandler"][1]>;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -425,6 +431,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "goals.get": "goals.read",
   "goals.create": "goals.create",
   "goals.update": "goals.update",
+  // Runs gate
+  "runs.registerBeforeRunHandler": "run.gate",
 };
 
 // ---------------------------------------------------------------------------
@@ -762,6 +770,9 @@ export function createHostClientHandlers(
     }),
     "goals.update": gated("goals.update", async (params) => {
       return services.goals.update(params);
+    }),
+    "runs.registerBeforeRunHandler": gated("runs.registerBeforeRunHandler", async (params) => {
+      return services.runs.registerBeforeRunHandler(params);
     }),
   };
 }

@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     projects: [
       "packages/shared",
+      "packages/plugins/sdk",
       "packages/db",
       "packages/adapter-utils",
       "packages/adapters/acpx-local",

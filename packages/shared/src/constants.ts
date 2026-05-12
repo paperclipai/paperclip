@@ -776,6 +776,7 @@ export const PLUGIN_CAPABILITIES = [
   "http.outbound",
   "secrets.read-ref",
   "environment.drivers.register",
+  "run.gate",
   "local.folders",
   // Agent Tools
   "agent.tools.register",

@@ -314,6 +314,7 @@ function stopReasonLabel(run: RunForIssue) {
   if (stopReason === "max_turns_exhausted" || stopReason === "turn_limit_exhausted") return "max turns exhausted";
   if (stopReason === "budget_paused") return "budget paused";
   if (stopReason === "cancelled") return "cancelled";
+  if (stopReason === "plugin_gate") return "cancelled by plugin gate";
   if (stopReason === "paused") return "paused by board";
   if (stopReason === "process_lost") return "process lost";
   if (stopReason === "adapter_failed") return "adapter failed";

@@ -353,6 +353,75 @@ export interface PluginWorkspace {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// WS-1: Run gate types
+// ---------------------------------------------------------------------------
+
+/**
+ * Parameters passed to a `ctx.runs.onBeforeRun` handler.
+ *
+ * The host calls this hook for every queued run before flipping its status
+ * to `running`. The plugin may inspect the run metadata and decide whether
+ * to allow or veto the claim.
+ *
+ * `contextSnapshot` is intentionally omitted — it can be large and may
+ * contain sensitive prompt material. Use `runId` / `agentId` to look up
+ * additional context via SDK calls if needed.
+ */
+export interface BeforeRunParams {
+  /** The unique ID of the heartbeat run being claimed. */
+  runId: string;
+  /** The agent that owns this run. */
+  agentId: string;
+  /** The issue the run is scoped to, or null for non-issue runs. */
+  issueId: string | null;
+  /** The company that owns the run. */
+  companyId: string;
+  /**
+   * Opaque invocation-source label. Known values include `"automation"` and
+   * `"user_initiated"` but the set may grow without a major SDK bump.
+   */
+  invocationSource: string;
+}
+
+/**
+ * Result returned by a `ctx.runs.onBeforeRun` handler.
+ *
+ * Return `{ veto: false }` to allow the run to proceed, or
+ * `{ veto: true, reason }` to cancel it before it is claimed.
+ */
+export type BeforeRunResult =
+  | { veto: false }
+  | { veto: true; reason: string };
+
+/**
+ * `ctx.runs` — register a pre-claim gate handler.
+ *
+ * Requires the `run.gate` manifest capability.
+ */
+export interface PluginRunsClient {
+  /**
+   * Register a handler invoked synchronously in the run-claim path, before
+   * a queued run is flipped to `running`. Return `{ veto: false }` to allow,
+   * or `{ veto: true, reason }` to cancel the run with the given reason.
+   *
+   * Only one handler per plugin is supported; calling this again replaces
+   * the previous registration.
+   *
+   * **Fail-open:** if the handler throws or times out (5 s), the error is
+   * logged and the veto is NOT applied — the run proceeds. This prevents a
+   * buggy plugin from stalling the queue. For policy-critical gates, ensure
+   * your handler is resilient.
+   *
+   * **Startup:** register in `setup()`. Gate registrations are cleared on
+   * worker restart; runs may proceed ungated during the restart window.
+   *
+   * @requires `run.gate` capability
+   */
+  onBeforeRun(handler: (params: BeforeRunParams) => Promise<BeforeRunResult>): void;
+}
+
+// ---------------------------------------------------------------------------
 // Host API surfaces exposed via PluginContext
 // ---------------------------------------------------------------------------
 
@@ -1680,4 +1749,10 @@ export interface PluginContext {
 
   /** Structured logger. Output is captured and surfaced in the plugin health dashboard. */
   logger: PluginLogger;
+
+  /**
+   * Gate agent runs before they are claimed by the heartbeat dispatcher.
+   * Requires `run.gate` capability.
+   */
+  runs: PluginRunsClient;
 }

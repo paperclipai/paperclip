@@ -2121,6 +2121,13 @@ export function buildHostServices(
       },
     },
 
+    runs: {
+      async registerBeforeRunHandler(_params) {
+        // No-op ack. Capability enforced by METHOD_CAPABILITY_MAP in host-client-factory.
+        // Gate dispatch happens in claimQueuedRun via DB query, not via registration state.
+      },
+    },
+
     /**
      * Clean up all active session event subscriptions and flush any buffered
      * log entries. Must be called when the plugin worker is stopped, crashed,

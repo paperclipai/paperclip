@@ -88,6 +88,74 @@ const CRASH_WINDOW_MS = 10 * 60 * 1_000;
 const MAX_STDERR_EXCERPT_CHARS = 8_000;
 
 // ---------------------------------------------------------------------------
+// Run Gate Types and broadcastBeforeRun
+// ---------------------------------------------------------------------------
+
+/** Parameters passed to each gate plugin's beforeRun handler. */
+export interface BeforeRunParams {
+  runId: string;
+  agentId: string;
+  issueId: string | null;
+  companyId: string;
+  invocationSource: string;
+}
+
+/** Result returned by a gate plugin's beforeRun handler. */
+export type BeforeRunResult = { veto: false } | { veto: true; reason: string };
+
+const BEFORE_RUN_REASON_MAX_LEN = 500;
+
+/**
+ * A gate plugin descriptor used by broadcastBeforeRun.
+ * The caller builds this list from installed plugins with run.gate capability,
+ * sorted by installOrder ascending.
+ */
+export interface BeforeRunGatePlugin {
+  pluginId: string;
+  callBeforeRun(params: BeforeRunParams): Promise<BeforeRunResult>;
+}
+
+/** Extended veto result that includes the vetoing plugin's id for audit. */
+export type BeforeRunBroadcastResult =
+  | { veto: false }
+  | { veto: true; reason: string; vetoPluginId: string };
+
+/**
+ * Dispatch beforeRun to gate plugins in order.
+ *
+ * Stops at the first veto and returns it with the vetoing plugin's id.
+ * Fails open on handler error or malformed result (treat as veto:false).
+ * Truncates veto reasons to 500 chars.
+ */
+export async function broadcastBeforeRun(
+  gates: BeforeRunGatePlugin[],
+  params: BeforeRunParams,
+): Promise<BeforeRunBroadcastResult> {
+  for (const gate of gates) {
+    let result: BeforeRunResult;
+    try {
+      result = await gate.callBeforeRun(params);
+      if (result === null || typeof result !== "object" || typeof result.veto !== "boolean") {
+        continue;
+      }
+      if (result.veto && typeof (result as { reason?: unknown }).reason !== "string") {
+        continue;
+      }
+    } catch {
+      continue;
+    }
+    if (result.veto) {
+      return {
+        veto: true,
+        reason: result.reason.slice(0, BEFORE_RUN_REASON_MAX_LEN),
+        vetoPluginId: gate.pluginId,
+      };
+    }
+  }
+  return { veto: false };
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
