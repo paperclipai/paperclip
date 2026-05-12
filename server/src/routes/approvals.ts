@@ -258,19 +258,23 @@ export function approvalRoutes(
             },
           });
 
-          await logActivity(db, {
-            companyId: approval.companyId,
-            actorType: "user",
-            actorId: req.actor.userId ?? "board",
-            action: "approval.requester_wakeup_queued",
-            entityType: "approval",
-            entityId: approval.id,
-            details: {
-              requesterAgentId: approval.requestedByAgentId,
-              wakeRunId: wakeRun?.id ?? null,
-              linkedIssueIds,
-            },
-          });
+          try {
+            await logActivity(db, {
+              companyId: approval.companyId,
+              actorType: "user",
+              actorId: req.actor.userId ?? "board",
+              action: "approval.requester_wakeup_queued",
+              entityType: "approval",
+              entityId: approval.id,
+              details: {
+                requesterAgentId: approval.requestedByAgentId,
+                wakeRunId: wakeRun?.id ?? null,
+                linkedIssueIds,
+              },
+            });
+          } catch (err) {
+            logger.warn({ err, approvalId: approval.id }, "failed to log approval requester wakeup activity");
+          }
         } catch (err) {
           logger.warn(
             {
@@ -280,19 +284,23 @@ export function approvalRoutes(
             },
             "failed to queue requester wakeup after approval",
           );
-          await logActivity(db, {
-            companyId: approval.companyId,
-            actorType: "user",
-            actorId: req.actor.userId ?? "board",
-            action: "approval.requester_wakeup_failed",
-            entityType: "approval",
-            entityId: approval.id,
-            details: {
-              requesterAgentId: approval.requestedByAgentId,
-              linkedIssueIds,
-              error: err instanceof Error ? err.message : String(err),
-            },
-          });
+          try {
+            await logActivity(db, {
+              companyId: approval.companyId,
+              actorType: "user",
+              actorId: req.actor.userId ?? "board",
+              action: "approval.requester_wakeup_failed",
+              entityType: "approval",
+              entityId: approval.id,
+              details: {
+                requesterAgentId: approval.requestedByAgentId,
+                linkedIssueIds,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            });
+          } catch (logErr) {
+            logger.warn({ err: logErr, approvalId: approval.id }, "failed to log approval requester wakeup failure");
+          }
         }
       }
     }

@@ -280,6 +280,81 @@ describe("approval routes idempotent retries", () => {
     );
   });
 
+  it("does not fail approval when requester wakeup audit logging fails", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-wakeup-audit-fail",
+      companyId: "company-1",
+      type: "plugin_workflow",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+    mockApprovalService.approve.mockResolvedValue({
+      approval: {
+        id: "approval-wakeup-audit-fail",
+        companyId: "company-1",
+        type: "plugin_workflow",
+        status: "approved",
+        payload: {},
+        requestedByAgentId: "agent-1",
+      },
+      applied: true,
+    });
+    mockLogActivity.mockImplementation(async (_db, input) => {
+      if (input.action === "approval.requester_wakeup_queued") {
+        throw new Error("audit unavailable");
+      }
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-wakeup-audit-fail/approve")
+      .send({ decisionNote: "ship it" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({ reason: "approval_approved" }),
+    );
+  });
+
+  it("does not fail approval when requester wakeup and failure audit logging both fail", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-wakeup-fail-audit-fail",
+      companyId: "company-1",
+      type: "plugin_workflow",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+    mockApprovalService.approve.mockResolvedValue({
+      approval: {
+        id: "approval-wakeup-fail-audit-fail",
+        companyId: "company-1",
+        type: "plugin_workflow",
+        status: "approved",
+        payload: {},
+        requestedByAgentId: "agent-1",
+      },
+      applied: true,
+    });
+    mockHeartbeatService.wakeup.mockRejectedValue(new Error("wakeup unavailable"));
+    mockLogActivity.mockImplementation(async (_db, input) => {
+      if (input.action === "approval.requester_wakeup_failed") {
+        throw new Error("audit unavailable");
+      }
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-wakeup-fail-audit-fail/approve")
+      .send({ decisionNote: "ship it" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({ reason: "approval_approved" }),
+    );
+  });
+
   it("derives approval attribution from the authenticated actor on reject", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-5",
