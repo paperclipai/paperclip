@@ -15,6 +15,15 @@ const mockRuntimeConfig = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockLifecycle = vi.hoisted(() => ({
+  load: vi.fn(),
+  unload: vi.fn(),
+  restartWorker: vi.fn(),
+}));
+const mockWorkerManager = vi.hoisted(() => ({
+  isRunning: vi.fn(),
+  call: vi.fn(),
+}));
 
 vi.mock("../services/plugin-registry.js", () => ({
   pluginRegistryService: () => mockRegistry,
@@ -25,7 +34,7 @@ vi.mock("../services/plugin-runtime-config.js", () => ({
 }));
 
 vi.mock("../services/plugin-lifecycle.js", () => ({
-  pluginLifecycleManager: () => ({ load: vi.fn(), unload: vi.fn() }),
+  pluginLifecycleManager: () => mockLifecycle,
 }));
 
 vi.mock("../services/plugin-loader.js", () => ({
@@ -76,7 +85,17 @@ async function createApp(actor: Record<string, unknown>) {
     req.actor = actor as typeof req.actor;
     next();
   });
-  app.use("/api", pluginRoutes({} as never, {} as never, {} as never, undefined, {} as never, {} as never));
+  app.use("/api", pluginRoutes(
+    {} as never,
+    {} as never,
+    {} as never,
+    undefined,
+    {} as never,
+    {
+      workerManager: mockWorkerManager,
+      streamBus: {} as never,
+    },
+  ));
   app.use(errorHandler);
   return app;
 }
@@ -145,11 +164,46 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
   it("clears runtime config and returns 204 for instance admins", async () => {
     readyPlugin();
     mockRuntimeConfig.clearRuntime.mockResolvedValue(undefined);
+    mockWorkerManager.isRunning.mockReturnValue(false);
     const app = await createApp(boardActor({ isInstanceAdmin: true }));
 
     const res = await request(app).delete(`/api/plugins/${pluginId}/runtime-config`);
     expect(res.status).toBe(204);
     expect(mockRuntimeConfig.clearRuntime).toHaveBeenCalledWith(pluginId);
+  });
+
+  it("notifies a running worker after runtime config is cleared", async () => {
+    readyPlugin();
+    mockRuntimeConfig.clearRuntime.mockResolvedValue(undefined);
+    mockWorkerManager.isRunning.mockReturnValue(true);
+    mockWorkerManager.call.mockResolvedValue(undefined);
+    const app = await createApp(boardActor({ isInstanceAdmin: true }));
+
+    const res = await request(app).delete(`/api/plugins/${pluginId}/runtime-config`);
+    expect(res.status).toBe(204);
+    expect(mockWorkerManager.call).toHaveBeenCalledWith(
+      pluginId,
+      "configChanged",
+      { config: {} },
+    );
+    expect(mockLifecycle.restartWorker).not.toHaveBeenCalled();
+  });
+
+  it("restarts a running worker when it cannot handle runtime config clear notifications", async () => {
+    const { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } = await import("@paperclipai/plugin-sdk");
+    readyPlugin();
+    mockRuntimeConfig.clearRuntime.mockResolvedValue(undefined);
+    mockWorkerManager.isRunning.mockReturnValue(true);
+    mockWorkerManager.call.mockRejectedValue(new JsonRpcCallError({
+      code: PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED,
+      message: "method not implemented",
+    }));
+    mockLifecycle.restartWorker.mockResolvedValue(undefined);
+    const app = await createApp(boardActor({ isInstanceAdmin: true }));
+
+    const res = await request(app).delete(`/api/plugins/${pluginId}/runtime-config`);
+    expect(res.status).toBe(204);
+    expect(mockLifecycle.restartWorker).toHaveBeenCalledWith(pluginId);
   });
 
   it("rejects non-board actors with 403", async () => {
