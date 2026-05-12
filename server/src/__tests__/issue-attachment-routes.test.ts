@@ -81,6 +81,10 @@ function registerRouteMocks() {
       syncDocument: async () => undefined,
       syncIssue: async () => undefined,
     }),
+    issueRecoveryActionService: () => ({
+      getActiveForIssue: vi.fn(async () => null),
+      listActiveForIssues: vi.fn(async () => new Map()),
+    }),
     issueService: () => mockIssueService,
     logActivity: mockLogActivity,
     projectService: () => ({}),
