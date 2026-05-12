@@ -237,9 +237,10 @@ fetch_remote() {
 push_branch_to_forks() {
   local source_ref="$1"
   local target_ref="$2"
-  local remote candidate pushed_any
+  local remote candidate pushed_any pushed_remotes
   local -a remotes=()
   pushed_any="0"
+  pushed_remotes=""
 
   if [[ "$PUSH_PRIVATE" == "1" ]]; then
     remote_exists "$PRIVATE_REMOTE" || die "Private remote not found: $PRIVATE_REMOTE"
@@ -251,24 +252,16 @@ push_branch_to_forks() {
     remotes+=("$PUBLIC_REMOTE")
   fi
 
-  local -a unique_remotes=()
   for candidate in "${remotes[@]}"; do
     [[ -n "$candidate" ]] || continue
-    local seen="0"
-    for remote in "${unique_remotes[@]}"; do
-      if [[ "$remote" == "$candidate" ]]; then
-        seen="1"
-        break
-      fi
-    done
-    [[ "$seen" == "1" ]] && continue
-    unique_remotes+=("$candidate")
-  done
-
-  for remote in "${unique_remotes[@]}"; do
+    if [[ ",${pushed_remotes}," == *",${candidate},"* ]]; then
+      continue
+    fi
+    remote="$candidate"
     log "Pushing ${source_ref}:${target_ref} to ${remote}..."
     git push "$remote" "${source_ref}:${target_ref}" 2>&1
     pushed_any="1"
+    pushed_remotes="${pushed_remotes:+${pushed_remotes},}${remote}"
   done
 
   [[ "$pushed_any" == "1" ]] || log "No fork remotes selected for push."
