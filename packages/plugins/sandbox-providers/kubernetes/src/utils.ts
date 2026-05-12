@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+
 const ULID_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
 
 export function deriveCompanySlug(input: string): string {
@@ -22,8 +24,9 @@ export function newRunUlidDns(now: () => number = Date.now): string {
     out = ULID_ALPHABET[t & 0x1f] + out;
     t = Math.floor(t / 32);
   }
+  const randBytes = randomBytes(16);
   for (let i = 0; i < 16; i++) {
-    out += ULID_ALPHABET[Math.floor(Math.random() * 32)];
+    out += ULID_ALPHABET[randBytes[i] & 0x1f];
   }
   return out;
 }

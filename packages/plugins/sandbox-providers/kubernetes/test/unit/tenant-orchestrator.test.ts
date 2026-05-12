@@ -150,4 +150,25 @@ describe("ensureTenant", () => {
       name: "paperclip-egress-allow",
     });
   });
+
+  it("handles concurrent first-run create conflicts by rereading and replacing managed resources", async () => {
+    const clients = makeMockClients();
+    const existing = { metadata: { resourceVersion: "rv-race" } };
+    clients.core.createNamespace.mockRejectedValueOnce({ code: 409 });
+    clients.core.readNamespacedServiceAccount
+      .mockRejectedValueOnce({ code: 404 })
+      .mockResolvedValue(existing);
+    clients.core.createNamespacedServiceAccount.mockRejectedValueOnce({ code: 409 });
+
+    await ensureTenant(clients as never, baseInput);
+
+    expect(clients.core.createNamespace).toHaveBeenCalled();
+    expect(clients.core.replaceNamespacedServiceAccount).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({
+          metadata: expect.objectContaining({ resourceVersion: "rv-race" }),
+        }),
+      }),
+    );
+  });
 });

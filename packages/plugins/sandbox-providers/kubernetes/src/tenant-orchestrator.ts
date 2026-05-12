@@ -47,22 +47,26 @@ async function ensureNamespace(clients: KubeClients, input: EnsureTenantInput): 
   } catch (err) {
     if (!isNotFound(err)) throw err;
   }
-  await clients.core.createNamespace({
-    body: {
-      apiVersion: "v1",
-      kind: "Namespace",
-      metadata: {
-        name: input.namespace,
-        labels: {
-          "paperclip.io/company-id": input.companyId,
-          "paperclip.io/managed-by": "paperclip-k8s-plugin",
-          "pod-security.kubernetes.io/enforce": "restricted",
-          "pod-security.kubernetes.io/audit": "restricted",
-          "pod-security.kubernetes.io/warn": "restricted",
+  try {
+    await clients.core.createNamespace({
+      body: {
+        apiVersion: "v1",
+        kind: "Namespace",
+        metadata: {
+          name: input.namespace,
+          labels: {
+            "paperclip.io/company-id": input.companyId,
+            "paperclip.io/managed-by": "paperclip-k8s-plugin",
+            "pod-security.kubernetes.io/enforce": "restricted",
+            "pod-security.kubernetes.io/audit": "restricted",
+            "pod-security.kubernetes.io/warn": "restricted",
+          },
         },
       },
-    },
-  });
+    });
+  } catch (err) {
+    if (!isAlreadyExists(err)) throw err;
+  }
 }
 
 async function ensureServiceAccount(clients: KubeClients, input: EnsureTenantInput): Promise<void> {
@@ -87,7 +91,17 @@ async function ensureServiceAccount(clients: KubeClients, input: EnsureTenantInp
   } catch (err) {
     if (!isNotFound(err)) throw err;
   }
-  await clients.core.createNamespacedServiceAccount({ namespace: input.namespace, body: manifest });
+  try {
+    await clients.core.createNamespacedServiceAccount({ namespace: input.namespace, body: manifest });
+  } catch (err) {
+    if (!isAlreadyExists(err)) throw err;
+    const existing = await clients.core.readNamespacedServiceAccount({ name: SERVICE_ACCOUNT_NAME, namespace: input.namespace });
+    await clients.core.replaceNamespacedServiceAccount({
+      name: SERVICE_ACCOUNT_NAME,
+      namespace: input.namespace,
+      body: withResourceVersion(manifest, existing) as never,
+    });
+  }
 }
 
 async function ensureRole(clients: KubeClients, input: EnsureTenantInput): Promise<void> {
@@ -110,7 +124,17 @@ async function ensureRole(clients: KubeClients, input: EnsureTenantInput): Promi
   } catch (err) {
     if (!isNotFound(err)) throw err;
   }
-  await clients.rbac.createNamespacedRole({ namespace: input.namespace, body: manifest });
+  try {
+    await clients.rbac.createNamespacedRole({ namespace: input.namespace, body: manifest });
+  } catch (err) {
+    if (!isAlreadyExists(err)) throw err;
+    const existing = await clients.rbac.readNamespacedRole({ name: ROLE_NAME, namespace: input.namespace });
+    await clients.rbac.replaceNamespacedRole({
+      name: ROLE_NAME,
+      namespace: input.namespace,
+      body: withResourceVersion(manifest, existing) as never,
+    });
+  }
 }
 
 async function ensureRoleBinding(clients: KubeClients, input: EnsureTenantInput): Promise<void> {
@@ -132,7 +156,17 @@ async function ensureRoleBinding(clients: KubeClients, input: EnsureTenantInput)
   } catch (err) {
     if (!isNotFound(err)) throw err;
   }
-  await clients.rbac.createNamespacedRoleBinding({ namespace: input.namespace, body: manifest });
+  try {
+    await clients.rbac.createNamespacedRoleBinding({ namespace: input.namespace, body: manifest });
+  } catch (err) {
+    if (!isAlreadyExists(err)) throw err;
+    const existing = await clients.rbac.readNamespacedRoleBinding({ name: ROLE_BINDING_NAME, namespace: input.namespace });
+    await clients.rbac.replaceNamespacedRoleBinding({
+      name: ROLE_BINDING_NAME,
+      namespace: input.namespace,
+      body: withResourceVersion(manifest, existing) as never,
+    });
+  }
 }
 
 async function ensureResourceQuota(clients: KubeClients, input: EnsureTenantInput): Promise<void> {
@@ -161,7 +195,17 @@ async function ensureResourceQuota(clients: KubeClients, input: EnsureTenantInpu
   } catch (err) {
     if (!isNotFound(err)) throw err;
   }
-  await clients.core.createNamespacedResourceQuota({ namespace: input.namespace, body: manifest });
+  try {
+    await clients.core.createNamespacedResourceQuota({ namespace: input.namespace, body: manifest });
+  } catch (err) {
+    if (!isAlreadyExists(err)) throw err;
+    const existing = await clients.core.readNamespacedResourceQuota({ name: RESOURCE_QUOTA_NAME, namespace: input.namespace });
+    await clients.core.replaceNamespacedResourceQuota({
+      name: RESOURCE_QUOTA_NAME,
+      namespace: input.namespace,
+      body: withResourceVersion(manifest, existing) as never,
+    });
+  }
 }
 
 async function ensureLimitRange(clients: KubeClients, input: EnsureTenantInput): Promise<void> {
@@ -195,10 +239,20 @@ async function ensureLimitRange(clients: KubeClients, input: EnsureTenantInput):
   } catch (err) {
     if (!isNotFound(err)) throw err;
   }
-  await clients.core.createNamespacedLimitRange({
-    namespace: input.namespace,
-    body: manifest as never,
-  });
+  try {
+    await clients.core.createNamespacedLimitRange({
+      namespace: input.namespace,
+      body: manifest as never,
+    });
+  } catch (err) {
+    if (!isAlreadyExists(err)) throw err;
+    const existing = await clients.core.readNamespacedLimitRange({ name: LIMIT_RANGE_NAME, namespace: input.namespace });
+    await clients.core.replaceNamespacedLimitRange({
+      name: LIMIT_RANGE_NAME,
+      namespace: input.namespace,
+      body: withResourceVersion(manifest, existing) as never,
+    });
+  }
 }
 
 async function ensureNetworkPolicies(clients: KubeClients, input: EnsureTenantInput): Promise<void> {
@@ -243,7 +297,17 @@ async function ensureNetworkPolicy(
   } catch (err) {
     if (!isNotFound(err)) throw err;
   }
-  await clients.networking.createNamespacedNetworkPolicy({ namespace, body: manifest as never });
+  try {
+    await clients.networking.createNamespacedNetworkPolicy({ namespace, body: manifest as never });
+  } catch (err) {
+    if (!isAlreadyExists(err)) throw err;
+    const existing = await clients.networking.readNamespacedNetworkPolicy({ name, namespace });
+    await clients.networking.replaceNamespacedNetworkPolicy({
+      name,
+      namespace,
+      body: withResourceVersion(manifest, existing) as never,
+    });
+  }
 }
 
 async function ensureCiliumNetworkPolicy(
@@ -272,13 +336,32 @@ async function ensureCiliumNetworkPolicy(
   } catch (err) {
     if (!isNotFound(err)) throw err;
   }
-  await clients.custom.createNamespacedCustomObject({
-    group: "cilium.io",
-    version: "v2",
-    namespace,
-    plural: "ciliumnetworkpolicies",
-    body: manifest,
-  });
+  try {
+    await clients.custom.createNamespacedCustomObject({
+      group: "cilium.io",
+      version: "v2",
+      namespace,
+      plural: "ciliumnetworkpolicies",
+      body: manifest,
+    });
+  } catch (err) {
+    if (!isAlreadyExists(err)) throw err;
+    const existing = await clients.custom.getNamespacedCustomObject({
+      group: "cilium.io",
+      version: "v2",
+      namespace,
+      plural: "ciliumnetworkpolicies",
+      name,
+    });
+    await clients.custom.replaceNamespacedCustomObject({
+      group: "cilium.io",
+      version: "v2",
+      namespace,
+      plural: "ciliumnetworkpolicies",
+      name,
+      body: withResourceVersion(manifest, existing),
+    });
+  }
 }
 
 async function deleteNetworkPolicyIfExists(clients: KubeClients, namespace: string, name: string): Promise<void> {
@@ -319,4 +402,10 @@ function isNotFound(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false;
   const e = err as { code?: number; statusCode?: number };
   return e.code === 404 || e.statusCode === 404;
+}
+
+function isAlreadyExists(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const e = err as { code?: number; statusCode?: number };
+  return e.code === 409 || e.statusCode === 409;
 }
