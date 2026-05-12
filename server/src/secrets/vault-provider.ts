@@ -510,8 +510,44 @@ export function createVaultProvider(
         },
       });
     },
-    async createVersion() {
-      throw new Error("createVersion not implemented yet");
+    async createVersion(input) {
+      const config = resolveConfig(input.providerConfig);
+      const gateway = resolveGateway(config);
+      const tokenManager = tokenManagerFor(config, gateway);
+      const ctx = input.context;
+      if (!ctx) throw unprocessable("vault createVersion requires SecretProviderWriteContext");
+
+      const ctxWithExtras = ctx as SecretProviderWriteContext & { deploymentId?: string };
+      const path = buildManagedKvPath({
+        config,
+        deploymentId: ctxWithExtras.deploymentId ?? deploymentId(),
+        companyId: ctx.companyId,
+        secretKey: ctx.secretKey,
+      });
+      const valueSha256 = createHash("sha256").update(input.value).digest("hex");
+
+      const cas = ctx.version > 0 ? ctx.version : undefined;
+
+      return await withVaultTokenRetry({
+        tokenManager,
+        sourceMode: tokenManager.sourceMode,
+        operation: async () => {
+          await tokenManager.acquire();
+          const { version } = await gateway.putKv({
+            mount: config.kvMount,
+            path,
+            data: { value: input.value },
+            cas,
+          });
+          return {
+            material: managedMaterial({ mount: config.kvMount, path, version }),
+            valueSha256,
+            fingerprintSha256: fingerprintFromVersionAndPath(config.kvMount, path, version),
+            externalRef: `${config.kvMount}/${path}`,
+            providerVersionRef: String(version),
+          };
+        },
+      });
     },
     async linkExternalSecret() {
       throw new Error("linkExternalSecret not implemented yet");

@@ -719,6 +719,78 @@ describe("withVaultTokenRetry", () => {
   });
 });
 
+describe("createVersion", () => {
+  it("rotates with CAS = currentVersion and stores under same path", async () => {
+    const gw = fakeVaultGateway();
+    const provider = createVaultProvider({
+      config: {
+        address: "https://v",
+        namespace: null,
+        kvMount: "secret",
+        kvPathPrefix: "paperclip",
+        auth: { method: "token", role: null, saTokenPath: "/dev/null" },
+        versionRetention: 10,
+      },
+      gateway: gw.impl,
+    });
+    process.env.VAULT_TOKEN = "static";
+
+    const ctx = { companyId: "co", deploymentId: "d", secretId: "s", secretKey: "K", secretName: "K", version: 1 } as const;
+    await provider.createSecret({ value: "v1", context: ctx });
+    const v2 = await provider.createVersion({
+      value: "v2",
+      context: ctx,
+      externalRef: "secret/paperclip/d/co/K",
+    });
+    expect(v2.providerVersionRef).toBe("2");
+
+    const stored = gw.store.get("secret/paperclip/d/co/K");
+    expect(stored!.versions.length).toBe(2);
+    expect(JSON.parse(stored!.versions[1][0])).toEqual({ value: "v2" });
+  });
+
+  it("maps CAS mismatch to SecretProviderClientError(code:conflict)", async () => {
+    const gw = fakeVaultGateway();
+    // pre-seed two versions so the CAS check in fakeVaultGateway will reject our cas=1 update
+    gw.store.set("secret/paperclip/d/co/K", {
+      versions: [[JSON.stringify({ value: "v1" })], [JSON.stringify({ value: "v2-extra" })]],
+    });
+    const provider = createVaultProvider({
+      config: {
+        address: "https://v",
+        namespace: null,
+        kvMount: "secret",
+        kvPathPrefix: "paperclip",
+        auth: { method: "token", role: null, saTokenPath: "/dev/null" },
+        versionRetention: 10,
+      },
+      gateway: {
+        ...gw.impl,
+        putKv: async (input) => {
+          if (input.cas !== undefined && input.cas === 1) {
+            throw new SecretProviderClientError({
+              code: "conflict",
+              provider: "vault",
+              operation: "putKv",
+              message: "cas mismatch",
+            });
+          }
+          return gw.impl.putKv(input);
+        },
+      },
+    });
+    process.env.VAULT_TOKEN = "static";
+
+    await expect(
+      provider.createVersion({
+        value: "v3",
+        context: { companyId: "co", deploymentId: "d", secretId: "s", secretKey: "K", secretName: "K", version: 1 },
+        externalRef: "secret/paperclip/d/co/K",
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+  });
+});
+
 describe("VaultTokenManager.sourceMode", () => {
   it("exposes the source mode for retry-helper callers", () => {
     const tm = new VaultTokenManager({
