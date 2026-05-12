@@ -14,7 +14,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CapabilityDeniedError,
   createHostClientHandlers,
-} from "../../../packages/plugins/sdk/src/host-client-factory.js";
+} from "@paperclipai/plugin-sdk";
 
 const PLUGIN_ID = "plugin-capability-test";
 

@@ -127,18 +127,18 @@ export function PluginSettings() {
     enabled: !!pluginId,
   });
 
-	  const clearRuntimeConfigMutation = useMutation({
-	    mutationFn: () => pluginsApi.clearRuntimeConfig(pluginId!),
-	    onSuccess: () => {
-	      void queryClient.invalidateQueries({ queryKey: ["plugins", pluginId, "runtime-config"] });
-	    },
-	  });
-	  const clearRuntimeConfigRestartError =
-	    clearRuntimeConfigMutation.data && typeof clearRuntimeConfigMutation.data === "object"
-	      && "restart" in clearRuntimeConfigMutation.data
-	      && clearRuntimeConfigMutation.data.restart.status === "failed"
-	      ? clearRuntimeConfigMutation.data.restart.error ?? "Worker restart failed"
-	      : null;
+  const [runtimeConfigRestartWarning, setRuntimeConfigRestartWarning] = useState<string | null>(null);
+  const clearRuntimeConfigMutation = useMutation({
+    mutationFn: () => pluginsApi.clearRuntimeConfig(pluginId!),
+    onSuccess: (result) => {
+      const restartWarning =
+        result && typeof result === "object" && "restart" in result && result.restart.status === "failed"
+          ? result.restart.message
+          : null;
+      setRuntimeConfigRestartWarning(restartWarning);
+      void queryClient.invalidateQueries({ queryKey: ["plugins", pluginId, "runtime-config"] });
+    },
+  });
 
   // Filter slots to only show settings pages for this specific plugin
   const pluginSlots = slots.filter((slot) => slot.pluginId === pluginId);
@@ -618,7 +618,7 @@ export function PluginSettings() {
                   ) : (
                     <p className="text-sm text-muted-foreground italic">No runtime config stored.</p>
                   )}
-	                  {canClearRuntimeConfig && runtimeConfigData && Object.keys(runtimeConfigData.values).length > 0 && (
+                  {canClearRuntimeConfig && runtimeConfigData && Object.keys(runtimeConfigData.values).length > 0 && (
 	                    <>
 	                      <Button
 	                        variant="destructive"
@@ -637,13 +637,13 @@ export function PluginSettings() {
 	                          Failed to clear runtime config: {clearRuntimeConfigMutation.error instanceof Error ? clearRuntimeConfigMutation.error.message : "Unknown error"}
 	                        </p>
 	                      )}
-	                      {clearRuntimeConfigRestartError && (
-	                        <p className="text-sm text-amber-600 dark:text-amber-400">
-	                          Runtime config cleared, but worker restart failed: {clearRuntimeConfigRestartError}
-	                        </p>
-	                      )}
-	                    </>
-	                  )}
+                    </>
+                  )}
+                  {runtimeConfigRestartWarning && (
+                    <p className="text-sm text-amber-600 dark:text-amber-400">
+                      Runtime config cleared, but worker restart failed: {runtimeConfigRestartWarning}
+                    </p>
+                  )}
                 </CardContent>
               </Card>
             </div>

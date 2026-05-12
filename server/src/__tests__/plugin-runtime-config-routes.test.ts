@@ -239,7 +239,7 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
     readyPlugin();
     mockRuntimeConfig.clearRuntime.mockResolvedValue(undefined);
     mockWorkerManager.isRunning.mockReturnValue(true);
-    mockLifecycle.restartWorker.mockRejectedValue(new Error("restart failed"));
+    mockLifecycle.restartWorker.mockRejectedValue(new Error("secret-token-raw-stderr"));
     const app = await createApp(boardActor({ isInstanceAdmin: true }));
 
     const res = await request(app).delete(`/api/plugins/${pluginId}/runtime-config`);
@@ -249,7 +249,7 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
       restart: {
         attempted: true,
         status: "failed",
-        error: "restart failed",
+        message: "Worker restart failed after runtime config was cleared.",
       },
     });
     expect(mockLifecycle.restartWorker).toHaveBeenCalledWith(pluginId);
@@ -264,10 +264,10 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
         entityId: pluginId,
         details: expect.objectContaining({
           restartStatus: "failed",
-          restartError: "restart failed",
         }),
       }),
     );
+    expect(JSON.stringify(res.body)).not.toContain("secret-token-raw-stderr");
   });
 
   it("does not restart a non-running worker after runtime config is cleared", async () => {

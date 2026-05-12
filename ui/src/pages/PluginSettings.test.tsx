@@ -157,7 +157,7 @@ async function renderSettings(container: HTMLDivElement) {
   });
   await flushReact();
   await flushReact();
-  return root;
+  return { root, queryClient };
 }
 
 describe("PluginSettings", () => {
@@ -194,7 +194,7 @@ describe("PluginSettings", () => {
   });
 
   it("routes environment-provider plugins to company environments when they have no instance config", async () => {
-    const root = await renderSettings(container);
+    const { root } = await renderSettings(container);
 
     expect(container.textContent).toContain("Configure this plugin from Company Environments.");
     expect(container.textContent).toContain("company-scoped instead of instance-global");
@@ -228,7 +228,7 @@ describe("PluginSettings", () => {
       folders: [folderStatus()],
     });
 
-    const root = await renderSettings(container);
+    const { root } = await renderSettings(container);
 
     expect(container.textContent).toContain("Local folders");
     expect(container.textContent).toContain("Wiki root");
@@ -270,7 +270,7 @@ describe("PluginSettings", () => {
       })],
     });
 
-    const root = await renderSettings(container);
+    const { root } = await renderSettings(container);
 
     expect(container.textContent).toContain("/tmp/wiki");
     expect(container.textContent).toContain("ReadableYes");
@@ -311,7 +311,7 @@ describe("PluginSettings", () => {
       })],
     });
 
-    const root = await renderSettings(container);
+    const { root } = await renderSettings(container);
 
     expect(container.textContent).toContain("Configured local folder cannot be inspected.");
     expect(container.textContent).toContain("Not inspected");
@@ -352,7 +352,7 @@ describe("PluginSettings", () => {
       })],
     });
 
-    const root = await renderSettings(container);
+    const { root } = await renderSettings(container);
 
     expect(container.textContent).toContain("Healthy");
     expect(container.textContent).toContain("Configured path");
@@ -383,7 +383,7 @@ describe("PluginSettings", () => {
       revision: "7",
     });
 
-    const root = await renderSettings(container);
+    const { root } = await renderSettings(container);
 
     await act(async () => {
       Array.from(container.querySelectorAll("button"))
@@ -425,7 +425,7 @@ describe("PluginSettings", () => {
       source: "local_implicit",
     });
 
-    const root = await renderSettings(container);
+    const { root } = await renderSettings(container);
 
     await act(async () => {
       Array.from(container.querySelectorAll("button"))
@@ -473,10 +473,10 @@ describe("PluginSettings", () => {
     });
     mockPluginsApi.clearRuntimeConfig.mockResolvedValue({
       cleared: true,
-      restart: { attempted: true, status: "failed", error: "restart failed" },
+      restart: { attempted: true, status: "failed", message: "Worker restart failed after runtime config was cleared." },
     });
 
-    const root = await renderSettings(container);
+    const { root, queryClient } = await renderSettings(container);
 
     await act(async () => {
       Array.from(container.querySelectorAll("button"))
@@ -492,7 +492,19 @@ describe("PluginSettings", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Runtime config cleared, but worker restart failed: restart failed");
+    expect(container.textContent).toContain("Runtime config cleared, but worker restart failed: Worker restart failed after runtime config was cleared.");
+
+    mockPluginsApi.getRuntimeConfig.mockResolvedValue({
+      values: {},
+      revision: "8",
+    });
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["plugins", "plugin-1", "runtime-config"] });
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("No runtime config stored.");
+    expect(container.textContent).toContain("Runtime config cleared, but worker restart failed: Worker restart failed after runtime config was cleared.");
 
     await act(async () => {
       root.unmount();
@@ -512,7 +524,7 @@ describe("PluginSettings", () => {
     }));
     mockPluginsApi.getRuntimeConfig.mockRejectedValue(new Error("forbidden"));
 
-    const root = await renderSettings(container);
+    const { root } = await renderSettings(container);
 
     await act(async () => {
       Array.from(container.querySelectorAll("button"))

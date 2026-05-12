@@ -449,7 +449,7 @@ export const pluginsApi = {
   clearRuntimeConfig: (pluginId: string) =>
     api.delete<void | {
       cleared: true;
-      restart: { attempted: boolean; status: "failed"; error: string | null };
+      restart: { attempted: boolean; status: "failed"; message: string };
     }>(`/plugins/${pluginId}/runtime-config`),
 
   // ===========================================================================

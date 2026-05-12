@@ -2140,29 +2140,26 @@ export function pluginRoutes(
     const plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) throw notFound("Plugin not found");
 
-	    const svc = createPluginRuntimeConfigService(db);
-	    await svc.clearRuntime(plugin.id);
-	
-	    let restartStatus: "not_running" | "restarted" | "failed" = "not_running";
-	    let restartError: string | null = null;
-	    if (bridgeDeps?.workerManager.isRunning(plugin.id)) {
-	      try {
-	        await lifecycle.restartWorker(plugin.id);
-	        restartStatus = "restarted";
-	      } catch (err) {
-	        restartStatus = "failed";
-	        restartError = err instanceof Error ? err.message : "Worker restart failed";
-	        // Runtime config is already cleared; restart failure is non-fatal.
-	      }
-	    }
+    const svc = createPluginRuntimeConfigService(db);
+    await svc.clearRuntime(plugin.id);
+
+    let restartStatus: "not_running" | "restarted" | "failed" = "not_running";
+    if (bridgeDeps?.workerManager.isRunning(plugin.id)) {
+      try {
+        await lifecycle.restartWorker(plugin.id);
+        restartStatus = "restarted";
+      } catch {
+        restartStatus = "failed";
+        // Runtime config is already cleared; restart failure is non-fatal.
+      }
+    }
 
     try {
       await logPluginMutationActivity(req, "plugin.runtime-config.cleared", plugin.id, {
 	        pluginId: plugin.id,
 	        pluginKey: plugin.pluginKey,
-	        restartStatus,
-	        ...(restartError ? { restartError } : {}),
-	      });
+        restartStatus,
+      });
     } catch (err) {
       logger.error(
         { err, pluginId: plugin.id, pluginKey: plugin.pluginKey },
@@ -2175,7 +2172,7 @@ export function pluginRoutes(
 	        restart: {
 	          attempted: true,
 	          status: restartStatus,
-	          error: restartError,
+	          message: "Worker restart failed after runtime config was cleared.",
 	        },
 	      });
 	      return;
