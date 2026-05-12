@@ -21,7 +21,10 @@
     "instanceSettings": "Instance Settings",
     "heartbeats": "Heartbeats",
     "plugins": "Plugins",
-    "adapters": "Adapters"
+    "adapters": "Adapters",
+    "profile": "Profile",
+    "access": "Access",
+    "workspaces": "Workspaces"
   },
   "commandPalette": {
     "searchPlaceholder": "Search issues, agents, projects...",

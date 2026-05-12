@@ -1,6 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { useTranslation } from "react-i18next";
 import type {
   Agent,
   Approval,
@@ -594,10 +593,8 @@ const TimelineList = memo(function TimelineList({
   votingTargetId?: string | null;
   highlightCommentId?: string | null;
 }) {
-  const { t } = useTranslation("common");
-
   if (timeline.length === 0) {
-    return <p className="text-sm text-muted-foreground">{t("commentThread.noCommentsOrRuns")}</p>;
+    return <p className="text-sm text-muted-foreground">No timeline entries yet.</p>;
   }
 
   return (
@@ -646,7 +643,7 @@ const TimelineList = memo(function TimelineList({
                   <Link to={`/agents/${run.agentId}`} className="font-medium text-foreground transition-colors hover:underline">
                     {actorName}
                   </Link>
-                  <span className="text-muted-foreground">{t("commentThread.run")}</span>
+                  <span className="text-muted-foreground">run</span>
                   <Link
                     to={`/agents/${run.agentId}/runs/${run.runId}`}
                     className="inline-flex items-center rounded-md border border-border bg-accent/40 px-2 py-1 font-mono text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
@@ -755,11 +752,9 @@ export function CommentThread({
   interruptingQueuedRunId = null,
   composerDisabledReason = null,
 }: CommentThreadProps) {
-  const { t } = useTranslation("common");
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
-  const [reopen, setReopen] = useState(false);
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
   const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
   const [highlightCommentId, setHighlightCommentId] = useState<string | null>(null);
@@ -863,16 +858,6 @@ export function CommentThread({
     setReassignTarget(effectiveSuggestedAssigneeValue);
   }, [effectiveSuggestedAssigneeValue]);
 
-  const isImplicitReopen = useMemo(() => {
-    return shouldImplicitlyReopenComment(
-      issueStatus,
-      enableReassign && reassignTarget !== currentAssigneeValue ? reassignTarget : currentAssigneeValue
-    );
-  }, [issueStatus, enableReassign, reassignTarget, currentAssigneeValue]);
-
-  const isClosed = issueStatus === "done" || issueStatus === "cancelled" || issueStatus === "blocked";
-  const showReopenControl = isClosed && !isImplicitReopen;
-
   // Scroll to comment when URL hash matches #comment-{id}
   useEffect(() => {
     const hash = location.hash;
@@ -896,20 +881,18 @@ export function CommentThread({
     if (!trimmed) return;
     const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
     const reassignment = hasReassignment ? parseReassignment(reassignTarget) : null;
-    const implicitReopen = shouldImplicitlyReopenComment(
+    const reopen = shouldImplicitlyReopenComment(
       issueStatus,
       hasReassignment ? reassignTarget : currentAssigneeValue,
-    );
-    const finalReopen = (implicitReopen || reopen) ? true : undefined;
+    ) ? true : undefined;
     const submittedBody = trimmed;
 
     setSubmitting(true);
     setBody("");
     try {
-      await onAdd(submittedBody, finalReopen, reassignment ?? undefined);
+      await onAdd(submittedBody, reopen, reassignment ?? undefined);
       if (draftKey) clearDraft(draftKey);
       setReassignTarget(effectiveSuggestedAssigneeValue);
-      setReopen(false);
     } catch {
       setBody((current) =>
         restoreSubmittedCommentDraft({
@@ -960,7 +943,7 @@ export function CommentThread({
 
   return (
     <div className="space-y-4">
-      <h3 className="text-sm font-semibold">{t("commentThread.commentsAndRuns", { count: timeline.length + queuedComments.length })}</h3>
+      <h3 className="text-sm font-semibold">Timeline ({timeline.length + queuedComments.length})</h3>
 
       <TimelineList
         timeline={timeline}
@@ -1052,29 +1035,18 @@ export function CommentThread({
                 </Button>
               </div>
             )}
-            {showReopenControl && (
-              <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={reopen}
-                  onChange={(e) => setReopen(e.target.checked)}
-                  className="rounded border-border"
-                />
-                {t("commentThread.reOpen")}
-              </label>
-            )}
             {enableReassign && reassignOptions.length > 0 && (
               <InlineEntitySelector
                 value={reassignTarget}
                 options={reassignOptions}
-                placeholder={t("commentThread.assignee")}
-                noneLabel={t("commentThread.noAssignee")}
-                searchPlaceholder={t("commentThread.searchAssignees")}
-                emptyMessage={t("commentThread.noAssigneesFound")}
+                placeholder="Assignee"
+                noneLabel="No assignee"
+                searchPlaceholder="Search assignees..."
+                emptyMessage="No assignees found."
                 onChange={setReassignTarget}
                 className="text-xs h-8"
                 renderTriggerValue={(option) => {
-                  if (!option) return <span className="text-muted-foreground">{t("commentThread.assignee")}</span>;
+                  if (!option) return <span className="text-muted-foreground">Assignee</span>;
                   const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
                   const agent = agentId ? agentMap?.get(agentId) : null;
                   return (
@@ -1102,7 +1074,7 @@ export function CommentThread({
               />
             )}
             <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>
-              {submitting ? t("commentThread.posting") : t("commentThread.comment")}
+              {submitting ? "Posting..." : "Comment"}
             </Button>
           </div>
         </div>

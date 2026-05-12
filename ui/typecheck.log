@@ -1,0 +1,23 @@
+
+> @paperclipai/ui@0.3.1 typecheck /Users/julioborges/src/personal/paperclip/ui
+> tsc -b
+
+src/components/CommentThread.tsx(1045,26): error TS2552: Cannot find name 'reopen'. Did you mean 'open'?
+src/components/CommentThread.tsx(1046,34): error TS2304: Cannot find name 'setReopen'.
+src/components/InstanceSidebar.tsx(28,68): error TS2345: Argument of type '["sidebar.profile"]' is not assignable to parameter of type '[key: string | string[], options: TOptionsBase & $Dictionary & { defaultValue: string; }] | [key: string | string[], defaultValue: string, options?: (TOptionsBase & $Dictionary) | undefined] | [key: ...]'.
+  Type '["sidebar.profile"]' is not assignable to type '[key: "sidebar.general" | "sidebar.company" | "sidebar.projects" | "sidebar.goals" | "sidebar.agents" | "sidebar.issues" | "sidebar.dashboard" | "sidebar.settings" | "sidebar.plugins" | ... 40 more ... | ("sidebar.general" | ... 47 more ... | TemplateStringsArray)[], options?: (TOptionsBase & ... 1 more ... & { ...;...'.
+    Type at position 0 in source is not compatible with type at position 0 in target.
+      Type '"sidebar.profile"' is not assignable to type '"sidebar.general" | "sidebar.company" | "sidebar.projects" | "sidebar.goals" | "sidebar.agents" | "sidebar.issues" | "sidebar.dashboard" | "sidebar.settings" | "sidebar.plugins" | ... 40 more ... | ("sidebar.general" | ... 47 more ... | TemplateStringsArray)[]'.
+src/components/InstanceSidebar.tsx(30,67): error TS2345: Argument of type '["sidebar.access"]' is not assignable to parameter of type '[key: string | string[], options: TOptionsBase & $Dictionary & { defaultValue: string; }] | [key: string | string[], defaultValue: string, options?: (TOptionsBase & $Dictionary) | undefined] | [key: ...]'.
+  Type '["sidebar.access"]' is not assignable to type '[key: "sidebar.general" | "sidebar.company" | "sidebar.projects" | "sidebar.goals" | "sidebar.agents" | "sidebar.issues" | "sidebar.dashboard" | "sidebar.settings" | "sidebar.plugins" | ... 40 more ... | ("sidebar.general" | ... 47 more ... | TemplateStringsArray)[], options?: (TOptionsBase & ... 1 more ... & { ...;...'.
+    Type at position 0 in source is not compatible with type at position 0 in target.
+      Type '"sidebar.access"' is not assignable to type '"sidebar.general" | "sidebar.company" | "sidebar.projects" | "sidebar.goals" | "sidebar.agents" | "sidebar.issues" | "sidebar.dashboard" | "sidebar.settings" | "sidebar.plugins" | ... 40 more ... | ("sidebar.general" | ... 47 more ... | TemplateStringsArray)[]'. Did you mean '"sidebar.costs"'?
+src/components/IssuesList.tsx(1159,55): error TS2304: Cannot find name 'rootRef'.
+src/components/IssuesList.tsx(1280,15): error TS2304: Cannot find name 'rootRef'.
+src/components/Sidebar.tsx(108,55): error TS2345: Argument of type '["sidebar.workspaces"]' is not assignable to parameter of type '[key: string | string[], options: TOptionsBase & $Dictionary & { defaultValue: string; }] | [key: string | string[], defaultValue: string, options?: (TOptionsBase & $Dictionary) | undefined] | [key: ...]'.
+  Type '["sidebar.workspaces"]' is not assignable to type '[key: "sidebar.general" | "sidebar.company" | "sidebar.projects" | "sidebar.goals" | "sidebar.agents" | "sidebar.issues" | "sidebar.dashboard" | "sidebar.settings" | "sidebar.plugins" | ... 40 more ... | ("sidebar.general" | ... 47 more ... | TemplateStringsArray)[], options?: (TOptionsBase & ... 1 more ... & { ...;...'.
+    Type at position 0 in source is not compatible with type at position 0 in target.
+      Type '"sidebar.workspaces"' is not assignable to type '"sidebar.general" | "sidebar.company" | "sidebar.projects" | "sidebar.goals" | "sidebar.agents" | "sidebar.issues" | "sidebar.dashboard" | "sidebar.settings" | "sidebar.plugins" | ... 40 more ... | ("sidebar.general" | ... 47 more ... | TemplateStringsArray)[]'. Did you mean '"sidebar.work"'?
+src/pages/Inbox.tsx(263,24): error TS2554: Expected 2 arguments, but got 1.
+src/pages/Inbox.tsx(1101,21): error TS2554: Expected 2 arguments, but got 1.
+ ELIFECYCLE  Command failed with exit code 1.

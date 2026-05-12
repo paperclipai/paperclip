@@ -25,7 +25,7 @@ import { NotFoundPage } from "./NotFound";
  */
 export function PluginPage() {
   const { t } = useTranslation("plugins");
-  const { companyPrefix: routeCompanyPrefix, pluginId, pluginRoutePath } = useParams<{
+  const params = useParams<{
     companyPrefix?: string;
     pluginId?: string;
     pluginRoutePath?: string;
@@ -115,17 +115,16 @@ export function PluginPage() {
   }, [contributions, pluginRoutePath]);
 
   useEffect(() => {
-    if (pageSlot) {
-      setBreadcrumbs([
-        { label: t("breadcrumb.plugins"), href: "/instance/settings/plugins" },
-        { label: pageSlot.pluginDisplayName },
-      ]);
+    if (!pageSlot) return;
+    if (routeSidebarActive) {
+      setBreadcrumbs([{ label: resolveRouteSidebarPageTitle(pageSlot, pluginRouteSplat) }]);
+      return;
     }
     setBreadcrumbs([
-      { label: "Plugins", href: "/instance/settings/plugins" },
+      { label: t("breadcrumb.plugins"), href: "/instance/settings/plugins" },
       { label: pageSlot.pluginDisplayName },
     ]);
-  }, [pageSlot, pluginRouteSplat, setBreadcrumbs, routeSidebarActive]);
+  }, [pageSlot, pluginRouteSplat, setBreadcrumbs, routeSidebarActive, t]);
 
   if (!resolvedCompanyId) {
     if (hasInvalidCompanyPrefix) {

@@ -2,9 +2,7 @@ import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCal
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
 import { useDialogActions } from "../context/DialogContext";
-import { useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { useQuery } from "@tanstack/react-query";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -633,6 +631,7 @@ export function IssuesList({
   const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(() => loadIssueColumns(scopedKey));
   const renderedIssueIdsRef = useRef("");
   const initialServerFillRequestedRef = useRef(false);
+  const rootRef = useRef<HTMLDivElement>(null);
   const deferredIssueSearch = useDeferredValue(issueSearch);
   const normalizedIssueSearch = deferredIssueSearch.trim().toLowerCase();
 

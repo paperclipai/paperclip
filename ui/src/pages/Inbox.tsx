@@ -171,7 +171,7 @@ function firstNonEmptyLine(value: string | null | undefined): string | null {
   return line ?? null;
 }
 
-function runFailureMessage(run: HeartbeatRun, fallback: string): string {
+function runFailureMessage(run: HeartbeatRun, fallback: string = "Unknown error"): string {
   return firstNonEmptyLine(run.error) ?? firstNonEmptyLine(run.stderrExcerpt) ?? fallback;
 }
 

@@ -171,7 +171,7 @@ describe("CommentThread", () => {
 
     expect(container.textContent).toContain("Workspace is closed.");
     expect(container.querySelector('textarea[aria-label="Comment editor"]')).toBeNull();
-    expect(container.textContent).not.toContain("Comment");
+    expect(Array.from(container.querySelectorAll("button")).find(b => b.textContent?.includes("commentThread.comment") || b.textContent?.includes("Comment"))).toBeUndefined();
 
     act(() => {
       root.unmount();
@@ -238,11 +238,11 @@ describe("CommentThread", () => {
       );
     });
 
-    expect(container.textContent).not.toContain("Re-open");
+    expect(container.textContent).not.toContain("commentThread.reOpen");
 
     const editor = container.querySelector('textarea[aria-label="Comment editor"]') as HTMLTextAreaElement | null;
     const submitButton = Array.from(container.querySelectorAll("button")).find(
-      (element) => element.textContent === "Comment",
+      (element) => element.textContent === "commentThread.comment",
     ) as HTMLButtonElement | undefined;
     expect(editor).not.toBeNull();
     expect(submitButton).toBeDefined();
