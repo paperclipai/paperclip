@@ -164,7 +164,7 @@ describe("approval routes idempotent retries", () => {
 
     const res = await request(await createApp())
       .post("/api/approvals/approval-1/reject")
-      .send({});
+      .send({ decisionNote: "already rejected" });
 
     expect(res.status).toBe(200);
     expect(mockLogActivity).not.toHaveBeenCalled();

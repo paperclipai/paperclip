@@ -17,8 +17,18 @@ export const resolveApprovalSchema = z.object({
 
 export type ResolveApproval = z.infer<typeof resolveApprovalSchema>;
 
+export const rejectApprovalSchema = z.object({
+  decisionNote: multilineTextSchema.pipe(
+    z.string().min(1, "decisionNote is required for rejection"),
+  ),
+});
+
+export type RejectApproval = z.infer<typeof rejectApprovalSchema>;
+
 export const requestApprovalRevisionSchema = z.object({
-  decisionNote: multilineTextSchema.optional().nullable(),
+  decisionNote: multilineTextSchema.pipe(
+    z.string().min(1, "decisionNote is required when requesting revision"),
+  ),
 });
 
 export type RequestApprovalRevision = z.infer<typeof requestApprovalRevisionSchema>;
