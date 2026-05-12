@@ -16,6 +16,9 @@ import {
 import { oauthConnections } from "@paperclipai/db/schema/oauth";
 import type { ProviderRegistry } from "../oauth/registry.js";
 import type { refreshConnection as refreshConnectionImpl, RefreshDeps } from "../oauth/refresh.js";
+import { applyCredentialBrokerResolver } from "../oauth/apply-credential-broker-resolver.js";
+import { logger as serverLogger } from "../middleware/logger.js";
+import type { CredentialDelivery } from "@paperclipai/shared";
 import type {
   AgentEnvConfig,
   CompanySecretBindingTarget,
@@ -2249,6 +2252,29 @@ export function secretService(db: Db, oauthDeps?: SecretServiceOAuthDeps) {
           manifest,
           oauthConnectionIds: Array.from(oauthConnectionIds),
         };
+      }
+      // M1 credential-broker smart-resolver: observational only.
+      // With PAPERCLIP_FEATURE_CREDENTIAL_BROKER off (default) this is a
+      // no-op and the legacy oauth_token resolution path below runs
+      // unchanged. With the flag on but no broker registered (M1 state),
+      // the resolver decides `env` and logs a structured warn so
+      // operators can see exactly which runs still hand plaintext
+      // bearers to the agent. The actual env value remains plaintext
+      // until M2 wires the in-tree broker.
+      // See docs/superpowers/specs/2026-05-12-credential-broker-design.md §6.
+      if (oauthDeps) {
+        await applyCredentialBrokerResolver(
+          { db, registry: oauthDeps.registry, logger: serverLogger },
+          {
+            companyId,
+            envRecord: record,
+            explicit: adapterConfig.credentialDelivery as
+              | CredentialDelivery
+              | undefined,
+            runId: context?.heartbeatRunId ?? null,
+            agentId: context?.consumerId ?? null,
+          },
+        );
       }
       const env: Record<string, string> = {};
       for (const [key, rawBinding] of Object.entries(record)) {
