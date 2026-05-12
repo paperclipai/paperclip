@@ -302,4 +302,225 @@ describeEmbeddedPostgres("provider rate-limit block release", () => {
       .where(and(eq(issueRelations.issueId, recoveryIssueId), eq(issueRelations.relatedIssueId, sourceIssueId)));
     expect(remainingRelations).toHaveLength(0);
   });
+
+  it("releases only a changed-scope provider pause and keeps the original provider block active", async () => {
+    const svc = providerRateLimitService(db);
+    const now = new Date("2026-05-06T08:00:00.000Z");
+    const companyId = randomUUID();
+    const releasedAgentId = randomUUID();
+    const stillBlockedAgentId = randomUUID();
+    const issueId = randomUUID();
+    const blockId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `P${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: releasedAgentId,
+        companyId,
+        name: "Codex",
+        role: "engineer",
+        status: "paused",
+        pauseReason: "provider_rate_limit",
+        pausedAt: new Date(now.getTime() - 60_000),
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-5.3-codex" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: stillBlockedAgentId,
+        companyId,
+        name: "Claude",
+        role: "engineer",
+        status: "paused",
+        pauseReason: "provider_rate_limit",
+        pausedAt: new Date(now.getTime() - 60_000),
+        adapterType: "claude_local",
+        adapterConfig: { model: "claude-opus-4-7" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Continue after switching provider",
+      status: "blocked",
+      assigneeAgentId: releasedAgentId,
+      updatedAt: now,
+    });
+    await db.insert(providerRateLimitBlocks).values({
+      id: blockId,
+      companyId,
+      adapterType: "claude_local",
+      limitKind: "seven_day_opus",
+      modelFamily: "claude-opus",
+      message: "Opus quota exhausted",
+    });
+    await db.insert(providerRateLimitBlockMembers).values([
+      {
+        blockId,
+        companyId,
+        agentId: releasedAgentId,
+        issueId,
+        originalAgentStatus: "running",
+        releaseStatus: "pending",
+      },
+      {
+        blockId,
+        companyId,
+        agentId: stillBlockedAgentId,
+        originalAgentStatus: "running",
+        releaseStatus: "pending",
+      },
+    ]);
+
+    const result = await svc.reconcileAgentProviderLimitPause(releasedAgentId);
+
+    expect(result).toMatchObject({ released: true, issueIds: [issueId], wakeupsQueued: 1 });
+    const [block] = await db.select().from(providerRateLimitBlocks).where(eq(providerRateLimitBlocks.id, blockId));
+    expect(block?.resolvedAt).toBeNull();
+    const [releasedAgent] = await db.select().from(agents).where(eq(agents.id, releasedAgentId));
+    expect(releasedAgent?.status).toBe("idle");
+    expect(releasedAgent?.pauseReason).toBeNull();
+    const [stillBlockedAgent] = await db.select().from(agents).where(eq(agents.id, stillBlockedAgentId));
+    expect(stillBlockedAgent?.status).toBe("paused");
+    expect(stillBlockedAgent?.pauseReason).toBe("provider_rate_limit");
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue?.status).toBe("in_progress");
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.agentId, releasedAgentId), eq(agentWakeupRequests.reason, "provider_rate_limit_scope_changed")));
+    expect(wakeups).toHaveLength(1);
+  });
+
+  it("uses the issue model profile when reconciling model-family provider pauses", async () => {
+    const svc = providerRateLimitService(db);
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const blockId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `P${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Claude",
+      role: "engineer",
+      status: "paused",
+      pauseReason: "provider_rate_limit",
+      pausedAt: new Date(),
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-opus-4-7" },
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: { adapterConfig: { model: "claude-sonnet-4-6" } },
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Cheap lane",
+      status: "blocked",
+      assigneeAgentId: agentId,
+      assigneeAdapterOverrides: { modelProfile: "cheap" },
+    });
+    await db.insert(providerRateLimitBlocks).values({
+      id: blockId,
+      companyId,
+      adapterType: "claude_local",
+      limitKind: "seven_day_opus",
+      modelFamily: "claude-opus",
+      message: "Opus quota exhausted",
+    });
+    await db.insert(providerRateLimitBlockMembers).values({
+      blockId,
+      companyId,
+      agentId,
+      issueId,
+      originalAgentStatus: "running",
+      releaseStatus: "pending",
+    });
+
+    const result = await svc.reconcileAgentProviderLimitPause(agentId);
+
+    expect(result.released).toBe(true);
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(agent?.status).toBe("idle");
+    const effectiveModel = await svc.resolveEffectiveRunModel({ companyId, agent: agent!, issueId });
+    expect(effectiveModel).toBe("claude-sonnet-4-6");
+    await expect(svc.getActiveBlockForAgent(companyId, "claude_local", effectiveModel)).resolves.toBeNull();
+  });
+
+  it("keeps Sonnet paused under a generic Claude provider block and never crosses providers", async () => {
+    const svc = providerRateLimitService(db);
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const blockId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `P${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Claude",
+      role: "engineer",
+      status: "paused",
+      pauseReason: "provider_rate_limit",
+      pausedAt: new Date(),
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-sonnet-4-6" },
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Generic Claude lane",
+      status: "blocked",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(providerRateLimitBlocks).values({
+      id: blockId,
+      companyId,
+      adapterType: "claude_local",
+      limitKind: "five_hour",
+      modelFamily: null,
+      message: "Claude quota exhausted",
+    });
+    await db.insert(providerRateLimitBlockMembers).values({
+      blockId,
+      companyId,
+      agentId,
+      issueId,
+      originalAgentStatus: "running",
+      releaseStatus: "pending",
+    });
+
+    await expect(svc.reconcileAgentProviderLimitPause(agentId))
+      .resolves.toMatchObject({ released: false, issueIds: [] });
+    await expect(svc.getActiveBlockForAgent(companyId, "codex_local", "gpt-5.3-codex"))
+      .resolves.toBeNull();
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(agent?.status).toBe("paused");
+    expect(agent?.pauseReason).toBe("provider_rate_limit");
+  });
 });
