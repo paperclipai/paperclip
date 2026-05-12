@@ -128,7 +128,7 @@ export function SidebarAccountMenu({
       queryClient.removeQueries({
         predicate: (query) => query.queryKey[0] !== queryKeys.auth.session[0],
       });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+      queryClient.setQueryData(queryKeys.auth.session, null);
     },
   });
 
