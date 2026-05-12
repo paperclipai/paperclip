@@ -74,8 +74,8 @@ describe("boardMutationGuard", () => {
 
   // Local-implicit /issues mutations from Playwright API contexts and other
   // header-less local clients (no Origin AND no Referer) are allowed when the
-  // literal Host header resolves to a loopback interface (127.0.0.1, localhost,
-  // ::1). supertest sends Host=127.0.0.1:<port> by default, which is loopback.
+  // peer address is loopback and the literal Host header resolves to a loopback
+  // interface (127.0.0.1, localhost, ::1).
   // X-Forwarded-Host is intentionally NOT considered in the fallback (it is
   // client-controlled via untrusted proxy headers). The existing browser-spoof
   // attack vector — a foreign page POSTing with a mismatched Origin — is still
@@ -196,14 +196,13 @@ describe("boardMutationGuard", () => {
   });
 
   // Header-absent fallback: Playwright API contexts and other local clients
-  // that omit Origin/Referer are allowed when the literal Host header resolves
-  // to a loopback interface. X-Forwarded-Host is excluded because it is
-  // client-controlled. Reverse-proxy clients without a browser must use a
-  // board API key (board_key actor source); their flow does not depend on
-  // this fallback. The anti-spoof intent is preserved: any caller that DOES
-  // send an Origin or Referer header must match the trusted set or be
-  // rejected; and any header-less request whose Host does not resolve to
-  // loopback also still 403s, regardless of X-Forwarded-Host.
+  // that omit Origin/Referer are allowed only when both the peer address and
+  // literal Host header are loopback. X-Forwarded-Host is excluded because it is
+  // client-controlled. Reverse-proxy clients without a browser must use a board
+  // API key (board_key actor source); their flow does not depend on this
+  // fallback. The anti-spoof intent is preserved: any caller that DOES send an
+  // Origin or Referer header must match the trusted set or be rejected; and any
+  // header-less request whose peer or Host is not loopback also still 403s.
 
   it("allows local implicit issue creation when Origin and Referer are both absent (Playwright API context)", async () => {
     const middleware = boardMutationGuard();
@@ -212,6 +211,7 @@ describe("boardMutationGuard", () => {
       originalUrl: "/api/companies/company-1/issues",
       url: "/api/companies/company-1/issues",
       actor: { type: "board", userId: "board", source: "local_implicit" },
+      socket: { remoteAddress: "127.0.0.1" },
       header: (name: string) => {
         if (name.toLowerCase() === "host") return "127.0.0.1:34521";
         return undefined;
@@ -236,6 +236,7 @@ describe("boardMutationGuard", () => {
       originalUrl: "/api/issues/issue-1/comments",
       url: "/api/issues/issue-1/comments",
       actor: { type: "board", userId: "board", source: "local_implicit" },
+      socket: { remoteAddress: "::ffff:127.0.0.1" },
       header: (name: string) => {
         if (name.toLowerCase() === "host") return "127.0.0.1:34521";
         return undefined;
@@ -291,10 +292,39 @@ describe("boardMutationGuard", () => {
       originalUrl: "/api/issues/issue-1/comments",
       url: "/api/issues/issue-1/comments",
       actor: { type: "board", userId: "board", source: "local_implicit" },
+      socket: { remoteAddress: "10.0.0.8" },
       header: (name: string) => {
         const lower = name.toLowerCase();
         if (lower === "host") return "evil.example.com";
         if (lower === "x-forwarded-host") return "127.0.0.1:34521";
+        return undefined;
+      },
+    } as any;
+    const res = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn(),
+    } as any;
+    const next = vi.fn();
+
+    middleware(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Issue mutation requires trusted browser origin or authenticated actor",
+    });
+  });
+
+  it("rejects header-absent fallback when Host claims loopback but peer address is external (anti-spoof)", async () => {
+    const middleware = boardMutationGuard();
+    const req = {
+      method: "POST",
+      originalUrl: "/api/issues/issue-1/comments",
+      url: "/api/issues/issue-1/comments",
+      actor: { type: "board", userId: "board", source: "local_implicit" },
+      socket: { remoteAddress: "10.0.0.8" },
+      header: (name: string) => {
+        if (name.toLowerCase() === "host") return "localhost:34521";
         return undefined;
       },
     } as any;
@@ -320,6 +350,7 @@ describe("boardMutationGuard", () => {
       originalUrl: "/api/issues/issue-1/comments",
       url: "/api/issues/issue-1/comments",
       actor: { type: "board", userId: "board", source: "local_implicit" },
+      socket: { remoteAddress: "::1" },
       header: (name: string) => {
         const lower = name.toLowerCase();
         if (lower === "host") return "internal-victim.example.com";
@@ -377,6 +408,7 @@ describe("boardMutationGuard", () => {
       originalUrl: "/api/issues/issue-1/comments",
       url: "/api/issues/issue-1/comments",
       actor: { type: "board", userId: "board", source: "local_implicit" },
+      socket: { remoteAddress: "127.0.0.1" },
       header: (name: string) => {
         if (name.toLowerCase() === "host") return "[::1]:34521";
         return undefined;
@@ -401,6 +433,7 @@ describe("boardMutationGuard", () => {
       originalUrl: "/api/issues/issue-1/comments",
       url: "/api/issues/issue-1/comments",
       actor: { type: "board", userId: "board", source: "local_implicit" },
+      socket: { remoteAddress: "127.0.0.1" },
       header: (name: string) => {
         if (name.toLowerCase() === "host") return "localhost:34521";
         return undefined;

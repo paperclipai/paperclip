@@ -4,7 +4,7 @@ import multer from "multer";
 import { z } from "zod";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, executionWorkspaces, issueExecutionDecisions, projectWorkspaces } from "@paperclipai/db";
+import { activityLog, agentWakeupRequests, executionWorkspaces, issueExecutionDecisions, projectWorkspaces } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
@@ -111,6 +111,10 @@ function wasIssueCommentInserted(comment: unknown) {
 
 function isUniqueViolation(err: unknown) {
   return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "23505";
+}
+
+function issueCommentWakeupIdempotencyKey(input: { issueId: string; commentId: string; agentId: string; reason: string }) {
+  return `issue-comment-wakeup:${input.issueId}:${input.commentId}:${input.agentId}:${input.reason}`;
 }
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
@@ -921,6 +925,20 @@ export function issueRoutes(
           throw err;
         }
       }
+    }
+  }
+
+  async function hasWakeupRequest(idempotencyKey: string) {
+    try {
+      const existing = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.idempotencyKey, idempotencyKey))
+        .limit(1);
+      return existing.length > 0;
+    } catch (err) {
+      logger.warn({ err, idempotencyKey }, "failed to check existing comment wakeup request");
+      return false;
     }
   }
 
@@ -3098,6 +3116,7 @@ export function issueRoutes(
     }
 
     let comment = null;
+    let commentInserted = false;
     if (commentBody) {
       const commentReferenceSummaryBefore = updateReferenceSummaryAfter
         ?? await issueReferencesSvc.listIssueReferenceSummary(issue.id);
@@ -3106,7 +3125,7 @@ export function issueRoutes(
         userId: actor.actorType === "agent" ? undefined : (actor.actorType === "user" ? actor.actorId : undefined),
         runId: actor.runId,
       });
-      const commentInserted = wasIssueCommentInserted(comment);
+      commentInserted = wasIssueCommentInserted(comment);
       await issueReferencesSvc.syncComment(comment.id);
       const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
@@ -3273,16 +3292,17 @@ export function issueRoutes(
         });
       }
 
-      if (commentBody && comment && wasIssueCommentInserted(comment)) {
+      if (commentBody && comment) {
         const assigneeId = issue.assigneeAgentId;
         const selfComment = actor.actorType === "agent" && actor.agentId === assigneeId;
         const skipAssigneeCommentWake = selfComment || isClosed;
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
+          const reason = reopened ? "issue_reopened_via_comment" : "issue_commented";
           addWakeup(assigneeId, {
             source: "automation",
             triggerDetail: "system",
-            reason: reopened ? "issue_reopened_via_comment" : "issue_commented",
+            reason,
             payload: {
               issueId: id,
               commentId: comment.id,
@@ -3299,7 +3319,7 @@ export function issueRoutes(
               commentId: comment.id,
               wakeCommentId: comment.id,
               source: reopened ? "issue.comment.reopen" : "issue.comment",
-              wakeReason: reopened ? "issue_reopened_via_comment" : "issue_commented",
+              wakeReason: reason,
               ...(reopened ? { reopenedFrom: reopenFromStatus } : {}),
               ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
               ...(interruptedRunId ? { interruptedRunId } : {}),
@@ -3395,8 +3415,16 @@ export function issueRoutes(
       }
 
       for (const { agentId, wakeup } of wakeups.values()) {
+        const reason = typeof wakeup.reason === "string" && wakeup.reason.length > 0 ? wakeup.reason : "issue_wakeup";
+        const idempotencyKey = comment
+          ? issueCommentWakeupIdempotencyKey({ issueId: issue.id, commentId: comment.id, agentId, reason })
+          : null;
+        if (idempotencyKey && !commentInserted && await hasWakeupRequest(idempotencyKey)) continue;
         heartbeat
-          .wakeup(agentId, wakeup)
+          .wakeup(agentId, {
+            ...wakeup,
+            idempotencyKey,
+          })
           .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update"));
       }
     })();
@@ -4300,7 +4328,7 @@ export function issueRoutes(
     });
 
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
-    if (commentInserted) void (async () => {
+    void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
       const assigneeId = currentIssue.assigneeAgentId;
       const selfComment = actor.actorType === "agent" && actor.agentId === assigneeId;
@@ -4390,8 +4418,20 @@ export function issueRoutes(
       }
 
       for (const [agentId, wakeup] of wakeups.entries()) {
+        if (!wakeup) continue;
+        const reason = typeof wakeup.reason === "string" && wakeup.reason.length > 0 ? wakeup.reason : "issue_wakeup";
+        const idempotencyKey = issueCommentWakeupIdempotencyKey({
+          issueId: currentIssue.id,
+          commentId: comment.id,
+          agentId,
+          reason,
+        });
+        if (!commentInserted && await hasWakeupRequest(idempotencyKey)) continue;
         heartbeat
-          .wakeup(agentId, wakeup)
+          .wakeup(agentId, {
+            ...wakeup,
+            idempotencyKey,
+          })
           .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));
       }
     })();

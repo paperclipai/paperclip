@@ -38,8 +38,9 @@ const mockTxInsert = vi.hoisted(() => vi.fn(() => ({ values: mockTxInsertValues 
 const mockTx = vi.hoisted(() => ({
   insert: mockTxInsert,
 }));
+const mockDbSelectLimit = vi.hoisted(() => vi.fn(async () => []));
 const mockDbSelectOrderBy = vi.hoisted(() => vi.fn(async () => []));
-const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({ orderBy: mockDbSelectOrderBy })));
+const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({ orderBy: mockDbSelectOrderBy, limit: mockDbSelectLimit })));
 const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
 const mockDb = vi.hoisted(() => ({
@@ -256,8 +257,9 @@ describe.sequential("issue comment reopen routes", () => {
     mockDb.transaction.mockReset();
     mockTxInsertValues.mockResolvedValue(undefined);
     mockTxInsert.mockImplementation(() => ({ values: mockTxInsertValues }));
+    mockDbSelectLimit.mockResolvedValue([]);
     mockDbSelectOrderBy.mockResolvedValue([]);
-    mockDbSelectWhere.mockImplementation(() => ({ orderBy: mockDbSelectOrderBy }));
+    mockDbSelectWhere.mockImplementation(() => ({ orderBy: mockDbSelectOrderBy, limit: mockDbSelectLimit }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDb.transaction.mockImplementation(async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx));
@@ -771,7 +773,13 @@ describe.sequential("issue comment reopen routes", () => {
         details: expect.objectContaining({ interactionId: "interaction-expired" }),
       }),
     );
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        reason: "issue_commented",
+        idempotencyKey: "issue-comment-wakeup:11111111-1111-4111-8111-111111111111:comment-deduped-direct:22222222-2222-4222-8222-222222222222:issue_commented",
+      }),
+    ));
   });
 
   it("moves assigned blocked issues back to todo via the PATCH comment path", async () => {

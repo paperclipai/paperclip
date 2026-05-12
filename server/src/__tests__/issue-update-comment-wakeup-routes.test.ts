@@ -387,6 +387,12 @@ describe("issue update comment wakeups", () => {
     );
     expect(mockRoutineService.syncRunStatusForIssue).toHaveBeenCalledWith(existing.id);
     expect(mockHeartbeatService.reportRunActivity).toHaveBeenCalledWith("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        reason: "issue_commented",
+        idempotencyKey: `issue-comment-wakeup:${existing.id}:comment-deduped-only:${ASSIGNEE_AGENT_ID}:issue_commented`,
+      }),
+    ));
   });
 });
