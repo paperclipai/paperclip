@@ -248,15 +248,20 @@ export async function waitForSandboxReady(
     }) as Record<string, unknown>;
 
     const status = (cr.status as Record<string, unknown>) ?? {};
-    const phase = (status.phase as string) ?? "Pending";
+    // agent-sandbox v1alpha1 uses status.conditions[type=Ready,status=True],
+    // not status.phase. Fall back to phase for forward-compat.
+    const conditions = Array.isArray(status.conditions) ? status.conditions as Array<Record<string, unknown>> : [];
+    const readyCondition = conditions.find((c) => c.type === "Ready");
+    const failedCondition = conditions.find((c) => c.type === "Failed" || (c.type === "Ready" && c.status === "False" && typeof c.reason === "string" && /failed/i.test(c.reason)));
+    const phase = (status.phase as string) ?? "";
 
-    if (phase === "Ready") {
+    if (readyCondition?.status === "True" || phase === "Ready") {
       return mapSandboxPhase(cr);
     }
-    if (phase === "Failed") {
+    if (failedCondition?.status === "True" || phase === "Failed") {
       const mapped = mapSandboxPhase(cr);
       throw new Error(
-        `Sandbox ${namespace}/${name} failed: ${mapped.reason ?? "unknown reason"} — ${mapped.message ?? ""}`,
+        `Sandbox ${namespace}/${name} failed: ${mapped.reason ?? (failedCondition?.reason as string) ?? "unknown reason"} — ${mapped.message ?? (failedCondition?.message as string) ?? ""}`,
       );
     }
     // Pending or Terminating — keep polling

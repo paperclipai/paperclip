@@ -60,6 +60,11 @@ export function buildJobManifest(input: BuildJobManifestInput): Record<string, u
               image: input.image,
               imagePullPolicy: "IfNotPresent",
               command: ["/usr/bin/tini", "--", "/usr/local/bin/paperclip-agent-shim"],
+              // HOME must point at a writable mount; the image's default
+              // HOME is inside the readOnly root filesystem. Agent runtimes
+              // can silently exit with code 0 and no output when HOME is
+              // unwritable, so set this explicitly.
+              env: [{ name: "HOME", value: "/home/paperclip" }],
               envFrom: [{ secretRef: { name: input.envSecretName } }],
               securityContext: {
                 runAsNonRoot: true,

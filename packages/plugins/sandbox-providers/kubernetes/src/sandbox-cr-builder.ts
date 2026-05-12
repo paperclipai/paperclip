@@ -96,6 +96,11 @@ export function buildSandboxCrManifest(
                 "-c",
                 "sleep infinity",
               ],
+              // HOME must point at a writable mount; the image's default
+               // HOME=/home/node is inside the readOnly root filesystem.
+               // Claude (and most agent runtimes) silently exit with code 0
+               // and no output when HOME is unwritable, so set this explicitly.
+              env: [{ name: "HOME", value: "/home/paperclip" }],
               envFrom: [{ secretRef: { name: input.envSecretName } }],
               securityContext: {
                 runAsNonRoot: true,

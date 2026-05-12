@@ -8,11 +8,30 @@
  * NOTE: tty=false so stdout and stderr arrive on separate channels. If tty=true
  * were used, they would be merged onto stdout and the exit code would not be
  * reliable from the status callback on older cluster versions.
+ *
+ * Stdin handling: @kubernetes/client-node v0.21.0 attaches `stdin.on("end", ()
+ * => ws.close())`, which closes the entire WebSocket as soon as our PassThrough
+ * ends — BEFORE the pod's command has a chance to flush and BEFORE the
+ * statusCallback fires. We work around this by removing that listener after
+ * exec setup completes so EOF on stdin only signals the pod (via a stdin-
+ * channel close frame implicit in our flow) without tearing down the
+ * connection. We then close the WebSocket explicitly inside the statusCallback.
  */
 
 import { Exec } from "@kubernetes/client-node";
 import { PassThrough } from "node:stream";
 import type { KubeConfig } from "@kubernetes/client-node";
+
+// Minimal WebSocket-like shape covering what we touch (close()). The full type
+// comes from @kubernetes/client-node's transitive ws/isomorphic-ws dep but
+// importing it directly couples this file to that internal choice.
+type WebSocketLike = { close(): void };
+
+// Single-quote a string for safe interpolation into a sh -c script. Wraps in
+// '...' and escapes any embedded single quotes via '\'' (close, escape, reopen).
+function shQuote(segment: string): string {
+  return `'${segment.replace(/'/g, "'\\''")}'`;
+}
 
 export async function execInPod(
   kc: KubeConfig,
@@ -20,17 +39,29 @@ export async function execInPod(
   podName: string,
   containerName: string,
   command: string[],
-  stdin?: string,
+  stdin?: string | Buffer,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const exec = new Exec(kc);
   const stdoutStream = new PassThrough();
   const stderrStream = new PassThrough();
 
-  // If stdin is provided build a readable stream from it; the Exec API accepts
-  // a Readable | null for stdin.
-  const stdinStream: import("node:stream").Readable | null = stdin
-    ? PassThrough.from(stdin)
+  const stdinPayload: Buffer | null =
+    Buffer.isBuffer(stdin) ? stdin
+    : typeof stdin === "string" && stdin.length > 0 ? Buffer.from(stdin, "utf-8")
     : null;
+  const stdinStream: PassThrough | null = stdinPayload ? new PassThrough() : null;
+
+  // When stdin is provided, wrap the command so its stdin is bounded by
+  // `head -c <N>`. Any program reading stdin (`cat`, `claude --print -`,
+  // `base64 -d`, etc.) waits for EOF to terminate the read. With the k8s
+  // client v0.21.0 stdin-end -> ws.close() limitation (see comment above)
+  // we can't reliably deliver EOF without tearing down the exec — so we
+  // pipe `head -c <N>` (which exits after exactly N bytes) into the
+  // original command. The pipe propagates the exit code of the RHS so the
+  // statusCallback still reflects the real command's exit status.
+  const effectiveCommand = stdinPayload
+    ? ["/bin/sh", "-c", `head -c ${stdinPayload.length} | ${command.map(shQuote).join(" ")}`]
+    : command;
 
   let stdoutData = "";
   let stderrData = "";
@@ -44,35 +75,73 @@ export async function execInPod(
 
   return await new Promise<{ exitCode: number; stdout: string; stderr: string }>(
     (resolve, reject) => {
-      exec
-        .exec(
-          namespace,
-          podName,
-          containerName,
-          command,
-          stdoutStream,
-          stderrStream,
-          stdinStream,
-          false, // tty=false: keep stdout/stderr on separate channels
-          (status) => {
-            // status.status is "Success" | "Failure"
-            if (status.status === "Success") {
-              resolve({ exitCode: 0, stdout: stdoutData, stderr: stderrData });
-              return;
-            }
-            // On failure, the exit code surfaces via
-            // status.details?.causes[].{reason:"ExitCode", message:"<N>"}
+      let ws: WebSocketLike | null = null;
+      let resolved = false;
+      let pendingExitCode: number | null = null;
+      let stdoutEnded = false;
+      let stderrEnded = false;
+
+      // The k8s client writes stdout/stderr to our PassThroughs synchronously
+      // and calls statusCallback in the same WS message handler. But `data`
+      // events on the PassThroughs fire on process.nextTick, so resolving
+      // inside statusCallback captures stdoutData/stderrData BEFORE the final
+      // bytes have been appended. Wait for both streams' `end` events (which
+      // the k8s client triggers via `stream.end()` when it processes the
+      // status frame) so all buffered data has been drained into our string
+      // accumulators before resolving.
+      const tryFinish = () => {
+        if (resolved) return;
+        if (pendingExitCode === null) return;
+        if (!stdoutEnded || !stderrEnded) return;
+        resolved = true;
+        try { ws?.close(); } catch { /* ignore */ }
+        resolve({ exitCode: pendingExitCode, stdout: stdoutData, stderr: stderrData });
+      };
+
+      stdoutStream.on("end", () => { stdoutEnded = true; tryFinish(); });
+      stderrStream.on("end", () => { stderrEnded = true; tryFinish(); });
+
+      const execPromise = exec.exec(
+        namespace,
+        podName,
+        containerName,
+        effectiveCommand,
+        stdoutStream,
+        stderrStream,
+        stdinStream,
+        false, // tty=false: keep stdout/stderr on separate channels
+        (status) => {
+          if (status.status === "Success") {
+            pendingExitCode = 0;
+          } else {
             const causes = status.details?.causes ?? [];
             const exitCodeCause = causes.find(
               (c: { reason?: string; message?: string }) =>
                 c.reason === "ExitCode",
             );
-            const exitCode = exitCodeCause?.message
+            pendingExitCode = exitCodeCause?.message
               ? Number(exitCodeCause.message)
               : 1;
-            resolve({ exitCode, stdout: stdoutData, stderr: stderrData });
-          },
-        )
+          }
+          tryFinish();
+        },
+      );
+
+      execPromise
+        .then((webSocket) => {
+          ws = webSocket as unknown as WebSocketLike;
+          if (stdinStream && stdinPayload) {
+            // Remove the default `end -> ws.close()` listener that k8s client
+            // attaches in handleStandardInput; it tears down the connection
+            // before the pod's command can finish flushing. We manage ws
+            // closure inside `tryFinish()` instead.
+            stdinStream.removeAllListeners("end");
+            stdinStream.end(stdinPayload);
+          } else if (stdinStream) {
+            stdinStream.removeAllListeners("end");
+            stdinStream.end();
+          }
+        })
         .catch(reject);
     },
   );
