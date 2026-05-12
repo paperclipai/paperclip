@@ -154,6 +154,32 @@ describe("normalizeIssueExecutionPolicy", () => {
       },
     });
   });
+
+  it("keeps final-delivery-only policies so origin return metadata survives create/update normalization", () => {
+    const result = normalizeIssueExecutionPolicy({
+      stages: [],
+      finalDelivery: {
+        destination: {
+          platform: "telegram",
+          chatId: "-1003913210493",
+          threadId: "103",
+        },
+      },
+    });
+
+    expect(result).toMatchObject({
+      mode: "normal",
+      commentRequired: true,
+      stages: [],
+      finalDelivery: {
+        destination: {
+          platform: "telegram",
+          chatId: "-1003913210493",
+          threadId: "103",
+        },
+      },
+    });
+  });
 });
 
 describe("parseIssueExecutionState", () => {

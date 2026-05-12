@@ -389,8 +389,10 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
 
   const missionControl = parsed.data.missionControl ?? null;
   const hasMissionControlGate = Boolean(missionControl?.enabled);
+  const finalDelivery = parsed.data.finalDelivery ?? null;
+  const hasFinalDelivery = Boolean(finalDelivery?.destination);
 
-  if (stages.length === 0 && !monitor && !hasMissionControlGate) return null;
+  if (stages.length === 0 && !monitor && !hasMissionControlGate && !hasFinalDelivery) return null;
 
   return {
     mode: parsed.data.mode ?? "normal",
@@ -398,6 +400,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
     stages,
     ...(monitor ? { monitor } : {}),
     ...(missionControl ? { missionControl } : {}),
+    ...(finalDelivery ? { finalDelivery } : {}),
   };
 }
 
