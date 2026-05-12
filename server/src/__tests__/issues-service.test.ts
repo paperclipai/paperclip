@@ -2868,6 +2868,8 @@ describeEmbeddedPostgres("issueService.addComment idempotency", () => {
     const second = await svc.addComment(issueId, "Implementation is complete.", { agentId, runId });
 
     expect(second.id).toBe(first.id);
+    expect((first as { wasInserted?: boolean }).wasInserted).toBe(true);
+    expect((second as { wasInserted?: boolean }).wasInserted).toBe(false);
 
     const rows = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(rows).toHaveLength(1);
@@ -2905,6 +2907,19 @@ describeEmbeddedPostgres("issueService.addComment idempotency", () => {
 
     const first = await svc.addComment(issueId, "Manual agent note.", { agentId });
     const second = await svc.addComment(issueId, "Manual agent note.", { agentId });
+
+    expect(second.id).not.toBe(first.id);
+
+    const rows = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.idempotencyKey === null)).toBe(true);
+  });
+
+  it("does not deduplicate non-agent comments even when a run id is present", async () => {
+    const { issueId, runId } = await seedIssueWithRun();
+
+    const first = await svc.addComment(issueId, "Board-side follow-up.", { userId: "user-1", runId });
+    const second = await svc.addComment(issueId, "Board-side follow-up.", { userId: "user-1", runId });
 
     expect(second.id).not.toBe(first.id);
 

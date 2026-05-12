@@ -105,6 +105,10 @@ const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
 
+function wasIssueCommentInserted(comment: unknown) {
+  return !comment || typeof comment !== "object" || (comment as { wasInserted?: boolean }).wasInserted !== false;
+}
+
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
 type CompanySearchService = {
@@ -3099,12 +3103,19 @@ export function issueRoutes(
         userId: actor.actorType === "agent" ? undefined : (actor.actorType === "user" ? actor.actorId : undefined),
         runId: actor.runId,
       });
-      await issueReferencesSvc.syncComment(comment.id);
-      const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
-      const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
-        commentReferenceSummaryBefore,
-        commentReferenceSummaryAfter,
-      );
+      const commentInserted = wasIssueCommentInserted(comment);
+      if (commentInserted) {
+        await issueReferencesSvc.syncComment(comment.id);
+      }
+      const commentReferenceSummaryAfter = commentInserted
+        ? await issueReferencesSvc.listIssueReferenceSummary(issue.id)
+        : commentReferenceSummaryBefore;
+      const commentReferenceDiff = commentInserted
+        ? issueReferencesSvc.diffIssueReferenceSummary(
+          commentReferenceSummaryBefore,
+          commentReferenceSummaryAfter,
+        )
+        : { addedReferencedIssues: [], removedReferencedIssues: [], currentReferencedIssues: [] };
       issueResponse = {
         ...issueResponse,
         relatedWork: commentReferenceSummaryAfter,
@@ -3113,46 +3124,50 @@ export function issueRoutes(
         ),
       };
 
-      await logActivity(db, {
-        companyId: issue.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        action: "issue.comment_added",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          commentId: comment.id,
-          bodySnippet: comment.body.slice(0, 120),
-          identifier: issue.identifier,
-          issueTitle: issue.title,
-          ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
-          ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
-          ...(interruptedRunId ? { interruptedRunId } : {}),
-          ...(hasFieldChanges ? { updated: true } : {}),
-          ...summarizeIssueReferenceActivityDetails({
-            addedReferencedIssues: commentReferenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
-            removedReferencedIssues: commentReferenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
-            currentReferencedIssues: commentReferenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
-          }),
-        },
-      });
-
-      const expiredInteractions = await issueThreadInteractionService(db).expireRequestConfirmationsSupersededByComment(
-        issue,
-        comment,
-        {
+      if (commentInserted) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
           agentId: actor.agentId,
-          userId: actor.actorType === "user" ? actor.actorId : null,
-        },
-      );
-      await logExpiredRequestConfirmations({
-        issue,
-        interactions: expiredInteractions,
-        actor,
-        source: "issue.comment",
-      });
+          runId: actor.runId,
+          action: "issue.comment_added",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            commentId: comment.id,
+            bodySnippet: comment.body.slice(0, 120),
+            identifier: issue.identifier,
+            issueTitle: issue.title,
+            ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+            ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
+            ...(interruptedRunId ? { interruptedRunId } : {}),
+            ...(hasFieldChanges ? { updated: true } : {}),
+            ...summarizeIssueReferenceActivityDetails({
+              addedReferencedIssues: commentReferenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
+              removedReferencedIssues: commentReferenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
+              currentReferencedIssues: commentReferenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
+            }),
+          },
+        });
+      }
+
+      if (commentInserted) {
+        const expiredInteractions = await issueThreadInteractionService(db).expireRequestConfirmationsSupersededByComment(
+          issue,
+          comment,
+          {
+            agentId: actor.agentId,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          },
+        );
+        await logExpiredRequestConfirmations({
+          issue,
+          interactions: expiredInteractions,
+          actor,
+          source: "issue.comment",
+        });
+      }
 
     } else if (updateReferenceSummaryAfter) {
       issueResponse = {
@@ -3259,7 +3274,7 @@ export function issueRoutes(
         });
       }
 
-      if (commentBody && comment) {
+      if (commentBody && comment && wasIssueCommentInserted(comment)) {
         const assigneeId = issue.assigneeAgentId;
         const selfComment = actor.actorType === "agent" && actor.agentId === assigneeId;
         const skipAssigneeCommentWake = selfComment || isClosed;
@@ -4217,60 +4232,71 @@ export function issueRoutes(
       presentation: req.body.presentation ?? null,
       metadata: req.body.metadata ?? null,
     });
-    await issueReferencesSvc.syncComment(comment.id);
-    const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(currentIssue.id);
-    const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
-      commentReferenceSummaryBefore,
-      commentReferenceSummaryAfter,
-    );
+    const commentInserted = wasIssueCommentInserted(comment);
+    if (commentInserted) {
+      await issueReferencesSvc.syncComment(comment.id);
+    }
+    const commentReferenceSummaryAfter = commentInserted
+      ? await issueReferencesSvc.listIssueReferenceSummary(currentIssue.id)
+      : commentReferenceSummaryBefore;
+    const commentReferenceDiff = commentInserted
+      ? issueReferencesSvc.diffIssueReferenceSummary(
+        commentReferenceSummaryBefore,
+        commentReferenceSummaryAfter,
+      )
+      : { addedReferencedIssues: [], removedReferencedIssues: [], currentReferencedIssues: [] };
 
-    if (actor.runId) {
+    if (commentInserted && actor.runId) {
       await heartbeat.reportRunActivity(actor.runId).catch((err) =>
         logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue comment"));
     }
 
-    await logActivity(db, {
-      companyId: currentIssue.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "issue.comment_added",
-      entityType: "issue",
-      entityId: currentIssue.id,
-      details: {
-        commentId: comment.id,
-        bodySnippet: comment.body.slice(0, 120),
-        identifier: currentIssue.identifier,
-        issueTitle: currentIssue.title,
-        ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
-        ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
-        ...(interruptedRunId ? { interruptedRunId } : {}),
-        ...summarizeIssueReferenceActivityDetails({
-          addedReferencedIssues: commentReferenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
-          removedReferencedIssues: commentReferenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
-          currentReferencedIssues: commentReferenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
-        }),
-      },
-    });
-
-    const expiredInteractions = await issueThreadInteractionService(db).expireRequestConfirmationsSupersededByComment(
-      currentIssue,
-      comment,
-      {
+    if (commentInserted) {
+      await logActivity(db, {
+        companyId: currentIssue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
         agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-      },
-    );
-    await logExpiredRequestConfirmations({
-      issue: currentIssue,
-      interactions: expiredInteractions,
-      actor,
-      source: "issue.comment",
-    });
+        runId: actor.runId,
+        action: "issue.comment_added",
+        entityType: "issue",
+        entityId: currentIssue.id,
+        details: {
+          commentId: comment.id,
+          bodySnippet: comment.body.slice(0, 120),
+          identifier: currentIssue.identifier,
+          issueTitle: currentIssue.title,
+          ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+          ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
+          ...(interruptedRunId ? { interruptedRunId } : {}),
+          ...summarizeIssueReferenceActivityDetails({
+            addedReferencedIssues: commentReferenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
+            removedReferencedIssues: commentReferenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
+            currentReferencedIssues: commentReferenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
+          }),
+        },
+      });
+    }
+
+    if (commentInserted) {
+      const expiredInteractions = await issueThreadInteractionService(db).expireRequestConfirmationsSupersededByComment(
+        currentIssue,
+        comment,
+        {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+      );
+      await logExpiredRequestConfirmations({
+        issue: currentIssue,
+        interactions: expiredInteractions,
+        actor,
+        source: "issue.comment",
+      });
+    }
 
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
-    void (async () => {
+    if (commentInserted) void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
       const assigneeId = currentIssue.assigneeAgentId;
       const selfComment = actor.actorType === "agent" && actor.agentId === assigneeId;
@@ -4366,7 +4392,7 @@ export function issueRoutes(
       }
     })();
 
-    res.status(201).json(comment);
+    res.status(commentInserted ? 201 : 200).json(comment);
   });
 
   router.post("/issues/:id/feedback-votes", validate(upsertIssueFeedbackVoteSchema), async (req, res) => {
