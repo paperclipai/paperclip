@@ -3,7 +3,8 @@
   "type": "object",
   "properties": {
     "decision": {
-      "type": "string"
+      "type": "string",
+      "enum": ["approved", "needs_revision", "rejected"]
     },
     "findings": {
       "type": "array",

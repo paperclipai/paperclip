@@ -2,6 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
+    "decision": {
+      "type": "string",
+      "enum": ["approved", "needs_revision", "rejected"]
+    },
     "status": {
       "type": "string"
     },

@@ -2,8 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
-    "classification": {
-      "type": "string"
+    "decision": {
+      "type": "string",
+      "enum": ["route_a", "route_b", "route_c"]
     },
     "confidence": {
       "type": "number",
