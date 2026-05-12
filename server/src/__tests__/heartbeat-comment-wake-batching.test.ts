@@ -18,7 +18,7 @@ import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.t
 
 function parsePaperclipContext(payload: Record<string, unknown> | undefined): Record<string, unknown> {
   const extra = String(payload?.extraSystemPrompt ?? "");
-  const match = extra.match(/```json\n([\s\S]*?)\n```/);
+  const match = extra.match(/Paperclip context \(structured run metadata\):\n```json\n([\s\S]*?)\n```/);
   if (!match) {
     throw new Error("Paperclip context JSON block not found in extraSystemPrompt");
   }
