@@ -852,7 +852,7 @@ export function buildHostServices(
           requiredFiles: status.requiredFiles,
         });
         await registry.upsertCompanySettings(pluginId, companyId, {
-          enabled: existing?.enabled ?? true,
+          enabled: existing?.enabled ?? false,
           settingsJson: nextSettings,
           lastError: status.healthy ? null : status.problems.map((item: { message: string }) => item.message).join("; "),
         });

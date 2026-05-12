@@ -15,6 +15,7 @@ import {
   issueRelations,
   issues,
   pluginManagedResources,
+  pluginCompanySettings,
   plugins,
   projects,
 } from "@paperclipai/db";
@@ -68,6 +69,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(pluginManagedResources);
+    await db.delete(pluginCompanySettings);
     await db.delete(projects);
     await db.delete(plugins);
     await db.delete(agents);
@@ -314,6 +316,14 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
 
     const finalStatus = await services.localFolders.status({ companyId, folderKey: "wiki-root" });
     expect(finalStatus.healthy).toBe(true);
+    const [settings] = await db
+      .select({ enabled: pluginCompanySettings.enabled })
+      .from(pluginCompanySettings)
+      .where(and(
+        eq(pluginCompanySettings.pluginId, pluginId),
+        eq(pluginCompanySettings.companyId, companyId),
+      ));
+    expect(settings?.enabled).toBe(false);
     await expect(fs.stat(path.join(root, "raw"))).resolves.toMatchObject({});
     await expect(fs.stat(path.join(root, "wiki/concepts"))).resolves.toMatchObject({});
     await expect(fs.readFile(path.join(root, "WIKI.md"), "utf8")).resolves.toBe("# Wiki\n");

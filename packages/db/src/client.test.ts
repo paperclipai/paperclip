@@ -44,6 +44,97 @@ if (!embeddedPostgresSupport.supported) {
 
 describeEmbeddedPostgres("applyPendingMigrations", () => {
   it(
+    "replays migration 0084 by granting companies with existing plugin-owned secrets",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const migration0084Hash = await migrationHash("0084_plugin_secret_company_grants.sql");
+
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${migration0084Hash}'`,
+        );
+        await sql.unsafe(`
+          INSERT INTO "companies" ("id", "name", "issue_prefix")
+          VALUES ('11111111-1111-4111-8111-111111111111', 'Plugin grants', 'PGT')
+        `);
+        await sql.unsafe(`
+          INSERT INTO "plugins" (
+            "id",
+            "plugin_key",
+            "package_name",
+            "version",
+            "manifest_json",
+            "status"
+          )
+          VALUES (
+            '22222222-2222-4222-8222-222222222222',
+            'paperclip.secret-writer',
+            '@paperclip/plugin-secret-writer',
+            '1.0.0',
+            '{"id":"paperclip.secret-writer","version":"1.0.0","capabilities":["secrets.write"]}'::jsonb,
+            'ready'
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "company_secrets" (
+            "id",
+            "company_id",
+            "key",
+            "name",
+            "provider",
+            "status",
+            "latest_version",
+            "created_by_user_id"
+          )
+          VALUES
+            (
+              '33333333-3333-4333-8333-333333333333',
+              '11111111-1111-4111-8111-111111111111',
+              'PLUGIN_TOKEN',
+              'PLUGIN_TOKEN',
+              'local_encrypted',
+              'active',
+              1,
+              'plugin:22222222-2222-4222-8222-222222222222'
+            ),
+            (
+              '44444444-4444-4444-8444-444444444444',
+              '11111111-1111-4111-8111-111111111111',
+              'PLUGIN_OLD',
+              'PLUGIN_OLD',
+              'local_encrypted',
+              'deleted',
+              1,
+              'plugin:22222222-2222-4222-8222-222222222222'
+            )
+        `);
+      } finally {
+        await sql.end();
+      }
+
+      await applyPendingMigrations(connectionString);
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const rows = await verifySql.unsafe<{ enabled: boolean }[]>(`
+          SELECT "enabled"
+          FROM "plugin_company_settings"
+          WHERE "company_id" = '11111111-1111-4111-8111-111111111111'
+            AND "plugin_id" = '22222222-2222-4222-8222-222222222222'
+        `);
+        expect(rows).toEqual([{ enabled: true }]);
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
     "applies an inserted earlier migration without replaying later legacy migrations",
     async () => {
       const connectionString = await createTempDatabase();
