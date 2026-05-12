@@ -35,6 +35,8 @@ For non-resumed runs, Paperclip assembles the Codex prompt in this order:
 
 This ordering is intentional: models that support prefix prompt caching can reuse the stable `promptTemplate` portion even when the wake payload changes each heartbeat, improving `cached_input_tokens`.
 
+To verify the cache impact, compare two consecutive non-resumed heartbeats with different wake payloads and compute `cachedInputTokens / inputTokens` from the run token usage. The ratio should increase when more stable prompt text is moved into the cacheable prefix.
+
 ## Session Persistence
 
 Codex uses `previous_response_id` for session continuity. The adapter serializes and restores this across heartbeats, allowing the agent to maintain conversation context.
