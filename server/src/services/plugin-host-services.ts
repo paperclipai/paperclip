@@ -1512,7 +1512,9 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         const issue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
         const interaction = await issueThreadInteractionService(db).create(issue, params.interaction as CreateIssueThreadInteraction, {
+          actorType: "agent",
           agentId: params.authorAgentId ?? null,
+          userId: null,
         });
         await logPluginActivity({
           companyId,

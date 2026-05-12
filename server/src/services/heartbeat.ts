@@ -31,6 +31,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueRelations,
+  issueThreadInteractions,
   issues,
   issueWorkProducts,
   projects,
@@ -73,6 +74,7 @@ import {
 } from "./issue-liveness.js";
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
 import { maybeLogAwaitingHumanHandoff } from "./awaiting-human-handoff.js";
+import { detectClickUpAwaitingHumanApproval } from "./awaiting-human-notifications.js";
 import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
@@ -124,6 +126,8 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { extractSkillMentionIds } from "@paperclipai/shared";
 import { getStorageService } from "../storage/index.js";
+import { issueThreadInteractionService } from "./issue-thread-interactions.js";
+import { finalizeAcceptedInteractionResolution, isClosedIssueStatus } from "./issue-interaction-resolution-effects.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -5119,6 +5123,327 @@ export function heartbeatService(db: Db) {
     return result;
   }
 
+  async function reconcileAwaitingHumanApprovals() {
+    const candidates = await db
+      .select({
+        issueId: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        interactionId: issueThreadInteractions.id,
+        createdByAgentId: issueThreadInteractions.createdByAgentId,
+      })
+      .from(issues)
+      .innerJoin(
+        issueThreadInteractions,
+        and(
+          eq(issueThreadInteractions.issueId, issues.id),
+          eq(issueThreadInteractions.companyId, issues.companyId),
+        ),
+      )
+      .where(
+        and(
+          eq(issues.status, "awaiting_human"),
+          eq(issueThreadInteractions.kind, "request_confirmation"),
+          eq(issueThreadInteractions.status, "pending"),
+        ),
+      );
+
+    const result = {
+      checked: 0,
+      approved: 0,
+      failed: 0,
+      skipped: 0,
+      noApproval: 0,
+      issueIds: [] as string[],
+      interactionIds: [] as string[],
+    };
+    const interactionsSvc = issueThreadInteractionService(db);
+
+    async function hasForwardedClickUpReply(input: {
+      companyId: string;
+      issueId: string;
+      interactionId: string;
+      clickupMessageId: string;
+      clickupReplyId: string;
+    }) {
+      const row = await db
+        .select({ id: activityLog.id })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, input.companyId),
+            eq(activityLog.action, "issue.comment_added"),
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.entityId, input.issueId),
+            sql`${activityLog.details} ->> 'interactionId' = ${input.interactionId}`,
+            sql`${activityLog.details} ->> 'clickupMessageId' = ${input.clickupMessageId}`,
+            sql`${activityLog.details} ->> 'clickupReplyId' = ${input.clickupReplyId}`,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      return Boolean(row);
+    }
+
+    function buildForwardedClickUpReplyComment(replyBody: string) {
+      return `ClickUp reply received:\n\n${replyBody}`;
+    }
+
+    async function getCurrentIssueStatus(companyId: string, issueId: string) {
+      const row = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.id, issueId),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      return row?.status ?? null;
+    }
+
+    const candidateIssueIds = [...new Set(candidates.map((candidate) => candidate.issueId))];
+    const candidateCompanyIds = [...new Set(candidates.map((candidate) => candidate.companyId))];
+    const candidateInteractionKeys = new Set(
+      candidates.map((candidate) => `${candidate.companyId}:${candidate.issueId}:${candidate.interactionId}`),
+    );
+    const handoffRows = candidateIssueIds.length > 0
+      ? await db
+        .select({
+          companyId: activityLog.companyId,
+          issueId: activityLog.entityId,
+          details: activityLog.details,
+        })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.action, "issue.awaiting_human.entered"),
+            eq(activityLog.entityType, "issue"),
+            inArray(activityLog.companyId, candidateCompanyIds),
+            inArray(activityLog.entityId, candidateIssueIds),
+          ),
+        )
+        .orderBy(desc(activityLog.createdAt))
+      : [];
+    const latestHandoffsByCandidateKey = new Map<string, { details: typeof activityLog.$inferSelect.details }>();
+    for (const handoff of handoffRows) {
+      const details = parseObject(handoff.details);
+      const interactionId = readNonEmptyString(details.interactionId);
+      if (!interactionId) continue;
+      const candidateKey = `${handoff.companyId}:${handoff.issueId}:${interactionId}`;
+      if (!candidateInteractionKeys.has(candidateKey) || latestHandoffsByCandidateKey.has(candidateKey)) continue;
+      latestHandoffsByCandidateKey.set(candidateKey, { details: handoff.details });
+    }
+
+    for (const candidate of candidates) {
+      const handoff = latestHandoffsByCandidateKey.get(
+        `${candidate.companyId}:${candidate.issueId}:${candidate.interactionId}`,
+      ) ?? null;
+
+      const details = parseObject(handoff?.details);
+      const delivery = parseObject(details.notificationDelivery);
+      const messageId = readNonEmptyString(delivery.externalId);
+      if (
+        delivery.channel !== "clickup-chat"
+        || delivery.status !== "sent"
+        || !messageId
+      ) {
+        result.skipped += 1;
+        continue;
+      }
+
+      result.checked += 1;
+      const approval = await detectClickUpAwaitingHumanApproval(messageId);
+      if (approval.status === "failed") {
+        result.failed += 1;
+        logger.warn({
+          issueId: candidate.issueId,
+          interactionId: candidate.interactionId,
+          clickupMessageId: messageId,
+          detail: approval.detail,
+        }, "failed to poll ClickUp awaiting_human approval state");
+        continue;
+      }
+      if (approval.status === "forward_reply") {
+        let forwardedAny = false;
+        for (const reply of approval.replies ?? []) {
+          const replyId = readNonEmptyString(reply.id);
+          const replyBody = readNonEmptyString(reply.content);
+          const wakeAgentId = candidate.assigneeAgentId ?? candidate.createdByAgentId ?? null;
+          if (!replyId || !replyBody) continue;
+          if (await hasForwardedClickUpReply({
+            companyId: candidate.companyId,
+            issueId: candidate.issueId,
+            interactionId: candidate.interactionId,
+            clickupMessageId: messageId,
+            clickupReplyId: replyId,
+          })) {
+            continue;
+          }
+
+          try {
+            const comment = await db.transaction(async (tx) => {
+              const [createdComment] = await tx
+                .insert(issueComments)
+                .values({
+                  companyId: candidate.companyId,
+                  issueId: candidate.issueId,
+                  authorAgentId: null,
+                  authorUserId: null,
+                  createdByRunId: null,
+                  body: buildForwardedClickUpReplyComment(replyBody),
+                })
+                .returning();
+
+              await tx
+                .update(issues)
+                .set({ updatedAt: new Date() })
+                .where(eq(issues.id, candidate.issueId));
+
+              await logActivity(tx as unknown as Db, {
+                companyId: candidate.companyId,
+                actorType: "system",
+                actorId: "clickup_approval_poller",
+                action: "issue.comment_added",
+                entityType: "issue",
+                entityId: candidate.issueId,
+                details: {
+                  commentId: createdComment.id,
+                  bodySnippet: createdComment.body.slice(0, 120),
+                  identifier: candidate.identifier,
+                  issueTitle: candidate.title,
+                  interactionId: candidate.interactionId,
+                  forwardingOrigin: "clickup.awaiting_human.reply_forwarded",
+                  clickupMessageId: messageId,
+                  clickupReplyId: replyId,
+                },
+              });
+
+              return createdComment;
+            });
+
+            forwardedAny = true;
+
+            const currentIssueStatus = await getCurrentIssueStatus(candidate.companyId, candidate.issueId);
+            if (wakeAgentId && currentIssueStatus !== "backlog" && !isClosedIssueStatus(currentIssueStatus)) {
+              await enqueueWakeup(wakeAgentId, {
+                source: "automation",
+                triggerDetail: "system",
+                reason: "issue_commented",
+                payload: {
+                  issueId: candidate.issueId,
+                  commentId: comment.id,
+                  mutation: "comment",
+                },
+                requestedByActorType: "system",
+                requestedByActorId: "clickup_approval_poller",
+                contextSnapshot: {
+                  issueId: candidate.issueId,
+                  taskId: candidate.issueId,
+                  commentId: comment.id,
+                  wakeCommentId: comment.id,
+                  source: "clickup.awaiting_human.reply_forwarded",
+                  wakeReason: "issue_commented",
+                  interactionId: candidate.interactionId,
+                  clickupMessageId: messageId,
+                  clickupReplyId: replyId,
+                },
+              });
+            }
+          } catch (error) {
+            result.failed += 1;
+            logger.warn({
+              err: error,
+              issueId: candidate.issueId,
+              interactionId: candidate.interactionId,
+              clickupMessageId: messageId,
+              clickupReplyId: replyId,
+            }, "failed to forward awaiting_human ClickUp reply into issue comment");
+          }
+        }
+        if (!forwardedAny) {
+          result.skipped += 1;
+        }
+        continue;
+      }
+      if (approval.status === "skipped" || approval.status === "no_approval") {
+        if (approval.status === "skipped") result.skipped += 1;
+        if (approval.status === "no_approval") result.noApproval += 1;
+        continue;
+      }
+
+      try {
+        const { interaction, createdIssues, continuationIssue } = await interactionsSvc.acceptInteraction({
+          id: candidate.issueId,
+          companyId: candidate.companyId,
+          goalId: null,
+          projectId: null,
+        }, candidate.interactionId, {}, {
+          actorType: "system",
+          userId: null,
+          agentId: null,
+        });
+
+        await finalizeAcceptedInteractionResolution({
+          db,
+          heartbeat: { wakeup: enqueueWakeup },
+          logActivity,
+          issue: {
+            id: candidate.issueId,
+            companyId: candidate.companyId,
+            identifier: candidate.identifier,
+            status: candidate.status,
+            assigneeAgentId: candidate.assigneeAgentId,
+            assigneeUserId: candidate.assigneeUserId,
+          },
+          interaction,
+          createdIssues,
+          continuationIssue,
+          actor: {
+            actorType: "system",
+            actorId: "clickup_approval_poller",
+            agentId: null,
+            runId: null,
+          },
+          source: "clickup.awaiting_human.approval",
+          metadata: {
+            resolutionSource: approval.resolutionSource,
+            clickupMessageId: messageId,
+            clickupReaction: approval.clickupReaction ?? null,
+          },
+        });
+
+        if (interaction.status === "accepted") {
+          result.approved += 1;
+          result.issueIds.push(candidate.issueId);
+          result.interactionIds.push(candidate.interactionId);
+        } else {
+          result.skipped += 1;
+        }
+      } catch (error) {
+        if (error instanceof HttpError && error.status === 409) {
+          result.skipped += 1;
+          continue;
+        }
+        result.failed += 1;
+        logger.warn({
+          err: error,
+          issueId: candidate.issueId,
+          interactionId: candidate.interactionId,
+          clickupMessageId: messageId,
+        }, "failed to accept awaiting_human approval from ClickUp");
+      }
+    }
+
+    return result;
+  }
+
   async function updateRuntimeState(
     agent: typeof agents.$inferSelect,
     run: typeof heartbeatRuns.$inferSelect,
@@ -7870,6 +8195,8 @@ export function heartbeatService(db: Db) {
     reconcileStrandedAssignedIssues,
 
     reconcileIssueGraphLiveness,
+
+    reconcileAwaitingHumanApprovals,
 
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);

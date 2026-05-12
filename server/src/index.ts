@@ -672,14 +672,22 @@ export async function startServer(): Promise<StartedServer> {
       .then(async (promotion) => {
         await heartbeat.resumeQueuedRuns();
         const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+        const approvals = await heartbeat.reconcileAwaitingHumanApprovals();
         if (
           promotion.promoted > 0 ||
           reconciled.dispatchRequeued > 0 ||
           reconciled.continuationRequeued > 0 ||
-          reconciled.escalated > 0
+          reconciled.escalated > 0 ||
+          approvals.approved > 0 ||
+          approvals.failed > 0
         ) {
           logger.warn(
-            { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
+            {
+              promotedScheduledRetries: promotion.promoted,
+              promotedScheduledRetryRunIds: promotion.runIds,
+              ...reconciled,
+              clickupAwaitingHumanApprovals: approvals,
+            },
             "startup heartbeat recovery changed assigned issue state",
           );
         }
@@ -724,14 +732,22 @@ export async function startServer(): Promise<StartedServer> {
         .then(async (promotion) => {
           await heartbeat.resumeQueuedRuns();
           const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+          const approvals = await heartbeat.reconcileAwaitingHumanApprovals();
           if (
             promotion.promoted > 0 ||
             reconciled.dispatchRequeued > 0 ||
             reconciled.continuationRequeued > 0 ||
-            reconciled.escalated > 0
+            reconciled.escalated > 0 ||
+            approvals.approved > 0 ||
+            approvals.failed > 0
           ) {
             logger.warn(
-              { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
+              {
+                promotedScheduledRetries: promotion.promoted,
+                promotedScheduledRetryRunIds: promotion.runIds,
+                ...reconciled,
+                clickupAwaitingHumanApprovals: approvals,
+              },
               "periodic heartbeat recovery changed assigned issue state",
             );
           }

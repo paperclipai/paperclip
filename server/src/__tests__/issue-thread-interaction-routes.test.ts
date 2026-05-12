@@ -576,6 +576,7 @@ describe("issue thread interaction routes", () => {
         sourceRunId: "run-1",
       }),
       {
+        actorType: "agent",
         agentId: CREATED_AGENT_ID,
         userId: null,
       },

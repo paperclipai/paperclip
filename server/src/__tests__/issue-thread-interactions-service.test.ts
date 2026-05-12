@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -20,6 +20,16 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+vi.mock("../otel.js", () => ({
+  recordComment: vi.fn(),
+  recordHumanIntervened: vi.fn(),
+  recordIssueCreated: vi.fn(),
+  recordIssueStatusChanged: vi.fn(),
+  recordIssueStatusCounts: vi.fn(),
+  clearIssueStatusCountsForCompany: vi.fn(),
+  traceHumanCommentPosted: vi.fn(),
+  recordRunStatus: vi.fn(),
+}));
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
@@ -1162,6 +1172,78 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       projectId: null,
     }, created.id, {}, {
       userId: "local-board",
+    });
+
+    expect(accepted.continuationIssue?.status).toBe("awaiting_human");
+    const updated = (await db.select().from(issues)).find((row) => row.id === issueId);
+    expect(updated?.status).toBe("awaiting_human");
+    expect(updated?.assigneeAgentId).toBe(agentId);
+  });
+
+  it("returns awaiting_human confirmations to the creator agent for system-driven approval bridges", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "ClickUp bridge flow",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parked issue",
+      status: "awaiting_human",
+      priority: "medium",
+      assigneeUserId: "local-board",
+    });
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee_on_accept",
+      payload: {
+        version: 1,
+        prompt: "Approve?",
+      },
+    }, {
+      agentId,
+    });
+
+    const accepted = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {}, {
+      actorType: "system",
+      userId: null,
+      agentId: null,
     });
 
     expect(accepted.continuationIssue?.status).toBe("awaiting_human");

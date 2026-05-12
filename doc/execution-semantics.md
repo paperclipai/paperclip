@@ -95,6 +95,13 @@ plane enforces this at the API level and excludes `awaiting_human` from
 agent auto-checkout paths and from "other agents may help unblock"
 reconcilers.
 
+When ClickUp chat handoff is configured, Bizbox may also poll the exact
+handoff message for a human reply or a configured positive reaction.
+That external signal is not the source of truth by itself: Bizbox first
+translates it into acceptance of the matching pending
+`request_confirmation` interaction, then resumes work through the normal
+interaction-resolution wake path.
+
 ### `in_review`
 
 Execution work is paused because the next move belongs to a reviewer or approver, not the current executor.

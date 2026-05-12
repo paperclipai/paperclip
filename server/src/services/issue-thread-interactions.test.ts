@@ -139,6 +139,7 @@ describe("issueThreadInteractionService", () => {
         tasks: [{ clientKey: "task-1", title: "One" }],
       },
     }, {
+      actorType: "agent",
       agentId: "agent-1",
     });
 
@@ -207,6 +208,7 @@ describe("issueThreadInteractionService", () => {
       ],
       summaryMarkdown: "Phase 1 with tests and docs.",
     }, {
+      actorType: "user",
       userId: "local-board",
     });
 
@@ -281,6 +283,7 @@ describe("issueThreadInteractionService", () => {
         { questionId: "scope", optionIds: ["phase-1"] },
       ],
     }, {
+      actorType: "user",
       userId: "local-board",
     });
 

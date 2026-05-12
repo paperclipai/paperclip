@@ -39,6 +39,7 @@ import { maybeLogAwaitingHumanHandoff } from "./awaiting-human-handoff.js";
 import { issueService } from "./issues.js";
 
 type InteractionActor = {
+  actorType: "agent" | "user" | "system";
   agentId?: string | null;
   userId?: string | null;
 };
@@ -177,7 +178,7 @@ function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
 }) {
   if (args.current.kind !== "request_confirmation") return false;
   if (!args.current.createdByAgentId) return false;
-  if (!args.actor.userId) return false;
+  if (args.actor.actorType === "agent") return false;
   if (!args.issue.assigneeUserId) return false;
   if (args.issue.assigneeAgentId) return false;
   if (isTerminalIssueStatus(args.issue.status)) return false;

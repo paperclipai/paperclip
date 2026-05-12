@@ -77,6 +77,10 @@ import {
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import {
+  finalizeAcceptedInteractionResolution,
+  queueResolvedInteractionContinuationWakeup,
+} from "../services/issue-interaction-resolution-effects.js";
+import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
@@ -197,65 +201,6 @@ function shouldImplicitlyMoveCommentedIssueToTodoForAgent(input: {
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   if (input.actorType === "agent" && input.actorId === input.assigneeAgentId) return false;
   return true;
-}
-
-function queueResolvedInteractionContinuationWakeup(input: {
-  heartbeat: ReturnType<typeof heartbeatService>;
-  issue: { id: string; assigneeAgentId: string | null; status: string };
-  interaction: {
-    id: string;
-    kind: string;
-    status: string;
-    continuationPolicy: string;
-    sourceCommentId?: string | null;
-    sourceRunId?: string | null;
-  };
-  actor: { actorType: "user" | "agent"; actorId: string };
-  source: string;
-}) {
-  if (
-    input.interaction.continuationPolicy !== "wake_assignee"
-    && input.interaction.continuationPolicy !== "wake_assignee_on_accept"
-  ) return;
-  if (
-    input.interaction.continuationPolicy === "wake_assignee_on_accept"
-    && input.interaction.status !== "accepted"
-  ) return;
-  if (input.interaction.status === "expired") return;
-  if (!input.issue.assigneeAgentId || isClosedIssueStatus(input.issue.status)) return;
-
-  void input.heartbeat.wakeup(input.issue.assigneeAgentId, {
-    source: "automation",
-    triggerDetail: "system",
-    reason: "issue_commented",
-    payload: {
-      issueId: input.issue.id,
-      interactionId: input.interaction.id,
-      interactionKind: input.interaction.kind,
-      interactionStatus: input.interaction.status,
-      sourceCommentId: input.interaction.sourceCommentId ?? null,
-      sourceRunId: input.interaction.sourceRunId ?? null,
-      mutation: "interaction",
-    },
-    requestedByActorType: input.actor.actorType,
-    requestedByActorId: input.actor.actorId,
-    contextSnapshot: {
-      issueId: input.issue.id,
-      taskId: input.issue.id,
-      interactionId: input.interaction.id,
-      interactionKind: input.interaction.kind,
-      interactionStatus: input.interaction.status,
-      sourceCommentId: input.interaction.sourceCommentId ?? null,
-      sourceRunId: input.interaction.sourceRunId ?? null,
-      wakeReason: "issue_commented",
-      source: input.source,
-    },
-  }).catch((err) => logger.warn({
-    err,
-    issueId: input.issue.id,
-    interactionId: input.interaction.id,
-    agentId: input.issue.assigneeAgentId,
-  }, "failed to wake assignee on issue interaction resolution"));
 }
 
 function diffExecutionParticipants(
@@ -1175,6 +1120,7 @@ export function issueRoutes(
           latestRevisionNumber: doc.latestRevisionNumber,
         },
         {
+          actorType: actor.actorType,
           agentId: actor.agentId,
           userId: actor.actorType === "user" ? actor.actorId : null,
         },
@@ -1273,6 +1219,7 @@ export function issueRoutes(
           latestRevisionNumber: result.document.latestRevisionNumber,
         },
         {
+          actorType: actor.actorType,
           agentId: actor.agentId,
           userId: actor.actorType === "user" ? actor.actorId : null,
         },
@@ -1344,6 +1291,7 @@ export function issueRoutes(
         latestRevisionNumber: null,
       },
       {
+        actorType: actor.actorType,
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       },
@@ -2302,6 +2250,7 @@ export function issueRoutes(
         issue,
         comment,
         {
+          actorType: actor.actorType,
           agentId: actor.agentId,
           userId: actor.actorType === "user" ? actor.actorId : null,
         },
@@ -2801,6 +2750,7 @@ export function issueRoutes(
       ...req.body,
       sourceRunId: req.actor.type === "agent" ? agentSourceRunId : req.body.sourceRunId ?? null,
     }, {
+      actorType: actor.actorType,
       agentId: actor.agentId,
       userId: actor.actorType === "user" ? actor.actorId : null,
     });
@@ -2841,80 +2791,24 @@ export function issueRoutes(
 
       const actor = getActorInfo(req);
       const { interaction, createdIssues, continuationIssue } = await issueThreadInteractionService(db).acceptInteraction(issue, interactionId, req.body, {
+        actorType: actor.actorType,
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
-      const continuationWakeIssue = continuationIssue ?? issue;
-
-      await logActivity(db, {
-        companyId: issue.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        action: interaction.status === "expired"
-          ? "issue.thread_interaction_expired"
-          : "issue.thread_interaction_accepted",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          interactionId: interaction.id,
-          interactionKind: interaction.kind,
-          interactionStatus: interaction.status,
-          createdTaskCount:
-            interaction.kind === "suggest_tasks"
-              ? (interaction.result?.createdTasks?.length ?? 0)
-              : 0,
-          skippedTaskCount:
-            interaction.kind === "suggest_tasks"
-              ? (interaction.result?.skippedClientKeys?.length ?? 0)
-              : 0,
-        },
-      });
-
-      if (continuationIssue) {
-        await logActivity(db, {
-          companyId: issue.companyId,
+      await finalizeAcceptedInteractionResolution({
+        db,
+        heartbeat,
+        interaction,
+        issue,
+        createdIssues,
+        continuationIssue,
+        actor: {
           actorType: actor.actorType,
           actorId: actor.actorId,
           agentId: actor.agentId,
           runId: actor.runId,
-          action: "issue.updated",
-          entityType: "issue",
-          entityId: issue.id,
-          details: {
-            identifier: issue.identifier,
-            status: continuationIssue.status,
-            assigneeAgentId: continuationIssue.assigneeAgentId ?? null,
-            assigneeUserId: continuationIssue.assigneeUserId ?? null,
-            source: "request_confirmation_accept",
-            interactionId: interaction.id,
-            _previous: {
-              status: issue.status,
-              assigneeAgentId: issue.assigneeAgentId ?? null,
-              assigneeUserId: issue.assigneeUserId ?? null,
-            },
-          },
-        });
-      }
-
-      for (const createdIssue of createdIssues) {
-        void queueIssueAssignmentWakeup({
-          heartbeat,
-          issue: createdIssue,
-          reason: "issue_assigned",
-          mutation: "interaction_accept",
-          contextSource: "issue.interaction.accept",
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-        });
-      }
-
-      queueResolvedInteractionContinuationWakeup({
-        heartbeat,
-        issue: continuationWakeIssue,
-        interaction,
-        actor,
+        },
+        logActivity,
         source: "issue.interaction.accept",
       });
 
@@ -2938,6 +2832,7 @@ export function issueRoutes(
 
       const actor = getActorInfo(req);
       const interaction = await issueThreadInteractionService(db).rejectInteraction(issue, interactionId, req.body, {
+        actorType: actor.actorType,
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
@@ -2994,6 +2889,7 @@ export function issueRoutes(
 
       const actor = getActorInfo(req);
       const interaction = await issueThreadInteractionService(db).answerQuestions(issue, interactionId, req.body, {
+        actorType: actor.actorType,
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
@@ -3334,6 +3230,7 @@ export function issueRoutes(
       currentIssue,
       comment,
       {
+        actorType: actor.actorType,
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       },

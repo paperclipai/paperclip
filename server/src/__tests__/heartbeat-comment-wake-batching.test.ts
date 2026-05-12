@@ -627,6 +627,14 @@ describe("heartbeat comment wake batching", () => {
 
       expect(firstRun).not.toBeNull();
       await waitFor(() => gateway.getAgentPayloads().length === 1);
+      await waitFor(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, firstRun!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "running";
+      });
 
       const queuedComment = await db
         .insert(issueComments)
@@ -655,6 +663,20 @@ describe("heartbeat comment wake batching", () => {
       });
 
       expect(followupRun).toBeNull();
+      await waitFor(async () => {
+        const deferred = await db
+          .select({ id: agentWakeupRequests.id })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, companyId),
+              eq(agentWakeupRequests.agentId, agentId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        return Boolean(deferred);
+      });
 
       await heartbeat.cancelRun(firstRun!.id);
 
