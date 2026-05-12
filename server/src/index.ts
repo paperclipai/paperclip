@@ -744,8 +744,16 @@ export async function startServer(): Promise<StartedServer> {
   
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure
       // persisted queued work is still being driven forward.
+      // reapStaleRunningRuns runs first so alive-but-wedged runs become process_pid_dead
+      // candidates that the standard reapOrphanedRuns can clean up in the same tick;
+      // serializing also prevents the two reapers from clobbering the same row.
       void heartbeat
-        .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+        .reapStaleRunningRuns({ maxRuntimeMs: config.heartbeatRunMaxRuntimeMs, graceMs: config.heartbeatRunReaperGraceMs })
+        .catch((err) => {
+          logger.error({ err }, "periodic runtime reaper failed");
+          return { reaped: 0, runIds: [] as string[] };
+        })
+        .then(() => heartbeat.reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 }))
         .then(() => heartbeat.promoteDueScheduledRetries())
         .then(async (promotion) => {
           await heartbeat.resumeQueuedRuns();
@@ -785,10 +793,6 @@ export async function startServer(): Promise<StartedServer> {
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
-
-      void heartbeat
-        .reapStaleRunningRuns({ maxRuntimeMs: config.heartbeatRunMaxRuntimeMs, graceMs: config.heartbeatRunReaperGraceMs })
-        .catch((err) => logger.error({ err }, "periodic runtime reaper failed"));
     }, config.heartbeatSchedulerIntervalMs);
   }
   
