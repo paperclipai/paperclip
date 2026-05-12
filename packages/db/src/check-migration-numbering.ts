@@ -38,6 +38,25 @@ function ensureSequentialJournalIndexes(journal: JournalFile) {
   });
 }
 
+function migrationPrefix(tag: string): number {
+  const match = tag.match(/^(\d{4})_/);
+  if (!match) {
+    throw new Error(`Migration journal entry does not start with a 4-digit migration number: ${tag}`);
+  }
+  return Number(match[1]);
+}
+
+function ensureJournalPrefixOrder(journalTags: string[]) {
+  let previous = -1;
+  for (const tag of journalTags) {
+    const current = migrationPrefix(tag);
+    if (current < previous) {
+      throw new Error(`Migration journal numeric order moved backward at ${tag}`);
+    }
+    previous = current;
+  }
+}
+
 function ensureJournalReferencesFiles(migrationFiles: string[], journalTags: string[]) {
   const migrationFileSet = new Set(migrationFiles);
   const journalFiles = journalTags.map((tag) => `${tag}.sql`);
@@ -109,6 +128,7 @@ async function main() {
   ensureUniqueValues(journalTags, "migration journal");
   ensureNumberedTags(journalTags, "migration journal");
   ensureSequentialJournalIndexes(journal);
+  ensureJournalPrefixOrder(journalTags);
   ensureJournalReferencesFiles(migrationFiles, journalTags);
   ensureNamedSnapshotsMatchJournal(snapshotFiles, journalTags);
 }
