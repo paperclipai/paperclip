@@ -4448,7 +4448,7 @@ export function issueRoutes(
           agentId,
           reason,
         });
-        if (!commentInserted && reason === "issue_commented") {
+        if (!commentInserted && (reason === "issue_commented" || reason === "issue_comment_mentioned")) {
           const reopenIdempotencyKey = issueCommentWakeupIdempotencyKey({
             issueId: currentIssue.id,
             commentId: comment.id,

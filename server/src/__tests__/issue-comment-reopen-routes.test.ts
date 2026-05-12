@@ -539,6 +539,60 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
+  it("skips mentioned-agent POST retries after the original reopen wakeup exists for a prior assignee", async () => {
+    const priorAssigneeId = "33333333-3333-4333-8333-333333333333";
+    const currentAssigneeId = "22222222-2222-4222-8222-222222222222";
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("todo"),
+      assigneeAgentId: currentAssigneeId,
+    });
+    mockIssueService.findMentionedAgents.mockResolvedValue([priorAssigneeId]);
+    const dedupedComment = {
+      id: "comment-reopen-mention-retry",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "@Reviewer please revise this",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: null,
+      authorUserId: "local-board",
+    };
+    Object.defineProperty(dedupedComment, "wasInserted", {
+      value: false,
+      enumerable: false,
+    });
+    mockIssueService.addComment.mockResolvedValue(dedupedComment);
+    mockDbSelectWhere.mockImplementation((whereClause: { queryChunks?: Array<{ value?: unknown }> }) => {
+      const idempotencyKey = whereClause.queryChunks?.find((chunk) => typeof chunk?.value === "string")?.value;
+      return {
+        orderBy: mockDbSelectOrderBy,
+        limit: vi.fn(async () => {
+          mockDbSelectLimit(idempotencyKey);
+          return typeof idempotencyKey === "string" &&
+            idempotencyKey ===
+              "issue-comment-wakeup:11111111-1111-4111-8111-111111111111:comment-reopen-mention-retry:33333333-3333-4333-8333-333333333333:issue_reopened_via_comment"
+            ? [{ id: "existing-reopen-wakeup" }]
+            : [];
+        }),
+      };
+    });
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "@Reviewer please revise this" });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(mockDbSelectLimit).toHaveBeenCalledTimes(3));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      priorAssigneeId,
+      expect.objectContaining({ reason: "issue_comment_mentioned" }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      currentAssigneeId,
+      expect.objectContaining({ reason: "issue_commented" }),
+    );
+  });
+
   it("rejects non-assignee agent POST comments on closed issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.addComment.mockResolvedValue({
