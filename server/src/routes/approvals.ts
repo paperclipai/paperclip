@@ -100,7 +100,9 @@ export function approvalRoutes(
       updatedAt: new Date(),
     });
 
-    if (uniqueIssueIds.length > 0) {
+    const wasDeduplicated = approval.status === "cancelled";
+
+    if (uniqueIssueIds.length > 0 && !wasDeduplicated) {
       await issueApprovalsSvc.linkManyForApproval(approval.id, uniqueIssueIds, {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
@@ -112,13 +114,17 @@ export function approvalRoutes(
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
-      action: "approval.created",
+      action: wasDeduplicated ? "approval.deduplicated" : "approval.created",
       entityType: "approval",
       entityId: approval.id,
-      details: { type: approval.type, issueIds: uniqueIssueIds },
+      details: {
+        type: approval.type,
+        issueIds: uniqueIssueIds,
+        ...(wasDeduplicated ? { reason: approval.decisionNote } : {}),
+      },
     });
 
-    res.status(201).json(redactApprovalPayload(approval));
+    res.status(wasDeduplicated ? 200 : 201).json(redactApprovalPayload(approval));
   });
 
   router.get("/approvals/:id/issues", async (req, res) => {

@@ -123,12 +123,21 @@ export interface GovernanceExport {
   pending_approvals: Array<{
     id: string;
     company_id: string;
+    company_name: string;
     type: string;
     status: string;
     requested_by_agent_id: string | null;
+    requested_by_agent_name: string | null;
     requested_by_user_id: string | null;
+    title: string;
+    summary: string;
+    recommended_action: string;
+    risks: string[];
     decision_note: string | null;
     created_at: string;
+    duplicate_of: string | null;
+    risk_level: string;
+    recommendation: string;
   }>;
   permission_grants: Array<{
     id: string;
@@ -365,9 +374,90 @@ async function exportIssues(db: Db): Promise<IssueExport[]> {
   return result;
 }
 
+/**
+ * Assess risk level of an approval based on its type and payload content.
+ */
+function assessApprovalRisk(type: string, payload: Record<string, unknown>): string {
+  const risks = Array.isArray(payload.risks) ? payload.risks : [];
+  const action = typeof payload.recommendedAction === "string" ? payload.recommendedAction.toLowerCase() : "";
+  const title = typeof payload.title === "string" ? payload.title.toLowerCase() : "";
+  const text = `${title} ${action}`;
+
+  // High risk: financial transfers, credential changes, security group changes with 0.0.0.0/0
+  if (text.includes("transfer") || text.includes("fund") || text.includes("send tao") || text.includes("send eth")) return "HIGH";
+  if (text.includes("0.0.0.0/0") && text.includes("port")) return "MEDIUM";
+  if (type === "hire_agent") return "MEDIUM";
+  if (type === "budget_override_required") return "HIGH";
+  if (text.includes("port") || text.includes("firewall") || text.includes("security group")) return "MEDIUM";
+  if (risks.length >= 3) return "MEDIUM";
+
+  return "LOW";
+}
+
+/**
+ * Generate a recommendation for an approval based on its content.
+ */
+function generateApprovalRecommendation(
+  type: string,
+  payload: Record<string, unknown>,
+  riskLevel: string,
+  isDuplicate: boolean,
+): string {
+  if (isDuplicate) return "SUPERSEDE — duplicate of existing pending approval";
+
+  const action = typeof payload.recommendedAction === "string" ? payload.recommendedAction : "";
+
+  if (riskLevel === "HIGH") {
+    return `REVIEW REQUIRED — ${type === "budget_override_required" ? "budget override" : "financial/security action"} needs explicit Board confirmation`;
+  }
+  if (riskLevel === "MEDIUM") {
+    return action ? `Conditionally approve — verify: ${action.slice(0, 100)}` : "Review before approving";
+  }
+  return "Low risk — approve if action aligns with company objectives";
+}
+
+/**
+ * Detect if a pending approval is a duplicate of another pending approval
+ * by comparing normalized title + key identifiers.
+ */
+function detectDuplicateApprovals(
+  pendingApprovals: Array<{ id: string; type: string; payload: Record<string, unknown> }>,
+): Map<string, string> {
+  const duplicateMap = new Map<string, string>(); // id → duplicate_of_id
+
+  const fingerprints = new Map<string, string>(); // fingerprint → first approval id
+  for (const a of pendingApprovals) {
+    const title = typeof a.payload.title === "string" ? a.payload.title : "";
+    const action = typeof a.payload.recommendedAction === "string" ? a.payload.recommendedAction : "";
+
+    // Normalize: strip UUIDs, timestamps, whitespace differences
+    const normalize = (s: string) =>
+      s.toLowerCase()
+        .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, "")
+        .replace(/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}[^\s]*/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    // Extract key identifiers (wallet addresses, ports, IPs)
+    const identifiers = action.match(/\b(0x[0-9a-fA-F]{6,}|5[A-Za-z0-9]{47}|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|port \d+)\b/gi) ?? [];
+    const fp = [a.type, normalize(title), ...identifiers.map((id) => id.toLowerCase())].join("|");
+
+    const existing = fingerprints.get(fp);
+    if (existing) {
+      duplicateMap.set(a.id, existing);
+    } else {
+      fingerprints.set(fp, a.id);
+    }
+  }
+
+  return duplicateMap;
+}
+
 async function exportGovernance(db: Db): Promise<GovernanceExport> {
   const allCompanies = await db.select().from(companies);
   const companyMap = new Map(allCompanies.map((c) => [c.id, c.name]));
+  const allAgents = await db.select().from(agents);
+  const agentMap = new Map(allAgents.map((a) => [a.id, a.name]));
 
   const approvalRules = allCompanies.map((c) => ({
     company_id: c.id,
@@ -380,6 +470,15 @@ async function exportGovernance(db: Db): Promise<GovernanceExport> {
     .from(approvals)
     .where(eq(approvals.status, "pending"))
     .orderBy(desc(approvals.createdAt));
+
+  // Detect duplicates among pending approvals
+  const duplicateMap = detectDuplicateApprovals(
+    pendingApprovals.map((a) => ({
+      id: a.id,
+      type: a.type,
+      payload: (a.payload ?? {}) as Record<string, unknown>,
+    })),
+  );
 
   const grants = await db.select().from(principalPermissionGrants);
 
@@ -398,16 +497,36 @@ async function exportGovernance(db: Db): Promise<GovernanceExport> {
 
   return {
     approval_rules: approvalRules,
-    pending_approvals: pendingApprovals.map((a) => ({
-      id: a.id,
-      company_id: a.companyId,
-      type: a.type,
-      status: a.status,
-      requested_by_agent_id: a.requestedByAgentId,
-      requested_by_user_id: a.requestedByUserId,
-      decision_note: a.decisionNote,
-      created_at: a.createdAt.toISOString(),
-    })),
+    pending_approvals: pendingApprovals.map((a) => {
+      const payload = (a.payload ?? {}) as Record<string, unknown>;
+      const title = typeof payload.title === "string" ? payload.title : a.type;
+      const summary = typeof payload.summary === "string" ? payload.summary : "";
+      const recommendedAction = typeof payload.recommendedAction === "string" ? payload.recommendedAction : "";
+      const risks = Array.isArray(payload.risks) ? payload.risks.map(String) : [];
+      const isDuplicate = duplicateMap.has(a.id);
+      const riskLevel = assessApprovalRisk(a.type, payload);
+      const recommendation = generateApprovalRecommendation(a.type, payload, riskLevel, isDuplicate);
+
+      return {
+        id: a.id,
+        company_id: a.companyId,
+        company_name: companyMap.get(a.companyId) ?? "unknown",
+        type: a.type,
+        status: a.status,
+        requested_by_agent_id: a.requestedByAgentId,
+        requested_by_agent_name: a.requestedByAgentId ? (agentMap.get(a.requestedByAgentId) ?? null) : null,
+        requested_by_user_id: a.requestedByUserId,
+        title,
+        summary,
+        recommended_action: recommendedAction,
+        risks,
+        decision_note: a.decisionNote,
+        created_at: a.createdAt.toISOString(),
+        duplicate_of: duplicateMap.get(a.id) ?? null,
+        risk_level: riskLevel,
+        recommendation,
+      };
+    }),
     permission_grants: grants.map((g) => ({
       id: g.id,
       company_id: g.companyId,
@@ -645,19 +764,69 @@ function governanceMd(gov: GovernanceExport): string {
   }
   lines.push("");
 
+  // ── Approval Review Packet ──────────────────────────────────────────
+  lines.push("## Approval Review Packet");
+  lines.push("");
+  lines.push("> **GOVERNANCE RULE:** Board approvals may not be bulk-approved or bulk-denied.");
+  lines.push("> Each approval requires individual review. Explicit Board decision required per item.");
+  lines.push("");
+
   if (gov.pending_approvals.length > 0) {
-    lines.push("## Pending Approvals");
+    const duplicates = gov.pending_approvals.filter((a) => a.duplicate_of);
+    const unique = gov.pending_approvals.filter((a) => !a.duplicate_of);
+
+    lines.push(`**${gov.pending_approvals.length} pending** (${unique.length} unique, ${duplicates.length} duplicates detected)`);
     lines.push("");
-    lines.push("| ID | Company | Type | Requested By | Created |");
-    lines.push("|----|---------|------|-------------|---------|");
-    for (const a of gov.pending_approvals) {
-      const requestedBy = a.requested_by_agent_id ?? a.requested_by_user_id ?? "—";
-      lines.push(`| ${a.id.slice(0, 8)}… | ${a.company_id.slice(0, 8)}… | ${a.type} | ${requestedBy.slice(0, 8)}… | ${a.created_at.split("T")[0]} |`);
+
+    // Summary table
+    lines.push("| # | Title | Requester | Risk | Duplicate? | Decision |");
+    lines.push("|---|-------|-----------|------|------------|----------|");
+    for (let i = 0; i < gov.pending_approvals.length; i++) {
+      const a = gov.pending_approvals[i];
+      const requester = a.requested_by_agent_name ?? a.requested_by_user_id ?? "unknown";
+      const dup = a.duplicate_of ? `Yes (of ${a.duplicate_of.slice(0, 8)}…)` : "No";
+      lines.push(`| ${i + 1} | ${a.title} | ${requester} | **${a.risk_level}** | ${dup} | PENDING |`);
     }
     lines.push("");
+
+    // Detailed per-approval review
+    for (let i = 0; i < gov.pending_approvals.length; i++) {
+      const a = gov.pending_approvals[i];
+      lines.push(`### Approval ${i + 1}: ${a.title}`);
+      lines.push("");
+      lines.push(`- **ID:** \`${a.id}\``);
+      lines.push(`- **Company:** ${a.company_name}`);
+      lines.push(`- **Type:** ${a.type}`);
+      lines.push(`- **Requester:** ${a.requested_by_agent_name ?? a.requested_by_user_id ?? "unknown"} (${a.requested_by_agent_id ? `agent:${a.requested_by_agent_id.slice(0, 8)}…` : `user:${a.requested_by_user_id ?? "?"}`})`);
+      lines.push(`- **Created:** ${a.created_at}`);
+      lines.push(`- **Risk Level:** **${a.risk_level}**`);
+      if (a.duplicate_of) {
+        lines.push(`- **DUPLICATE OF:** \`${a.duplicate_of}\``);
+      }
+      lines.push("");
+      if (a.summary) {
+        lines.push(`**Summary:** ${a.summary}`);
+        lines.push("");
+      }
+      if (a.recommended_action) {
+        lines.push(`**Requested Action:** ${a.recommended_action}`);
+        lines.push("");
+      }
+      if (a.risks.length > 0) {
+        lines.push("**Risks:**");
+        for (const risk of a.risks) {
+          lines.push(`- ${risk}`);
+        }
+        lines.push("");
+      }
+      lines.push(`**Recommendation:** ${a.recommendation}`);
+      lines.push("");
+      lines.push("**Board Decision:** ___________________ (APPROVE / DENY / REQUEST REVISION)");
+      lines.push("");
+      lines.push("---");
+      lines.push("");
+    }
   } else {
-    lines.push("## Pending Approvals");
-    lines.push("");
     lines.push("No pending approvals.");
     lines.push("");
   }
@@ -832,10 +1001,19 @@ function boardReviewPacketMd(bundle: BoardExportBundle): string {
 
   // Governance alerts
   if (bundle.governance.pending_approvals.length > 0) {
+    const uniqueApprovals = bundle.governance.pending_approvals.filter((a) => !a.duplicate_of);
+    const dupCount = bundle.governance.pending_approvals.length - uniqueApprovals.length;
     lines.push("## Pending Governance Approvals");
     lines.push("");
+    lines.push("> **Do not bulk-approve.** See `governance.md` for full Approval Review Packet.");
+    lines.push("");
     for (const a of bundle.governance.pending_approvals) {
-      lines.push(`- **${a.type}** (${a.id.slice(0, 8)}…) — created ${a.created_at.split("T")[0]}`);
+      const dup = a.duplicate_of ? " **[DUPLICATE]**" : "";
+      lines.push(`- **${a.title}** — ${a.risk_level} risk | ${a.requested_by_agent_name ?? "unknown"} | ${a.created_at.split("T")[0]}${dup}`);
+    }
+    if (dupCount > 0) {
+      lines.push("");
+      lines.push(`*${dupCount} duplicate(s) detected — recommend superseding.*`);
     }
     lines.push("");
   }
