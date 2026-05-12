@@ -22,6 +22,16 @@ describe("matchesT1 — CEO/CHO task done", () => {
     expect(matchesT1(prev, next, [CEO])).toBe(true);
   });
 
+  it("fires on first-event (prev=null) when next=done with assignee in topAgentIds", () => {
+    const next = state({ status: "done", assigneeAgentId: CEO });
+    expect(matchesT1(null, next, [CEO])).toBe(true);
+  });
+
+  it("does not fire on first-event (prev=null) when assignee is not in topAgentIds", () => {
+    const next = state({ status: "done", assigneeAgentId: "other-agent" });
+    expect(matchesT1(null, next, [CEO])).toBe(false);
+  });
+
   it("does not fire when status was already done", () => {
     const prev = state({ status: "done", assigneeAgentId: CEO });
     const next = state({ status: "done", assigneeAgentId: CEO });
@@ -48,6 +58,11 @@ describe("matchesT2 — in_review handover to board user", () => {
     expect(matchesT2(prev, next, WALTER)).toBe(true);
   });
 
+  it("fires on first-event (prev=null) when next=in_review with board user", () => {
+    const next = state({ status: "in_review", assigneeUserId: WALTER });
+    expect(matchesT2(null, next, WALTER)).toBe(true);
+  });
+
   it("does not fire when assignee is a different user", () => {
     const prev = state({ status: "in_progress" });
     const next = state({ status: "in_review", assigneeUserId: "other-user" });
@@ -66,6 +81,11 @@ describe("matchesT3 — blocked transition (mention check is caller's job)", () 
     const prev = state({ status: "in_progress" });
     const next = state({ status: "blocked" });
     expect(matchesT3(prev, next)).toBe(true);
+  });
+
+  it("fires on first-event (prev=null) when next=blocked", () => {
+    const next = state({ status: "blocked" });
+    expect(matchesT3(null, next)).toBe(true);
   });
 
   it("does not fire when already blocked", () => {

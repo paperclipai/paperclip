@@ -97,8 +97,35 @@ describe("handleIssueUpdated", () => {
     expect(body.get("priority")).toBe("0");
   });
 
-  it("does not fire when prev state is unknown (post-bootstrap-gap safety)", async () => {
-    const ctx = makeCtx(null);
+  it("fires T1 on first-event (prev=null) when CEO task arrives as done", async () => {
+    const ctx = makeCtx(null, { issue: { status: "done", assigneeAgentId: CEO } });
+    await handleIssueUpdated(ctx, baseConfig(), issueUpdatedEvent() as any);
+
+    expect(ctx.http.fetch).toHaveBeenCalledTimes(1);
+    const body = new URLSearchParams(ctx.http.fetch.mock.calls[0][1].body);
+    expect(body.get("title")).toMatch(/^\[WHI\] CEO erledigt:/);
+  });
+
+  it("fires T2 on first-event (prev=null) when issue arrives as in_review for Walter", async () => {
+    const ctx = makeCtx(null, {
+      issue: { status: "in_review", assigneeAgentId: CEO, assigneeUserId: WALTER },
+    });
+    await handleIssueUpdated(ctx, baseConfig(), issueUpdatedEvent({ status: "in_review" }) as any);
+
+    expect(ctx.http.fetch).toHaveBeenCalledTimes(1);
+    const body = new URLSearchParams(ctx.http.fetch.mock.calls[0][1].body);
+    expect(body.get("title")).toMatch(/^\[WHI\] Review-Handover:/);
+  });
+
+  it("does NOT fire on first-event when next status is not a trigger condition (just seeds state)", async () => {
+    const ctx = makeCtx(null, { issue: { status: "in_progress", assigneeAgentId: CEO } });
+    await handleIssueUpdated(ctx, baseConfig(), issueUpdatedEvent({ status: "in_progress" }) as any);
+    expect(ctx.http.fetch).not.toHaveBeenCalled();
+    expect(ctx.state.set).toHaveBeenCalled(); // state IS seeded
+  });
+
+  it("does NOT fire T1 on first-event when assignee is not in topAgentIds", async () => {
+    const ctx = makeCtx(null, { issue: { status: "done", assigneeAgentId: "some-other-agent" } });
     await handleIssueUpdated(ctx, baseConfig(), issueUpdatedEvent() as any);
     expect(ctx.http.fetch).not.toHaveBeenCalled();
   });

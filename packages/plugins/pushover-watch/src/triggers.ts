@@ -101,8 +101,6 @@ export async function handleIssueUpdated(
     assigneeUserId: next.assigneeUserId,
   });
 
-  if (!prev) return; // unknown issue — seed only, no notification
-
   const url = issueUrl(config, company, issue.identifier);
   const title = issue.title ?? "";
 
