@@ -26,4 +26,13 @@ if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
 fi
 
+# When deployed on Render, fall back to its system-provided external URL so
+# Paperclip's better-auth + invite flow has a base URL even before the operator
+# pastes PAPERCLIP_PUBLIC_URL into the dashboard. Harmless on other platforms
+# (variable is unset there).
+if [ -z "${PAPERCLIP_PUBLIC_URL:-}" ] && [ -n "${RENDER_EXTERNAL_URL:-}" ]; then
+    export PAPERCLIP_PUBLIC_URL="$RENDER_EXTERNAL_URL"
+    echo "PAPERCLIP_PUBLIC_URL fell back to RENDER_EXTERNAL_URL=$RENDER_EXTERNAL_URL"
+fi
+
 exec gosu node "$@"

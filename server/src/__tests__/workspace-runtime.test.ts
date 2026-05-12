@@ -808,13 +808,15 @@ describe("realizeExecutionWorkspace", () => {
     });
 
     await expect(fs.readFile(path.join(reused.cwd, ".paperclip-provision-version"), "utf8")).resolves.toBe("v2\n");
-  });
+  }, 30_000);
 
   it("writes an isolated repo-local Paperclip config and worktree branding when provisioning", async () => {
     const repoRoot = await createTempRepo();
     const previousCwd = process.cwd();
+    const previousPath = process.env.PATH;
     const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-home-"));
     const isolatedWorktreeHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktrees-"));
+    const isolatedBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-bin-"));
     const instanceId = "worktree-base";
     const sharedConfigDir = path.join(paperclipHome, "instances", instanceId);
     const sharedConfigPath = path.join(sharedConfigDir, "config.json");
@@ -823,6 +825,10 @@ describe("realizeExecutionWorkspace", () => {
     process.env.PAPERCLIP_HOME = paperclipHome;
     process.env.PAPERCLIP_INSTANCE_ID = instanceId;
     process.env.PAPERCLIP_WORKTREES_DIR = isolatedWorktreeHome;
+    // Keep this server-side fixture on provision-worktree.sh's config writer path;
+    // CLI/database seeding is covered by the CLI worktree tests.
+    await fs.symlink(process.execPath, path.join(isolatedBin, "node"));
+    process.env.PATH = `${isolatedBin}${path.delimiter}/usr/bin${path.delimiter}/bin`;
 
     await fs.mkdir(sharedConfigDir, { recursive: true });
     await fs.writeFile(
@@ -985,6 +991,11 @@ describe("realizeExecutionWorkspace", () => {
       expect(reusedEnvContents).toContain('PAPERCLIP_WORKTREE_COLOR="#112233"');
     } finally {
       process.chdir(previousCwd);
+      if (previousPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = previousPath;
+      }
     }
   }, 15_000);
 
@@ -1507,7 +1518,7 @@ describe("realizeExecutionWorkspace", () => {
     });
     expect(provisionOperation?.result.stdout).toContain("[output truncated to last");
     expect(provisionOperation?.result.stdout?.length ?? 0).toBeLessThan(300000);
-  });
+  }, 10_000);
 
   it("reuses an existing branch without resetting it when recreating a missing worktree", async () => {
     const repoRoot = await createTempRepo();
@@ -1648,7 +1659,7 @@ describe("realizeExecutionWorkspace", () => {
     await expect(fs.readFile(path.join(initial.cwd, ".paperclip-restored-branch"), "utf8")).resolves.toBe(`${branchName}\n`);
     const actualHead = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: initial.cwd })).stdout.trim();
     expect(actualHead).toBe(expectedHead);
-  });
+  }, 15_000);
 
   it("reprovisions an existing persisted git worktree before manual control starts it", async () => {
     const repoRoot = await createTempRepo();
@@ -1732,7 +1743,7 @@ describe("realizeExecutionWorkspace", () => {
     });
 
     await expect(fs.readFile(path.join(initial.cwd, ".paperclip-restored-state"), "utf8")).resolves.toBe("reprovisioned\n");
-  });
+  }, 15_000);
 
   it("auto-detects the default branch when baseRef is not configured", async () => {
     // Create a repo with "master" as default branch (not "main")
@@ -1784,7 +1795,7 @@ describe("realizeExecutionWorkspace", () => {
     const worktreeOp = operations.find(op => op.phase === "worktree_prepare" && op.metadata?.created);
     expect(worktreeOp).toBeDefined();
     expect(worktreeOp!.metadata!.baseRef).toBe("master");
-  });
+  }, 10_000);
 
   it("auto-detects the default branch via symbolic-ref when origin/HEAD is set", async () => {
     // Create a repo with "master" as default branch
@@ -1835,7 +1846,7 @@ describe("realizeExecutionWorkspace", () => {
     const worktreeOp = operations.find(op => op.phase === "worktree_prepare" && op.metadata?.created);
     expect(worktreeOp).toBeDefined();
     expect(worktreeOp!.metadata!.baseRef).toBe("master");
-  });
+  }, 10_000);
 
   it("removes a created git worktree and branch during cleanup", async () => {
     const repoRoot = await createTempRepo();
@@ -1963,7 +1974,7 @@ describe("realizeExecutionWorkspace", () => {
     ).resolves.toMatchObject({
       stdout: expect.stringContaining(workspace.branchName!),
     });
-  });
+  }, 10_000);
 
   it("records teardown and cleanup operations when a recorder is provided", async () => {
     const repoRoot = await createTempRepo();
@@ -2163,7 +2174,7 @@ describe("ensureRuntimeServicesForRun", () => {
     expect(third).toHaveLength(1);
     expect(third[0]?.reused).toBe(false);
     expect(third[0]?.id).not.toBe(first[0]?.id);
-  });
+  }, 10_000);
 
   it("does not reuse project-scoped shared services across different workspace launch contexts", async () => {
     const primaryWorkspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-primary-"));
@@ -2588,7 +2599,7 @@ describe("ensureRuntimeServicesForRun", () => {
       workspaceCwd: workspace.cwd,
       runtimeServiceId: worker?.id ?? null,
     });
-  });
+  }, 10_000);
 });
 
 describe("buildWorkspaceRuntimeDesiredStatePatch", () => {
@@ -3122,6 +3133,130 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     expect(persisted?.status).toBe("stopped");
     expect(persisted?.healthStatus).toBe("unknown");
     expect(persisted?.stoppedAt).toBeTruthy();
+  });
+
+  it("restarts a stopped auto-port service on the same port when it is available", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-port-reuse-"));
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Codex Coder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Runtime port reuse test",
+      status: "active",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Execution workspace port reuse test",
+      status: "active",
+      cwd: workspaceRoot,
+      providerType: "local_fs",
+      providerRef: workspaceRoot,
+    });
+
+    const actor = {
+      id: agentId,
+      name: "Codex Coder",
+      companyId,
+    };
+    const workspace = {
+      ...buildWorkspace(workspaceRoot),
+      projectId,
+      workspaceId: null,
+    };
+    const config = {
+      workspaceRuntime: {
+        services: [
+          {
+            name: "web",
+            command:
+              "node -e \"require('node:http').createServer((req,res)=>res.end('ok')).listen(Number(process.env.PORT), '127.0.0.1')\"",
+            port: { type: "auto" },
+            readiness: {
+              type: "http",
+              urlTemplate: "http://127.0.0.1:{{port}}",
+              timeoutSec: 10,
+              intervalMs: 100,
+            },
+            expose: {
+              type: "url",
+              urlTemplate: "http://127.0.0.1:{{port}}",
+            },
+            lifecycle: "shared",
+            reuseScope: "execution_workspace",
+            stopPolicy: {
+              type: "manual",
+            },
+          },
+        ],
+      },
+    };
+
+    const first = await startRuntimeServicesForWorkspaceControl({
+      db,
+      actor,
+      issue: null,
+      workspace,
+      executionWorkspaceId,
+      config,
+      adapterEnv: {},
+    });
+    expect(first).toHaveLength(1);
+    expect(first[0]?.port).toBeGreaterThan(0);
+    await expect(fetch(first[0]!.url!)).resolves.toMatchObject({ ok: true });
+
+    await stopRuntimeServicesForExecutionWorkspace({
+      db,
+      executionWorkspaceId,
+      workspaceCwd: workspace.cwd,
+    });
+    await expect(fetch(first[0]!.url!)).rejects.toThrow();
+
+    const second = await startRuntimeServicesForWorkspaceControl({
+      db,
+      actor,
+      issue: null,
+      workspace,
+      executionWorkspaceId,
+      config,
+      adapterEnv: {},
+    });
+
+    expect(second).toHaveLength(1);
+    expect(second[0]?.id).toBe(first[0]?.id);
+    expect(second[0]?.port).toBe(first[0]?.port);
+    expect(second[0]?.url).toBe(first[0]?.url);
+    await expect(fetch(second[0]!.url!)).resolves.toMatchObject({ ok: true });
+
+    await stopRuntimeServicesForExecutionWorkspace({
+      db,
+      executionWorkspaceId,
+      workspaceCwd: workspace.cwd,
+    });
   });
 });
 

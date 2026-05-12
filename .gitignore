@@ -3,6 +3,7 @@ node_modules/
 **/node_modules
 **/node_modules/
 dist/
+ui/storybook-static/
 .env
 *.tsbuildinfo
 drizzle/meta/
@@ -47,6 +48,9 @@ diagnostics/
 
 # Doc maintenance cursor
 .doc-review-cursor
+
+# Local recon dir (downloaded sibling repos for analysis only)
+.recon/
 
 # Playwright
 tests/e2e/test-results/

@@ -27,10 +27,18 @@ import type {
   IssueComment,
   IssueDocument,
   IssueDocumentSummary,
+  IssueAssigneeAdapterOverrides,
   IssueThreadInteraction,
   CreateIssueThreadInteraction,
+  PluginManagedAgentResolution,
+  PluginManagedProjectResolution,
+  PluginManagedRoutineResolution,
+  PluginManagedSkillResolution,
+  Routine,
+  RoutineRun,
   Agent,
   Goal,
+  PluginLocalFolderDeclaration,
 } from "@paperclipai/shared";
 export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
 
@@ -46,6 +54,8 @@ import type {
   PluginWorkspace,
   ToolRunContext,
   ToolResult,
+  PluginLocalFolderListing,
+  PluginLocalFolderStatus,
 } from "./types.js";
 import type {
   PluginHealthDiagnostics,
@@ -325,6 +335,100 @@ export interface ExecuteToolParams {
   runContext: ToolRunContext;
 }
 
+export interface PluginEnvironmentDiagnostic {
+  severity: "info" | "warning" | "error";
+  message: string;
+  code?: string;
+  details?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentDriverBaseParams {
+  driverKey: string;
+  companyId: string;
+  environmentId: string;
+  issueId?: string | null;
+  config: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentValidateConfigParams {
+  driverKey: string;
+  config: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentValidationResult {
+  ok: boolean;
+  warnings?: string[];
+  errors?: string[];
+  normalizedConfig?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentProbeParams extends PluginEnvironmentDriverBaseParams {}
+
+export interface PluginEnvironmentProbeResult {
+  ok: boolean;
+  summary?: string;
+  diagnostics?: PluginEnvironmentDiagnostic[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentLease {
+  providerLeaseId: string | null;
+  metadata?: Record<string, unknown>;
+  expiresAt?: string | null;
+}
+
+export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDriverBaseParams {
+  runId: string;
+  workspaceMode?: string;
+  requestedCwd?: string;
+}
+
+export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDriverBaseParams {
+  providerLeaseId: string;
+  leaseMetadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentReleaseLeaseParams extends PluginEnvironmentDriverBaseParams {
+  providerLeaseId: string | null;
+  leaseMetadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentDestroyLeaseParams extends PluginEnvironmentReleaseLeaseParams {}
+
+export interface PluginEnvironmentRealizeWorkspaceParams extends PluginEnvironmentDriverBaseParams {
+  lease: PluginEnvironmentLease;
+  workspace: {
+    localPath?: string;
+    remotePath?: string;
+    mode?: string;
+    metadata?: Record<string, unknown>;
+  };
+}
+
+export interface PluginEnvironmentRealizeWorkspaceResult {
+  cwd: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentExecuteParams extends PluginEnvironmentDriverBaseParams {
+  lease: PluginEnvironmentLease;
+  command: string;
+  args?: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  stdin?: string;
+  timeoutMs?: number;
+}
+
+export interface PluginEnvironmentExecuteResult {
+  exitCode: number | null;
+  signal?: string | null;
+  timedOut: boolean;
+  stdout: string;
+  stderr: string;
+  metadata?: Record<string, unknown>;
+}
+
 // ---------------------------------------------------------------------------
 // UI launcher / modal host interaction payloads
 // ---------------------------------------------------------------------------
@@ -394,6 +498,38 @@ export interface HostToWorkerMethods {
   performAction: [params: PerformActionParams, result: unknown];
   /** @see PLUGIN_SPEC.md §13.10 */
   executeTool: [params: ExecuteToolParams, result: ToolResult];
+  environmentValidateConfig: [
+    params: PluginEnvironmentValidateConfigParams,
+    result: PluginEnvironmentValidationResult,
+  ];
+  environmentProbe: [
+    params: PluginEnvironmentProbeParams,
+    result: PluginEnvironmentProbeResult,
+  ];
+  environmentAcquireLease: [
+    params: PluginEnvironmentAcquireLeaseParams,
+    result: PluginEnvironmentLease,
+  ];
+  environmentResumeLease: [
+    params: PluginEnvironmentResumeLeaseParams,
+    result: PluginEnvironmentLease,
+  ];
+  environmentReleaseLease: [
+    params: PluginEnvironmentReleaseLeaseParams,
+    result: void,
+  ];
+  environmentDestroyLease: [
+    params: PluginEnvironmentDestroyLeaseParams,
+    result: void,
+  ];
+  environmentRealizeWorkspace: [
+    params: PluginEnvironmentRealizeWorkspaceParams,
+    result: PluginEnvironmentRealizeWorkspaceResult,
+  ];
+  environmentExecute: [
+    params: PluginEnvironmentExecuteParams,
+    result: PluginEnvironmentExecuteResult,
+  ];
 }
 
 /** Union of all host→worker method names. */
@@ -417,6 +553,14 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "getData",
   "performAction",
   "executeTool",
+  "environmentValidateConfig",
+  "environmentProbe",
+  "environmentAcquireLease",
+  "environmentResumeLease",
+  "environmentReleaseLease",
+  "environmentDestroyLease",
+  "environmentRealizeWorkspace",
+  "environmentExecute",
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -432,6 +576,48 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
 export interface WorkerToHostMethods {
   // Config
   "config.get": [params: Record<string, never>, result: Record<string, unknown>];
+
+  // Trusted local folders
+  "localFolders.declarations": [
+    params: Record<string, never>,
+    result: PluginLocalFolderDeclaration[],
+  ];
+  "localFolders.configure": [
+    params: {
+      companyId: string;
+      folderKey: string;
+      path: string;
+      access?: "read" | "readWrite";
+      requiredDirectories?: string[];
+      requiredFiles?: string[];
+    },
+    result: PluginLocalFolderStatus,
+  ];
+  "localFolders.status": [
+    params: { companyId: string; folderKey: string },
+    result: PluginLocalFolderStatus,
+  ];
+  "localFolders.list": [
+    params: { companyId: string; folderKey: string; relativePath?: string | null; recursive?: boolean; maxEntries?: number },
+    result: PluginLocalFolderListing,
+  ];
+  "localFolders.readText": [
+    params: { companyId: string; folderKey: string; relativePath: string },
+    result: string,
+  ];
+  "localFolders.writeTextAtomic": [
+    params: {
+      companyId: string;
+      folderKey: string;
+      relativePath: string;
+      contents: string;
+    },
+    result: PluginLocalFolderStatus,
+  ];
+  "localFolders.deleteFile": [
+    params: { companyId: string; folderKey: string; relativePath: string },
+    result: PluginLocalFolderStatus,
+  ];
 
   // State
   "state.get": [
@@ -591,6 +777,69 @@ export interface WorkerToHostMethods {
     params: { issueId: string; companyId: string },
     result: PluginWorkspace | null,
   ];
+  "projects.managed.get": [
+    params: { projectKey: string; companyId: string },
+    result: PluginManagedProjectResolution,
+  ];
+  "projects.managed.reconcile": [
+    params: { projectKey: string; companyId: string },
+    result: PluginManagedProjectResolution,
+  ];
+  "projects.managed.reset": [
+    params: { projectKey: string; companyId: string },
+    result: PluginManagedProjectResolution,
+  ];
+  "routines.managed.get": [
+    params: { routineKey: string; companyId: string },
+    result: PluginManagedRoutineResolution,
+  ];
+  "routines.managed.reconcile": [
+    params: {
+      routineKey: string;
+      companyId: string;
+      assigneeAgentId?: string | null;
+      projectId?: string | null;
+    },
+    result: PluginManagedRoutineResolution,
+  ];
+  "routines.managed.reset": [
+    params: {
+      routineKey: string;
+      companyId: string;
+      assigneeAgentId?: string | null;
+      projectId?: string | null;
+    },
+    result: PluginManagedRoutineResolution,
+  ];
+  "routines.managed.update": [
+    params: {
+      routineKey: string;
+      companyId: string;
+      status?: string;
+    },
+    result: Routine,
+  ];
+  "routines.managed.run": [
+    params: {
+      routineKey: string;
+      companyId: string;
+      assigneeAgentId?: string | null;
+      projectId?: string | null;
+    },
+    result: RoutineRun,
+  ];
+  "skills.managed.get": [
+    params: { skillKey: string; companyId: string },
+    result: PluginManagedSkillResolution,
+  ];
+  "skills.managed.reconcile": [
+    params: { skillKey: string; companyId: string },
+    result: PluginManagedSkillResolution,
+  ];
+  "skills.managed.reset": [
+    params: { skillKey: string; companyId: string },
+    result: PluginManagedSkillResolution,
+  ];
 
   // Issues
   "issues.list": [
@@ -599,8 +848,10 @@ export interface WorkerToHostMethods {
       projectId?: string;
       assigneeAgentId?: string;
       originKind?: string;
+      originKindPrefix?: string;
       originId?: string;
       status?: string;
+      includePluginOperations?: boolean;
       limit?: number;
       offset?: number;
     },
@@ -625,6 +876,8 @@ export interface WorkerToHostMethods {
       assigneeUserId?: string | null;
       requestDepth?: number;
       billingCode?: string | null;
+      assigneeAdapterOverrides?: IssueAssigneeAdapterOverrides | null;
+      surfaceVisibility?: string | null;
       originKind?: string | null;
       originId?: string | null;
       originRunId?: string | null;
@@ -806,6 +1059,18 @@ export interface WorkerToHostMethods {
   "agents.invoke": [
     params: { agentId: string; companyId: string; prompt: string; reason?: string },
     result: { runId: string },
+  ];
+  "agents.managed.get": [
+    params: { agentKey: string; companyId: string },
+    result: PluginManagedAgentResolution,
+  ];
+  "agents.managed.reconcile": [
+    params: { agentKey: string; companyId: string },
+    result: PluginManagedAgentResolution,
+  ];
+  "agents.managed.reset": [
+    params: { agentKey: string; companyId: string },
+    result: PluginManagedAgentResolution,
   ];
 
   // Agent Sessions

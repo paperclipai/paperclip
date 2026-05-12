@@ -36,6 +36,10 @@ const mockAgentService = vi.hoisted(() => ({
   resolveByReference: vi.fn(),
 }));
 
+const mockCompanyService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
+
 const mockDocumentService = vi.hoisted(() => ({
   upsertIssueDocument: vi.fn(),
 }));
@@ -55,6 +59,9 @@ const mockStorageService = vi.hoisted(() => ({
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+}));
+const mockIssueRecoveryActionService = vi.hoisted(() => ({
+  getActiveForIssue: vi.fn(async () => null),
 }));
 
 function registerRouteMocks() {
@@ -94,6 +101,7 @@ function registerRouteMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
+    companyService: () => mockCompanyService,
     documentService: () => mockDocumentService,
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({
@@ -119,6 +127,7 @@ function registerRouteMocks() {
       listCompanyIds: vi.fn(async () => [companyId]),
     }),
     issueApprovalService: () => ({}),
+    issueRecoveryActionService: () => mockIssueRecoveryActionService,
     issueReferenceService: () => ({
       deleteDocumentSource: async () => undefined,
       diffIssueReferenceSummary: () => ({
@@ -238,12 +247,13 @@ describe("agent issue mutation checkout ownership", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerRouteMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockAccessService.canUser.mockReset();
     mockAccessService.hasPermission.mockReset();
     mockAgentService.getById.mockReset();
     mockAgentService.list.mockReset();
     mockAgentService.resolveByReference.mockReset();
+    mockCompanyService.getById.mockReset();
     mockIssueService.addComment.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
     mockIssueService.getAttachmentById.mockReset();
@@ -253,6 +263,8 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.getWakeableParentAfterChildCompletion.mockReset();
     mockIssueService.listAttachments.mockReset();
     mockIssueService.listWakeableBlockedDependents.mockReset();
+    mockIssueRecoveryActionService.getActiveForIssue.mockReset();
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(null);
     mockIssueService.remove.mockReset();
     mockIssueService.removeAttachment.mockReset();
     mockIssueService.update.mockReset();
@@ -276,6 +288,7 @@ describe("agent issue mutation checkout ownership", () => {
       makeAgent(peerAgentId),
     ]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: null });
+    mockCompanyService.getById.mockResolvedValue({ id: companyId, issuePrefix: "PAP" });
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockIssueService.getByIdentifier.mockResolvedValue(null);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
@@ -430,18 +443,20 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).toHaveBeenCalled();
   });
 
-  it("allows same-company agent mutations when the issue is not in progress", async () => {
-    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }),
-      ...patch,
-    }));
+  it.each([
+    ["todo", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Todo update" })],
+    ["todo", "comment", (app: express.Express) => request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Todo noise" })],
+    ["blocked", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked update" })],
+  ])("rejects peer agent %s issue %s mutations outside active checkout ownership", async (status, _kind, sendRequest) => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: status as "todo" | "blocked", assigneeAgentId: ownerAgentId }));
 
-    const res = await request(await createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ title: "Todo update" });
+    const res = await sendRequest(await createApp(peerActor()));
 
-    expect(res.status).toBe(200);
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
-    expect(mockIssueService.update).toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
   it("allows same-company agent mutations on unassigned in-progress issues", async () => {

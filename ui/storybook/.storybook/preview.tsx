@@ -20,11 +20,22 @@ import {
   storybookIssues,
   storybookLiveRuns,
   storybookProjects,
+  storybookSecretAccessEvents,
+  storybookSecretBindings,
+  storybookSecretProviderHealth,
+  storybookSecretProviders,
+  storybookSecrets,
   storybookSidebarBadges,
 } from "../fixtures/paperclipData";
 import "@mdxeditor/editor/style.css";
 import "./tailwind-entry.css";
 import "./styles.css";
+
+// Install fetch monkeypatch eagerly so any module-load-time fetches (e.g. schema
+// caches in adapter config renderers) hit our fixtures before they reach the
+// network. Some renderers issue a fetch from useEffect on first paint, which
+// can otherwise race the StorybookProviders mount.
+installStorybookApiFixtures();
 
 function installStorybookApiFixtures() {
   if (typeof window === "undefined") return;
@@ -87,8 +98,108 @@ function installStorybookApiFixtures() {
       });
     }
 
+    if (url.pathname === "/api/adapters") {
+      return Response.json([
+        {
+          type: "claude_local",
+          label: "Claude Local",
+          source: "builtin",
+          modelsCount: 2,
+          loaded: true,
+          disabled: false,
+          capabilities: {
+            supportsInstructionsBundle: true,
+            supportsSkills: true,
+            supportsLocalAgentJwt: true,
+            requiresMaterializedRuntimeSkills: false,
+            supportsModelProfiles: true,
+          },
+        },
+        {
+          type: "codex_local",
+          label: "Codex Local",
+          source: "builtin",
+          modelsCount: 3,
+          loaded: true,
+          disabled: false,
+          capabilities: {
+            supportsInstructionsBundle: true,
+            supportsSkills: true,
+            supportsLocalAgentJwt: true,
+            requiresMaterializedRuntimeSkills: false,
+            supportsModelProfiles: true,
+          },
+        },
+      ]);
+    }
+
+    const adapterModelsMatch = url.pathname.match(
+      /^\/api\/companies\/[^/]+\/adapters\/([^/]+)\/(models|model-profiles)$/,
+    );
+    if (adapterModelsMatch) {
+      const [, , resource] = adapterModelsMatch;
+      if (resource === "models") {
+        return Response.json([
+          { id: "claude-opus-4-7", label: "Claude Opus 4.7" },
+          { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+          { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
+        ]);
+      }
+      return Response.json([
+        {
+          key: "cheap",
+          label: "Cheap",
+          adapterConfig: { model: "claude-sonnet-4-6" },
+          source: "adapter_default",
+        },
+      ]);
+    }
+
     if (url.pathname === "/api/plugins/ui-contributions") {
       return Response.json([]);
+    }
+
+    const adapterSchemaMatch = url.pathname.match(/^\/api\/adapters\/([^/]+)\/config-schema$/);
+    if (adapterSchemaMatch) {
+      const [, adapterType] = adapterSchemaMatch;
+      const schemas = (window as typeof window & {
+        __paperclipStorybookAdapterSchemas?: Record<string, unknown>;
+      }).__paperclipStorybookAdapterSchemas;
+      const schema = schemas?.[adapterType];
+      if (schema) return Response.json(schema);
+    }
+
+    const secretsListMatch = url.pathname.match(/^\/api\/companies\/([^/]+)\/secrets$/);
+    if (secretsListMatch) {
+      const [, companyId] = secretsListMatch;
+      return Response.json(companyId === "company-storybook" ? storybookSecrets : []);
+    }
+
+    const secretProvidersMatch = url.pathname.match(/^\/api\/companies\/([^/]+)\/secret-providers$/);
+    if (secretProvidersMatch) {
+      return Response.json(storybookSecretProviders);
+    }
+
+    const secretProviderHealthMatch = url.pathname.match(
+      /^\/api\/companies\/([^/]+)\/secret-providers\/health$/,
+    );
+    if (secretProviderHealthMatch) {
+      return Response.json(storybookSecretProviderHealth);
+    }
+
+    const secretUsageMatch = url.pathname.match(/^\/api\/secrets\/([^/]+)\/usage$/);
+    if (secretUsageMatch) {
+      const [, secretId] = secretUsageMatch;
+      return Response.json({
+        secretId,
+        bindings: storybookSecretBindings.filter((binding) => binding.secretId === secretId),
+      });
+    }
+
+    const secretEventsMatch = url.pathname.match(/^\/api\/secrets\/([^/]+)\/access-events$/);
+    if (secretEventsMatch) {
+      const [, secretId] = secretEventsMatch;
+      return Response.json(storybookSecretAccessEvents.filter((event) => event.secretId === secretId));
     }
 
     const companyResourceMatch = url.pathname.match(/^\/api\/companies\/([^/]+)\/([^/]+)$/);
@@ -149,6 +260,11 @@ function installStorybookApiFixtures() {
   };
 }
 
+// Install fetch fixtures at module load so React Query never sees a real network failure.
+if (typeof window !== "undefined") {
+  installStorybookApiFixtures();
+}
+
 function applyStorybookTheme(theme: "light" | "dark") {
   if (typeof document === "undefined") return;
   document.documentElement.classList.toggle("dark", theme === "dark");
@@ -174,9 +290,12 @@ function StorybookProviders({
       }),
   );
 
+  if (typeof window !== "undefined") {
+    installStorybookApiFixtures();
+  }
+
   useEffect(() => {
     applyStorybookTheme(theme);
-    installStorybookApiFixtures();
   }, [theme]);
 
   return (

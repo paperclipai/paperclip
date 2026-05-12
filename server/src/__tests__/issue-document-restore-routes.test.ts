@@ -108,6 +108,9 @@ function registerModuleMocks() {
   }));
 
   vi.doMock("../services/index.js", () => ({
+    companyService: () => ({
+      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+    }),
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
     documentService: () => mockDocumentsService,
@@ -129,6 +132,10 @@ function registerModuleMocks() {
       syncComment: async () => undefined,
       syncDocument: async () => undefined,
       syncIssue: async () => undefined,
+    }),
+    issueRecoveryActionService: () => ({
+      getActiveForIssue: vi.fn(async () => null),
+      listActiveForIssues: vi.fn(async () => new Map()),
     }),
     issueService: () => mockIssueService,
     issueThreadInteractionService: () => mockIssueThreadInteractionService,
@@ -177,7 +184,7 @@ describe("issue document revision routes", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue({
       id: issueId,
       companyId,

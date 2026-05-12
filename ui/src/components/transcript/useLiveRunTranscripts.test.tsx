@@ -258,6 +258,34 @@ describe("useLiveRunTranscripts", () => {
     container.remove();
   });
 
+  it("starts persisted-log hydration from the newest bytes when the visible window is truncated", async () => {
+    function Harness() {
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-1", status: "running", adapterType: "codex_local", lastOutputBytes: 100_000 }],
+        enableRealtimeUpdates: false,
+        logReadLimitBytes: 64_000,
+      });
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+
+    expect(logMock).toHaveBeenCalledWith("run-1", 36_000, 64_000);
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
   it("rebuilds only the transcript for the run that receives live output", async () => {
     function Harness() {
       useLiveRunTranscripts({

@@ -25,6 +25,25 @@ export interface RunForIssue {
   continuationAttempt?: number;
   lastUsefulActionAt?: string | null;
   nextAction?: string | null;
+  contextSnapshot?: Record<string, unknown> | null;
+  environment?: {
+    id: string;
+    name: string;
+    driver: string;
+  } | null;
+  environmentLease?: {
+    id: string;
+    status: string;
+    leasePolicy: string;
+    provider: string | null;
+    providerLeaseId: string | null;
+    executionWorkspaceId: string | null;
+    workspacePath: string | null;
+    failureReason: string | null;
+    cleanupStatus: string | null;
+    acquiredAt: string | Date;
+    releasedAt: string | Date | null;
+  } | null;
 }
 
 export interface IssueForRun {

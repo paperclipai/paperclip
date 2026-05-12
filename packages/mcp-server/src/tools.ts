@@ -4,7 +4,7 @@ import {
   askUserQuestionsPayloadSchema,
   checkoutIssueSchema,
   createApprovalSchema,
-  createIssueSchema,
+  createIssueInputSchema,
   issueThreadInteractionContinuationPolicySchema,
   requestConfirmationPayloadSchema,
   suggestTasksPayloadSchema,
@@ -95,7 +95,7 @@ const upsertDocumentToolSchema = z.object({
 
 const createIssueToolSchema = z.object({
   companyId: companyIdOptional,
-}).merge(createIssueSchema);
+}).merge(createIssueInputSchema);
 
 const updateIssueToolSchema = z.object({
   issueId: issueIdSchema,
@@ -479,7 +479,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     ),
     makeTool(
       "paperclipUpdateIssue",
-      "Patch an issue, optionally including a comment",
+      "Patch an issue, optionally including a comment; include resume=true when intentionally requesting follow-up on resumable closed work",
       updateIssueToolSchema,
       async ({ issueId, ...body }) =>
         client.requestJson("PATCH", `/issues/${encodeURIComponent(issueId)}`, { body }),
@@ -504,7 +504,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     ),
     makeTool(
       "paperclipAddComment",
-      "Add a comment to an issue",
+      "Add a comment to an issue; include resume=true when intentionally requesting follow-up on resumable closed work",
       addCommentToolSchema,
       async ({ issueId, ...body }) =>
         client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/comments`, { body }),

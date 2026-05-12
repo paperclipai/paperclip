@@ -16,6 +16,8 @@ export interface RunTranscriptSource {
   status: string;
   adapterType: string;
   hasStoredOutput?: boolean;
+  logBytes?: number | null;
+  lastOutputBytes?: number | null;
 }
 
 interface UseLiveRunTranscriptsOptions {
@@ -33,6 +35,19 @@ function readString(value: unknown): string | null {
 
 function isTerminalStatus(status: string): boolean {
   return status === "failed" || status === "timed_out" || status === "cancelled" || status === "succeeded";
+}
+
+function runKnownLogBytes(run: RunTranscriptSource): number | null {
+  const bytes = run.status === "queued"
+    ? run.logBytes
+    : run.lastOutputBytes ?? run.logBytes;
+  return typeof bytes === "number" && Number.isFinite(bytes) && bytes > 0 ? bytes : null;
+}
+
+export function resolveInitialLogOffset(run: RunTranscriptSource, limitBytes: number): number {
+  const knownBytes = runKnownLogBytes(run);
+  if (knownBytes === null) return 0;
+  return Math.max(0, knownBytes - Math.max(0, limitBytes));
 }
 
 function parsePersistedLogContent(
@@ -82,7 +97,11 @@ export function useLiveRunTranscripts({
   const runsKey = useMemo(
     () =>
       runs
-        .map((run) => `${run.id}:${run.status}:${run.adapterType}:${run.hasStoredOutput === true ? "1" : "0"}`)
+        .map((run) => {
+          const logBytes = typeof run.logBytes === "number" ? run.logBytes : "";
+          const lastOutputBytes = typeof run.lastOutputBytes === "number" ? run.lastOutputBytes : "";
+          return `${run.id}:${run.status}:${run.adapterType}:${run.hasStoredOutput === true ? "1" : "0"}:${logBytes}:${lastOutputBytes}`;
+        })
         .sort((a, b) => a.localeCompare(b))
         .join(","),
     [runs],
@@ -197,7 +216,7 @@ export function useLiveRunTranscripts({
       if (missingTerminalLogRunIdsRef.current.has(run.id)) {
         return;
       }
-      const offset = logOffsetByRunRef.current.get(run.id) ?? 0;
+      const offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
       try {
         const result = await heartbeatsApi.log(run.id, offset, logReadLimitBytes);
         if (cancelled) return;

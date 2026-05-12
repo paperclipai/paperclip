@@ -1,5 +1,25 @@
-import type { ServerAdapterModule } from "./types.js";
-import { getAdapterSessionManagement } from "@paperclipai/adapter-utils";
+import type {
+  AdapterModel,
+  AdapterModelProfileDefinition,
+  AdapterRuntimeCommandSpec,
+  ServerAdapterModule,
+} from "./types.js";
+import {
+  buildSandboxNpmInstallCommand,
+  getAdapterSessionManagement,
+} from "@paperclipai/adapter-utils";
+import {
+  execute as acpxExecute,
+  testEnvironment as acpxTestEnvironment,
+  sessionCodec as acpxSessionCodec,
+  getConfigSchema as getAcpxConfigSchema,
+  listAcpxSkills,
+  syncAcpxSkills,
+} from "@paperclipai/adapter-acpx-local/server";
+import {
+  agentConfigurationDoc as acpxAgentConfigurationDoc,
+  models as acpxModels,
+} from "@paperclipai/adapter-acpx-local";
 import {
   execute as claudeExecute,
   listClaudeSkills,
@@ -9,7 +29,11 @@ import {
   sessionCodec as claudeSessionCodec,
   getQuotaWindows as claudeGetQuotaWindows,
 } from "@paperclipai/adapter-claude-local/server";
-import { agentConfigurationDoc as claudeAgentConfigurationDoc, models as claudeModels } from "@paperclipai/adapter-claude-local";
+import {
+  agentConfigurationDoc as claudeAgentConfigurationDoc,
+  models as claudeModels,
+  modelProfiles as claudeModelProfiles,
+} from "@paperclipai/adapter-claude-local";
 import {
   execute as codexExecute,
   listCodexSkills,
@@ -18,7 +42,11 @@ import {
   sessionCodec as codexSessionCodec,
   getQuotaWindows as codexGetQuotaWindows,
 } from "@paperclipai/adapter-codex-local/server";
-import { agentConfigurationDoc as codexAgentConfigurationDoc, models as codexModels } from "@paperclipai/adapter-codex-local";
+import {
+  agentConfigurationDoc as codexAgentConfigurationDoc,
+  models as codexModels,
+  modelProfiles as codexModelProfiles,
+} from "@paperclipai/adapter-codex-local";
 import {
   execute as cursorExecute,
   listCursorSkills,
@@ -26,7 +54,18 @@ import {
   testEnvironment as cursorTestEnvironment,
   sessionCodec as cursorSessionCodec,
 } from "@paperclipai/adapter-cursor-local/server";
-import { agentConfigurationDoc as cursorAgentConfigurationDoc, models as cursorModels } from "@paperclipai/adapter-cursor-local";
+import {
+  agentConfigurationDoc as cursorAgentConfigurationDoc,
+  models as cursorModels,
+  modelProfiles as cursorModelProfiles,
+} from "@paperclipai/adapter-cursor-local";
+import {
+  execute as cursorCloudExecute,
+  getConfigSchema as getCursorCloudConfigSchema,
+  sessionCodec as cursorCloudSessionCodec,
+  testEnvironment as cursorCloudTestEnvironment,
+} from "@paperclipai/adapter-cursor-cloud/server";
+import { agentConfigurationDoc as cursorCloudAgentConfigurationDoc } from "@paperclipai/adapter-cursor-cloud";
 import {
   execute as geminiExecute,
   listGeminiSkills,
@@ -34,7 +73,11 @@ import {
   testEnvironment as geminiTestEnvironment,
   sessionCodec as geminiSessionCodec,
 } from "@paperclipai/adapter-gemini-local/server";
-import { agentConfigurationDoc as geminiAgentConfigurationDoc, models as geminiModels } from "@paperclipai/adapter-gemini-local";
+import {
+  agentConfigurationDoc as geminiAgentConfigurationDoc,
+  models as geminiModels,
+  modelProfiles as geminiModelProfiles,
+} from "@paperclipai/adapter-gemini-local";
 import {
   execute as openCodeExecute,
   listOpenCodeSkills,
@@ -46,6 +89,7 @@ import {
 import {
   agentConfigurationDoc as openCodeAgentConfigurationDoc,
   models as openCodeModels,
+  modelProfiles as openCodeModelProfiles,
 } from "@paperclipai/adapter-opencode-local";
 import {
   execute as openclawGatewayExecute,
@@ -55,7 +99,15 @@ import {
   agentConfigurationDoc as openclawGatewayAgentConfigurationDoc,
   models as openclawGatewayModels,
 } from "@paperclipai/adapter-openclaw-gateway";
-import { listCodexModels } from "./codex-models.js";
+import {
+  execute as openswarmLocalExecute,
+  testEnvironment as openswarmLocalTestEnvironment,
+} from "@paperclipai/adapter-openswarm-local/server";
+import {
+  agentConfigurationDoc as openswarmLocalAgentConfigurationDoc,
+  models as openswarmLocalModels,
+} from "@paperclipai/adapter-openswarm-local";
+import { listCodexModels, refreshCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
 import {
   execute as piExecute,
@@ -67,6 +119,7 @@ import {
 } from "@paperclipai/adapter-pi-local/server";
 import {
   agentConfigurationDoc as piAgentConfigurationDoc,
+  modelProfiles as piModelProfiles,
 } from "@paperclipai/adapter-pi-local";
 import {
   execute as hermesExecute,
@@ -85,6 +138,45 @@ import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
+
+function readConfiguredCommand(config: Record<string, unknown>, fallback: string): string {
+  const value = typeof config.command === "string" ? config.command.trim() : "";
+  return value.length > 0 ? value : fallback;
+}
+
+function hasPathSeparator(command: string): boolean {
+  return command.includes("/") || command.includes("\\");
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function buildNpmRuntimeCommandSpec(
+  config: Record<string, unknown>,
+  fallbackCommand: string,
+  packageName: string,
+): AdapterRuntimeCommandSpec {
+  const command = readConfiguredCommand(config, fallbackCommand);
+  const canSelfInstall = !hasPathSeparator(command) && command === fallbackCommand;
+  const installLine = buildSandboxNpmInstallCommand(packageName);
+  return {
+    command,
+    detectCommand: command,
+    installCommand: canSelfInstall
+      ? `if ! command -v ${shellQuote(command)} >/dev/null 2>&1; then ${installLine}; fi`
+      : null,
+  };
+}
+
+function buildCursorRuntimeCommandSpec(config: Record<string, unknown>): AdapterRuntimeCommandSpec {
+  const command = readConfiguredCommand(config, "agent");
+  return {
+    command,
+    detectCommand: command,
+    installCommand: null,
+  };
+}
 
 function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(ctx: T): T {
   const config =
@@ -117,6 +209,38 @@ function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(
   return ctx;
 }
 
+function dedupeAdapterModels(models: AdapterModel[]): AdapterModel[] {
+  const seen = new Set<string>();
+  const result: AdapterModel[] = [];
+  for (const model of models) {
+    const id = model.id.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    result.push({ ...model, id });
+  }
+  return result;
+}
+
+function prefixAdapterModelLabels(models: AdapterModel[], provider: "Claude" | "Codex"): AdapterModel[] {
+  const prefix = `${provider}: `;
+  return models.map((model) => ({
+    ...model,
+    label: model.label.startsWith(prefix) ? model.label : `${prefix}${model.label}`,
+  }));
+}
+
+async function listAcpxModels(): Promise<AdapterModel[]> {
+  const [claude, codex] = await Promise.all([
+    listClaudeModels().catch(() => claudeModels),
+    listCodexModels().catch(() => codexModels),
+  ]);
+  return dedupeAdapterModels([
+    ...acpxModels,
+    ...prefixAdapterModelLabels(claude, "Claude"),
+    ...prefixAdapterModelLabels(codex, "Codex"),
+  ]);
+}
+
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
   execute: claudeExecute,
@@ -126,13 +250,37 @@ const claudeLocalAdapter: ServerAdapterModule = {
   sessionCodec: claudeSessionCodec,
   sessionManagement: getAdapterSessionManagement("claude_local") ?? undefined,
   models: claudeModels,
+  modelProfiles: claudeModelProfiles,
   listModels: listClaudeModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
+  getRuntimeCommandSpec: (config) =>
+    buildNpmRuntimeCommandSpec(config, "claude", "@anthropic-ai/claude-code"),
   agentConfigurationDoc: claudeAgentConfigurationDoc,
   getQuotaWindows: claudeGetQuotaWindows,
+};
+
+const acpxLocalAdapter: ServerAdapterModule = {
+  type: "acpx_local",
+  execute: acpxExecute,
+  testEnvironment: acpxTestEnvironment,
+  listSkills: listAcpxSkills,
+  syncSkills: syncAcpxSkills,
+  sessionCodec: acpxSessionCodec,
+  sessionManagement: getAdapterSessionManagement("acpx_local") ?? undefined,
+  models: dedupeAdapterModels([
+    ...prefixAdapterModelLabels(claudeModels, "Claude"),
+    ...prefixAdapterModelLabels(codexModels, "Codex"),
+  ]),
+  listModels: listAcpxModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: acpxAgentConfigurationDoc,
+  getConfigSchema: getAcpxConfigSchema,
 };
 
 const codexLocalAdapter: ServerAdapterModule = {
@@ -144,11 +292,14 @@ const codexLocalAdapter: ServerAdapterModule = {
   sessionCodec: codexSessionCodec,
   sessionManagement: getAdapterSessionManagement("codex_local") ?? undefined,
   models: codexModels,
+  modelProfiles: codexModelProfiles,
   listModels: listCodexModels,
+  refreshModels: refreshCodexModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
+  getRuntimeCommandSpec: (config) => buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex"),
   agentConfigurationDoc: codexAgentConfigurationDoc,
   getQuotaWindows: codexGetQuotaWindows,
 };
@@ -162,12 +313,29 @@ const cursorLocalAdapter: ServerAdapterModule = {
   sessionCodec: cursorSessionCodec,
   sessionManagement: getAdapterSessionManagement("cursor") ?? undefined,
   models: cursorModels,
+  modelProfiles: cursorModelProfiles,
   listModels: listCursorModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: true,
+  getRuntimeCommandSpec: buildCursorRuntimeCommandSpec,
   agentConfigurationDoc: cursorAgentConfigurationDoc,
+};
+
+const cursorCloudAdapter: ServerAdapterModule = {
+  type: "cursor_cloud",
+  execute: cursorCloudExecute,
+  testEnvironment: cursorCloudTestEnvironment,
+  sessionCodec: cursorCloudSessionCodec,
+  sessionManagement: getAdapterSessionManagement("cursor_cloud") ?? undefined,
+  models: [],
+  supportsLocalAgentJwt: false,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: cursorCloudAgentConfigurationDoc,
+  getConfigSchema: getCursorCloudConfigSchema,
 };
 
 const geminiLocalAdapter: ServerAdapterModule = {
@@ -179,10 +347,13 @@ const geminiLocalAdapter: ServerAdapterModule = {
   sessionCodec: geminiSessionCodec,
   sessionManagement: getAdapterSessionManagement("gemini_local") ?? undefined,
   models: geminiModels,
+  modelProfiles: geminiModelProfiles,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: true,
+  getRuntimeCommandSpec: (config) =>
+    buildNpmRuntimeCommandSpec(config, "gemini", "@google/gemini-cli"),
   agentConfigurationDoc: geminiAgentConfigurationDoc,
 };
 
@@ -197,6 +368,21 @@ const openclawGatewayAdapter: ServerAdapterModule = {
   agentConfigurationDoc: openclawGatewayAgentConfigurationDoc,
 };
 
+const openswarmLocalAdapter: ServerAdapterModule = {
+  type: "openswarm_local",
+  execute: openswarmLocalExecute,
+  testEnvironment: openswarmLocalTestEnvironment,
+  models: openswarmLocalModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  // OpenSwarm has two flavors that both install a binary named `openswarm`,
+  // so we cannot pick a single canonical npm package for sandbox auto-install.
+  // Operators set adapterConfig.command (or install one flavor manually).
+  agentConfigurationDoc: openswarmLocalAgentConfigurationDoc,
+};
+
 const openCodeLocalAdapter: ServerAdapterModule = {
   type: "opencode_local",
   execute: openCodeExecute,
@@ -205,12 +391,14 @@ const openCodeLocalAdapter: ServerAdapterModule = {
   syncSkills: syncOpenCodeSkills,
   sessionCodec: openCodeSessionCodec,
   models: openCodeModels,
+  modelProfiles: openCodeModelProfiles,
   sessionManagement: getAdapterSessionManagement("opencode_local") ?? undefined,
   listModels: listOpenCodeModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: true,
+  getRuntimeCommandSpec: (config) => buildNpmRuntimeCommandSpec(config, "opencode", "opencode-ai"),
   agentConfigurationDoc: openCodeAgentConfigurationDoc,
 };
 
@@ -223,11 +411,14 @@ const piLocalAdapter: ServerAdapterModule = {
   sessionCodec: piSessionCodec,
   sessionManagement: getAdapterSessionManagement("pi_local") ?? undefined,
   models: [],
+  modelProfiles: piModelProfiles,
   listModels: listPiModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: true,
+  getRuntimeCommandSpec: (config) =>
+    buildNpmRuntimeCommandSpec(config, "pi", "@mariozechner/pi-coding-agent"),
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
@@ -310,13 +501,16 @@ const pausedOverrides = new Set<string>();
 
 function registerBuiltInAdapters() {
   for (const adapter of [
+    acpxLocalAdapter,
     claudeLocalAdapter,
     codexLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
+    cursorCloudAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
     openclawGatewayAdapter,
+    openswarmLocalAdapter,
     hermesLocalAdapter,
     processAdapter,
     httpAdapter,
@@ -457,6 +651,30 @@ export async function listAdapterModels(type: string): Promise<{ id: string; lab
     if (discovered.length > 0) return discovered;
   }
   return adapter.models ?? [];
+}
+
+export async function refreshAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
+  const adapter = findActiveServerAdapter(type);
+  if (!adapter) return [];
+  if (adapter.refreshModels) {
+    const refreshed = await adapter.refreshModels();
+    if (refreshed.length > 0) return refreshed;
+  }
+  if (adapter.listModels) {
+    const discovered = await adapter.listModels();
+    if (discovered.length > 0) return discovered;
+  }
+  return adapter.models ?? [];
+}
+
+export async function listAdapterModelProfiles(type: string): Promise<AdapterModelProfileDefinition[]> {
+  const adapter = findActiveServerAdapter(type);
+  if (!adapter) return [];
+  if (adapter.listModelProfiles) {
+    const discovered = await adapter.listModelProfiles();
+    if (discovered.length > 0) return discovered;
+  }
+  return adapter.modelProfiles ?? [];
 }
 
 export function listServerAdapters(): ServerAdapterModule[] {

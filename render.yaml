@@ -1,0 +1,79 @@
+# Render Blueprint for Paperclip
+#
+# What it provisions:
+#   - 1 web service (Docker, this repo)
+#   - 1 Postgres add-on (managed by Render)
+#
+# To deploy:
+#   1. Push this branch to your fork.
+#   2. In Render: New + → Blueprint → connect this GitHub repo + branch.
+#   3. Render reads this file, provisions the DB, generates BETTER_AUTH_SECRET,
+#      and starts the service. No paste step required.
+#   4. After the first deploy finishes, copy the public URL Render assigns
+#      (looks like https://paperclip-XYZ.onrender.com) and paste it into the
+#      PAPERCLIP_PUBLIC_URL env var on the service. (Or skip — see entrypoint
+#      fallback to RENDER_EXTERNAL_URL.)
+#   5. Open the URL, claim the board, and you're live.
+#
+# Optional after first launch:
+#   - Paste LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY for heartbeat tracing
+#   - Wire OpenClaw-HQ via Adapter Manager (Settings → Adapters)
+#   - Install @henkey/hermes-paperclip-adapter via Adapter Manager
+#
+# See doc/DEPLOY-RENDER.md for the full walkthrough.
+
+services:
+  - type: web
+    name: paperclip
+    runtime: docker
+    plan: standard
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeploy: true
+    disk:
+      name: paperclip-data
+      mountPath: /paperclip
+      sizeGB: 10
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3100"
+      - key: HOST
+        value: 0.0.0.0
+      - key: SERVE_UI
+        value: "true"
+      - key: PAPERCLIP_DEPLOYMENT_MODE
+        value: authenticated
+      - key: PAPERCLIP_DEPLOYMENT_EXPOSURE
+        value: public
+      - key: PAPERCLIP_HOME
+        value: /paperclip
+      - key: PAPERCLIP_INSTANCE_ID
+        value: default
+      - key: PAPERCLIP_CONFIG
+        value: /paperclip/instances/default/config.json
+      - key: BETTER_AUTH_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: paperclip-db
+          property: connectionString
+      - key: PAPERCLIP_PUBLIC_URL
+        sync: false
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      - key: LANGFUSE_BASE_URL
+        value: https://us.cloud.langfuse.com
+      - key: LANGFUSE_RECORD_IO
+        value: "false"
+
+databases:
+  - name: paperclip-db
+    plan: basic-256mb
+    databaseName: paperclip
+    user: paperclip
+    region: oregon

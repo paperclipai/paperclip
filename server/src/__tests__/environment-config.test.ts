@@ -105,14 +105,147 @@ describe("environment config helpers", () => {
     });
   });
 
-  it("rejects unsupported environment drivers", () => {
-    expect(() =>
-      normalizeEnvironmentConfig({
-        driver: "sandbox" as any,
-        config: {
-          provider: "fake",
+  it("normalizes sandbox config into its canonical stored shape", () => {
+    const config = normalizeEnvironmentConfig({
+      driver: "sandbox",
+      config: {
+        provider: "fake",
+        image: "  ubuntu:24.04  ",
+      },
+    });
+
+    expect(config).toEqual({
+      provider: "fake",
+      image: "ubuntu:24.04",
+      reuseLease: false,
+    });
+  });
+
+  it("parses a persisted sandbox environment into a typed driver config", () => {
+    const parsed = parseEnvironmentDriverConfig({
+      driver: "sandbox",
+      config: {
+        provider: "fake",
+        image: "ubuntu:24.04",
+        reuseLease: true,
+      },
+    });
+
+    expect(parsed).toEqual({
+      driver: "sandbox",
+      config: {
+        provider: "fake",
+        image: "ubuntu:24.04",
+        reuseLease: true,
+      },
+    });
+  });
+
+  it("normalizes schema-driven sandbox config into the generic plugin-backed stored shape", () => {
+    const config = normalizeEnvironmentConfig({
+      driver: "sandbox",
+      config: {
+        provider: "secure-plugin",
+        template: "  base  ",
+        apiKey: "22222222-2222-2222-2222-222222222222",
+        timeoutMs: "450000",
+      },
+    });
+
+    expect(config).toEqual({
+      provider: "secure-plugin",
+      template: "  base  ",
+      apiKey: "22222222-2222-2222-2222-222222222222",
+      timeoutMs: 450000,
+      reuseLease: false,
+    });
+  });
+
+  it("normalizes plugin-backed sandbox provider config without server provider changes", () => {
+    const config = normalizeEnvironmentConfig({
+      driver: "sandbox",
+      config: {
+        provider: "fake-plugin",
+        image: "  fake:test  ",
+        timeoutMs: "120000",
+        reuseLease: true,
+        customFlag: "kept",
+      },
+    });
+
+    expect(config).toEqual({
+      provider: "fake-plugin",
+      image: "  fake:test  ",
+      timeoutMs: 120000,
+      reuseLease: true,
+      customFlag: "kept",
+    });
+  });
+
+  it("parses a persisted schema-driven sandbox environment into a typed driver config", () => {
+    const parsed = parseEnvironmentDriverConfig({
+      driver: "sandbox",
+      config: {
+        provider: "secure-plugin",
+        template: "base",
+        apiKey: "22222222-2222-2222-2222-222222222222",
+        timeoutMs: 300000,
+        reuseLease: true,
+      },
+    });
+
+    expect(parsed).toEqual({
+      driver: "sandbox",
+      config: {
+        provider: "secure-plugin",
+        template: "base",
+        apiKey: "22222222-2222-2222-2222-222222222222",
+        timeoutMs: 300000,
+        reuseLease: true,
+      },
+    });
+  });
+
+  it("parses a persisted plugin-backed sandbox environment into a typed driver config", () => {
+    const parsed = parseEnvironmentDriverConfig({
+      driver: "sandbox",
+      config: {
+        provider: "fake-plugin",
+        image: "fake:test",
+        timeoutMs: 300000,
+        reuseLease: true,
+      },
+    });
+
+    expect(parsed).toEqual({
+      driver: "sandbox",
+      config: {
+        provider: "fake-plugin",
+        image: "fake:test",
+        timeoutMs: 300000,
+        reuseLease: true,
+      },
+    });
+  });
+
+  it("normalizes plugin environment config into its canonical stored shape", () => {
+    const config = normalizeEnvironmentConfig({
+      driver: "plugin",
+      config: {
+        pluginKey: "acme.environments",
+        driverKey: "fake-plugin",
+        driverConfig: {
+          template: "base",
         },
-      }),
-    ).toThrow(HttpError);
+      },
+    });
+
+    expect(config).toEqual({
+      pluginKey: "acme.environments",
+      driverKey: "fake-plugin",
+      driverConfig: {
+        template: "base",
+      },
+    });
   });
 });

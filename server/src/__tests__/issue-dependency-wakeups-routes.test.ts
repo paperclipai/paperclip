@@ -17,6 +17,9 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  companyService: () => ({
+    getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+  }),
   accessService: () => ({
     canUser: vi.fn(),
     hasPermission: vi.fn(),
@@ -57,6 +60,10 @@ vi.mock("../services/index.js", () => ({
     syncComment: async () => undefined,
     syncDocument: async () => undefined,
     syncIssue: async () => undefined,
+  }),
+  issueRecoveryActionService: () => ({
+    getActiveForIssue: vi.fn(async () => null),
+    listActiveForIssues: vi.fn(async () => new Map()),
   }),
   issueService: () => mockIssueService,
   logActivity: vi.fn(async () => undefined),
@@ -100,7 +107,7 @@ describe("issue dependency wakeups in issue routes", () => {
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.getCommentCursor.mockResolvedValue({

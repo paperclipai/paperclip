@@ -424,7 +424,7 @@ describeEmbeddedPostgres("activity service", () => {
     expect(backfilledRun).toMatchObject({
       runId,
       livenessState: "plan_only",
-      livenessReason: "Run described future work without concrete action evidence",
+      livenessReason: "Run described runnable future work without concrete action evidence",
       lastUsefulActionAt: null,
     });
   });
@@ -530,7 +530,7 @@ describeEmbeddedPostgres("activity service", () => {
     expect(backfilledRun).toMatchObject({
       runId,
       livenessState: "plan_only",
-      livenessReason: "Run described future work without concrete action evidence",
+      livenessReason: "Run described runnable future work without concrete action evidence",
       lastUsefulActionAt: null,
     });
   });

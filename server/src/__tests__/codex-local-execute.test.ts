@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import { execute } from "@paperclipai/adapter-codex-local/server";
 
 async function writeFakeCodexCommand(commandPath: string): Promise<void> {
@@ -14,6 +15,9 @@ const payload = {
   prompt: fs.readFileSync(0, "utf8"),
   codexHome: process.env.CODEX_HOME || null,
   paperclipWakePayloadJson: process.env.PAPERCLIP_WAKE_PAYLOAD_JSON || null,
+  paperclipApiUrl: process.env.PAPERCLIP_API_URL || null,
+  paperclipApiKey: process.env.PAPERCLIP_API_KEY || null,
+  paperclipApiBridgeMode: process.env.PAPERCLIP_API_BRIDGE_MODE || null,
   paperclipEnvKeys: Object.keys(process.env)
     .filter((key) => key.startsWith("PAPERCLIP_"))
     .sort(),
@@ -43,6 +47,9 @@ type CapturePayload = {
   prompt: string;
   codexHome: string | null;
   paperclipWakePayloadJson: string | null;
+  paperclipApiUrl?: string | null;
+  paperclipApiKey?: string | null;
+  paperclipApiBridgeMode?: string | null;
   paperclipEnvKeys: string[];
 };
 
@@ -50,6 +57,40 @@ type LogEntry = {
   stream: "stdout" | "stderr";
   chunk: string;
 };
+
+function createLocalSandboxRunner() {
+  let counter = 0;
+  return {
+    execute: async (input: {
+      command: string;
+      args?: string[];
+      cwd?: string;
+      env?: Record<string, string>;
+      stdin?: string;
+      timeoutMs?: number;
+      onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+      onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
+    }) => {
+      counter += 1;
+      return runChildProcess(
+        `sandbox-run-${counter}`,
+        input.command,
+        input.args ?? [],
+        {
+          cwd: input.cwd ?? process.cwd(),
+          env: input.env ?? {},
+          stdin: input.stdin,
+          timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
+          graceSec: 5,
+          onLog: input.onLog ?? (async () => {}),
+          onSpawn: input.onSpawn
+            ? async (meta) => input.onSpawn?.({ pid: meta.pid, startedAt: meta.startedAt })
+            : undefined,
+        },
+      );
+    },
+  };
+}
 
 describe("codex execute", () => {
   it("uses a Paperclip-managed CODEX_HOME outside worktree mode while preserving shared auth and config", async () => {
@@ -270,6 +311,80 @@ describe("codex execute", () => {
     }
   });
 
+  it("injects bridge env into sandbox-managed remote runs", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-sandbox-"));
+    const localWorkspace = path.join(root, "workspace");
+    const remoteWorkspace = path.join(root, "sandbox");
+    const binDir = path.join(root, "bin");
+    const commandPath = path.join(binDir, "codex");
+    const capturePath = path.join(remoteWorkspace, "capture.json");
+    const previousHome = process.env.HOME;
+    const previousPath = process.env.PATH;
+
+    await fs.mkdir(localWorkspace, { recursive: true });
+    await fs.mkdir(remoteWorkspace, { recursive: true });
+    await fs.mkdir(binDir, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    process.env.HOME = root;
+    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
+
+    try {
+      const result = await execute({
+        runId: "run-sandbox-auth",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: localWorkspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "e2b",
+          environmentId: "env-1",
+          leaseId: "lease-1",
+          remoteCwd: remoteWorkspace,
+          timeoutMs: 30_000,
+          runner: createLocalSandboxRunner(),
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.codexHome).toBe(path.join(remoteWorkspace, ".paperclip-runtime", "codex", "home"));
+      expect(capture.paperclipApiUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      expect(capture.paperclipApiKey).not.toBe("run-jwt-token");
+      expect(capture.paperclipApiBridgeMode).toBe("queue_v1");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("injects structured Paperclip wake payloads into env and prompt", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-wake-"));
     const workspace = path.join(root, "workspace");
@@ -419,8 +534,71 @@ describe("codex execute", () => {
 
       expect(result.exitCode).toBe(1);
       expect(result.errorCode).toBe("codex_transient_upstream");
+      expect(result.errorFamily).toBe("transient_upstream");
       expect(result.errorMessage).toContain("high demand");
     } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("persists retry-not-before metadata for codex usage-limit failures", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-usage-limit-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFailingCodexCommand(
+      commandPath,
+      "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at 11:31 PM.",
+    );
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 3, 22, 22, 29, 0));
+
+    try {
+      const result = await execute({
+        runId: "run-usage-limit",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: "codex-session-usage-limit",
+          sessionParams: {
+            sessionId: "codex-session-usage-limit",
+            cwd: workspace,
+          },
+          sessionDisplayId: "codex-session-usage-limit",
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "gpt-5.3-codex-spark",
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("codex_transient_upstream");
+      expect(result.errorFamily).toBe("transient_upstream");
+      const expectedRetryNotBefore = new Date(2026, 3, 22, 23, 31, 0, 0).toISOString();
+      expect(result.retryNotBefore).toBe(expectedRetryNotBefore);
+      expect(result.resultJson?.retryNotBefore).toBe(expectedRetryNotBefore);
+      expect(new Date(String(result.resultJson?.transientRetryNotBefore)).getTime()).toBe(
+        new Date(2026, 3, 22, 23, 31, 0, 0).getTime(),
+      );
+    } finally {
+      vi.useRealTimers();
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
       await fs.rm(root, { recursive: true, force: true });

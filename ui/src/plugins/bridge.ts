@@ -25,7 +25,8 @@
  * @see PLUGIN_SPEC.md §19.7 — Error Propagation Through The Bridge
  */
 
-import { createContext, useCallback, useContext, useRef, useState, useEffect } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useLocation as useRouterLocation, useNavigate as useRouterNavigate, type NavigateOptions } from "react-router-dom";
 import type {
   PluginBridgeErrorCode,
   PluginLauncherBounds,
@@ -35,6 +36,8 @@ import type {
 import { pluginsApi } from "@/api/plugins";
 import { ApiError } from "@/api/client";
 import { useToastActions, type ToastInput } from "@/context/ToastContext";
+import { useSidebar } from "@/context/SidebarContext";
+import { isGlobalPath, normalizeCompanyPrefix } from "@/lib/company-routes";
 
 // ---------------------------------------------------------------------------
 // Bridge error type (mirrors the SDK's PluginBridgeError)
@@ -62,6 +65,36 @@ export interface PluginDataResult<T = unknown> {
 
 export type PluginToastInput = ToastInput;
 export type PluginToastFn = (input: PluginToastInput) => string | null;
+
+export interface HostNavigationOptions {
+  replace?: boolean;
+  state?: unknown;
+}
+
+export interface HostNavigationLinkOptions extends HostNavigationOptions {
+  target?: string;
+  rel?: string;
+}
+
+export interface HostNavigationLinkProps {
+  href: string;
+  target?: string;
+  rel?: string;
+  onClick(event: ReactMouseEvent<HTMLAnchorElement>): void;
+}
+
+export interface HostNavigation {
+  resolveHref(to: string): string;
+  navigate(to: string, options?: HostNavigationOptions): void;
+  linkProps(to: string, options?: HostNavigationLinkOptions): HostNavigationLinkProps;
+}
+
+export interface HostLocation {
+  pathname: string;
+  search: string;
+  hash: string;
+  state?: unknown;
+}
 
 // ---------------------------------------------------------------------------
 // Host context type (mirrors the SDK's PluginHostContext)
@@ -220,6 +253,81 @@ function serializeRenderEnvironmentSnapshot(
   return snapshot ? JSON.stringify(snapshot) : "";
 }
 
+function splitPath(path: string): { pathname: string; search: string; hash: string } {
+  const match = path.match(/^([^?#]*)(\?[^#]*)?(#.*)?$/);
+  return {
+    pathname: match?.[1] ?? path,
+    search: match?.[2] ?? "",
+    hash: match?.[3] ?? "",
+  };
+}
+
+function sameOriginPathFromHref(href: string): string | null {
+  if (!/^[a-z][a-z\d+.-]*:/i.test(href) && !href.startsWith("//")) {
+    return href;
+  }
+  if (typeof window === "undefined") return null;
+  try {
+    const url = new URL(href, window.location.origin);
+    if (url.origin !== window.location.origin) return null;
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return null;
+  }
+}
+
+function hasCompanyPrefix(pathname: string, companyPrefix: string): boolean {
+  const [firstSegment] = pathname.split("/").filter(Boolean);
+  return firstSegment?.toUpperCase() === normalizeCompanyPrefix(companyPrefix);
+}
+
+/**
+ * Resolve a plugin-provided Paperclip path to the active company scope.
+ *
+ * This intentionally handles plugin page roots such as `/wiki`, which cannot
+ * be listed in the host router's static board-route table ahead of time.
+ */
+export function resolveHostNavigationHref(
+  to: string,
+  companyPrefix: string | null | undefined,
+): string {
+  const sameOriginPath = sameOriginPathFromHref(to);
+  if (sameOriginPath === null) return to;
+
+  const { pathname, search, hash } = splitPath(sameOriginPath);
+  if (!pathname.startsWith("/") || isGlobalPath(pathname) || !companyPrefix) {
+    return sameOriginPath;
+  }
+
+  if (hasCompanyPrefix(pathname, companyPrefix)) {
+    return sameOriginPath;
+  }
+
+  return `/${normalizeCompanyPrefix(companyPrefix)}${pathname}${search}${hash}`;
+}
+
+function isPlainLeftClick(event: ReactMouseEvent<HTMLAnchorElement>): boolean {
+  return (
+    !event.defaultPrevented &&
+    event.button === 0 &&
+    !event.metaKey &&
+    !event.altKey &&
+    !event.ctrlKey &&
+    !event.shiftKey
+  );
+}
+
+export function shouldHandleHostNavigationClick(
+  event: ReactMouseEvent<HTMLAnchorElement>,
+  href: string,
+  target?: string,
+): boolean {
+  if (!isPlainLeftClick(event)) return false;
+  if (target && target !== "_self") return false;
+  if (event.currentTarget.hasAttribute("download")) return false;
+  return sameOriginPathFromHref(href) !== null;
+}
+
 /**
  * Concrete implementation of `usePluginData<T>(key, params)`.
  *
@@ -362,6 +470,81 @@ export function usePluginAction(key: string): PluginActionFn {
 export function useHostContext(): PluginHostContext {
   const { hostContext } = usePluginBridgeContext();
   return hostContext;
+}
+
+// ---------------------------------------------------------------------------
+// useHostNavigation — concrete implementation
+// ---------------------------------------------------------------------------
+
+export function useHostNavigation(): HostNavigation {
+  const { hostContext } = usePluginBridgeContext();
+  const routerNavigate = useRouterNavigate();
+  const { isMobile, setSidebarOpen } = useSidebar();
+  const companyPrefix = hostContext.companyPrefix;
+
+  const resolveHref = useCallback(
+    (to: string) => resolveHostNavigationHref(to, companyPrefix),
+    [companyPrefix],
+  );
+
+  const navigate = useCallback(
+    (to: string, options?: HostNavigationOptions) => {
+      const href = resolveHref(to);
+      const sameOriginPath = sameOriginPathFromHref(href);
+      if (sameOriginPath === null) {
+        window.location.assign(href);
+        return;
+      }
+      routerNavigate(sameOriginPath, options as NavigateOptions | undefined);
+      // Mirror host sidebar behavior: tapping a link inside the mobile drawer
+      // dismisses the drawer so the user can see the destination page.
+      if (isMobile) setSidebarOpen(false);
+    },
+    [isMobile, resolveHref, routerNavigate, setSidebarOpen],
+  );
+
+  const linkProps = useCallback(
+    (to: string, options?: HostNavigationLinkOptions): HostNavigationLinkProps => {
+      const href = resolveHref(to);
+      return {
+        href,
+        target: options?.target,
+        rel: options?.rel,
+        onClick: (event) => {
+          if (!shouldHandleHostNavigationClick(event, href, options?.target)) return;
+          event.preventDefault();
+          navigate(href, options);
+        },
+      };
+    },
+    [navigate, resolveHref],
+  );
+
+  return useMemo(
+    () => ({
+      resolveHref,
+      navigate,
+      linkProps,
+    }),
+    [linkProps, navigate, resolveHref],
+  );
+}
+
+// ---------------------------------------------------------------------------
+// useHostLocation — concrete implementation
+// ---------------------------------------------------------------------------
+
+export function useHostLocation(): HostLocation {
+  const location = useRouterLocation();
+  return useMemo(
+    () => ({
+      pathname: location.pathname,
+      search: location.search,
+      hash: location.hash,
+      state: location.state,
+    }),
+    [location.hash, location.pathname, location.search, location.state],
+  );
 }
 
 // ---------------------------------------------------------------------------

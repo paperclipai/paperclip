@@ -6,6 +6,8 @@ const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
   getByKey: vi.fn(),
   upsertConfig: vi.fn(),
+  getCompanySettings: vi.fn(),
+  upsertCompanySettings: vi.fn(),
 }));
 
 const mockLifecycle = vi.hoisted(() => ({
@@ -16,25 +18,21 @@ const mockLifecycle = vi.hoisted(() => ({
   disable: vi.fn(),
 }));
 
-function registerRouteMocks() {
-  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
+vi.mock("../services/plugin-registry.js", () => ({
+  pluginRegistryService: () => mockRegistry,
+}));
 
-  vi.doMock("../services/plugin-registry.js", () => ({
-    pluginRegistryService: () => mockRegistry,
-  }));
+vi.mock("../services/plugin-lifecycle.js", () => ({
+  pluginLifecycleManager: () => mockLifecycle,
+}));
 
-  vi.doMock("../services/plugin-lifecycle.js", () => ({
-    pluginLifecycleManager: () => mockLifecycle,
-  }));
+vi.mock("../services/activity-log.js", () => ({
+  logActivity: vi.fn(),
+}));
 
-  vi.doMock("../services/activity-log.js", () => ({
-    logActivity: vi.fn(),
-  }));
-
-  vi.doMock("../services/live-events.js", () => ({
-    publishGlobalLiveEvent: vi.fn(),
-  }));
-}
+vi.mock("../services/live-events.js", () => ({
+  publishGlobalLiveEvent: vi.fn(),
+}));
 
 async function createApp(
   actor: Record<string, unknown>,
@@ -47,8 +45,8 @@ async function createApp(
   } = {},
 ) {
   const [{ pluginRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/plugins.js")>("../routes/plugins.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    import("../routes/plugins.js"),
+    import("../middleware/index.js"),
   ]);
 
   const loader = {
@@ -114,21 +112,9 @@ function readyPlugin() {
   });
 }
 
-describe("plugin install and upgrade authz", () => {
+describe.sequential("plugin install and upgrade authz", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../services/issues.js");
-    vi.doUnmock("../services/plugin-config-validator.js");
-    vi.doUnmock("../services/plugin-loader.js");
-    vi.doUnmock("../services/plugin-registry.js");
-    vi.doUnmock("../services/plugin-lifecycle.js");
-    vi.doUnmock("../services/activity-log.js");
-    vi.doUnmock("../services/live-events.js");
-    vi.doUnmock("../routes/plugins.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    registerRouteMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
   });
 
   it("rejects plugin installation for non-admin board users", async () => {
@@ -238,6 +224,30 @@ describe("plugin install and upgrade authz", () => {
     expect(mockLifecycle.disable).not.toHaveBeenCalled();
   }, 20_000);
 
+  it("rejects plugin config saves that contain secret refs even for instance admins", async () => {
+    readyPlugin();
+
+    const { app } = await createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyA],
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/config`)
+      .send({
+        configJson: {
+          apiKeyRef: "77777777-7777-4777-8777-777777777777",
+        },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toMatch(/secret references are disabled/i);
+    expect(mockRegistry.upsertConfig).not.toHaveBeenCalled();
+  }, 20_000);
+
   it("allows instance admins to upgrade plugins", async () => {
     const pluginId = "11111111-1111-4111-8111-111111111111";
     mockRegistry.getById.mockResolvedValue({
@@ -267,21 +277,9 @@ describe("plugin install and upgrade authz", () => {
   }, 20_000);
 });
 
-describe("scoped plugin API routes", () => {
+describe.sequential("scoped plugin API routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../services/issues.js");
-    vi.doUnmock("../services/plugin-config-validator.js");
-    vi.doUnmock("../services/plugin-loader.js");
-    vi.doUnmock("../services/plugin-registry.js");
-    vi.doUnmock("../services/plugin-lifecycle.js");
-    vi.doUnmock("../services/activity-log.js");
-    vi.doUnmock("../services/live-events.js");
-    vi.doUnmock("../routes/plugins.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    registerRouteMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
   });
 
   it("dispatches manifest-declared scoped routes after company access checks", async () => {
@@ -345,21 +343,64 @@ describe("scoped plugin API routes", () => {
   }, 20_000);
 });
 
-describe("plugin tool and bridge authz", () => {
+describe.sequential("plugin local folder routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../services/issues.js");
-    vi.doUnmock("../services/plugin-config-validator.js");
-    vi.doUnmock("../services/plugin-loader.js");
-    vi.doUnmock("../services/plugin-registry.js");
-    vi.doUnmock("../services/plugin-lifecycle.js");
-    vi.doUnmock("../services/activity-log.js");
-    vi.doUnmock("../services/live-events.js");
-    vi.doUnmock("../routes/plugins.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    registerRouteMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
+    mockRegistry.getCompanySettings.mockResolvedValue(null);
+  });
+
+  function readyLocalFolderPlugin() {
+    mockRegistry.getById.mockResolvedValue({
+      id: pluginId,
+      pluginKey: "paperclip.example",
+      version: "1.0.0",
+      status: "ready",
+      manifestJson: {
+        id: "paperclip.example",
+        capabilities: ["local.folders"],
+        localFolders: [
+          {
+            folderKey: "content-root",
+            displayName: "Content root",
+            access: "readWrite",
+            requiredDirectories: ["docs"],
+            requiredFiles: ["README.md"],
+          },
+        ],
+      },
+    });
+  }
+
+  it("rejects validation for undeclared local folder keys", async () => {
+    readyLocalFolderPlugin();
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/companies/${companyA}/local-folders/ssh/validate`)
+      .send({ path: "/tmp" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Local folder key is not declared");
+    expect(mockRegistry.upsertCompanySettings).not.toHaveBeenCalled();
+  });
+
+  it("rejects saving undeclared local folder keys", async () => {
+    readyLocalFolderPlugin();
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .put(`/api/plugins/${pluginId}/companies/${companyA}/local-folders/ssh`)
+      .send({ path: "/tmp" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Local folder key is not declared");
+    expect(mockRegistry.upsertCompanySettings).not.toHaveBeenCalled();
+  });
+});
+
+describe.sequential("plugin tool and bridge authz", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
   });
 
   it("rejects tool execution when the board user cannot access runContext.companyId", async () => {
@@ -393,63 +434,67 @@ describe("plugin tool and bridge authz", () => {
     expect(executeTool).not.toHaveBeenCalled();
   });
 
-  it.each([
-    [
-      "agentId",
+  it("rejects tool execution when any runContext reference is outside the company scope", async () => {
+    const cases: Array<[string, Array<Array<Record<string, unknown>>>]> = [
       [
-        [{ companyId: companyB }],
+        "agentId",
+        [
+          [{ companyId: companyB }],
+        ],
       ],
-    ],
-    [
-      "runId company",
       [
-        [{ companyId: companyA }],
-        [{ companyId: companyB, agentId: agentA }],
+        "runId company",
+        [
+          [{ companyId: companyA }],
+          [{ companyId: companyB, agentId: agentA }],
+        ],
       ],
-    ],
-    [
-      "runId agent",
       [
-        [{ companyId: companyA }],
-        [{ companyId: companyA, agentId: "77777777-7777-4777-8777-777777777777" }],
+        "runId agent",
+        [
+          [{ companyId: companyA }],
+          [{ companyId: companyA, agentId: "77777777-7777-4777-8777-777777777777" }],
+        ],
       ],
-    ],
-    [
-      "projectId",
       [
-        [{ companyId: companyA }],
-        [{ companyId: companyA, agentId: agentA }],
-        [{ companyId: companyB }],
+        "projectId",
+        [
+          [{ companyId: companyA }],
+          [{ companyId: companyA, agentId: agentA }],
+          [{ companyId: companyB }],
+        ],
       ],
-    ],
-  ])("rejects tool execution when runContext.%s is outside the company scope", async (_case, rows) => {
-    const executeTool = vi.fn();
-    const { app } = await createApp(boardActor(), {}, {
-      db: createSelectQueueDb(rows),
-      toolDeps: {
-        toolDispatcher: {
-          listToolsForAgent: vi.fn(),
-          getTool: vi.fn(() => ({ name: "paperclip.example:search" })),
-          executeTool,
-        },
-      },
-    });
+    ];
 
-    const res = await request(app)
-      .post("/api/plugins/tools/execute")
-      .send({
-        tool: "paperclip.example:search",
-        parameters: {},
-        runContext: {
-          agentId: agentA,
-          runId: runA,
-          companyId: companyA,
-          projectId: projectA,
+    for (const [label, rows] of cases) {
+      const executeTool = vi.fn();
+      const { app } = await createApp(boardActor(), {}, {
+        db: createSelectQueueDb(rows),
+        toolDeps: {
+          toolDispatcher: {
+            listToolsForAgent: vi.fn(),
+            getTool: vi.fn(() => ({ name: "paperclip.example:search" })),
+            executeTool,
+          },
         },
       });
 
-    expect(res.status).toBe(403);
-    expect(executeTool).not.toHaveBeenCalled();
+      const res = await request(app)
+        .post("/api/plugins/tools/execute")
+        .send({
+          tool: "paperclip.example:search",
+          parameters: {},
+          runContext: {
+            agentId: agentA,
+            runId: runA,
+            companyId: companyA,
+            projectId: projectA,
+          },
+        });
+
+      expect(res.status, label).toBe(403);
+      expect(executeTool).not.toHaveBeenCalled();
+    }
   });
 
   it("allows tool execution when agent, run, and project all belong to runContext.companyId", async () => {
