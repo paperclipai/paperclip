@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="${PAPERCLIP_SYNC_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 DATE="$(date +%Y%m%d)"
 BRANCH="chore/sync-${DATE}"
 UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
