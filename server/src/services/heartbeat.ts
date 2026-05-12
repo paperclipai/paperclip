@@ -144,7 +144,7 @@ import {
 import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
-import { maybeExportHeartbeatRunToLangfuse } from "./langfuse-export.js";
+import { isLangfuseEnabled, maybeExportHeartbeatRunToLangfuse } from "./langfuse-export.js";
 import {
   redactCurrentUserText,
   redactCurrentUserValue,
@@ -7860,7 +7860,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }, normalizedUsage);
 
         let promptVersion = agent.updatedAt ? agent.updatedAt.toISOString() : null;
-        if (process.env.PAPERCLIP_LANGFUSE_ENABLED === "1") {
+        if (issueRef && isLangfuseEnabled()) {
           try {
             const latestRevision = await db
               .select({ id: agentConfigRevisions.id })

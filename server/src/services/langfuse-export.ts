@@ -11,6 +11,10 @@ function parseBooleanEnv(value: unknown) {
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
+export function isLangfuseEnabled() {
+  return parseBooleanEnv(process.env.PAPERCLIP_LANGFUSE_ENABLED);
+}
+
 function normalizeHost(value: unknown) {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -125,7 +129,7 @@ export type LangfuseHeartbeatRunExportInput = {
 
 export async function maybeExportHeartbeatRunToLangfuse(input: LangfuseHeartbeatRunExportInput) {
   try {
-    const enabled = parseBooleanEnv(process.env.PAPERCLIP_LANGFUSE_ENABLED);
+    const enabled = isLangfuseEnabled();
     if (!enabled) return;
 
     const host =
@@ -157,6 +161,7 @@ export async function maybeExportHeartbeatRunToLangfuse(input: LangfuseHeartbeat
     const generationId = deriveUuidV4(`${runId}:generation:v1`);
     const traceEventId = deriveUuidV4(`${runId}:trace-create:v1`);
     const generationEventId = deriveUuidV4(`${runId}:generation-create:v1`);
+    const scoreId = deriveUuidV4(`${runId}:score:v1`);
     const scoreEventId = deriveUuidV4(`${runId}:score-create:v1`);
 
     const provider = safeShortString(input?.adapterResult?.provider, 80);
@@ -221,7 +226,7 @@ export async function maybeExportHeartbeatRunToLangfuse(input: LangfuseHeartbeat
     };
 
     const scoreBody = {
-      id: scoreEventId,
+      id: scoreId,
       traceId: runId,
       observationId: generationId,
       name: "paperclip.outcome",
