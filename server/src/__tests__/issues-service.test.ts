@@ -2004,6 +2004,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -2254,6 +2255,62 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await expect(
       svc.checkout(blockedId, assigneeAgentId, ["todo", "blocked"], null),
     ).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("rejects checkout of a terminal routine_execution issue without resume: true", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: assigneeAgentId,
+      status: "failed",
+      invocationSource: "manual",
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Weekly routine output",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId,
+      originKind: "routine_execution",
+    });
+
+    await expect(
+      svc.checkout(issueId, assigneeAgentId, ["todo", "blocked", "done", "in_review"], runId),
+    ).rejects.toMatchObject({ status: 422 });
+
+    const checkedOut = await svc.checkout(
+      issueId,
+      assigneeAgentId,
+      ["todo", "blocked", "done", "in_review"],
+      runId,
+      true,
+    );
+    expect(checkedOut?.status).toBe("in_progress");
+    expect(checkedOut?.checkoutRunId).toBe(runId);
   });
 
   it("wakes parents only when all direct children are terminal", async () => {
