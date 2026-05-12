@@ -152,6 +152,73 @@ describe("issue graph liveness classifier", () => {
     expect(findings).toEqual([]);
   });
 
+  it("detects an assigned backlog blocker leaf with no action path", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue(),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Parked assigned unblock work",
+          status: "backlog",
+          assigneeAgentId: "blocker-agent",
+        }),
+      ],
+      relations: blocks,
+      agents: [
+        agent(),
+        manager,
+        agent({ id: "blocker-agent", name: "Blocker Agent", reportsTo: managerId }),
+      ],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: blockedId,
+      identifier: "PAP-1703",
+      state: "blocked_by_assigned_backlog_issue",
+      recoveryIssueId: blockerId,
+      recommendedOwnerAgentId: "blocker-agent",
+      dependencyPath: [
+        expect.objectContaining({ issueId: blockedId }),
+        expect.objectContaining({ issueId: blockerId, status: "backlog" }),
+      ],
+      incidentKey: `harness_liveness:${companyId}:${blockedId}:blocked_by_assigned_backlog_issue:${blockerId}`,
+    });
+  });
+
+  it("does not flag an assigned backlog blocker that has an explicit waiting path", () => {
+    const backlogBlocker = issue({
+      id: blockerId,
+      identifier: "PAP-1704",
+      title: "Explicitly parked unblock work",
+      status: "backlog",
+      assigneeAgentId: "blocker-agent",
+    });
+    const baseInput = {
+      issues: [issue(), backlogBlocker],
+      relations: blocks,
+      agents: [
+        agent(),
+        manager,
+        agent({ id: "blocker-agent", name: "Blocker Agent", reportsTo: managerId }),
+      ],
+    };
+
+    expect(classifyIssueGraphLiveness({
+      ...baseInput,
+      issues: [issue(), { ...backlogBlocker, assigneeAgentId: null, assigneeUserId: "board-user-1" }],
+    })).toEqual([]);
+    expect(classifyIssueGraphLiveness({
+      ...baseInput,
+      activeRuns: [{ companyId, issueId: blockerId, agentId: "blocker-agent", status: "running" }],
+    })).toEqual([]);
+    expect(classifyIssueGraphLiveness({
+      ...baseInput,
+      openRecoveryIssues: [{ companyId, issueId: blockerId, status: "todo" }],
+    })).toEqual([]);
+  });
+
   it("does not flag an unassigned blocker that already has an active execution path", () => {
     const findings = classifyIssueGraphLiveness({
       issues: [

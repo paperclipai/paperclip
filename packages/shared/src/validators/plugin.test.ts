@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PLUGIN_CAPABILITIES } from "../constants.js";
-import { pluginManagedRoutineDeclarationSchema, pluginUiSlotDeclarationSchema } from "./plugin.js";
+import { pluginManagedRoutineDeclarationSchema, pluginManifestV1Schema, pluginUiSlotDeclarationSchema } from "./plugin.js";
 
 describe("plugin capability constants", () => {
   it("exposes each capability once", () => {
@@ -27,6 +27,41 @@ describe("plugin managed routine validators", () => {
     });
 
     expect(parsed.success).toBe(false);
+  });
+});
+
+describe("plugin managed skill validators", () => {
+  const baseManifest = {
+    id: "paperclip.test-managed-skills",
+    apiVersion: 1,
+    version: "0.1.0",
+    displayName: "Managed Skills",
+    description: "Managed skills test plugin.",
+    author: "Paperclip",
+    categories: ["automation"],
+    entrypoints: { worker: "./dist/worker.js" },
+  } as const;
+
+  it("requires skills.managed when managed skills are declared", () => {
+    const parsed = pluginManifestV1Schema.safeParse({
+      ...baseManifest,
+      capabilities: [],
+      skills: [{ skillKey: "wiki-maintainer", displayName: "Wiki Maintainer" }],
+    });
+
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues.some((issue) => issue.message.includes("skills.managed"))).toBe(true);
+  });
+
+  it("accepts managed skills with the skills.managed capability", () => {
+    const parsed = pluginManifestV1Schema.parse({
+      ...baseManifest,
+      capabilities: ["skills.managed"],
+      skills: [{ skillKey: "wiki-maintainer", displayName: "Wiki Maintainer" }],
+    });
+
+    expect(parsed.skills?.[0]?.skillKey).toBe("wiki-maintainer");
   });
 });
 
