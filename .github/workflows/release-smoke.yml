@@ -94,8 +94,11 @@ jobs:
       - name: Capture Docker logs
         if: always()
         run: |
-          if [[ -n "${SMOKE_CONTAINER_NAME:-}" ]]; then
-            docker logs "$SMOKE_CONTAINER_NAME" >"$RUNNER_TEMP/docker-onboard-smoke.log" 2>&1 || true
+          container_name="${SMOKE_CONTAINER_NAME:-paperclip-onboard-smoke}"
+          if docker ps -a --format '{{.Names}}' | grep -Fx "$container_name" >/dev/null 2>&1; then
+            docker logs "$container_name" >"$RUNNER_TEMP/docker-onboard-smoke.log" 2>&1 || true
+          else
+            echo "Smoke container $container_name was not found." >"$RUNNER_TEMP/docker-onboard-smoke.log"
           fi
 
       - name: Upload diagnostics
@@ -113,6 +116,7 @@ jobs:
       - name: Stop Docker smoke container
         if: always()
         run: |
-          if [[ -n "${SMOKE_CONTAINER_NAME:-}" ]]; then
-            docker rm -f "$SMOKE_CONTAINER_NAME" >/dev/null 2>&1 || true
+          container_name="${SMOKE_CONTAINER_NAME:-paperclip-onboard-smoke}"
+          if docker ps -a --format '{{.Names}}' | grep -Fx "$container_name" >/dev/null 2>&1; then
+            docker rm -f "$container_name" >/dev/null 2>&1 || true
           fi

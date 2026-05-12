@@ -16,6 +16,7 @@ SMOKE_AUTO_BOOTSTRAP="${SMOKE_AUTO_BOOTSTRAP:-true}"
 SMOKE_ADMIN_NAME="${SMOKE_ADMIN_NAME:-Smoke Admin}"
 SMOKE_ADMIN_EMAIL="${SMOKE_ADMIN_EMAIL:-smoke-admin@paperclip.local}"
 SMOKE_ADMIN_PASSWORD="${SMOKE_ADMIN_PASSWORD:-paperclip-smoke-password}"
+SMOKE_READY_TIMEOUT_SECONDS="${SMOKE_READY_TIMEOUT_SECONDS:-180}"
 CONTAINER_NAME="${IMAGE_NAME//[^a-zA-Z0-9_.-]/-}"
 LOG_PID=""
 COOKIE_JAR=""
@@ -44,6 +45,26 @@ container_is_running() {
   [[ "$running" == "true" ]]
 }
 
+capture_readiness_diagnostics() {
+  local url="$1"
+  echo "==> Smoke readiness diagnostics for $CONTAINER_NAME" >&2
+  echo "    Health URL: $url" >&2
+  echo "    Container running: $(container_is_running && echo true || echo false)" >&2
+  echo "    Docker status:" >&2
+  docker ps -a \
+    --filter "name=^/${CONTAINER_NAME}$" \
+    --format '      {{.Names}} {{.Status}} {{.Ports}}' >&2 || true
+  echo "    Docker inspect state:" >&2
+  docker inspect \
+    -f '      status={{.State.Status}} running={{.State.Running}} exitCode={{.State.ExitCode}} startedAt={{.State.StartedAt}} finishedAt={{.State.FinishedAt}} oomKilled={{.State.OOMKilled}} error={{.State.Error}}' \
+    "$CONTAINER_NAME" >&2 || true
+  echo "    Direct health probe:" >&2
+  curl -sS -i --max-time 5 "$url" >&2 || true
+  echo >&2
+  echo "    Recent container logs:" >&2
+  docker logs --tail=300 "$CONTAINER_NAME" >&2 || true
+}
+
 wait_for_http() {
   local url="$1"
   local attempts="${2:-60}"
@@ -55,15 +76,13 @@ wait_for_http() {
     fi
     if ! container_is_running; then
       echo "Smoke bootstrap failed: container $CONTAINER_NAME exited before $url became ready" >&2
-      docker logs "$CONTAINER_NAME" >&2 || true
+      capture_readiness_diagnostics "$url"
       return 1
     fi
     sleep "$sleep_seconds"
   done
-  if ! container_is_running; then
-    echo "Smoke bootstrap failed: container $CONTAINER_NAME exited before readiness check completed" >&2
-    docker logs "$CONTAINER_NAME" >&2 || true
-  fi
+  echo "Smoke bootstrap failed: timed out after $((attempts * sleep_seconds))s waiting for $url" >&2
+  capture_readiness_diagnostics "$url"
   return 1
 }
 
@@ -91,6 +110,7 @@ generate_bootstrap_invite_url() {
       -e PAPERCLIP_DEPLOYMENT_MODE="$PAPERCLIP_DEPLOYMENT_MODE" \
       -e PAPERCLIP_DEPLOYMENT_EXPOSURE="$PAPERCLIP_DEPLOYMENT_EXPOSURE" \
       -e PAPERCLIP_PUBLIC_URL="$PAPERCLIP_PUBLIC_URL" \
+      -e PAPERCLIPAI_VERSION="$PAPERCLIPAI_VERSION" \
       -e PAPERCLIP_HOME="/paperclip" \
       "$CONTAINER_NAME" bash -lc \
       'timeout 20s npx --yes "paperclipai@${PAPERCLIPAI_VERSION}" auth bootstrap-ceo --data-dir "$PAPERCLIP_HOME" --base-url "$PAPERCLIP_PUBLIC_URL"' \
@@ -253,6 +273,7 @@ echo "    Smoke auto-bootstrap: $SMOKE_AUTO_BOOTSTRAP"
 echo "    Detached mode: $SMOKE_DETACH"
 echo "    Data dir: $DATA_DIR"
 echo "    Deployment: $PAPERCLIP_DEPLOYMENT_MODE/$PAPERCLIP_DEPLOYMENT_EXPOSURE"
+echo "    Readiness timeout: ${SMOKE_READY_TIMEOUT_SECONDS}s"
 if [[ "$SMOKE_DETACH" != "true" ]]; then
   echo "    Live output: onboard banner and server logs stream in this terminal (Ctrl+C to stop)"
 fi
@@ -278,7 +299,7 @@ fi
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-onboard-smoke.XXXXXX")"
 COOKIE_JAR="$TMP_DIR/cookies.txt"
 
-if ! wait_for_http "$PAPERCLIP_PUBLIC_URL/api/health" 90 1; then
+if ! wait_for_http "$PAPERCLIP_PUBLIC_URL/api/health" "$SMOKE_READY_TIMEOUT_SECONDS" 1; then
   echo "Smoke bootstrap failed: server did not become ready at $PAPERCLIP_PUBLIC_URL/api/health" >&2
   exit 1
 fi
