@@ -614,6 +614,9 @@ export type {
   PluginWebhookDeliveryRecord,
   QuotaWindow,
   ProviderQuotaResult,
+  IssueCustomFieldType,
+  IssueCustomFieldEnumValue,
+  IssueCustomFieldDeclaration,
 } from "./types/index.js";
 export { COMPANY_SEARCH_SCOPES } from "./types/index.js";
 export {

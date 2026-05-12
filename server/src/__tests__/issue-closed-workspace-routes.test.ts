@@ -123,6 +123,7 @@ function registerServiceMocks() {
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
     workProductService: () => ({}),
+  issueCustomFieldService: () => ({}),
   }));
 }
 

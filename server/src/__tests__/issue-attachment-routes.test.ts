@@ -88,6 +88,7 @@ function registerRouteMocks() {
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
     workProductService: () => ({}),
+  issueCustomFieldService: () => ({}),
   }));
 }
 

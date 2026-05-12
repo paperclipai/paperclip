@@ -40,6 +40,7 @@ import type {
   Agent,
   Goal,
 } from "@paperclipai/shared";
+import type { IssueCustomFieldType } from "@paperclipai/shared";
 
 // ---------------------------------------------------------------------------
 // Re-exports from @paperclipai/shared (plugin authors import from one place)
@@ -120,7 +121,89 @@ export type {
   IssueSurfaceVisibility,
   Agent,
   Goal,
+  IssueCustomFieldType,
+  IssueCustomFieldDeclaration,
 } from "@paperclipai/shared";
+
+// ---------------------------------------------------------------------------
+// WS-4: Issue custom fields
+// ---------------------------------------------------------------------------
+
+/**
+ * A single issue custom field value as returned by `ctx.issues.customFields.*`
+ * and included in `Issue.customFields` when populated.
+ *
+ * Plugin RPC: only the calling plugin's own fields are returned.
+ * Board REST: all plugins' fields are returned, including `pluginKey` and `pluginDisplayName`.
+ *
+ * Requires `issue.custom-fields.read` capability.
+ * @see CORE-ADDITIONS.md §WS-4
+ */
+export interface IssueCustomField {
+  /** UUID of the plugin that owns this field. */
+  pluginId: string;
+  /** Stable plugin identifier (e.g. `"acme.linear-sync"`). */
+  pluginKey: string;
+  /** Human-readable plugin name for UI display (anti-label-spoofing). */
+  pluginDisplayName: string;
+  /** Field key — matches ^[a-z][a-z0-9_-]*$. */
+  key: string;
+  /** Field type as declared in the manifest. */
+  type: IssueCustomFieldType;
+  /** Human-readable label from manifest, denormalized at write time. */
+  label: string;
+  /** Stored value as string. Non-null for all types when set; for number fields this is the original input string (e.g. "3.14"). */
+  valueText: string | null;
+  /** Parsed numeric value; non-null only when type=number. */
+  valueNumber: number | null;
+}
+
+/**
+ * SDK client for issue custom fields.
+ * Mounted as `ctx.issues.customFields`.
+ *
+ * All methods require `issue.custom-fields.read` or `issue.custom-fields.write`.
+ * The `pluginId` is always injected from the authenticated worker context — callers cannot supply it.
+ */
+export interface IssueCustomFieldsClient {
+  /**
+   * Set a custom field value on an issue.
+   * Requires `issue.custom-fields.write`.
+   * - `key` must be declared in this plugin's manifest `customFields` array.
+   * - For `enum-ref`: `value` must be one of the declared `enumValues[].id`.
+   * - For `url`: `value` must be a valid http/https URL.
+   * - For `number`: `value` must parse as a finite number (passed as string).
+   */
+  set(params: {
+    companyId: string;
+    issueId: string;
+    key: string;
+    value: string;
+  }): Promise<void>;
+
+  /**
+   * Soft-delete a custom field value from an issue.
+   * Requires `issue.custom-fields.write`.
+   * Noop (no error, no audit) if no live value exists for this key.
+   */
+  unset(params: {
+    companyId: string;
+    issueId: string;
+    key: string;
+  }): Promise<void>;
+
+  /**
+   * List this plugin's custom fields for an issue.
+   * Requires `issue.custom-fields.read`.
+   * Returns only this plugin's fields — cross-plugin enumeration is not supported in v1.
+   */
+  listForIssue(params: {
+    companyId: string;
+    issueId: string;
+  }): Promise<IssueCustomField[]>;
+}
+
+// IssueCustomFieldType and IssueCustomFieldDeclaration are already in the re-exports block above.
 
 // ---------------------------------------------------------------------------
 // Scope key — identifies where plugin state is stored
@@ -1391,6 +1474,11 @@ export interface PluginIssuesClient {
   relations: PluginIssueRelationsClient;
   /** Read compact orchestration summaries. */
   summaries: PluginIssueSummariesClient;
+  /**
+   * Read and write issue custom fields declared in this plugin's manifest.
+   * Requires `issue.custom-fields.read` / `issue.custom-fields.write`.
+   */
+  customFields: IssueCustomFieldsClient;
 }
 
 /**

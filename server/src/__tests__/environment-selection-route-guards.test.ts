@@ -83,6 +83,7 @@ vi.mock("../services/index.js", () => ({
   documentService: () => ({}),
   routineService: () => ({}),
   workProductService: () => ({}),
+  issueCustomFieldService: () => ({}),
 }));
 
 vi.mock("../services/environments.js", () => ({

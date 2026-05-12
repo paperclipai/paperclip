@@ -81,6 +81,7 @@ vi.mock("../services/index.js", () => ({
     syncRunStatusForIssue: vi.fn(async () => undefined),
   }),
   workProductService: () => ({}),
+  issueCustomFieldService: () => ({}),
 }));
 
 function registerModuleMocks() {
@@ -139,6 +140,7 @@ function registerModuleMocks() {
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
     workProductService: () => ({}),
+  issueCustomFieldService: () => ({}),
   }));
 }
 

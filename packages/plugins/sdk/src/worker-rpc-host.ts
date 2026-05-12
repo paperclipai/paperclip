@@ -946,6 +946,18 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             return callHost("issues.summaries.getOrchestration", input);
           },
         },
+
+        customFields: {
+          async set({ companyId, issueId, key, value }) {
+            return callHost("issues.customFields.set", { companyId, issueId, key, value });
+          },
+          async unset({ companyId, issueId, key }) {
+            return callHost("issues.customFields.unset", { companyId, issueId, key });
+          },
+          async listForIssue({ companyId, issueId }) {
+            return callHost("issues.customFields.listForIssue", { companyId, issueId });
+          },
+        },
       },
 
       agents: {

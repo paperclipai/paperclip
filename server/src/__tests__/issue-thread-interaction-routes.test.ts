@@ -94,6 +94,7 @@ function registerModuleMocks() {
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
     workProductService: () => ({}),
+  issueCustomFieldService: () => ({}),
   }));
 }
 

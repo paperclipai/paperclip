@@ -1,3 +1,14 @@
+export interface IssueCustomField {
+  pluginId: string;
+  pluginKey: string;
+  pluginDisplayName: string;
+  key: string;
+  type: "text" | "number" | "url" | "enum-ref";
+  label: string;
+  valueText: string | null;
+  valueNumber: number | null;
+}
+
 import type {
   AskUserQuestionsAnswer,
   Approval,
@@ -244,6 +255,7 @@ export const issuesApi = {
     api.post<Approval[]>(`/issues/${id}/approvals`, { approvalId }),
   unlinkApproval: (id: string, approvalId: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/approvals/${approvalId}`),
+  listCustomFields: (id: string) => api.get<{ customFields: IssueCustomField[] }>(`/issues/${id}/custom-fields`),
   listWorkProducts: (id: string) => api.get<IssueWorkProduct[]>(`/issues/${id}/work-products`),
   createWorkProduct: (id: string, data: Record<string, unknown>) =>
     api.post<IssueWorkProduct>(`/issues/${id}/work-products`, data),

@@ -21,13 +21,14 @@ import type {
   PluginIssueAssigneeSummary,
   PluginIssueOrchestrationSummary,
 } from "@paperclipai/plugin-sdk";
-import type { CreateIssueThreadInteraction, IssueDocumentSummary } from "@paperclipai/shared";
+import type { CreateIssueThreadInteraction, IssueDocumentSummary, IssueCustomFieldType } from "@paperclipai/shared";
 import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { issueService } from "./issues.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
+import { issueCustomFieldService } from "./issue-custom-fields.js";
 import { goalService } from "./goals.js";
 import { documentService } from "./documents.js";
 import { heartbeatService } from "./heartbeat.js";
@@ -521,6 +522,7 @@ export function buildHostServices(
   });
   const projects = projectService(db);
   const issues = issueService(db);
+  const issueCustomFields = issueCustomFieldService(db);
   const documents = documentService(db);
   const goals = goalService(db);
   const activity = activityService(db);
@@ -565,6 +567,15 @@ export function buildHostServices(
    * availability gate to enforce here.
    */
   const ensurePluginAvailableForCompany = async (_companyId: string) => {};
+
+  const ensurePluginCapability = async (capability: string) => {
+    const pluginRow = await registry.getById(pluginId);
+    const caps = (pluginRow?.manifestJson as { capabilities?: string[] } | null)?.capabilities ?? [];
+    if (!caps.includes(capability)) {
+      throw new Error(`Plugin '${pluginKey}' does not have required capability '${capability}'`);
+    }
+    return pluginRow;
+  };
 
   const getLocalFolderDeclaration = (folderKey: string) =>
     requireLocalFolderDeclaration(options.manifest?.localFolders, folderKey);
@@ -1835,6 +1846,75 @@ export function buildHostServices(
             documentKey: params.key,
           },
         });
+      },
+    },
+
+    issueCustomFields: {
+      async set(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const pluginRow = await ensurePluginCapability("issue.custom-fields.write");
+        const manifest = pluginRow?.manifestJson as { customFields?: Array<{ key: string; label: string; type: string; enumValues?: Array<{ id: string; label: string }> }> } | null;
+        const fieldDecl = manifest?.customFields?.find((f) => f.key === params.key);
+        if (!fieldDecl) {
+          throw new Error(`Plugin has no custom field declared with key '${params.key}'`);
+        }
+        if (fieldDecl.type === "enum-ref") {
+          const allowed = (fieldDecl.enumValues ?? []).map((e) => e.id);
+          if (!allowed.includes(params.value)) {
+            throw new Error(
+              `Value '${params.value}' is not a declared enum option for field '${params.key}'`,
+            );
+          }
+        }
+        await issueCustomFields.set({
+          companyId,
+          issueId: params.issueId,
+          pluginId,
+          key: params.key,
+          value: params.value,
+          fieldType: fieldDecl.type as IssueCustomFieldType,
+          fieldLabel: fieldDecl.label,
+        });
+        await logPluginActivity({
+          companyId,
+          action: "issue.custom_field_set",
+          entityType: "issue",
+          entityId: params.issueId,
+          details: { fieldKey: params.key, fieldType: fieldDecl.type, fieldLabel: fieldDecl.label },
+        });
+      },
+      async unset(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        await ensurePluginCapability("issue.custom-fields.write");
+        const didUnset = await issueCustomFields.unset({
+          companyId,
+          issueId: params.issueId,
+          pluginId,
+          key: params.key,
+        });
+        if (didUnset) {
+          await logPluginActivity({
+            companyId,
+            action: "issue.custom_field_unset",
+            entityType: "issue",
+            entityId: params.issueId,
+            details: { fieldKey: params.key },
+          });
+        }
+      },
+      async listForIssue(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const pluginRow = await ensurePluginCapability("issue.custom-fields.read");
+        const fields = await issueCustomFields.listForIssue({
+          companyId,
+          issueId: params.issueId,
+          pluginId,
+        });
+        const displayName = (pluginRow?.manifestJson as { displayName?: string })?.displayName ?? pluginKey;
+        return fields.map((f) => ({ ...f, pluginKey, pluginDisplayName: displayName }));
       },
     },
 

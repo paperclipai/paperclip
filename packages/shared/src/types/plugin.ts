@@ -53,6 +53,40 @@ export type {
 // ---------------------------------------------------------------------------
 
 /**
+ * Allowed types for plugin-declared issue custom fields.
+ * - `text`: plain text string, rendered as a text node.
+ * - `number`: finite numeric value, stored as numeric for sortability.
+ * - `url`: http/https URL, rendered as a safe anchor tag.
+ * - `enum-ref`: one of a declared set of values; enumValues must be provided.
+ */
+export type IssueCustomFieldType = "text" | "number" | "url" | "enum-ref";
+
+/** A single enum option for a custom field of type `enum-ref`. */
+export interface IssueCustomFieldEnumValue {
+  /** Stable identifier — matches ^[a-z][a-z0-9_-]*$. */
+  id: string;
+  /** Human-readable label (max 128 chars). */
+  label: string;
+}
+
+/**
+ * Declares an issue custom field in a plugin manifest.
+ * Requires `issue.custom-fields.read` / `issue.custom-fields.write` capabilities.
+ */
+export interface IssueCustomFieldDeclaration {
+  /** Stable key unique within this plugin — ^[a-z][a-z0-9_-]*$, max 64 chars. */
+  key: string;
+  /** Human-readable label shown in the issue detail UI (max 128 chars). */
+  label: string;
+  /** How the value is stored and rendered. */
+  type: IssueCustomFieldType;
+  /** Must be `"issue"` in v1. */
+  scope: "issue";
+  /** Required when `type === "enum-ref"`. Must be non-empty. */
+  enumValues?: IssueCustomFieldEnumValue[];
+}
+
+/**
  * Declares a scheduled job a plugin can run.
  *
  * @see PLUGIN_SPEC.md §17 — Scheduled Jobs
@@ -552,6 +586,13 @@ export interface PaperclipPluginManifestV1 {
   launchers?: PluginLauncherDeclaration[];
   /** UI bundle declarations. Requires `entrypoints.ui` when populated. */
   ui?: PluginUiDeclaration;
+  /**
+   * Issue custom fields this plugin declares.
+   * Requires `issue.custom-fields.read` / `issue.custom-fields.write` capabilities.
+   * Keys must match ^[a-z][a-z0-9_-]*$ and be unique within this array.
+   * @see CORE-ADDITIONS.md §WS-4
+   */
+  customFields?: IssueCustomFieldDeclaration[];
 }
 
 // ---------------------------------------------------------------------------

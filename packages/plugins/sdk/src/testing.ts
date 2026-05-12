@@ -1717,6 +1717,26 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           };
         },
       },
+
+      customFields: {
+        async set({ companyId, issueId, key }) {
+          requireCapability(manifest, capabilitySet, "issue.custom-fields.write");
+          requireCompanyId(companyId);
+          if (!issues.has(issueId)) throw new Error(`Issue not found: ${issueId}`);
+          if (!/^[a-z][a-z0-9_-]*$/.test(key)) throw new Error(`Invalid field key: ${key}`);
+        },
+        async unset({ companyId, issueId, key }) {
+          requireCapability(manifest, capabilitySet, "issue.custom-fields.write");
+          requireCompanyId(companyId);
+          if (!/^[a-z][a-z0-9_-]*$/.test(key)) throw new Error(`Invalid field key: ${key}`);
+        },
+        async listForIssue({ companyId, issueId }) {
+          requireCapability(manifest, capabilitySet, "issue.custom-fields.read");
+          requireCompanyId(companyId);
+          if (!issues.has(issueId)) throw new Error(`Issue not found: ${issueId}`);
+          return [];
+        },
+      },
     },
     agents: {
       async list(input) {

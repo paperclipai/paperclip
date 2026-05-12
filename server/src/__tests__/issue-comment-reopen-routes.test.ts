@@ -145,6 +145,7 @@ vi.mock("../services/index.js", () => ({
   projectService: () => ({}),
   routineService: () => mockRoutineService,
   workProductService: () => ({}),
+  issueCustomFieldService: () => ({}),
 }));
 
 function createApp() {

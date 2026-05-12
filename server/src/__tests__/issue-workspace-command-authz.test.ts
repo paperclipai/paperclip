@@ -120,6 +120,7 @@ function registerRouteMocks() {
     projectService: () => ({}),
     routineService: () => mockRoutineService,
     workProductService: () => ({}),
+  issueCustomFieldService: () => ({}),
   }));
 }
 

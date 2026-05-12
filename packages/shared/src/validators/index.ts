@@ -397,6 +397,8 @@ export {
   pluginManagedSkillFileDeclarationSchema,
   pluginManagedSkillDeclarationSchema,
   pluginApiRouteDeclarationSchema,
+  pluginCustomFieldDeclarationSchema,
+  pluginCustomFieldEnumValueSchema,
   pluginManifestV1Schema,
   installPluginSchema,
   upsertPluginConfigSchema,
