@@ -58,9 +58,14 @@ export function createBuiltinBroker(
   const proxy: ProxyListener = createProxyListener({
     store,
     log: (entry) => {
+      // sessionToken is the live Proxy-Authorization bearer — runId +
+      // companyId are sufficient for correlation, so drop the token from
+      // the structured fields to avoid leaking a replayable credential
+      // into application logs.
+      const { sessionToken: _sessionToken, ...redacted } = entry;
       ctx.logger.info("credential broker proxied request", {
         event: "credential-broker-request",
-        ...entry,
+        ...redacted,
       });
     },
   });

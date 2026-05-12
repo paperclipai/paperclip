@@ -101,8 +101,10 @@ export function createSessionCa(input: CreateSessionCaInput = {}): SessionCa {
 
   const caPem = forge.pki.certificateToPem(caCert);
 
-  // 3. Per-host leaf cache.
-  const leafCache = new Map<string, SignedLeaf>();
+  // 3. Per-host leaf cache. Entries carry `expiresAt` so stale leaves
+  // are evicted and re-signed on demand — anchoring expiry to CA-creation
+  // time would silently break TLS for any session over `leafTtl` seconds.
+  const leafCache = new Map<string, { leaf: SignedLeaf; expiresAt: number }>();
 
   function signLeaf(hostname: string): SignedLeaf {
     if (!isPlausibleHostname(hostname)) {
@@ -112,15 +114,20 @@ export function createSessionCa(input: CreateSessionCaInput = {}): SessionCa {
         )}`,
       );
     }
+    const signingNow = new Date();
     const cached = leafCache.get(hostname);
-    if (cached) return cached;
+    // Keep at least 60s of remaining validity to avoid handing out a cert
+    // that will expire mid-session.
+    if (cached && cached.expiresAt - signingNow.getTime() > 60_000) {
+      return cached.leaf;
+    }
 
     const leafKeys = forge.pki.rsa.generateKeyPair({ bits: 2048 });
     const leafCert = forge.pki.createCertificate();
     leafCert.publicKey = leafKeys.publicKey;
     leafCert.serialNumber = randomSerial();
-    leafCert.validity.notBefore = new Date(now.getTime() - 60 * 1000);
-    leafCert.validity.notAfter = new Date(now.getTime() + leafTtl * 1000);
+    leafCert.validity.notBefore = new Date(signingNow.getTime() - 60 * 1000);
+    leafCert.validity.notAfter = new Date(signingNow.getTime() + leafTtl * 1000);
     leafCert.setSubject([
       { name: "commonName", value: hostname },
       { name: "organizationName", value: "Paperclip Credential Broker" },
@@ -149,7 +156,10 @@ export function createSessionCa(input: CreateSessionCaInput = {}): SessionCa {
       keyPem: forge.pki.privateKeyToPem(leafKeys.privateKey),
       certPem: forge.pki.certificateToPem(leafCert),
     };
-    leafCache.set(hostname, signed);
+    leafCache.set(hostname, {
+      leaf: signed,
+      expiresAt: signingNow.getTime() + leafTtl * 1000,
+    });
     return signed;
   }
 

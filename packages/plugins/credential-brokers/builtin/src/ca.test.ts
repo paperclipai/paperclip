@@ -66,4 +66,19 @@ describe("createSessionCa", () => {
     const b = createSessionCa();
     expect(a.caPem).not.toBe(b.caPem);
   });
+
+  it("evicts and re-signs cached leaves whose validity has lapsed", async () => {
+    // Tiny leaf TTL so the cached entry expires before the second
+    // signLeaf call returns. Anchoring the leaf's validity to CA-creation
+    // time (instead of signing time) would silently hand back the same
+    // already-expired cert; this regression test fails in that case.
+    const ca = createSessionCa({ leafTtlSeconds: 1 });
+    const first = ca.signLeaf("api.github.com");
+    await new Promise((r) => setTimeout(r, 1100));
+    const second = ca.signLeaf("api.github.com");
+    expect(second.certPem).not.toBe(first.certPem);
+    const leaf = new X509Certificate(second.certPem);
+    // The freshly-signed leaf's notAfter must be in the future.
+    expect(new Date(leaf.validTo).getTime()).toBeGreaterThan(Date.now());
+  });
 });

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { Router, type Request, type Response } from "express";
 import type { ProviderRegistry } from "../oauth/registry.js";
 import type { RegisteredProvider } from "../oauth/types.js";
@@ -495,6 +497,20 @@ export function oauthRoutes(deps: OAuthRouteDeps): Router {
       res.status(404).end();
       return;
     }
+    // Validate the URL up front *before* persisting the auth-token
+    // secret. Otherwise an http:// or otherwise-malformed URL would
+    // orphan a `company_secrets` row that no broker target references.
+    const { createBrokerTargetsService, validateBrokerTargetInput } =
+      await import("../services/broker-targets.js");
+    try {
+      validateBrokerTargetInput({ url, authTokenSecretId: randomUUID() });
+    } catch (err) {
+      res.status(400).json({
+        errorCode: "invalid_broker_target",
+        message: (err as Error).message,
+      });
+      return;
+    }
     let secret;
     try {
       secret = await deps.secretService.upsertSecretByName(companyId, {
@@ -509,10 +525,19 @@ export function oauthRoutes(deps: OAuthRouteDeps): Router {
       res.status(500).json({ errorCode: "secret_persist_failed" });
       return;
     }
-    const { createBrokerTargetsService } = await import(
-      "../services/broker-targets.js"
-    );
     const svc = createBrokerTargetsService({ db: deps.db });
+    const cleanupOrphanedSecret = async () => {
+      if (!deps.secretService.remove) return;
+      await deps.secretService.remove(secret.id).catch((cleanupErr: unknown) => {
+        oauthLogger.warn(
+          {
+            secretId: secret.id,
+            err: { message: (cleanupErr as Error).message },
+          },
+          "broker target secret orphan cleanup failed",
+        );
+      });
+    };
     try {
       const target = await svc.add(req.params.id, {
         url,
@@ -524,6 +549,7 @@ export function oauthRoutes(deps: OAuthRouteDeps): Router {
         addedAt: target.addedAt,
       });
     } catch (err) {
+      await cleanupOrphanedSecret();
       const message = (err as Error).message;
       if (/too many/i.test(message)) {
         res.status(409).json({ errorCode: "broker_target_cap_exceeded" });

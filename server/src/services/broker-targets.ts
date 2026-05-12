@@ -33,13 +33,15 @@ export interface AddBrokerTargetInput {
 }
 
 const ADD_INPUT_SCHEMA = z.object({
+  // HTTPS only: the refresh worker POSTs a rotated OAuth access token plus
+  // the per-target push-auth bearer to this URL on every refresh. Allowing
+  // http:// would put both credentials in plaintext on the network path.
   url: z
     .string()
     .url()
-    .refine(
-      (u) => u.startsWith("https://") || u.startsWith("http://"),
-      { message: "broker target URL must use http or https" },
-    ),
+    .refine((u) => u.startsWith("https://"), {
+      message: "broker target URL must use https",
+    }),
   authTokenSecretId: z.string().uuid(),
 });
 
