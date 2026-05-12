@@ -933,6 +933,106 @@ describe("resolveVersion — external", () => {
   });
 });
 
+describe("healthCheck", () => {
+  function gwWith(over: Partial<import("../secrets/vault-provider.js").VaultHttpGateway>): import("../secrets/vault-provider.js").VaultHttpGateway {
+    const base = fakeVaultGateway().impl;
+    return { ...base, ...over };
+  }
+
+  it("status=ok when all probes succeed", async () => {
+    const provider = createVaultProvider({
+      config: {
+        address: "https://v",
+        namespace: null,
+        kvMount: "secret",
+        kvPathPrefix: "paperclip",
+        auth: { method: "token", role: null, saTokenPath: "/dev/null" },
+        versionRetention: 10,
+      },
+      gateway: gwWith({}),
+    });
+    process.env.VAULT_TOKEN = "static";
+    const r = await provider.healthCheck();
+    expect(r.status).toBe("ok");
+  });
+
+  it("status=warn when KV mount is v1", async () => {
+    const provider = createVaultProvider({
+      config: {
+        address: "https://v",
+        namespace: null,
+        kvMount: "secret",
+        kvPathPrefix: "paperclip",
+        auth: { method: "token", role: null, saTokenPath: "/dev/null" },
+        versionRetention: 10,
+      },
+      gateway: gwWith({
+        readMount: async () => ({ type: "kv", options: { version: "1" } }),
+      }),
+    });
+    process.env.VAULT_TOKEN = "static";
+    const r = await provider.healthCheck();
+    expect(r.status).toBe("warn");
+    expect(r.message + (r.warnings ?? []).join(" ")).toMatch(/kv v2/i);
+  });
+
+  it("status=warn when sys/health reports sealed", async () => {
+    const provider = createVaultProvider({
+      config: {
+        address: "https://v",
+        namespace: null,
+        kvMount: "secret",
+        kvPathPrefix: "paperclip",
+        auth: { method: "token", role: null, saTokenPath: "/dev/null" },
+        versionRetention: 10,
+      },
+      gateway: gwWith({
+        health: async () => ({ sealed: true, standby: false, version: "1.0.0" }),
+      }),
+    });
+    process.env.VAULT_TOKEN = "static";
+    const r = await provider.healthCheck();
+    expect(r.status).toBe("warn");
+    expect((r.warnings ?? []).join(" ") + r.message).toMatch(/sealed/);
+  });
+
+  it("status=error when /sys/health is unreachable", async () => {
+    const provider = createVaultProvider({
+      config: {
+        address: "https://v",
+        namespace: null,
+        kvMount: "secret",
+        kvPathPrefix: "paperclip",
+        auth: { method: "token", role: null, saTokenPath: "/dev/null" },
+        versionRetention: 10,
+      },
+      gateway: gwWith({
+        health: async () => { throw new Error("ECONNREFUSED"); },
+      }),
+    });
+    process.env.VAULT_TOKEN = "static";
+    const r = await provider.healthCheck();
+    expect(r.status).toBe("error");
+  });
+
+  it("never includes the token in the response", async () => {
+    const provider = createVaultProvider({
+      config: {
+        address: "https://v",
+        namespace: null,
+        kvMount: "secret",
+        kvPathPrefix: "paperclip",
+        auth: { method: "token", role: null, saTokenPath: "/dev/null" },
+        versionRetention: 10,
+      },
+      gateway: gwWith({}),
+    });
+    process.env.VAULT_TOKEN = "hvs.SECRET_SHOULD_NOT_LEAK";
+    const r = await provider.healthCheck();
+    expect(JSON.stringify(r)).not.toContain("hvs.SECRET_SHOULD_NOT_LEAK");
+  });
+});
+
 describe("deleteOrArchive", () => {
   it("soft-deletes the KV path in delete mode", async () => {
     const gw = fakeVaultGateway();

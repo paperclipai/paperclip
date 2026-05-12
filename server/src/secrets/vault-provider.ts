@@ -643,8 +643,98 @@ export function createVaultProvider(
         },
       });
     },
-    async healthCheck() {
-      return { provider: "vault", status: "warn", message: "healthCheck not implemented yet" };
+    async healthCheck(input) {
+      const warnings: string[] = [];
+      let config: VaultProviderConfig | null;
+      try {
+        config = resolveConfig(input?.providerConfig);
+      } catch (error) {
+        return {
+          provider: "vault",
+          status: "warn" as const,
+          message:
+            "vault provider is not configured for runtime resolution; external references can still be stored as metadata",
+          warnings: [(error as Error).message],
+        };
+      }
+      const gateway = resolveGateway(config);
+      const details: Record<string, unknown> = {
+        address: config.address,
+        kvMount: config.kvMount,
+        kvPathPrefix: config.kvPathPrefix,
+        authMethod: config.auth.method,
+      };
+
+      // 1) reachability
+      let healthStatus: { sealed?: boolean; standby?: boolean; version?: string } = {};
+      try {
+        healthStatus = await gateway.health();
+        details.vaultVersion = healthStatus.version;
+        details.standby = healthStatus.standby ?? false;
+        if (healthStatus.sealed) warnings.push("vault is sealed; auth/data calls will fail until unsealed");
+      } catch (error) {
+        return {
+          provider: "vault",
+          status: "error" as const,
+          message: `vault unreachable at ${config.address}`,
+          warnings: [(error as Error).message],
+          details,
+        };
+      }
+
+      // 2) auth probe
+      const tokenManager = tokenManagerFor(config, gateway);
+      try {
+        if (tokenManager.sourceMode === "error") {
+          throw new Error("no vault auth source detected");
+        }
+        await tokenManager.acquire();
+        if (tokenManager.sourceMode === "token") {
+          const info = await gateway.lookupSelf();
+          details.tokenTtlSec = info.leaseDurationSec;
+          details.tokenRenewable = info.renewable;
+          details.policies = info.policies;
+        }
+      } catch (error) {
+        warnings.push(`auth probe failed: ${(error as Error).message}`);
+      }
+
+      // 3) KV engine probe
+      try {
+        const mount = await gateway.readMount(config.kvMount);
+        if (mount.options?.version !== "2") {
+          warnings.push(`mount '${config.kvMount}' is kv v${mount.options?.version ?? "?"}; the vault provider requires kv v2`);
+        }
+      } catch (error) {
+        warnings.push(`could not inspect mount '${config.kvMount}': ${(error as Error).message}`);
+      }
+
+      // 4) capabilities probe
+      try {
+        const probePath = `${config.kvMount}/data/${config.kvPathPrefix}/_health_probe`;
+        const caps = await gateway.capabilitiesSelf([probePath]);
+        const granted = caps[probePath] ?? [];
+        const required = ["create", "read", "update", "delete"];
+        const missing = required.filter((cap) => !granted.includes(cap));
+        if (missing.length > 0) {
+          warnings.push(`missing vault capabilities on ${probePath}: ${missing.join(", ")}`);
+        }
+        details.capabilities = granted;
+      } catch (error) {
+        warnings.push(`capabilities probe failed: ${(error as Error).message}`);
+      }
+
+      const status = warnings.length === 0 ? "ok" : "warn";
+      return {
+        provider: "vault",
+        status: status as "ok" | "warn",
+        message:
+          status === "ok"
+            ? `vault provider healthy at ${config.address} (mount=${config.kvMount}, auth=${config.auth.method})`
+            : `vault provider has warnings at ${config.address}`,
+        warnings: warnings.length > 0 ? warnings : undefined,
+        details,
+      };
     },
   };
 }
