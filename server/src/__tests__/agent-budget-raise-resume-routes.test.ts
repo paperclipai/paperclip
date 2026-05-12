@@ -147,6 +147,12 @@ async function createApp() {
 				]),
 			})),
 		})),
+		// Route now wraps svc.update + budgets.upsertPolicy in a transaction
+		// to close the TOCTOU window. The mock passes a sentinel tx-like object
+		// through so the test can assert that callees receive it.
+		transaction: vi.fn(async (fn: (tx: unknown) => unknown) =>
+			fn({ __tx: true }),
+		),
 	};
 	app.use("/api", agentRoutes(db as any));
 	app.use(errorHandler);
@@ -190,6 +196,15 @@ describe("PATCH /api/agents/:id budget sync", () => {
 				windowKind: "calendar_month_utc",
 			},
 			"local-board",
+			{ __tx: true },
+		);
+		// svc.update must also receive the same tx so its agent-row write
+		// commits atomically with the policy upsert.
+		expect(mockAgentService.update).toHaveBeenCalledWith(
+			agentId,
+			expect.objectContaining({ budgetMonthlyCents: 200_000 }),
+			expect.any(Object),
+			{ __tx: true },
 		);
 	});
 

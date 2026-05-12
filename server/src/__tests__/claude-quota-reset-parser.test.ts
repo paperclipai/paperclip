@@ -102,4 +102,46 @@ describe("parseClaudeQuotaResetTime", () => {
 			),
 		).toBeNull();
 	});
+
+	it("rejects out-of-range 12-hour clock values (13pm, 0am, 15pm)", () => {
+		const now = new Date("2026-05-12T05:00:00.000Z");
+		// These previously slid through with the wrong hour24 because the
+		// pm-branch only fired when hourRaw < 12. Now they return null.
+		expect(
+			parseClaudeQuotaResetTime(
+				"out of extra usage · resets 13pm (Europe/Prague)",
+				now,
+			),
+		).toBeNull();
+		expect(
+			parseClaudeQuotaResetTime(
+				"out of extra usage · resets 15pm (Europe/Prague)",
+				now,
+			),
+		).toBeNull();
+		expect(
+			parseClaudeQuotaResetTime(
+				"out of extra usage · resets 0am (Europe/Prague)",
+				now,
+			),
+		).toBeNull();
+		expect(
+			parseClaudeQuotaResetTime(
+				"out of extra usage · resets 0pm (Europe/Prague)",
+				now,
+			),
+		).toBeNull();
+	});
+
+	it("accepts 24-hour clock without meridiem (16:00)", () => {
+		// Edge: the format without am/pm should still parse 0..23 valid.
+		const now = new Date("2026-05-12T05:00:00.000Z"); // 07:00 Prague
+		const reset = parseClaudeQuotaResetTime(
+			"out of extra usage · resets 16:00 (Europe/Prague)",
+			now,
+		);
+		expect(reset).not.toBeNull();
+		// 16:00 Prague (CEST = UTC+2) = 14:00 UTC
+		expect(reset?.toISOString()).toBe("2026-05-12T14:00:00.000Z");
+	});
 });

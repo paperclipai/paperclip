@@ -45,18 +45,26 @@ export function parseClaudeQuotaResetTime(
 	if (!errorMessage) return null;
 	const match = errorMessage.match(CLAUDE_QUOTA_RESET_PATTERN);
 	if (!match) return null;
-	const hour12 = Number(match[1]);
+	const hourRaw = Number(match[1]);
 	const minute = match[2] ? Number(match[2]) : 0;
 	const meridiem = match[3]?.toLowerCase();
 	const timeZone = match[4]?.trim();
 	if (!timeZone) return null;
-	if (!Number.isFinite(hour12) || hour12 < 0 || hour12 > 23) return null;
+	if (!Number.isFinite(hourRaw) || hourRaw < 0) return null;
 	if (!Number.isFinite(minute) || minute < 0 || minute > 59) return null;
 
-	let hour24 = hour12;
-	if (meridiem === "pm" && hour12 < 12) hour24 = hour12 + 12;
-	else if (meridiem === "am" && hour12 === 12) hour24 = 0;
-	else if (!meridiem && hour12 > 23) return null;
+	// 12-hour clock must use 1..12; 24-hour clock (no am/pm) must use 0..23.
+	// This rejects nonsense like "13pm" or "0am" instead of silently dropping
+	// the meridiem and scheduling the retry at the wrong wall-clock time.
+	let hour24: number;
+	if (meridiem) {
+		if (hourRaw < 1 || hourRaw > 12) return null;
+		if (meridiem === "pm") hour24 = hourRaw === 12 ? 12 : hourRaw + 12;
+		else hour24 = hourRaw === 12 ? 0 : hourRaw;
+	} else {
+		if (hourRaw > 23) return null;
+		hour24 = hourRaw;
+	}
 
 	let parts: Record<string, string>;
 	try {
