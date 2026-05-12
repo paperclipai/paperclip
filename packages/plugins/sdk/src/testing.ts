@@ -749,6 +749,13 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         requireCapability(manifest, capabilitySet, "secrets.read-ref");
         return `resolved:${secretRef}`;
       },
+      async write(input) {
+        requireCapability(manifest, capabilitySet, "secrets.write");
+        return `mock-secret-id:${input.name}`;
+      },
+      async delete(_input) {
+        requireCapability(manifest, capabilitySet, "secrets.write");
+      },
     },
     activity: {
       async log(entry) {

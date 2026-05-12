@@ -116,4 +116,57 @@ describe("SidebarAccountMenu", () => {
       root.unmount();
     });
   });
+
+  it("clears cached authenticated data and pins the session to signed out on sign out", async () => {
+    mockAuthApi.signOut.mockResolvedValue(undefined);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(["auth", "session"], {
+      session: { id: "session-1", userId: "user-1" },
+      user: { id: "user-1", name: "Jane Example", email: "jane@example.com", image: null },
+    });
+    queryClient.setQueryData(["access", "current-board-access"], { isInstanceAdmin: true });
+    queryClient.setQueryData(["instance", "plugin-secrets"], [
+      { id: "secret-1", name: "PLUGIN_TOKEN", createdByUserId: "plugin:gitea" },
+    ]);
+    localStorage.setItem("paperclip.companyPaths", JSON.stringify({ "company-1": "/issues/PAP-1" }));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAccountMenu
+            deploymentMode="authenticated"
+            instanceSettingsTarget="/instance/settings/general"
+            version="1.2.3"
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const trigger = container.querySelector('button[aria-label="Open account menu"]');
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const signOutButton = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Sign out"));
+    await act(async () => {
+      signOutButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockAuthApi.signOut).toHaveBeenCalled();
+    expect(queryClient.getQueryData(["access", "current-board-access"])).toBeUndefined();
+    expect(queryClient.getQueryData(["instance", "plugin-secrets"])).toBeUndefined();
+    expect(queryClient.getQueryData(["auth", "session"])).toBeNull();
+    expect(localStorage.getItem("paperclip.companyPaths")).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });

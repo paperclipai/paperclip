@@ -36,6 +36,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useDialogActions } from "@/context/DialogContext";
 import { useCompanyOrder } from "@/hooks/useCompanyOrder";
 import { queryKeys } from "@/lib/queryKeys";
+import { clearAuthenticatedCache } from "@/lib/auth-cache";
 import { cn } from "@/lib/utils";
 import { useSidebar } from "../context/SidebarContext";
 import { CompanyPatternIcon } from "./CompanyPatternIcon";
@@ -167,7 +168,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
     onSuccess: async () => {
       setOpen(false);
       if (isMobile) setSidebarOpen(false);
-      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+      await clearAuthenticatedCache(queryClient);
     },
   });
 

@@ -396,6 +396,148 @@ describe.sequential("plugin local folder routes", () => {
     expect(res.body.error).toContain("Local folder key is not declared");
     expect(mockRegistry.upsertCompanySettings).not.toHaveBeenCalled();
   });
+
+  it("stores local folder settings without implicitly enabling company access", async () => {
+    readyLocalFolderPlugin();
+    mockRegistry.getCompanySettings.mockResolvedValue(null);
+    mockRegistry.upsertCompanySettings.mockResolvedValue({
+      pluginId,
+      companyId: companyA,
+      enabled: false,
+      settingsJson: {},
+      lastError: null,
+    });
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .put(`/api/plugins/${pluginId}/companies/${companyA}/local-folders/content-root`)
+      .send({ path: process.cwd() });
+
+    expect(res.status).toBe(200);
+    expect(mockRegistry.upsertCompanySettings).toHaveBeenCalledWith(pluginId, companyA, expect.objectContaining({
+      enabled: false,
+    }));
+  });
+
+  it("preserves explicit company access while storing local folder settings", async () => {
+    readyLocalFolderPlugin();
+    mockRegistry.getCompanySettings.mockResolvedValue({
+      pluginId,
+      companyId: companyA,
+      enabled: true,
+      settingsJson: {},
+      lastError: null,
+    });
+    mockRegistry.upsertCompanySettings.mockResolvedValue({
+      pluginId,
+      companyId: companyA,
+      enabled: true,
+      settingsJson: {},
+      lastError: null,
+    });
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .put(`/api/plugins/${pluginId}/companies/${companyA}/local-folders/content-root`)
+      .send({ path: process.cwd() });
+
+    expect(res.status).toBe(200);
+    expect(mockRegistry.upsertCompanySettings).toHaveBeenCalledWith(pluginId, companyA, expect.objectContaining({
+      enabled: true,
+    }));
+  });
+});
+
+describe.sequential("plugin company settings routes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    readyPlugin();
+  });
+
+  it("returns disabled when no company settings row exists", async () => {
+    mockRegistry.getCompanySettings.mockResolvedValue(null);
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .get(`/api/plugins/${pluginId}/companies/${companyA}/settings`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      pluginId,
+      companyId: companyA,
+      enabled: false,
+      explicit: false,
+    });
+  });
+
+  it("creates an explicit company enable row without local folder settings", async () => {
+    mockRegistry.getCompanySettings.mockResolvedValue(null);
+    mockRegistry.upsertCompanySettings.mockResolvedValue({
+      pluginId,
+      companyId: companyA,
+      enabled: true,
+      settingsJson: {},
+      lastError: null,
+    });
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .put(`/api/plugins/${pluginId}/companies/${companyA}/settings`)
+      .send({ enabled: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      pluginId,
+      companyId: companyA,
+      enabled: true,
+      explicit: true,
+    });
+    expect(mockRegistry.upsertCompanySettings).toHaveBeenCalledWith(pluginId, companyA, {
+      enabled: true,
+      settingsJson: {},
+      lastError: null,
+    });
+  });
+
+  it("preserves existing company settings JSON when toggling access", async () => {
+    mockRegistry.getCompanySettings.mockResolvedValue({
+      pluginId,
+      companyId: companyA,
+      enabled: true,
+      settingsJson: { localFolders: { docs: { path: "/repo/docs" } } },
+      lastError: "folder missing",
+    });
+    mockRegistry.upsertCompanySettings.mockResolvedValue({
+      pluginId,
+      companyId: companyA,
+      enabled: false,
+      settingsJson: { localFolders: { docs: { path: "/repo/docs" } } },
+      lastError: "folder missing",
+    });
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .put(`/api/plugins/${pluginId}/companies/${companyA}/settings`)
+      .send({ enabled: false });
+
+    expect(res.status).toBe(200);
+    expect(mockRegistry.upsertCompanySettings).toHaveBeenCalledWith(pluginId, companyA, {
+      enabled: false,
+      settingsJson: { localFolders: { docs: { path: "/repo/docs" } } },
+      lastError: "folder missing",
+    });
+  });
+
+  it("rejects cross-company company settings updates", async () => {
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .put(`/api/plugins/${pluginId}/companies/${companyB}/settings`)
+      .send({ enabled: true });
+
+    expect(res.status).toBe(403);
+    expect(mockRegistry.upsertCompanySettings).not.toHaveBeenCalled();
+  });
 });
 
 describe.sequential("plugin tool and bridge authz", () => {

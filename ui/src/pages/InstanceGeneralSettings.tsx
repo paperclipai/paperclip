@@ -15,6 +15,7 @@ import { ModeBadge } from "@/components/access/ModeBadge";
 import { Button } from "../components/ui/button";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import { clearAuthenticatedCache } from "@/lib/auth-cache";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { cn } from "../lib/utils";
 
@@ -27,8 +28,8 @@ export function InstanceGeneralSettings() {
 
   const signOutMutation = useMutation({
     mutationFn: () => authApi.signOut(),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+    onSuccess: async () => {
+      await clearAuthenticatedCache(queryClient);
     },
     onError: (error) => {
       setActionError(error instanceof Error ? error.message : "Failed to sign out.");

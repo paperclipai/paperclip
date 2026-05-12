@@ -72,6 +72,7 @@ describe.sequential("auth routes", () => {
     const res = await request(app).get("/api/auth/get-session");
 
     expect(res.status).toBe(200);
+    expect(res.headers["cache-control"]).toBe("no-store");
     expect(res.body).toEqual({
       session: {
         id: "paperclip:session:user-1",

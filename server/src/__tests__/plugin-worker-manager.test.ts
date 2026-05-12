@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import {
   JsonRpcCallError,
+  PLUGIN_RPC_ERROR_CODES,
   type HostToWorkerMethods,
 } from "@paperclipai/plugin-sdk";
 import {
@@ -15,6 +16,7 @@ import {
 const FIXTURES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
 const DELAYED_WORKER_ENTRYPOINT = path.join(FIXTURES_DIR, "plugin-worker-delayed.cjs");
 const TERMINATED_WORKER_ENTRYPOINT = path.join(FIXTURES_DIR, "plugin-worker-terminated.cjs");
+const HOST_ERROR_WORKER_ENTRYPOINT = path.join(FIXTURES_DIR, "plugin-worker-host-error.cjs");
 
 const TEST_MANIFEST: PaperclipPluginManifestV1 = {
   id: "test.plugin",
@@ -175,6 +177,47 @@ describe("plugin-worker-manager stderr failure context", () => {
       expect(unhandledRejection).not.toHaveBeenCalled();
     } finally {
       process.off("unhandledRejection", unhandledRejection);
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("preserves host handler plugin RPC error codes across the worker boundary", async () => {
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: HOST_ERROR_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers: {
+        "secrets.write": async () => {
+          const err = new Error("Plugin is disabled for this company") as Error & { code: number };
+          err.code = PLUGIN_RPC_ERROR_CODES.CAPABILITY_DENIED;
+          throw err;
+        },
+      },
+    });
+
+    try {
+      await handle.start();
+
+      await expect(handle.call(
+        "environmentExecute",
+        {
+          driverKey: "e2b",
+          companyId: "company-1",
+          environmentId: "environment-1",
+          config: {},
+          lease: { providerLeaseId: "lease-1" },
+          command: "echo",
+        } as HostToWorkerMethods["environmentExecute"][0],
+      )).resolves.toMatchObject({
+        hostErrorCode: PLUGIN_RPC_ERROR_CODES.CAPABILITY_DENIED,
+        hostErrorMessage: "Plugin is disabled for this company",
+      });
+    } finally {
       await handle.stop().catch(() => undefined);
     }
   });

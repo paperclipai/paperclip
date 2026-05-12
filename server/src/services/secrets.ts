@@ -1446,6 +1446,16 @@ export function secretService(db: Db) {
       };
     },
 
+    listPluginOwned: () =>
+      db
+        .select()
+        .from(companySecrets)
+        .where(and(
+          like(companySecrets.createdByUserId, "plugin:%"),
+          ne(companySecrets.status, "deleted"),
+        ))
+        .orderBy(desc(companySecrets.createdAt)),
+
     getById,
     getByName,
     resolveSecretValue,
@@ -1494,7 +1504,7 @@ export function secretService(db: Db) {
       if (managedMode === "paperclip_managed" && input.externalRef?.trim()) {
         throw unprocessable("Managed secrets cannot override externalRef");
       }
-      if (managedMode === "paperclip_managed" && !input.value?.trim()) {
+      if (managedMode === "paperclip_managed" && (input.value == null || input.value.length === 0)) {
         throw unprocessable("Managed secrets require value");
       }
       const providerWriteContext = {
@@ -1658,7 +1668,7 @@ export function secretService(db: Db) {
       if (secret.managedMode !== "external_reference" && input.externalRef?.trim()) {
         throw unprocessable("Managed secrets cannot override externalRef");
       }
-      if (secret.managedMode !== "external_reference" && !input.value?.trim()) {
+      if (secret.managedMode !== "external_reference" && (input.value == null || input.value.length === 0)) {
         throw unprocessable("Managed secrets require value");
       }
       const providerWriteContext = {

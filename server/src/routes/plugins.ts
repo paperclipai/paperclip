@@ -2431,6 +2431,62 @@ export function pluginRoutes(
     });
   });
 
+  router.get("/plugins/:pluginId/companies/:companyId/settings", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const { pluginId, companyId } = req.params;
+    assertCompanyAccess(req, companyId);
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const settings = await registry.getCompanySettings(plugin.id, companyId);
+    res.json({
+      pluginId: plugin.id,
+      companyId,
+      enabled: settings?.enabled ?? false,
+      explicit: Boolean(settings),
+    });
+  });
+
+  router.put("/plugins/:pluginId/companies/:companyId/settings", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const { pluginId, companyId } = req.params;
+    assertCompanyAccess(req, companyId);
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const body = req.body as { enabled?: unknown } | undefined;
+    if (typeof body?.enabled !== "boolean") {
+      res.status(400).json({ error: '"enabled" is required and must be a boolean' });
+      return;
+    }
+
+    const existing = await registry.getCompanySettings(plugin.id, companyId);
+    const settings = await registry.upsertCompanySettings(plugin.id, companyId, {
+      enabled: body.enabled,
+      settingsJson: existing?.settingsJson ?? {},
+      lastError: existing?.lastError ?? null,
+    });
+    await logPluginMutationActivity(req, body.enabled ? "plugin.company.enabled" : "plugin.company.disabled", plugin.id, {
+      pluginId: plugin.id,
+      pluginKey: plugin.pluginKey,
+      companyId,
+    });
+    res.json({
+      pluginId: plugin.id,
+      companyId,
+      enabled: settings.enabled,
+      explicit: true,
+    });
+  });
+
   router.get("/plugins/:pluginId/companies/:companyId/local-folders/:folderKey/status", async (req, res) => {
     assertBoardOrgAccess(req);
     const { pluginId, companyId, folderKey } = req.params;
@@ -2527,7 +2583,7 @@ export function pluginRoutes(
       requiredFiles: status.requiredFiles,
     });
     await registry.upsertCompanySettings(plugin.id, companyId, {
-      enabled: existing?.enabled ?? true,
+      enabled: existing?.enabled ?? false,
       settingsJson: nextSettings,
       lastError: status.healthy ? null : status.problems.map((item: { message: string }) => item.message).join("; "),
     });

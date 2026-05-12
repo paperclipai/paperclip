@@ -132,9 +132,11 @@ export interface HostServices {
     fetch(params: WorkerToHostMethods["http.fetch"][0]): Promise<WorkerToHostMethods["http.fetch"][1]>;
   };
 
-  /** Provides `secrets.resolve`. */
+  /** Provides `secrets.resolve`, `secrets.write`, and `secrets.delete`. */
   secrets: {
     resolve(params: WorkerToHostMethods["secrets.resolve"][0]): Promise<string>;
+    write(params: WorkerToHostMethods["secrets.write"][0]): Promise<string>;
+    delete(params: WorkerToHostMethods["secrets.delete"][0]): Promise<undefined>;
   };
 
   /** Provides `activity.log`. */
@@ -345,6 +347,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
 
   // Secrets
   "secrets.resolve": "secrets.read-ref",
+  "secrets.write": "secrets.write",
+  "secrets.delete": "secrets.write",
 
   // Activity
   "activity.log": "activity.log.write",
@@ -562,6 +566,12 @@ export function createHostClientHandlers(
     // Secrets
     "secrets.resolve": gated("secrets.resolve", async (params) => {
       return services.secrets.resolve(params);
+    }),
+    "secrets.write": gated("secrets.write", async (params) => {
+      return services.secrets.write(params);
+    }),
+    "secrets.delete": gated("secrets.delete", async (params) => {
+      return services.secrets.delete(params);
     }),
 
     // Activity

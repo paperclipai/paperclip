@@ -852,7 +852,7 @@ export function buildHostServices(
           requiredFiles: status.requiredFiles,
         });
         await registry.upsertCompanySettings(pluginId, companyId, {
-          enabled: existing?.enabled ?? true,
+          enabled: existing?.enabled ?? false,
           settingsJson: nextSettings,
           lastError: status.healthy ? null : status.problems.map((item: { message: string }) => item.message).join("; "),
         });
@@ -989,6 +989,12 @@ export function buildHostServices(
     secrets: {
       async resolve(params) {
         return secretsHandler.resolve(params);
+      },
+      async write(params) {
+        return secretsHandler.write(params);
+      },
+      async delete(params) {
+        return secretsHandler.delete(params);
       },
     },
 

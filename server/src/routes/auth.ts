@@ -38,6 +38,7 @@ export function authRoutes(db: Db) {
   const router = Router();
 
   router.get("/get-session", async (req, res) => {
+    res.set("Cache-Control", "no-store");
     if (req.actor.type !== "board" || !req.actor.userId) {
       throw unauthorized("Board authentication required");
     }

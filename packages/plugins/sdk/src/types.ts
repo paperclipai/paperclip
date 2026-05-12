@@ -604,6 +604,41 @@ export interface PluginSecretsClient {
    * @returns The resolved secret value
    */
   resolve(secretRef: string): Promise<string>;
+
+  /**
+   * Create or rotate a named secret in the Paperclip vault.
+   *
+   * The secret material is encrypted by the configured SecretProvider before
+   * being stored. If a secret with the given name already exists and was
+   * created by this plugin, it is rotated to the new value. If it was created
+   * by a different actor, the call throws an ownership collision error.
+   *
+   * Requires `secrets.write` capability.
+   *
+   * Secret values must never be cached, logged, or written to plugin state.
+   *
+   * @param input - The secret name, value, and optional description
+   * @returns The secret UUID (use as a secretRef in plugin config)
+   */
+  write(input: {
+    companyId: string;
+    name: string;
+    value: string;
+    description?: string;
+  }): Promise<string>;
+
+  /**
+   * Delete a named secret from the Paperclip vault.
+   *
+   * Only secrets created by this plugin (via `ctx.secrets.write`) may be
+   * deleted. Attempting to delete a secret owned by a different actor throws
+   * an ownership error. If the secret does not exist, the call is a no-op.
+   *
+   * Requires `secrets.write` capability.
+   *
+   * @param input - The company ID and secret name to delete
+   */
+  delete(input: { companyId: string; name: string }): Promise<void>;
 }
 
 /**

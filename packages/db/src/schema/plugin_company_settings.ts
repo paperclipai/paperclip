@@ -9,10 +9,11 @@ import { plugins } from "./plugins.js";
  * This is distinct from `plugin_config`, which stores instance-wide plugin
  * configuration. Each company can have at most one settings row per plugin.
  *
- * Rows represent explicit overrides from the default company behavior:
- * - no row => plugin is enabled for the company by default
- * - row with `enabled = false` => plugin is disabled for that company
- * - row with `enabled = true` => plugin remains enabled and stores company settings
+ * Rows represent explicit company authorization for sensitive plugin
+ * operations and storage for company-scoped settings:
+ * - no row => plugin is not authorized for company-scoped writes
+ * - row with `enabled = false` => plugin is explicitly disabled for that company
+ * - row with `enabled = true` => plugin is enabled and stores company settings
  */
 export const pluginCompanySettings = pgTable(
   "plugin_company_settings",

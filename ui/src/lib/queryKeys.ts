@@ -130,6 +130,7 @@ export const queryKeys = {
     generalSettings: ["instance", "general-settings"] as const,
     schedulerHeartbeats: ["instance", "scheduler-heartbeats"] as const,
     experimentalSettings: ["instance", "experimental-settings"] as const,
+    pluginSecrets: ["instance", "plugin-secrets"] as const,
   },
   health: ["health"] as const,
   secrets: {
@@ -184,6 +185,8 @@ export const queryKeys = {
     health: (pluginId: string) => ["plugins", pluginId, "health"] as const,
     uiContributions: ["plugins", "ui-contributions"] as const,
     config: (pluginId: string) => ["plugins", pluginId, "config"] as const,
+    companySettings: (pluginId: string, companyId: string) =>
+      ["plugins", pluginId, "companies", companyId, "settings"] as const,
     localFolders: (pluginId: string, companyId: string) =>
       ["plugins", pluginId, "companies", companyId, "local-folders"] as const,
     dashboard: (pluginId: string) => ["plugins", pluginId, "dashboard"] as const,

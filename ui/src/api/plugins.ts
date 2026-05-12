@@ -182,6 +182,13 @@ export interface PluginLocalFoldersResponse {
   folders: PluginLocalFolderStatus[];
 }
 
+export interface PluginCompanySettingsResponse {
+  pluginId: string;
+  companyId: string;
+  enabled: boolean;
+  explicit: boolean;
+}
+
 export interface PluginLocalFolderSaveInput {
   path: string;
   access?: "read" | "readWrite";
@@ -391,6 +398,12 @@ export const pluginsApi = {
    */
   listLocalFolders: (pluginId: string, companyId: string) =>
     api.get<PluginLocalFoldersResponse>(`/plugins/${pluginId}/companies/${companyId}/local-folders`),
+
+  getCompanySettings: (pluginId: string, companyId: string) =>
+    api.get<PluginCompanySettingsResponse>(`/plugins/${pluginId}/companies/${companyId}/settings`),
+
+  saveCompanySettings: (pluginId: string, companyId: string, input: { enabled: boolean }) =>
+    api.put<PluginCompanySettingsResponse>(`/plugins/${pluginId}/companies/${companyId}/settings`, input),
 
   /**
    * Inspect a configured local folder without changing persisted settings.

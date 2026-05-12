@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Clock3, ExternalLink, Settings } from "lucide-react";
+import { Clock3, ExternalLink, KeyRound, Settings } from "lucide-react";
 import type { InstanceSchedulerHeartbeatAgent } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { heartbeatsApi } from "../api/heartbeats";
 import { agentsApi } from "../api/agents";
+import { instanceSettingsApi } from "../api/instanceSettings";
+import { accessApi } from "../api/access";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
 import { Badge } from "@/components/ui/badge";
@@ -26,6 +28,11 @@ function buildAgentHref(agent: InstanceSchedulerHeartbeatAgent) {
   return `/${agent.companyIssuePrefix}/agents/${encodeURIComponent(agent.agentUrlKey)}`;
 }
 
+function pluginIdFromCreatedByUserId(createdByUserId: string | null) {
+  if (!createdByUserId?.startsWith("plugin:")) return null;
+  return createdByUserId.slice("plugin:".length);
+}
+
 export function InstanceSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -38,10 +45,25 @@ export function InstanceSettings() {
     ]);
   }, [setBreadcrumbs]);
 
+  const boardAccessQuery = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+  });
+
+  const canViewPluginSecrets = (boardAccessQuery.data?.isInstanceAdmin ?? false)
+    || boardAccessQuery.data?.source === "local_implicit";
+
   const heartbeatsQuery = useQuery({
     queryKey: queryKeys.instance.schedulerHeartbeats,
     queryFn: () => heartbeatsApi.listInstanceSchedulerAgents(),
     refetchInterval: 15_000,
+  });
+
+  const pluginSecretsQuery = useQuery({
+    queryKey: queryKeys.instance.pluginSecrets,
+    queryFn: () => instanceSettingsApi.listPluginSecrets(),
+    refetchInterval: 30_000,
+    enabled: canViewPluginSecrets,
   });
 
   const toggleMutation = useMutation({
@@ -163,120 +185,187 @@ export function InstanceSettings() {
     );
   }
 
-  return (
-    <div className="max-w-5xl space-y-6">
-      <div className="space-y-2">
-        <div className="flex items-center gap-2">
-          <Settings className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Scheduler Heartbeats</h1>
-        </div>
-        <p className="text-sm text-muted-foreground">
-          Agents with a timer heartbeat enabled across all of your companies.
-        </p>
-      </div>
+  const pluginSecrets = pluginSecretsQuery.data ?? [];
 
-      <div className="flex items-center gap-4 text-sm text-muted-foreground">
-        <span><span className="font-semibold text-foreground">{activeCount}</span> active</span>
-        <span><span className="font-semibold text-foreground">{disabledCount}</span> disabled</span>
-        <span><span className="font-semibold text-foreground">{grouped.length}</span> {grouped.length === 1 ? "company" : "companies"}</span>
-        {anyEnabled && (
-          <Button
-            variant="destructive"
-            size="sm"
-            className="ml-auto h-7 text-xs"
-            disabled={disableAllMutation.isPending}
-            onClick={() => {
-              const noun = enabledCount === 1 ? "agent" : "agents";
-              if (!window.confirm(`Disable timer heartbeats for all ${enabledCount} enabled ${noun}?`)) {
-                return;
-              }
-              disableAllMutation.mutate(agents);
-            }}
-          >
-            {disableAllMutation.isPending ? "Disabling..." : "Disable All"}
-          </Button>
+  return (
+    <div className="max-w-5xl space-y-10">
+      <div className="space-y-6">
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <Settings className="h-5 w-5 text-muted-foreground" />
+            <h1 className="text-lg font-semibold">Scheduler Heartbeats</h1>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            Agents with a timer heartbeat enabled across all of your companies.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-4 text-sm text-muted-foreground">
+          <span><span className="font-semibold text-foreground">{activeCount}</span> active</span>
+          <span><span className="font-semibold text-foreground">{disabledCount}</span> disabled</span>
+          <span><span className="font-semibold text-foreground">{grouped.length}</span> {grouped.length === 1 ? "company" : "companies"}</span>
+          {anyEnabled && (
+            <Button
+              variant="destructive"
+              size="sm"
+              className="ml-auto h-7 text-xs"
+              disabled={disableAllMutation.isPending}
+              onClick={() => {
+                const noun = enabledCount === 1 ? "agent" : "agents";
+                if (!window.confirm(`Disable timer heartbeats for all ${enabledCount} enabled ${noun}?`)) {
+                  return;
+                }
+                disableAllMutation.mutate(agents);
+              }}
+            >
+              {disableAllMutation.isPending ? "Disabling..." : "Disable All"}
+            </Button>
+          )}
+        </div>
+
+        {actionError && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+            {actionError}
+          </div>
+        )}
+
+        {agents.length === 0 ? (
+          <EmptyState
+            icon={Clock3}
+            message="No scheduler heartbeats match the current criteria."
+          />
+        ) : (
+          <div className="space-y-4">
+            {grouped.map((group) => (
+              <Card key={group.companyName}>
+                <CardContent className="p-0">
+                  <div className="border-b px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    {group.companyName}
+                  </div>
+                  <div className="divide-y">
+                    {group.agents.map((agent) => {
+                      const saving = toggleMutation.isPending && toggleMutation.variables?.id === agent.id;
+                      return (
+                        <div
+                          key={agent.id}
+                          className="flex items-center gap-3 px-3 py-2 text-sm"
+                        >
+                          <Badge
+                            variant={agent.schedulerActive ? "default" : "outline"}
+                            className="shrink-0 text-[10px] px-1.5 py-0"
+                          >
+                            {agent.schedulerActive ? "On" : "Off"}
+                          </Badge>
+                          <Link
+                            to={buildAgentHref(agent)}
+                            className="font-medium truncate hover:underline"
+                          >
+                            {agent.agentName}
+                          </Link>
+                          <span className="hidden sm:inline text-muted-foreground truncate">
+                            {humanize(agent.title ?? agent.role)}
+                          </span>
+                          <span className="text-muted-foreground tabular-nums shrink-0">
+                            {agent.intervalSec}s
+                          </span>
+                          <span
+                            className="hidden md:inline text-muted-foreground truncate"
+                            title={agent.lastHeartbeatAt ? formatDateTime(agent.lastHeartbeatAt) : undefined}
+                          >
+                            {agent.lastHeartbeatAt
+                              ? relativeTime(agent.lastHeartbeatAt)
+                              : "never"}
+                          </span>
+                          <span className="ml-auto flex items-center gap-1.5 shrink-0">
+                            <Link
+                              to={buildAgentHref(agent)}
+                              className="text-muted-foreground hover:text-foreground"
+                              title="Full agent config"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                            </Link>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 px-2 text-xs"
+                              disabled={saving}
+                              onClick={() => toggleMutation.mutate(agent)}
+                            >
+                              {saving ? "..." : agent.heartbeatEnabled ? "Disable Timer Heartbeat" : "Enable Timer Heartbeat"}
+                            </Button>
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
         )}
       </div>
 
-      {actionError && (
-        <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          {actionError}
+      {canViewPluginSecrets && (
+      <div className="space-y-4">
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <KeyRound className="h-5 w-5 text-muted-foreground" />
+            <h2 className="text-lg font-semibold">Plugin-Managed Secrets</h2>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            Secrets created or rotated by installed plugins via the <code className="text-xs bg-muted px-1 py-0.5 rounded">secrets.write</code> capability. Read-only — manage these through the plugin or the company secrets page.
+          </p>
         </div>
-      )}
 
-      {agents.length === 0 ? (
-        <EmptyState
-          icon={Clock3}
-          message="No scheduler heartbeats match the current criteria."
-        />
-      ) : (
-        <div className="space-y-4">
-          {grouped.map((group) => (
-            <Card key={group.companyName}>
-              <CardContent className="p-0">
-                <div className="border-b px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  {group.companyName}
-                </div>
-                <div className="divide-y">
-                  {group.agents.map((agent) => {
-                    const saving = toggleMutation.isPending && toggleMutation.variables?.id === agent.id;
-                    return (
-                      <div
-                        key={agent.id}
-                        className="flex items-center gap-3 px-3 py-2 text-sm"
-                      >
-                        <Badge
-                          variant={agent.schedulerActive ? "default" : "outline"}
-                          className="shrink-0 text-[10px] px-1.5 py-0"
-                        >
-                          {agent.schedulerActive ? "On" : "Off"}
+        {pluginSecretsQuery.isLoading ? (
+          <div className="text-sm text-muted-foreground">Loading plugin secrets...</div>
+        ) : pluginSecretsQuery.error ? (
+          <div className="text-sm text-destructive">
+            {pluginSecretsQuery.error instanceof Error
+              ? pluginSecretsQuery.error.message
+              : "Failed to load plugin secrets."}
+          </div>
+        ) : pluginSecrets.length === 0 ? (
+          <EmptyState
+            icon={KeyRound}
+            message="No plugin-managed secrets. Plugins with the secrets.write capability will appear here."
+          />
+        ) : (
+          <Card>
+            <CardContent className="p-0">
+              <div className="divide-y">
+                {pluginSecrets.map((secret) => {
+                  const pluginId = pluginIdFromCreatedByUserId(secret.createdByUserId);
+                  return (
+                    <div key={secret.id} className="flex items-center gap-3 px-3 py-2 text-sm">
+                      <span className="font-mono font-medium truncate">{secret.name}</span>
+                      {pluginId && (
+                        <Badge variant="outline" className="shrink-0 text-[10px] px-1.5 py-0">
+                          {pluginId}
                         </Badge>
-                        <Link
-                          to={buildAgentHref(agent)}
-                          className="font-medium truncate hover:underline"
-                        >
-                          {agent.agentName}
-                        </Link>
-                        <span className="hidden sm:inline text-muted-foreground truncate">
-                          {humanize(agent.title ?? agent.role)}
+                      )}
+                      {secret.companyId && (
+                        <span className="text-muted-foreground text-xs shrink-0 truncate max-w-[120px]" title={secret.companyId}>
+                          {secret.companyId}
                         </span>
-                        <span className="text-muted-foreground tabular-nums shrink-0">
-                          {agent.intervalSec}s
-                        </span>
-                        <span
-                          className="hidden md:inline text-muted-foreground truncate"
-                          title={agent.lastHeartbeatAt ? formatDateTime(agent.lastHeartbeatAt) : undefined}
-                        >
-                          {agent.lastHeartbeatAt
-                            ? relativeTime(agent.lastHeartbeatAt)
-                            : "never"}
-                        </span>
-                        <span className="ml-auto flex items-center gap-1.5 shrink-0">
-                          <Link
-                            to={buildAgentHref(agent)}
-                            className="text-muted-foreground hover:text-foreground"
-                            title="Full agent config"
-                          >
-                            <ExternalLink className="h-3.5 w-3.5" />
-                          </Link>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 px-2 text-xs"
-                            disabled={saving}
-                            onClick={() => toggleMutation.mutate(agent)}
-                          >
-                            {saving ? "..." : agent.heartbeatEnabled ? "Disable Timer Heartbeat" : "Enable Timer Heartbeat"}
-                          </Button>
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
+                      )}
+                      <span className="text-muted-foreground tabular-nums shrink-0">
+                        v{secret.latestVersion}
+                      </span>
+                      <span
+                        className="ml-auto text-muted-foreground tabular-nums shrink-0"
+                        title={formatDateTime(secret.createdAt)}
+                      >
+                        {relativeTime(secret.createdAt)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+      </div>
       )}
     </div>
   );
