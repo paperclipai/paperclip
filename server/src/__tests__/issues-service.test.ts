@@ -91,6 +91,33 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await tempDb?.cleanup();
   });
 
+  it("marks truncated descriptions on company issue list results", async () => {
+    const companyId = randomUUID();
+    const longDescription = "x".repeat(1600);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      title: "Long issue",
+      description: longDescription,
+      status: "backlog",
+      priority: "medium",
+    });
+
+    const [issue] = await svc.list(companyId, {});
+
+    expect(issue).toBeDefined();
+    expect(issue?.description).toHaveLength(1200);
+    expect(issue?.descriptionTruncated).toBe(true);
+  });
+
   it("returns issues an agent participated in across the supported signals", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

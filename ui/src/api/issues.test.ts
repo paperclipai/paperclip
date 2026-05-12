@@ -47,4 +47,13 @@ describe("issuesApi.list", () => {
       "/companies/company-1/issues?limit=500&offset=1500",
     );
   });
+
+  it("returns issue list payloads without client-side shape rewriting", async () => {
+    const payload = [{ id: "issue-1", title: "Test", description: "x", descriptionTruncated: true }];
+    mockApi.get.mockResolvedValue(payload);
+
+    const result = await issuesApi.list("company-1");
+
+    expect(result).toEqual(payload);
+  });
 });
