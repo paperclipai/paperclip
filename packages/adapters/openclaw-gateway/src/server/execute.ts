@@ -611,17 +611,38 @@ function buildDeviceAuthPayloadV3(params: {
   ].join("|");
 }
 
+/**
+ * Normalize a PEM string that may have corrupted newlines.
+ * Common corruption: JSON serialization turning \n into \\n, or stripping newlines entirely.
+ */
+function normalizePem(pem: string): string {
+  // First, unescape any double-escaped newlines (\\n -> \n)
+  let normalized = pem.replace(/\\n/g, '\n');
+
+  // If still no newlines, try to reconstruct the PEM structure
+  if (!normalized.includes('\n')) {
+    // Insert newline after header
+    normalized = normalized.replace(/(-----BEGIN [^-]+-----)/, '$1\n');
+    // Insert newline before footer
+    normalized = normalized.replace(/(-----END [^-]+-----)/, '\n$1');
+  }
+
+  return normalized.trim();
+}
+
 function resolveDeviceIdentity(config: Record<string, unknown>): GatewayDeviceIdentity {
   const configuredPrivateKey = nonEmpty(config.devicePrivateKeyPem);
   if (configuredPrivateKey) {
-    const privateKey = crypto.createPrivateKey(configuredPrivateKey);
+    // Normalize PEM to handle corrupted newlines from JSON serialization
+    const normalizedPem = normalizePem(configuredPrivateKey);
+    const privateKey = crypto.createPrivateKey(normalizedPem);
     const publicKey = crypto.createPublicKey(privateKey);
     const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }).toString();
     const raw = derivePublicKeyRaw(publicKeyPem);
     return {
       deviceId: crypto.createHash("sha256").update(raw).digest("hex"),
       publicKeyRawBase64Url: base64UrlEncode(raw),
-      privateKeyPem: configuredPrivateKey,
+      privateKeyPem: normalizedPem, // Use normalized PEM for signing
       source: "configured",
     };
   }
