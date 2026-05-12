@@ -319,6 +319,7 @@ export function agentRoutes(
         companyId: input.companyId,
         environment,
         issueId: null,
+        agentId: null,
         heartbeatRunId: null,
         persistedExecutionWorkspace: null,
       });

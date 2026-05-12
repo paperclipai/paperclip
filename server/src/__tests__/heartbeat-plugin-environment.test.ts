@@ -209,6 +209,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       issueId: null,
       config: { template: "base" },
       runId: run!.id,
+      agentId,
       workspaceMode: "shared_workspace",
     });
     await vi.waitFor(() => {
@@ -426,6 +427,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       issueId,
       config: { template: "new" },
       runId: run!.id,
+      agentId,
       workspaceMode: "shared_workspace",
     });
   }, 15_000);
