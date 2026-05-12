@@ -213,6 +213,166 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     });
   });
 
+  it("reaps a stale running checkout lock during release when the same assignee presents a newer run", async () => {
+    const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "running",
+        processPid: 999_999_999,
+        processGroupId: null,
+        updatedAt: new Date(Date.now() - 2 * 60 * 1000),
+      })
+      .where(eq(heartbeatRuns.id, currentRunId));
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale running release",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, failedRunId)))
+      .post(`/api/issues/${issueId}/release`)
+      .send();
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    const issueRow = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(issueRow).toEqual({
+      status: "todo",
+      assigneeAgentId: null,
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+
+    const runRow = await db
+      .select({
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, currentRunId))
+      .then((rows) => rows[0]);
+    expect(runRow).toEqual({
+      status: "failed",
+      errorCode: "process_lost",
+    });
+  });
+
+  it("reaps a stale running checkout lock during checkout for the same assignee", async () => {
+    const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "running",
+        processPid: 999_999_999,
+        processGroupId: null,
+        updatedAt: new Date(Date.now() - 2 * 60 * 1000),
+      })
+      .where(eq(heartbeatRuns.id, currentRunId));
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale running checkout",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, failedRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["in_progress"],
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.checkoutRunId).toBe(failedRunId);
+    expect(res.body.executionRunId).toBe(failedRunId);
+
+    const runRow = await db
+      .select({
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, currentRunId))
+      .then((rows) => rows[0]);
+    expect(runRow).toEqual({
+      status: "failed",
+      errorCode: "process_lost",
+    });
+  });
+
+  it("recovers a stale detached running checkout lock for the same assignee", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const staleRunId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(heartbeatRuns).values({
+      id: staleRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      processPid: 999_999_999,
+      errorCode: "process_detached",
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+      startedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Detached stale lock release",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: staleRunId,
+      executionRunId: staleRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .post(`/api/issues/${issueId}/release`)
+      .send();
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    const staleRun = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, staleRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(staleRun).toEqual({
+      status: "failed",
+      errorCode: "process_lost",
+    });
+  });
+
   it("restricts admin force-release to board users with company access and writes an audit event", async () => {
     const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
     const issueId = randomUUID();
