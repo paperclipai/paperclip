@@ -2984,3 +2984,102 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     expect(row).toEqual({ executionRunId: null, executionLockedAt: null });
   });
 });
+
+describeEmbeddedPostgres("issueService.listComments date interpolation regression (COD-632)", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-listcomments-date-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(activityLog);
+    await db.delete(heartbeatRuns);
+    await db.delete(issues);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("does not throw a TypeError when human-authored comments are in the result set", async () => {
+    // Regression for COD-632: Date objects passed as raw sql bind values caused
+    // postgres-js to throw ERR_INVALID_ARG_TYPE when enrichCommentsWithDerivedAgentAttribution
+    // ran its coalesce() timestamp comparison.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const commentId = randomUUID();
+    const runId = randomUUID();
+    const commentTime = new Date("2026-05-11T18:55:40.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "TestAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Issue with human comment",
+      status: "todo",
+      priority: "medium",
+    });
+
+    // Human-authored comment: has authorUserId, no authorAgentId, no createdByRunId —
+    // exactly the shape that triggers enrichCommentsWithDerivedAgentAttribution.
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      body: "A human wrote this",
+      authorUserId: "user-1",
+      authorAgentId: null,
+      createdAt: commentTime,
+      updatedAt: commentTime,
+    });
+
+    // A run whose window overlaps the comment, so the date-range predicate is exercised.
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "finished",
+      invocationSource: "manual",
+      startedAt: new Date("2026-05-11T18:51:00.000Z"),
+      finishedAt: new Date("2026-05-11T19:00:00.000Z"),
+      contextSnapshot: { issueId },
+    });
+
+    // Before the fix this threw: TypeError [ERR_INVALID_ARG_TYPE]: The "string" argument
+    // must be of type string or an instance of Buffer or ArrayBuffer.
+    await expect(svc.listComments(issueId)).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: commentId }),
+      ]),
+    );
+  });
+});
