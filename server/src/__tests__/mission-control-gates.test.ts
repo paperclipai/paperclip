@@ -106,6 +106,77 @@ describe("mission-control completion gate service", () => {
     ).toThrow(/Mission-control completion gate blocked issue/);
   });
 
+  it("throws 422 when default mission-control completion lacks an orchestration contract", () => {
+    let missingContractError: unknown;
+    try {
+      assertMissionControlCompletionGate({
+        issue: {
+          id: "issue-orchestration-required",
+          priority: "high",
+          executionPolicy: { missionControl: { enabled: true, riskClass: "high" } },
+        },
+        documents: completedMissionDocuments,
+      });
+    } catch (err) {
+      missingContractError = err;
+    }
+
+    expect(missingContractError).toBeInstanceOf(HttpError);
+    expect((missingContractError as HttpError).status).toBe(422);
+    expect((missingContractError as HttpError).details).toMatchObject({
+      reason: "missing_documents",
+      missingDocumentKeys: ["orchestration-contract"],
+      validatorVerdict: "PASS",
+      requiredApprovalGate: "board",
+    });
+  });
+
+  it("throws 422 when the orchestration contract has unfinished delegated workstreams", () => {
+    let incompleteContractError: unknown;
+    try {
+      assertMissionControlCompletionGate({
+        issue: {
+          id: "issue-orchestration-incomplete",
+          priority: "high",
+          executionPolicy: { missionControl: { enabled: true, riskClass: "high" } },
+        },
+        documents: [
+          { key: "validation-contract", body: "objective/pass criteria" },
+          {
+            key: "orchestration-contract",
+            body: JSON.stringify({
+              version: 1,
+              leadAgentId: "lead-agent-1",
+              validatorAgentId,
+              childWorkstreams: [
+                {
+                  title: "Server gate workstream",
+                  objective: "Wire the orchestration contract into server completion checks.",
+                  issueId: "child-issue-1",
+                  assigneeAgentId: workerAgentId,
+                  acceptanceCriteria: ["server gate test passes"],
+                  requiredArtifacts: ["worker handoff"],
+                  handoffDocumentKeys: ["worker-handoff"],
+                  status: "in_progress",
+                },
+              ],
+            }),
+          },
+          { key: "worker-handoff", body: "completed/checks" },
+          validatorPassDocument,
+        ],
+      });
+    } catch (err) {
+      incompleteContractError = err;
+    }
+
+    expect(incompleteContractError).toBeInstanceOf(HttpError);
+    expect((incompleteContractError as HttpError).details).toMatchObject({
+      reason: "orchestration_workstreams_incomplete",
+      validatorVerdict: "PASS",
+    });
+  });
+
   it("does not let a done transition bypass an existing mission-control gate by disabling the next policy", () => {
     expect(() =>
       assertMissionControlCompletionTransitionGate({

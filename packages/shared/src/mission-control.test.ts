@@ -4,6 +4,7 @@ import {
   MISSION_CONTROL_AUTONOMOUS_LOOP_DECISIONS,
   MISSION_CONTROL_AUTONOMOUS_LOOP_DOCUMENT_KEY,
   MISSION_CONTROL_DEFAULT_REQUIRED_DOCUMENT_KEYS,
+  MISSION_CONTROL_ORCHESTRATION_CONTRACT_DOCUMENT_KEY,
   MISSION_CONTROL_VALIDATOR_VERDICTS,
   classifyMissionControlActionRisk,
   evaluateMissionControlAutonomousLoopGate,
@@ -12,6 +13,7 @@ import {
   missionControlAutonomousLoopPolicySchema,
   missionControlCeoLoopDecisionSchema,
   missionControlIssuePolicySchema,
+  missionControlOrchestrationContractSchema,
   missionControlSideEffectApprovalEnvelopeSchema,
   missionControlValidatorReportSchema,
   missionControlWorkerHandoffSchema,
@@ -23,9 +25,50 @@ describe("mission-control workflow contracts", () => {
   it("defines the required mission documents for a validated mission loop", () => {
     expect(MISSION_CONTROL_DEFAULT_REQUIRED_DOCUMENT_KEYS).toEqual([
       "validation-contract",
+      "orchestration-contract",
       "worker-handoff",
       "validator-report",
     ]);
+  });
+
+  it("validates the orchestration contract for delegated child workstreams", () => {
+    expect(MISSION_CONTROL_ORCHESTRATION_CONTRACT_DOCUMENT_KEY).toBe("orchestration-contract");
+
+    const contract = missionControlOrchestrationContractSchema.parse({
+      version: 1,
+      leadAgentId: "lead-agent-1",
+      validatorAgentId: "validator-agent-1",
+      reporterAgentId: "reporter-agent-1",
+      childWorkstreams: [
+        {
+          title: "Implement shared mission-control contract",
+          objective: "Add a reusable contract for delegated child workstreams.",
+          issueId: "child-issue-1",
+          assigneeAgentId: "worker-agent-1",
+          acceptanceCriteria: ["shared tests pass"],
+          requiredArtifacts: ["worker handoff", "test output"],
+          handoffDocumentKeys: ["worker-handoff"],
+          status: "done",
+        },
+      ],
+    });
+
+    expect(contract.childWorkstreams).toHaveLength(1);
+    expect(contract.childWorkstreams[0]?.status).toBe("done");
+
+    expect(() =>
+      missionControlOrchestrationContractSchema.parse({
+        ...contract,
+        childWorkstreams: [],
+      }),
+    ).toThrow();
+
+    expect(() =>
+      missionControlOrchestrationContractSchema.parse({
+        ...contract,
+        validatorAgentId: "worker-agent-1",
+      }),
+    ).toThrow();
   });
 
   it("defines the CEO autonomous loop policy and decision contract", () => {
@@ -359,6 +402,29 @@ describe("mission-control workflow contracts", () => {
   });
 });
 
+
+const completedOrchestrationContractDocument = () => ({
+  key: MISSION_CONTROL_ORCHESTRATION_CONTRACT_DOCUMENT_KEY,
+  body: JSON.stringify({
+    version: 1,
+    leadAgentId: "lead-agent-1",
+    validatorAgentId: "validator-agent-1",
+    reporterAgentId: "reporter-agent-1",
+    childWorkstreams: [
+      {
+        title: "Complete delegated worker stream",
+        objective: "Provide evidence that delegated worker execution is done.",
+        issueId: "child-issue-1",
+        assigneeAgentId: "worker-agent-1",
+        acceptanceCriteria: ["worker handoff exists"],
+        requiredArtifacts: ["worker handoff"],
+        handoffDocumentKeys: ["worker-handoff"],
+        status: "done",
+      },
+    ],
+  }),
+});
+
 describe("mission-control completion gate", () => {
   it("accepts mission-control policy inside the existing issue execution policy", () => {
     expect(
@@ -384,8 +450,222 @@ describe("mission-control completion gate", () => {
     });
 
     expect(blocked.allowed).toBe(false);
-    expect(blocked.missingDocumentKeys).toEqual(["validator-report"]);
+    expect(blocked.missingDocumentKeys).toEqual([
+      MISSION_CONTROL_ORCHESTRATION_CONTRACT_DOCUMENT_KEY,
+      "validator-report",
+    ]);
     expect(blocked.requiredApprovalGate).toBe("board");
+  });
+
+  it("requires an orchestration contract by default for mission-controlled completion", () => {
+    const blocked = evaluateMissionControlCompletionGate({
+      issue: {
+        priority: "high",
+        executionPolicy: { missionControl: missionControlIssuePolicySchema.parse({ enabled: true, riskClass: "high" }) },
+      },
+      documents: [
+        { key: "validation-contract", body: "objective/pass criteria" },
+        { key: "worker-handoff", body: "completed/checks" },
+        {
+          key: "validator-report",
+          body: JSON.stringify({
+            version: 1,
+            writtenByAgentId: "validator-agent-1",
+            verdict: "PASS",
+            completionScore: 9,
+            criteriaChecked: ["criteria checked"],
+            evidence: ["test output"],
+            blockingIssues: [],
+          }),
+        },
+      ],
+    });
+
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.reason).toBe("missing_documents");
+    expect(blocked.missingDocumentKeys).toEqual([MISSION_CONTROL_ORCHESTRATION_CONTRACT_DOCUMENT_KEY]);
+  });
+
+  it("blocks completion when the orchestration contract has unfinished child workstreams", () => {
+    const blocked = evaluateMissionControlCompletionGate({
+      issue: {
+        priority: "high",
+        executionPolicy: { missionControl: missionControlIssuePolicySchema.parse({ enabled: true, riskClass: "high" }) },
+      },
+      documents: [
+        { key: "validation-contract", body: "objective/pass criteria" },
+        {
+          key: MISSION_CONTROL_ORCHESTRATION_CONTRACT_DOCUMENT_KEY,
+          body: JSON.stringify({
+            version: 1,
+            leadAgentId: "lead-agent-1",
+            validatorAgentId: "validator-agent-1",
+            childWorkstreams: [
+              {
+                title: "Implement server gate",
+                objective: "Wire the orchestration contract into completion checks.",
+                issueId: "child-issue-1",
+                assigneeAgentId: "worker-agent-1",
+                acceptanceCriteria: ["server gate tests pass"],
+                requiredArtifacts: ["worker handoff"],
+                handoffDocumentKeys: ["worker-handoff"],
+                status: "delegated",
+              },
+            ],
+          }),
+        },
+        { key: "worker-handoff", body: "completed/checks" },
+        {
+          key: "validator-report",
+          body: JSON.stringify({
+            version: 1,
+            writtenByAgentId: "validator-agent-1",
+            verdict: "PASS",
+            completionScore: 9,
+            criteriaChecked: ["criteria checked"],
+            evidence: ["test output"],
+            blockingIssues: [],
+          }),
+        },
+      ],
+    });
+
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.reason).toBe("orchestration_workstreams_incomplete");
+  });
+
+  it("blocks completion when the validator report is not written by the contract validator", () => {
+    const blocked = evaluateMissionControlCompletionGate({
+      issue: {
+        priority: "high",
+        executionPolicy: { missionControl: missionControlIssuePolicySchema.parse({ enabled: true, riskClass: "high" }) },
+      },
+      documents: [
+        { key: "validation-contract", body: "objective/pass criteria" },
+        completedOrchestrationContractDocument(),
+        { key: "worker-handoff", body: "completed/checks" },
+        {
+          key: "validator-report",
+          body: JSON.stringify({
+            version: 1,
+            writtenByAgentId: "worker-agent-1",
+            verdict: "PASS",
+            completionScore: 9,
+            criteriaChecked: ["criteria checked"],
+            evidence: ["test output"],
+            blockingIssues: [],
+          }),
+        },
+      ],
+    });
+
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.reason).toBe("validator_self_attested");
+    expect(blocked.validatorVerdict).toBe("PASS");
+  });
+
+  it("requires the reporter final summary document when the orchestration contract names one", () => {
+    const blocked = evaluateMissionControlCompletionGate({
+      issue: {
+        priority: "high",
+        executionPolicy: { missionControl: missionControlIssuePolicySchema.parse({ enabled: true, riskClass: "high" }) },
+      },
+      documents: [
+        { key: "validation-contract", body: "objective/pass criteria" },
+        {
+          key: MISSION_CONTROL_ORCHESTRATION_CONTRACT_DOCUMENT_KEY,
+          body: JSON.stringify({
+            version: 1,
+            leadAgentId: "lead-agent-1",
+            validatorAgentId: "validator-agent-1",
+            reporterAgentId: "reporter-agent-1",
+            finalSummaryDocumentKey: "final-summary",
+            childWorkstreams: [
+              {
+                title: "Implement server gate",
+                objective: "Wire the orchestration contract into completion checks.",
+                issueId: "child-issue-1",
+                assigneeAgentId: "worker-agent-1",
+                acceptanceCriteria: ["server gate tests pass"],
+                requiredArtifacts: ["worker handoff"],
+                handoffDocumentKeys: ["worker-handoff"],
+                status: "done",
+              },
+            ],
+          }),
+        },
+        { key: "worker-handoff", body: "completed/checks" },
+        {
+          key: "validator-report",
+          body: JSON.stringify({
+            version: 1,
+            writtenByAgentId: "validator-agent-1",
+            verdict: "PASS",
+            completionScore: 9,
+            criteriaChecked: ["criteria checked"],
+            evidence: ["test output"],
+            blockingIssues: [],
+          }),
+        },
+      ],
+    });
+
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.reason).toBe("missing_documents");
+    expect(blocked.missingDocumentKeys).toEqual(["final-summary"]);
+  });
+
+  it("allows completion when the orchestration contract records completed delegated workstreams", () => {
+    const allowed = evaluateMissionControlCompletionGate({
+      issue: {
+        priority: "high",
+        executionPolicy: { missionControl: missionControlIssuePolicySchema.parse({ enabled: true, riskClass: "high" }) },
+      },
+      documents: [
+        { key: "validation-contract", body: "objective/pass criteria" },
+        {
+          key: MISSION_CONTROL_ORCHESTRATION_CONTRACT_DOCUMENT_KEY,
+          body: JSON.stringify({
+            version: 1,
+            leadAgentId: "lead-agent-1",
+            validatorAgentId: "validator-agent-1",
+            reporterAgentId: "reporter-agent-1",
+            childWorkstreams: [
+              {
+                title: "Implement server gate",
+                objective: "Wire the orchestration contract into completion checks.",
+                issueId: "child-issue-1",
+                assigneeAgentId: "worker-agent-1",
+                acceptanceCriteria: ["server gate tests pass"],
+                requiredArtifacts: ["worker handoff"],
+                handoffDocumentKeys: ["worker-handoff"],
+                status: "done",
+              },
+            ],
+          }),
+        },
+        { key: "worker-handoff", body: "completed/checks" },
+        {
+          key: "validator-report",
+          body: JSON.stringify({
+            version: 1,
+            writtenByAgentId: "validator-agent-1",
+            verdict: "PASS",
+            completionScore: 9,
+            criteriaChecked: ["criteria checked"],
+            evidence: ["test output"],
+            blockingIssues: [],
+          }),
+        },
+      ],
+    });
+
+    expect(allowed).toMatchObject({
+      allowed: true,
+      reason: "allowed",
+      validatorVerdict: "PASS",
+      orchestrationContract: { childWorkstreams: [{ status: "done" }] },
+    });
   });
 
   it("allows completion when the validator report is PASS", () => {
@@ -398,6 +678,7 @@ describe("mission-control completion gate", () => {
       },
       documents: [
         { key: "validation-contract", body: "objective/pass criteria" },
+        completedOrchestrationContractDocument(),
         { key: "worker-handoff", body: "completed/checks" },
         {
           key: "validator-report",
@@ -428,6 +709,7 @@ describe("mission-control completion gate", () => {
       },
       documents: [
         { key: "validation-contract", body: "objective/pass criteria" },
+        completedOrchestrationContractDocument(),
         { key: "worker-handoff", body: "completed/checks" },
         {
           key: "validator-report",
@@ -469,6 +751,7 @@ describe("mission-control completion gate", () => {
       },
       documents: [
         { key: "validation-contract", body: "objective/pass criteria" },
+        completedOrchestrationContractDocument(),
         { key: "worker-handoff", body: "completed/checks" },
         {
           key: "validator-report",
@@ -495,6 +778,7 @@ describe("mission-control completion gate", () => {
       },
       documents: [
         { key: "validation-contract", body: "objective/pass criteria" },
+        completedOrchestrationContractDocument(),
         { key: "worker-handoff", body: "completed/checks" },
         {
           key: "validator-report",
@@ -527,6 +811,7 @@ describe("mission-control completion gate", () => {
       },
       documents: [
         { key: "validation-contract", body: "objective/pass criteria" },
+        completedOrchestrationContractDocument(),
         { key: "worker-handoff", body: "completed/checks" },
         {
           key: "validator-report",
@@ -561,6 +846,7 @@ describe("mission-control completion gate", () => {
       },
       documents: [
         { key: "validation-contract", body: "objective/pass criteria" },
+        completedOrchestrationContractDocument(),
         { key: "worker-handoff", body: "completed/checks" },
         {
           key: "validator-report",
@@ -648,6 +934,7 @@ describe("mission-control completion gate", () => {
     };
     const baseDocuments = [
       { key: "validation-contract", body: "objective/pass criteria" },
+      completedOrchestrationContractDocument(),
       { key: "worker-handoff", body: "completed/checks" },
       {
         key: "validator-report",

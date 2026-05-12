@@ -27,6 +27,7 @@ export function assertMissionControlCompletionGate(input: {
     missingDocumentKeys: gate.missingDocumentKeys,
     validatorVerdict: gate.validatorVerdict,
     ceoLoopDecision: gate.ceoLoopDecision,
+    orchestrationContract: gate.orchestrationContract,
     requiredApprovalGate: gate.requiredApprovalGate,
     requiredDocumentKeys: gate.policy?.requiredDocumentKeys ?? [],
     acceptedValidatorVerdicts: gate.policy?.acceptedValidatorVerdicts ?? ["PASS"],

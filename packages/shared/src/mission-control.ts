@@ -24,8 +24,22 @@ export const MISSION_CONTROL_SIDE_EFFECT_APPROVAL_STATUSES = ["requested", "appr
 export type MissionControlSideEffectApprovalStatus =
   (typeof MISSION_CONTROL_SIDE_EFFECT_APPROVAL_STATUSES)[number];
 
+export const MISSION_CONTROL_ORCHESTRATION_CONTRACT_DOCUMENT_KEY = "orchestration-contract" as const;
+
+export const MISSION_CONTROL_ORCHESTRATION_WORKSTREAM_STATUSES = [
+  "planned",
+  "delegated",
+  "in_progress",
+  "done",
+  "blocked",
+  "cancelled",
+] as const;
+export type MissionControlOrchestrationWorkstreamStatus =
+  (typeof MISSION_CONTROL_ORCHESTRATION_WORKSTREAM_STATUSES)[number];
+
 export const MISSION_CONTROL_DEFAULT_REQUIRED_DOCUMENT_KEYS = [
   "validation-contract",
+  MISSION_CONTROL_ORCHESTRATION_CONTRACT_DOCUMENT_KEY,
   "worker-handoff",
   "validator-report",
 ] as const;
@@ -35,6 +49,12 @@ export type MissionControlDefaultRequiredDocumentKey =
 const textArraySchema = z.array(z.string().trim().min(1));
 const nonEmptyTextArraySchema = textArraySchema.default([]);
 const requiredTextArraySchema = textArraySchema.min(1);
+const missionControlDocumentKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z0-9][a-z0-9_-]*$/);
 
 export const MISSION_CONTROL_AUTONOMOUS_LOOP_DOCUMENT_KEY = "ceo-loop-decision" as const;
 
@@ -275,12 +295,67 @@ export const missionControlCeoLoopDecisionSchema = z
   });
 export type MissionControlCeoLoopDecision = z.infer<typeof missionControlCeoLoopDecisionSchema>;
 
+export const missionControlOrchestrationChildWorkstreamSchema = z
+  .object({
+    title: z.string().trim().min(1).max(240),
+    objective: z.string().trim().min(1).max(4000),
+    issueId: z.string().trim().min(1).max(160).optional().nullable().default(null),
+    assigneeAgentId: z.string().trim().min(1).max(160).optional().nullable().default(null),
+    acceptanceCriteria: requiredTextArraySchema,
+    requiredArtifacts: requiredTextArraySchema,
+    handoffDocumentKeys: z.array(missionControlDocumentKeySchema).min(1).default(["worker-handoff"]),
+    status: z.enum(MISSION_CONTROL_ORCHESTRATION_WORKSTREAM_STATUSES).optional().default("planned"),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (!value.issueId && !value.assigneeAgentId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Child workstreams require issueId or assigneeAgentId",
+        path: ["issueId"],
+      });
+    }
+  });
+export type MissionControlOrchestrationChildWorkstream = z.infer<
+  typeof missionControlOrchestrationChildWorkstreamSchema
+>;
+
+export const missionControlOrchestrationContractSchema = z
+  .object({
+    version: z.literal(1),
+    leadAgentId: z.string().trim().min(1).max(160),
+    validatorAgentId: z.string().trim().min(1).max(160),
+    reporterAgentId: z.string().trim().min(1).max(160).optional().nullable().default(null),
+    childWorkstreams: z.array(missionControlOrchestrationChildWorkstreamSchema).min(1).max(25),
+    finalSummaryDocumentKey: missionControlDocumentKeySchema.optional().nullable().default(null),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.validatorAgentId === value.leadAgentId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Validator must be distinct from the lead",
+        path: ["validatorAgentId"],
+      });
+    }
+    value.childWorkstreams.forEach((workstream, index) => {
+      if (workstream.assigneeAgentId && workstream.assigneeAgentId === value.validatorAgentId) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Validator must be distinct from delegated workers",
+          path: ["childWorkstreams", index, "assigneeAgentId"],
+        });
+      }
+    });
+  });
+export type MissionControlOrchestrationContract = z.infer<typeof missionControlOrchestrationContractSchema>;
+
 export const missionControlIssuePolicySchema = z
   .object({
     enabled: z.boolean().optional().default(false),
     riskClass: z.enum(MISSION_CONTROL_RISK_CLASSES).optional().default("medium"),
     requiredDocumentKeys: z
-      .array(z.string().trim().min(1).max(64).regex(/^[a-z0-9][a-z0-9_-]*$/))
+      .array(missionControlDocumentKeySchema)
       .optional()
       .default([...MISSION_CONTROL_DEFAULT_REQUIRED_DOCUMENT_KEYS]),
     acceptedValidatorVerdicts: z.array(z.enum(MISSION_CONTROL_VALIDATOR_VERDICTS)).optional().default(["PASS"]),
@@ -422,12 +497,16 @@ export type MissionControlCompletionGateResult = {
   missingDocumentKeys: string[];
   validatorVerdict: MissionControlValidatorVerdict | null;
   ceoLoopDecision: MissionControlCeoLoopDecision | null;
+  orchestrationContract: MissionControlOrchestrationContract | null;
   requiredApprovalGate: MissionControlApprovalGate;
   reason:
     | "mission_control_disabled"
     | "missing_documents"
+    | "invalid_orchestration_contract"
+    | "orchestration_workstreams_incomplete"
     | "validator_not_passed"
     | "validator_self_attested"
+    | "validator_identity_mismatch"
     | "missing_ceo_loop_decision"
     | "invalid_ceo_loop_decision"
     | "ceo_loop_iteration_mismatch"
@@ -535,6 +614,25 @@ function parseValidatorReportFromBody(
     blockingIssues: verdict === "PASS" ? [] : ["validator did not pass"],
     exactFixIfFailed: null,
   };
+}
+
+const INVALID_ORCHESTRATION_CONTRACT = "__invalid_orchestration_contract__" as const;
+
+function parseOrchestrationContractFromBody(
+  body: string | null | undefined,
+): MissionControlOrchestrationContract | typeof INVALID_ORCHESTRATION_CONTRACT | null {
+  if (!body?.trim()) return null;
+  const trimmed = body.trim();
+  for (const candidate of jsonDocumentCandidatesFromBody(trimmed)) {
+    try {
+      const parsedJson = JSON.parse(candidate) as unknown;
+      const parsedContract = missionControlOrchestrationContractSchema.safeParse(parsedJson);
+      if (parsedContract.success) return parsedContract.data;
+    } catch {
+      // Orchestration contracts must be structured JSON; fall through to invalid.
+    }
+  }
+  return INVALID_ORCHESTRATION_CONTRACT;
 }
 
 const INVALID_CEO_LOOP_DECISION = "__invalid_ceo_loop_decision__" as const;
@@ -827,6 +925,7 @@ export function evaluateMissionControlCompletionGate(input: {
       missingDocumentKeys: [],
       validatorVerdict: null,
       ceoLoopDecision: null,
+      orchestrationContract: null,
       requiredApprovalGate: "none",
       reason: "mission_control_disabled",
     };
@@ -844,6 +943,14 @@ export function evaluateMissionControlCompletionGate(input: {
   });
   const validatorVerdict = validatorReport?.verdict ?? null;
   const requiredApprovalGate = requiredGateForRisk(policy);
+  const orchestrationDocument = docsByKey.get(MISSION_CONTROL_ORCHESTRATION_CONTRACT_DOCUMENT_KEY);
+  const orchestrationContractResult = orchestrationDocument
+    ? parseOrchestrationContractFromBody(orchestrationDocument.body)
+    : null;
+  const orchestrationContract =
+    orchestrationContractResult && orchestrationContractResult !== INVALID_ORCHESTRATION_CONTRACT
+      ? orchestrationContractResult
+      : null;
 
   if (missingDocumentKeys.length > 0) {
     return {
@@ -853,9 +960,64 @@ export function evaluateMissionControlCompletionGate(input: {
       missingDocumentKeys,
       validatorVerdict,
       ceoLoopDecision: null,
+      orchestrationContract,
       requiredApprovalGate,
       reason: "missing_documents",
     };
+  }
+
+  if (orchestrationDocument && (!orchestrationContractResult || orchestrationContractResult === INVALID_ORCHESTRATION_CONTRACT)) {
+    return {
+      allowed: false,
+      enabled: true,
+      policy,
+      missingDocumentKeys: [],
+      validatorVerdict,
+      ceoLoopDecision: null,
+      orchestrationContract: null,
+      requiredApprovalGate,
+      reason: "invalid_orchestration_contract",
+    };
+  }
+
+  if (orchestrationContract) {
+    const requiredOrchestrationDocumentKeys = [
+      ...orchestrationContract.childWorkstreams.reduce<string[]>(
+        (keys, workstream) => [...keys, ...workstream.handoffDocumentKeys],
+        [],
+      ),
+      ...(orchestrationContract.finalSummaryDocumentKey ? [orchestrationContract.finalSummaryDocumentKey] : []),
+    ];
+    const missingOrchestrationDocumentKeys = requiredOrchestrationDocumentKeys.filter(
+      (key, index, keys) => keys.indexOf(key) === index && !docsByKey.has(key),
+    );
+    if (missingOrchestrationDocumentKeys.length > 0) {
+      return {
+        allowed: false,
+        enabled: true,
+        policy,
+        missingDocumentKeys: missingOrchestrationDocumentKeys,
+        validatorVerdict,
+        ceoLoopDecision: null,
+        orchestrationContract,
+        requiredApprovalGate,
+        reason: "missing_documents",
+      };
+    }
+
+    if (orchestrationContract.childWorkstreams.some((workstream) => workstream.status !== "done")) {
+      return {
+        allowed: false,
+        enabled: true,
+        policy,
+        missingDocumentKeys: [],
+        validatorVerdict,
+        ceoLoopDecision: null,
+        orchestrationContract,
+        requiredApprovalGate,
+        reason: "orchestration_workstreams_incomplete",
+      };
+    }
   }
 
   if (!validatorVerdict || !policy.acceptedValidatorVerdicts.includes(validatorVerdict)) {
@@ -866,9 +1028,44 @@ export function evaluateMissionControlCompletionGate(input: {
       missingDocumentKeys: [],
       validatorVerdict,
       ceoLoopDecision: null,
+      orchestrationContract,
       requiredApprovalGate,
       reason: "validator_not_passed",
     };
+  }
+
+  if (orchestrationContract && validatorReport?.writtenByAgentId) {
+    const validatorWriterAgentId = validatorReport.writtenByAgentId.trim();
+    const contractValidatorAgentId = orchestrationContract.validatorAgentId.trim();
+    const delegatedWorkerAgentIds = orchestrationContract.childWorkstreams
+      .map((workstream) => workstream.assigneeAgentId?.trim() || null)
+      .filter((agentId): agentId is string => Boolean(agentId));
+    if (delegatedWorkerAgentIds.includes(validatorWriterAgentId)) {
+      return {
+        allowed: false,
+        enabled: true,
+        policy,
+        missingDocumentKeys: [],
+        validatorVerdict,
+        ceoLoopDecision: null,
+        orchestrationContract,
+        requiredApprovalGate,
+        reason: "validator_self_attested",
+      };
+    }
+    if (validatorWriterAgentId !== contractValidatorAgentId) {
+      return {
+        allowed: false,
+        enabled: true,
+        policy,
+        missingDocumentKeys: [],
+        validatorVerdict,
+        ceoLoopDecision: null,
+        orchestrationContract,
+        requiredApprovalGate,
+        reason: "validator_identity_mismatch",
+      };
+    }
   }
 
   const assignedWorkerAgentId = input.issue.assigneeAgentId?.trim() || null;
@@ -880,6 +1077,7 @@ export function evaluateMissionControlCompletionGate(input: {
       missingDocumentKeys: [],
       validatorVerdict,
       ceoLoopDecision: null,
+      orchestrationContract,
       requiredApprovalGate,
       reason: "validator_self_attested",
     };
@@ -899,6 +1097,7 @@ export function evaluateMissionControlCompletionGate(input: {
       missingDocumentKeys: autonomousLoopGate.missingDocumentKeys,
       validatorVerdict,
       ceoLoopDecision: autonomousLoopGate.ceoLoopDecision,
+      orchestrationContract,
       requiredApprovalGate: autonomousLoopGate.requiredApprovalGate,
       reason:
         autonomousLoopGate.reason === "autonomous_loop_disabled"
@@ -914,6 +1113,7 @@ export function evaluateMissionControlCompletionGate(input: {
     missingDocumentKeys: [],
     validatorVerdict,
     ceoLoopDecision: autonomousLoopGate.ceoLoopDecision,
+    orchestrationContract,
     requiredApprovalGate,
     reason: "allowed",
   };
