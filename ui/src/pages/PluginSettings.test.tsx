@@ -260,6 +260,76 @@ describe("PluginSettings", () => {
     });
   });
 
+  it("ignores runtime config restart warnings from stale clear requests", async () => {
+    mockPluginsApi.get.mockImplementation(async (pluginId: string) => basePlugin({
+      id: pluginId,
+      packageName: `@paperclipai/${pluginId}`,
+      manifestJson: {
+        displayName: pluginId,
+        version: "0.1.0",
+        description: "Runtime config plugin.",
+        author: "Paperclip",
+        capabilities: [],
+      },
+    }));
+    mockPluginsApi.getRuntimeConfig.mockResolvedValue({
+      values: { mode: "paused" },
+      revision: "7",
+    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
+      isInstanceAdmin: true,
+      userId: "user-1",
+      boardUserId: "board-user-1",
+      source: "session",
+    });
+    let resolveClear: ((value: Awaited<ReturnType<typeof mockPluginsApi.clearRuntimeConfig>>) => void) | null = null;
+    mockPluginsApi.clearRuntimeConfig.mockImplementation(
+      () => new Promise((resolve) => {
+        resolveClear = resolve;
+      }),
+    );
+
+    const { root } = await renderSettings(container);
+
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Status")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Clear Runtime Config")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    mockRouteParams.pluginId = "plugin-2";
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <PluginSettings />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    await act(async () => {
+      resolveClear?.({
+        cleared: true,
+        restart: { attempted: true, status: "failed", message: "Worker restart failed after runtime config was cleared." },
+      });
+    });
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Runtime config cleared, but worker restart failed");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("routes environment-provider plugins to company environments when they have no instance config", async () => {
     const { root } = await renderSettings(container);
 

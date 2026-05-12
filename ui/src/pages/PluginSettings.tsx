@@ -129,8 +129,13 @@ export function PluginSettings() {
 
   const [runtimeConfigRestartWarning, setRuntimeConfigRestartWarning] = useState<string | null>(null);
   const clearRuntimeConfigMutation = useMutation({
-    mutationFn: () => pluginsApi.clearRuntimeConfig(pluginId!),
-    onSuccess: (result) => {
+    mutationFn: async () => {
+      const clearedPluginId = pluginId!;
+      const result = await pluginsApi.clearRuntimeConfig(clearedPluginId);
+      return { clearedPluginId, result };
+    },
+    onSuccess: ({ clearedPluginId, result }) => {
+      if (clearedPluginId !== pluginId) return;
       const restartWarning =
         result && typeof result === "object" && "restart" in result && result.restart.status === "failed"
           ? result.restart.message
