@@ -27,6 +27,15 @@ export type IssueUpdateResponse = Issue & {
   comment?: IssueComment | null;
 };
 
+export interface CeoChatHandle {
+  issueId: string;
+  companyId: string;
+  assigneeAgentId: string;
+  isCeoChat: true;
+  status: string;
+  title: string;
+}
+
 export const issuesApi = {
   list: (
     companyId: string,
@@ -79,6 +88,8 @@ export const issuesApi = {
     const qs = params.toString();
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
   },
+  getCeoChat: (companyId: string): Promise<CeoChatHandle> =>
+    api.get<CeoChatHandle>(`/companies/${companyId}/ceo-chat`),
   listLabels: (companyId: string) => api.get<IssueLabel[]>(`/companies/${companyId}/labels`),
   createLabel: (companyId: string, data: { name: string; color: string }) =>
     api.post<IssueLabel>(`/companies/${companyId}/labels`, data),
