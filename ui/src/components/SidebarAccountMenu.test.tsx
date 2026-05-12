@@ -131,6 +131,7 @@ describe("SidebarAccountMenu", () => {
     queryClient.setQueryData(["instance", "plugin-secrets"], [
       { id: "secret-1", name: "PLUGIN_TOKEN", createdByUserId: "plugin:gitea" },
     ]);
+    localStorage.setItem("paperclip.companyPaths", JSON.stringify({ "company-1": "/issues/PAP-1" }));
 
     await act(async () => {
       root.render(
@@ -162,6 +163,7 @@ describe("SidebarAccountMenu", () => {
     expect(queryClient.getQueryData(["access", "current-board-access"])).toBeUndefined();
     expect(queryClient.getQueryData(["instance", "plugin-secrets"])).toBeUndefined();
     expect(queryClient.getQueryData(["auth", "session"])).toBeNull();
+    expect(localStorage.getItem("paperclip.companyPaths")).toBeNull();
 
     await act(async () => {
       root.unmount();
