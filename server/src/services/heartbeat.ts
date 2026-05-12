@@ -4801,7 +4801,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           | "issue_execution_lock_changed"
           | "issue_review_participant_changed"
           | "issue_paused"
-          | "issue_dependencies_blocked";
+          | "issue_dependencies_blocked"
+          | "scheduled_retry_paused";
         issueId: string | null;
         details: Record<string, unknown>;
       };
@@ -4819,6 +4820,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       input.retryReason ?? readNonEmptyString(contextSnapshot.retryReason) ?? run.scheduledRetryReason ?? null;
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     const projectId = readNonEmptyString(contextSnapshot.projectId);
+    const enqueueCheck = await canEnqueueForAgent(agent.id);
+    if (!enqueueCheck.allowed) {
+      return {
+        allowed: false,
+        reason: "Scheduled retry deferred because enqueue is paused",
+        errorCode: "scheduled_retry_paused",
+        issueId,
+        details: {
+          agentId: agent.id,
+          pauseReason: enqueueCheck.reason ?? "unknown",
+        },
+      };
+    }
 
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
       issueId,
@@ -5096,6 +5110,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       enforceIssueExecutionLock: dueRun.scheduledRetryReason === MAX_TURN_CONTINUATION_RETRY_REASON,
     });
     if (!gate.allowed) {
+      if (gate.errorCode === "scheduled_retry_paused") {
+        return { outcome: "not_promoted", run: dueRun };
+      }
       if (
         gate.errorCode === "issue_not_found" &&
         dueRun.scheduledRetryReason !== MAX_TURN_CONTINUATION_RETRY_REASON
