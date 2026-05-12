@@ -53,6 +53,33 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     });
   });
 
+  it("refreshes linked issue approval queries for legacy approval activity details", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "approval",
+        entityId: "approval-1",
+        action: "approval.approved",
+        details: { linkedIssueIds: ["issue-legacy"] },
+      },
+      { userId: null, agentId: null },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.approvals("issue-legacy"),
+    });
+  });
+
+
   it("refreshes touched inbox queries and only the changed issue data for issue updates", () => {
     const invalidations: unknown[] = [];
     const queryClient = {

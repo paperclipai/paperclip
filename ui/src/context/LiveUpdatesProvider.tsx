@@ -722,9 +722,14 @@ function invalidateActivityQueries(
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.issues(entityId) });
     }
     const details = payload.details;
-    const issueIds = details && typeof details === "object" && Array.isArray((details as { issueIds?: unknown }).issueIds)
-      ? (details as { issueIds: unknown[] }).issueIds.filter((issueId): issueId is string => typeof issueId === "string")
+    const rawIssueIds = details && typeof details === "object"
+      ? Array.isArray((details as { issueIds?: unknown }).issueIds)
+        ? (details as { issueIds: unknown[] }).issueIds
+        : Array.isArray((details as { linkedIssueIds?: unknown }).linkedIssueIds)
+          ? (details as { linkedIssueIds: unknown[] }).linkedIssueIds
+          : []
       : [];
+    const issueIds = rawIssueIds.filter((issueId): issueId is string => typeof issueId === "string");
     for (const issueId of issueIds) {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.approvals(issueId) });

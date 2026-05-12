@@ -40,6 +40,11 @@ export function approvalRoutes(
   const secretsSvc = secretService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
+  async function listLinkedIssueIds(approvalId: string) {
+    const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approvalId);
+    return linkedIssues.map((issue) => issue.id);
+  }
+
   async function requireApprovalAccess(req: Request, id: string) {
     const approval = await svc.getById(id);
     if (!approval) {
@@ -145,8 +150,7 @@ export function approvalRoutes(
     const { approval, applied } = await svc.approve(id, decidedByUserId, req.body.decisionNote);
 
     if (applied) {
-      const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
-      const linkedIssueIds = linkedIssues.map((issue) => issue.id);
+      const linkedIssueIds = await listLinkedIssueIds(approval.id);
       const primaryIssueId = linkedIssueIds[0] ?? null;
 
       await logActivity(db, {
@@ -159,6 +163,7 @@ export function approvalRoutes(
         details: {
           type: approval.type,
           requestedByAgentId: approval.requestedByAgentId,
+          issueIds: linkedIssueIds,
           linkedIssueIds,
         },
       });
@@ -254,6 +259,7 @@ export function approvalRoutes(
     const { approval, applied } = await svc.reject(id, decidedByUserId, req.body.decisionNote);
 
     if (applied) {
+      const linkedIssueIds = await listLinkedIssueIds(approval.id);
       if (approval.sourcePluginId && options.pluginWorkerManager) {
         const worker = options.pluginWorkerManager.getWorker(approval.sourcePluginId);
         if (worker) {
@@ -274,7 +280,7 @@ export function approvalRoutes(
         action: "approval.rejected",
         entityType: "approval",
         entityId: approval.id,
-        details: { type: approval.type },
+        details: { type: approval.type, issueIds: linkedIssueIds, linkedIssueIds },
       });
     }
 
@@ -293,6 +299,7 @@ export function approvalRoutes(
       }
       const decidedByUserId = req.actor.userId ?? "board";
       const approval = await svc.requestRevision(id, decidedByUserId, req.body.decisionNote);
+      const linkedIssueIds = await listLinkedIssueIds(approval.id);
 
       await logActivity(db, {
         companyId: approval.companyId,
@@ -301,7 +308,7 @@ export function approvalRoutes(
         action: "approval.revision_requested",
         entityType: "approval",
         entityId: approval.id,
-        details: { type: approval.type },
+        details: { type: approval.type, issueIds: linkedIssueIds, linkedIssueIds },
       });
 
       res.json(redactApprovalPayload(approval));
@@ -332,6 +339,7 @@ export function approvalRoutes(
         : req.body.payload
       : undefined;
     const approval = await svc.resubmit(id, normalizedPayload);
+    const linkedIssueIds = await listLinkedIssueIds(approval.id);
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: approval.companyId,
@@ -341,7 +349,7 @@ export function approvalRoutes(
       action: "approval.resubmitted",
       entityType: "approval",
       entityId: approval.id,
-      details: { type: approval.type },
+      details: { type: approval.type, issueIds: linkedIssueIds, linkedIssueIds },
     });
     res.json(redactApprovalPayload(approval));
   });
