@@ -1,0 +1,68 @@
+name: Build and push paperclip-prod overlay image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docker/Dockerfile.overlay
+  workflow_dispatch:
+    inputs:
+      upstream_image:
+        description: 'Upstream image tag (e.g. ghcr.io/paperclipai/paperclip:1.2.3)'
+        required: false
+        default: 'ghcr.io/paperclipai/paperclip:931ad06'
+      playwright_version:
+        description: 'Playwright version (must match upstream)'
+        required: false
+        default: '1.58.2'
+
+env:
+  REGISTRY: registry.oxfordcigarcompany.com
+  IMAGE_NAME: paperclip-prod
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: tag
+        run: |
+          UPSTREAM="${{ inputs.upstream_image || 'ghcr.io/paperclipai/paperclip:931ad06' }}"
+          SHA=$(echo "$UPSTREAM" | cut -d: -f2)
+          echo "tag=${SHA}-pwfix" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Oxford registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.OXFORD_REGISTRY_USERNAME }}
+          password: ${{ secrets.OXFORD_REGISTRY_PASSWORD }}
+
+      - name: Build and push overlay image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.overlay
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }}
+          build-args: |
+            UPSTREAM_IMAGE=${{ inputs.upstream_image || 'ghcr.io/paperclipai/paperclip:931ad06' }}
+            PLAYWRIGHT_VERSION=${{ inputs.playwright_version || '1.58.2' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test overlay image
+        run: |
+          docker run --rm \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }}" \
+            node -e "
+              const { chromium } = require('/app/node_modules/.pnpm/playwright@1.58.2/node_modules/playwright');
+              chromium.launch({args:['--no-sandbox']}).then(b=>b.close()).then(()=>{ console.log('OK'); process.exit(0); }).catch(e=>{ console.error(e); process.exit(1); });
+            "
