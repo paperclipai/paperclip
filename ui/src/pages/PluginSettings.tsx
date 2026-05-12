@@ -157,6 +157,7 @@ export function PluginSettings() {
 
   useEffect(() => {
     setActiveTab("configuration");
+    setRuntimeConfigRestartWarning(null);
   }, [pluginId]);
 
   if (pluginLoading) {

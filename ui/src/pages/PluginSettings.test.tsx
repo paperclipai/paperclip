@@ -23,6 +23,10 @@ const mockAccessApi = vi.hoisted(() => ({
 }));
 
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
+const mockRouteParams = vi.hoisted(() => ({
+  companyPrefix: "PAP",
+  pluginId: "plugin-1",
+}));
 
 vi.mock("@/api/plugins", () => ({
   pluginsApi: mockPluginsApi,
@@ -48,7 +52,7 @@ vi.mock("@/context/CompanyContext", () => ({
 vi.mock("@/lib/router", () => ({
   Link: ({ to, children }: { to: string; children: React.ReactNode }) => <a href={to}>{children}</a>,
   Navigate: () => null,
-  useParams: () => ({ companyPrefix: "PAP", pluginId: "plugin-1" }),
+  useParams: () => mockRouteParams,
 }));
 
 vi.mock("@/plugins/slots", () => ({
@@ -164,6 +168,8 @@ describe("PluginSettings", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    mockRouteParams.companyPrefix = "PAP";
+    mockRouteParams.pluginId = "plugin-1";
     container = document.createElement("div");
     document.body.appendChild(container);
 
@@ -191,6 +197,67 @@ describe("PluginSettings", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it("clears runtime config restart warnings when navigating between plugin ids", async () => {
+    mockPluginsApi.get.mockImplementation(async (pluginId: string) => basePlugin({
+      id: pluginId,
+      packageName: `@paperclipai/${pluginId}`,
+      manifestJson: {
+        displayName: pluginId,
+        version: "0.1.0",
+        description: "Runtime config plugin.",
+        author: "Paperclip",
+        capabilities: [],
+      },
+    }));
+    mockPluginsApi.getRuntimeConfig.mockResolvedValue({
+      values: { mode: "paused" },
+      revision: "7",
+    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
+      isInstanceAdmin: true,
+      userId: "user-1",
+      boardUserId: "board-user-1",
+      source: "session",
+    });
+    mockPluginsApi.clearRuntimeConfig.mockResolvedValue({
+      cleared: true,
+      restart: { attempted: true, status: "failed", message: "Worker restart failed after runtime config was cleared." },
+    });
+
+    const { root } = await renderSettings(container);
+
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Status")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Clear Runtime Config")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    expect(container.textContent).toContain("Runtime config cleared, but worker restart failed");
+
+    mockRouteParams.pluginId = "plugin-2";
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <PluginSettings />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Runtime config cleared, but worker restart failed");
+
+    await act(async () => {
+      root.unmount();
+    });
   });
 
   it("routes environment-provider plugins to company environments when they have no instance config", async () => {
