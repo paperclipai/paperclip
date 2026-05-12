@@ -4,7 +4,8 @@ import multer from "multer";
 import { z } from "zod";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, executionWorkspaces, issueExecutionDecisions, projectWorkspaces } from "@paperclipai/db";
+import { activityLog, agents as agentsTable, executionWorkspaces, issueExecutionDecisions, projectWorkspaces } from "@paperclipai/db";
+import { ensureCeoChatIssue } from "../services/ceo-chat.js";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
@@ -181,6 +182,24 @@ const SUCCESSFUL_RUN_HANDOFF_ACTIONS = [
   "issue.successful_run_handoff_resolved",
   "issue.successful_run_handoff_escalated",
 ] as const;
+
+const CHECKPOINT_KEYWORD_RE = /\bcheckpoint\b/i;
+const CHECKPOINT_EVIDENCE_MARKER_RE = /\bcheckpoint_evidence\s*:\s*([^\s]+)/i;
+
+function issueRequiresCheckpointEvidenceOnDone(issue: { title?: string | null; description?: string | null }) {
+  return CHECKPOINT_KEYWORD_RE.test(issue.title ?? "") || CHECKPOINT_KEYWORD_RE.test(issue.description ?? "");
+}
+
+function parseCheckpointEvidenceTimestamp(commentBody: string | null | undefined): Date | null {
+  if (!commentBody) return null;
+  const match = commentBody.match(CHECKPOINT_EVIDENCE_MARKER_RE);
+  if (!match) return null;
+  const raw = match[1]?.trim();
+  if (!raw) return null;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
 
 const ISSUE_WORKSPACE_AUDIT_FIELDS = new Set([
   "projectWorkspaceId",
@@ -1452,9 +1471,17 @@ export function issueRoutes(
       companyId,
       result.map((issue) => issue.id),
     );
+    const includeBlockerAttention =
+      req.query.includeBlockerAttention === "true" || req.query.includeBlockerAttention === "1";
+    const blockerAttentionMap = includeBlockerAttention
+      ? await svc.listBlockerAttention(companyId, result)
+      : null;
     res.json(result.map((issue) => ({
       ...issue,
       successfulRunHandoff: handoffStates.get(issue.id) ?? null,
+      ...(blockerAttentionMap
+        ? { blockerAttention: blockerAttentionMap.get(issue.id) ?? null }
+        : {}),
     })));
   });
 
@@ -1510,6 +1537,30 @@ export function issueRoutes(
       details: { name: removed.name, color: removed.color },
     });
     res.json(removed);
+  });
+
+  router.get("/companies/:companyId/ceo-chat", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCompanyAccess(req, companyId);
+
+    const ceo = await db
+      .select({ id: agentsTable.id })
+      .from(agentsTable)
+      .where(and(eq(agentsTable.companyId, companyId), eq(agentsTable.role, "ceo")))
+      .then((rows) => rows[0] ?? null);
+    if (!ceo) {
+      throw notFound("Company has no CEO agent");
+    }
+
+    const chat = await ensureCeoChatIssue(db, companyId, ceo.id);
+    res.json({
+      issueId: chat.id,
+      companyId: chat.companyId,
+      assigneeAgentId: chat.assigneeAgentId,
+      isCeoChat: chat.isCeoChat,
+      status: chat.status,
+      title: chat.title,
+    });
   });
 
   router.get("/issues/:id/heartbeat-context", async (req, res) => {
@@ -2557,6 +2608,21 @@ export function issueRoutes(
     } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
+    if (updateFields.status === "done" && existing.status !== "done" && issueRequiresCheckpointEvidenceOnDone(existing)) {
+      const evidenceAt = parseCheckpointEvidenceTimestamp(commentBody);
+      if (!evidenceAt) {
+        res.status(422).json({
+          error: "Checkpoint issues require a done comment with `checkpoint_evidence: <ISO-8601 timestamp>`",
+        });
+        return;
+      }
+      if (evidenceAt.getTime() > Date.now()) {
+        res.status(422).json({
+          error: "Checkpoint evidence timestamp cannot be in the future",
+        });
+        return;
+      }
+    }
     if (resumeRequested === true && !commentBody) {
       res.status(400).json({ error: "Follow-up intent requires a comment" });
       return;
