@@ -89,7 +89,9 @@ export function routineRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
-    const result = await svc.list(companyId, { projectId });
+    const assigneeAgentId =
+      typeof req.query.assigneeAgentId === "string" ? req.query.assigneeAgentId : undefined;
+    const result = await svc.list(companyId, { projectId, assigneeAgentId });
     res.json(result);
   });
 
