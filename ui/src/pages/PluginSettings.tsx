@@ -129,8 +129,7 @@ export function PluginSettings() {
 
   const [runtimeConfigRestartWarning, setRuntimeConfigRestartWarning] = useState<string | null>(null);
   const clearRuntimeConfigMutation = useMutation({
-    mutationFn: async () => {
-      const clearedPluginId = pluginId!;
+    mutationFn: async (clearedPluginId: string) => {
       const result = await pluginsApi.clearRuntimeConfig(clearedPluginId);
       return { clearedPluginId, result };
     },
@@ -147,6 +146,13 @@ export function PluginSettings() {
 
   // Filter slots to only show settings pages for this specific plugin
   const pluginSlots = slots.filter((slot) => slot.pluginId === pluginId);
+  const clearRuntimeConfigPluginId = clearRuntimeConfigMutation.variables;
+  const clearRuntimeConfigMatchesPlugin = clearRuntimeConfigPluginId === pluginId;
+  const clearRuntimeConfigPending = clearRuntimeConfigMutation.isPending && clearRuntimeConfigMatchesPlugin;
+  const clearRuntimeConfigError =
+    clearRuntimeConfigMutation.isError && clearRuntimeConfigMatchesPlugin
+      ? clearRuntimeConfigMutation.error
+      : null;
 
   // If the plugin has a custom settingsPage slot, prefer that over auto-generated form
   const hasCustomSettingsPage = pluginSlots.length > 0;
@@ -630,18 +636,18 @@ export function PluginSettings() {
 	                      <Button
 	                        variant="destructive"
 	                        size="sm"
-	                        disabled={clearRuntimeConfigMutation.isPending}
-	                        onClick={() => clearRuntimeConfigMutation.mutate()}
+	                        disabled={clearRuntimeConfigPending}
+	                        onClick={() => clearRuntimeConfigMutation.mutate(pluginId!)}
 	                      >
-	                        {clearRuntimeConfigMutation.isPending ? (
+	                        {clearRuntimeConfigPending ? (
 	                          <><Loader2 className="mr-2 h-3 w-3 animate-spin" />Clearing...</>
 	                        ) : (
 	                          "Clear Runtime Config"
 	                        )}
 	                      </Button>
-	                      {clearRuntimeConfigMutation.isError && (
+	                      {clearRuntimeConfigError && (
 	                        <p className="text-sm text-destructive">
-	                          Failed to clear runtime config: {clearRuntimeConfigMutation.error instanceof Error ? clearRuntimeConfigMutation.error.message : "Unknown error"}
+	                          Failed to clear runtime config: {clearRuntimeConfigError instanceof Error ? clearRuntimeConfigError.message : "Unknown error"}
 	                        </p>
 	                      )}
                     </>
