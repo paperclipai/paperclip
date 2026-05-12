@@ -436,6 +436,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             contents,
           });
         },
+
+        async deleteFile(companyId: string, folderKey: string, relativePath: string) {
+          return callHost("localFolders.deleteFile", { companyId, folderKey, relativePath });
+        },
       },
 
       events: {
@@ -677,6 +681,20 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
+      skills: {
+        managed: {
+          async get(skillKey: string, companyId: string) {
+            return callHost("skills.managed.get", { skillKey, companyId });
+          },
+          async reconcile(skillKey: string, companyId: string) {
+            return callHost("skills.managed.reconcile", { skillKey, companyId });
+          },
+          async reset(skillKey: string, companyId: string) {
+            return callHost("skills.managed.reset", { skillKey, companyId });
+          },
+        },
+      },
+
       companies: {
         async list(input) {
           return callHost("companies.list", {
@@ -725,6 +743,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             assigneeUserId: input.assigneeUserId,
             requestDepth: input.requestDepth,
             billingCode: input.billingCode,
+            assigneeAdapterOverrides: input.assigneeAdapterOverrides,
             surfaceVisibility: input.surfaceVisibility,
             originKind: input.originKind,
             originId: input.originId,
