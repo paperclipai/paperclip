@@ -476,6 +476,7 @@ function createSandboxEnvironmentDriver(
                 config: workerConfig,
                 providerLeaseId: reusableLease.providerLeaseId,
                 leaseMetadata: reusableLease.metadata ?? undefined,
+                ...(input.agentId ? { agentId: input.agentId } : {}),
               },
               resolvePluginSandboxRpcTimeoutMs(workerConfig),
             ).then((resumed) =>

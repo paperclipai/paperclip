@@ -393,6 +393,14 @@ export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDr
 export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDriverBaseParams {
   providerLeaseId: string;
   leaseMetadata?: Record<string, unknown>;
+  /**
+   * UUID of the agent the run is being resumed for. Symmetric with
+   * `PluginEnvironmentAcquireLeaseParams.agentId`. Plugins can compare this
+   * to the agentId they stored in `leaseMetadata` at acquire time; if it
+   * doesn't match, return `{ providerLeaseId: null, metadata: { expired: true } }`
+   * to force the host to create a fresh lease for the current agent.
+   */
+  agentId?: string;
 }
 
 export interface PluginEnvironmentReleaseLeaseParams extends PluginEnvironmentDriverBaseParams {
