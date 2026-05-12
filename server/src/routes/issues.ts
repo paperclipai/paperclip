@@ -731,7 +731,18 @@ export function issueRoutes(
     }
     if (issue.assigneeAgentId === actorAgentId) return true;
     if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
-    return true;
+      return true;
+    }
+
+    res.status(403).json({
+      error: "Agent cannot request follow-up for another agent's issue",
+      details: {
+        issueId: issue.id,
+        assigneeAgentId: issue.assigneeAgentId,
+        actorAgentId,
+      },
+    });
+    return false;
   }
 
   async function assertCanForceReleaseIssue(
@@ -759,17 +770,6 @@ export function issueRoutes(
       return true;
     }
     res.status(403).json({ error: "Manager or admin checkout override required" });
-    return false;
-  }
-
-    res.status(403).json({
-      error: "Agent cannot request follow-up for another agent's issue",
-      details: {
-        issueId: issue.id,
-        assigneeAgentId: issue.assigneeAgentId,
-        actorAgentId,
-      },
-    });
     return false;
   }
 
