@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
@@ -1031,7 +1032,25 @@ async function pathExists(candidate: string) {
   }
 }
 
-async function resolveCommandPath(command: string, cwd: string, env: NodeJS.ProcessEnv): Promise<string | null> {
+export function defaultCommandFallbackDirs(): string[] {
+  if (process.platform === "win32") return [];
+  const home = os.homedir();
+  return [
+    path.join(home, ".local", "bin"),
+    path.join(home, ".npm-global", "bin"),
+    path.join(home, ".opencode", "bin"),
+    path.join(home, ".codex", "bin"),
+    "/usr/local/bin",
+    "/opt/homebrew/bin",
+  ];
+}
+
+export async function resolveCommandPath(
+  command: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  options: { fallbackDirs?: string[] } = {},
+): Promise<string | null> {
   const hasPathSeparator = command.includes("/") || command.includes("\\");
   if (hasPathSeparator) {
     const absolute = path.isAbsolute(command) ? command : path.resolve(cwd, command);
@@ -1040,7 +1059,19 @@ async function resolveCommandPath(command: string, cwd: string, env: NodeJS.Proc
 
   const pathValue = env.PATH ?? env.Path ?? "";
   const delimiter = process.platform === "win32" ? ";" : ":";
-  const dirs = pathValue.split(delimiter).filter(Boolean);
+  const pathDirs = pathValue.split(delimiter).filter(Boolean);
+  // Fallback dirs are appended after PATH so an operator's PATH choice wins,
+  // but a sparse supervisor PATH (systemd unit without EnvironmentFile, etc.)
+  // can still resolve well-known CLI install locations. See SIMAA-2177 and
+  // docs/deploy/paperclip-systemd.md.
+  const fallbackDirs = options.fallbackDirs ?? defaultCommandFallbackDirs();
+  const seen = new Set<string>();
+  const dirs: string[] = [];
+  for (const dir of [...pathDirs, ...fallbackDirs]) {
+    if (seen.has(dir)) continue;
+    seen.add(dir);
+    dirs.push(dir);
+  }
   const exts = process.platform === "win32" ? windowsPathExts(env) : [""];
   const hasExtension = process.platform === "win32" && path.extname(command).length > 0;
 

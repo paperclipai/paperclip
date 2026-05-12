@@ -8,8 +8,10 @@ import {
   appendWithByteCap,
   buildInvocationEnvForLogs,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  defaultCommandFallbackDirs,
   materializePaperclipSkillCopy,
   renderPaperclipWakePrompt,
+  resolveCommandPath,
   runningProcesses,
   runChildProcess,
   sanitizeSshRemoteEnv,
@@ -817,5 +819,78 @@ describe("appendWithByteCap", () => {
     expect(output).not.toContain("\uFFFD");
     expect(Buffer.from(output, "utf8").toString("utf8")).toBe(output);
     expect(Buffer.byteLength(output, "utf8")).toBeLessThanOrEqual(7);
+  });
+});
+
+describe.skipIf(process.platform === "win32")("resolveCommandPath", () => {
+  async function createExecutableShim(dir: string, name: string) {
+    await fs.mkdir(dir, { recursive: true });
+    const target = path.join(dir, name);
+    await fs.writeFile(target, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    return target;
+  }
+
+  it("resolves a binary that lives on PATH and ignores fallback dirs", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "resolve-path-on-path-"));
+    try {
+      const onPathDir = path.join(tmp, "on-path");
+      const fallbackDir = path.join(tmp, "fallback");
+      const name = `shim-${randomUUID().slice(0, 8)}`;
+      const onPathTarget = await createExecutableShim(onPathDir, name);
+      const fallbackTarget = await createExecutableShim(fallbackDir, name);
+
+      const resolved = await resolveCommandPath(name, tmp, { PATH: onPathDir }, { fallbackDirs: [fallbackDir] });
+
+      expect(resolved).toBe(onPathTarget);
+      expect(resolved).not.toBe(fallbackTarget);
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves a binary from fallback dirs when PATH does not contain it (SIMAA-2177)", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "resolve-path-fallback-"));
+    try {
+      const sparsePathDir = path.join(tmp, "sparse-path");
+      await fs.mkdir(sparsePathDir, { recursive: true });
+      const fallbackDir = path.join(tmp, "fallback");
+      const name = `shim-${randomUUID().slice(0, 8)}`;
+      const fallbackTarget = await createExecutableShim(fallbackDir, name);
+
+      const resolved = await resolveCommandPath(name, tmp, { PATH: sparsePathDir }, { fallbackDirs: [fallbackDir] });
+
+      expect(resolved).toBe(fallbackTarget);
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("returns null when neither PATH nor fallback dirs contain the binary", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "resolve-path-miss-"));
+    try {
+      const emptyDir = path.join(tmp, "empty");
+      await fs.mkdir(emptyDir, { recursive: true });
+
+      const resolved = await resolveCommandPath(
+        `missing-${randomUUID().slice(0, 8)}`,
+        tmp,
+        { PATH: emptyDir },
+        { fallbackDirs: [emptyDir] },
+      );
+
+      expect(resolved).toBeNull();
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("defaultCommandFallbackDirs covers the install locations SIMAA-2177 targets", () => {
+    const dirs = defaultCommandFallbackDirs();
+    const home = os.homedir();
+
+    expect(dirs).toContain(path.join(home, ".local", "bin"));
+    expect(dirs).toContain("/usr/local/bin");
+    expect(dirs).toContain(path.join(home, ".opencode", "bin"));
+    expect(dirs).toContain(path.join(home, ".codex", "bin"));
   });
 });
