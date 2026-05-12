@@ -5,6 +5,7 @@ export type {
   AskUserQuestionsQuestion,
   AskUserQuestionsQuestionOption,
   AskUserQuestionsResult,
+  FinalDeliveryInteraction,
   IssueThreadInteraction,
   IssueThreadInteractionActorFields,
   IssueThreadInteractionBase,
@@ -49,6 +50,7 @@ export function isIssueThreadInteraction(
       candidate.kind === "suggest_tasks"
       || candidate.kind === "ask_user_questions"
       || candidate.kind === "request_confirmation"
+      || candidate.kind === "final_delivery"
     );
 }
 
@@ -83,14 +85,21 @@ export function buildIssueThreadInteractionSummary(
     return "Requested confirmation";
   }
 
-  const count = interaction.payload.questions.length;
-  if (interaction.status === "answered") {
-    return count === 1 ? "Answered 1 question" : `Answered ${count} questions`;
+  if (interaction.kind === "ask_user_questions") {
+    const count = interaction.payload.questions.length;
+    if (interaction.status === "answered") {
+      return count === 1 ? "Answered 1 question" : `Answered ${count} questions`;
+    }
+    if (interaction.status === "cancelled") {
+      return count === 1 ? "Cancelled 1 question" : `Cancelled ${count} questions`;
+    }
+    return count === 1 ? "Asked 1 question" : `Asked ${count} questions`;
   }
-  if (interaction.status === "cancelled") {
-    return count === 1 ? "Cancelled 1 question" : `Cancelled ${count} questions`;
-  }
-  return count === 1 ? "Asked 1 question" : `Asked ${count} questions`;
+
+  const platform = interaction.payload.destination.platform === "telegram" ? "Telegram" : "Slack";
+  if (interaction.result?.outcome === "delivered") return `Delivered final result to ${platform}`;
+  if (interaction.status === "failed" || interaction.result?.outcome === "failed") return `Failed final delivery to ${platform}`;
+  return `Queued final result to ${platform}`;
 }
 
 export function buildSuggestedTaskTree(

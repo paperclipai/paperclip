@@ -15,6 +15,7 @@ import type {
   AskUserQuestionsInteraction,
   CancelIssueThreadInteraction,
   CreateIssueThreadInteraction,
+  FinalDeliveryInteraction,
   IssueThreadInteraction,
   RequestConfirmationInteraction,
   RequestConfirmationTarget,
@@ -29,6 +30,8 @@ import {
   askUserQuestionsResultSchema,
   cancelIssueThreadInteractionSchema,
   createIssueThreadInteractionSchema,
+  issueFinalDeliveryPayloadSchema,
+  issueFinalDeliveryResultSchema,
   rejectIssueThreadInteractionSchema,
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
@@ -128,6 +131,13 @@ function hydrateInteraction(
         payload: requestConfirmationPayloadSchema.parse(row.payload),
         result: row.result ? requestConfirmationResultSchema.parse(row.result) : null,
       } satisfies RequestConfirmationInteraction;
+    case "final_delivery":
+      return {
+        ...base,
+        kind: "final_delivery",
+        payload: issueFinalDeliveryPayloadSchema.parse(row.payload),
+        result: row.result ? issueFinalDeliveryResultSchema.parse(row.result) : null,
+      } satisfies FinalDeliveryInteraction;
     default:
       throw unprocessable(`Unknown interaction kind: ${row.kind}`);
   }
@@ -620,6 +630,18 @@ export function issueThreadInteractionService(db: Db) {
         .where(eq(issueThreadInteractions.id, interactionId))
         .then((rows) => rows[0] ?? null);
 
+      return row ? hydrateInteraction(row) : null;
+    },
+
+    findByIdempotencyKey: async (
+      issue: { id: string; companyId: string },
+      idempotencyKey: string,
+    ) => {
+      const row = await getIdempotentInteraction({
+        issueId: issue.id,
+        companyId: issue.companyId,
+        idempotencyKey,
+      });
       return row ? hydrateInteraction(row) : null;
     },
 

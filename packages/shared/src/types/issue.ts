@@ -266,12 +266,36 @@ export interface IssueExecutionMonitorPolicy {
   recoveryPolicy?: IssueExecutionMonitorRecoveryPolicy | null;
 }
 
+export interface IssueFinalDeliveryTelegramDestination {
+  platform: "telegram";
+  chatId: string;
+  threadId?: string | null;
+  messageId?: string | null;
+}
+
+export interface IssueFinalDeliverySlackDestination {
+  platform: "slack";
+  channelId: string;
+  threadTs?: string | null;
+  messageTs?: string | null;
+}
+
+export type IssueFinalDeliveryDestination =
+  | IssueFinalDeliveryTelegramDestination
+  | IssueFinalDeliverySlackDestination;
+
+export interface IssueFinalDeliveryPolicy {
+  enabled: boolean;
+  destination: IssueFinalDeliveryDestination;
+}
+
 export interface IssueExecutionPolicy {
   mode: IssueExecutionPolicyMode;
   commentRequired: boolean;
   stages: IssueExecutionStage[];
   monitor?: IssueExecutionMonitorPolicy | null;
   missionControl?: MissionControlIssuePolicy | null;
+  finalDelivery?: IssueFinalDeliveryPolicy | null;
 }
 
 export interface IssueExecutionMonitorState {
@@ -603,6 +627,39 @@ export interface RequestConfirmationResult {
   staleTarget?: RequestConfirmationTarget | null;
 }
 
+export interface IssueFinalDeliveryArtifact {
+  id?: string | null;
+  type: string;
+  title: string;
+  url?: string | null;
+  summary?: string | null;
+  isPrimary: boolean;
+}
+
+export interface IssueFinalDeliveryPayload {
+  version: 1;
+  destination: IssueFinalDeliveryDestination;
+  issue: {
+    id: string;
+    identifier?: string | null;
+    title: string;
+  };
+  message: {
+    format: "markdown";
+    body: string;
+  };
+  artifacts: IssueFinalDeliveryArtifact[];
+  queuedAt?: string;
+}
+
+export interface IssueFinalDeliveryResult {
+  version: 1;
+  outcome: "delivered" | "failed" | "skipped";
+  deliveredAt?: string | null;
+  externalMessageId?: string | null;
+  error?: string | null;
+}
+
 export interface IssueThreadInteractionBase extends IssueThreadInteractionActorFields {
   id: string;
   companyId: string;
@@ -638,20 +695,29 @@ export interface RequestConfirmationInteraction extends IssueThreadInteractionBa
   result?: RequestConfirmationResult | null;
 }
 
+export interface FinalDeliveryInteraction extends IssueThreadInteractionBase {
+  kind: "final_delivery";
+  payload: IssueFinalDeliveryPayload;
+  result?: IssueFinalDeliveryResult | null;
+}
+
 export type IssueThreadInteraction =
   | SuggestTasksInteraction
   | AskUserQuestionsInteraction
-  | RequestConfirmationInteraction;
+  | RequestConfirmationInteraction
+  | FinalDeliveryInteraction;
 
 export type IssueThreadInteractionPayload =
   | SuggestTasksPayload
   | AskUserQuestionsPayload
-  | RequestConfirmationPayload;
+  | RequestConfirmationPayload
+  | IssueFinalDeliveryPayload;
 
 export type IssueThreadInteractionResult =
   | SuggestTasksResult
   | AskUserQuestionsResult
-  | RequestConfirmationResult;
+  | RequestConfirmationResult
+  | IssueFinalDeliveryResult;
 
 export interface IssueAttachment {
   id: string;

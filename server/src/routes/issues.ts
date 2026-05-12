@@ -58,6 +58,7 @@ import {
   ISSUE_LIST_MAX_LIMIT,
   issueReferenceService,
   issueService,
+  issueFinalDeliveryService,
   clampIssueListLimit,
   documentService,
   logActivity,
@@ -783,6 +784,7 @@ export function issueRoutes(
 ) {
   const router = Router();
   const svc = issueService(db);
+  const finalDeliverySvc = issueFinalDeliveryService(db);
   const access = accessService(db);
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
@@ -3205,6 +3207,39 @@ export function issueRoutes(
             model,
           });
         }
+      }
+
+      try {
+        const finalDelivery = await finalDeliverySvc.queueForCompletedIssue(issue, {
+          actor: {
+            agentId: actor.agentId ?? null,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          },
+          finalMessageMarkdown: commentBody ?? null,
+          sourceRunId: actor.runId ?? null,
+        });
+        if (finalDelivery.status === "queued" || finalDelivery.status === "already_queued") {
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: finalDelivery.status === "queued"
+              ? "issue.final_delivery_queued"
+              : "issue.final_delivery_already_queued",
+            entityType: "issue_thread_interaction",
+            entityId: finalDelivery.interaction.id,
+            details: {
+              issueId: issue.id,
+              identifier: issue.identifier,
+              idempotencyKey: finalDelivery.interaction.idempotencyKey,
+              status: finalDelivery.interaction.status,
+            },
+          });
+        }
+      } catch (err) {
+        logger.warn({ err, issueId: issue.id }, "failed to queue issue final delivery");
       }
     }
 

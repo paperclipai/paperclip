@@ -10,6 +10,7 @@ import {
   getQuestionAnswerLabels,
   type AskUserQuestionsAnswer,
   type AskUserQuestionsInteraction,
+  type FinalDeliveryInteraction,
   type IssueThreadInteraction,
   type RequestConfirmationInteraction,
   type RequestConfirmationTarget,
@@ -94,6 +95,8 @@ function interactionKindLabel(kind: IssueThreadInteraction["kind"]) {
       return "Ask user questions";
     case "request_confirmation":
       return "Confirmation";
+    case "final_delivery":
+      return "Final delivery";
     default:
       return kind;
   }
@@ -1022,6 +1025,52 @@ function RequestConfirmationResolution({
   return null;
 }
 
+function finalDeliveryDestinationLabel(destination: FinalDeliveryInteraction["payload"]["destination"]) {
+  if (destination.platform === "telegram") {
+    return destination.threadId
+      ? `Telegram thread ${destination.threadId}`
+      : `Telegram chat ${destination.chatId}`;
+  }
+  return destination.threadTs
+    ? `Slack thread ${destination.threadTs}`
+    : `Slack channel ${destination.channelId}`;
+}
+
+function FinalDeliveryCard({ interaction }: { interaction: FinalDeliveryInteraction }) {
+  const artifacts = interaction.payload.artifacts ?? [];
+  return (
+    <div className="space-y-4">
+      <div className="rounded-sm border border-border/70 bg-background/75 p-4 text-sm leading-6 text-foreground">
+        <div className="mb-3 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+          Destination: {finalDeliveryDestinationLabel(interaction.payload.destination)}
+        </div>
+        <MarkdownBody>{interaction.payload.message.body}</MarkdownBody>
+      </div>
+      {artifacts.length > 0 ? (
+        <div className="rounded-sm border border-border/70 bg-background/75 p-4">
+          <div className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+            Evidence artifacts
+          </div>
+          <div className="mt-3 space-y-2">
+            {artifacts.map((artifact, index) => (
+              <div key={artifact.id ?? `${artifact.type}-${index}`} className="rounded-sm border border-border/60 p-3 text-sm">
+                <div className="font-medium text-foreground">{artifact.title}</div>
+                <div className="mt-1 text-xs uppercase tracking-[0.16em] text-muted-foreground">{artifact.type}</div>
+                {artifact.summary ? <div className="mt-2 text-muted-foreground">{artifact.summary}</div> : null}
+                {artifact.url ? (
+                  <a className="mt-2 inline-flex text-xs font-medium text-primary hover:underline" href={artifact.url} target="_blank" rel="noreferrer">
+                    Open artifact
+                  </a>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function RequestConfirmationCard({
   interaction,
   onAcceptInteraction,
@@ -1262,7 +1311,9 @@ export function IssueThreadInteractionCard({
                 ? "Suggested task tree"
                 : interaction.kind === "ask_user_questions"
                   ? interaction.payload.title ?? "Questions for the operator"
-                  : "Confirmation requested")}
+                  : interaction.kind === "request_confirmation"
+                    ? "Confirmation requested"
+                    : "Final delivery queued")}
           </div>
           {interaction.summary ? (
             <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
@@ -1300,12 +1351,14 @@ export function IssueThreadInteractionCard({
             onSubmitInteractionAnswers={onSubmitInteractionAnswers}
             onCancelInteraction={onCancelInteraction}
           />
-        ) : (
+        ) : interaction.kind === "request_confirmation" ? (
           <RequestConfirmationCard
             interaction={interaction}
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
           />
+        ) : (
+          <FinalDeliveryCard interaction={interaction} />
         )}
       </div>
 

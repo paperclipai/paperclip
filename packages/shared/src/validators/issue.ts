@@ -126,12 +126,35 @@ export const issueExecutionMonitorPolicySchema = z.object({
   recoveryPolicy: z.enum(ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES).optional().nullable().default(null),
 });
 
+export const issueFinalDeliveryDestinationSchema = z.discriminatedUnion("platform", [
+  z.object({
+    platform: z.literal("telegram"),
+    chatId: z.string().trim().min(1).max(128),
+    threadId: z.string().trim().min(1).max(128).optional().nullable(),
+    messageId: z.string().trim().min(1).max(128).optional().nullable(),
+  }),
+  z.object({
+    platform: z.literal("slack"),
+    channelId: z.string().trim().min(1).max(128),
+    threadTs: z.string().trim().min(1).max(128).optional().nullable(),
+    messageTs: z.string().trim().min(1).max(128).optional().nullable(),
+  }),
+]);
+
+export const issueFinalDeliveryPolicySchema = z.object({
+  enabled: z.boolean().optional().default(true),
+  destination: issueFinalDeliveryDestinationSchema,
+});
+export type IssueFinalDeliveryDestination = z.infer<typeof issueFinalDeliveryDestinationSchema>;
+export type IssueFinalDeliveryPolicy = z.infer<typeof issueFinalDeliveryPolicySchema>;
+
 export const issueExecutionPolicySchema = z.object({
   mode: z.enum(ISSUE_EXECUTION_POLICY_MODES).optional().default("normal"),
   commentRequired: z.boolean().optional().default(true),
   stages: z.array(issueExecutionStageSchema).default([]),
   monitor: issueExecutionMonitorPolicySchema.optional().nullable(),
   missionControl: missionControlIssuePolicySchema.optional().nullable(),
+  finalDelivery: issueFinalDeliveryPolicySchema.optional().nullable(),
 });
 
 export const issueExecutionMonitorStateSchema = z.object({
@@ -572,6 +595,42 @@ export const requestConfirmationResultSchema = z.object({
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
 });
 
+export const issueFinalDeliveryArtifactSchema = z.object({
+  id: z.string().uuid().optional().nullable(),
+  type: z.string().trim().min(1).max(80),
+  title: z.string().trim().min(1).max(240),
+  url: z.string().trim().url().nullable().optional(),
+  summary: z.string().trim().max(1000).nullable().optional(),
+  isPrimary: z.boolean().optional().default(false),
+});
+
+export const issueFinalDeliveryPayloadSchema = z.object({
+  version: z.literal(1),
+  destination: issueFinalDeliveryDestinationSchema,
+  issue: z.object({
+    id: z.string().uuid(),
+    identifier: z.string().trim().min(1).max(64).nullable().optional(),
+    title: z.string().trim().min(1).max(240),
+  }),
+  message: z.object({
+    format: z.literal("markdown"),
+    body: z.string().trim().min(1).max(20000),
+  }),
+  artifacts: z.array(issueFinalDeliveryArtifactSchema).max(50).default([]),
+  queuedAt: z.string().datetime().optional(),
+});
+
+export const issueFinalDeliveryResultSchema = z.object({
+  version: z.literal(1),
+  outcome: z.enum(["delivered", "failed", "skipped"]),
+  deliveredAt: z.string().datetime().nullable().optional(),
+  externalMessageId: z.string().trim().max(255).nullable().optional(),
+  error: z.string().trim().max(4000).nullable().optional(),
+});
+export type IssueFinalDeliveryArtifact = z.infer<typeof issueFinalDeliveryArtifactSchema>;
+export type IssueFinalDeliveryPayload = z.infer<typeof issueFinalDeliveryPayloadSchema>;
+export type IssueFinalDeliveryResult = z.infer<typeof issueFinalDeliveryResultSchema>;
+
 export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("suggest_tasks"),
@@ -602,6 +661,16 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
     summary: z.string().trim().max(1000).nullable().optional(),
     continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("none"),
     payload: requestConfirmationPayloadSchema,
+  }),
+  z.object({
+    kind: z.literal("final_delivery"),
+    idempotencyKey: z.string().trim().max(255).nullable().optional(),
+    sourceCommentId: z.string().uuid().nullable().optional(),
+    sourceRunId: z.string().uuid().nullable().optional(),
+    title: z.string().trim().max(240).nullable().optional(),
+    summary: z.string().trim().max(1000).nullable().optional(),
+    continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("none"),
+    payload: issueFinalDeliveryPayloadSchema,
   }),
 ]);
 
