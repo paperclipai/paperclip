@@ -42,9 +42,13 @@ import {
 import {
   RECOVERY_ORIGIN_KINDS,
   buildIssueGraphLivenessLeafKey,
+  buildRuntimeApiRetryExhaustedIdempotencyKey,
   isStrandedIssueRecoveryOriginKind,
+  isWatchdogRecursiveOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "./origins.js";
+import { getWatchdogConfig } from "./watchdog-config.js";
+import { killProcessGroup } from "./kill-process-group.js";
 import {
   classifyIssueGraphLiveness,
   type IssueLivenessFinding,
@@ -63,6 +67,7 @@ export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
+const RUNTIME_API_RETRY_EXHAUSTED_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.runtimeApiRetryExhausted;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 
 type RecoveryWakeupOptions = {
@@ -672,8 +677,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return run.lastOutputAt ?? run.processStartedAt ?? run.startedAt ?? run.createdAt ?? null;
   }
 
+  // Liveness clock backs the suspicious/critical silent-output thresholds.
+  // Per AUR-33, an api_retry-emitting CLI is "alive" even with no stdout, so
+  // we evaluate against `lastLivenessAt` (falling back to lastOutputAt and
+  // then to processStartedAt) once the feature flag is on. The flag-off path
+  // preserves the legacy `lastOutputAt`-only semantics for emergency revert.
+  function livenessStartedAtForRun(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "lastLivenessAt" | "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt">,
+  ) {
+    if (!getWatchdogConfig().apiRetryAware) {
+      return silenceStartedAtForRun(run);
+    }
+    return run.lastLivenessAt ?? run.lastOutputAt ?? run.processStartedAt ?? run.startedAt ?? run.createdAt ?? null;
+  }
+
   function silenceAgeMsForRun(run: Pick<typeof heartbeatRuns.$inferSelect, "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt">, now = new Date()) {
     const startedAt = silenceStartedAtForRun(run);
+    return startedAt ? Math.max(0, now.getTime() - startedAt.getTime()) : null;
+  }
+
+  function livenessAgeMsForRun(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "lastLivenessAt" | "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt">,
+    now = new Date(),
+  ) {
+    const startedAt = livenessStartedAtForRun(run);
     return startedAt ? Math.max(0, now.getTime() - startedAt.getTime()) : null;
   }
 
@@ -722,22 +749,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
       "id" | "companyId" | "status" | "lastOutputAt" | "lastOutputSeq" | "lastOutputStream" | "processStartedAt" | "startedAt" | "createdAt"
-    >,
+    > & Partial<Pick<typeof heartbeatRuns.$inferSelect, "lastLivenessAt">>,
     now = new Date(),
   ): Promise<RunOutputSilenceSummary> {
     const [quietUntilDecision, evaluation] = await Promise.all([
       latestActiveOutputQuietUntilDecision(run.companyId, run.id, now),
       findOpenStaleRunEvaluation(run.companyId, run.id),
     ]);
+    // AUR-33: thresholds evaluate against the liveness clock (api_retry
+    // events keep this fresh) so a retrying CLI is not classified silent.
+    // silenceStartedAt remains the stdout-only clock for diagnostics.
     const silenceStartedAt = silenceStartedAtForRun(run);
+    const livenessAwareRun = { ...run, lastLivenessAt: run.lastLivenessAt ?? null };
+    const livenessAgeMs = run.status === "running" ? livenessAgeMsForRun(livenessAwareRun, now) : null;
     const silenceAgeMs = run.status === "running" ? silenceAgeMsForRun(run, now) : null;
     const level = run.status !== "running"
       ? "not_applicable"
       : quietUntilDecision
         ? "snoozed"
-        : (silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS
+        : (livenessAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS
           ? "critical"
-          : (silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS
+          : (livenessAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS
             ? "suspicious"
             : "ok";
     return {
@@ -1033,7 +1065,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       prefix,
       now: input.now,
     });
-    const level = (evidence.silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS ? "critical" : "suspicious";
+    const livenessAwareRun = {
+      ...input.run,
+      lastLivenessAt: input.run.lastLivenessAt ?? null,
+    };
+    const ageForLevel = livenessAgeMsForRun(livenessAwareRun, input.now) ?? evidence.silenceAgeMs ?? 0;
+    const level = ageForLevel >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS ? "critical" : "suspicious";
+    // AUR-33 hard cascade guard. Unconditional; runs at every threshold level.
+    if (await shouldSuppressForCascade({ run: input.run, thresholdLevel: level, sourceIssue })) {
+      return { kind: "cascade_suppressed" as const };
+    }
     const existing = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
     if (existing) {
       if (level === "critical" && existing.priority !== "high") {
@@ -1150,7 +1191,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   async function scanSilentActiveRuns(opts?: { now?: Date; companyId?: string }) {
     const now = opts?.now ?? new Date();
+    const apiRetryAware = getWatchdogConfig().apiRetryAware;
     const suspicionBefore = new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS);
+    // AUR-33: when api-retry-aware mode is on we scan against the liveness
+    // clock (api_retry events keep this fresh). When the flag is off we keep
+    // the legacy stdout-only clock so emergency rollback is bit-equivalent.
+    const livenessClockSql = apiRetryAware
+      ? sql`coalesce(${heartbeatRuns.lastLivenessAt}, ${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.processStartedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt})`
+      : sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.processStartedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt})`;
     const candidates = await db
       .select()
       .from(heartbeatRuns)
@@ -1158,7 +1206,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         and(
           opts?.companyId ? eq(heartbeatRuns.companyId, opts.companyId) : undefined,
           eq(heartbeatRuns.status, "running"),
-          sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.processStartedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${suspicionBefore.toISOString()}::timestamptz`,
+          sql`${livenessClockSql} <= ${suspicionBefore.toISOString()}::timestamptz`,
         ),
       )
       .orderBy(asc(heartbeatRuns.createdAt))
@@ -1171,6 +1219,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       escalated: 0,
       snoozed: 0,
       skipped: 0,
+      cascadeSuppressed: 0,
       evaluationIssueIds: [] as string[],
     };
 
@@ -1183,12 +1232,267 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (outcome.kind === "created") result.created += 1;
       else if (outcome.kind === "existing") result.existing += 1;
       else if (outcome.kind === "escalated") result.escalated += 1;
+      else if (outcome.kind === "cascade_suppressed") result.cascadeSuppressed += 1;
       else result.skipped += 1;
       if ("evaluationIssueId" in outcome && outcome.evaluationIssueId) {
         result.evaluationIssueIds.push(outcome.evaluationIssueId);
       }
     }
 
+    return result;
+  }
+
+  // -------------------------------------------------------------------------
+  // AUR-33: hard cascade guard (depth cap = 1)
+  // -------------------------------------------------------------------------
+  // Per CEO comment on AUR-27: before the watchdog emits ANY review issue
+  // (suspicious-silent, critical-silent, or retry-stall), resolve the source
+  // run's source issue and short-circuit unconditionally when its originKind
+  // is itself a watchdog-emitted origin. No retry-state heuristic, no time
+  // window. The thing that caps recursion must not depend on the thing that
+  // is failing.
+  async function shouldSuppressForCascade(input: {
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "contextSnapshot">;
+    thresholdLevel: "suspicious" | "critical" | "retry_stall";
+    sourceIssue: Pick<typeof issues.$inferSelect, "id" | "originKind"> | null;
+  }): Promise<boolean> {
+    if (!getWatchdogConfig().apiRetryAware) return false;
+    const sourceOriginKind = input.sourceIssue?.originKind ?? null;
+    if (!isWatchdogRecursiveOriginKind(sourceOriginKind)) return false;
+    logger.info(
+      {
+        event: "cascade_suppressed",
+        runId: input.run.id,
+        sourceIssueId: input.sourceIssue?.id ?? null,
+        sourceOriginKind,
+        thresholdLevel: input.thresholdLevel,
+      },
+      "watchdog suppressed review-issue emission to prevent recursive cascade",
+    );
+    return true;
+  }
+
+  // -------------------------------------------------------------------------
+  // AUR-33: bounded retry-stall detector
+  // -------------------------------------------------------------------------
+  async function findOpenRuntimeApiRetryExhausted(companyId: string, runId: string) {
+    const [row] = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, RUNTIME_API_RETRY_EXHAUSTED_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
+  function isUniqueRuntimeApiRetryExhaustedConflict(error: unknown) {
+    const maybe = unwrapDatabaseConflictError(error);
+    if (!maybe) return false;
+    return maybe.code === "23505" &&
+      (
+        maybe.constraint === "issues_active_runtime_api_retry_exhausted_uq" ||
+        maybe.constraint_name === "issues_active_runtime_api_retry_exhausted_uq" ||
+        typeof maybe.message === "string" && maybe.message.includes("issues_active_runtime_api_retry_exhausted_uq")
+      );
+  }
+
+  async function markRunRetryExhaustedTerminal(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    now: Date;
+    killOutcome: Awaited<ReturnType<typeof killProcessGroup>>;
+  }) {
+    const reasonParts = [`runtime_api_retry_exhausted`];
+    if (input.run.lastRetryAttempt !== null && input.run.lastRetryAttempt !== undefined) {
+      reasonParts.push(`attempt=${input.run.lastRetryAttempt}`);
+    }
+    if (input.run.lastRetryErrorStatus) reasonParts.push(`status=${input.run.lastRetryErrorStatus}`);
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "failed",
+        errorCode: "runtime_api_retry_exhausted",
+        error: reasonParts.join(" "),
+        finishedAt: input.now,
+        updatedAt: input.now,
+      })
+      .where(eq(heartbeatRuns.id, input.run.id));
+  }
+
+  async function createRuntimeApiRetryExhaustedReview(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    now: Date;
+    killOutcome: Awaited<ReturnType<typeof killProcessGroup>>;
+  }) {
+    const config = getWatchdogConfig();
+    const runningAgent = await getAgent(input.run.agentId);
+    if (!runningAgent || runningAgent.companyId !== input.run.companyId) {
+      return { kind: "skipped" as const };
+    }
+    const sourceIssue = await resolveStaleRunSourceIssue(input.run);
+    const prefix = await getCompanyIssuePrefix(input.run.companyId);
+
+    if (await shouldSuppressForCascade({ run: input.run, thresholdLevel: "retry_stall", sourceIssue })) {
+      return { kind: "cascade_suppressed" as const };
+    }
+
+    const existing = await findOpenRuntimeApiRetryExhausted(input.run.companyId, input.run.id);
+    if (existing) {
+      return { kind: "existing" as const, evaluationIssueId: existing.id };
+    }
+
+    const ownerAgentId = await resolveStaleRunOwnerAgentId({ run: input.run, runningAgent, sourceIssue });
+    const idempotencyKey = buildRuntimeApiRetryExhaustedIdempotencyKey({
+      companyId: input.run.companyId,
+      runId: input.run.id,
+    });
+    const description = [
+      `Paperclip's bounded retry-stall detector terminated an active heartbeat run.`,
+      "",
+      "## Run",
+      "",
+      `- Run: ${runUiLink(input.run, prefix)}`,
+      `- Agent: ${runningAgent.name} (${runningAgent.adapterType})`,
+      `- Source issue: ${sourceIssue ? issueUiLink({ identifier: sourceIssue.identifier, id: sourceIssue.id }, prefix) : "none"}`,
+      `- Started at: ${input.run.startedAt?.toISOString() ?? "unknown"}`,
+      `- Last output at: ${input.run.lastOutputAt?.toISOString() ?? "none recorded"}`,
+      `- Last liveness at: ${input.run.lastLivenessAt?.toISOString() ?? "none recorded"}`,
+      `- Last attempt observed: ${input.run.lastRetryAttempt ?? "unknown"}`,
+      `- Last error_status: ${input.run.lastRetryErrorStatus ?? "unknown"}`,
+      `- Last error: ${input.run.lastRetryErrorMessage ?? "unknown"}`,
+      `- Retry stall started at: ${input.run.retryStallStartedAt?.toISOString() ?? "unknown"}`,
+      "",
+      "## Kill Outcome",
+      "",
+      `\`\`\`json\n${JSON.stringify(input.killOutcome)}\n\`\`\``,
+      "",
+      "## Watchdog Config",
+      "",
+      `- retryStallAttemptThreshold: ${config.retryStallAttemptThreshold}`,
+      `- retryStallBudgetSec: ${config.retryStallBudgetSec}`,
+      `- autoRecover: ${config.autoRecover}`,
+      `- apiRetryAware: ${config.apiRetryAware}`,
+      "",
+      "## Idempotency",
+      "",
+      `\`${idempotencyKey}\``,
+      "",
+      "## Decision Checklist",
+      "",
+      "- Confirm the upstream API outage is resolved before requeueing.",
+      "- If the source issue should resume, re-trigger a heartbeat manually.",
+      "- Close as done once the source issue has been requeued or the root cause is documented.",
+    ].join("\n");
+
+    let evaluation: Awaited<ReturnType<typeof issuesSvc.create>>;
+    try {
+      evaluation = await issuesSvc.create(input.run.companyId, {
+        title: `Auto-terminated retry-stalled run for ${runningAgent.name}`,
+        description,
+        status: "todo",
+        priority: "high",
+        parentId: sourceIssue && !["done", "cancelled"].includes(sourceIssue.status) ? sourceIssue.id : null,
+        projectId: sourceIssue?.projectId ?? null,
+        goalId: sourceIssue?.goalId ?? null,
+        billingCode: sourceIssue?.billingCode ?? null,
+        assigneeAgentId: ownerAgentId,
+        assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides(),
+        originKind: RUNTIME_API_RETRY_EXHAUSTED_ORIGIN_KIND,
+        originId: input.run.id,
+        originRunId: input.run.id,
+        // Round-trip the AUR-37 idempotency key here so dedup short-circuits
+        // duplicate fires. AUR-37 will wire a dedicated `idempotencyKey`
+        // column; until then `originFingerprint` carries the canonical value
+        // and is also covered by the partial unique index added in 0084.
+        originFingerprint: idempotencyKey,
+      });
+    } catch (error) {
+      if (!isUniqueRuntimeApiRetryExhaustedConflict(error)) throw error;
+      const raced = await findOpenRuntimeApiRetryExhausted(input.run.companyId, input.run.id);
+      if (!raced) throw error;
+      return { kind: "existing" as const, evaluationIssueId: raced.id };
+    }
+
+    await logActivity(db, {
+      companyId: input.run.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: ownerAgentId,
+      runId: input.run.id,
+      action: "heartbeat.retry_stall_detected",
+      entityType: "issue",
+      entityId: evaluation.id,
+      details: {
+        source: "recovery.scan_retry_stalled_runs",
+        idempotencyKey,
+        sourceIssueId: sourceIssue?.id ?? null,
+        lastRetryAttempt: input.run.lastRetryAttempt ?? null,
+        lastRetryErrorStatus: input.run.lastRetryErrorStatus ?? null,
+        killOutcome: input.killOutcome,
+      },
+    });
+    return { kind: "created" as const, evaluationIssueId: evaluation.id };
+  }
+
+  async function scanRetryStalledRuns(opts?: { now?: Date; companyId?: string }) {
+    const config = getWatchdogConfig();
+    const result = {
+      scanned: 0,
+      terminated: 0,
+      existing: 0,
+      cascadeSuppressed: 0,
+      skipped: 0,
+      evaluationIssueIds: [] as string[],
+    };
+    if (!config.apiRetryAware) return result;
+    const now = opts?.now ?? new Date();
+    const budgetMs = config.retryStallBudgetSec * 1000;
+    const stallBudgetThreshold = new Date(now.getTime() - budgetMs);
+    const candidates = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          opts?.companyId ? eq(heartbeatRuns.companyId, opts.companyId) : undefined,
+          eq(heartbeatRuns.status, "running"),
+          sql`${heartbeatRuns.retryStallStartedAt} is not null`,
+          sql`${heartbeatRuns.retryStallStartedAt} <= ${stallBudgetThreshold.toISOString()}::timestamptz`,
+          sql`coalesce(${heartbeatRuns.lastRetryAttempt}, 0) >= ${config.retryStallAttemptThreshold}`,
+        ),
+      )
+      .orderBy(asc(heartbeatRuns.createdAt))
+      .limit(100);
+    result.scanned = candidates.length;
+    for (const run of candidates) {
+      const killOutcome = await killProcessGroup({
+        pid: run.processPid ?? null,
+        pgid: run.processGroupId ?? null,
+        runId: run.id,
+      });
+      await markRunRetryExhaustedTerminal({ run, now, killOutcome });
+      const outcome = await createRuntimeApiRetryExhaustedReview({ run, now, killOutcome });
+      if (outcome.kind === "created") {
+        result.terminated += 1;
+        if (outcome.evaluationIssueId) result.evaluationIssueIds.push(outcome.evaluationIssueId);
+      } else if (outcome.kind === "existing") {
+        result.existing += 1;
+        if (outcome.evaluationIssueId) result.evaluationIssueIds.push(outcome.evaluationIssueId);
+      } else if (outcome.kind === "cascade_suppressed") {
+        result.cascadeSuppressed += 1;
+      } else {
+        result.skipped += 1;
+      }
+    }
     return result;
   }
 
@@ -2833,6 +3137,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     escalateStrandedAssignedIssue,
     recordWatchdogDecision,
     scanSilentActiveRuns,
+    scanRetryStalledRuns,
     reconcileStrandedAssignedIssues,
     buildIssueGraphLivenessAutoRecoveryPreview,
     reconcileIssueGraphLiveness,
