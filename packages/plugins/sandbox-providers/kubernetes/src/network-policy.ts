@@ -92,6 +92,7 @@ export function buildNetworkPolicyManifests(input: BuildNetworkPolicyInput): Rec
           : []),
         ...input.egressAllowCidrs.map((cidr) => ({
           to: [{ ipBlock: { cidr } }],
+          ports: [{ protocol: "TCP", port: 443 }],
         })),
       ],
     },

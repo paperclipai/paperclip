@@ -22,7 +22,7 @@ describe("execInPod", () => {
     });
 
     const result = await execInPod({} as never, "ns", "pod-1", "agent", ["echo", "ok"]);
-    expect(result).toEqual({ exitCode: 0, stdout: "ok\n", stderr: "" });
+    expect(result).toEqual({ exitCode: 0, timedOut: false, stdout: "ok\n", stderr: "" });
   });
 
   it("returns an execution failure if the websocket closes before a status frame", async () => {
@@ -35,6 +35,7 @@ describe("execInPod", () => {
 
     await expect(resultPromise).resolves.toMatchObject({
       exitCode: 1,
+      timedOut: false,
       stderr: expect.stringContaining("websocket closed before status frame"),
     });
   });
@@ -45,6 +46,7 @@ describe("execInPod", () => {
     const result = await execInPod({} as never, "ns", "pod-1", "agent", ["sleep", "60"], undefined, 5);
 
     expect(result.exitCode).toBe(1);
+    expect(result.timedOut).toBe(true);
     expect(result.stderr).toContain("Kubernetes exec timed out after 5ms");
   });
 });

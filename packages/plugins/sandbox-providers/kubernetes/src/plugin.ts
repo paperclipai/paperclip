@@ -490,7 +490,7 @@ const plugin = definePlugin({
 
       return {
         exitCode: execResult.exitCode,
-        timedOut: false,
+        timedOut: execResult.timedOut,
         stdout: execResult.stdout,
         stderr: execResult.stderr,
         metadata: {

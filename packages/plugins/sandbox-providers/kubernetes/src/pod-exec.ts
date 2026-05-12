@@ -14,6 +14,13 @@ import { Exec } from "@kubernetes/client-node";
 import { PassThrough } from "node:stream";
 import type { KubeConfig } from "@kubernetes/client-node";
 
+export interface ExecInPodResult {
+  exitCode: number;
+  timedOut: boolean;
+  stdout: string;
+  stderr: string;
+}
+
 export async function execInPod(
   kc: KubeConfig,
   namespace: string,
@@ -22,7 +29,7 @@ export async function execInPod(
   command: string[],
   stdin?: string,
   timeoutMs?: number,
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+): Promise<ExecInPodResult> {
   const exec = new Exec(kc);
   const stdoutStream = new PassThrough();
   const stderrStream = new PassThrough();
@@ -43,25 +50,26 @@ export async function execInPod(
     stderrData += chunk.toString("utf-8");
   });
 
-  return await new Promise<{ exitCode: number; stdout: string; stderr: string }>(
+  return await new Promise<ExecInPodResult>(
     (resolve, reject) => {
       let settled = false;
       const timeout =
         typeof timeoutMs === "number" && timeoutMs > 0
           ? setTimeout(() => {
-              finishWithTransportFailure(`Kubernetes exec timed out after ${timeoutMs}ms`);
+              finishWithTransportFailure(`Kubernetes exec timed out after ${timeoutMs}ms`, true);
             }, timeoutMs)
           : null;
-      const finish = (result: { exitCode: number; stdout: string; stderr: string }) => {
+      const finish = (result: ExecInPodResult) => {
         if (settled) return;
         settled = true;
         if (timeout) clearTimeout(timeout);
         resolve(result);
       };
-      const finishWithTransportFailure = (message: string) => {
+      const finishWithTransportFailure = (message: string, timedOut = false) => {
         const separator = stderrData.length > 0 && !stderrData.endsWith("\n") ? "\n" : "";
         finish({
           exitCode: 1,
+          timedOut,
           stdout: stdoutData,
           stderr: `${stderrData}${separator}${message}`,
         });
@@ -80,7 +88,7 @@ export async function execInPod(
           (status) => {
             // status.status is "Success" | "Failure"
             if (status.status === "Success") {
-              finish({ exitCode: 0, stdout: stdoutData, stderr: stderrData });
+              finish({ exitCode: 0, timedOut: false, stdout: stdoutData, stderr: stderrData });
               return;
             }
             // On failure, the exit code surfaces via
@@ -93,7 +101,7 @@ export async function execInPod(
             const exitCode = exitCodeCause?.message
               ? Number(exitCodeCause.message)
               : 1;
-            finish({ exitCode, stdout: stdoutData, stderr: stderrData });
+            finish({ exitCode, timedOut: false, stdout: stdoutData, stderr: stderrData });
           },
         );
 

@@ -39,10 +39,11 @@ describe("buildNetworkPolicyManifests", () => {
 
   it("includes user-supplied CIDRs in egress allow", () => {
     const [, egress] = buildNetworkPolicyManifests({ ...baseInput, egressAllowCidrs: ["10.0.0.0/8"] });
-    const cidrRule = egress.spec.egress.find((r: { to: { ipBlock?: { cidr: string } }[] }) =>
+    const cidrRule = egress.spec.egress.find((r: { to: { ipBlock?: { cidr: string } }[]; ports?: { protocol: string; port: number }[] }) =>
       r.to.some((t) => t.ipBlock?.cidr === "10.0.0.0/8"),
     );
     expect(cidrRule).toBeDefined();
+    expect(cidrRule?.ports).toEqual([{ protocol: "TCP", port: 443 }]);
   });
 
   it("adds a public HTTPS fallback when standard mode receives FQDN allow-list entries", () => {
