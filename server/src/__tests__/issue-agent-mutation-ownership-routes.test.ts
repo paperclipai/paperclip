@@ -457,6 +457,9 @@ describe("agent issue mutation checkout ownership", () => {
         agentId: ownerAgentId,
         runId: ownerRunId,
       }),
+      expect.objectContaining({
+        authorType: "agent",
+      }),
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
