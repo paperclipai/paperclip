@@ -44,6 +44,90 @@ if (!embeddedPostgresSupport.supported) {
 
 describeEmbeddedPostgres("applyPendingMigrations", () => {
   it(
+    "replays migration 0086 by deduplicating comment activity before adding the unique index",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const migration0086Hash = await migrationHash("0086_activity_comment_idempotency.sql");
+
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${migration0086Hash}'`,
+        );
+        await sql.unsafe(`DROP INDEX IF EXISTS "activity_log_comment_added_comment_id_uq"`);
+        await sql.unsafe(`
+          INSERT INTO "companies" ("id", "name", "issue_prefix")
+          VALUES ('11111111-1111-4111-8111-111111111111', 'Migration replay', 'MRP')
+        `);
+        await sql.unsafe(`
+          INSERT INTO "activity_log" (
+            "id",
+            "company_id",
+            "actor_type",
+            "actor_id",
+            "action",
+            "entity_type",
+            "entity_id",
+            "details",
+            "created_at"
+          )
+          VALUES
+            (
+              '22222222-2222-4222-8222-222222222222',
+              '11111111-1111-4111-8111-111111111111',
+              'system',
+              'system',
+              'approval.comment_added',
+              'approval',
+              'approval-1',
+              '{"commentId":"comment-1"}'::jsonb,
+              '2026-04-01T00:00:00.000Z'
+            ),
+            (
+              '33333333-3333-4333-8333-333333333333',
+              '11111111-1111-4111-8111-111111111111',
+              'system',
+              'system',
+              'approval.comment_added',
+              'approval',
+              'approval-1',
+              '{"commentId":"comment-1"}'::jsonb,
+              '2026-04-02T00:00:00.000Z'
+            )
+        `);
+      } finally {
+        await sql.end();
+      }
+
+      await applyPendingMigrations(connectionString);
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const rows = await verifySql.unsafe<{ id: string; created_at: Date }[]>(`
+          SELECT "id", "created_at"
+          FROM "activity_log"
+          WHERE "action" = 'approval.comment_added'
+            AND "entity_type" = 'approval'
+            AND "entity_id" = 'approval-1'
+            AND "details" ->> 'commentId' = 'comment-1'
+        `);
+        expect(rows).toEqual([
+          {
+            id: "22222222-2222-4222-8222-222222222222",
+            created_at: new Date("2026-04-01T00:00:00.000Z"),
+          },
+        ]);
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
     "applies an inserted earlier migration without replaying later legacy migrations",
     async () => {
       const connectionString = await createTempDatabase();

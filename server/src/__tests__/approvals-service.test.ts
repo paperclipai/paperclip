@@ -195,7 +195,7 @@ describeEmbeddedPostgres("approvalService.addComment idempotency", () => {
     expect(rows[0]?.idempotencyKey).toMatch(/^[a-f0-9]{64}$/);
     expect(rows[0]?.createdByRunId).toBe(runId);
     expect(afterFirst?.updatedAt.getTime()).toBeGreaterThan(staleUpdatedAt.getTime());
-    expect(afterSecond?.updatedAt.getTime()).toBeGreaterThan(staleAfterFirst.getTime());
+    expect(afterSecond?.updatedAt).toEqual(staleAfterFirst);
   });
 
   it("does not deduplicate non-agent approval comments even when a run id is present", async () => {

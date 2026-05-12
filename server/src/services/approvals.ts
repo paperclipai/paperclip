@@ -290,10 +290,12 @@ export function approvalService(db: Db) {
         throw new Error("Failed to insert or retrieve deduplicated approval comment");
       }
 
-      await db
-        .update(approvals)
-        .set({ updatedAt: now })
-        .where(eq(approvals.id, approvalId));
+      if (inserted.length > 0) {
+        await db
+          .update(approvals)
+          .set({ updatedAt: now })
+          .where(eq(approvals.id, approvalId));
+      }
 
       const redacted = redactApprovalComment(comment, currentUserRedactionOptions.enabled);
       Object.defineProperty(redacted, "wasInserted", {
