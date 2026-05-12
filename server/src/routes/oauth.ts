@@ -583,7 +583,27 @@ export function oauthRoutes(deps: OAuthRouteDeps): Router {
         "../services/broker-targets.js"
       );
       const svc = createBrokerTargetsService({ db: deps.db });
+      // Look up the target before removing so we can clean up the
+      // associated company_secrets row — otherwise every deleted
+      // broker target leaves an orphaned auth-token secret behind,
+      // mirroring the cleanup that the POST path does on add-failure.
+      const existing = (await svc.list(req.params.id)).find(
+        (t) => t.id === req.params.targetId,
+      );
       await svc.remove(req.params.id, req.params.targetId);
+      if (existing?.authTokenSecretId && deps.secretService.remove) {
+        await deps.secretService
+          .remove(existing.authTokenSecretId)
+          .catch((err: unknown) => {
+            oauthLogger.warn(
+              {
+                secretId: existing.authTokenSecretId,
+                err: { message: (err as Error).message },
+              },
+              "broker target secret orphan cleanup failed on delete",
+            );
+          });
+      }
       res.status(204).end();
     },
   );

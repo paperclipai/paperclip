@@ -339,7 +339,12 @@ export function createProxyListener(
         outer.once("error", reject);
         outer.listen(port, host, () => {
           const addr = outer.address() as AddressInfo;
-          listenAddress = `${host}:${addr.port}`;
+          // Bracket IPv6 hosts so the resulting URL is parseable by
+          // `new URL(...)` (which the materializer uses to splice in
+          // auth credentials). Without bracketing, `::1:54321` is a
+          // syntactically invalid URL host.
+          const displayHost = host.includes(":") ? `[${host}]` : host;
+          listenAddress = `${displayHost}:${addr.port}`;
           resolve();
         });
       });
