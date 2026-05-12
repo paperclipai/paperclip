@@ -40,9 +40,17 @@ export function approvalRoutes(
   const secretsSvc = secretService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
-  async function listLinkedIssueIds(approvalId: string) {
+  async function listLinkedIssueRefs(approvalId: string) {
     const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approvalId);
-    return linkedIssues.map((issue) => issue.id);
+    return linkedIssues.map((issue) => ({ id: issue.id, identifier: issue.identifier ?? null }));
+  }
+
+  function linkedIssueActivityDetails(issueRefs: Array<{ id: string; identifier: string | null }>) {
+    return {
+      issueIds: issueRefs.map((issue) => issue.id),
+      linkedIssueIds: issueRefs.map((issue) => issue.id),
+      issueRefs,
+    };
   }
 
   async function requireApprovalAccess(req: Request, id: string) {
@@ -150,7 +158,9 @@ export function approvalRoutes(
     const { approval, applied } = await svc.approve(id, decidedByUserId, req.body.decisionNote);
 
     if (applied) {
-      const linkedIssueIds = await listLinkedIssueIds(approval.id);
+      const linkedIssueRefs = await listLinkedIssueRefs(approval.id);
+      const linkedIssueDetails = linkedIssueActivityDetails(linkedIssueRefs);
+      const linkedIssueIds = linkedIssueDetails.issueIds;
       const primaryIssueId = linkedIssueIds[0] ?? null;
 
       await logActivity(db, {
@@ -163,8 +173,7 @@ export function approvalRoutes(
         details: {
           type: approval.type,
           requestedByAgentId: approval.requestedByAgentId,
-          issueIds: linkedIssueIds,
-          linkedIssueIds,
+          ...linkedIssueDetails,
         },
       });
 
@@ -259,7 +268,8 @@ export function approvalRoutes(
     const { approval, applied } = await svc.reject(id, decidedByUserId, req.body.decisionNote);
 
     if (applied) {
-      const linkedIssueIds = await listLinkedIssueIds(approval.id);
+      const linkedIssueRefs = await listLinkedIssueRefs(approval.id);
+      const linkedIssueDetails = linkedIssueActivityDetails(linkedIssueRefs);
       if (approval.sourcePluginId && options.pluginWorkerManager) {
         const worker = options.pluginWorkerManager.getWorker(approval.sourcePluginId);
         if (worker) {
@@ -280,7 +290,7 @@ export function approvalRoutes(
         action: "approval.rejected",
         entityType: "approval",
         entityId: approval.id,
-        details: { type: approval.type, issueIds: linkedIssueIds, linkedIssueIds },
+        details: { type: approval.type, ...linkedIssueDetails },
       });
     }
 
@@ -299,7 +309,7 @@ export function approvalRoutes(
       }
       const decidedByUserId = req.actor.userId ?? "board";
       const approval = await svc.requestRevision(id, decidedByUserId, req.body.decisionNote);
-      const linkedIssueIds = await listLinkedIssueIds(approval.id);
+      const linkedIssueDetails = linkedIssueActivityDetails(await listLinkedIssueRefs(approval.id));
 
       await logActivity(db, {
         companyId: approval.companyId,
@@ -308,7 +318,7 @@ export function approvalRoutes(
         action: "approval.revision_requested",
         entityType: "approval",
         entityId: approval.id,
-        details: { type: approval.type, issueIds: linkedIssueIds, linkedIssueIds },
+        details: { type: approval.type, ...linkedIssueDetails },
       });
 
       res.json(redactApprovalPayload(approval));
@@ -339,7 +349,7 @@ export function approvalRoutes(
         : req.body.payload
       : undefined;
     const approval = await svc.resubmit(id, normalizedPayload);
-    const linkedIssueIds = await listLinkedIssueIds(approval.id);
+    const linkedIssueDetails = linkedIssueActivityDetails(await listLinkedIssueRefs(approval.id));
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: approval.companyId,
@@ -349,7 +359,7 @@ export function approvalRoutes(
       action: "approval.resubmitted",
       entityType: "approval",
       entityId: approval.id,
-      details: { type: approval.type, issueIds: linkedIssueIds, linkedIssueIds },
+      details: { type: approval.type, ...linkedIssueDetails },
     });
     res.json(redactApprovalPayload(approval));
   });

@@ -722,17 +722,30 @@ function invalidateActivityQueries(
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.issues(entityId) });
     }
     const details = payload.details;
-    const rawIssueIds = details && typeof details === "object"
-      ? Array.isArray((details as { issueIds?: unknown }).issueIds)
+    const issueRefs = new Set<string>();
+    if (details && typeof details === "object") {
+      const rawIssueIds = Array.isArray((details as { issueIds?: unknown }).issueIds)
         ? (details as { issueIds: unknown[] }).issueIds
         : Array.isArray((details as { linkedIssueIds?: unknown }).linkedIssueIds)
           ? (details as { linkedIssueIds: unknown[] }).linkedIssueIds
-          : []
-      : [];
-    const issueIds = rawIssueIds.filter((issueId): issueId is string => typeof issueId === "string");
-    for (const issueId of issueIds) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.approvals(issueId) });
+          : [];
+      for (const issueId of rawIssueIds) {
+        if (typeof issueId === "string") issueRefs.add(issueId);
+      }
+      const rawIssueRefs = Array.isArray((details as { issueRefs?: unknown }).issueRefs)
+        ? (details as { issueRefs: unknown[] }).issueRefs
+        : [];
+      for (const rawIssueRef of rawIssueRefs) {
+        if (!rawIssueRef || typeof rawIssueRef !== "object") continue;
+        const id = (rawIssueRef as { id?: unknown }).id;
+        const identifier = (rawIssueRef as { identifier?: unknown }).identifier;
+        if (typeof id === "string") issueRefs.add(id);
+        if (typeof identifier === "string") issueRefs.add(identifier);
+      }
+    }
+    for (const issueRef of issueRefs) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.approvals(issueRef) });
     }
     return;
   }
