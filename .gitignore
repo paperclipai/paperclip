@@ -49,6 +49,9 @@ diagnostics/
 # Doc maintenance cursor
 .doc-review-cursor
 
+# Local recon dir (downloaded sibling repos for analysis only)
+.recon/
+
 # Playwright
 tests/e2e/test-results/
 tests/e2e/playwright-report/
