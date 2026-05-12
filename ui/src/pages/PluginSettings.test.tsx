@@ -12,6 +12,8 @@ const mockPluginsApi = vi.hoisted(() => ({
   dashboard: vi.fn(),
   logs: vi.fn(),
   getConfig: vi.fn(),
+  getCompanySettings: vi.fn(),
+  saveCompanySettings: vi.fn(),
   listLocalFolders: vi.fn(),
   configureLocalFolder: vi.fn(),
 }));
@@ -147,6 +149,18 @@ describe("PluginSettings", () => {
     mockPluginsApi.dashboard.mockResolvedValue(null);
     mockPluginsApi.health.mockResolvedValue({ pluginId: "plugin-1", status: "ready", healthy: true, checks: [] });
     mockPluginsApi.logs.mockResolvedValue([]);
+    mockPluginsApi.getCompanySettings.mockResolvedValue({
+      pluginId: "plugin-1",
+      companyId: "company-1",
+      enabled: false,
+      explicit: false,
+    });
+    mockPluginsApi.saveCompanySettings.mockResolvedValue({
+      pluginId: "plugin-1",
+      companyId: "company-1",
+      enabled: true,
+      explicit: true,
+    });
     mockPluginsApi.listLocalFolders.mockResolvedValue({
       pluginId: "plugin-1",
       companyId: "company-1",
@@ -204,6 +218,38 @@ describe("PluginSettings", () => {
     expect(container.textContent).toContain("No local folder path is configured.");
     expect(container.textContent).toContain("Missing directories: raw, wiki");
     expect(container.textContent).toContain("Missing files: WIKI.md, index.md");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders and updates company access for secret-writing plugins", async () => {
+    mockPluginsApi.get.mockResolvedValue(basePlugin({
+      status: "ready",
+      manifestJson: {
+        displayName: "Secret writer",
+        version: "0.1.0",
+        description: "Writes plugin-owned secrets.",
+        author: "Paperclip",
+        capabilities: ["secrets.write"],
+      },
+    }));
+
+    const root = await renderSettings(container);
+
+    expect(container.textContent).toContain("Company access");
+    expect(container.textContent).toContain("Disabled");
+    const toggle = container.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
+    expect(toggle).not.toBeNull();
+    expect(toggle?.checked).toBe(false);
+
+    await act(async () => {
+      toggle!.click();
+    });
+    await flushReact();
+
+    expect(mockPluginsApi.saveCompanySettings).toHaveBeenCalledWith("plugin-1", "company-1", { enabled: true });
 
     await act(async () => {
       root.unmount();

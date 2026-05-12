@@ -147,6 +147,7 @@ export function PluginSettings() {
   const environmentDrivers = plugin.manifestJson.environmentDrivers ?? [];
   const localFolderDeclarations = plugin.manifestJson.localFolders ?? [];
   const hasLocalFolders = localFolderDeclarations.length > 0;
+  const canWriteSecrets = pluginCapabilities.includes("secrets.write");
   const environmentDriverNames = environmentDrivers
     .map((driver) => driver.displayName?.trim() || driver.driverKey)
     .filter((name, index, values) => values.indexOf(name) === index);
@@ -221,6 +222,12 @@ export function PluginSettings() {
               <div className="space-y-1">
                 <h2 className="text-base font-semibold">Settings</h2>
               </div>
+              {canWriteSecrets ? (
+                <PluginCompanyAccessSettings
+                  pluginId={pluginId!}
+                  companyId={selectedCompanyId}
+                />
+              ) : null}
               {hasLocalFolders ? (
                 <PluginLocalFoldersSettings
                   pluginId={pluginId!}
@@ -565,6 +572,95 @@ export function PluginSettings() {
           </div>
         </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PluginCompanyAccessSettings — explicit company opt-in for write-capable plugins
+// ---------------------------------------------------------------------------
+
+interface PluginCompanyAccessSettingsProps {
+  pluginId: string;
+  companyId: string | null;
+}
+
+function PluginCompanyAccessSettings({ pluginId, companyId }: PluginCompanyAccessSettingsProps) {
+  const queryClient = useQueryClient();
+  const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const { data, isLoading, error } = useQuery({
+    queryKey: companyId
+      ? queryKeys.plugins.companySettings(pluginId, companyId)
+      : ["plugins", pluginId, "companies", "none", "settings"],
+    queryFn: () => pluginsApi.getCompanySettings(pluginId, companyId!),
+    enabled: !!companyId,
+  });
+  const saveMutation = useMutation({
+    mutationFn: (enabled: boolean) => pluginsApi.saveCompanySettings(pluginId, companyId!, { enabled }),
+    onSuccess: (next) => {
+      setMessage({
+        type: "success",
+        text: next.enabled ? "Company access enabled." : "Company access disabled.",
+      });
+      queryClient.invalidateQueries({ queryKey: queryKeys.plugins.companySettings(pluginId, companyId!) });
+    },
+    onError: (err: Error) => {
+      setMessage({ type: "error", text: err.message || "Failed to update company access." });
+    },
+  });
+
+  if (!companyId) {
+    return (
+      <div className="rounded-md border border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
+        Select a company to authorize plugin secret writes.
+      </div>
+    );
+  }
+
+  const enabled = Boolean(data?.enabled);
+
+  return (
+    <div className="space-y-3 rounded-md border border-border/70 bg-background px-4 py-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <ShieldAlert className="h-4 w-4 text-muted-foreground" />
+            <h3 className="text-sm font-medium">Company access</h3>
+            <Badge variant={enabled ? "default" : "secondary"}>
+              {enabled ? "Enabled" : "Disabled"}
+            </Badge>
+          </div>
+          <p className="max-w-2xl text-sm leading-5 text-muted-foreground">
+            Allow this plugin to create, rotate, and delete secrets it owns for the selected company.
+          </p>
+        </div>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={enabled}
+            disabled={isLoading || saveMutation.isPending}
+            onChange={(event) => {
+              setMessage(null);
+              saveMutation.mutate(event.currentTarget.checked);
+            }}
+          />
+          <span>Enabled</span>
+        </label>
+      </div>
+      {error ? (
+        <div className="rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {(error as Error).message || "Failed to load company access."}
+        </div>
+      ) : null}
+      {message ? (
+        <div className={`rounded-md border px-3 py-2 text-sm ${
+          message.type === "success"
+            ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+            : "border-destructive/20 bg-destructive/10 text-destructive"
+        }`}>
+          {message.text}
+        </div>
+      ) : null}
     </div>
   );
 }

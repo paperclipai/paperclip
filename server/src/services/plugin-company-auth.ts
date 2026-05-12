@@ -15,12 +15,12 @@ export class PluginCompanyAuthorizationError extends Error {
 /**
  * Asserts that a plugin is authorized to operate within the given company.
  *
- * Authorization model: a plugin may write/delete secrets for a company unless
- * an explicit `plugin_company_settings` row disables it.
- * No row → authorized (default company behavior).
- * Row with `enabled = false` → denied.
+ * Authorization model: a plugin may write/delete secrets for a company only
+ * when an explicit `plugin_company_settings` row enables it.
+ * No row → denied.
+ * Row with `enabled = true` → authorized.
  *
- * Throws if the plugin is explicitly disabled for the company.
+ * Throws if the plugin is not explicitly enabled for the company.
  */
 export async function assertPluginAuthorizedForCompany(
   db: Db,
@@ -38,7 +38,7 @@ export async function assertPluginAuthorizedForCompany(
     )
     .then((rows) => rows[0] ?? null);
 
-  if (row !== null && !row.enabled) {
+  if (row === null || !row.enabled) {
     throw new PluginCompanyAuthorizationError(companyId);
   }
 }
