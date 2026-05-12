@@ -4,6 +4,14 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  rollup: '>=4.59.0'
+
+patchedDependencies:
+  embedded-postgres@18.1.0-beta.16:
+    hash: d8b1e087e95f559a6342fc15954f11af22d9dca43a7fcca5762b6459913b5800
+    path: patches/embedded-postgres@18.1.0-beta.16.patch
+
 importers:
 
   .:
@@ -79,7 +87,7 @@ importers:
         version: 0.45.2(kysely@0.28.11)(pg@8.18.0)(postgres@3.4.8)(sqlite3@5.1.7)
       embedded-postgres:
         specifier: ^18.1.0-beta.16
-        version: 18.1.0-beta.16
+        version: 18.1.0-beta.16(patch_hash=d8b1e087e95f559a6342fc15954f11af22d9dca43a7fcca5762b6459913b5800)
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
@@ -275,7 +283,7 @@ importers:
         version: 0.45.2(kysely@0.28.11)(pg@8.18.0)(postgres@3.4.8)(sqlite3@5.1.7)
       embedded-postgres:
         specifier: ^18.1.0-beta.16
-        version: 18.1.0-beta.16
+        version: 18.1.0-beta.16(patch_hash=d8b1e087e95f559a6342fc15954f11af22d9dca43a7fcca5762b6459913b5800)
       postgres:
         specifier: ^3.4.5
         version: 3.4.8
@@ -631,7 +639,7 @@ importers:
         version: 0.45.2(kysely@0.28.11)(pg@8.18.0)(postgres@3.4.8)(sqlite3@5.1.7)
       embedded-postgres:
         specifier: ^18.1.0-beta.16
-        version: 18.1.0-beta.16
+        version: 18.1.0-beta.16(patch_hash=d8b1e087e95f559a6342fc15954f11af22d9dca43a7fcca5762b6459913b5800)
       express:
         specifier: ^5.1.0
         version: 5.2.1
@@ -11854,7 +11862,7 @@ snapshots:
 
   electron-to-chromium@1.5.286: {}
 
-  embedded-postgres@18.1.0-beta.16:
+  embedded-postgres@18.1.0-beta.16(patch_hash=d8b1e087e95f559a6342fc15954f11af22d9dca43a7fcca5762b6459913b5800):
     dependencies:
       async-exit-hook: 2.0.1
       pg: 8.18.0
