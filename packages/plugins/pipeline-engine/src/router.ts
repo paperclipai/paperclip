@@ -1,4 +1,4 @@
-import { getIncomingEdges, getErrorEdges, getRootStageIds } from "./edge-utils.js";
+import { getIncomingEdges, getErrorEdges, getRootStageIds, getLoopEdges } from "./edge-utils.js";
 import type { EdgeDefinition, FailureAction, PipelineDefinition, PipelineStage, StageDefinition } from "./types.js";
 
 export class Router {
@@ -6,12 +6,14 @@ export class Router {
     pipeline: PipelineDefinition,
     stageRows: PipelineStage[],
     companyId: string,
+    loopEdgeCounts?: Record<string, number>,
   ): Promise<StageDefinition[]> {
     const stageStatusMap = new Map(stageRows.map((s) => [s.stageId, s]));
     const ready: StageDefinition[] = [];
     const edges = pipeline.edges ?? [];
     const stageIds = pipeline.stages.map((s) => s.id);
     const rootIds = new Set(getRootStageIds(stageIds, edges));
+    const counts = loopEdgeCounts ?? {};
 
     for (const stageDef of pipeline.stages) {
       const row = stageStatusMap.get(stageDef.id);
@@ -20,13 +22,40 @@ export class Router {
       // Skip sub-pipeline stages (they need dynamic materialization)
       if (stageDef.type === "sub-pipeline") continue;
 
-      if (rootIds.has(stageDef.id)) {
-        // Root stages are ready immediately
+      const incomingEdges = getIncomingEdges(stageDef.id, edges);
+      const hasOnlyLoopIncoming = rootIds.has(stageDef.id) && incomingEdges.length > 0;
+
+      if (rootIds.has(stageDef.id) && incomingEdges.length === 0) {
         ready.push(stageDef);
         continue;
       }
 
-      const incomingEdges = getIncomingEdges(stageDef.id, edges);
+      if (hasOnlyLoopIncoming) {
+        // Stage is a DAG root but has incoming loop edges.
+        // Ready on initial pass (no loop source completed yet), or when a loop edge fires.
+        const anyLoopSourceCompleted = incomingEdges.some((e) => {
+          const src = stageStatusMap.get(e.from);
+          return src?.status === "completed";
+        });
+        if (!anyLoopSourceCompleted) {
+          // Initial pass — no loop source has completed yet
+          ready.push(stageDef);
+          continue;
+        }
+        // Check if any loop edge is satisfied (source completed, iterations remain)
+        const loopSatisfied = incomingEdges.some((e) => {
+          if (e.type !== "loop") return false;
+          const src = stageStatusMap.get(e.from);
+          if (src?.status !== "completed") return false;
+          const edgeCount = counts[e.id] ?? 0;
+          return edgeCount < (e.max_iterations ?? 0);
+        });
+        if (loopSatisfied) {
+          ready.push(stageDef);
+        }
+        continue;
+      }
+
       if (incomingEdges.length === 0) continue;
 
       // Determine fan_in strategy
@@ -47,12 +76,33 @@ export class Router {
         const sourceCompleted = sourceRow.status === "completed" || sourceRow.status === "skipped";
 
         if (!sourceCompleted) {
-          allSourcesResolved = false;
+          // Loop edges: source completed means the loop-back fires
+          if (edge.type === "loop") {
+            allSourcesResolved = false;
+          } else {
+            allSourcesResolved = false;
+          }
           continue;
         }
 
-        // sourceHandle-based routing: edge satisfied only if source decision matches
-        if (edge.sourceHandle) {
+        // Loop edge: check if iterations exhausted
+        if (edge.type === "loop") {
+          const edgeCount = counts[edge.id] ?? 0;
+          if (edgeCount >= (edge.max_iterations ?? 0)) {
+            // Loop exhausted — treat as unsatisfied, but source is resolved
+            continue;
+          }
+        }
+
+        // activationKey-based routing: edge satisfied only if key is in source's tracks array
+        if (edge.activationKey) {
+          const sourceOutput = sourceRow.output as Record<string, unknown> | null;
+          const tracks = sourceOutput?.tracks;
+          if (Array.isArray(tracks) && tracks.includes(edge.activationKey)) {
+            satisfiedEdges.push(edge);
+          }
+        } else if (edge.sourceHandle) {
+          // sourceHandle-based routing: edge satisfied only if source decision matches
           const sourceOutput = sourceRow.output as Record<string, unknown> | null;
           if (sourceOutput?.decision === edge.sourceHandle) {
             satisfiedEdges.push(edge);
@@ -79,16 +129,38 @@ export class Router {
     return ready;
   }
 
+  getLoopEdgesForReadyStage(
+    stageId: string,
+    pipeline: PipelineDefinition,
+    stageRows: PipelineStage[],
+    loopEdgeCounts?: Record<string, number>,
+  ): EdgeDefinition[] {
+    const edges = pipeline.edges ?? [];
+    const stageStatusMap = new Map(stageRows.map((s) => [s.stageId, s]));
+    const counts = loopEdgeCounts ?? {};
+    const incomingLoopEdges = edges.filter(
+      (e) => e.to === stageId && e.type === "loop",
+    );
+    return incomingLoopEdges.filter((edge) => {
+      const sourceRow = stageStatusMap.get(edge.from);
+      if (!sourceRow || sourceRow.status !== "completed") return false;
+      const edgeCount = counts[edge.id] ?? 0;
+      return edgeCount < (edge.max_iterations ?? 0);
+    });
+  }
+
   async getSkippedStages(
     pipeline: PipelineDefinition,
     stageRows: PipelineStage[],
     companyId: string,
+    loopEdgeCounts?: Record<string, number>,
   ): Promise<StageDefinition[]> {
     const stageStatusMap = new Map(stageRows.map((s) => [s.stageId, s]));
     const skipped: StageDefinition[] = [];
     const edges = pipeline.edges ?? [];
     const stageIds = pipeline.stages.map((s) => s.id);
     const rootIds = new Set(getRootStageIds(stageIds, edges));
+    const counts = loopEdgeCounts ?? {};
 
     for (const stageDef of pipeline.stages) {
       const row = stageStatusMap.get(stageDef.id);
@@ -114,7 +186,22 @@ export class Router {
 
         if (!sourceCompleted) continue;
 
-        if (edge.sourceHandle) {
+        // Loop edge: check iterations
+        if (edge.type === "loop") {
+          const edgeCount = counts[edge.id] ?? 0;
+          if (edgeCount >= (edge.max_iterations ?? 0)) {
+            continue;
+          }
+        }
+
+        if (edge.activationKey) {
+          const sourceOutput = sourceRow.output as Record<string, unknown> | null;
+          const tracks = sourceOutput?.tracks;
+          if (Array.isArray(tracks) && tracks.includes(edge.activationKey)) {
+            anySatisfied = true;
+            break;
+          }
+        } else if (edge.sourceHandle) {
           const sourceOutput = sourceRow.output as Record<string, unknown> | null;
           if (sourceOutput?.decision === edge.sourceHandle) {
             anySatisfied = true;

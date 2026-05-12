@@ -16,12 +16,12 @@ interface ListAgentsResult {
 interface EdgeInspectorProps {
   edge: Edge;
   stageIds: string[];
-  onUpdate: (id: string, changes: Partial<{ label: string; sourceHandle: string; type: "default" | "error" }>) => void;
+  onUpdate: (id: string, changes: Partial<{ label: string; sourceHandle: string; type: "default" | "error" | "loop"; activationKey: string; max_iterations: number }>) => void;
   onDelete: (id: string) => void;
 }
 
 function EdgeInspector({ edge, stageIds, onUpdate, onDelete }: EdgeInspectorProps) {
-  const data = (edge.data ?? {}) as { sourceHandle?: string; type?: "default" | "error" };
+  const data = (edge.data ?? {}) as { sourceHandle?: string; type?: "default" | "error" | "loop"; activationKey?: string; max_iterations?: number };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -50,11 +50,33 @@ function EdgeInspector({ edge, stageIds, onUpdate, onDelete }: EdgeInspectorProp
         <select
           style={selectStyle}
           value={data.type ?? "default"}
-          onChange={(e) => onUpdate(edge.id, { type: e.target.value as "default" | "error" })}
+          onChange={(e) => onUpdate(edge.id, { type: e.target.value as "default" | "error" | "loop" })}
         >
           <option value="default">Default</option>
           <option value="error">Error</option>
+          <option value="loop">Loop</option>
         </select>
+      </FieldGroup>
+
+      {data.type === "loop" && (
+        <FieldGroup label="Max Iterations">
+          <input
+            type="number"
+            style={inputStyle}
+            value={data.max_iterations ?? 3}
+            min={1}
+            onChange={(e) => onUpdate(edge.id, { max_iterations: parseInt(e.target.value) || 1 })}
+          />
+        </FieldGroup>
+      )}
+
+      <FieldGroup label="Activation Key">
+        <input
+          style={inputStyle}
+          value={data.activationKey ?? ""}
+          onChange={(e) => onUpdate(edge.id, { activationKey: e.target.value })}
+          placeholder="e.g. backend"
+        />
       </FieldGroup>
 
       <button
@@ -226,7 +248,7 @@ export interface StageInspectorProps {
   currentPipelineName: string;
   onStageChange: (updated: StageDefinition, oldId?: string) => void;
   onStageDelete: (id: string) => void;
-  onEdgeUpdate: (id: string, changes: Partial<{ label: string; sourceHandle: string; type: "default" | "error" }>) => void;
+  onEdgeUpdate: (id: string, changes: Partial<{ label: string; sourceHandle: string; type: "default" | "error" | "loop"; activationKey: string; max_iterations: number }>) => void;
   onEdgeDelete: (id: string) => void;
 }
 

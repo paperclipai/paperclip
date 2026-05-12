@@ -30,8 +30,12 @@ function buildEdges(pipeline: PipelineDefinition): Edge[] {
     target: e.to,
     sourceHandle: e.sourceHandle ?? null,
     label: e.sourceHandle ?? e.label,
-    data: { type: e.type, sourceHandle: e.sourceHandle },
-    style: { stroke: e.type === "error" ? "#ef4444" : "#4b5563", strokeWidth: 2 },
+    data: { type: e.type, sourceHandle: e.sourceHandle, activationKey: e.activationKey, max_iterations: e.max_iterations },
+    style: {
+      stroke: e.type === "error" ? "#ef4444" : e.type === "loop" ? "#f59e0b" : "#4b5563",
+      strokeWidth: 2,
+      ...(e.type === "loop" ? { strokeDasharray: "5 3" } : {}),
+    },
     animated: false,
   }));
 }
@@ -126,8 +130,12 @@ export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasP
       target: e.to,
       sourceHandle: e.sourceHandle ?? null,
       label: e.sourceHandle ?? e.label,
-      data: { type: e.type, sourceHandle: e.sourceHandle },
-      style: { stroke: e.type === "error" ? "#ef4444" : "#4b5563", strokeWidth: 2 },
+      data: { type: e.type, sourceHandle: e.sourceHandle, activationKey: e.activationKey, max_iterations: e.max_iterations },
+      style: {
+        stroke: e.type === "error" ? "#ef4444" : e.type === "loop" ? "#f59e0b" : "#4b5563",
+        strokeWidth: 2,
+        ...(e.type === "loop" ? { strokeDasharray: "5 3" } : {}),
+      },
       selected: e.id === selectedEdgeId,
     })),
     [edgeDefs, selectedEdgeId],
@@ -289,7 +297,7 @@ export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasP
   }, [setNodes, setEdges]);
 
   const handleEdgeUpdate = useCallback(
-    (id: string, changes: Partial<{ label: string; sourceHandle: string; type: "default" | "error" }>) => {
+    (id: string, changes: Partial<{ label: string; sourceHandle: string; type: "default" | "error" | "loop"; activationKey: string; max_iterations: number }>) => {
       setEdgeDefs((prev) =>
         prev.map((e) =>
           e.id === id ? { ...e, ...changes } : e,
@@ -303,7 +311,7 @@ export function PipelineCanvas({ pipeline, companyId, onSaved }: PipelineCanvasP
                 ...(changes.label !== undefined ? { label: changes.label } : {}),
                 ...(changes.sourceHandle !== undefined ? { sourceHandle: changes.sourceHandle, label: changes.sourceHandle } : {}),
                 ...(changes.type !== undefined
-                  ? { style: { stroke: changes.type === "error" ? "#ef4444" : "#4b5563", strokeWidth: 2 } }
+                  ? { style: { stroke: changes.type === "error" ? "#ef4444" : changes.type === "loop" ? "#f59e0b" : "#4b5563", strokeWidth: 2, ...(changes.type === "loop" ? { strokeDasharray: "5 3" } : {}) } }
                   : {}),
                 data: { ...(e.data ?? {}), ...changes },
               }

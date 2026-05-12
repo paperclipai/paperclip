@@ -52,6 +52,9 @@ export function validatePipeline(
     if (!ids.has(edge.to)) {
       errors.push({ edgeId: edge.id, field: "to", message: `Edge "${edge.id}" references missing stage "${edge.to}"` });
     }
+    if (edge.type === "loop" && (!edge.max_iterations || edge.max_iterations <= 0)) {
+      errors.push({ edgeId: edge.id, field: "max_iterations", message: `Loop edge "${edge.id}" must have max_iterations > 0` });
+    }
   }
 
   if (decisionMap) {

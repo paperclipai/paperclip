@@ -1,5 +1,5 @@
 import type { EdgeDefinition, PipelineDefinition, StageDefinition } from "./types.js";
-import { buildAdjacencyFromEdges, getForwardEdges } from "./edge-utils.js";
+import { buildAdjacencyFromEdges, getForwardEdges, getLoopEdges } from "./edge-utils.js";
 
 export interface ValidationResult {
   valid: boolean;
@@ -68,10 +68,17 @@ export function validateDAG(pipeline: PipelineDefinition): ValidationResult {
     }
   }
 
-  // Cycle detection using forward edges only
+  // Cycle detection using forward edges only (loop edges excluded)
   const cycleError = detectCycle(pipeline.stages, pipeline.edges);
   if (cycleError) {
     errors.push(cycleError);
+  }
+
+  // Validate loop edges
+  for (const edge of getLoopEdges(pipeline.edges)) {
+    if (!edge.max_iterations || edge.max_iterations <= 0) {
+      errors.push(`loop edge "${edge.id}" must have max_iterations > 0`);
+    }
   }
 
   return { valid: errors.length === 0, errors };

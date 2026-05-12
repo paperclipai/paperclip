@@ -2,6 +2,7 @@ import type { EdgeDefinition } from "./types.js";
 
 /**
  * Returns all edges whose destination is the given stage, excluding error edges.
+ * Loop edges are included as they represent valid incoming paths.
  */
 export function getIncomingEdges(stageId: string, edges: EdgeDefinition[]): EdgeDefinition[] {
   return edges.filter((e) => e.to === stageId && e.type !== "error");
@@ -15,10 +16,17 @@ export function getOutgoingEdges(stageId: string, edges: EdgeDefinition[]): Edge
 }
 
 /**
- * Returns all edges that are not error edges (type !== "error").
+ * Returns all edges that are not error or loop edges.
  */
 export function getForwardEdges(edges: EdgeDefinition[]): EdgeDefinition[] {
-  return edges.filter((e) => e.type !== "error");
+  return edges.filter((e) => e.type !== "error" && e.type !== "loop");
+}
+
+/**
+ * Returns all edges where type === "loop".
+ */
+export function getLoopEdges(edges: EdgeDefinition[]): EdgeDefinition[] {
+  return edges.filter((e) => e.type === "loop");
 }
 
 /**

@@ -47,8 +47,10 @@ export interface EdgeDefinition {
   id: string;
   from: string;
   to: string;
-  type?: "default" | "error";
+  type?: "default" | "error" | "loop";
   sourceHandle?: string;  // decision enum value
+  activationKey?: string;
+  max_iterations?: number;
   label?: string;
 }
 

@@ -18,6 +18,7 @@ export class StateMachine {
   }
 
   private activeLocks = new Set<string>();
+  private loopEdgeCounts = new Map<string, Record<string, number>>();
 
   async tryAdvisoryLock(runId: string): Promise<boolean> {
     if (this.activeLocks.has(runId)) return false;
@@ -27,6 +28,27 @@ export class StateMachine {
 
   async releaseAdvisoryLock(runId: string): Promise<void> {
     this.activeLocks.delete(runId);
+  }
+
+  getLoopEdgeCounts(runId: string): Record<string, number> {
+    return this.loopEdgeCounts.get(runId) ?? {};
+  }
+
+  incrementLoopEdgeCount(runId: string, edgeId: string): number {
+    const counts = this.loopEdgeCounts.get(runId) ?? {};
+    counts[edgeId] = (counts[edgeId] ?? 0) + 1;
+    this.loopEdgeCounts.set(runId, counts);
+    return counts[edgeId];
+  }
+
+  async resetLoopBodyStages(pipelineRunId: string, stageIds: string[]): Promise<void> {
+    if (stageIds.length === 0) return;
+    const placeholders = stageIds.map((_, i) => `$${i + 2}`).join(", ");
+    await this.db.execute(
+      `UPDATE ${this.table("pipeline_stages")} SET status = 'pending', output = NULL, error = NULL, started_at = NULL, completed_at = NULL
+       WHERE pipeline_run_id = $1 AND stage_id IN (${placeholders})`,
+      [pipelineRunId, ...stageIds],
+    );
   }
 
   async claimStageForDispatch(stageRowId: string): Promise<boolean> {
