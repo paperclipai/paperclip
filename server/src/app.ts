@@ -142,7 +142,14 @@ export async function createApp(
   // (e.g. /api/companies/:cid/issues at limit=500) shrink ~6× on the
   // wire; the static UI bundle and CSS shrink ~3–7×. CPU overhead is
   // ~30ms for the largest list response; trivial vs network savings.
-  app.use(compression());
+  app.use(compression({
+    filter: (req, res) => {
+      // Never compress SSE streams — the zlib buffer prevents immediate
+      // event delivery. Let the default filter handle everything else.
+      if (req.headers.accept?.includes("text/event-stream")) return false;
+      return compression.filter(req, res);
+    },
+  }));
 
   app.use(express.json({
     // Company import/export payloads can inline full portable packages.
