@@ -213,8 +213,6 @@ export function approvalRoutes(
       const linkedIssueIds = linkedIssueDetails.issueIds;
       const primaryIssueId = linkedIssueIds[0] ?? null;
 
-      notifyApprovalResolved(approval);
-
       await logActivity(db, {
         companyId: approval.companyId,
         actorType: "user",
@@ -228,6 +226,8 @@ export function approvalRoutes(
           ...linkedIssueDetails,
         },
       });
+
+      notifyApprovalResolved(approval);
 
       if (approval.requestedByAgentId) {
         try {
@@ -309,7 +309,6 @@ export function approvalRoutes(
     if (applied) {
       const linkedIssueRefs = await listLinkedIssueRefs(approval.id, [], { action: "approval.rejected", phase: "after" });
       const linkedIssueDetails = linkedIssueActivityDetails(linkedIssueRefs);
-      notifyApprovalResolved(approval);
 
       await logActivity(db, {
         companyId: approval.companyId,
@@ -320,6 +319,8 @@ export function approvalRoutes(
         entityId: approval.id,
         details: { type: approval.type, ...linkedIssueDetails },
       });
+
+      notifyApprovalResolved(approval);
     }
 
     res.json(redactApprovalPayload(approval));

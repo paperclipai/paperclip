@@ -2142,7 +2142,7 @@ export function buildHostServices(
           }
         }
 
-        const { row } = await db.transaction(async (tx) => {
+        const { row, linkedIssues } = await db.transaction(async (tx) => {
           const txDb = tx as unknown as Db;
           const txApprovals = approvalService(txDb);
           const txIssueApprovals = issueApprovalService(txDb);
@@ -2176,31 +2176,31 @@ export function buildHostServices(
             );
             linkedIssues = [...linkedIssues, { id: params.issueId, identifier: null }];
           }
-          const issueIds = linkedIssues.map((issue) => issue.id);
-          const issueRefs = linkedIssues.map((issue) => ({ id: issue.id, identifier: issue.identifier ?? null }));
+          return { row, linkedIssues };
+        });
+        const issueIds = linkedIssues.map((issue) => issue.id);
+        const issueRefs = linkedIssues.map((issue) => ({ id: issue.id, identifier: issue.identifier ?? null }));
 
-          await logActivity(txDb, {
-            companyId,
-            actorType: "plugin",
-            actorId: pluginId,
-            agentId: params.actorAgentId ?? undefined,
-            runId: params.actorRunId ?? undefined,
-            action: "approval.created",
-            entityType: "approval",
-            entityId: row.id,
-            details: {
-              type: row.type,
-              sourcePluginId: pluginId,
-              sourcePluginKey: pluginKey,
-              issueIds,
-              linkedIssueIds: issueIds,
-              issueRefs,
-              initiatingActorType: params.actorAgentId ? "agent" : "plugin",
-              initiatingActorId: params.actorAgentId ?? pluginId,
-              ...(params.actorRunId ? { initiatingRunId: params.actorRunId } : {}),
-            },
-          });
-          return { row };
+        await logActivity(db, {
+          companyId,
+          actorType: "plugin",
+          actorId: pluginId,
+          agentId: params.actorAgentId ?? undefined,
+          runId: params.actorRunId ?? undefined,
+          action: "approval.created",
+          entityType: "approval",
+          entityId: row.id,
+          details: {
+            type: row.type,
+            sourcePluginId: pluginId,
+            sourcePluginKey: pluginKey,
+            issueIds,
+            linkedIssueIds: issueIds,
+            issueRefs,
+            initiatingActorType: params.actorAgentId ? "agent" : "plugin",
+            initiatingActorId: params.actorAgentId ?? pluginId,
+            ...(params.actorRunId ? { initiatingRunId: params.actorRunId } : {}),
+          },
         });
 
         return { approvalId: row.id, status: row.status };
