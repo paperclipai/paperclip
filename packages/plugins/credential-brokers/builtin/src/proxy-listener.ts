@@ -88,6 +88,34 @@ interface AnnotatedTlsSocket extends TLSSocket {
   __brokerUpstreamPort?: number;
 }
 
+/**
+ * Parse a CONNECT target of the form `host:port` or `[ipv6]:port`. Falls
+ * back to port 443 when the port portion is missing or malformed. The
+ * host is returned without brackets so it can be used directly as the
+ * `host` field on `https.request` (Node accepts unbracketed IPv6 there)
+ * and as the SNI servername for the per-session leaf.
+ *
+ * @internal — exported for unit testing.
+ */
+export function parseConnectTarget(url: string): { host: string; port: number } {
+  // Bracketed IPv6: [::1]:443
+  if (url.startsWith("[")) {
+    const close = url.indexOf("]");
+    if (close === -1) return { host: url, port: 443 };
+    const host = url.slice(1, close);
+    const rest = url.slice(close + 1);
+    if (!rest.startsWith(":")) return { host, port: 443 };
+    const port = Number.parseInt(rest.slice(1), 10);
+    return { host, port: Number.isFinite(port) ? port : 443 };
+  }
+  // Plain host:port; last colon separates (DNS labels can't contain `:`).
+  const lastColon = url.lastIndexOf(":");
+  if (lastColon === -1) return { host: url, port: 443 };
+  const host = url.slice(0, lastColon);
+  const port = Number.parseInt(url.slice(lastColon + 1), 10);
+  return { host, port: Number.isFinite(port) ? port : 443 };
+}
+
 export function createProxyListener(
   input: CreateProxyListenerInput,
 ): ProxyListener {
@@ -189,9 +217,7 @@ export function createProxyListener(
 
   outer.on("connect", (req, socket, head) => {
     const startedAt = Date.now();
-    const target = (req.url ?? "").split(":");
-    const host = target[0] ?? "";
-    const port = target[1] ? Number.parseInt(target[1], 10) : 443;
+    const { host, port } = parseConnectTarget(req.url ?? "");
     const auth = req.headers["proxy-authorization"];
     const authToken = typeof auth === "string"
       ? auth.replace(/^\s*Bearer\s+/i, "")
@@ -252,7 +278,7 @@ export function createProxyListener(
     }) as AnnotatedTlsSocket;
     tlsSocket.__brokerSession = session;
     tlsSocket.__brokerUpstreamHost = host;
-    tlsSocket.__brokerUpstreamPort = Number.isFinite(port) ? port : 443;
+    tlsSocket.__brokerUpstreamPort = port;
     if (head.length > 0) tlsSocket.unshift(head);
 
     tlsSocket.on("error", () => {

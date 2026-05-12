@@ -74,11 +74,18 @@ export function buildCredentialBrokerCtx(deps: {
         if (provider.config.broker?.supported !== true) continue;
         const hosts = extractHostsFromProviderConfig(provider.config);
         if (hosts.length === 0) continue;
+        // Per-provider header override (e.g. X-API-Key) when the YAML
+        // declares one; otherwise fall back to the OAuth Bearer
+        // convention which covers GitHub, Slack, Linear, etc.
+        const headerInjection = provider.config.broker?.headerInjection ?? {
+          header: "Authorization",
+          format: "Bearer {value}",
+        };
         out.push({
           id: row.id,
           providerId: row.providerId,
           hosts,
-          headerInjection: { header: "Authorization", format: "Bearer {value}" },
+          headerInjection,
         });
       }
       return out;
@@ -88,12 +95,17 @@ export function buildCredentialBrokerCtx(deps: {
 }
 
 /**
- * Pull unique hostnames out of a provider's endpoints URLs. These are
- * the upstream hosts the broker's proxy will allowlist for the
- * provider's OAuth bindings.
+ * Pull unique hostnames out of a provider's endpoints URLs *and* any
+ * explicit `broker.apiHosts` declared in the provider YAML. The
+ * endpoint hostnames are typically enough for providers like GitHub
+ * (where `api.github.com` is the accountInfo endpoint), but
+ * providers whose main API host isn't an OAuth endpoint — Slack
+ * (`slack.com/api/...`), Microsoft Graph (`graph.microsoft.com`),
+ * etc. — declare them under `broker.apiHosts`.
  */
 function extractHostsFromProviderConfig(config: {
   endpoints: { authorize: string; token: string; accountInfo: string; revoke?: string };
+  broker?: { apiHosts?: string[] };
 }): string[] {
   const urls = [
     config.endpoints.authorize,
@@ -109,6 +121,10 @@ function extractHostsFromProviderConfig(config: {
     } catch {
       // ignore malformed
     }
+  }
+  for (const h of config.broker?.apiHosts ?? []) {
+    const trimmed = h.trim().toLowerCase();
+    if (trimmed) hosts.add(trimmed);
   }
   return Array.from(hosts);
 }

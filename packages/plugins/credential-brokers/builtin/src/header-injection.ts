@@ -37,9 +37,17 @@ function containsPlaceholder(
   return false;
 }
 
-/** Token-format substitution that tolerates either `{value}` or no placeholder. */
+/**
+ * Token-format substitution that tolerates either `{value}` or no placeholder.
+ *
+ * Uses split/join rather than `String.prototype.replace(string, string)`
+ * because the latter interprets special `$` patterns in the replacement
+ * (`$&`, `$$`, `` $` ``, `$'`) — an OAuth bearer that contained any of
+ * those would be silently corrupted and the upstream would reject the
+ * request with a 401. split/join treats the value as raw text.
+ */
 function applyFormat(format: string, value: string): string {
-  return format.includes("{value}") ? format.replace("{value}", value) : value;
+  return format.includes("{value}") ? format.split("{value}").join(value) : value;
 }
 
 export function rewriteHeadersForUpstream(

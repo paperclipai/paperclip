@@ -77,6 +77,16 @@ describe("rewriteHeadersForUpstream", () => {
     expect(r.strippedPlaceholder).toBe(true);
   });
 
+  it("treats $-sequences in the bearer as literal text (no String.replace shenanigans)", () => {
+    const r = rewriteHeadersForUpstream({
+      headers: {},
+      rule: githubRule,
+      bearer: "ghs_$&LOOKS$_$LIKE$REGEX'$$",
+      knownPlaceholders: [],
+    });
+    expect(r.headers.authorization).toBe("Bearer ghs_$&LOOKS$_$LIKE$REGEX'$$");
+  });
+
   it("supports format strings without {value} (raw value)", () => {
     const r = rewriteHeadersForUpstream({
       headers: {},
