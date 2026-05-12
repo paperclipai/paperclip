@@ -46,6 +46,27 @@ const DEFAULT_NO_PROXY = [
   // PAPERCLIP_BROKER_NO_PROXY_EXTRA.
 ].join(",");
 
+/**
+ * Embed the session token in the proxy URL's userInfo segment. Standard
+ * HTTP clients (curl, Python requests, Node's https-proxy-agent) only
+ * send `Proxy-Authorization` when credentials are encoded in the URL
+ * this way — they then issue `Basic base64(user:pass)`. The broker's
+ * proxy-listener accepts both Bearer and Basic, treating the password
+ * portion of a Basic header as the session token. Without this the
+ * proxy returns 407 on every CONNECT and the agent fails silently.
+ */
+function buildAuthenticatedProxyUrl(
+  proxyUrl: string,
+  sessionToken: string,
+): string {
+  const parsed = new URL(proxyUrl);
+  // Encode the token so any URL-reserved characters survive the round
+  // trip; the listener URL-decodes the Basic password before lookup.
+  parsed.username = "session";
+  parsed.password = encodeURIComponent(sessionToken);
+  return parsed.toString();
+}
+
 export function materializeBrokerSessionForRuntime(
   session: BrokerRuntimeEnvInput,
 ): BrokerRuntimeEnv {
@@ -58,14 +79,19 @@ export function materializeBrokerSessionForRuntime(
     ? `${DEFAULT_NO_PROXY},${process.env.PAPERCLIP_BROKER_NO_PROXY_EXTRA}`
     : DEFAULT_NO_PROXY;
 
+  const authedProxyUrl = buildAuthenticatedProxyUrl(
+    session.proxyUrl,
+    session.sessionToken,
+  );
+
   return {
     caPath,
     env: {
-      HTTPS_PROXY: session.proxyUrl,
-      HTTP_PROXY: session.proxyUrl,
+      HTTPS_PROXY: authedProxyUrl,
+      HTTP_PROXY: authedProxyUrl,
       // Some HTTP clients honor lowercase variants only.
-      https_proxy: session.proxyUrl,
-      http_proxy: session.proxyUrl,
+      https_proxy: authedProxyUrl,
+      http_proxy: authedProxyUrl,
       NO_PROXY: noProxy,
       no_proxy: noProxy,
       // CA-trust env: the union supported across the language runtimes

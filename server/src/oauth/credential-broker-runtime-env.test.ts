@@ -29,22 +29,39 @@ describe("materializeBrokerSessionForRuntime", () => {
     expect(mode & 0o077).toBe(0); // no read for group/other
   });
 
-  it("populates the full CA-trust env-var union", () => {
+  it("populates the full CA-trust env-var union and embeds the session token in HTTPS_PROXY", () => {
     const out = materializeBrokerSessionForRuntime({
       proxyUrl: "http://127.0.0.1:54321",
       caCertPem: "X",
-      sessionToken: "session-2",
+      sessionToken: "session-2-token",
     });
-    expect(out.env.HTTPS_PROXY).toBe("http://127.0.0.1:54321");
-    expect(out.env.HTTP_PROXY).toBe("http://127.0.0.1:54321");
-    expect(out.env.https_proxy).toBe("http://127.0.0.1:54321");
-    expect(out.env.http_proxy).toBe("http://127.0.0.1:54321");
+    // The session token MUST be embedded in the proxy URL so that
+    // HTTP clients (curl, Python requests, Node's https-proxy-agent)
+    // send `Proxy-Authorization: Basic base64(session:<token>)` on
+    // every CONNECT. Without it the broker returns 407 silently.
+    const parsed = new URL(out.env.HTTPS_PROXY!);
+    expect(parsed.username).toBe("session");
+    expect(decodeURIComponent(parsed.password)).toBe("session-2-token");
+    expect(parsed.host).toBe("127.0.0.1:54321");
+    expect(out.env.HTTP_PROXY).toBe(out.env.HTTPS_PROXY);
+    expect(out.env.https_proxy).toBe(out.env.HTTPS_PROXY);
+    expect(out.env.http_proxy).toBe(out.env.HTTPS_PROXY);
     expect(out.env.SSL_CERT_FILE).toBe(out.caPath);
     expect(out.env.NODE_EXTRA_CA_CERTS).toBe(out.caPath);
     expect(out.env.REQUESTS_CA_BUNDLE).toBe(out.caPath);
     expect(out.env.CURL_CA_BUNDLE).toBe(out.caPath);
     expect(out.env.GIT_SSL_CAINFO).toBe(out.caPath);
     expect(out.env.DENO_CERT).toBe(out.caPath);
+  });
+
+  it("URI-encodes session tokens containing URL-reserved characters", () => {
+    const out = materializeBrokerSessionForRuntime({
+      proxyUrl: "http://127.0.0.1:54321",
+      caCertPem: "X",
+      sessionToken: "abc/def+ghi=jk:lm@n",
+    });
+    const parsed = new URL(out.env.HTTPS_PROXY!);
+    expect(decodeURIComponent(parsed.password)).toBe("abc/def+ghi=jk:lm@n");
   });
 
   it("includes 127.0.0.1 and localhost in NO_PROXY by default", () => {

@@ -97,6 +97,44 @@ interface AnnotatedTlsSocket extends TLSSocket {
  *
  * @internal — exported for unit testing.
  */
+/**
+ * Pull the session token out of a `Proxy-Authorization` header. Two
+ * schemes are accepted:
+ *
+ *  - **Bearer** (`Bearer <token>`): used by clients that can be
+ *    configured to send a custom proxy auth header — e.g. our own e2e
+ *    test harness.
+ *  - **Basic** (`Basic base64(user:pass)`): the canonical scheme
+ *    standard HTTP libraries (curl, Python requests, Node's
+ *    https-proxy-agent) emit when the `HTTPS_PROXY` URL embeds
+ *    `http://user:pass@host:port`. We treat the password portion as
+ *    the session token; the username is unused but conventionally
+ *    `session` (set by the server-side env materializer). The token is
+ *    `decodeURIComponent`'d because the materializer URI-encodes it
+ *    before splicing into the URL userInfo segment.
+ *
+ * @internal — exported for unit testing.
+ */
+export function extractSessionTokenFromProxyAuth(header: string): string {
+  const trimmed = header.trim();
+  const bearerMatch = /^Bearer\s+(\S+)\s*$/i.exec(trimmed);
+  if (bearerMatch) return bearerMatch[1] ?? "";
+  const basicMatch = /^Basic\s+([A-Za-z0-9+/=]+)\s*$/i.exec(trimmed);
+  if (basicMatch) {
+    try {
+      const decoded = Buffer.from(basicMatch[1] ?? "", "base64").toString(
+        "utf8",
+      );
+      const colon = decoded.indexOf(":");
+      if (colon === -1) return "";
+      return decodeURIComponent(decoded.slice(colon + 1));
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+
 export function parseConnectTarget(url: string): { host: string; port: number } {
   // Bracketed IPv6: [::1]:443
   if (url.startsWith("[")) {
@@ -220,7 +258,7 @@ export function createProxyListener(
     const { host, port } = parseConnectTarget(req.url ?? "");
     const auth = req.headers["proxy-authorization"];
     const authToken = typeof auth === "string"
-      ? auth.replace(/^\s*Bearer\s+/i, "")
+      ? extractSessionTokenFromProxyAuth(auth)
       : "";
     const session = authToken ? input.store.get(authToken) : undefined;
 
