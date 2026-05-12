@@ -107,23 +107,31 @@ export async function runRefreshTick(deps: RefreshWorkerDeps): Promise<void> {
         // truth; if the broker push fails, dispatched runs will pick up
         // the new token on the next mintSession (or via the 401-driven
         // retry path in M4).
-        if (result && result.outcome === "success" && broker) {
-          try {
-            await broker.pushCredential({
-              companyId: (row as { companyId: string }).companyId,
-              connectionId: row.id,
-              field: "access",
-              value: result.accessToken,
-            });
-          } catch (pushErr) {
-            oauthLogger.warn(
-              {
+        if (result && result.outcome === "success") {
+          if (broker) {
+            try {
+              await broker.pushCredential({
+                companyId: (row as { companyId: string }).companyId,
                 connectionId: row.id,
-                err: { message: (pushErr as Error).message },
-              },
-              "credential-broker pushCredential failed after refresh",
-            );
+                field: "access",
+                value: result.accessToken,
+              });
+            } catch (pushErr) {
+              oauthLogger.warn(
+                {
+                  connectionId: row.id,
+                  err: { message: (pushErr as Error).message },
+                },
+                "credential-broker pushCredential failed after refresh",
+              );
+            }
           }
+          // BYO push targets — best-effort POST to each registered URL.
+          await pushToByoBrokerTargets({
+            row,
+            accessToken: result.accessToken,
+            secretService: deps.secretService,
+          });
         }
       } catch (err) {
         oauthLogger.error(
@@ -163,4 +171,75 @@ export function startRefreshWorker(
       clearTimeout(timeout);
     },
   };
+}
+
+interface ByoBrokerTarget {
+  id: string;
+  url: string;
+  authTokenSecretId: string;
+  addedAt: string;
+}
+
+/**
+ * Best-effort fan-out: POST the rotated access token to each registered
+ * BYO broker push target. Failures log without propagating — the DB
+ * row is the source of truth; operators whose brokers are temporarily
+ * unreachable pick up the new value via their next mintSession path
+ * or on demand from their own backoff loop.
+ */
+async function pushToByoBrokerTargets(input: {
+  row: { id: string; companyId: string; brokerTargets?: unknown[] | null };
+  accessToken: string;
+  secretService: RefreshSecretService;
+}): Promise<void> {
+  const targets =
+    (input.row.brokerTargets as ByoBrokerTarget[] | null | undefined) ?? [];
+  if (targets.length === 0) return;
+  for (const target of targets) {
+    try {
+      const authToken = await input.secretService.resolveSecretValue(
+        input.row.companyId,
+        target.authTokenSecretId,
+        "latest",
+      );
+      const ctrl = new AbortController();
+      const timeoutId = setTimeout(() => ctrl.abort(), 10_000);
+      try {
+        const response = await fetch(target.url, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${authToken}`,
+          },
+          body: JSON.stringify({
+            connectionId: input.row.id,
+            field: "access",
+            value: input.accessToken,
+          }),
+          signal: ctrl.signal,
+        });
+        if (!response.ok) {
+          oauthLogger.warn(
+            {
+              connectionId: input.row.id,
+              targetId: target.id,
+              status: response.status,
+            },
+            "BYO broker target rejected push",
+          );
+        }
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    } catch (err) {
+      oauthLogger.warn(
+        {
+          connectionId: input.row.id,
+          targetId: target.id,
+          err: { message: (err as Error).message },
+        },
+        "BYO broker target push failed",
+      );
+    }
+  }
 }
