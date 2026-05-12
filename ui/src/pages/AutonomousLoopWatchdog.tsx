@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import { AlertTriangle, Eye, ShieldCheck } from "lucide-react";
 import { Link } from "@/lib/router";
 import { autonomousLoopWatchdogApi } from "../api/autonomousLoopWatchdog";
@@ -84,9 +84,15 @@ export function AutonomousLoopWatchdog() {
     setBreadcrumbs([{ label: "Observability" }]);
   }, [setBreadcrumbs]);
 
-  const { data, error, isLoading } = useQuery({
-    queryKey: queryKeys.autonomousLoopWatchdog.preview(selectedCompanyId!, WATCHDOG_PREVIEW_LIMIT),
-    queryFn: () => autonomousLoopWatchdogApi.preview(selectedCompanyId!, { limit: WATCHDOG_PREVIEW_LIMIT }),
+  const { data, error, isLoading, hasNextPage, isFetchingNextPage, fetchNextPage } = useInfiniteQuery({
+    queryKey: [...queryKeys.autonomousLoopWatchdog.preview(selectedCompanyId!, WATCHDOG_PREVIEW_LIMIT), "infinite"],
+    queryFn: ({ pageParam }) =>
+      autonomousLoopWatchdogApi.preview(
+        selectedCompanyId!,
+        pageParam ? { limit: WATCHDOG_PREVIEW_LIMIT, cursor: pageParam } : { limit: WATCHDOG_PREVIEW_LIMIT },
+      ),
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => (lastPage.hasMore ? lastPage.nextCursor : undefined),
     enabled: !!selectedCompanyId,
     refetchInterval: 30_000,
   });
@@ -99,7 +105,10 @@ export function AutonomousLoopWatchdog() {
     return <PageSkeleton variant="list" />;
   }
 
-  const candidates = data?.candidates ?? [];
+  const pages = data?.pages ?? [];
+  const candidates = pages.flatMap((page) => page.candidates);
+  const totalIssuesScanned = pages.reduce((total, page) => total + page.totalIssuesScanned, 0);
+  const readOnly = pages.some((page) => page.readOnly === true);
 
   return (
     <div className="space-y-5">
@@ -116,7 +125,7 @@ export function AutonomousLoopWatchdog() {
           </p>
         </div>
         <div className="rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
-          <div className="font-medium text-foreground">{data?.totalIssuesScanned ?? 0} issues scanned</div>
+          <div className="font-medium text-foreground">{totalIssuesScanned} issues scanned</div>
           <div>{candidates.length} candidates</div>
         </div>
       </div>
@@ -127,17 +136,17 @@ export function AutonomousLoopWatchdog() {
         </div>
       ) : null}
 
-      {data?.readOnly === true ? (
+      {readOnly ? (
         <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
           <ShieldCheck className="h-4 w-4" />
           Preview mode is read-only. Operator actions stay outside this panel.
         </div>
       ) : null}
 
-      {data && candidates.length === 0 ? (
+      {pages.length > 0 && candidates.length === 0 ? (
         <EmptyState
           icon={AlertTriangle}
-          message={`No watchdog candidates in the latest ${data.totalIssuesScanned} scanned open issues.`}
+          message={`No watchdog candidates in the latest ${totalIssuesScanned} scanned open issues.`}
         />
       ) : null}
 
@@ -146,6 +155,21 @@ export function AutonomousLoopWatchdog() {
           {candidates.map((candidate) => (
             <CandidateCard key={candidate.id} candidate={candidate} />
           ))}
+        </div>
+      ) : null}
+
+      {hasNextPage ? (
+        <div className="flex justify-center">
+          <button
+            type="button"
+            className="rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={isFetchingNextPage}
+            onClick={() => {
+              void fetchNextPage({ cancelRefetch: false });
+            }}
+          >
+            Load more watchdog candidates{isFetchingNextPage ? "…" : ""}
+          </button>
         </div>
       ) : null}
     </div>

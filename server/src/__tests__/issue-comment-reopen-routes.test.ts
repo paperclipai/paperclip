@@ -15,6 +15,7 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 const mockListMissionControlCompletionDocuments = vi.hoisted(() => vi.fn());
 const mockListAutonomousGoalLoopWatchdogPreview = vi.hoisted(() => vi.fn());
+const mockIsValidAutonomousGoalLoopWatchdogCursor = vi.hoisted(() => vi.fn());
 const mockListAutonomousGoalLoopWatchdogRecoveryPlanPreview = vi.hoisted(() => vi.fn());
 
 const mockAccessService = vi.hoisted(() => ({
@@ -109,6 +110,7 @@ vi.mock("../services/mission-control-gates.js", () => ({
 }));
 
 vi.mock("../services/autonomous-loop-watchdog-preview.js", () => ({
+  isValidAutonomousGoalLoopWatchdogCursor: mockIsValidAutonomousGoalLoopWatchdogCursor,
   listAutonomousGoalLoopWatchdogPreview: mockListAutonomousGoalLoopWatchdogPreview,
 }));
 
@@ -317,12 +319,16 @@ describe.sequential("issue comment reopen routes", () => {
     mockListMissionControlCompletionDocuments.mockReset();
     mockListMissionControlCompletionDocuments.mockResolvedValue([]);
     mockListAutonomousGoalLoopWatchdogPreview.mockReset();
+    mockIsValidAutonomousGoalLoopWatchdogCursor.mockReset();
+    mockIsValidAutonomousGoalLoopWatchdogCursor.mockImplementation((cursor: string) => cursor === "opaque-watchdog-cursor-1");
     mockListAutonomousGoalLoopWatchdogPreview.mockResolvedValue({
       companyId: "company-1",
       mode: "preview",
       readOnly: true,
       generatedAt: "2026-05-11T10:00:00.000Z",
       totalIssuesScanned: 0,
+      hasMore: false,
+      nextCursor: null,
       candidates: [],
     });
     mockListAutonomousGoalLoopWatchdogRecoveryPlanPreview.mockReset();
@@ -388,6 +394,8 @@ describe.sequential("issue comment reopen routes", () => {
       readOnly: true,
       generatedAt: "2026-05-11T10:00:00.000Z",
       totalIssuesScanned: 2,
+      hasMore: true,
+      nextCursor: "opaque-watchdog-cursor-1",
       candidates: [
         {
           id: "issue-1:repair_loop_decision:ceo_loop_decision_stale",
@@ -408,7 +416,7 @@ describe.sequential("issue comment reopen routes", () => {
     });
 
     const res = await request(await installActor(createApp()))
-      .get("/api/companies/company-1/autonomous-loop-watchdog/preview?limit=25")
+      .get("/api/companies/company-1/autonomous-loop-watchdog/preview?limit=25&cursor=opaque-watchdog-cursor-1")
       .send();
 
     expect(res.status).toBe(200);
@@ -417,6 +425,8 @@ describe.sequential("issue comment reopen routes", () => {
       mode: "preview",
       readOnly: true,
       totalIssuesScanned: 2,
+      hasMore: true,
+      nextCursor: "opaque-watchdog-cursor-1",
       candidates: [
         expect.objectContaining({
           owner: "operator",
@@ -425,7 +435,10 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       ],
     });
-    expect(mockListAutonomousGoalLoopWatchdogPreview).toHaveBeenCalledWith(mockDb, "company-1", { limit: 25 });
+    expect(mockListAutonomousGoalLoopWatchdogPreview).toHaveBeenCalledWith(mockDb, "company-1", {
+      limit: 25,
+      cursor: "opaque-watchdog-cursor-1",
+    });
   });
 
   it("rejects non-board actors for autonomous loop watchdog previews", async () => {
@@ -444,6 +457,16 @@ describe.sequential("issue comment reopen routes", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("Invalid limit");
+    expect(mockListAutonomousGoalLoopWatchdogPreview).not.toHaveBeenCalled();
+  });
+
+  it("validates autonomous loop watchdog preview cursors", async () => {
+    const res = await request(await installActor(createApp()))
+      .get("/api/companies/company-1/autonomous-loop-watchdog/preview?cursor=issue-1")
+      .send();
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid cursor");
     expect(mockListAutonomousGoalLoopWatchdogPreview).not.toHaveBeenCalled();
   });
 

@@ -99,6 +99,8 @@ describe("AutonomousLoopWatchdog page", () => {
       readOnly: true,
       generatedAt: "2026-05-11T10:00:00.000Z",
       totalIssuesScanned: 25,
+      hasMore: true,
+      nextCursor: "issue-2",
       candidates: [
         {
           id: "issue-1:repair_loop_decision:ceo_loop_decision_stale",
@@ -148,6 +150,7 @@ describe("AutonomousLoopWatchdog page", () => {
       expect(container.textContent).not.toContain("Metric");
       expect(container.textContent).toContain("Internal repair");
       expect(container.textContent).toContain("Review and rewrite the ceo-loop-decision document.");
+      expect(container.textContent).toContain("Load more watchdog candidates");
     });
 
     const issueLink = container.querySelector('a[href="/PAP/issues/PAP-581"]');
@@ -167,6 +170,8 @@ describe("AutonomousLoopWatchdog page", () => {
       readOnly: true,
       generatedAt: "2026-05-11T10:00:00.000Z",
       totalIssuesScanned: 25,
+      hasMore: false,
+      nextCursor: null,
       candidates: [],
     });
 
@@ -175,6 +180,87 @@ describe("AutonomousLoopWatchdog page", () => {
     await waitForAssertion(() => {
       expect(container.textContent).toContain("No watchdog candidates in the latest 25 scanned open issues.");
       expect(container.textContent).not.toContain("all clear");
+    });
+
+    await act(async () => root.unmount());
+  });
+
+  it("loads additional watchdog pages with the server cursor", async () => {
+    watchdogApiMock.preview
+      .mockResolvedValueOnce({
+        companyId: "company-1",
+        mode: "preview",
+        readOnly: true,
+        generatedAt: "2026-05-11T10:00:00.000Z",
+        totalIssuesScanned: 25,
+        hasMore: true,
+        nextCursor: "opaque-watchdog-cursor-1",
+        candidates: [
+          {
+            id: "issue-1:manual_review:missing_ceo_loop_decision",
+            kind: "loop_manual_review",
+            severity: "medium",
+            owner: "operator",
+            issueId: "issue-1",
+            identifier: "PAP-581",
+            title: "First loop",
+            status: "in_progress",
+            reason: "missing_ceo_loop_decision",
+            recoveryAction: "manual_review",
+            recommendedAction: "Inspect the issue and add a fresh decision document.",
+            userVisible: false,
+            generatedAt: "2026-05-11T10:00:00.000Z",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        companyId: "company-1",
+        mode: "preview",
+        readOnly: true,
+        generatedAt: "2026-05-11T10:01:00.000Z",
+        totalIssuesScanned: 1,
+        hasMore: false,
+        nextCursor: null,
+        candidates: [
+          {
+            id: "issue-2:manual_review:missing_ceo_loop_decision",
+            kind: "loop_manual_review",
+            severity: "medium",
+            owner: "operator",
+            issueId: "issue-2",
+            identifier: "PAP-582",
+            title: "Second loop",
+            status: "in_progress",
+            reason: "missing_ceo_loop_decision",
+            recoveryAction: "manual_review",
+            recommendedAction: "Inspect the issue and add a fresh decision document.",
+            userVisible: false,
+            generatedAt: "2026-05-11T10:01:00.000Z",
+          },
+        ],
+      });
+
+    const root = renderWatchdog(container);
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("First loop");
+      expect(container.textContent).toContain("Load more watchdog candidates");
+    });
+
+    const button = Array.from(container.querySelectorAll("button")).find((element) =>
+      element.textContent?.includes("Load more watchdog candidates"),
+    );
+    expect(button).toBeTruthy();
+
+    await act(async () => {
+      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(watchdogApiMock.preview).toHaveBeenNthCalledWith(2, "company-1", { limit: 25, cursor: "opaque-watchdog-cursor-1" });
+      expect(container.textContent).toContain("First loop");
+      expect(container.textContent).toContain("Second loop");
+      expect(container.textContent).not.toContain("Load more watchdog candidates");
     });
 
     await act(async () => root.unmount());
