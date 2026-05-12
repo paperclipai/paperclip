@@ -1,14 +1,12 @@
 import { Link } from "@/lib/router";
-import { useTranslation } from "react-i18next";
-import { Identity } from "./Identity";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { deriveInitials } from "./Identity";
+import { IssueReferenceActivitySummary } from "./IssueReferenceActivitySummary";
 import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
+import { formatActivityVerb } from "../lib/activity-format";
 import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai/shared";
-
-function humanizeValue(value: unknown): string {
-  if (typeof value !== "string") return String(value ?? "none");
-  return value.replace(/_/g, " ");
-}
+import type { CompanyUserProfile } from "../lib/company-members";
 
 function entityLink(entityType: string, entityId: string, name?: string | null): string | null {
   switch (entityType) {
@@ -24,34 +22,14 @@ function entityLink(entityType: string, entityId: string, name?: string | null):
 interface ActivityRowProps {
   event: ActivityEvent;
   agentMap: Map<string, Agent>;
+  userProfileMap?: Map<string, CompanyUserProfile>;
   entityNameMap: Map<string, string>;
   entityTitleMap?: Map<string, string>;
   className?: string;
 }
 
-export function ActivityRow({ event, agentMap, entityNameMap, entityTitleMap, className }: ActivityRowProps) {
-  const { t } = useTranslation("activity");
-
-  function formatVerb(action: string, details?: Record<string, unknown> | null): string {
-    if (action === "issue.updated" && details) {
-      const previous = (details._previous ?? {}) as Record<string, unknown>;
-      if (details.status !== undefined) {
-        const from = previous.status;
-        return from
-          ? t("changedStatusFrom", { from: humanizeValue(from), to: humanizeValue(details.status) })
-          : t("changedStatusTo", { to: humanizeValue(details.status) });
-      }
-      if (details.priority !== undefined) {
-        const from = previous.priority;
-        return from
-          ? t("changedPriorityFrom", { from: humanizeValue(from), to: humanizeValue(details.priority) })
-          : t("changedPriorityTo", { to: humanizeValue(details.priority) });
-      }
-    }
-    return t(`actionVerbs.${action}`, { defaultValue: action.replace(/[._]/g, " ") });
-  }
-
-  const verb = formatVerb(event.action, event.details);
+export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, entityTitleMap, className }: ActivityRowProps) {
+  const verb = formatActivityVerb(event.action, event.details, { agentMap, userProfileMap });
 
   const isHeartbeatEvent = event.entityType === "heartbeat_run";
   const heartbeatAgentId = isHeartbeatEvent
@@ -69,21 +47,28 @@ export function ActivityRow({ event, agentMap, entityNameMap, entityTitleMap, cl
     : entityLink(event.entityType, event.entityId, name);
 
   const actor = event.actorType === "agent" ? agentMap.get(event.actorId) : null;
-  const actorName = actor?.name ?? (event.actorType === "system" ? t("actorNames.system") : event.actorType === "user" ? t("actorNames.board") : event.actorId || t("actorNames.unknown"));
+  const userProfile = event.actorType === "user" ? userProfileMap?.get(event.actorId) : null;
+  const actorName = actor?.name ?? (event.actorType === "system" ? "System" : userProfile?.label ?? (event.actorType === "user" ? "Board" : event.actorId || "Unknown"));
+  const actorAvatarUrl = userProfile?.image ?? null;
 
   const inner = (
-    <div className="flex gap-3">
-      <p className="flex-1 min-w-0 truncate">
-        <Identity
-          name={actorName}
-          size="xs"
-          className="align-baseline"
-        />
-        <span className="text-muted-foreground ml-1">{verb} </span>
-        {name && <span className="font-medium">{name}</span>}
-        {entityTitle && <span className="text-muted-foreground ml-1">— {entityTitle}</span>}
-      </p>
-      <span className="text-xs text-muted-foreground shrink-0 pt-0.5">{timeAgo(event.createdAt)}</span>
+    <div className="space-y-2">
+      <div className="flex items-center gap-3">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <Avatar size="xs">
+            {actorAvatarUrl && <AvatarImage src={actorAvatarUrl} alt={actorName} />}
+            <AvatarFallback>{deriveInitials(actorName)}</AvatarFallback>
+          </Avatar>
+          <p className="min-w-0 flex-1 truncate">
+            <span>{actorName}</span>
+            <span className="text-muted-foreground"> {verb} </span>
+            {name && <span className="font-medium">{name}</span>}
+            {entityTitle && <span className="text-muted-foreground"> — {entityTitle}</span>}
+          </p>
+        </div>
+        <span className="text-xs text-muted-foreground shrink-0">{timeAgo(event.createdAt)}</span>
+      </div>
+      <IssueReferenceActivitySummary event={event} />
     </div>
   );
 

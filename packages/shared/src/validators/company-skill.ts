@@ -43,7 +43,9 @@ export const companySkillUsageAgentSchema = z.object({
   urlKey: z.string().min(1),
   adapterType: z.string().min(1),
   desired: z.boolean(),
-  actualState: z.string().nullable(),
+  actualState: z.string().nullable().describe(
+    "Runtime adapter skill state when explicitly fetched; company skill detail reads return null without probing agent runtimes.",
+  ),
 });
 
 export const companySkillDetailSchema = companySkillSchema.extend({

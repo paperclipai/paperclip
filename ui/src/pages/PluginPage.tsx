@@ -6,7 +6,11 @@ import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
-import { PluginSlotMount } from "@/plugins/slots";
+import {
+  PluginSlotMount,
+  resolveRouteSidebarSlot,
+  type ResolvedPluginSlot,
+} from "@/plugins/slots";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft } from "lucide-react";
 import { NotFoundPage } from "./NotFound";
@@ -25,7 +29,10 @@ export function PluginPage() {
     companyPrefix?: string;
     pluginId?: string;
     pluginRoutePath?: string;
+    "*": string | undefined;
   }>();
+  const { companyPrefix: routeCompanyPrefix, pluginId, pluginRoutePath } = params;
+  const pluginRouteSplat = params["*"];
   const { companies, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const routeCompany = useMemo(() => {
@@ -91,6 +98,22 @@ export function PluginPage() {
     [resolvedCompanyId, companyPrefix],
   );
 
+  // When the active route has a routeSidebar slot, the sidebar provides the
+  // back affordance, but the top bar still needs a route-specific title.
+  const routeSidebarActive = useMemo(() => {
+    if (!pluginRoutePath || !contributions) return false;
+    const flattened: ResolvedPluginSlot[] = contributions.flatMap((contribution) =>
+      contribution.slots.map((slot) => ({
+        ...slot,
+        pluginId: contribution.pluginId,
+        pluginKey: contribution.pluginKey,
+        pluginDisplayName: contribution.displayName,
+        pluginVersion: contribution.version,
+      })),
+    );
+    return resolveRouteSidebarSlot(flattened, pluginRoutePath) !== null;
+  }, [contributions, pluginRoutePath]);
+
   useEffect(() => {
     if (pageSlot) {
       setBreadcrumbs([
@@ -98,7 +121,11 @@ export function PluginPage() {
         { label: pageSlot.pluginDisplayName },
       ]);
     }
-  }, [pageSlot, companyPrefix, setBreadcrumbs]);
+    setBreadcrumbs([
+      { label: "Plugins", href: "/instance/settings/plugins" },
+      { label: pageSlot.pluginDisplayName },
+    ]);
+  }, [pageSlot, pluginRouteSplat, setBreadcrumbs, routeSidebarActive]);
 
   if (!resolvedCompanyId) {
     if (hasInvalidCompanyPrefix) {
@@ -155,4 +182,43 @@ export function PluginPage() {
       />
     </div>
   );
+}
+
+function resolveRouteSidebarPageTitle(pageSlot: ResolvedPluginSlot, routeSplat: string | undefined): string {
+  const title = titleFromRouteSplat(routeSplat);
+  return title ?? pageSlot.displayName ?? pageSlot.pluginDisplayName;
+}
+
+function titleFromRouteSplat(routeSplat: string | undefined): string | null {
+  const segments = (routeSplat ?? "")
+    .split("/")
+    .filter(Boolean)
+    .map(decodeRouteSegment);
+  if (segments.length === 0) return null;
+
+  if (segments[0] === "page" && segments.length > 1) {
+    return titleFromPath(segments.slice(1).join("/"), { preserveCase: true });
+  }
+
+  return titleFromPath(segments[0] ?? null);
+}
+
+function titleFromPath(path: string | null | undefined, options: { preserveCase?: boolean } = {}): string | null {
+  const trimmed = path?.trim();
+  if (!trimmed) return null;
+  const basename = trimmed.split("/").filter(Boolean).at(-1) ?? trimmed;
+  const withoutNamespace = basename.split("::").at(-1) ?? basename;
+  const withoutExtension = withoutNamespace.replace(/\.[^.]+$/, "");
+  const normalized = withoutExtension.replace(/[-_]+/g, " ").trim();
+  if (!normalized) return null;
+  if (options.preserveCase) return normalized;
+  return normalized.replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function decodeRouteSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
 }

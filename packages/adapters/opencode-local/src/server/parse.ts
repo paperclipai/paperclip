@@ -23,6 +23,7 @@ export function parseOpenCodeJsonl(stdout: string) {
   let sessionId: string | null = null;
   const messages: string[] = [];
   const errors: string[] = [];
+  const toolErrors: string[] = [];
   const usage = {
     inputTokens: 0,
     cachedInputTokens: 0,
@@ -65,7 +66,7 @@ export function parseOpenCodeJsonl(stdout: string) {
       const state = parseObject(part.state);
       if (asString(state.status, "") === "error") {
         const text = asString(state.error, "").trim();
-        if (text) errors.push(text);
+        if (text) toolErrors.push(text);
       }
       continue;
     }
@@ -83,6 +84,7 @@ export function parseOpenCodeJsonl(stdout: string) {
     usage,
     costUsd,
     errorMessage: errors.length > 0 ? errors.join("\n") : null,
+    toolErrors,
   };
 }
 

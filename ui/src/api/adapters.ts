@@ -4,6 +4,14 @@
 
 import { api } from "./client";
 
+export interface AdapterCapabilities {
+  supportsInstructionsBundle: boolean;
+  supportsSkills: boolean;
+  supportsLocalAgentJwt: boolean;
+  requiresMaterializedRuntimeSkills: boolean;
+  supportsModelProfiles: boolean;
+}
+
 export interface AdapterInfo {
   type: string;
   label: string;
@@ -11,6 +19,7 @@ export interface AdapterInfo {
   modelsCount: number;
   loaded: boolean;
   disabled: boolean;
+  capabilities: AdapterCapabilities;
   /** Installed version (for external npm adapters) */
   version?: string;
   /** Package name (for external adapters) */

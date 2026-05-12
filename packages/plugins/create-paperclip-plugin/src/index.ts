@@ -4,9 +4,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VALID_TEMPLATES = ["default", "connector", "workspace"] as const;
+const VALID_TEMPLATES = ["default", "connector", "workspace", "environment"] as const;
 type PluginTemplate = (typeof VALID_TEMPLATES)[number];
-const VALID_CATEGORIES = new Set(["connector", "workspace", "automation", "ui"] as const);
+const VALID_CATEGORIES = new Set(["connector", "workspace", "automation", "ui", "environment"] as const);
 
 export interface ScaffoldPluginOptions {
   pluginName: string;
@@ -15,7 +15,7 @@ export interface ScaffoldPluginOptions {
   displayName?: string;
   description?: string;
   author?: string;
-  category?: "connector" | "workspace" | "automation" | "ui";
+  category?: "connector" | "workspace" | "automation" | "ui" | "environment";
   sdkPath?: string;
 }
 
@@ -138,7 +138,7 @@ export function scaffoldPluginProject(options: ScaffoldPluginOptions): string {
   const displayName = options.displayName ?? makeDisplayName(options.pluginName);
   const description = options.description ?? "A Paperclip plugin";
   const author = options.author ?? "Plugin Author";
-  const category = options.category ?? (template === "workspace" ? "workspace" : "connector");
+  const category = options.category ?? (template === "workspace" ? "workspace" : template === "environment" ? "environment" : "connector");
   const manifestId = packageToManifestId(options.pluginName);
   const localSdkPath = path.resolve(options.sdkPath ?? getLocalSdkPackagePath());
   const localSharedPath = getLocalSharedPackagePath(localSdkPath);
@@ -296,9 +296,231 @@ export default defineConfig({
 `,
   );
 
-  writeFile(
-    path.join(outputDir, "src", "manifest.ts"),
-    `import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+  if (template === "environment") {
+    writeFile(
+      path.join(outputDir, "src", "manifest.ts"),
+      `import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+
+const manifest: PaperclipPluginManifestV1 = {
+  id: ${quote(manifestId)},
+  apiVersion: 1,
+  version: "0.1.0",
+  displayName: ${quote(displayName)},
+  description: ${quote(description)},
+  author: ${quote(author)},
+  categories: [${quote(category)}],
+  capabilities: [
+    "environment.drivers.register",
+    "plugin.state.read",
+    "plugin.state.write"
+  ],
+  entrypoints: {
+    worker: "./dist/worker.js",
+    ui: "./dist/ui"
+  },
+  environmentDrivers: [
+    {
+      driverKey: ${quote(manifestId + "-driver")},
+      displayName: ${quote(displayName + " Driver")}
+    }
+  ],
+  ui: {
+    slots: [
+      {
+        type: "dashboardWidget",
+        id: "health-widget",
+        displayName: ${quote(`${displayName} Health`)},
+        exportName: "DashboardWidget"
+      }
+    ]
+  }
+};
+
+export default manifest;
+`,
+    );
+
+    writeFile(
+      path.join(outputDir, "src", "worker.ts"),
+      `import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
+import type {
+  PluginEnvironmentValidateConfigParams,
+  PluginEnvironmentProbeParams,
+  PluginEnvironmentAcquireLeaseParams,
+  PluginEnvironmentResumeLeaseParams,
+  PluginEnvironmentReleaseLeaseParams,
+  PluginEnvironmentDestroyLeaseParams,
+  PluginEnvironmentRealizeWorkspaceParams,
+  PluginEnvironmentExecuteParams,
+} from "@paperclipai/plugin-sdk";
+
+const plugin = definePlugin({
+  async setup(ctx) {
+    ctx.data.register("health", async () => {
+      return { status: "ok", checkedAt: new Date().toISOString() };
+    });
+  },
+
+  async onHealth() {
+    return { status: "ok", message: "Environment plugin worker is running" };
+  },
+
+  async onEnvironmentValidateConfig(params: PluginEnvironmentValidateConfigParams) {
+    if (!params.config || typeof params.config !== "object") {
+      return { ok: false, errors: ["Config must be a non-null object"] };
+    }
+    return { ok: true, normalizedConfig: params.config };
+  },
+
+  async onEnvironmentProbe(_params: PluginEnvironmentProbeParams) {
+    return { ok: true, summary: "Environment is reachable" };
+  },
+
+  async onEnvironmentAcquireLease(params: PluginEnvironmentAcquireLeaseParams) {
+    const providerLeaseId = \`lease-\${params.runId}-\${Date.now()}\`;
+    return {
+      providerLeaseId,
+      metadata: { acquiredAt: new Date().toISOString() },
+    };
+  },
+
+  async onEnvironmentResumeLease(params: PluginEnvironmentResumeLeaseParams) {
+    return {
+      providerLeaseId: params.providerLeaseId,
+      metadata: { ...params.leaseMetadata, resumed: true },
+    };
+  },
+
+  async onEnvironmentReleaseLease(_params: PluginEnvironmentReleaseLeaseParams) {
+    // Release provider-side resources here
+  },
+
+  async onEnvironmentDestroyLease(_params: PluginEnvironmentDestroyLeaseParams) {
+    // Destroy provider-side resources here
+  },
+
+  async onEnvironmentRealizeWorkspace(params: PluginEnvironmentRealizeWorkspaceParams) {
+    const cwd = params.workspace.remotePath ?? params.workspace.localPath ?? "/tmp/workspace";
+    return { cwd, metadata: { realized: true } };
+  },
+
+  async onEnvironmentExecute(params: PluginEnvironmentExecuteParams) {
+    // Replace this with real command execution against your provider
+    return {
+      exitCode: 0,
+      timedOut: false,
+      stdout: \`Executed: \${params.command}\`,
+      stderr: "",
+    };
+  },
+});
+
+export default plugin;
+runWorker(plugin, import.meta.url);
+`,
+    );
+
+    writeFile(
+      path.join(outputDir, "src", "ui", "index.tsx"),
+      `import { usePluginData, type PluginWidgetProps } from "@paperclipai/plugin-sdk/ui";
+
+type HealthData = {
+  status: "ok" | "degraded" | "error";
+  checkedAt: string;
+};
+
+export function DashboardWidget(_props: PluginWidgetProps) {
+  const { data, loading, error } = usePluginData<HealthData>("health");
+
+  if (loading) return <div>Loading environment health...</div>;
+  if (error) return <div>Plugin error: {error.message}</div>;
+
+  return (
+    <div style={{ display: "grid", gap: "0.5rem" }}>
+      <strong>${displayName}</strong>
+      <div>Health: {data?.status ?? "unknown"}</div>
+      <div>Checked: {data?.checkedAt ?? "never"}</div>
+    </div>
+  );
+}
+`,
+    );
+
+    writeFile(
+      path.join(outputDir, "tests", "plugin.spec.ts"),
+      `import { describe, expect, it } from "vitest";
+import {
+  createEnvironmentTestHarness,
+  createFakeEnvironmentDriver,
+  assertEnvironmentEventOrder,
+  assertLeaseLifecycle,
+} from "@paperclipai/plugin-sdk/testing";
+import manifest from "../src/manifest.js";
+import plugin from "../src/worker.js";
+
+const ENV_ID = "env-test-1";
+const BASE_PARAMS = {
+  driverKey: manifest.environmentDrivers![0].driverKey,
+  companyId: "co-1",
+  environmentId: ENV_ID,
+  config: {},
+};
+
+describe("environment plugin scaffold", () => {
+  it("validates config", async () => {
+    const driver = createFakeEnvironmentDriver({ driverKey: BASE_PARAMS.driverKey });
+    const harness = createEnvironmentTestHarness({ manifest, environmentDriver: driver });
+    await plugin.definition.setup(harness.ctx);
+
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: BASE_PARAMS.driverKey,
+      config: { host: "test" },
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("probes the environment", async () => {
+    const driver = createFakeEnvironmentDriver({ driverKey: BASE_PARAMS.driverKey });
+    const harness = createEnvironmentTestHarness({ manifest, environmentDriver: driver });
+    await plugin.definition.setup(harness.ctx);
+
+    const result = await plugin.definition.onEnvironmentProbe!(BASE_PARAMS);
+    expect(result.ok).toBe(true);
+  });
+
+  it("runs a full lease lifecycle through the harness", async () => {
+    const driver = createFakeEnvironmentDriver({ driverKey: BASE_PARAMS.driverKey });
+    const harness = createEnvironmentTestHarness({ manifest, environmentDriver: driver });
+    await plugin.definition.setup(harness.ctx);
+
+    const lease = await harness.acquireLease({ ...BASE_PARAMS, runId: "run-1" });
+    expect(lease.providerLeaseId).toBeTruthy();
+
+    await harness.realizeWorkspace({
+      ...BASE_PARAMS,
+      lease,
+      workspace: { localPath: "/tmp/test" },
+    });
+
+    await harness.releaseLease({
+      ...BASE_PARAMS,
+      providerLeaseId: lease.providerLeaseId,
+    });
+
+    assertEnvironmentEventOrder(harness.environmentEvents, [
+      "acquireLease",
+      "realizeWorkspace",
+      "releaseLease",
+    ]);
+    assertLeaseLifecycle(harness.environmentEvents, ENV_ID);
+  });
+});
+`,
+    );
+  } else {
+    writeFile(
+      path.join(outputDir, "src", "manifest.ts"),
+      `import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: ${quote(manifestId)},
@@ -331,11 +553,11 @@ const manifest: PaperclipPluginManifestV1 = {
 
 export default manifest;
 `,
-  );
+    );
 
-  writeFile(
-    path.join(outputDir, "src", "worker.ts"),
-    `import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
+    writeFile(
+      path.join(outputDir, "src", "worker.ts"),
+      `import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 
 const plugin = definePlugin({
   async setup(ctx) {
@@ -363,11 +585,11 @@ const plugin = definePlugin({
 export default plugin;
 runWorker(plugin, import.meta.url);
 `,
-  );
+    );
 
-  writeFile(
-    path.join(outputDir, "src", "ui", "index.tsx"),
-    `import { usePluginAction, usePluginData, type PluginWidgetProps } from "@paperclipai/plugin-sdk/ui";
+    writeFile(
+      path.join(outputDir, "src", "ui", "index.tsx"),
+      `import { usePluginAction, usePluginData, type PluginWidgetProps } from "@paperclipai/plugin-sdk/ui";
 
 type HealthData = {
   status: "ok" | "degraded" | "error";
@@ -391,11 +613,11 @@ export function DashboardWidget(_props: PluginWidgetProps) {
   );
 }
 `,
-  );
+    );
 
-  writeFile(
-    path.join(outputDir, "tests", "plugin.spec.ts"),
-    `import { describe, expect, it } from "vitest";
+    writeFile(
+      path.join(outputDir, "tests", "plugin.spec.ts"),
+      `import { describe, expect, it } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
@@ -416,7 +638,8 @@ describe("plugin scaffold", () => {
   });
 });
 `,
-  );
+    );
+  }
 
   writeFile(
     path.join(outputDir, "README.md"),

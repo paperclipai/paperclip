@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
@@ -6,7 +6,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { agentsApi } from "../api/agents";
 import { companySkillsApi } from "../api/companySkills";
 import { queryKeys } from "../lib/queryKeys";
-import { AGENT_ROLES } from "@paperclipai/shared";
+import { AGENT_ROLES, type AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -17,19 +17,24 @@ import {
 import { Shield } from "lucide-react";
 import { cn, agentUrl } from "../lib/utils";
 import { roleLabels } from "../components/agent-config-primitives";
-import { AgentConfigForm, type CreateConfigValues } from "../components/AgentConfigForm";
+import {
+  AgentConfigForm,
+  AdapterEnvironmentResult,
+  type CreateConfigValues,
+} from "../components/AgentConfigForm";
 import { defaultCreateValues } from "../components/agent-config-defaults";
 import { getUIAdapter, listUIAdapters } from "../adapters";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { isValidAdapterType } from "../adapters/metadata";
 import { ReportsToPicker } from "../components/ReportsToPicker";
+import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
-import { useTranslation } from "react-i18next";
+import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
 
 function createValuesForAdapterType(
   adapterType: CreateConfigValues["adapterType"],
@@ -45,13 +50,12 @@ function createValuesForAdapterType(
   } else if (adapterType === "cursor") {
     nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
   } else if (adapterType === "opencode_local") {
-    nextValues.model = "";
+    nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
   }
   return nextValues;
 }
 
 export function NewAgent() {
-  const { t } = useTranslation("agents");
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -67,24 +71,20 @@ export function NewAgent() {
   const [selectedSkillKeys, setSelectedSkillKeys] = useState<string[]>([]);
   const [roleOpen, setRoleOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [testAgentAction, setTestAgentAction] = useState<(() => void) | null>(null);
+  const [testAgentState, setTestAgentState] = useState({ disabled: true, pending: false });
+  const [testAgentFeedback, setTestAgentFeedback] = useState<{
+    errorMessage: string | null;
+    result: AdapterEnvironmentTestResult | null;
+  }>({
+    errorMessage: null,
+    result: null,
+  });
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
-  });
-
-  const {
-    data: adapterModels,
-    error: adapterModelsError,
-    isLoading: adapterModelsLoading,
-    isFetching: adapterModelsFetching,
-  } = useQuery({
-    queryKey: selectedCompanyId
-      ? queryKeys.agents.adapterModels(selectedCompanyId, configValues.adapterType)
-      : ["agents", "none", "adapter-models", configValues.adapterType],
-    queryFn: () => agentsApi.adapterModels(selectedCompanyId!, configValues.adapterType),
-    enabled: Boolean(selectedCompanyId),
   });
 
   const { data: companySkills } = useQuery({
@@ -98,10 +98,10 @@ export function NewAgent() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: t("title"), href: "/agents" },
-      { label: t("newAgentPage.breadcrumb") },
+      { label: "Agents", href: "/agents" },
+      { label: "New Agent" },
     ]);
-  }, [setBreadcrumbs, t]);
+  }, [setBreadcrumbs]);
 
   useEffect(() => {
     if (isFirstAgent) {
@@ -142,52 +142,22 @@ export function NewAgent() {
     if (!selectedCompanyId || !name.trim()) return;
     setFormError(null);
     if (configValues.adapterType === "opencode_local") {
-      const selectedModel = configValues.model.trim();
-      if (!selectedModel) {
-        setFormError(t("newAgentPage.openCodeModelRequired"));
-        return;
-      }
-      if (adapterModelsError) {
-        setFormError(
-          adapterModelsError instanceof Error
-            ? adapterModelsError.message
-            : "Failed to load OpenCode models.",
-        );
-        return;
-      }
-      if (adapterModelsLoading || adapterModelsFetching) {
-        setFormError(t("newAgentPage.openCodeModelsLoading"));
-        return;
-      }
-      const discovered = adapterModels ?? [];
-      if (!discovered.some((entry) => entry.id === selectedModel)) {
-        setFormError(
-          discovered.length === 0
-            ? t("newAgentPage.openCodeNoModels")
-            : t("newAgentPage.openCodeModelUnavailable", { model: selectedModel }),
-        );
+      if (!isValidOpenCodeModelId(configValues.model)) {
+        setFormError("OpenCode requires an explicit model in provider/model format.");
         return;
       }
     }
-    createAgent.mutate({
-      name: name.trim(),
-      role: effectiveRole,
-      ...(title.trim() ? { title: title.trim() } : {}),
-      ...(reportsTo ? { reportsTo } : {}),
-      ...(selectedSkillKeys.length > 0 ? { desiredSkills: selectedSkillKeys } : {}),
-      adapterType: configValues.adapterType,
-      adapterConfig: buildAdapterConfig(),
-      runtimeConfig: {
-        heartbeat: {
-          enabled: configValues.heartbeatEnabled,
-          intervalSec: configValues.intervalSec,
-          wakeOnDemand: true,
-          cooldownSec: 10,
-          maxConcurrentRuns: 1,
-        },
-      },
-      budgetMonthlyCents: 0,
-    });
+    createAgent.mutate(
+      buildNewAgentHirePayload({
+        name,
+        effectiveRole,
+        title,
+        reportsTo,
+        selectedSkillKeys,
+        configValues,
+        adapterConfig: buildAdapterConfig(),
+      }),
+    );
   }
 
   const availableSkills = (companySkills ?? []).filter((skill) => !skill.key.startsWith("paperclipai/paperclip/"));
@@ -201,12 +171,27 @@ export function NewAgent() {
     });
   }
 
+  const handleTestAgentActionChange = useCallback((fn: (() => void) | null) => {
+    setTestAgentAction(() => fn);
+  }, []);
+
+  const handleTestAgentStateChange = useCallback((state: { disabled: boolean; pending: boolean }) => {
+    setTestAgentState(state);
+  }, []);
+
+  const handleTestAgentFeedbackChange = useCallback((feedback: {
+    errorMessage: string | null;
+    result: AdapterEnvironmentTestResult | null;
+  }) => {
+    setTestAgentFeedback(feedback);
+  }, []);
+
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <div>
-        <h1 className="text-lg font-semibold">{t("newAgentPage.title")}</h1>
+        <h1 className="text-lg font-semibold">New Agent</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          {t("newAgentPage.description")}
+          Advanced agent configuration
         </p>
       </div>
 
@@ -215,7 +200,7 @@ export function NewAgent() {
         <div className="px-4 pt-4 pb-2">
           <input
             className="w-full text-lg font-semibold bg-transparent outline-none placeholder:text-muted-foreground/50"
-            placeholder={t("newAgentPage.namePlaceholder")}
+            placeholder="Agent name"
             value={name}
             onChange={(e) => setName(e.target.value)}
             autoFocus
@@ -226,7 +211,7 @@ export function NewAgent() {
         <div className="px-4 pb-2">
           <input
             className="w-full bg-transparent outline-none text-sm text-muted-foreground placeholder:text-muted-foreground/40"
-            placeholder={t("newAgentPage.titlePlaceholder")}
+            placeholder="Title (e.g. VP of Engineering)"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
           />
@@ -276,20 +261,22 @@ export function NewAgent() {
           mode="create"
           values={configValues}
           onChange={(patch) => setConfigValues((prev) => ({ ...prev, ...patch }))}
-          adapterModels={adapterModels}
+          onTestActionChange={handleTestAgentActionChange}
+          onTestActionStateChange={handleTestAgentStateChange}
+          onTestFeedbackChange={handleTestAgentFeedbackChange}
         />
 
         <div className="border-t border-border px-4 py-4">
           <div className="space-y-3">
             <div>
-              <h2 className="text-sm font-medium">{t("newAgentPage.companySkills")}</h2>
+              <h2 className="text-sm font-medium">Company skills</h2>
               <p className="mt-1 text-xs text-muted-foreground">
-                {t("newAgentPage.companySkillsDesc")}
+                Optional skills from the company library. Built-in Paperclip runtime skills are added automatically.
               </p>
             </div>
             {availableSkills.length === 0 ? (
               <p className="text-xs text-muted-foreground">
-                {t("newAgentPage.noCompanySkills")}
+                No optional company skills installed yet.
               </p>
             ) : (
               <div className="space-y-3">
@@ -320,22 +307,43 @@ export function NewAgent() {
         {/* Footer */}
         <div className="border-t border-border px-4 py-3">
           {isFirstAgent && (
-            <p className="text-xs text-muted-foreground mb-2">{t("newAgentPage.thiWillBeCeo")}</p>
+            <p className="text-xs text-muted-foreground mb-2">This will be the CEO</p>
           )}
           {formError && (
             <p className="text-xs text-destructive mb-2">{formError}</p>
           )}
-          <div className="flex items-center justify-end gap-2">
-            <Button variant="outline" size="sm" onClick={() => navigate("/agents")}>
-              {t("newAgentPage.cancel")}
-            </Button>
-            <Button
-              size="sm"
-              disabled={!name.trim() || createAgent.isPending}
-              onClick={handleSubmit}
-            >
-              {createAgent.isPending ? t("newAgentPage.creating") : t("newAgentPage.createAgent")}
-            </Button>
+          <div className="space-y-3">
+            {testAgentFeedback.errorMessage && (
+              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                {testAgentFeedback.errorMessage}
+              </div>
+            )}
+            {testAgentFeedback.result && (
+              <AdapterEnvironmentResult result={testAgentFeedback.result} />
+            )}
+            <div className="flex items-center justify-between gap-2">
+              <Button variant="outline" size="sm" onClick={() => navigate("/agents")}>
+                Cancel
+              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={testAgentState.disabled}
+                  onClick={() => testAgentAction?.()}
+                >
+                  {testAgentState.pending ? "Testing..." : "Test Agent"}
+                </Button>
+                <Button
+                  size="sm"
+                  disabled={!name.trim() || createAgent.isPending}
+                  onClick={handleSubmit}
+                >
+                  {createAgent.isPending ? "Creating…" : "Create agent"}
+                </Button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
