@@ -73,6 +73,7 @@ type EmbeddedPostgresCtor = new (opts: {
   port: number;
   persistent: boolean;
   initdbFlags?: string[];
+  postgresFlags?: string[];
   onLog?: (message: unknown) => void;
   onError?: (message: unknown) => void;
 }) => EmbeddedPostgresInstance;
@@ -386,6 +387,8 @@ export async function startServer(): Promise<StartedServer> {
           port,
           persistent: true,
           initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
+          // TAP-1190: cap connections for local/embedded mode (single Paperclip server only).
+          postgresFlags: ["-c", "max_connections=20"],
           onLog: appendEmbeddedPostgresLog,
           onError: appendEmbeddedPostgresLog,
         });
@@ -670,7 +673,7 @@ export async function startServer(): Promise<StartedServer> {
     });
   
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    const heartbeat = heartbeatService(db as any, { pluginWorkerManager, runtimeReaper: { maxRuntimeMs: config.heartbeatRunMaxRuntimeMs, graceMs: config.heartbeatRunReaperGraceMs } });
     const routines = routineService(db as any, { pluginWorkerManager });
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
@@ -782,6 +785,10 @@ export async function startServer(): Promise<StartedServer> {
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
+
+      void heartbeat
+        .reapStaleRunningRuns({ maxRuntimeMs: config.heartbeatRunMaxRuntimeMs, graceMs: config.heartbeatRunReaperGraceMs })
+        .catch((err) => logger.error({ err }, "periodic runtime reaper failed"));
     }, config.heartbeatSchedulerIntervalMs);
   }
   
