@@ -101,6 +101,11 @@ const manifest: PaperclipPluginManifestV1 = {
             minimum: 1,
             description: "Hard ceiling on a single run's wall-clock time (default: 3600).",
           },
+          adapterType: {
+            type: "string",
+            description:
+              "The adapter type that Jobs in this environment will run (e.g. `claude_local`, `codex_local`). Defaults to `claude_local`. Each environment is bound to one adapter; create multiple environments for different adapters.",
+          },
         },
         anyOf: [
           { required: ["inCluster"] },

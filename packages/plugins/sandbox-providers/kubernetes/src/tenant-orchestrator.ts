@@ -165,12 +165,15 @@ async function ensureLimitRange(clients: KubeClients, input: EnsureTenantInput):
             type: "Container",
             max: { cpu: "4", memory: "8Gi" },
             min: { cpu: "100m", memory: "128Mi" },
+            // The k8s client-node type names this `_default` but the actual
+            // Kubernetes API field is `default`. We produce a JSON-shape
+            // manifest so the cast is safe.
             default: { cpu: "1", memory: "2Gi" },
             defaultRequest: { cpu: "250m", memory: "512Mi" },
           },
         ],
       },
-    },
+    } as never,
   });
 }
 
