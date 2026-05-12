@@ -2115,11 +2115,11 @@ export function pluginRoutes(
     assertBoardOrgAccess(req);
     const { pluginId } = req.params;
     const registry = pluginRegistryService(db);
-    const plugin = await registry.getById(pluginId);
+    const plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) throw notFound("Plugin not found");
 
     const svc = createPluginRuntimeConfigService(db);
-    const result = await svc.getRuntime(pluginId);
+    const result = await svc.getRuntime(plugin.id);
     res.json(result);
   });
 
@@ -2136,22 +2136,27 @@ export function pluginRoutes(
     assertInstanceAdmin(req);
     const { pluginId } = req.params;
     const registry = pluginRegistryService(db);
-    const plugin = await registry.getById(pluginId);
+    const plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) throw notFound("Plugin not found");
 
     const svc = createPluginRuntimeConfigService(db);
-    await svc.clearRuntime(pluginId);
-    await logPluginMutationActivity(req, "plugin.runtime-config.cleared", pluginId, {
-      pluginId: plugin.id,
-      pluginKey: plugin.pluginKey,
-    });
+    await svc.clearRuntime(plugin.id);
 
-    if (bridgeDeps?.workerManager.isRunning(plugin.id)) {
+    if (bridgeDeps?.workerManager.getWorker(plugin.id)) {
       try {
         await lifecycle.restartWorker(plugin.id);
       } catch {
         // Runtime config is already cleared; restart failure is non-fatal.
       }
+    }
+
+    try {
+      await logPluginMutationActivity(req, "plugin.runtime-config.cleared", plugin.id, {
+      pluginId: plugin.id,
+      pluginKey: plugin.pluginKey,
+      });
+    } catch {
+      // Runtime config is cleared and any live worker was already bounced.
     }
     res.status(204).end();
   });
