@@ -80,6 +80,19 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import {
+  AUTONOMOUS_GOAL_LOOP_CONTINUATION_DOCUMENT_KEY,
+  AUTONOMOUS_GOAL_LOOP_CONTINUATION_ORIGIN_KIND,
+  buildAutonomousGoalLoopState,
+  continueAutonomousGoalLoopFromDecision,
+  summarizeAutonomousGoalLoopContinuationOutcome,
+} from "../services/autonomous-goal-loop-continuation.js";
+import {
+  isValidAutonomousGoalLoopWatchdogCursor,
+  listAutonomousGoalLoopWatchdogPreview,
+} from "../services/autonomous-loop-watchdog-preview.js";
+import { listAutonomousGoalLoopWatchdogRecoveryPlanPreview } from "../services/autonomous-loop-watchdog-recovery-plan.js";
+import { listMissionControlCompletionDocuments } from "../services/mission-control-gates.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
@@ -1360,6 +1373,58 @@ export function issueRoutes(
     res.json(result);
   });
 
+  router.get("/companies/:companyId/autonomous-loop-watchdog/preview", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const limitParsed = z.coerce.number().int().min(1).max(100).optional().safeParse(req.query.limit);
+    if (!limitParsed.success) {
+      res.status(400).json({ error: "Invalid limit", details: limitParsed.error.issues });
+      return;
+    }
+    const cursorParsed = z.string().min(1).optional().safeParse(req.query.cursor);
+    if (!cursorParsed.success) {
+      res.status(400).json({ error: "Invalid cursor", details: cursorParsed.error.issues });
+      return;
+    }
+    if (cursorParsed.data && !isValidAutonomousGoalLoopWatchdogCursor(cursorParsed.data)) {
+      res.status(400).json({ error: "Invalid cursor" });
+      return;
+    }
+    const preview = await listAutonomousGoalLoopWatchdogPreview(db, companyId, {
+      limit: limitParsed.data,
+      cursor: cursorParsed.data,
+    });
+    res.json(preview);
+  });
+
+  router.get("/companies/:companyId/autonomous-loop-watchdog/recovery-plan/preview", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+
+    const allowedQueryKeys = new Set(["limit", "dryRun"]);
+    const unknownQueryKeys = Object.keys(req.query).filter((key) => !allowedQueryKeys.has(key));
+    const dryRunParsed = z.union([z.literal("true"), z.literal("1")]).optional().safeParse(req.query.dryRun);
+    const limitParsed = z.coerce.number().int().min(1).max(100).optional().safeParse(req.query.limit);
+    if (unknownQueryKeys.length > 0 || !dryRunParsed.success || !limitParsed.success) {
+      res.status(400).json({
+        error: "Invalid recovery plan preview query",
+        details: {
+          unknownQueryKeys,
+          dryRun: dryRunParsed.success ? undefined : dryRunParsed.error.issues,
+          limit: limitParsed.success ? undefined : limitParsed.error.issues,
+        },
+      });
+      return;
+    }
+
+    const preview = await listAutonomousGoalLoopWatchdogRecoveryPlanPreview(db, companyId, {
+      limit: limitParsed.data,
+    });
+    res.json(preview);
+  });
+
   router.get("/companies/:companyId/issues", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -1689,6 +1754,26 @@ export function issueRoutes(
     });
   });
 
+  router.get("/issues/:id/autonomous-loop-state", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const [documents, childIssues] = await Promise.all([
+      listMissionControlCompletionDocuments(db, issue.id),
+      svc.list(issue.companyId, {
+        parentId: issue.id,
+        originKind: AUTONOMOUS_GOAL_LOOP_CONTINUATION_ORIGIN_KIND,
+        originId: issue.id,
+        limit: 100,
+      }),
+    ]);
+    res.json(buildAutonomousGoalLoopState({ issue, documents, childIssues }));
+  });
+
   router.get("/issues/:id/work-products", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -1815,7 +1900,41 @@ export function issueRoutes(
       });
     }
 
-    res.status(result.created ? 201 : 200).json(doc);
+    let autonomousLoopContinuation: ReturnType<typeof summarizeAutonomousGoalLoopContinuationOutcome> | null = null;
+    if (doc.key === AUTONOMOUS_GOAL_LOOP_CONTINUATION_DOCUMENT_KEY) {
+      const continuationOutcome = await continueAutonomousGoalLoopFromDecision({
+        db,
+        issue,
+        actor,
+      });
+      autonomousLoopContinuation = summarizeAutonomousGoalLoopContinuationOutcome(continuationOutcome);
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.autonomous_loop_continuation",
+        entityType: "issue",
+        entityId: issue.id,
+        details: autonomousLoopContinuation,
+      });
+      if (continuationOutcome.outcome === "created") {
+        void queueIssueAssignmentWakeup({
+          heartbeat,
+          issue: continuationOutcome.childIssue,
+          reason: "autonomous_loop_continuation",
+          mutation: "create",
+          contextSource: "issue.autonomous_loop_continuation",
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+        });
+      }
+    }
+
+    res.status(result.created ? 201 : 200).json(
+      autonomousLoopContinuation ? { ...doc, autonomousLoopContinuation } : doc,
+    );
   });
 
   router.get("/issues/:id/documents/:key/revisions", async (req, res) => {

@@ -3,7 +3,7 @@ import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import { ApiError } from "../api/client";
-import { issuesApi } from "../api/issues";
+import { issuesApi, type AutonomousLoopState } from "../api/issues";
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
 import { heartbeatsApi, type ActiveRunForIssue, type LiveRunForIssue } from "../api/heartbeats";
@@ -34,6 +34,7 @@ import {
 } from "../lib/issueDetailBreadcrumb";
 import { resolveIssueActiveRun, shouldTrackIssueActiveRun } from "../lib/issueActiveRun";
 import { getIssueDetailQueryOptions } from "../lib/issueDetailCache";
+import { deriveAutonomousLoopUiState } from "../lib/autonomousLoopUiState";
 import {
   hasBlockingShortcutDialog,
   resolveIssueDetailGoKeyAction,
@@ -209,6 +210,104 @@ function treeControlPreviewErrorCopy(error: unknown): string {
     if (error.status === 422) return "This subtree action is currently invalid for the selected issues.";
   }
   return error instanceof Error ? error.message : "Unable to load preview.";
+}
+
+function IssueAutonomousLoopPanel({ state }: { state?: AutonomousLoopState | null }) {
+  if (!state?.enabled) return null;
+
+  const uiState = deriveAutonomousLoopUiState(state);
+  const progress = uiState.progress;
+  const decision = uiState.decisionLabel;
+  const nextTaskTitle = uiState.nextTaskTitle;
+  const latestIteration = state.iterations?.at(-1) ?? null;
+  const supervisor = uiState.supervisor;
+  const observabilityChain = state.observability?.chain ?? [];
+
+  return (
+    <section className="space-y-3 rounded-lg border border-border bg-card/40 p-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-medium text-foreground">Autonomous loop</h3>
+          <p className="text-xs text-muted-foreground">
+            Goal-to-iteration observability for this issue.
+          </p>
+        </div>
+        <div className={cn(
+          "rounded-full border px-2 py-0.5 text-xs font-medium",
+          supervisor.needsAttention
+            ? "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300"
+            : "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300",
+        )}>
+          Supervisor: {supervisor.label}
+        </div>
+      </div>
+
+      <div className="grid gap-2 text-sm sm:grid-cols-2">
+        <div>
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Goal</div>
+          <div className="text-foreground">{state.goal ?? "Not set"}</div>
+        </div>
+        <div>
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Progress</div>
+          <div className="font-mono text-foreground">{progress}</div>
+        </div>
+        <div>
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Current decision</div>
+          <div className="font-mono text-foreground">{decision}</div>
+        </div>
+        <div>
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Next task</div>
+          <div className="text-foreground">{nextTaskTitle ?? "Waiting for CEO decision"}</div>
+        </div>
+      </div>
+
+      {supervisor.kind !== "clear" ? (
+        <div className="grid gap-2 rounded-md border border-amber-200 bg-amber-50/60 px-3 py-2 text-sm dark:border-amber-900/60 dark:bg-amber-950/20 sm:grid-cols-2">
+          <div>
+            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Repair owner</div>
+            <div className="font-mono text-foreground">{supervisor.owner}</div>
+          </div>
+          <div>
+            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Repair action</div>
+            <div className="font-mono text-foreground">{supervisor.recoveryAction}</div>
+          </div>
+        </div>
+      ) : null}
+
+      {latestIteration ? (
+        <div className="rounded-md border border-border/70 bg-background/70 px-3 py-2 text-sm">
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Child iteration</div>
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <span className="font-mono text-xs text-muted-foreground">
+              {latestIteration.identifier ?? latestIteration.issueId ?? `Loop ${latestIteration.iteration ?? "?"}`}
+            </span>
+            <span className="text-foreground">{latestIteration.title ?? nextTaskTitle ?? "Untitled iteration"}</span>
+            {latestIteration.status ? (
+              <span className="rounded-full bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                {latestIteration.status}
+              </span>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {observabilityChain.length > 0 ? (
+        <div className="space-y-1 text-xs text-muted-foreground">
+          <div className="font-medium uppercase tracking-wide">Observability chain</div>
+          <div className="flex flex-wrap gap-1.5">
+            {observabilityChain.map((item, index) => {
+              const label = item.label ?? item.identifier ?? item.title ?? item.kind ?? `Step ${index + 1}`;
+              return (
+                <span key={`${item.kind ?? "step"}-${item.issueId ?? index}-${item.iteration ?? "none"}`} className="rounded-full border border-border bg-background px-2 py-0.5">
+                  {label}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
 }
 
 function resolveRunningIssueRun(
@@ -1236,6 +1335,13 @@ export function IssueDetail() {
       } : null,
     }),
     enabled: !!issueId,
+  });
+  const { data: autonomousLoopState } = useQuery({
+    queryKey: queryKeys.issues.autonomousLoopState(issueId ?? "pending"),
+    queryFn: () => issuesApi.getAutonomousLoopState(issueId!),
+    enabled: !!issueId,
+    retry: false,
+    placeholderData: keepPreviousDataForSameQueryTail<AutonomousLoopState>(issueId ?? "pending"),
   });
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
   const commentComposerDisabledReason = useMemo(() => {
@@ -3745,6 +3851,8 @@ export function IssueDetail() {
         open={galleryOpen}
         onOpenChange={setGalleryOpen}
       />
+
+      <IssueAutonomousLoopPanel state={autonomousLoopState} />
 
       <IssueWorkspaceCard
         issue={issue}

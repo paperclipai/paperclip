@@ -387,13 +387,17 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
     }
     : null;
 
-  if (stages.length === 0 && !monitor) return null;
+  const missionControl = parsed.data.missionControl ?? null;
+  const hasMissionControlGate = Boolean(missionControl?.enabled);
+
+  if (stages.length === 0 && !monitor && !hasMissionControlGate) return null;
 
   return {
     mode: parsed.data.mode ?? "normal",
     commentRequired: true,
     stages,
     ...(monitor ? { monitor } : {}),
+    ...(missionControl ? { missionControl } : {}),
   };
 }
 

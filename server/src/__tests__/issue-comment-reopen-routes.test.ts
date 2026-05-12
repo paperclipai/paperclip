@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  list: vi.fn(),
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
@@ -12,6 +13,10 @@ const mockIssueService = vi.hoisted(() => ({
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
 }));
+const mockListMissionControlCompletionDocuments = vi.hoisted(() => vi.fn());
+const mockListAutonomousGoalLoopWatchdogPreview = vi.hoisted(() => vi.fn());
+const mockIsValidAutonomousGoalLoopWatchdogCursor = vi.hoisted(() => vi.fn());
+const mockListAutonomousGoalLoopWatchdogRecoveryPlanPreview = vi.hoisted(() => vi.fn());
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
@@ -98,6 +103,19 @@ vi.mock("../services/feedback.js", () => ({
 
 vi.mock("../services/heartbeat.js", () => ({
   heartbeatService: () => mockHeartbeatService,
+}));
+
+vi.mock("../services/mission-control-gates.js", () => ({
+  listMissionControlCompletionDocuments: mockListMissionControlCompletionDocuments,
+}));
+
+vi.mock("../services/autonomous-loop-watchdog-preview.js", () => ({
+  isValidAutonomousGoalLoopWatchdogCursor: mockIsValidAutonomousGoalLoopWatchdogCursor,
+  listAutonomousGoalLoopWatchdogPreview: mockListAutonomousGoalLoopWatchdogPreview,
+}));
+
+vi.mock("../services/autonomous-loop-watchdog-recovery-plan.js", () => ({
+  listAutonomousGoalLoopWatchdogRecoveryPlanPreview: mockListAutonomousGoalLoopWatchdogRecoveryPlanPreview,
 }));
 
 vi.mock("../services/instance-settings.js", () => ({
@@ -215,6 +233,7 @@ describe.sequential("issue comment reopen routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockReset();
+    mockIssueService.list.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
     mockIssueService.update.mockReset();
     mockIssueService.addComment.mockReset();
@@ -296,6 +315,42 @@ describe.sequential("issue comment reopen routes", () => {
     });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    mockIssueService.list.mockResolvedValue([]);
+    mockListMissionControlCompletionDocuments.mockReset();
+    mockListMissionControlCompletionDocuments.mockResolvedValue([]);
+    mockListAutonomousGoalLoopWatchdogPreview.mockReset();
+    mockIsValidAutonomousGoalLoopWatchdogCursor.mockReset();
+    mockIsValidAutonomousGoalLoopWatchdogCursor.mockImplementation((cursor: string) => cursor === "opaque-watchdog-cursor-1");
+    mockListAutonomousGoalLoopWatchdogPreview.mockResolvedValue({
+      companyId: "company-1",
+      mode: "preview",
+      readOnly: true,
+      generatedAt: "2026-05-11T10:00:00.000Z",
+      totalIssuesScanned: 0,
+      hasMore: false,
+      nextCursor: null,
+      candidates: [],
+    });
+    mockListAutonomousGoalLoopWatchdogRecoveryPlanPreview.mockReset();
+    mockListAutonomousGoalLoopWatchdogRecoveryPlanPreview.mockResolvedValue({
+      companyId: "company-1",
+      mode: "recovery_plan_preview",
+      dryRun: true,
+      readOnly: true,
+      liveRecovery: false,
+      generatedAt: "2026-05-11T10:00:00.000Z",
+      totalIssuesScanned: 0,
+      candidatesConsidered: 0,
+      plans: [],
+      skippedCandidates: [],
+      guardrails: {
+        boardOnly: true,
+        dryRunOnly: true,
+        noLiveRecovery: true,
+        noApprovalLaundering: true,
+        allowedOwners: ["operator"],
+      },
+    });
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.hasPermission.mockResolvedValue(false);
@@ -329,6 +384,294 @@ describe.sequential("issue comment reopen routes", () => {
         ambiguous: false,
         agent: { id: reference },
       };
+    });
+  });
+
+  it("serves read-only autonomous loop watchdog previews for operators", async () => {
+    mockListAutonomousGoalLoopWatchdogPreview.mockResolvedValue({
+      companyId: "company-1",
+      mode: "preview",
+      readOnly: true,
+      generatedAt: "2026-05-11T10:00:00.000Z",
+      totalIssuesScanned: 2,
+      hasMore: true,
+      nextCursor: "opaque-watchdog-cursor-1",
+      candidates: [
+        {
+          id: "issue-1:repair_loop_decision:ceo_loop_decision_stale",
+          kind: "loop_decision_repair",
+          severity: "high",
+          owner: "operator",
+          issueId: "issue-1",
+          identifier: "PAP-581",
+          title: "Autonomous loop goal",
+          status: "in_progress",
+          reason: "ceo_loop_decision_stale",
+          recoveryAction: "repair_loop_decision",
+          recommendedAction: "Review and rewrite the ceo-loop-decision document.",
+          userVisible: false,
+          generatedAt: "2026-05-11T10:00:00.000Z",
+        },
+      ],
+    });
+
+    const res = await request(await installActor(createApp()))
+      .get("/api/companies/company-1/autonomous-loop-watchdog/preview?limit=25&cursor=opaque-watchdog-cursor-1")
+      .send();
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      companyId: "company-1",
+      mode: "preview",
+      readOnly: true,
+      totalIssuesScanned: 2,
+      hasMore: true,
+      nextCursor: "opaque-watchdog-cursor-1",
+      candidates: [
+        expect.objectContaining({
+          owner: "operator",
+          kind: "loop_decision_repair",
+          recoveryAction: "repair_loop_decision",
+        }),
+      ],
+    });
+    expect(mockListAutonomousGoalLoopWatchdogPreview).toHaveBeenCalledWith(mockDb, "company-1", {
+      limit: 25,
+      cursor: "opaque-watchdog-cursor-1",
+    });
+  });
+
+  it("rejects non-board actors for autonomous loop watchdog previews", async () => {
+    const res = await request(await installActor(createApp(), agentActor()))
+      .get("/api/companies/company-1/autonomous-loop-watchdog/preview")
+      .send();
+
+    expect(res.status).toBe(403);
+    expect(mockListAutonomousGoalLoopWatchdogPreview).not.toHaveBeenCalled();
+  });
+
+  it("validates autonomous loop watchdog preview limits", async () => {
+    const res = await request(await installActor(createApp()))
+      .get("/api/companies/company-1/autonomous-loop-watchdog/preview?limit=101")
+      .send();
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid limit");
+    expect(mockListAutonomousGoalLoopWatchdogPreview).not.toHaveBeenCalled();
+  });
+
+  it("validates autonomous loop watchdog preview cursors", async () => {
+    const res = await request(await installActor(createApp()))
+      .get("/api/companies/company-1/autonomous-loop-watchdog/preview?cursor=issue-1")
+      .send();
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid cursor");
+    expect(mockListAutonomousGoalLoopWatchdogPreview).not.toHaveBeenCalled();
+  });
+
+  it("serves dry-run autonomous loop watchdog recovery-plan previews for operators", async () => {
+    mockListAutonomousGoalLoopWatchdogRecoveryPlanPreview.mockResolvedValue({
+      companyId: "company-1",
+      mode: "recovery_plan_preview",
+      dryRun: true,
+      readOnly: true,
+      liveRecovery: false,
+      generatedAt: "2026-05-11T10:00:00.000Z",
+      totalIssuesScanned: 2,
+      candidatesConsidered: 1,
+      plans: [
+        {
+          id: "recovery-plan:issue-1:repair_loop_decision:ceo_loop_decision_stale",
+          candidateId: "issue-1:repair_loop_decision:ceo_loop_decision_stale",
+          issueId: "issue-1",
+          identifier: "PAP-581",
+          title: "Autonomous loop goal",
+          severity: "high",
+          reason: "ceo_loop_decision_stale",
+          recoveryAction: "repair_loop_decision",
+          planKind: "repair_loop_decision_document",
+          execution: "operator_manual_only",
+          mutationPolicy: {
+            dryRunOnly: true,
+            writesDocument: false,
+            createsIssue: false,
+            createsApproval: false,
+            queuesWakeup: false,
+            continuesAutonomousLoop: false,
+            liveRecovery: false,
+          },
+          steps: [],
+          blockedActions: ["continue_autonomous_goal_loop", "create_child_issue", "request_user_approval"],
+        },
+      ],
+      skippedCandidates: [],
+      guardrails: {
+        boardOnly: true,
+        dryRunOnly: true,
+        noLiveRecovery: true,
+        noApprovalLaundering: true,
+        allowedOwners: ["operator"],
+      },
+    });
+
+    const res = await request(await installActor(createApp()))
+      .get("/api/companies/company-1/autonomous-loop-watchdog/recovery-plan/preview?limit=25&dryRun=true")
+      .send();
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      companyId: "company-1",
+      mode: "recovery_plan_preview",
+      dryRun: true,
+      readOnly: true,
+      liveRecovery: false,
+      plans: [
+        expect.objectContaining({
+          execution: "operator_manual_only",
+          planKind: "repair_loop_decision_document",
+        }),
+      ],
+    });
+    expect(mockListAutonomousGoalLoopWatchdogRecoveryPlanPreview).toHaveBeenCalledWith(mockDb, "company-1", {
+      limit: 25,
+    });
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-board actors for autonomous loop watchdog recovery-plan previews", async () => {
+    const res = await request(await installActor(createApp(), agentActor()))
+      .get("/api/companies/company-1/autonomous-loop-watchdog/recovery-plan/preview")
+      .send();
+
+    expect(res.status).toBe(403);
+    expect(mockListAutonomousGoalLoopWatchdogRecoveryPlanPreview).not.toHaveBeenCalled();
+  });
+
+  it("validates autonomous loop watchdog recovery-plan preview limits", async () => {
+    const res = await request(await installActor(createApp()))
+      .get("/api/companies/company-1/autonomous-loop-watchdog/recovery-plan/preview?limit=101")
+      .send();
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid recovery plan preview query");
+    expect(mockListAutonomousGoalLoopWatchdogRecoveryPlanPreview).not.toHaveBeenCalled();
+  });
+
+  it("rejects live/apply-shaped autonomous loop watchdog recovery-plan preview queries", async () => {
+    const dryRunFalse = await request(await installActor(createApp()))
+      .get("/api/companies/company-1/autonomous-loop-watchdog/recovery-plan/preview?dryRun=false")
+      .send();
+    const applyQuery = await request(await installActor(createApp()))
+      .get("/api/companies/company-1/autonomous-loop-watchdog/recovery-plan/preview?apply=true")
+      .send();
+
+    expect(dryRunFalse.status).toBe(400);
+    expect(applyQuery.status).toBe(400);
+    expect(mockListAutonomousGoalLoopWatchdogRecoveryPlanPreview).not.toHaveBeenCalled();
+  });
+
+  it("serves derived autonomous loop state for the issue detail panel", async () => {
+    const parentIssue = {
+      ...makeIssue("in_progress"),
+      priority: "high",
+      executionPolicy: {
+        missionControl: {
+          enabled: true,
+          riskClass: "high",
+          requiredDocumentKeys: ["validation-contract", "worker-handoff", "validator-report"],
+          autonomousLoop: {
+            enabled: true,
+            controller: "CEO",
+            goal: "Ship Autonomous Loop v2 observability",
+            startedAt: "2026-05-11T08:00:00.000Z",
+            iteration: 1,
+            maxIterations: 5,
+            maxRuntimeHours: 24,
+          },
+        },
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(parentIssue);
+    mockListMissionControlCompletionDocuments.mockResolvedValue([
+      { key: "validation-contract", body: "objective/pass criteria" },
+      { key: "worker-handoff", body: "worker done" },
+      { key: "validator-report", body: "Verdict: PASS" },
+      {
+        key: "ceo-loop-decision",
+        body: JSON.stringify({
+          version: 1,
+          iteration: 1,
+          decision: "next_iteration",
+          rationale: "Continue with the next safe internal task.",
+          nextTask: {
+            title: "Expose loop state panel",
+            acceptanceCriteria: ["Issue detail shows loop state"],
+            safeToRunWithoutUserApproval: true,
+          },
+        }),
+      },
+    ]);
+    mockIssueService.list.mockResolvedValue([
+      {
+        id: "child-1",
+        parentId: parentIssue.id,
+        identifier: "PAP-581",
+        title: "Expose loop state panel",
+        status: "in_progress",
+        originKind: "autonomous_goal_loop_iteration",
+        originId: parentIssue.id,
+        originFingerprint: "iteration:1",
+        createdAt: new Date("2026-05-11T09:00:00.000Z"),
+        updatedAt: new Date("2026-05-11T09:10:00.000Z"),
+      },
+    ]);
+
+    const res = await request(await installActor(createApp()))
+      .get("/api/issues/11111111-1111-4111-8111-111111111111/autonomous-loop-state")
+      .send();
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      enabled: true,
+      status: "executing",
+      goal: "Ship Autonomous Loop v2 observability",
+      iteration: 1,
+      progressLabel: "1 / 5",
+      currentDecision: {
+        iteration: 1,
+        decision: "next_iteration",
+        nextTaskTitle: "Expose loop state panel",
+      },
+      planner: {
+        mode: "single_child",
+        supportsParallelChildren: false,
+        originFingerprint: "iteration:1",
+        childIssueId: "child-1",
+      },
+      supervisor: {
+        attentionRequired: false,
+        recoveryAction: "none",
+      },
+      iterations: [
+        {
+          iteration: 2,
+          issueId: "child-1",
+          identifier: "PAP-581",
+          title: "Expose loop state panel",
+          status: "in_progress",
+        },
+      ],
+    });
+    expect(res.body.observability.chain).toEqual([
+      expect.objectContaining({ kind: "goal", issueId: parentIssue.id }),
+      expect.objectContaining({ kind: "iteration", issueId: "child-1", iteration: 2 }),
+    ]);
+    expect(mockIssueService.list).toHaveBeenCalledWith("company-1", {
+      parentId: parentIssue.id,
+      originKind: "autonomous_goal_loop_iteration",
+      originId: parentIssue.id,
+      limit: 100,
     });
   });
 

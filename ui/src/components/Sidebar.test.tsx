@@ -161,4 +161,16 @@ describe("Sidebar", () => {
       root.unmount();
     });
   });
+
+  it("links the Company section to the autonomous loop observability page", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    const root = await renderSidebar();
+
+    const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Observability");
+    expect(link?.getAttribute("href")).toBe("/observability");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });
