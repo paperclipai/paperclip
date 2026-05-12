@@ -1139,7 +1139,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     idempotencyKey: ctx.runId,
   };
   delete agentParams.text;
-  agentParams.paperclip = paperclipPayload;
+  // Shenas fork patch: openclaw-gateway 2026.5.7's `validateAgentParams`
+  // rejects unknown root properties, so a `paperclip` key on agent params
+  // fails the handshake with `INVALID_REQUEST: at root: unexpected
+  // property 'paperclip'`. Wake metadata still reaches the heartbeat via
+  // env vars (PAPERCLIP_TASK_ID, PAPERCLIP_RUN_ID, PAPERCLIP_WAKE_REASON,
+  // …). Drop the suppression once openclaw-gateway accepts pass-through
+  // properties or paperclip moves the payload under a key it accepts.
+  void paperclipPayload;
 
   const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
