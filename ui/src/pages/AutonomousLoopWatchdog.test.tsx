@@ -5,7 +5,12 @@ import { createRoot } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AutonomousLoopWatchdog } from "./AutonomousLoopWatchdog";
+import {
+  AutonomousLoopWatchdog,
+  watchdogPreviewRefetchInterval,
+  watchdogPreviewRetryDelay,
+  watchdogPreviewShouldRetry,
+} from "./AutonomousLoopWatchdog";
 
 const companyState = vi.hoisted(() => ({
   selectedCompanyId: "company-1" as string | null,
@@ -85,11 +90,22 @@ describe("AutonomousLoopWatchdog page", () => {
     companyState.selectedCompanyId = "company-1";
     breadcrumbState.setBreadcrumbs.mockReset();
     watchdogApiMock.preview.mockReset();
+    window.localStorage.clear();
   });
 
   afterEach(() => {
     container.remove();
     document.body.innerHTML = "";
+  });
+
+  it("backs off watchdog polling after endpoint errors", () => {
+    expect(watchdogPreviewRefetchInterval({ state: { error: null } } as never)).toBe(30_000);
+    expect(watchdogPreviewRefetchInterval({ state: { error: new Error("Board access required") } } as never)).toBe(false);
+    expect(watchdogPreviewShouldRetry(0, new Error("transient network failure"))).toBe(true);
+    expect(watchdogPreviewShouldRetry(3, new Error("transient network failure"))).toBe(false);
+    expect(watchdogPreviewShouldRetry(0, new Error("Board access required"))).toBe(false);
+    expect(watchdogPreviewRetryDelay(0)).toBe(1_000);
+    expect(watchdogPreviewRetryDelay(6)).toBe(30_000);
   });
 
   it("renders read-only watchdog candidates from the preview endpoint", async () => {
@@ -159,6 +175,97 @@ describe("AutonomousLoopWatchdog page", () => {
     expect(identifierlessIssueLink).not.toBeNull();
     expect(container.textContent).toContain("Identifierless loop");
     expect(breadcrumbState.setBreadcrumbs).toHaveBeenCalledWith([{ label: "Observability" }]);
+
+    await act(async () => root.unmount());
+  });
+
+  it("lets an operator locally snooze a watchdog candidate", async () => {
+    watchdogApiMock.preview.mockResolvedValue({
+      companyId: "company-1",
+      mode: "preview",
+      readOnly: true,
+      generatedAt: "2026-05-11T10:00:00.000Z",
+      totalIssuesScanned: 1,
+      hasMore: false,
+      nextCursor: null,
+      candidates: [
+        {
+          id: "issue-1:repair_loop_decision:ceo_loop_decision_stale",
+          kind: "loop_decision_repair",
+          severity: "high",
+          owner: "operator",
+          issueId: "issue-1",
+          identifier: "PAP-581",
+          title: "Autonomous loop goal",
+          status: "in_progress",
+          reason: "ceo_loop_decision_stale",
+          recoveryAction: "repair_loop_decision",
+          recommendedAction: "Review and rewrite the ceo-loop-decision document.",
+          userVisible: false,
+          generatedAt: "2026-05-11T10:00:00.000Z",
+        },
+      ],
+    });
+
+    const root = renderWatchdog(container);
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("I'm on this");
+      expect(container.textContent).not.toContain("Snoozed");
+    });
+
+    const button = Array.from(container.querySelectorAll("button")).find((element) => element.textContent?.includes("I'm on this"));
+    expect(button).toBeTruthy();
+
+    await act(async () => {
+      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Snoozed");
+      expect(window.localStorage.getItem("paperclip:autonomous-loop-watchdog:snoozed:company-1")).toContain(
+        "issue-1:repair_loop_decision:ceo_loop_decision_stale",
+      );
+    });
+
+    await act(async () => root.unmount());
+  });
+
+  it("does not style unsupported critical severity as a backend-emitted critical alert", async () => {
+    watchdogApiMock.preview.mockResolvedValue({
+      companyId: "company-1",
+      mode: "preview",
+      readOnly: true,
+      generatedAt: "2026-05-11T10:00:00.000Z",
+      totalIssuesScanned: 1,
+      hasMore: false,
+      nextCursor: null,
+      candidates: [
+        {
+          id: "issue-critical:manual_review:missing_ceo_loop_decision",
+          kind: "loop_manual_review",
+          severity: "critical",
+          owner: "operator",
+          issueId: "issue-critical",
+          identifier: "PAP-999",
+          title: "Unexpected critical label",
+          status: "in_progress",
+          reason: "missing_ceo_loop_decision",
+          recoveryAction: "manual_review",
+          recommendedAction: "Inspect the issue and add a fresh decision document.",
+          userVisible: false,
+          generatedAt: "2026-05-11T10:00:00.000Z",
+        },
+      ],
+    });
+
+    const root = renderWatchdog(container);
+
+    await waitForAssertion(() => {
+      const severityBadge = Array.from(container.querySelectorAll("span")).find((element) => element.textContent === "critical");
+      expect(severityBadge?.className).toContain("text-muted-foreground");
+      expect(severityBadge?.className).not.toContain("text-destructive");
+    });
 
     await act(async () => root.unmount());
   });
