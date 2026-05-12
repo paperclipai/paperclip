@@ -15,6 +15,10 @@ export interface LocalAgentJwtClaims {
   iss?: string;
   aud?: string;
   jti?: string;
+  // OAuth connections referenced by this run's adapter config. The runtime
+  // proxy uses this list to scope token-resolve and revoke calls to the
+  // exact connections this run was granted at dispatch time.
+  oauth?: { connectionIds: string[] };
 }
 
 const JWT_ALGORITHM = "HS256";
@@ -65,7 +69,13 @@ function safeCompare(a: string, b: string) {
   return timingSafeEqual(left, right);
 }
 
-export function createLocalAgentJwt(agentId: string, companyId: string, adapterType: string, runId: string) {
+export function createLocalAgentJwt(
+  agentId: string,
+  companyId: string,
+  adapterType: string,
+  runId: string,
+  oauth?: { connectionIds: string[] },
+) {
   const config = jwtConfig();
   if (!config) return null;
 
@@ -79,6 +89,7 @@ export function createLocalAgentJwt(agentId: string, companyId: string, adapterT
     exp: now + config.ttlSeconds,
     iss: config.issuer,
     aud: config.audience,
+    ...(oauth ? { oauth } : {}),
   };
 
   const header = {
@@ -127,6 +138,20 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   if (issuer && issuer !== config.issuer) return null;
   if (audience && audience !== config.audience) return null;
 
+  let oauth: { connectionIds: string[] } | undefined;
+  const oauthClaim = claims.oauth;
+  if (
+    oauthClaim &&
+    typeof oauthClaim === "object" &&
+    !Array.isArray(oauthClaim) &&
+    Array.isArray((oauthClaim as { connectionIds?: unknown }).connectionIds)
+  ) {
+    const ids = (oauthClaim as { connectionIds: unknown[] }).connectionIds.filter(
+      (id): id is string => typeof id === "string",
+    );
+    oauth = { connectionIds: ids };
+  }
+
   return {
     sub,
     company_id: companyId,
@@ -137,5 +162,6 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
     ...(issuer ? { iss: issuer } : {}),
     ...(audience ? { aud: audience } : {}),
     jti: typeof claims.jti === "string" ? claims.jti : undefined,
+    ...(oauth ? { oauth } : {}),
   };
 }

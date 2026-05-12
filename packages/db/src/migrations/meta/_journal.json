@@ -596,6 +596,13 @@
       "when": 1778355326070,
       "tag": "0084_issue_recovery_actions",
       "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1778889600000,
+      "tag": "0088_oauth_connections",
+      "breakpoints": true
     }
   ]
 }
