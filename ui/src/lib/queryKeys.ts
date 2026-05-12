@@ -101,7 +101,12 @@ export const queryKeys = {
   },
   approvals: {
     list: (companyId: string, status?: string, sourcePluginId?: string) =>
-      ["approvals", companyId, status, sourcePluginId] as const,
+      [
+        "approvals",
+        companyId,
+        ...(status !== undefined ? [status] : []),
+        ...(sourcePluginId !== undefined ? [sourcePluginId] : []),
+      ] as const,
     detail: (approvalId: string) => ["approvals", "detail", approvalId] as const,
     comments: (approvalId: string) => ["approvals", "comments", approvalId] as const,
     issues: (approvalId: string) => ["approvals", "issues", approvalId] as const,

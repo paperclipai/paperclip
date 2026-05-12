@@ -94,11 +94,14 @@ export function PluginSettings() {
   });
 
   const { data: pluginApprovalsData } = useQuery({
-    queryKey: queryKeys.approvals.list(selectedCompanyId!, "pending", plugin?.id),
-    queryFn: () => approvalsApi.list(selectedCompanyId!, "pending", plugin?.id),
+    queryKey: queryKeys.approvals.list(selectedCompanyId!, undefined, plugin?.id),
+    queryFn: () => approvalsApi.list(selectedCompanyId!, undefined, plugin?.id),
     enabled: !!selectedCompanyId && !!plugin?.id && activeTab === "status",
     refetchInterval: 30000,
   });
+  const actionablePluginApprovals = (pluginApprovalsData ?? []).filter(
+    (approval) => approval.status === "pending" || approval.status === "revision_requested",
+  );
 
   // Fetch existing config for the plugin
   const configSchema = plugin?.manifestJson?.instanceConfigSchema as JsonSchemaNode | undefined;
@@ -579,10 +582,10 @@ export function PluginSettings() {
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
-                    {pluginApprovalsData && pluginApprovalsData.length > 0 ? (
+                    {actionablePluginApprovals.length > 0 ? (
                       <div className="space-y-2">
                         <p className="text-sm text-muted-foreground">
-                          {pluginApprovalsData.length} pending approval{pluginApprovalsData.length !== 1 ? "s" : ""} from this plugin.
+                          {actionablePluginApprovals.length} open approval{actionablePluginApprovals.length !== 1 ? "s" : ""} from this plugin.
                         </p>
                         <Link to={`/approvals/pending`}>
                           <Button variant="outline" size="sm" className="w-full">
@@ -591,7 +594,7 @@ export function PluginSettings() {
                         </Link>
                       </div>
                     ) : (
-                      <p className="text-sm text-muted-foreground italic">No pending approvals.</p>
+                      <p className="text-sm text-muted-foreground italic">No open approvals.</p>
                     )}
                   </CardContent>
                 </Card>
