@@ -7,6 +7,8 @@ import type {
   PluginEnvironmentLease,
   PluginEnvironmentProbeParams,
   PluginEnvironmentProbeResult,
+  PluginEnvironmentRealizeWorkspaceParams,
+  PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentReleaseLeaseParams,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
@@ -265,6 +267,25 @@ const plugin = definePlugin({
     return {
       providerLeaseId: jobName,
       metadata: leaseMetadata as unknown as Record<string, unknown>,
+    };
+  },
+
+  async onEnvironmentRealizeWorkspace(
+    params: PluginEnvironmentRealizeWorkspaceParams,
+  ): Promise<PluginEnvironmentRealizeWorkspaceResult> {
+    // The agent pod already has /workspace mounted as an emptyDir at pod
+    // scheduling time (see pod-spec-builder). Nothing to provision here —
+    // we just hand back the cwd. Honor a caller-supplied remotePath if set.
+    const cwd =
+      params.workspace.remotePath && params.workspace.remotePath.trim().length > 0
+        ? params.workspace.remotePath.trim()
+        : "/workspace";
+    return {
+      cwd,
+      metadata: {
+        provider: "kubernetes",
+        remoteCwd: cwd,
+      },
     };
   },
 
