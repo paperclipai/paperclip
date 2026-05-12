@@ -212,6 +212,16 @@ export async function testEnvironment(
       if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
       if (extraArgs.length > 0) args.push(...extraArgs);
 
+      // Sandbox bridges add tens of seconds of overhead (lease warmup, SSE
+      // round-trips) on top of the probe itself, so give those targets a much
+      // larger budget. The plugin RPC layer adds another 30s buffer, so a
+      // 120s probe → 150s RPC, comfortably covering CF cold-starts observed
+      // in the QA matrix.
+      const helloProbeTimeoutSec = Math.max(
+        1,
+        asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 120 : 45),
+      );
+
       const probe = await runAdapterExecutionTargetProcess(
         runId,
         target,
@@ -220,7 +230,7 @@ export async function testEnvironment(
         {
           cwd,
           env,
-          timeoutSec: 45,
+          timeoutSec: helloProbeTimeoutSec,
           graceSec: 5,
           stdin: "Respond with hello.",
           onLog: async () => {},
