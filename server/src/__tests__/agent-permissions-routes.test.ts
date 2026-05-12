@@ -72,6 +72,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   resetRuntimeSession: vi.fn(),
   getRun: vi.fn(),
   cancelRun: vi.fn(),
+  clearAgentEnqueueTimestamps: vi.fn(),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({
@@ -107,6 +108,9 @@ const mockEnvironmentService = vi.hoisted(() => ({
 const mockInstanceSettingsService = vi.hoisted(() => ({
   getGeneral: vi.fn(),
 }));
+const mockDbUpdateWhere = vi.hoisted(() => vi.fn());
+const mockDbUpdateSet = vi.hoisted(() => vi.fn(() => ({ where: mockDbUpdateWhere })));
+const mockDbUpdate = vi.hoisted(() => vi.fn(() => ({ set: mockDbUpdateSet })));
 
 function registerModuleMocks() {
   vi.doMock("@paperclipai/adapter-opencode-local/server", async () => {
@@ -217,6 +221,7 @@ function createDbStub(options: { requireBoardApprovalForNewAgents?: boolean } = 
         }),
       }),
     }),
+    update: mockDbUpdate,
   };
 }
 
@@ -314,6 +319,7 @@ describe.sequential("agent permission routes", () => {
     mockHeartbeatService.resetRuntimeSession.mockReset();
     mockHeartbeatService.getRun.mockReset();
     mockHeartbeatService.cancelRun.mockReset();
+    mockHeartbeatService.clearAgentEnqueueTimestamps.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
     mockIssueService.list.mockReset();
     mockSecretService.normalizeAdapterConfigForPersistence.mockReset();
@@ -327,6 +333,9 @@ describe.sequential("agent permission routes", () => {
     mockSyncInstructionsBundleConfigFromFilePath.mockReset();
     mockInstanceSettingsService.getGeneral.mockReset();
     mockEnvironmentService.getById.mockReset();
+    mockDbUpdate.mockReset();
+    mockDbUpdateSet.mockReset();
+    mockDbUpdateWhere.mockReset();
     mockEnsureOpenCodeModelConfiguredAndAvailable.mockReset();
     mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
@@ -341,6 +350,10 @@ describe.sequential("agent permission routes", () => {
     });
     mockAgentService.update.mockResolvedValue(baseAgent);
     mockAgentService.updatePermissions.mockResolvedValue(baseAgent);
+    mockHeartbeatService.clearAgentEnqueueTimestamps.mockReturnValue(undefined);
+    mockDbUpdate.mockImplementation(() => ({ set: mockDbUpdateSet }));
+    mockDbUpdateSet.mockImplementation(() => ({ where: mockDbUpdateWhere }));
+    mockDbUpdateWhere.mockReturnValue({ returning: vi.fn(async () => [baseAgent]) });
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.hasPermission.mockResolvedValue(false);
     mockAccessService.getMembership.mockResolvedValue({
@@ -502,6 +515,47 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("host-executed workspace commands");
     expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("blocks auto-unpause for agents outside the caller company scope", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      companyId: "33333333-3333-4333-8333-333333333333",
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app).post(`/api/agents/${agentId}/unpause-auto`).send({});
+
+    expect(res.status).toBe(403);
+    expect(mockDbUpdate).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.clearAgentEnqueueTimestamps).not.toHaveBeenCalled();
+  });
+
+  it("clears auto-pause only for an agent in the caller company scope", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      runtimeConfig: { autoPause: { paused: true } },
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app).post(`/api/agents/${agentId}/unpause-auto`).send({});
+
+    expect(res.status).toBe(200);
+    expect(mockDbUpdate).toHaveBeenCalled();
+    expect(mockDbUpdateWhere).toHaveBeenCalled();
+    expect(mockHeartbeatService.clearAgentEnqueueTimestamps).toHaveBeenCalledWith(agentId);
   });
 
   it("blocks agent-authenticated self-updates that set cheap-profile host-executed workspace commands", async () => {

@@ -2981,23 +2981,22 @@ export function agentRoutes(
     });
   });
 
-  router.post("/agents/:id/unpause-auto", async (req, res) => {
-    assertBoard(req);
-    const id = req.params.id as string;
-    const agent = await svc.getById(id);
-    if (!agent) {
-      res.status(404).json({ error: "Agent not found" });
-      return;
-    }
+	  router.post("/agents/:id/unpause-auto", async (req, res) => {
+	    assertBoard(req);
+	    const id = req.params.id as string;
+	    const agent = await getAccessibleAgent(req, res, id);
+	    if (!agent) {
+	      return;
+	    }
 
     const [updated] = await db
       .update(agentsTable)
-      .set({
-        runtimeConfig: sql`coalesce(${agentsTable.runtimeConfig}, '{}'::jsonb) - 'autoPause'`,
-        updatedAt: new Date(),
-      })
-      .where(eq(agentsTable.id, id))
-      .returning();
+	      .set({
+	        runtimeConfig: sql`coalesce(${agentsTable.runtimeConfig}, '{}'::jsonb) - 'autoPause'`,
+	        updatedAt: new Date(),
+	      })
+	      .where(and(eq(agentsTable.id, id), eq(agentsTable.companyId, agent.companyId)))
+	      .returning();
 
     // Clear stale runaway timestamps so the first post-unpause enqueue doesn't
     // immediately re-trip the detector due to pre-pause activity.

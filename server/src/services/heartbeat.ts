@@ -201,6 +201,7 @@ const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+const PAUSE_CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running"] as const;
 const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
 export {
@@ -2414,11 +2415,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       logger.warn({ agentId, agentName, fastCount, slowCount }, "runaway detector triggered — auto-pausing agent");
       enqueueTimestamps.delete(agentId);
       const autoPausePatch = { autoPause: { paused: true, reason: tripReason, triggeredAt: new Date().toISOString() } };
-      await db.update(agents).set({
-        runtimeConfig: sql`coalesce(${agents.runtimeConfig}, '{}'::jsonb) || ${JSON.stringify(autoPausePatch)}::jsonb`,
-        updatedAt: new Date(),
-      }).where(eq(agents.id, agentId));
-      await cancelActiveForAgentInternal(agentId, tripReason);
+	      await db.update(agents).set({
+	        runtimeConfig: sql`coalesce(${agents.runtimeConfig}, '{}'::jsonb) || ${JSON.stringify(autoPausePatch)}::jsonb`,
+	        updatedAt: new Date(),
+	      }).where(eq(agents.id, agentId));
+	      await cancelActiveForAgentInternal(agentId, tripReason);
     }
   }
 
@@ -9534,9 +9535,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function cancelActiveForAgentInternal(agentId: string, reason = "Cancelled due to agent pause") {
     const agent = await getAgent(agentId);
     const runs = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES])));
+	      .select()
+	      .from(heartbeatRuns)
+	      .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...PAUSE_CANCELLABLE_HEARTBEAT_RUN_STATUSES])));
 
     for (const run of runs) {
       await setRunStatus(run.id, "cancelled", {

@@ -93,6 +93,24 @@ describeWithEmbeddedPostgres("heartbeat pause cleanup", () => {
     return runId;
   }
 
+  async function seedScheduledRetryRun(companyId: string, agentId: string) {
+    const runId = randomUUID();
+    const now = new Date();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      status: "scheduled_retry",
+      scheduledRetryAt: new Date(now.getTime() + 60_000),
+      scheduledRetryReason: "transient_error",
+      contextSnapshot: { issueId: randomUUID(), wakeReason: "scheduled_retry" },
+      updatedAt: now,
+      createdAt: now,
+    });
+    return runId;
+  }
+
   it("cancelAllActiveRuns: cancels queued runs across all agents", async () => {
     const agent1 = await seedAgent();
     const agent2 = await seedAgent();
@@ -115,5 +133,24 @@ describeWithEmbeddedPostgres("heartbeat pause cleanup", () => {
 
     const [run] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(run?.status).toBe("cancelled");
+  });
+
+  it("cancelActiveForAgent: preserves scheduled retries when an agent is paused", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const queuedRunId = await seedQueuedRun(companyId, agentId);
+    const retryRunId = await seedScheduledRetryRun(companyId, agentId);
+
+    await heartbeat.cancelActiveForAgent(agentId);
+
+    const [queuedRun] = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, queuedRunId));
+    const [retryRun] = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, retryRunId));
+    expect(queuedRun?.status).toBe("cancelled");
+    expect(retryRun?.status).toBe("scheduled_retry");
   });
 });

@@ -268,11 +268,12 @@ export function SidebarAgents() {
 
   const queuedCountByAgent = useMemo(() => {
     const counts = new Map<string, number>();
+    if (!boardAccess?.isInstanceAdmin) return counts;
     for (const entry of agentQueuedCounts ?? []) {
       counts.set(entry.agentId, entry.queuedCount);
     }
     return counts;
-  }, [agentQueuedCounts]);
+  }, [agentQueuedCounts, boardAccess?.isInstanceAdmin]);
 
   const visibleAgents = useMemo(() => {
     const filtered = (agents ?? []).filter(

@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarAgents } from "./SidebarAgents";
+import { queryKeys } from "../lib/queryKeys";
 
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -352,6 +353,29 @@ describe("SidebarAgents", () => {
     await flushReact();
 
     expect(mockAccessApi.getCurrentBoardAccess).toHaveBeenCalled();
+    expect(mockInstanceSettingsApi.getAgentQueuedCounts).not.toHaveBeenCalled();
+    expect(container.querySelector('[title="3 queued runs"]')).toBeNull();
+  });
+
+  it("does not render cached queued run counts for non-admins", async () => {
+    queryClient.setQueryData(queryKeys.instance.agentQueuedCounts, [
+      { agentId: "agent-a", queuedCount: 3 },
+    ]);
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
+      user: { id: "user-1", email: null, name: null, image: null },
+      userId: "user-1",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+      source: "session",
+      keyId: null,
+    });
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" }),
+    ]);
+
+    await renderSidebarAgents();
+    await flushReact();
+
     expect(mockInstanceSettingsApi.getAgentQueuedCounts).not.toHaveBeenCalled();
     expect(container.querySelector('[title="3 queued runs"]')).toBeNull();
   });
