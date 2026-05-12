@@ -153,6 +153,18 @@ export interface IssueBlockerAttention {
   sampleStalledBlockerIdentifier: string | null;
 }
 
+export type IssueOrphanDeliverableReason = "no_documents_no_agent_comments";
+
+export type IssueOrphanDeliverableStatus = "in_progress" | "in_review" | "done";
+
+export interface IssueOrphanDeliverableSignal {
+  reason: IssueOrphanDeliverableReason;
+  status: IssueOrphanDeliverableStatus;
+  flaggedSince: Date;
+  hasDocuments: boolean;
+  hasAgentComments: boolean;
+}
+
 export type IssueProductivityReviewTrigger =
   | "no_comment_streak"
   | "long_active_duration"
@@ -371,6 +383,7 @@ export interface Issue {
   blockedBy?: IssueRelationIssueSummary[];
   blocks?: IssueRelationIssueSummary[];
   blockerAttention?: IssueBlockerAttention;
+  orphanDeliverable?: IssueOrphanDeliverableSignal | null;
   productivityReview?: IssueProductivityReview | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   scheduledRetry?: IssueScheduledRetry | null;
