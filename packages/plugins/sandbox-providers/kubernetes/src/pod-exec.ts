@@ -40,6 +40,7 @@ export async function execInPod(
   containerName: string,
   command: string[],
   stdin?: string | Buffer,
+  timeoutMs?: number,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const exec = new Exec(kc);
   const stdoutStream = new PassThrough();
@@ -59,6 +60,11 @@ export async function execInPod(
   // pipe `head -c <N>` (which exits after exactly N bytes) into the
   // original command. The pipe propagates the exit code of the RHS so the
   // statusCallback still reflects the real command's exit status.
+  //
+  // NOTE: `stdinPayload.length` is the Buffer's BYTE length (correct for
+  // `head -c` which counts bytes). Do NOT substitute `string.length` here
+  // if the input is ever non-ASCII — UTF-8 multi-byte sequences would
+  // give a byte count that differs from JS character count.
   const effectiveCommand = stdinPayload
     ? ["/bin/sh", "-c", `head -c ${stdinPayload.length} | ${command.map(shQuote).join(" ")}`]
     : command;
@@ -89,11 +95,30 @@ export async function execInPod(
       // the k8s client triggers via `stream.end()` when it processes the
       // status frame) so all buffered data has been drained into our string
       // accumulators before resolving.
+      //
+      // Watchdog: if the WebSocket drops silently after setup (network blip,
+      // pod OOM-killed mid-exec, apiserver restart) the statusCallback never
+      // fires and the stream `end` events never arrive. Without a timer the
+      // calling worker hangs forever. Reject with a clear error so the caller
+      // can retry or surface the failure.
+      let watchdog: ReturnType<typeof setTimeout> | null = null;
+      if (typeof timeoutMs === "number" && timeoutMs > 0) {
+        watchdog = setTimeout(() => {
+          if (resolved) return;
+          resolved = true;
+          try { ws?.close(); } catch { /* ignore */ }
+          reject(new Error(
+            `execInPod timed out after ${timeoutMs}ms (pod=${podName}, container=${containerName}, cmd0=${effectiveCommand[0] ?? ""}). The WebSocket likely dropped before the command produced a status frame.`,
+          ));
+        }, timeoutMs);
+      }
+
       const tryFinish = () => {
         if (resolved) return;
         if (pendingExitCode === null) return;
         if (!stdoutEnded || !stderrEnded) return;
         resolved = true;
+        if (watchdog) clearTimeout(watchdog);
         try { ws?.close(); } catch { /* ignore */ }
         resolve({ exitCode: pendingExitCode, stdout: stdoutData, stderr: stderrData });
       };
@@ -142,7 +167,12 @@ export async function execInPod(
             stdinStream.end();
           }
         })
-        .catch(reject);
+        .catch((err) => {
+          if (resolved) return;
+          resolved = true;
+          if (watchdog) clearTimeout(watchdog);
+          reject(err);
+        });
     },
   );
 }

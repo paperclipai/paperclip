@@ -94,6 +94,16 @@ function generateBootstrapToken(): string {
 // don't collide. See upload-interceptor.ts for protocol details.
 const uploadInterceptor = new FastUploadInterceptor();
 
+// In-memory cache of sandbox CR names we've already observed reaching the
+// Ready condition during the current plugin-worker lifetime. The k8s
+// sandbox-cr lifecycle means once a Sandbox pod is Running, subsequent
+// execs into it don't need another readiness poll — saves one
+// `getNamespacedCustomObject` round-trip per exec, which adds up across
+// dozens of sequential exec calls in a typical adapter workflow.
+// On worker restart this resets, which is fine: the first exec on each
+// lease then re-confirms readiness from scratch.
+const readySandboxesByLease = new Set<string>();
+
 const plugin = definePlugin({
   async setup(ctx) {
     ctx.logger.info("Kubernetes sandbox provider plugin ready");
@@ -359,6 +369,14 @@ const plugin = definePlugin({
     const releaseOrchestrator =
       leaseBackend === "sandbox-cr" ? sandboxCrOrchestrator : jobOrchestrator;
 
+    // Drop any in-flight FastUploadInterceptor buffers associated with this
+    // lease. If a lease is torn down mid-upload (timeout, crash, cancel) the
+    // buffered b64 chunks would otherwise linger in worker memory until the
+    // worker exits. Each entry is capped at 100MB but a burst of aborted
+    // uploads could still push the heap meaningfully.
+    uploadInterceptor.reset();
+    readySandboxesByLease.delete(params.providerLeaseId);
+
     try {
       await releaseOrchestrator.release(clients, namespace, params.providerLeaseId);
     } catch (err) {
@@ -408,7 +426,7 @@ const plugin = definePlugin({
 
     if (leaseBackend === "sandbox-cr") {
       // ── Sandbox-CR backend ──────────────────────────────────────────────────
-      // 1. Ensure the Sandbox pod is Ready (wait if needed).
+      // 1. Ensure the Sandbox pod is Ready (wait only on first exec for this lease).
       // 2. Exec the command into the running pod.
       // 3. Return exec result directly (no log scraping needed).
 
@@ -417,30 +435,37 @@ const plugin = definePlugin({
           ? lease.metadata.podName
           : null;
 
-      // Wait for pod Ready if we don't have a pod name yet (or as a health check).
-      try {
-        await sandboxCrOrchestrator.waitForCompletion(
-          clients,
-          namespace,
-          lease.providerLeaseId,
-          { timeoutMs: effectiveTimeoutMs, pollMs: 2000 },
-        );
-      } catch (err) {
-        if (err instanceof SandboxCrTimeoutError) {
-          return {
-            exitCode: null,
-            timedOut: true,
-            stdout: "",
-            stderr: `Sandbox pod did not become Ready within ${effectiveTimeoutMs}ms`,
-            metadata: {
-              provider: "kubernetes",
-              backend: "sandbox-cr",
-              namespace,
-              sandboxName: lease.providerLeaseId,
-            },
-          };
+      // Skip the readiness poll if we've already observed this Sandbox CR
+      // reaching Ready during this worker's lifetime. See readySandboxesByLease
+      // declaration for rationale.
+      const podAlreadyKnownReady = readySandboxesByLease.has(lease.providerLeaseId);
+
+      if (!podAlreadyKnownReady) {
+        try {
+          await sandboxCrOrchestrator.waitForCompletion(
+            clients,
+            namespace,
+            lease.providerLeaseId,
+            { timeoutMs: effectiveTimeoutMs, pollMs: 2000 },
+          );
+          readySandboxesByLease.add(lease.providerLeaseId);
+        } catch (err) {
+          if (err instanceof SandboxCrTimeoutError) {
+            return {
+              exitCode: null,
+              timedOut: true,
+              stdout: "",
+              stderr: `Sandbox pod did not become Ready within ${effectiveTimeoutMs}ms`,
+              metadata: {
+                provider: "kubernetes",
+                backend: "sandbox-cr",
+                namespace,
+                sandboxName: lease.providerLeaseId,
+              },
+            };
+          }
+          throw err;
         }
-        throw err;
       }
 
       // Resolve pod name (may now be populated in Sandbox status).
@@ -521,6 +546,7 @@ const plugin = definePlugin({
             "agent",
             ["/bin/sh", "-c", script],
             base64Body,
+            effectiveTimeoutMs,
           );
           return {
             exitCode: flushResult.exitCode,
@@ -548,14 +574,34 @@ const plugin = definePlugin({
             ? ["/bin/sh", "-lc", command]
             : ["/bin/sh", "-l"];
 
-      const execResult = await execInPod(
-        kc,
-        namespace,
-        podName,
-        "agent",
-        execCommand,
-        typeof params.stdin === "string" ? params.stdin : undefined,
-      );
+      let execResult: { exitCode: number; stdout: string; stderr: string };
+      try {
+        execResult = await execInPod(
+          kc,
+          namespace,
+          podName,
+          "agent",
+          execCommand,
+          typeof params.stdin === "string" ? params.stdin : undefined,
+          effectiveTimeoutMs,
+        );
+      } catch (err) {
+        // Watchdog-fired or WebSocket-setup error. Surface as a timeout so
+        // the caller can retry instead of hanging forever.
+        return {
+          exitCode: null,
+          timedOut: true,
+          stdout: "",
+          stderr: err instanceof Error ? err.message : String(err),
+          metadata: {
+            provider: "kubernetes",
+            backend: "sandbox-cr",
+            namespace,
+            sandboxName: lease.providerLeaseId,
+            podName,
+          },
+        };
+      }
 
       return {
         exitCode: execResult.exitCode,
