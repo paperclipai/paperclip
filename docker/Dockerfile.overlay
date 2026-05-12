@@ -1,12 +1,35 @@
 # syntax=docker/dockerfile:1.20
-# Oxford overlay: adds Playwright/Chromium to the upstream paperclip prod image.
-# Bump UPSTREAM_IMAGE and PLAYWRIGHT_VERSION in lockstep with upstream releases.
-ARG UPSTREAM_IMAGE=ghcr.io/misterbusiness1/paperclip:latest
+# Oxford overlay: adds Playwright system libs + Chromium to upstream paperclip prod image.
+# This overlay is self-contained: it installs the 15 Playwright system libs AND the
+# chromium browser binary. Once upstream PR paperclipai/paperclip#5797 is merged and
+# the upstream image bundles both, this overlay can be retired.
+ARG UPSTREAM_IMAGE=ghcr.io/paperclipai/paperclip:latest
 FROM ${UPSTREAM_IMAGE}
 
 ARG PLAYWRIGHT_VERSION=1.58.2
 
 USER root
+
+# Install Playwright system library dependencies (Debian 13 trixie t64 variants)
+# These are the 15 libs from PR paperclipai/paperclip#5797
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libglib2.0-0t64 \
+    libnspr4 \
+    libnss3 \
+    libatk1.0-0t64 \
+    libatk-bridge2.0-0t64 \
+    libcups2t64 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libxkbcommon0 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libasound2t64 \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV PLAYWRIGHT_BROWSERS_PATH=/paperclip/.cache/ms-playwright
 
 RUN mkdir -p "$PLAYWRIGHT_BROWSERS_PATH" \
