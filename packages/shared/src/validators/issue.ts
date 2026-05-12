@@ -14,6 +14,11 @@ import {
   ISSUE_COMMENT_PRESENTATION_TONES,
   ISSUE_MONITOR_SCHEDULED_BY,
   ISSUE_PRIORITIES,
+  ISSUE_RECOVERY_ACTION_KINDS,
+  ISSUE_RECOVERY_ACTION_OUTCOMES,
+  ISSUE_RECOVERY_ACTION_OWNER_TYPES,
+  ISSUE_RECOVERY_ACTION_STATUSES,
+  ISSUE_WORK_MODES,
   clampIssueRequestDepth,
   ISSUE_STATUSES,
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
@@ -166,13 +171,137 @@ export const issueExecutionStateSchema = z.object({
   monitor: issueExecutionMonitorStateSchema.optional().nullable(),
 });
 
+export const issueRecoveryActionReadModelSchema = z.object({
+  id: z.string().uuid(),
+  companyId: z.string().uuid(),
+  sourceIssueId: z.string().uuid(),
+  recoveryIssueId: z.string().uuid().nullable(),
+  kind: z.enum(ISSUE_RECOVERY_ACTION_KINDS),
+  status: z.enum(ISSUE_RECOVERY_ACTION_STATUSES),
+  ownerType: z.enum(ISSUE_RECOVERY_ACTION_OWNER_TYPES),
+  ownerAgentId: z.string().uuid().nullable(),
+  ownerUserId: z.string().nullable(),
+  previousOwnerAgentId: z.string().uuid().nullable(),
+  returnOwnerAgentId: z.string().uuid().nullable(),
+  cause: z.string().min(1),
+  fingerprint: z.string().min(1),
+  evidence: z.record(z.unknown()),
+  nextAction: z.string().min(1),
+  wakePolicy: z.record(z.unknown()).nullable(),
+  monitorPolicy: z.record(z.unknown()).nullable(),
+  attemptCount: z.number().int().nonnegative(),
+  maxAttempts: z.number().int().positive().nullable(),
+  timeoutAt: z.union([z.date(), z.string().datetime()]).nullable(),
+  lastAttemptAt: z.union([z.date(), z.string().datetime()]).nullable(),
+  outcome: z.enum(ISSUE_RECOVERY_ACTION_OUTCOMES).nullable(),
+  resolutionNote: z.string().nullable(),
+  resolvedAt: z.union([z.date(), z.string().datetime()]).nullable(),
+  createdAt: z.union([z.date(), z.string().datetime()]),
+  updatedAt: z.union([z.date(), z.string().datetime()]),
+});
+
+export type IssueRecoveryActionReadModel = z.infer<typeof issueRecoveryActionReadModelSchema>;
+
+const RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES = [
+  "restored",
+  "false_positive",
+  "blocked",
+  "cancelled",
+] as const;
+
+export const resolveIssueRecoveryActionSchema = z.object({
+  actionId: z.string().uuid().optional(),
+  outcome: z.enum(RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES),
+  sourceIssueStatus: z.enum(["done", "in_review", "blocked"]),
+  resolutionNote: multilineTextSchema.optional().nullable(),
+}).strict().superRefine((value, ctx) => {
+  if (value.outcome === "restored") {
+    if (value.sourceIssueStatus !== "done" && value.sourceIssueStatus !== "in_review") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Restored recovery actions must move the source issue to done or in_review",
+        path: ["sourceIssueStatus"],
+      });
+    }
+    return;
+  }
+
+  if (value.outcome === "blocked") {
+    if (value.sourceIssueStatus !== "blocked") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Blocked recovery actions must move the source issue to blocked",
+        path: ["sourceIssueStatus"],
+      });
+    }
+    return;
+  }
+
+  if (value.outcome === "false_positive" || value.outcome === "cancelled") {
+    if (
+      value.sourceIssueStatus !== "done" &&
+      value.sourceIssueStatus !== "in_review"
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "This recovery outcome requires sourceIssueStatus to be done or in_review",
+        path: ["sourceIssueStatus"],
+      });
+    }
+    return;
+  }
+});
+
+export type ResolveIssueRecoveryAction = z.infer<typeof resolveIssueRecoveryActionSchema>;
+
 const issueRequestDepthInputSchema = z
   .number()
   .int()
   .nonnegative()
   .transform((value) => clampIssueRequestDepth(value));
 
-export const createIssueSchema = z.object({
+type IssueCreateStatusDefaultInput = {
+  status?: unknown;
+  assigneeAgentId?: unknown;
+  assigneeUserId?: unknown;
+};
+
+export function resolveCreateIssueStatusDefault(input: IssueCreateStatusDefaultInput): {
+  status: (typeof ISSUE_STATUSES)[number];
+  defaulted: boolean;
+  reason: "explicit" | "assigned_omitted_status" | "unassigned_omitted_status";
+} {
+  if (typeof input.status === "string") {
+    return {
+      status: input.status as (typeof ISSUE_STATUSES)[number],
+      defaulted: false,
+      reason: "explicit",
+    };
+  }
+
+  const hasAssignee =
+    (typeof input.assigneeAgentId === "string" && input.assigneeAgentId.length > 0)
+    || (typeof input.assigneeUserId === "string" && input.assigneeUserId.length > 0);
+  return {
+    status: hasAssignee ? "todo" : "backlog",
+    defaulted: true,
+    reason: hasAssignee ? "assigned_omitted_status" : "unassigned_omitted_status",
+  };
+}
+
+function withCreateIssueStatusDefault<T extends z.ZodRawShape>(schema: z.ZodObject<T>) {
+  return z.preprocess((input) => {
+    if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+    const raw = input as Record<string, unknown>;
+    if (raw.status !== undefined) return input;
+    return {
+      ...raw,
+      status: resolveCreateIssueStatusDefault(raw).status,
+    };
+  }, schema);
+}
+
+const createIssueBaseSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   projectWorkspaceId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
@@ -181,7 +310,8 @@ export const createIssueSchema = z.object({
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
   description: multilineTextSchema.optional().nullable(),
-  status: z.enum(ISSUE_STATUSES).optional().default("backlog"),
+  status: z.enum(ISSUE_STATUSES),
+  workMode: z.enum(ISSUE_WORK_MODES).optional().default("standard"),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   assigneeAgentId: z.string().uuid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
@@ -195,9 +325,15 @@ export const createIssueSchema = z.object({
   labelIds: z.array(z.string().uuid()).optional(),
 });
 
+export const createIssueInputSchema = createIssueBaseSchema.extend({
+  status: createIssueBaseSchema.shape.status.optional(),
+});
+
+export const createIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema);
+
 export type CreateIssue = z.infer<typeof createIssueSchema>;
 
-export const createChildIssueSchema = createIssueSchema
+export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema
   .omit({
     parentId: true,
     inheritExecutionWorkspaceFromIssueId: true,
@@ -205,7 +341,7 @@ export const createChildIssueSchema = createIssueSchema
   .extend({
     acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
     blockParentUntilDone: z.boolean().optional().default(false),
-  });
+  }));
 
 export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
 
@@ -216,7 +352,7 @@ export const createIssueLabelSchema = z.object({
 
 export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
-export const updateIssueSchema = createIssueSchema.partial().extend({
+export const updateIssueSchema = createIssueBaseSchema.partial().extend({
   requestDepth: issueRequestDepthInputSchema.optional(),
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
   comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
@@ -316,6 +452,7 @@ export const issueCommentMetadataSectionSchema = z.object({
 
 export const issueCommentMetadataSchema = z.object({
   version: z.literal(1),
+  sourceRunId: z.string().uuid().nullable().optional(),
   sections: z.array(issueCommentMetadataSectionSchema).min(1).max(20),
 }).strict();
 
@@ -353,6 +490,7 @@ export const suggestedTaskDraftSchema = z.object({
   title: z.string().trim().min(1).max(240),
   description: multilineTextSchema.pipe(z.string().trim().max(20000)).nullable().optional(),
   priority: z.enum(ISSUE_PRIORITIES).nullable().optional(),
+  workMode: z.enum(ISSUE_WORK_MODES).nullable().optional(),
   assigneeAgentId: z.string().uuid().nullable().optional(),
   assigneeUserId: z.string().trim().min(1).nullable().optional(),
   projectId: z.string().uuid().nullable().optional(),

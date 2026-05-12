@@ -117,7 +117,11 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     });
   }
 
-  async function seedBlockedChain(opts: { outsideLookback?: boolean } = {}) {
+  async function seedBlockedChain(opts: {
+    outsideLookback?: boolean;
+    blockerStatus?: string;
+    blockerAssigneeAgentId?: "coder" | "manager" | null;
+  } = {}) {
     const companyId = randomUUID();
     const managerId = randomUUID();
     const coderId = randomUUID();
@@ -178,8 +182,13 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
         id: blockerIssueId,
         companyId,
         title: "Missing unblock owner",
-        status: "todo",
+        status: opts.blockerStatus ?? "todo",
         priority: "medium",
+        assigneeAgentId: opts.blockerAssigneeAgentId === "coder"
+          ? coderId
+          : opts.blockerAssigneeAgentId === "manager"
+            ? managerId
+            : null,
         issueNumber: 2,
         identifier: `${issuePrefix}-2`,
         createdAt: issueTimestamp,
@@ -281,6 +290,46 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
 
     expect(result.findings).toBe(0);
     expect(result.escalationsCreated).toBe(0);
+  });
+
+  it("creates one bounded escalation for an assigned backlog blocker leaf", async () => {
+    await enableAutoRecovery();
+    const { companyId, coderId, blockedIssueId, blockerIssueId } = await seedBlockedChain({
+      blockerStatus: "backlog",
+      blockerAssigneeAgentId: "coder",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.reconcileIssueGraphLiveness();
+    const second = await heartbeat.reconcileIssueGraphLiveness();
+
+    expect(first.findings).toBe(1);
+    expect(first.escalationsCreated).toBe(1);
+    expect(second.findings).toBe(0);
+    expect(second.escalationsCreated).toBe(0);
+
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(1);
+    expect(escalations[0]).toMatchObject({
+      parentId: blockerIssueId,
+      assigneeAgentId: coderId,
+      originId: [
+        "harness_liveness",
+        companyId,
+        blockedIssueId,
+        "blocked_by_assigned_backlog_issue",
+        blockerIssueId,
+      ].join(":"),
+      originFingerprint: [
+        "harness_liveness_leaf",
+        companyId,
+        "blocked_by_assigned_backlog_issue",
+        blockerIssueId,
+      ].join(":"),
+    });
   });
 
   it("creates one manager escalation, preserves blockers, and records owner selection", async () => {

@@ -13,6 +13,7 @@ const mockIssueService = vi.hoisted(() => ({
   getComment: vi.fn(),
   listBlockerAttention: vi.fn(),
   listProductivityReviews: vi.fn(),
+  getCurrentScheduledRetry: vi.fn(),
   listAttachments: vi.fn(),
 }));
 
@@ -110,6 +111,10 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => mockHeartbeatService,
   instanceSettingsService: () => mockInstanceSettingsService,
   issueApprovalService: () => ({}),
+  issueRecoveryActionService: () => ({
+    getActiveForIssue: vi.fn(async () => null),
+    listActiveForIssues: vi.fn(async () => new Map()),
+  }),
   issueReferenceService: () => mockIssueReferenceService,
   issueService: () => mockIssueService,
   logActivity: mockLogActivity,
@@ -147,6 +152,7 @@ const legacyProjectLinkedIssue = {
   title: "Legacy onboarding task",
   description: "Seed the first CEO task",
   status: "todo",
+  workMode: "planning",
   priority: "medium",
   projectId: "22222222-2222-4222-8222-222222222222",
   goalId: null,
@@ -187,6 +193,7 @@ describe.sequential("issue goal context routes", () => {
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.listBlockerAttention.mockResolvedValue(new Map());
     mockIssueService.listProductivityReviews.mockResolvedValue(new Map());
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
     mockIssueService.listAttachments.mockResolvedValue([]);
     mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({});
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue(null);
@@ -264,6 +271,7 @@ describe.sequential("issue goal context routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.issue.goalId).toBe(projectGoal.id);
+    expect(res.body.issue.workMode).toBe("planning");
     expect(res.body.goal).toEqual(
       expect.objectContaining({
         id: projectGoal.id,

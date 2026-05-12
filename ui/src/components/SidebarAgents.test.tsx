@@ -145,6 +145,34 @@ async function openAgentMenu(label = "Open actions for Alpha") {
   await flushReact();
 }
 
+async function openAgentsSectionMenu() {
+  const trigger = document.body.querySelector('button[aria-label="Agents section actions"]');
+  expect(trigger).not.toBeNull();
+
+  await act(async () => {
+    trigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+    trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushReact();
+}
+
+async function chooseSortMode(label: string) {
+  const item = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-radio-item"]'))
+    .find((element) => element.textContent?.includes(label));
+  expect(item).toBeTruthy();
+
+  await act(async () => {
+    item?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushReact();
+}
+
+function agentLinkLabels(container: HTMLElement) {
+  return Array.from(container.querySelectorAll('a[href^="/agents/"]'))
+    .map((anchor) => anchor.textContent?.trim())
+    .filter(Boolean);
+}
+
 describe("SidebarAgents", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot> | null;
@@ -165,6 +193,7 @@ describe("SidebarAgents", () => {
       user: { id: "user-1" },
     });
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+    localStorage.clear();
   });
 
   afterEach(async () => {
@@ -177,10 +206,11 @@ describe("SidebarAgents", () => {
     queryClient.clear();
     container.remove();
     document.body.innerHTML = "";
+    localStorage.clear();
     vi.clearAllMocks();
   });
 
-  it("shows edit and pause actions for an active sidebar agent", async () => {
+  async function renderSidebarAgents() {
     const currentRoot = createRoot(container);
     root = currentRoot;
 
@@ -192,6 +222,97 @@ describe("SidebarAgents", () => {
       );
     });
     await flushReact();
+  }
+
+  it("keeps top mode in stored org-aware order", async () => {
+    localStorage.setItem("paperclip.agentOrder:company-1:user-1", JSON.stringify(["agent-b", "agent-a", "agent-c"]));
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" }),
+      makeAgent({ id: "agent-b", name: "Bravo", urlKey: "bravo" }),
+      makeAgent({ id: "agent-c", name: "Charlie", urlKey: "charlie" }),
+    ]);
+
+    await renderSidebarAgents();
+
+    expect(agentLinkLabels(container)).toEqual(["Bravo", "Alpha", "Charlie"]);
+  });
+
+  it("uses the heading for section menu and the plus button for agent creation", async () => {
+    await renderSidebarAgents();
+
+    const sectionMenuTrigger = container.querySelector('button[aria-label="Agents section actions"]');
+    expect(sectionMenuTrigger?.textContent).toContain("Agents");
+    expect(sectionMenuTrigger?.querySelector("svg")).toBeNull();
+
+    const newAgentButton = container.querySelector('button[aria-label="New agent"]');
+    expect(newAgentButton).toBeTruthy();
+    await act(async () => {
+      newAgentButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockOpenNewAgent).toHaveBeenCalledTimes(1);
+
+    await openAgentsSectionMenu();
+
+    const newAgentItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
+      .find((element) => element.textContent?.includes("New agent"));
+    expect(newAgentItem).toBeFalsy();
+    const browseLink = Array.from(document.body.querySelectorAll("a"))
+      .find((element) => element.textContent?.includes("Browse agents"));
+    expect(browseLink?.getAttribute("href")).toBe("/agents/all");
+  });
+
+  it("sorts alphabetically and persists the selected mode per company and user", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "agent-c", name: "Charlie", urlKey: "charlie" }),
+      makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" }),
+      makeAgent({ id: "agent-b", name: "Bravo", urlKey: "bravo" }),
+    ]);
+
+    await renderSidebarAgents();
+    await openAgentsSectionMenu();
+    await chooseSortMode("Alphabetical");
+
+    expect(agentLinkLabels(container)).toEqual(["Alpha", "Bravo", "Charlie"]);
+    expect(localStorage.getItem("paperclip.agentSortMode:company-1:user-1")).toBe("alphabetical");
+  });
+
+  it("sorts recent agents by heartbeat, updated time, and created time descending", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({
+        id: "agent-a",
+        name: "Alpha",
+        urlKey: "alpha",
+        lastHeartbeatAt: null,
+        updatedAt: new Date("2026-01-20T00:00:00Z"),
+        createdAt: new Date("2026-01-01T00:00:00Z"),
+      }),
+      makeAgent({
+        id: "agent-b",
+        name: "Bravo",
+        urlKey: "bravo",
+        lastHeartbeatAt: new Date("2026-01-10T00:00:00Z"),
+        updatedAt: new Date("2026-01-02T00:00:00Z"),
+        createdAt: new Date("2026-01-02T00:00:00Z"),
+      }),
+      makeAgent({
+        id: "agent-c",
+        name: "Charlie",
+        urlKey: "charlie",
+        lastHeartbeatAt: null,
+        updatedAt: new Date("2026-01-20T00:00:00Z"),
+        createdAt: new Date("2026-01-03T00:00:00Z"),
+      }),
+    ]);
+
+    await renderSidebarAgents();
+    await openAgentsSectionMenu();
+    await chooseSortMode("Recent");
+
+    expect(agentLinkLabels(container)).toEqual(["Bravo", "Charlie", "Alpha"]);
+  });
+
+  it("shows edit and pause actions for an active sidebar agent", async () => {
+    await renderSidebarAgents();
     await openAgentMenu();
 
     const editLink = Array.from(document.body.querySelectorAll("a"))
@@ -216,17 +337,8 @@ describe("SidebarAgents", () => {
     mockAgentsApi.list.mockResolvedValue([
       makeAgent({ status: "paused", pauseReason: "manual", pausedAt: new Date("2026-01-02T00:00:00Z") }),
     ]);
-    const currentRoot = createRoot(container);
-    root = currentRoot;
 
-    await act(async () => {
-      currentRoot.render(
-        <QueryClientProvider client={queryClient}>
-          <SidebarAgents />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
+    await renderSidebarAgents();
     await openAgentMenu();
 
     const resumeItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
@@ -248,17 +360,8 @@ describe("SidebarAgents", () => {
       makeAgent({ id: "agent-2", name: "Beta", urlKey: "beta" }),
     ]);
     mockAgentsApi.pause.mockImplementation(() => new Promise(() => {}));
-    const currentRoot = createRoot(container);
-    root = currentRoot;
 
-    await act(async () => {
-      currentRoot.render(
-        <QueryClientProvider client={queryClient}>
-          <SidebarAgents />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
+    await renderSidebarAgents();
     await openAgentMenu();
 
     const pauseItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
@@ -287,17 +390,8 @@ describe("SidebarAgents", () => {
         pausedAt: new Date("2026-01-02T00:00:00Z"),
       }),
     ]);
-    const currentRoot = createRoot(container);
-    root = currentRoot;
 
-    await act(async () => {
-      currentRoot.render(
-        <QueryClientProvider client={queryClient}>
-          <SidebarAgents />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
+    await renderSidebarAgents();
     await openAgentMenu();
 
     const budgetPausedItem = Array.from(

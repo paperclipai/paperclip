@@ -3,6 +3,7 @@ import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
   createIssueSchema,
+  resolveIssueRecoveryActionSchema,
   respondIssueThreadInteractionSchema,
   suggestedTaskDraftSchema,
   updateIssueSchema,
@@ -46,6 +47,70 @@ describe("issue validators", () => {
     expect(parsed.comment).toBe("Done\n\n- Verified the route");
   });
 
+  it("allows false-positive recovery resolutions to atomically restore the source issue status", () => {
+    expect(
+      resolveIssueRecoveryActionSchema.parse({
+        outcome: "false_positive",
+        sourceIssueStatus: "in_review",
+      }),
+    ).toMatchObject({
+      outcome: "false_positive",
+      sourceIssueStatus: "in_review",
+    });
+
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({
+        outcome: "false_positive",
+        sourceIssueStatus: "blocked",
+      }).success,
+    ).toBe(false);
+
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({
+        outcome: "false_positive",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("allows cancelled recovery resolutions to atomically restore the source issue status", () => {
+    expect(
+      resolveIssueRecoveryActionSchema.parse({
+        outcome: "cancelled",
+        sourceIssueStatus: "in_review",
+      }),
+    ).toMatchObject({
+      outcome: "cancelled",
+      sourceIssueStatus: "in_review",
+    });
+
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({
+        outcome: "cancelled",
+        sourceIssueStatus: "blocked",
+      }).success,
+    ).toBe(false);
+
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({
+        outcome: "cancelled",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects recovery outcomes that are not supported by the source-scoped resolution endpoint", () => {
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({
+        outcome: "delegated",
+      }).success,
+    ).toBe(false);
+
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({
+        outcome: "escalated",
+      }).success,
+    ).toBe(false);
+  });
+
   it("normalizes escaped line breaks in issue comment bodies", () => {
     const parsed = addIssueCommentSchema.parse({
       body: "Progress update\\r\\n\\r\\nNext action.",
@@ -65,6 +130,7 @@ describe("issue validators", () => {
       },
       metadata: {
         version: 1,
+        sourceRunId: "11111111-1111-4111-8111-111111111111",
         sections: [
           {
             title: "Evidence",
@@ -79,6 +145,7 @@ describe("issue validators", () => {
     });
 
     expect(parsed.presentation?.detailsDefaultOpen).toBe(false);
+    expect(parsed.metadata?.sourceRunId).toBe("11111111-1111-4111-8111-111111111111");
     expect(parsed.metadata?.sections[0]?.rows).toHaveLength(3);
   });
 
@@ -125,6 +192,39 @@ describe("issue validators", () => {
     });
 
     expect(parsed.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
+  });
+
+  it("defaults omitted create status to todo when an assignee is present", () => {
+    expect(createIssueSchema.parse({
+      title: "Assigned work",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+    }).status).toBe("todo");
+    expect(createIssueSchema.parse({ title: "Unassigned work" }).status).toBe("backlog");
+    expect(createIssueSchema.parse({
+      title: "Deliberately parked",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      status: "backlog",
+    }).status).toBe("backlog");
+  });
+
+  it("defaults issue work mode to standard and accepts planning", () => {
+    expect(createIssueSchema.parse({ title: "Plan first" }).workMode).toBe("standard");
+    expect(createIssueSchema.parse({ title: "Plan first", workMode: "planning" }).workMode).toBe("planning");
+    expect(updateIssueSchema.parse({ workMode: "planning" }).workMode).toBe("planning");
+    expect(suggestedTaskDraftSchema.parse({
+      clientKey: "planning-child",
+      title: "Plan child",
+      workMode: "planning",
+    }).workMode).toBe("planning");
+  });
+
+  it("rejects unknown issue work modes", () => {
+    expect(createIssueSchema.safeParse({ title: "Plan first", workMode: "normal" }).success).toBe(false);
+    expect(suggestedTaskDraftSchema.safeParse({
+      clientKey: "bad-child",
+      title: "Bad child",
+      workMode: "analysis",
+    }).success).toBe(false);
   });
 
   it("clamps oversized requestDepth values on update", () => {

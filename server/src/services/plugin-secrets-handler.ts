@@ -33,37 +33,19 @@
  * @see services/secrets.ts — secretService used by agent env bindings
  */
 
-import { eq, and, desc } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companySecrets, companySecretVersions, pluginConfig } from "@paperclipai/db";
-import type { SecretProvider } from "@paperclipai/shared";
-import { getSecretProvider } from "../secrets/provider-registry.js";
-import { pluginRegistryService } from "./plugin-registry.js";
 import {
   collectSecretRefPaths,
   isUuidSecretRef,
   readConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
 
+export const PLUGIN_SECRET_REFS_DISABLED_MESSAGE =
+  "Plugin secret references are disabled until company-scoped plugin config lands";
+
 // ---------------------------------------------------------------------------
 // Error helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Create a sanitised error that never leaks secret material.
- * Only the ref identifier is included; never the resolved value.
- */
-function secretNotFound(secretRef: string): Error {
-  const err = new Error(`Secret not found: ${secretRef}`);
-  err.name = "SecretNotFoundError";
-  return err;
-}
-
-function secretVersionNotFound(secretRef: string): Error {
-  const err = new Error(`No version found for secret: ${secretRef}`);
-  err.name = "SecretVersionNotFoundError";
-  return err;
-}
 
 function invalidSecretRef(secretRef: string): Error {
   const err = new Error(`Invalid secret reference: ${secretRef}`);
@@ -86,8 +68,20 @@ export function extractSecretRefsFromConfig(
   configJson: unknown,
   schema?: Record<string, unknown> | null,
 ): Set<string> {
-  const refs = new Set<string>();
-  if (configJson == null || typeof configJson !== "object") return refs;
+  return new Set(extractSecretRefPathsFromConfig(configJson, schema).keys());
+}
+
+export function extractSecretRefPathsFromConfig(
+  configJson: unknown,
+  schema?: Record<string, unknown> | null,
+): Map<string, Set<string>> {
+  const refs = new Map<string, Set<string>>();
+  const addRef = (secretRef: string, path: string) => {
+    const existing = refs.get(secretRef) ?? new Set<string>();
+    existing.add(path);
+    refs.set(secretRef, existing);
+  };
+  if (configJson == null || typeof configJson !== "object") return new Map();
 
   const secretPaths = collectSecretRefPaths(schema);
 
@@ -96,7 +90,7 @@ export function extractSecretRefsFromConfig(
     for (const dotPath of secretPaths) {
       const current = readConfigValueAtPath(configJson as Record<string, unknown>, dotPath);
       if (typeof current === "string" && isUuidSecretRef(current)) {
-        refs.add(current);
+        addRef(current, dotPath);
       }
     }
     return refs;
@@ -107,7 +101,7 @@ export function extractSecretRefsFromConfig(
   // instanceConfigSchema.
   function walkAll(value: unknown): void {
     if (typeof value === "string") {
-      if (isUuidSecretRef(value)) refs.add(value);
+      if (isUuidSecretRef(value)) addRef(value, "$");
     } else if (Array.isArray(value)) {
       for (const item of value) walkAll(item);
     } else if (value !== null && typeof value === "object") {
@@ -205,15 +199,10 @@ function createRateLimiter(maxAttempts: number, windowMs: number) {
 export function createPluginSecretsHandler(
   options: PluginSecretsHandlerOptions,
 ): PluginSecretsService {
-  const { db, pluginId } = options;
-  const registry = pluginRegistryService(db);
+  const { pluginId } = options;
 
   // Rate limit: max 30 resolution attempts per plugin per minute
   const rateLimiter = createRateLimiter(30, 60_000);
-
-  let cachedAllowedRefs: Set<string> | null = null;
-  let cachedAllowedRefsExpiry = 0;
-  const CONFIG_CACHE_TTL_MS = 30_000; // 30 seconds, matches event bus TTL
 
   return {
     async resolve(params: PluginSecretsResolveParams): Promise<string> {
@@ -241,72 +230,9 @@ export function createPluginSecretsHandler(
         throw invalidSecretRef(trimmedRef);
       }
 
-      // ---------------------------------------------------------------
-      // 1b. Scope check — only allow secrets referenced in this plugin's config
-      // ---------------------------------------------------------------
-      const now = Date.now();
-      if (!cachedAllowedRefs || now > cachedAllowedRefsExpiry) {
-        const [configRow, plugin] = await Promise.all([
-          db
-            .select()
-            .from(pluginConfig)
-            .where(eq(pluginConfig.pluginId, pluginId))
-            .then((rows) => rows[0] ?? null),
-          registry.getById(pluginId),
-        ]);
-
-        const schema = (plugin?.manifestJson as unknown as Record<string, unknown> | null)
-          ?.instanceConfigSchema as Record<string, unknown> | undefined;
-        cachedAllowedRefs = extractSecretRefsFromConfig(configRow?.configJson, schema);
-        cachedAllowedRefsExpiry = now + CONFIG_CACHE_TTL_MS;
-      }
-
-      if (!cachedAllowedRefs.has(trimmedRef)) {
-        // Return "not found" to avoid leaking whether the secret exists
-        throw secretNotFound(trimmedRef);
-      }
-
-      // ---------------------------------------------------------------
-      // 2. Look up the secret record by UUID
-      // ---------------------------------------------------------------
-      const secret = await db
-        .select()
-        .from(companySecrets)
-        .where(eq(companySecrets.id, trimmedRef))
-        .then((rows) => rows[0] ?? null);
-
-      if (!secret) {
-        throw secretNotFound(trimmedRef);
-      }
-
-      // ---------------------------------------------------------------
-      // 3. Fetch the latest version's material
-      // ---------------------------------------------------------------
-      const versionRow = await db
-        .select()
-        .from(companySecretVersions)
-        .where(
-          and(
-            eq(companySecretVersions.secretId, secret.id),
-            eq(companySecretVersions.version, secret.latestVersion),
-          ),
-        )
-        .then((rows) => rows[0] ?? null);
-
-      if (!versionRow) {
-        throw secretVersionNotFound(trimmedRef);
-      }
-
-      // ---------------------------------------------------------------
-      // 4. Resolve through the appropriate secret provider
-      // ---------------------------------------------------------------
-      const provider = getSecretProvider(secret.provider as SecretProvider);
-      const resolved = await provider.resolveVersion({
-        material: versionRow.material as Record<string, unknown>,
-        externalRef: secret.externalRef,
-      });
-
-      return resolved;
+      // Fail closed until plugin config and worker runtime both carry an
+      // explicit company scope for secret bindings and resolution.
+      throw new Error(PLUGIN_SECRET_REFS_DISABLED_MESSAGE);
     },
   };
 }

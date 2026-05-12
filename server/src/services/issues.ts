@@ -17,6 +17,7 @@ import {
   issueAttachments,
   issueInboxArchives,
   issueLabels,
+  issueRecoveryActions,
   issueRelations,
   issueComments,
   issueDocuments,
@@ -60,6 +61,7 @@ import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from ".
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
+import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { sanitizeIssueCommentBody } from "./issue-comment-guardrails.js";
 import {
@@ -77,6 +79,10 @@ const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
 const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
+const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
+const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
+const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
+const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -119,6 +125,86 @@ function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
   };
 }
 
+function toTimestampMs(value: Date | string | null | undefined) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  const timestamp = date.getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+type IssueCommentRunLogAttributionCandidate = {
+  id: string;
+  createdAt: Date | string;
+  authorAgentId?: string | null;
+  authorUserId?: string | null;
+  createdByRunId?: string | null;
+};
+
+type IssueCommentRunLogAttributionRun = {
+  runId: string;
+  agentId: string;
+  createdAt: Date | string;
+  startedAt?: Date | string | null;
+  finishedAt?: Date | string | null;
+  logContent: string;
+};
+
+export function deriveIssueCommentRunLogAttribution(
+  comments: readonly IssueCommentRunLogAttributionCandidate[],
+  runs: readonly IssueCommentRunLogAttributionRun[],
+) {
+  const derivedByCommentId = new Map<string, {
+    derivedAuthorAgentId: string;
+    derivedCreatedByRunId: string;
+    derivedAuthorSource: "run_log_comment_post";
+  }>();
+
+  for (const comment of comments) {
+    if (comment.authorAgentId || !comment.authorUserId || comment.createdByRunId) continue;
+    const commentCreatedAtMs = toTimestampMs(comment.createdAt);
+    if (commentCreatedAtMs === null) continue;
+
+    let bestMatch:
+      | {
+        runId: string;
+        agentId: string;
+        distanceMs: number;
+      }
+      | null = null;
+
+    for (const run of runs) {
+      const runStartMs = toTimestampMs(run.startedAt ?? run.createdAt);
+      const runEndMs = toTimestampMs(run.finishedAt ?? run.createdAt);
+      if (runStartMs === null || runEndMs === null) continue;
+      if (
+        commentCreatedAtMs < runStartMs
+        || commentCreatedAtMs > runEndMs + ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS
+      ) {
+        continue;
+      }
+      if (!run.logContent.includes(`comment id: ${comment.id}`)) continue;
+
+      const distanceMs = Math.abs(runEndMs - commentCreatedAtMs);
+      if (!bestMatch || distanceMs < bestMatch.distanceMs) {
+        bestMatch = {
+          runId: run.runId,
+          agentId: run.agentId,
+          distanceMs,
+        };
+      }
+    }
+
+    if (!bestMatch) continue;
+    derivedByCommentId.set(comment.id, {
+      derivedAuthorAgentId: bestMatch.agentId,
+      derivedCreatedByRunId: bestMatch.runId,
+      derivedAuthorSource: "run_log_comment_post",
+    });
+  }
+
+  return derivedByCommentId;
+}
+
 export interface IssueFilters {
   status?: string;
   assigneeAgentId?: string;
@@ -156,6 +242,19 @@ type IssueActiveRunRow = {
   startedAt: Date | null;
   finishedAt: Date | null;
   createdAt: Date;
+};
+type IssueScheduledRetryRow = {
+  runId: string;
+  status: "scheduled_retry" | "queued" | "running" | "cancelled";
+  agentId: string;
+  agentName: string | null;
+  retryOfRunId: string | null;
+  scheduledRetryAt: Date | null;
+  scheduledRetryAttempt: number;
+  scheduledRetryReason: string | null;
+  retryExhaustedReason?: string | null;
+  error?: string | null;
+  errorCode?: string | null;
 };
 type IssueWithLabels = IssueRow & { labels: IssueLabelRow[]; labelIds: string[] };
 type IssueWithLabelsAndRun = IssueWithLabels & { activeRun: IssueActiveRunRow | null };
@@ -1258,6 +1357,18 @@ async function listIssueBlockerAttentionMap(
       explicitWaitingIssueIds.add(parsed.issueId);
       explicitWaitingIssueIds.add(parsed.leafIssueId);
     }
+
+    const recoveryActionRows: Array<{ sourceIssueId: string }> = await dbOrTx
+      .select({ sourceIssueId: issueRecoveryActions.sourceIssueId })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          inArray(issueRecoveryActions.sourceIssueId, explicitWaitCandidateIds),
+        ),
+      );
+    for (const row of recoveryActionRows) explicitWaitingIssueIds.add(row.sourceIssueId);
   }
 
   const agentRows: IssueBlockerAttentionAgentRow[] = agentIds.size > 0
@@ -1297,6 +1408,9 @@ async function listIssueBlockerAttentionMap(
     if (explicitWaitingIssueIds.has(node.id)) {
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
+    if (node.assigneeUserId && node.status !== "cancelled") {
+      return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
+    }
     if (node.status === "in_review") {
       const hasWaitingPath = activeIssueIds.has(node.id) || Boolean(node.assigneeUserId);
       if (hasWaitingPath) {
@@ -1308,6 +1422,9 @@ async function listIssueBlockerAttentionMap(
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
     if (node.status === "cancelled") {
+      return { covered: false, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
+    }
+    if (node.status === "backlog" && node.assigneeAgentId) {
       return { covered: false, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
 
@@ -1431,6 +1548,7 @@ const issueListSelect = {
     END
   `,
   status: issues.status,
+  workMode: issues.workMode,
   priority: issues.priority,
   assigneeAgentId: issues.assigneeAgentId,
   assigneeUserId: issues.assigneeUserId,
@@ -1686,6 +1804,36 @@ export function issueService(db: Db) {
     return enriched;
   }
 
+  async function getCurrentScheduledRetryForIssue(issueId: string, companyId: string): Promise<IssueScheduledRetryRow | null> {
+    const row = await db
+      .select({
+        runId: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        agentId: heartbeatRuns.agentId,
+        agentName: agents.name,
+        retryOfRunId: heartbeatRuns.retryOfRunId,
+        scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+        scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+        error: heartbeatRuns.error,
+        errorCode: heartbeatRuns.errorCode,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.status, "scheduled_retry"),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .orderBy(asc(heartbeatRuns.scheduledRetryAt), asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    return row ? { ...row, status: "scheduled_retry" } : null;
+  }
+
   function deriveIssueCommentAuthorType(comment: {
     authorType?: string | null;
     authorAgentId?: string | null;
@@ -1728,6 +1876,124 @@ export function issueService(db: Db) {
       presentation: issueCommentPresentationSchema.nullable().catch(null).parse(comment.presentation ?? null),
       metadata: issueCommentMetadataSchema.nullable().catch(null).parse(comment.metadata ?? null),
     };
+  }
+
+  async function readRunLogText(run: {
+    logStore: string | null;
+    logRef: string | null;
+    logBytes: number | null;
+  }) {
+    if (run.logStore !== "local_file" || !run.logRef) return "";
+    const logBytes = Number(run.logBytes ?? 0);
+    if (!Number.isFinite(logBytes) || logBytes <= 0) return "";
+
+    const store = getRunLogStore();
+    let offset = 0;
+    let content = "";
+    let nextOffset: number | undefined = 0;
+
+    while (nextOffset !== undefined) {
+      const remainingBytes = ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES - Buffer.byteLength(content, "utf8");
+      if (remainingBytes <= 0) break;
+      const chunk = await store.read(
+        { store: "local_file", logRef: run.logRef },
+        {
+          offset,
+          limitBytes: Math.min(ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES, remainingBytes),
+        },
+      );
+      content += chunk.content;
+      nextOffset = chunk.nextOffset;
+      offset = chunk.nextOffset ?? 0;
+    }
+
+    return content;
+  }
+
+  async function enrichCommentsWithDerivedAgentAttribution<
+    T extends {
+      id: string;
+      companyId: string;
+      issueId: string;
+      authorAgentId?: string | null;
+      authorUserId?: string | null;
+      createdByRunId?: string | null;
+      createdAt: Date | string;
+    },
+  >(comments: readonly T[]) {
+    const candidates = comments.filter((comment) =>
+      !comment.authorAgentId
+      && !!comment.authorUserId
+      && !comment.createdByRunId,
+    );
+    if (candidates.length === 0) return comments;
+
+    const companyId = comments[0]?.companyId ?? null;
+    const issueId = comments[0]?.issueId ?? null;
+    if (!companyId || !issueId) return comments;
+
+    const minCommentCreatedAtMs = candidates.reduce<number | null>((min, comment) => {
+      const timestamp = toTimestampMs(comment.createdAt);
+      if (timestamp === null) return min;
+      return min === null ? timestamp : Math.min(min, timestamp);
+    }, null);
+    const maxCommentCreatedAtMs = candidates.reduce<number | null>((max, comment) => {
+      const timestamp = toTimestampMs(comment.createdAt);
+      if (timestamp === null) return max;
+      return max === null ? timestamp : Math.max(max, timestamp);
+    }, null);
+    if (minCommentCreatedAtMs === null || maxCommentCreatedAtMs === null) return comments;
+
+    const runs = await db
+      .select({
+        runId: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        createdAt: heartbeatRuns.createdAt,
+        startedAt: heartbeatRuns.startedAt,
+        finishedAt: heartbeatRuns.finishedAt,
+        logStore: heartbeatRuns.logStore,
+        logRef: heartbeatRuns.logRef,
+        logBytes: heartbeatRuns.logBytes,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          or(
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+            sql`exists (
+              select 1
+              from ${activityLog}
+              where ${activityLog.companyId} = ${companyId}
+                and ${activityLog.entityType} = 'issue'
+                and ${activityLog.entityId} = ${issueId}
+                and ${activityLog.runId} = ${heartbeatRuns.id}
+            )`,
+          ),
+          sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${new Date(minCommentCreatedAtMs)}`,
+          sql`coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${new Date(maxCommentCreatedAtMs + ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS)}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt));
+
+    if (runs.length === 0) return comments;
+
+    const runsWithLogs: Array<(typeof runs)[number] & { logContent: string }> = [];
+    for (let index = 0; index < runs.length; index += ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS) {
+      const batch = runs.slice(index, index + ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS);
+      const batchWithLogs = await Promise.all(batch.map(async (run) => ({
+        ...run,
+        logContent: await readRunLogText(run),
+      })));
+      runsWithLogs.push(...batchWithLogs);
+    }
+    const derivedByCommentId = deriveIssueCommentRunLogAttribution(candidates, runsWithLogs);
+    if (derivedByCommentId.size === 0) return comments;
+
+    return comments.map((comment) => {
+      const derived = derivedByCommentId.get(comment.id);
+      return derived ? { ...comment, ...derived } : comment;
+    });
   }
 
   async function assertAssignableAgent(companyId: string, agentId: string) {
@@ -2500,6 +2766,16 @@ export function issueService(db: Db) {
 
     getByIdentifier: async (identifier: string) => {
       return getIssueByIdentifier(identifier);
+    },
+
+    getCurrentScheduledRetry: async (issueId: string) => {
+      const issue = await db
+        .select({ id: issues.id, companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) throw notFound("Issue not found");
+      return getCurrentScheduledRetryForIssue(issue.id, issue.companyId);
     },
 
     getRelationSummaries: async (issueId: string) => {
@@ -3719,7 +3995,8 @@ export function issueService(db: Db) {
 
       const comments = limit ? await query.limit(limit) : await query;
       const { censorUsernameInLogs } = await instanceSettings.getGeneral();
-      return comments.map((comment) => redactIssueComment(comment, censorUsernameInLogs));
+      const enrichedComments = await enrichCommentsWithDerivedAgentAttribution(comments);
+      return enrichedComments.map((comment) => redactIssueComment(comment, censorUsernameInLogs));
     },
 
     getCommentCursor: async (issueId: string) => {
@@ -3750,16 +4027,17 @@ export function issueService(db: Db) {
       };
     },
 
-    getComment: (commentId: string) =>
-      instanceSettings.getGeneral().then(({ censorUsernameInLogs }) =>
-        db
+    getComment: async (commentId: string) => {
+      const { censorUsernameInLogs } = await instanceSettings.getGeneral();
+      const comment = await db
         .select()
         .from(issueComments)
         .where(eq(issueComments.id, commentId))
-        .then((rows) => {
-          const comment = rows[0] ?? null;
-          return comment ? redactIssueComment(comment, censorUsernameInLogs) : null;
-        })),
+        .then((rows) => rows[0] ?? null);
+      if (!comment) return null;
+      const [enrichedComment] = await enrichCommentsWithDerivedAgentAttribution([comment]);
+      return redactIssueComment(enrichedComment ?? comment, censorUsernameInLogs);
+    },
 
     removeComment: async (commentId: string) => {
       const currentUserRedactionOptions = {
