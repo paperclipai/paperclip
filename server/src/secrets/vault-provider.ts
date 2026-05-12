@@ -490,4 +490,24 @@ export class VaultTokenManager {
   }
 }
 
+export async function withVaultTokenRetry<T>(input: {
+  tokenManager: VaultTokenManager;
+  sourceMode: VaultAuthSource["mode"];
+  operation: () => Promise<T>;
+}): Promise<T> {
+  try {
+    return await input.operation();
+  } catch (error) {
+    if (
+      input.sourceMode === "kubernetes" &&
+      error instanceof SecretProviderClientError &&
+      error.code === "access_denied"
+    ) {
+      input.tokenManager.invalidate();
+      return await input.operation();
+    }
+    throw error;
+  }
+}
+
 export const vaultProvider: SecretProviderModule = createVaultProvider();

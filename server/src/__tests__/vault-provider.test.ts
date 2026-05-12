@@ -6,8 +6,10 @@ import {
   parseExternalRef,
   resolveVaultConfig,
   VaultTokenManager,
+  withVaultTokenRetry,
   type VaultAuthSource,
 } from "../secrets/vault-provider.js";
+import { SecretProviderClientError } from "../secrets/types.js";
 
 describe("vaultProvider", () => {
   const previousEnv = {
@@ -486,5 +488,91 @@ describe("VaultTokenManager", () => {
     tm.invalidate();
     await tm.acquire();
     expect(gw.loginKubernetes).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("withVaultTokenRetry", () => {
+  function tokenMgr(source: VaultAuthSource) {
+    return {
+      acquire: vi.fn(async () => "tok"),
+      invalidate: vi.fn(),
+      source,
+    } as unknown as VaultTokenManager & { invalidate: ReturnType<typeof vi.fn> };
+  }
+
+  it("returns the operation result when no error", async () => {
+    const tm = tokenMgr({ mode: "token", token: "x" });
+    const r = await withVaultTokenRetry({
+      tokenManager: tm,
+      sourceMode: "token",
+      operation: async () => 42,
+    });
+    expect(r).toBe(42);
+  });
+
+  it("retries once on 403 in kubernetes mode", async () => {
+    const tm = tokenMgr({ mode: "kubernetes", role: "r", jwt: "j", saTokenPath: "/sa" });
+    let calls = 0;
+    const r = await withVaultTokenRetry({
+      tokenManager: tm,
+      sourceMode: "kubernetes",
+      operation: async () => {
+        calls += 1;
+        if (calls === 1) {
+          throw new SecretProviderClientError({
+            code: "access_denied",
+            provider: "vault",
+            operation: "kvRead",
+            message: "permission denied",
+          });
+        }
+        return "ok";
+      },
+    });
+    expect(r).toBe("ok");
+    expect(tm.invalidate).toHaveBeenCalledTimes(1);
+    expect(calls).toBe(2);
+  });
+
+  it("does not retry on 403 in token mode", async () => {
+    const tm = tokenMgr({ mode: "token", token: "x" });
+    let calls = 0;
+    await expect(
+      withVaultTokenRetry({
+        tokenManager: tm,
+        sourceMode: "token",
+        operation: async () => {
+          calls += 1;
+          throw new SecretProviderClientError({
+            code: "access_denied",
+            provider: "vault",
+            operation: "kvRead",
+            message: "denied",
+          });
+        },
+      }),
+    ).rejects.toThrow(/denied/);
+    expect(calls).toBe(1);
+  });
+
+  it("does not retry on non-403 errors", async () => {
+    const tm = tokenMgr({ mode: "kubernetes", role: "r", jwt: "j", saTokenPath: "/sa" });
+    let calls = 0;
+    await expect(
+      withVaultTokenRetry({
+        tokenManager: tm,
+        sourceMode: "kubernetes",
+        operation: async () => {
+          calls += 1;
+          throw new SecretProviderClientError({
+            code: "throttled",
+            provider: "vault",
+            operation: "kvRead",
+            message: "slow down",
+          });
+        },
+      }),
+    ).rejects.toThrow(/slow down/);
+    expect(calls).toBe(1);
   });
 });
