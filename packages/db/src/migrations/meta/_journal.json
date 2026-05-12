@@ -498,6 +498,20 @@
       "when": 1776780004000,
       "tag": "0070_active_run_output_watchdog",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1778780005000,
+      "tag": "0071_qsl_findings",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1778780006000,
+      "tag": "0072_qsl_findings_review_states",
+      "breakpoints": true
     }
   ]
 }

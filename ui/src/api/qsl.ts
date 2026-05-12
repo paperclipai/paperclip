@@ -41,6 +41,38 @@ export interface QslState {
   rules: QslRule[];
 }
 
+export interface QslFinding {
+  id: string;
+  companyId: string;
+  fingerprint: string;
+  ruleId: string | null;
+  title: string;
+  severity: string | null;
+  threatCategory: string | null;
+  reviewState: string;
+  reviewDecision: string | null;
+  reviewerId: string | null;
+  reviewedAt: string | null;
+  firstSeen: string;
+  lastSeen: string;
+  occurrenceCount: number;
+  latestRiskScore: number | null;
+  latestPayload: Record<string, unknown> | null;
+  reviewHistory: Array<Record<string, unknown>>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface QslReviewRequest {
+  decision: "approved" | "denied";
+  notes?: string;
+}
+
+export interface QslStateChangeRequest {
+  state: string;
+  notes?: string;
+}
+
 export const qslApi = {
   listIssues: async (): Promise<QslIssue[]> => {
     const data = await api.get<QslIssue[] | { issues?: QslIssue[] }>("/qsl/issues");
@@ -51,4 +83,14 @@ export const qslApi = {
   },
   approve: (data: QslApprovalRequest) =>
     api.post<QslApprovalResponse>("/qsl/approve", data),
+
+  // ── Persistent findings API ──────────────────────────────────────
+  listFindings: async (companyId: string, reviewState?: string): Promise<QslFinding[]> => {
+    const params = reviewState ? `?reviewState=${reviewState}` : "";
+    return api.get<QslFinding[]>(`/qsl/companies/${companyId}/findings${params}`);
+  },
+  reviewFinding: (companyId: string, findingId: string, data: QslReviewRequest) =>
+    api.post<QslFinding>(`/qsl/companies/${companyId}/findings/${findingId}/review`, data),
+  setFindingState: (companyId: string, findingId: string, data: QslStateChangeRequest) =>
+    api.post<QslFinding>(`/qsl/companies/${companyId}/findings/${findingId}/state`, data),
 };

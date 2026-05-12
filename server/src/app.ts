@@ -216,7 +216,7 @@ export async function createApp(
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
-  api.use("/qsl", qslBridgeRoutes());
+  api.use("/qsl", qslBridgeRoutes(db));
   api.use("/board-export", boardExportRoutes(db));
   const pluginRegistry = pluginRegistryService(db);
   const eventBus = createPluginEventBus();
