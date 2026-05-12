@@ -85,14 +85,6 @@ async function createAgentApp(db: Record<string, unknown> = {}) {
   return app;
 }
 
-function makeActivityLookupDb(rows: Array<Record<string, unknown>>) {
-  const limit = vi.fn(async () => rows);
-  const where = vi.fn(() => ({ limit }));
-  const from = vi.fn(() => ({ where }));
-  const select = vi.fn(() => ({ from }));
-  return { db: { select }, stubs: { select, from, where, limit } };
-}
-
 describe("approval routes idempotent retries", () => {
   beforeEach(() => {
     vi.resetModules();
@@ -377,7 +369,6 @@ describe("approval routes idempotent retries", () => {
   });
 
   it("logs a deduped approval comment when its audit activity is missing", async () => {
-    const { db, stubs } = makeActivityLookupDb([]);
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-8",
       companyId: "company-1",
@@ -396,12 +387,11 @@ describe("approval routes idempotent retries", () => {
     });
     mockApprovalService.addComment.mockResolvedValue(dedupedComment);
 
-    const res = await request(await createAgentApp(db))
+    const res = await request(await createAgentApp())
       .post("/api/approvals/approval-8/comments")
       .send({ body: "Looks good." });
 
     expect(res.status).toBe(200);
-    expect(stubs.select).toHaveBeenCalled();
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -412,8 +402,7 @@ describe("approval routes idempotent retries", () => {
     );
   });
 
-  it("does not log a deduped approval comment when audit activity already exists", async () => {
-    const { db } = makeActivityLookupDb([{ id: "activity-1" }]);
+  it("suppresses duplicate audit rows for overlapping deduped approval comment retries", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-9",
       companyId: "company-1",
@@ -431,12 +420,20 @@ describe("approval routes idempotent retries", () => {
       enumerable: false,
     });
     mockApprovalService.addComment.mockResolvedValue(dedupedComment);
+    mockLogActivity.mockRejectedValue(Object.assign(new Error("duplicate"), { code: "23505" }));
 
-    const res = await request(await createAgentApp(db))
+    const res = await request(await createAgentApp())
       .post("/api/approvals/approval-9/comments")
       .send({ body: "Looks good." });
 
     expect(res.status).toBe(200);
-    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "approval.comment_added",
+        entityId: "approval-9",
+        details: { commentId: "comment-9" },
+      }),
+    );
   });
 });

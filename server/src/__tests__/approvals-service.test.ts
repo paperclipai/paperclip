@@ -181,7 +181,10 @@ describeEmbeddedPostgres("approvalService.addComment idempotency", () => {
 
     const first = await svc.addComment(approvalId, "Ready for review.", { agentId, runId });
     const [afterFirst] = await db.select({ updatedAt: approvals.updatedAt }).from(approvals).where(eq(approvals.id, approvalId));
+    const staleAfterFirst = new Date("2026-04-02T00:00:00.000Z");
+    await db.update(approvals).set({ updatedAt: staleAfterFirst }).where(eq(approvals.id, approvalId));
     const second = await svc.addComment(approvalId, "Ready for review.", { agentId, runId });
+    const [afterSecond] = await db.select({ updatedAt: approvals.updatedAt }).from(approvals).where(eq(approvals.id, approvalId));
 
     expect(second.id).toBe(first.id);
     expect((first as { wasInserted?: boolean }).wasInserted).toBe(true);
@@ -192,6 +195,7 @@ describeEmbeddedPostgres("approvalService.addComment idempotency", () => {
     expect(rows[0]?.idempotencyKey).toMatch(/^[a-f0-9]{64}$/);
     expect(rows[0]?.createdByRunId).toBe(runId);
     expect(afterFirst?.updatedAt.getTime()).toBeGreaterThan(staleUpdatedAt.getTime());
+    expect(afterSecond?.updatedAt.getTime()).toBeGreaterThan(staleAfterFirst.getTime());
   });
 
   it("does not deduplicate non-agent approval comments even when a run id is present", async () => {

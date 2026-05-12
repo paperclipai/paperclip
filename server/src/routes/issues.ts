@@ -109,6 +109,10 @@ function wasIssueCommentInserted(comment: unknown) {
   return !comment || typeof comment !== "object" || (comment as { wasInserted?: boolean }).wasInserted !== false;
 }
 
+function isUniqueViolation(err: unknown) {
+  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "23505";
+}
+
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
 type CompanySearchService = {
@@ -3097,18 +3101,12 @@ export function issueRoutes(
         runId: actor.runId,
       });
       const commentInserted = wasIssueCommentInserted(comment);
-      if (commentInserted) {
-        await issueReferencesSvc.syncComment(comment.id);
-      }
-      const commentReferenceSummaryAfter = commentInserted
-        ? await issueReferencesSvc.listIssueReferenceSummary(issue.id)
-        : commentReferenceSummaryBefore;
-      const commentReferenceDiff = commentInserted
-        ? issueReferencesSvc.diffIssueReferenceSummary(
-          commentReferenceSummaryBefore,
-          commentReferenceSummaryAfter,
-        )
-        : { addedReferencedIssues: [], removedReferencedIssues: [], currentReferencedIssues: [] };
+      await issueReferencesSvc.syncComment(comment.id);
+      const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+      const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
+        commentReferenceSummaryBefore,
+        commentReferenceSummaryAfter,
+      );
       issueResponse = {
         ...issueResponse,
         relatedWork: commentReferenceSummaryAfter,
@@ -3117,7 +3115,7 @@ export function issueRoutes(
         ),
       };
 
-      if (commentInserted) {
+      try {
         await logActivity(db, {
           companyId: issue.companyId,
           actorType: actor.actorType,
@@ -3143,24 +3141,26 @@ export function issueRoutes(
             }),
           },
         });
+      } catch (err) {
+        if (!isUniqueViolation(err)) {
+          throw err;
+        }
       }
 
-      if (commentInserted) {
-        const expiredInteractions = await issueThreadInteractionService(db).expireRequestConfirmationsSupersededByComment(
-          issue,
-          comment,
-          {
-            agentId: actor.agentId,
-            userId: actor.actorType === "user" ? actor.actorId : null,
-          },
-        );
-        await logExpiredRequestConfirmations({
-          issue,
-          interactions: expiredInteractions,
-          actor,
-          source: "issue.comment",
-        });
-      }
+      const expiredInteractions = await issueThreadInteractionService(db).expireRequestConfirmationsSupersededByComment(
+        issue,
+        comment,
+        {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+      );
+      await logExpiredRequestConfirmations({
+        issue,
+        interactions: expiredInteractions,
+        actor,
+        source: "issue.comment",
+      });
 
     } else if (updateReferenceSummaryAfter) {
       issueResponse = {

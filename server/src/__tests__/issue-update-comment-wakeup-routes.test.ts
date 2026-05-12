@@ -28,6 +28,20 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
 const mockRoutineService = vi.hoisted(() => ({
   syncRunStatusForIssue: vi.fn(async () => undefined),
 }));
+const mockIssueReferenceService = vi.hoisted(() => ({
+  deleteDocumentSource: vi.fn(async () => undefined),
+  diffIssueReferenceSummary: vi.fn(() => ({
+    addedReferencedIssues: [],
+    removedReferencedIssues: [],
+    currentReferencedIssues: [],
+  })),
+  emptySummary: vi.fn(() => ({ outbound: [], inbound: [] })),
+  listIssueReferenceSummary: vi.fn(async () => ({ outbound: [], inbound: [] })),
+  syncComment: vi.fn(async () => undefined),
+  syncDocument: vi.fn(async () => undefined),
+  syncIssue: vi.fn(async () => undefined),
+}));
+const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
@@ -63,22 +77,10 @@ vi.mock("../services/index.js", () => ({
     listCompanyIds: vi.fn(async () => ["company-1"]),
   }),
   issueApprovalService: () => ({}),
-  issueReferenceService: () => ({
-    deleteDocumentSource: async () => undefined,
-    diffIssueReferenceSummary: () => ({
-      addedReferencedIssues: [],
-      removedReferencedIssues: [],
-      currentReferencedIssues: [],
-    }),
-    emptySummary: () => ({ outbound: [], inbound: [] }),
-    listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
-    syncComment: async () => undefined,
-    syncDocument: async () => undefined,
-    syncIssue: async () => undefined,
-  }),
+  issueReferenceService: () => mockIssueReferenceService,
   issueService: () => mockIssueService,
   issueThreadInteractionService: () => mockIssueThreadInteractionService,
-  logActivity: vi.fn(async () => undefined),
+  logActivity: mockLogActivity,
   projectService: () => ({}),
   routineService: () => mockRoutineService,
   workProductService: () => ({}),
@@ -119,22 +121,10 @@ function registerModuleMocks() {
       listCompanyIds: vi.fn(async () => ["company-1"]),
     }),
     issueApprovalService: () => ({}),
-    issueReferenceService: () => ({
-      deleteDocumentSource: async () => undefined,
-      diffIssueReferenceSummary: () => ({
-        addedReferencedIssues: [],
-        removedReferencedIssues: [],
-        currentReferencedIssues: [],
-      }),
-      emptySummary: () => ({ outbound: [], inbound: [] }),
-      listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
-      syncComment: async () => undefined,
-      syncDocument: async () => undefined,
-      syncIssue: async () => undefined,
-    }),
+    issueReferenceService: () => mockIssueReferenceService,
     issueService: () => mockIssueService,
     issueThreadInteractionService: () => mockIssueThreadInteractionService,
-    logActivity: vi.fn(async () => undefined),
+    logActivity: mockLogActivity,
     projectService: () => ({}),
     routineService: () => mockRoutineService,
     workProductService: () => ({}),
@@ -198,6 +188,13 @@ describe("issue update comment wakeups", () => {
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockRoutineService.syncRunStatusForIssue.mockClear();
+    mockIssueReferenceService.listIssueReferenceSummary.mockResolvedValue({ outbound: [], inbound: [] });
+    mockIssueReferenceService.diffIssueReferenceSummary.mockReturnValue({
+      addedReferencedIssues: [],
+      removedReferencedIssues: [],
+      currentReferencedIssues: [],
+    });
+    mockLogActivity.mockResolvedValue(undefined);
   });
 
   it("includes the new comment in assignment wakes from issue updates", async () => {
@@ -323,5 +320,50 @@ describe("issue update comment wakeups", () => {
     expect(res.status).toBe(200);
     expect(mockRoutineService.syncRunStatusForIssue).toHaveBeenCalledWith(existing.id);
     expect(mockHeartbeatService.reportRunActivity).toHaveBeenCalledWith("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+  });
+
+  it("repairs comment side effects without waking agents on a deduped comment-only retry", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    const updated = { ...existing };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    const dedupedComment = {
+      id: "comment-deduped-only",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "please revise this",
+    };
+    Object.defineProperty(dedupedComment, "wasInserted", {
+      value: false,
+      enumerable: false,
+    });
+    mockIssueService.addComment.mockResolvedValue(dedupedComment);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        comment: "please revise this",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueReferenceService.syncComment).toHaveBeenCalledWith("comment-deduped-only");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.comment_added",
+        entityId: existing.id,
+        details: expect.objectContaining({ commentId: "comment-deduped-only" }),
+      }),
+    );
+    expect(mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment).toHaveBeenCalledWith(
+      updated,
+      dedupedComment,
+      expect.any(Object),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 });

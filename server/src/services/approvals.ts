@@ -278,13 +278,6 @@ export function approvalService(db: Db) {
         })
         .returning();
 
-      if (inserted.length > 0) {
-        await db
-          .update(approvals)
-          .set({ updatedAt: now })
-          .where(eq(approvals.id, approvalId));
-      }
-
       const [comment] = inserted.length > 0 || !idempotencyKey
         ? inserted
         : await db
@@ -296,6 +289,11 @@ export function approvalService(db: Db) {
       if (!comment) {
         throw new Error("Failed to insert or retrieve deduplicated approval comment");
       }
+
+      await db
+        .update(approvals)
+        .set({ updatedAt: now })
+        .where(eq(approvals.id, approvalId));
 
       const redacted = redactApprovalComment(comment, currentUserRedactionOptions.enabled);
       Object.defineProperty(redacted, "wasInserted", {

@@ -1,6 +1,5 @@
 import { Router, type Request } from "express";
-import { activityLog, type Db } from "@paperclipai/db";
-import { and, eq, sql } from "drizzle-orm";
+import type { Db } from "@paperclipai/db";
 import {
   addApprovalCommentSchema,
   createApprovalSchema,
@@ -32,20 +31,8 @@ function wasApprovalCommentInserted(comment: unknown) {
   return !comment || typeof comment !== "object" || (comment as { wasInserted?: boolean }).wasInserted !== false;
 }
 
-async function hasApprovalCommentActivity(db: Db, approvalId: string, commentId: string) {
-  const rows = await db
-    .select({ id: activityLog.id })
-    .from(activityLog)
-    .where(
-      and(
-        eq(activityLog.action, "approval.comment_added"),
-        eq(activityLog.entityType, "approval"),
-        eq(activityLog.entityId, approvalId),
-        sql`${activityLog.details} ->> 'commentId' = ${commentId}`,
-      ),
-    )
-    .limit(1);
-  return rows.length > 0;
+function isUniqueViolation(err: unknown) {
+  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "23505";
 }
 
 export function approvalRoutes(
@@ -368,10 +355,7 @@ export function approvalRoutes(
     });
 
     const commentInserted = wasApprovalCommentInserted(comment);
-    const commentActivityExists = commentInserted
-      ? false
-      : await hasApprovalCommentActivity(db, approval.id, comment.id);
-    if (commentInserted || !commentActivityExists) {
+    try {
       await logActivity(db, {
         companyId: approval.companyId,
         actorType: actor.actorType,
@@ -383,6 +367,10 @@ export function approvalRoutes(
         entityId: approval.id,
         details: { commentId: comment.id },
       });
+    } catch (err) {
+      if (!isUniqueViolation(err)) {
+        throw err;
+      }
     }
 
     res.status(commentInserted ? 201 : 200).json(comment);
