@@ -331,6 +331,7 @@ describe("agent thread routes", () => {
         agentThreadMessageId: messageId,
         agentThreadMessageBody: "hello from board",
         wakeReason: "agent_thread_message",
+        forceFreshSession: true,
       }),
     }));
     expect(res.body).toEqual({

@@ -612,14 +612,20 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     threadMessageIds,
     latestThreadMessageId: asString(payload.latestThreadMessageId, "").trim() || null,
     threadMessages,
-    requestedCount: asNumber(
-      commentWindow.requestedCount,
-      asNumber(threadMessageWindow.requestedCount, comments.length || commentIds.length || threadMessages.length || threadMessageIds.length),
-    ),
-    includedCount: asNumber(
-      commentWindow.includedCount,
-      asNumber(threadMessageWindow.includedCount, comments.length || threadMessages.length),
-    ),
+    requestedCount:
+      comments.length > 0 || commentIds.length > 0
+        ? asNumber(commentWindow.requestedCount, comments.length || commentIds.length)
+        : asNumber(
+            threadMessageWindow.totalCount,
+            asNumber(
+              threadMessageWindow.requestedCount,
+              threadMessages.length || threadMessageIds.length,
+            ),
+          ),
+    includedCount:
+      comments.length > 0 || commentIds.length > 0
+        ? asNumber(commentWindow.includedCount, comments.length)
+        : asNumber(threadMessageWindow.includedCount, threadMessages.length),
     missingCount: asNumber(
       commentWindow.missingCount,
       asNumber(threadMessageWindow.missingCount, 0),

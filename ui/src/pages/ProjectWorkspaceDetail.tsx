@@ -546,9 +546,9 @@ export function ProjectWorkspaceDetail() {
               </div>
 
               <details className="rounded-xl border border-dashed border-border/70 bg-background px-3 py-3">
-                <summary className="cursor-pointer text-sm font-medium">Advanced runtime JSON</summary>
+                <summary className="cursor-pointer text-sm font-medium">Runtime settings</summary>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  Paperclip derives Services and Jobs from this JSON. Prefer editing named commands first; use raw JSON for advanced lifecycle, port, readiness, or environment settings.
+                  Collapse this unless you need to inspect or edit the raw workspace command model. Paperclip derives Services and Jobs from this JSON.
                 </p>
                 <div className="mt-3">
                   <Field label="Workspace commands JSON" hint="Execution workspaces inherit this config unless they override it. Legacy `services` arrays still work, but `commands` supports both services and jobs.">

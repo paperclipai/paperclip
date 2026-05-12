@@ -152,6 +152,9 @@ const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
+const MAX_INLINE_WAKE_THREAD_MESSAGES = 8;
+const MAX_INLINE_WAKE_THREAD_MESSAGE_BODY_CHARS = 4_000;
+const MAX_INLINE_WAKE_THREAD_MESSAGE_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -1658,9 +1661,8 @@ export async function buildPaperclipWakePayload(input: {
     });
   }
 
-  const threadMessageIds = agentThreadMessageId ? [agentThreadMessageId] : [];
   const threadMessageRows =
-    threadMessageIds.length === 0
+    !agentThreadId
       ? []
       : await input.db
           .select({
@@ -1671,32 +1673,54 @@ export async function buildPaperclipWakePayload(input: {
             authorAgentId: agentThreadMessages.authorAgentId,
             authorUserId: agentThreadMessages.authorUserId,
             createdAt: agentThreadMessages.createdAt,
+            totalCount: sql<number>`count(*) over ()`,
           })
           .from(agentThreadMessages)
           .where(
             and(
               eq(agentThreadMessages.companyId, input.companyId),
-              inArray(agentThreadMessages.id, threadMessageIds),
+              eq(agentThreadMessages.threadId, agentThreadId),
             ),
-          );
-
-  const threadMessagesById = new Map(threadMessageRows.map((message) => [message.id, message]));
+          )
+          .orderBy(desc(agentThreadMessages.createdAt), desc(agentThreadMessages.id))
+          .limit(MAX_INLINE_WAKE_THREAD_MESSAGES)
+          .then((rows) => [...rows].reverse());
+  const threadMessageIds = threadMessageRows.map((message) => message.id);
+  const latestThreadMessageId =
+    threadMessageIds[threadMessageIds.length - 1] ?? agentThreadMessageId ?? null;
+  const threadMessageTotalCount = threadMessageRows[0]
+    ? Number(threadMessageRows[0].totalCount)
+    : 0;
   const threadMessages: Array<Record<string, unknown>> = [];
+  let remainingThreadBodyChars = MAX_INLINE_WAKE_THREAD_MESSAGE_BODY_TOTAL_CHARS;
   let missingThreadMessageCount = 0;
+  if (threadMessageTotalCount > threadMessageRows.length) {
+    missingThreadMessageCount += threadMessageTotalCount - threadMessageRows.length;
+    truncated = true;
+  }
 
-  for (const threadMessageId of threadMessageIds) {
-    const row = threadMessagesById.get(threadMessageId);
-    if (!row) {
+  for (const row of threadMessageRows) {
+    const allowedBodyChars = Math.min(
+      MAX_INLINE_WAKE_THREAD_MESSAGE_BODY_CHARS,
+      remainingThreadBodyChars,
+    );
+    if (allowedBodyChars <= 0) {
       missingThreadMessageCount += 1;
+      truncated = true;
       continue;
     }
+
+    const body = row.body.length > allowedBodyChars ? row.body.slice(0, allowedBodyChars) : row.body;
+    const bodyTruncated = body.length < row.body.length;
+    if (bodyTruncated) truncated = true;
+    remainingThreadBodyChars -= body.length;
 
     threadMessages.push({
       id: row.id,
       threadId: row.threadId,
       role: row.role,
-      body: row.body,
-      bodyTruncated: false,
+      body,
+      bodyTruncated,
       createdAt: row.createdAt.toISOString(),
       author: row.authorAgentId
         ? { type: "agent", id: row.authorAgentId }
@@ -1708,12 +1732,12 @@ export async function buildPaperclipWakePayload(input: {
 
   if (
     threadMessages.length === 0 &&
-    threadMessageIds.length > 0 &&
+    latestThreadMessageId &&
     typeof input.contextSnapshot.agentThreadMessageBody === "string" &&
     input.contextSnapshot.agentThreadMessageBody.trim().length > 0
   ) {
     threadMessages.push({
-      id: agentThreadMessageId,
+      id: latestThreadMessageId,
       threadId: agentThreadId,
       role: "user",
       body: input.contextSnapshot.agentThreadMessageBody,
@@ -1784,10 +1808,10 @@ export async function buildPaperclipWakePayload(input: {
     latestCommentId: commentIds[commentIds.length - 1] ?? null,
     comments,
     threadMessageIds,
-    latestThreadMessageId: threadMessageIds[threadMessageIds.length - 1] ?? null,
+    latestThreadMessageId,
     threadMessages,
     threadMessageWindow: {
-      requestedCount: threadMessageIds.length,
+      totalCount: threadMessageTotalCount,
       includedCount: threadMessages.length,
       missingCount: missingThreadMessageCount,
     },
