@@ -2,6 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 const migrationsDir = fileURLToPath(new URL("./migrations", import.meta.url));
+const migrationsMetaDir = fileURLToPath(new URL("./migrations/meta", import.meta.url));
 const journalPath = fileURLToPath(new URL("./migrations/meta/_journal.json", import.meta.url));
 
 type JournalFile = {
@@ -63,9 +64,27 @@ function ensureJournalMatchesFiles(migrationFiles: string[], journalTags: string
   }
 }
 
+function ensureNamedSnapshotsMatchJournal(snapshotFiles: string[], journalTags: string[]) {
+  const journalTagSet = new Set(journalTags);
+
+  for (const snapshotFile of snapshotFiles) {
+    const match = snapshotFile.match(/^(\d{4}_.+)_snapshot\.json$/);
+    if (!match) continue;
+    const tag = match[1];
+    if (!journalTagSet.has(tag)) {
+      throw new Error(
+        `Named migration snapshot ${snapshotFile} does not match any journal tag`,
+      );
+    }
+  }
+}
+
 async function main() {
   const migrationFiles = (await readdir(migrationsDir))
     .filter((entry) => entry.endsWith(".sql"))
+    .sort();
+  const snapshotFiles = (await readdir(migrationsMetaDir))
+    .filter((entry) => entry.endsWith("_snapshot.json"))
     .sort();
 
   ensureNoDuplicates(migrationFiles, "migration files");
@@ -84,6 +103,7 @@ async function main() {
   ensureNoDuplicates(journalTags, "migration journal");
   ensureStrictlyOrdered(journalTags, "migration journal");
   ensureJournalMatchesFiles(migrationFiles, journalTags);
+  ensureNamedSnapshotsMatchJournal(snapshotFiles, journalTags);
 }
 
 await main();
