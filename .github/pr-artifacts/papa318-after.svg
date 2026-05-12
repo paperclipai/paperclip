@@ -1,0 +1,22 @@
+<svg width="1426" height="1256" viewBox="0 0 1426 1256" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1426" height="1256" fill="#090909"/>
+  <circle cx="27" cy="138" r="24" fill="#1F1F1F"/>
+  <path d="M17 138L23 132M17 138L23 144M37 138L31 132M37 138L31 144" stroke="#B5B5B5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="70" y="150" fill="#F5F5F5" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="600">Claude</text>
+  <text x="210" y="150" fill="#71717A" font-family="Arial, Helvetica, sans-serif" font-size="24">worked for 4 minutes</text>
+  <text x="1260" y="150" fill="#71717A" font-family="Arial, Helvetica, sans-serif" font-size="24">43m ago</text>
+  <rect x="140" y="256" width="1176" height="930" rx="34" fill="#2A2A2A"/>
+  <circle cx="198" cy="226" r="28" fill="#1E293B"/>
+  <text x="178" y="235" fill="#E2E8F0" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700">C</text>
+  <text x="238" y="236" fill="#F5F5F5" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="600">Claude</text>
+  <text x="175" y="320" fill="#F5F5F5" font-family="Arial, Helvetica, sans-serif" font-size="44" font-weight="700">Investigation: exe.dev 422 + codex re-test</text>
+  <text x="175" y="420" fill="#F5F5F5" font-family="Arial, Helvetica, sans-serif" font-size="38" font-weight="700">Codex SSH (with new credits) → PASS</text>
+  <text x="175" y="486" fill="#F5F5F5" font-family="Arial, Helvetica, sans-serif" font-size="30">After your credit top-up, QA SSH Codex now passes. Hello probe returned</text>
+  <text x="175" y="528" fill="#F5F5F5" font-family="Arial, Helvetica, sans-serif" font-size="30">hello. SSH matrix is now: claude WARN (informational), codex PASS, cursor</text>
+  <text x="175" y="570" fill="#F5F5F5" font-family="Arial, Helvetica, sans-serif" font-size="30">PASS, gemini PASS, opencode PASS, pi WARN.</text>
+  <text x="175" y="670" fill="#F5F5F5" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700">exe.dev 422 → was a transient exe.dev API issue, now cleared</text>
+  <text x="175" y="738" fill="#F5F5F5" font-family="Arial, Helvetica, sans-serif" font-size="30">Original error from this morning's run:</text>
+  <rect x="175" y="774" width="1110" height="132" fill="#1D1E34" stroke="#3E4164" stroke-width="2"/>
+  <text x="197" y="826" fill="#D8DEFF" font-family="Menlo, Monaco, monospace" font-size="27">exe.dev API command failed (422) for: new --json --no-email ...</text>
+  <text x="175" y="984" fill="#F5F5F5" font-family="Arial, Helvetica, sans-serif" font-size="28">Corrected rendering: the historical comment is attributed to Claude instead of the board user.</text>
+</svg>
