@@ -46,6 +46,19 @@ export interface RefreshWorkerDeps {
  * failure rolls back only that row's work, not the whole tick.
  */
 export async function runRefreshTick(deps: RefreshWorkerDeps): Promise<void> {
+  // Drained from the transaction so the BYO HTTP fan-out runs *after*
+  // COMMIT — keeping 10s-per-target fetches out of the window where we
+  // hold `pg_try_advisory_xact_lock` and a pooled connection. Worst-case
+  // hold time was 100 rows × 8 targets × 10 s = 8 000 s before this fix.
+  const pendingByoPushes: Array<{
+    row: {
+      id: string;
+      companyId: string;
+      brokerTargets?: unknown[] | null;
+    };
+    accessToken: string;
+  }> = [];
+
   await deps.db.transaction(async (tx: any) => {
     const lockResult = await tx.execute(
       sql`SELECT pg_try_advisory_xact_lock(${ADVISORY_LOCK_KEY}::bigint) as result`,
@@ -126,12 +139,21 @@ export async function runRefreshTick(deps: RefreshWorkerDeps): Promise<void> {
               );
             }
           }
-          // BYO push targets — best-effort POST to each registered URL.
-          await pushToByoBrokerTargets({
-            row,
-            accessToken: result.accessToken,
-            secretService: deps.secretService,
-          });
+          // BYO push targets — defer the HTTP fan-out until after the
+          // transaction commits so external endpoints can't hold the
+          // advisory lock or starve the connection pool.
+          const targets = (row as { brokerTargets?: unknown[] | null })
+            .brokerTargets;
+          if (targets && targets.length > 0) {
+            pendingByoPushes.push({
+              row: {
+                id: row.id,
+                companyId: (row as { companyId: string }).companyId,
+                brokerTargets: targets,
+              },
+              accessToken: result.accessToken,
+            });
+          }
         }
       } catch (err) {
         oauthLogger.error(
@@ -145,6 +167,17 @@ export async function runRefreshTick(deps: RefreshWorkerDeps): Promise<void> {
     }
     // No explicit unlock — pg_try_advisory_xact_lock releases at COMMIT/ROLLBACK.
   });
+
+  // Post-commit BYO fan-out. The advisory lock has been released and the
+  // pooled connection returned, so a slow operator broker can't block the
+  // next tick. Pushes remain best-effort; the DB row is source of truth.
+  for (const pending of pendingByoPushes) {
+    await pushToByoBrokerTargets({
+      row: pending.row,
+      accessToken: pending.accessToken,
+      secretService: deps.secretService,
+    });
+  }
 }
 
 export function startRefreshWorker(

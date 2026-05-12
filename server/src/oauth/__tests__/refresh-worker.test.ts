@@ -109,6 +109,61 @@ describe("runRefreshTick", () => {
     expect(firstCallArgs).toBeDefined();
   });
 
+  it("defers BYO broker-target fetches until after the transaction commits", async () => {
+    // Regression for Greptile P1: the BYO HTTP fan-out used to run
+    // inside `db.transaction()`, holding `pg_try_advisory_xact_lock`
+    // and a pooled connection for up to 8000s in the worst case.
+    const candidates = [
+      {
+        id: "row-1",
+        companyId: "co-1",
+        refreshAttemptCount: 0,
+        lastErrorAt: null,
+        brokerTargets: [
+          {
+            id: "t-1",
+            url: "https://broker.acme.test/push",
+            authTokenSecretId: "11111111-2222-3333-4444-555555555555",
+            addedAt: new Date().toISOString(),
+          },
+        ],
+      },
+    ];
+    const { db, refreshFn, transaction } = buildDeps({ candidates });
+    const callOrder: string[] = [];
+    transaction.mockImplementation(async (cb: (tx: unknown) => Promise<void>) => {
+      callOrder.push("tx-begin");
+      const tx = {
+        execute: vi.fn().mockResolvedValue({ rows: [{ result: true }] }),
+        query: { oauthConnections: { findMany: vi.fn().mockResolvedValue(candidates) } },
+      };
+      await cb(tx);
+      callOrder.push("tx-commit");
+    });
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => {
+        callOrder.push("byo-fetch");
+        return new Response(null, { status: 200 }) as unknown as Response;
+      });
+    const secretService = {
+      resolveSecretValue: vi.fn().mockResolvedValue("push-auth"),
+    } as unknown as Parameters<typeof runRefreshTick>[0]["secretService"];
+    try {
+      await runRefreshTick({
+        db,
+        refreshFn,
+        registry: {} as never,
+        secretService,
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+    // The fetch MUST happen after tx-commit; if it fires before, the
+    // advisory lock and pool connection are held for the duration.
+    expect(callOrder).toEqual(["tx-begin", "tx-commit", "byo-fetch"]);
+  });
+
   it("logs and continues if a refreshFn throws", async () => {
     const candidates = [
       { id: "a", refreshAttemptCount: 0, lastErrorAt: null },
