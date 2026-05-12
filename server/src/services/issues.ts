@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, like, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -139,6 +139,9 @@ export interface IssueFilters {
   excludeRoutineExecutions?: boolean;
   includePluginOperations?: boolean;
   includeBlockedBy?: boolean;
+  showArchived?: boolean;
+  onlyArchived?: boolean;
+  fields?: "summary";
   q?: string;
   limit?: number;
   offset?: number;
@@ -1487,6 +1490,16 @@ const issueListSelect = {
   updatedAt: issues.updatedAt,
 };
 
+const issueSummarySelect = {
+  id: issues.id,
+  title: issues.title,
+  status: issues.status,
+  priority: issues.priority,
+  assigneeAgentId: issues.assigneeAgentId,
+  identifier: issues.identifier,
+  updatedAt: issues.updatedAt,
+};
+
 function withActiveRuns(
   issueRows: IssueWithLabels[],
   runMap: Map<string, IssueActiveRunRow>,
@@ -2225,7 +2238,7 @@ export function issueService(db: Db) {
   return {
     clearExecutionRunIfTerminal,
 
-    list: async (companyId: string, filters?: IssueFilters) => {
+    list: async (companyId: string, filters?: IssueFilters): Promise<IssueWithLabelsAndRun[]> => {
       const conditions = [eq(issues.companyId, companyId)];
       const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
         ? Math.max(1, Math.floor(filters.limit))
@@ -2335,7 +2348,11 @@ export function issueService(db: Db) {
       if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
         conditions.push(ne(issues.originKind, "routine_execution"));
       }
-      conditions.push(isNull(issues.hiddenAt));
+      if (filters?.onlyArchived) {
+        conditions.push(isNotNull(issues.hiddenAt));
+      } else if (!filters?.showArchived) {
+        conditions.push(isNull(issues.hiddenAt));
+      }
 
       const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
       const searchOrder = sql<number>`
@@ -2349,6 +2366,26 @@ export function issueService(db: Db) {
           ELSE 6
         END
       `;
+      const isSummaryMode = filters?.fields === "summary";
+
+      if (isSummaryMode) {
+        const summaryQuery = db
+          .select(issueSummarySelect)
+          .from(issues)
+          .where(and(...conditions))
+          .orderBy(
+            hasSearch ? asc(searchOrder) : asc(priorityOrder),
+            asc(priorityOrder),
+            desc(issues.updatedAt),
+            desc(issues.id),
+          );
+        const summaryPageQuery = offset > 0
+          ? (limit === undefined ? summaryQuery.offset(offset) : summaryQuery.limit(limit).offset(offset))
+          : (limit === undefined ? summaryQuery : summaryQuery.limit(limit));
+        // Route layer handles summary serialisation; cast to satisfy the declared return type.
+        return await summaryPageQuery as unknown as IssueWithLabelsAndRun[];
+      }
+
       const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);
       const baseQuery = db
         .select(issueListSelect)

@@ -4,6 +4,7 @@ import { issuesApi } from "../api/issues";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import { useIssuesByIds } from "../lib/issueEntityStore";
 import { StatusIcon } from "../components/StatusIcon";
 
 import { EntityRow } from "../components/EntityRow";
@@ -20,11 +21,13 @@ export function MyIssues() {
     setBreadcrumbs([{ label: "My Issues" }]);
   }, [setBreadcrumbs]);
 
-  const { data: issues, isLoading, error } = useQuery({
+  const { data: issueIds, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.list(selectedCompanyId!),
     queryFn: () => issuesApi.list(selectedCompanyId!),
+    select: (issues) => issues.map((i) => i.id),
     enabled: !!selectedCompanyId,
   });
+  const issuesByIds = useIssuesByIds(selectedCompanyId, issueIds);
 
   if (!selectedCompanyId) {
     return <EmptyState icon={ListTodo} message="Select a company to view your issues." />;
@@ -35,7 +38,7 @@ export function MyIssues() {
   }
 
   // Show issues that are not assigned (user-created or unassigned)
-  const myIssues = (issues ?? []).filter(
+  const myIssues = issuesByIds.filter(
     (i) => !i.assigneeAgentId && !["done", "cancelled"].includes(i.status)
   );
 

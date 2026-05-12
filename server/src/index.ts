@@ -29,6 +29,7 @@ import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
+  buildIssueAutoArchiveService,
   feedbackService,
   heartbeatService,
   instanceSettingsService,
@@ -672,6 +673,7 @@ export async function startServer(): Promise<StartedServer> {
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
+    const issueAutoArchive = buildIssueAutoArchiveService(db as any);
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
@@ -715,6 +717,11 @@ export async function startServer(): Promise<StartedServer> {
       })
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
+      });
+    void issueAutoArchive
+      .tick(new Date())
+      .catch((err) => {
+        logger.error({ err }, "startup issue auto-archive failed");
       });
     setInterval(() => {
       void heartbeat
@@ -781,6 +788,16 @@ export async function startServer(): Promise<StartedServer> {
         })
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");
+        });
+      void issueAutoArchive
+        .tick(new Date())
+        .then((result) => {
+          if (result.total > 0) {
+            logger.info({ ...result }, "issue auto-archive tick archived issues");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "issue auto-archive tick failed");
         });
     }, config.heartbeatSchedulerIntervalMs);
   }

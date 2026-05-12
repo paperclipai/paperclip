@@ -12,6 +12,7 @@ import { useToastActions } from "./ToastContext";
 import { upsertIssueCommentInPages } from "../lib/optimistic-issue-comments";
 import { clearIssueExecutionRun, removeLiveRunById } from "../lib/optimistic-issue-runs";
 import { queryKeys } from "../lib/queryKeys";
+import { getIssueEntityMap } from "../lib/issueEntityStore";
 import { toCompanyRelativePath } from "../lib/company-routes";
 import { useLocation } from "../lib/router";
 
@@ -115,7 +116,7 @@ function resolveIssueQueryRefs(
 ): string[] {
   const refs = new Set<string>([issueId]);
   const detailIssue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueId));
-  const listIssues = queryClient.getQueryData<Issue[]>(queryKeys.issues.list(companyId));
+  const entityMap = getIssueEntityMap(queryClient, companyId);
   const detailsIdentifier =
     readString(details?.identifier) ??
     readString(details?.issueIdentifier);
@@ -125,14 +126,14 @@ function resolveIssueQueryRefs(
   if (detailIssue?.id) refs.add(detailIssue.id);
   if (detailIssue?.identifier) refs.add(detailIssue.identifier);
 
-  const listIssue = listIssues?.find((issue) => {
-    if (issue.id === issueId) return true;
-    if (issue.identifier && issue.identifier === issueId) return true;
-    if (detailsIdentifier && issue.identifier === detailsIdentifier) return true;
-    return false;
-  });
-  if (listIssue?.id) refs.add(listIssue.id);
-  if (listIssue?.identifier) refs.add(listIssue.identifier);
+  // Look up in the normalized entity map (covers all view caches)
+  const entityIssue =
+    entityMap?.[issueId] ??
+    (detailsIdentifier ? Object.values(entityMap ?? {}).find(
+      (i) => i.identifier === issueId || i.identifier === detailsIdentifier,
+    ) : undefined);
+  if (entityIssue?.id) refs.add(entityIssue.id);
+  if (entityIssue?.identifier) refs.add(entityIssue.identifier);
 
   return Array.from(refs);
 }
@@ -147,10 +148,11 @@ function resolveIssueToastContext(
   const detailIssue = issueRefs
     .map((ref) => queryClient.getQueryData<Issue>(queryKeys.issues.detail(ref)))
     .find((issue): issue is Issue => !!issue);
-  const listIssue = queryClient
-    .getQueryData<Issue[]>(queryKeys.issues.list(companyId))
-    ?.find((issue) => issueRefs.some((ref) => issue.id === ref || issue.identifier === ref));
-  const cachedIssue = detailIssue ?? listIssue ?? null;
+  const entityMap = getIssueEntityMap(queryClient, companyId);
+  const entityIssue = issueRefs
+    .map((ref) => entityMap?.[ref])
+    .find((issue): issue is Issue => !!issue);
+  const cachedIssue = detailIssue ?? entityIssue ?? null;
   const ref =
     readString(details?.identifier) ??
     readString(details?.issueIdentifier) ??

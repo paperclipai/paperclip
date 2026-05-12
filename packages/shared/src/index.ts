@@ -367,6 +367,7 @@ export type {
   IssueWorkProductStatus,
   IssueWorkProductReviewState,
   Issue,
+  IssueSummary,
   IssueAssigneeAdapterOverrides,
   IssueBlockerAttention,
   IssueBlockerAttentionReason,

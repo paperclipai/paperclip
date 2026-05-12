@@ -362,6 +362,13 @@ export function IssueFiltersPopover({
                     <span className="text-sm">Hide routine runs</span>
                   </label>
                 ) : null}
+                <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                  <Checkbox
+                    checked={state.showArchived}
+                    onCheckedChange={(checked) => onChange({ showArchived: checked === true })}
+                  />
+                  <span className="text-sm">Show archived</span>
+                </label>
               </div>
             </div>
           </div>

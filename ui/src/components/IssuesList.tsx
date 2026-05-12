@@ -666,12 +666,35 @@ export function IssuesList({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [issues]);
 
+  const { data: archivedIssues = [] } = useQuery({
+    queryKey: [
+      ...queryKeys.issues.list(selectedCompanyId ?? "__no-company__"),
+      "archived",
+      projectId ?? "__all-projects__",
+      searchFilters ?? {},
+    ],
+    queryFn: () =>
+      issuesApi.list(selectedCompanyId!, {
+        ...searchFilters,
+        projectId,
+        onlyArchived: true,
+        limit: 500,
+      }),
+    enabled: !!selectedCompanyId && viewState.showArchived && !searchWithinLoadedIssues,
+    placeholderData: (previousData: Issue[] | undefined) => previousData,
+  });
+  const allIssues = useMemo(() => {
+    if (!viewState.showArchived) return issues;
+    const seen = new Set(issues.map((i) => i.id));
+    return [...issues, ...archivedIssues.filter((i) => !seen.has(i.id))];
+  }, [issues, archivedIssues, viewState.showArchived]);
   const { data: searchedIssues = [] } = useQuery({
     queryKey: [
       ...queryKeys.issues.search(selectedCompanyId!, normalizedIssueSearch, projectId),
       searchFilters ?? {},
       ISSUE_SEARCH_RESULT_LIMIT,
       enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
+      viewState.showArchived ? "show-archived" : "hide-archived",
     ],
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, {
@@ -680,6 +703,7 @@ export function IssuesList({
         limit: ISSUE_SEARCH_RESULT_LIMIT,
         ...searchFilters,
         ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
+        ...(viewState.showArchived ? { showArchived: true } : {}),
       }),
     enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0 && !searchWithinLoadedIssues,
     placeholderData: (previousData) => previousData,
@@ -695,6 +719,7 @@ export function IssuesList({
         searchFilters ?? {},
         ISSUE_BOARD_COLUMN_RESULT_LIMIT,
         enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
+      viewState.showArchived ? "show-archived" : "hide-archived",
       ],
       queryFn: () =>
         issuesApi.list(selectedCompanyId!, {
@@ -704,6 +729,7 @@ export function IssuesList({
           status,
           limit: ISSUE_BOARD_COLUMN_RESULT_LIMIT,
           ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
+        ...(viewState.showArchived ? { showArchived: true } : {}),
         }),
       enabled: !!selectedCompanyId && viewState.viewMode === "board" && !searchWithinLoadedIssues,
       placeholderData: (previousData: Issue[] | undefined) => previousData,
@@ -927,7 +953,7 @@ export function IssuesList({
 
   const filtered = useMemo(() => {
     const useRemoteSearch = normalizedIssueSearch.length > 0 && !searchWithinLoadedIssues;
-    const sourceIssues = boardIssues ?? (useRemoteSearch ? searchedIssues : issues);
+    const sourceIssues = boardIssues ?? (useRemoteSearch ? searchedIssues : allIssues);
     const searchScopedIssues = normalizedIssueSearch.length > 0 && searchWithinLoadedIssues
       ? sourceIssues.filter((issue) => issueMatchesLocalSearch(issue, normalizedIssueSearch))
       : sourceIssues;
@@ -942,6 +968,7 @@ export function IssuesList({
     return sortIssues(filteredByControls, viewState);
   }, [
     boardIssues,
+    allIssues,
     issues,
     searchedIssues,
     searchWithinLoadedIssues,
