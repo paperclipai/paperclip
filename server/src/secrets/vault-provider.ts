@@ -190,6 +190,75 @@ function validateNoCredentialFields(
   }
 }
 
+export interface ResolvedVaultConfig {
+  config: VaultProviderConfig | null;
+  warnings: string[];
+}
+
+export function resolveVaultConfig(input: {
+  env: NodeJS.ProcessEnv;
+  providerConfig: SecretProviderVaultRuntimeConfig | null;
+}): ResolvedVaultConfig {
+  const warnings: string[] = [];
+  const vaultConfig =
+    (input.providerConfig?.config ?? {}) as Record<string, unknown>;
+
+  validateNoCredentialFields(vaultConfig, warnings);
+
+  function fromConfigOrEnv(key: keyof typeof vaultConfig, envKey: string): unknown {
+    if (vaultConfig[key] !== undefined) return vaultConfig[key];
+    return input.env[envKey];
+  }
+
+  const url = validateAddress(
+    fromConfigOrEnv("address", "PAPERCLIP_SECRETS_VAULT_ADDR"),
+    warnings,
+  );
+  const kvMount = validateKvMount(
+    fromConfigOrEnv("kvMount", "PAPERCLIP_SECRETS_VAULT_KV_MOUNT"),
+    warnings,
+  );
+  const kvPathPrefix = validateKvPathPrefix(
+    fromConfigOrEnv("kvPathPrefix", "PAPERCLIP_SECRETS_VAULT_KV_PATH_PREFIX"),
+    warnings,
+  );
+
+  const authRaw = (vaultConfig.auth ?? null) as Record<string, unknown> | null;
+  const authMerged = authRaw ?? {
+    method: input.env.PAPERCLIP_SECRETS_VAULT_AUTH_METHOD,
+    role: input.env.PAPERCLIP_SECRETS_VAULT_K8S_ROLE,
+    saTokenPath: input.env.PAPERCLIP_SECRETS_VAULT_SA_TOKEN_PATH,
+  };
+  const auth = validateAuthBlock(authMerged, warnings);
+
+  const versionRetentionRaw =
+    vaultConfig.versionRetention !== undefined
+      ? vaultConfig.versionRetention
+      : input.env.PAPERCLIP_SECRETS_VAULT_VERSION_RETENTION !== undefined
+        ? Number(input.env.PAPERCLIP_SECRETS_VAULT_VERSION_RETENTION)
+        : undefined;
+  const versionRetention = validateVersionRetention(versionRetentionRaw, warnings);
+
+  const namespace =
+    asString(vaultConfig.namespace) ??
+    asString(input.env.PAPERCLIP_SECRETS_VAULT_NAMESPACE);
+
+  if (!url || !kvMount || !kvPathPrefix || !auth || versionRetention === null) {
+    return { config: null, warnings };
+  }
+  return {
+    config: {
+      address: url.origin,
+      namespace,
+      kvMount,
+      kvPathPrefix,
+      auth,
+      versionRetention,
+    },
+    warnings,
+  };
+}
+
 export function createVaultProvider(
   _options?: { config?: VaultProviderConfig; gateway?: VaultHttpGateway },
 ): SecretProviderModule {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createVaultProvider } from "../secrets/vault-provider.js";
+import { createVaultProvider, resolveVaultConfig } from "../secrets/vault-provider.js";
 
 describe("vaultProvider", () => {
   const previousEnv = {
@@ -215,5 +215,55 @@ describe("validateConfig — credential-shaped-field denylist", () => {
   it("denylist is case-insensitive", async () => {
     const r = await check({ TOKEN: "x" });
     expect(r.ok).toBe(false);
+  });
+});
+
+describe("resolveVaultConfig", () => {
+  it("uses static defaults when nothing is set", () => {
+    const r = resolveVaultConfig({
+      env: { PAPERCLIP_SECRETS_VAULT_ADDR: "https://vault.default:8200" },
+      providerConfig: null
+    });
+    expect(r.config?.kvMount).toBe("secret");
+    expect(r.config?.kvPathPrefix).toBe("paperclip");
+    expect(r.config?.versionRetention).toBe(10);
+    expect(r.config?.auth.saTokenPath).toBe(
+      "/var/run/secrets/kubernetes.io/serviceaccount/token",
+    );
+  });
+
+  it("reads from env when no vault config is given", () => {
+    const r = resolveVaultConfig({
+      env: {
+        PAPERCLIP_SECRETS_VAULT_ADDR: "https://vault.env:8200",
+        PAPERCLIP_SECRETS_VAULT_KV_MOUNT: "kv",
+        PAPERCLIP_SECRETS_VAULT_AUTH_METHOD: "kubernetes",
+        PAPERCLIP_SECRETS_VAULT_K8S_ROLE: "paperclip-server",
+      },
+      providerConfig: null,
+    });
+    expect(r.config?.address).toBe("https://vault.env:8200");
+    expect(r.config?.kvMount).toBe("kv");
+    expect(r.config?.auth.method).toBe("kubernetes");
+    expect(r.config?.auth.role).toBe("paperclip-server");
+  });
+
+  it("vault config overrides env", () => {
+    const r = resolveVaultConfig({
+      env: { PAPERCLIP_SECRETS_VAULT_ADDR: "https://from-env:8200" },
+      providerConfig: {
+        id: "v1",
+        provider: "vault",
+        status: "ready",
+        config: { address: "https://from-config:8200" },
+      },
+    });
+    expect(r.config?.address).toBe("https://from-config:8200");
+  });
+
+  it("returns errors when address is missing entirely", () => {
+    const r = resolveVaultConfig({ env: {}, providerConfig: null });
+    expect(r.config).toBeNull();
+    expect(r.warnings.join(" ")).toMatch(/address/i);
   });
 });
