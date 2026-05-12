@@ -163,6 +163,7 @@ export function PluginSettings() {
   useEffect(() => {
     setActiveTab("configuration");
     setRuntimeConfigRestartWarning(null);
+    clearRuntimeConfigMutation.reset();
   }, [pluginId]);
 
   if (pluginLoading) {
