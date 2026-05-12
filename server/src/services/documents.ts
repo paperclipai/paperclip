@@ -1,8 +1,12 @@
 import { and, asc, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
-import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
+import {
+  isSystemIssueDocumentKey,
+  issueDocumentKeySchema,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { assertNoWorkspaceRootPlanLinks } from "./plan-links.js";
 
 function normalizeDocumentKey(key: string) {
   const normalized = key.trim().toLowerCase();
@@ -209,6 +213,7 @@ export function documentService(db: Db) {
       lockedDocumentStrategy?: "conflict" | "create_new_document";
     }) => {
       const key = normalizeDocumentKey(input.key);
+      assertNoWorkspaceRootPlanLinks(input.body);
       const issue = await db
         .select({ id: issues.id, companyId: issues.companyId })
         .from(issues)
@@ -557,6 +562,7 @@ export function documentService(db: Db) {
             currentRevisionId: existing.latestRevisionId,
           });
         }
+        assertNoWorkspaceRootPlanLinks(revision.body);
 
         const now = new Date();
         const nextRevisionNumber = existing.latestRevisionNumber + 1;

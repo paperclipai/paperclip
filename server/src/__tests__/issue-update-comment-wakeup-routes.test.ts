@@ -358,4 +358,24 @@ describe("issue update comment wakeups", () => {
       }),
     );
   });
+
+  it("rejects workspace-root plan links in issue update comments", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        comment: "See [plan](plans/DAT-4136-unified-app-tab-proposal.md)",
+      });
+
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toContain("Workspace-root /plans links are not served");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
 });
