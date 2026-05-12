@@ -81,6 +81,12 @@ import {
 } from "./run-liveness.js";
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
 import {
+  classifyWakeReasonFromContext,
+  isRoutineTerminalSyntheticContinuationWake,
+  resumeIntentFromIssueWakeContext,
+  ROUTINE_TERMINAL_SYNTHETIC_CONTINUATION_WAKE_REASONS,
+} from "../lib/routine-terminal-continuation.js";
+import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
   ensureRuntimeServicesForRun,
@@ -5976,6 +5982,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           | "issue_not_found"
           | "issue_assignee_changed"
           | "issue_terminal_status"
+          | "routine_terminal_requires_resume_intent"
           | "issue_not_in_progress"
           | "issue_execution_lock_changed"
           | "issue_review_participant_changed"
@@ -5992,6 +5999,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .select({
         id: issues.id,
         status: issues.status,
+        originKind: issues.originKind,
         assigneeAgentId: issues.assigneeAgentId,
         executionRunId: issues.executionRunId,
         executionState: issues.executionState,
@@ -6011,8 +6019,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const wakeCommentId = deriveCommentId(context, null);
     const isInteractionWake = allowsIssueInteractionWake(context);
-    const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
+    const resumeIntent = resumeIntentFromIssueWakeContext(context);
     const wakeReason = readNonEmptyString(context.wakeReason);
+    const classifiedWakeReason = classifyWakeReasonFromContext(context);
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
 
     if (
@@ -6059,6 +6068,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issue.status === "done" || issue.status === "cancelled") {
+      const routineTerminalMissingResume =
+        issue.originKind === "routine_execution" && !resumeIntent;
+      if (routineTerminalMissingResume) {
+        const syntheticWake = isRoutineTerminalSyntheticContinuationWake(classifiedWakeReason);
+        return {
+          stale: true,
+          errorCode: "routine_terminal_requires_resume_intent",
+          reason:
+            `Cancelled because routine_execution issue is ${issue.status} and the queued wake lacks explicit resume intent ` +
+            "(context.resume / context.resumeIntent / context.followUpRequested from structured resume: true); comment-only wakes must not revive routine output",
+          details: {
+            issueId,
+            currentStatus: issue.status,
+            originKind: issue.originKind,
+            classifiedWakeReason: classifiedWakeReason ?? null,
+            routineTerminalSyntheticContinuationWake: syntheticWake,
+            routineTerminalGuardOutcome: syntheticWake
+              ? "rejected_synthetic_continuation_without_resume"
+              : "rejected_routine_terminal_without_resume",
+          },
+        };
+      }
       if (!resumeIntent && !wakeCommentId) {
         return {
           stale: true,
@@ -8239,16 +8270,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           };
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
-        const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
+        const deferredWakeReason = classifyWakeReasonFromContext(deferredContextSeed);
+        const deferredResumeIntent = resumeIntentFromIssueWakeContext(deferredContextSeed);
         // Only human/comment-reopen interactions should revive completed issues;
         // system follow-ups such as retry or cleanup wakes must not reopen closed work.
-        const shouldReopenDeferredCommentWake =
+        let shouldReopenDeferredCommentWake =
           deferredCommentIds.length > 0 &&
           (issue.status === "done" || issue.status === "cancelled") &&
           (
             deferred.requestedByActorType === "user" ||
             deferredWakeReason === "issue_reopened_via_comment"
           );
+        if (
+          shouldReopenDeferredCommentWake &&
+          issue.originKind === "routine_execution" &&
+          !deferredResumeIntent
+        ) {
+          shouldReopenDeferredCommentWake = false;
+        }
+        if (
+          (issue.status === "done" || issue.status === "cancelled") &&
+          issue.originKind === "routine_execution" &&
+          !shouldReopenDeferredCommentWake &&
+          !deferredResumeIntent
+        ) {
+          const wakeTag =
+            deferredWakeReason && ROUTINE_TERMINAL_SYNTHETIC_CONTINUATION_WAKE_REASONS.has(deferredWakeReason)
+              ? `[routine_terminal_guard:synthetic_continuation:${deferredWakeReason}]`
+              : "[routine_terminal_guard:terminal_routine]";
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: new Date(),
+              error: `${wakeTag} Deferred wake not promoted: terminal routine_execution issue has no audited comment/user reopen and no explicit resume metadata (requires context.resume / resumeIntent from structured resume: true)`,
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
+        }
         let reopenedActivity: LogActivityInput | null = null;
 
         if (shouldReopenDeferredCommentWake) {

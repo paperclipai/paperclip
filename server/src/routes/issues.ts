@@ -559,7 +559,10 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
   actorId: string;
+  originKind?: string | null | undefined;
 }) {
+  // Routine output must not be revived by a plain human comment; use resume: true.
+  if (input.originKind === "routine_execution" && isClosedIssueStatus(input.issueStatus)) return false;
   // Only human comments should implicitly reopen finished work.
   // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
@@ -2577,6 +2580,7 @@ export function issueRoutes(
           assigneeAgentId: requestedAssigneeAgentId,
           actorType: actor.actorType,
           actorId: actor.actorId,
+          originKind: existing.originKind,
         }));
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
       ? await issueReferencesSvc.listIssueReferenceSummary(existing.id)
@@ -2588,6 +2592,24 @@ export function issueRoutes(
     if (resumeRequested === true && isBlocked && hasUnresolvedFirstClassBlockers) {
       res.status(409).json({ error: "Issue follow-up blocked by unresolved blockers" });
       return;
+    }
+    const routineTerminal = existing.originKind === "routine_execution" && isClosedIssueStatus(existing.status);
+    if (routineTerminal && resumeRequested !== true) {
+      const patchedStatus = typeof updateFields.status === "string" ? updateFields.status : undefined;
+      const leavesTerminalViaExplicitStatus =
+        patchedStatus !== undefined && !isClosedIssueStatus(patchedStatus);
+      const leavesTerminalViaCommentOrReopen =
+        reopenRequested === true ||
+        (!!commentBody &&
+          effectiveMoveToTodoRequested &&
+          (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers)));
+      if (leavesTerminalViaExplicitStatus || leavesTerminalViaCommentOrReopen) {
+        res.status(422).json({
+          error:
+            "routine_execution issues in done or cancelled status require resume: true (and eligibility rules) to leave that terminal state",
+        });
+        return;
+      }
     }
     let interruptedRunId: string | null = null;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(existing);
@@ -3465,7 +3487,13 @@ export function issueRoutes(
 
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
-    const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
+    const updated = await svc.checkout(
+      id,
+      req.body.agentId,
+      req.body.expectedStatuses,
+      checkoutRunId,
+      req.body.resume === true,
+    );
     const actor = getActorInfo(req);
 
     await logActivity(db, {
@@ -4126,6 +4154,18 @@ export function issueRoutes(
     if (resumeRequested !== true && reopenRequested === true && req.actor.type === "agent") {
       if (!(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
     }
+    if (
+      issue.originKind === "routine_execution" &&
+      isClosedIssueStatus(issue.status) &&
+      resumeRequested !== true &&
+      reopenRequested === true
+    ) {
+      res.status(422).json({
+        error:
+          "routine_execution issues in done or cancelled status require resume: true (and eligibility rules) to leave that terminal state",
+      });
+      return;
+    }
     const isClosed = isClosedIssueStatus(issue.status);
     const isBlocked = issue.status === "blocked";
     const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;
@@ -4136,6 +4176,7 @@ export function issueRoutes(
         assigneeAgentId: issue.assigneeAgentId,
         actorType: actor.actorType,
         actorId: actor.actorId,
+        originKind: issue.originKind,
       });
     const hasUnresolvedFirstClassBlockers =
       isBlocked && effectiveMoveToTodoRequested

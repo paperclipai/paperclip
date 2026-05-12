@@ -282,6 +282,8 @@ export type IssueExecutionWorkspaceSettings = z.infer<typeof issueExecutionWorks
 export const checkoutIssueSchema = z.object({
   agentId: z.string().uuid(),
   expectedStatuses: z.array(z.enum(ISSUE_STATUSES)).nonempty(),
+  /** Required to reopen a terminal routine_execution issue via checkout */
+  resume: z.boolean().optional(),
 });
 
 export type CheckoutIssue = z.infer<typeof checkoutIssueSchema>;
