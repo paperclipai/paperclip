@@ -1,5 +1,6 @@
 import { ChangeEvent, useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import {
   DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,
@@ -29,6 +30,7 @@ const BYTES_PER_MIB = 1024 * 1024;
 const DEFAULT_COMPANY_ATTACHMENT_MAX_MIB = DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES / BYTES_PER_MIB;
 const MAX_COMPANY_ATTACHMENT_MAX_MIB = MAX_COMPANY_ATTACHMENT_MAX_BYTES / BYTES_PER_MIB;
 export function CompanySettings() {
+  const { t } = useTranslation("pages");
   const {
     companies,
     selectedCompany,
@@ -212,12 +214,35 @@ export function CompanySettings() {
     }
   });
 
+  const [deleteConfirmName, setDeleteConfirmName] = useState("");
+  const deleteMutation = useMutation({
+    mutationFn: ({
+      companyId,
+      nextCompanyId
+    }: {
+      companyId: string;
+      nextCompanyId: string | null;
+    }) => companiesApi.remove(companyId).then(() => ({ nextCompanyId })),
+    onSuccess: async ({ nextCompanyId }) => {
+      setDeleteConfirmName("");
+      if (nextCompanyId) {
+        setSelectedCompanyId(nextCompanyId);
+      }
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.companies.all
+      });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.companies.stats
+      });
+    }
+  });
+
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Settings" }
+      { label: selectedCompany?.name ?? t("companySettings.title"), href: "/dashboard" },
+      { label: t("companySettings.breadcrumb") }
     ]);
-  }, [setBreadcrumbs, selectedCompany?.name]);
+  }, [setBreadcrumbs, selectedCompany?.name, t]);
 
   if (!selectedCompany) {
     return (
@@ -587,6 +612,64 @@ export function CompanySettings() {
               </span>
             )}
           </div>
+        </div>
+        <div className="space-y-3 rounded-md border border-destructive/60 bg-destructive/10 px-4 py-4">
+          <div className="space-y-1">
+            <p className="text-sm font-semibold text-destructive">
+              Excluir empresa permanentemente
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Apaga a empresa e TODOS os dados associados (agentes, issues,
+              projetos, custos, segredos, comentários, runs, etc). Esta ação
+              é irreversível. Para confirmar, digite o nome exato da empresa
+              abaixo.
+            </p>
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <input
+              type="text"
+              value={deleteConfirmName}
+              onChange={(event) => setDeleteConfirmName(event.target.value)}
+              placeholder={selectedCompany.name}
+              className="flex-1 rounded-md border border-destructive/40 bg-background px-3 py-1.5 text-sm focus:border-destructive focus:outline-none"
+              disabled={deleteMutation.isPending}
+            />
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={
+                deleteMutation.isPending ||
+                deleteConfirmName.trim() !== selectedCompany.name
+              }
+              onClick={() => {
+                if (!selectedCompanyId) return;
+                if (deleteConfirmName.trim() !== selectedCompany.name) return;
+                const confirmed = window.confirm(
+                  `Excluir permanentemente "${selectedCompany.name}" e TODOS os dados associados? Esta ação não pode ser desfeita.`
+                );
+                if (!confirmed) return;
+                const nextCompanyId =
+                  companies.find(
+                    (company) =>
+                      company.id !== selectedCompanyId &&
+                      company.status !== "archived"
+                  )?.id ?? null;
+                deleteMutation.mutate({
+                  companyId: selectedCompanyId,
+                  nextCompanyId
+                });
+              }}
+            >
+              {deleteMutation.isPending ? "Excluindo..." : "Excluir permanentemente"}
+            </Button>
+          </div>
+          {deleteMutation.isError && (
+            <span className="text-xs text-destructive">
+              {deleteMutation.error instanceof Error
+                ? deleteMutation.error.message
+                : "Falha ao excluir empresa"}
+            </span>
+          )}
         </div>
       </div>
     </div>
