@@ -8301,7 +8301,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await tx
             .update(agentWakeupRequests)
             .set({
-              status: "failed",
+              status: "cancelled",
               finishedAt: new Date(),
               error: `${wakeTag} Deferred wake not promoted: terminal routine_execution issue has no audited comment/user reopen and no explicit resume metadata (requires context.resume / resumeIntent from structured resume: true)`,
               updatedAt: new Date(),
