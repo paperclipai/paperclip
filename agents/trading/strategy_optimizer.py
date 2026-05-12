@@ -89,6 +89,8 @@ def extract_critique(raw: str) -> dict:
 
 def main():
     print("⚙️ Strategy Optimizer arrancando...", flush=True)
+    # DiscontrolsBags company — sobreescribir el ID global para que api_client use el correcto
+    os.environ["PAPERCLIP_COMPANY_ID"] = "866b74e7-79a7-4166-9f9f-025faa751aa1"
 
     api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not api_key:

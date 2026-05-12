@@ -54,6 +54,7 @@ def parse_response(response: str) -> dict:
 
 
 def main():
+    os.environ["PAPERCLIP_COMPANY_ID"] = "866b74e7-79a7-4166-9f9f-025faa751aa1"
     api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not api_key:
         print("ERROR: OPENROUTER_API_KEY no configurada", file=sys.stderr)
