@@ -2862,13 +2862,6 @@ export function issueRoutes(
         blocks: updatedRelations.blocks,
       };
     }
-    await routinesSvc.syncRunStatusForIssue(issue.id);
-
-    if (actor.runId) {
-      await heartbeat.reportRunActivity(actor.runId).catch((err) =>
-        logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue activity"));
-    }
-
     // Build activity details with previous values for changed fields
     const previous: Record<string, unknown> = {};
     for (const key of Object.keys(updateFields)) {
@@ -3401,6 +3394,15 @@ export function issueRoutes(
           .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update"));
       }
     })();
+
+    if (!commentBody || (comment && wasIssueCommentInserted(comment))) {
+      await routinesSvc.syncRunStatusForIssue(issue.id);
+
+      if (actor.runId) {
+        await heartbeat.reportRunActivity(actor.runId).catch((err) =>
+          logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue activity"));
+      }
+    }
 
     res.json({ ...issueResponse, comment });
   });

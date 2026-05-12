@@ -1,7 +1,9 @@
-import { pgTable, uuid, text, timestamp, index } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { pgTable, uuid, text, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { approvals } from "./approvals.js";
 import { agents } from "./agents.js";
+import { heartbeatRuns } from "./heartbeat_runs.js";
 
 export const approvalComments = pgTable(
   "approval_comments",
@@ -11,6 +13,8 @@ export const approvalComments = pgTable(
     approvalId: uuid("approval_id").notNull().references(() => approvals.id),
     authorAgentId: uuid("author_agent_id").references(() => agents.id),
     authorUserId: text("author_user_id"),
+    createdByRunId: uuid("created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    idempotencyKey: text("idempotency_key"),
     body: text("body").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -22,5 +26,6 @@ export const approvalComments = pgTable(
       table.approvalId,
       table.createdAt,
     ),
+    idempotencyKeyIdx: uniqueIndex("approval_comments_idempotency_key_uq").on(table.idempotencyKey).where(sql`"idempotency_key" IS NOT NULL`),
   }),
 );

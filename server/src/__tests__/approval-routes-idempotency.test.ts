@@ -73,6 +73,7 @@ async function createAgentApp() {
     (req as any).actor = {
       type: "agent",
       agentId: "agent-1",
+      runId: "run-1",
       companyId: "company-1",
       source: "api_key",
       isInstanceAdmin: false,
@@ -334,6 +335,36 @@ describe("approval routes idempotent retries", () => {
         actorId: "agent-1",
         action: "approval.created",
       }),
+    );
+  });
+
+  it("passes run id through for agent approval comments", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-7",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+    });
+    mockApprovalService.addComment.mockResolvedValue({
+      id: "comment-1",
+      approvalId: "approval-7",
+      body: "Looks good.",
+    });
+
+    const res = await request(await createAgentApp())
+      .post("/api/approvals/approval-7/comments")
+      .send({ body: "Looks good." });
+
+    expect(res.status).toBe(201);
+    expect(mockApprovalService.addComment).toHaveBeenCalledWith(
+      "approval-7",
+      "Looks good.",
+      {
+        agentId: "agent-1",
+        userId: undefined,
+        runId: "run-1",
+      },
     );
   });
 });

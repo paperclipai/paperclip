@@ -27,6 +27,10 @@ function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(a
   };
 }
 
+function wasApprovalCommentInserted(comment: unknown) {
+  return !comment || typeof comment !== "object" || (comment as { wasInserted?: boolean }).wasInserted !== false;
+}
+
 export function approvalRoutes(
   db: Db,
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
@@ -343,20 +347,25 @@ export function approvalRoutes(
     const comment = await svc.addComment(id, req.body.body, {
       agentId: actor.agentId ?? undefined,
       userId: actor.actorType === "user" ? actor.actorId : undefined,
+      runId: actor.runId,
     });
 
-    await logActivity(db, {
-      companyId: approval.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      action: "approval.comment_added",
-      entityType: "approval",
-      entityId: approval.id,
-      details: { commentId: comment.id },
-    });
+    const commentInserted = wasApprovalCommentInserted(comment);
+    if (commentInserted) {
+      await logActivity(db, {
+        companyId: approval.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "approval.comment_added",
+        entityType: "approval",
+        entityId: approval.id,
+        details: { commentId: comment.id },
+      });
+    }
 
-    res.status(201).json(comment);
+    res.status(commentInserted ? 201 : 200).json(comment);
   });
 
   return router;
