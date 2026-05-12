@@ -2296,27 +2296,34 @@ export function buildHostServices(
           }
           const issueIds = linkedIssues.map((issue) => issue.id);
           const issueRefs = linkedIssues.map((issue) => ({ id: issue.id, identifier: issue.identifier ?? null }));
-          await logActivity(db, {
-            companyId,
-            actorType: "plugin",
-            actorId: pluginId,
-            action: "approval.cancelled",
-            entityType: "approval",
-            entityId: cancelResult.id,
-            details: {
-              type: cancelResult.type,
-              sourcePluginId: pluginId,
-              sourcePluginKey: pluginKey,
-              issueIds,
-              linkedIssueIds: issueIds,
-              issueRefs,
-              reason: params.reason ?? null,
-              status: "cancelled",
-              decisionNote: params.reason ?? null,
-              decidedByUserId: null,
-              decidedAt: now,
-            },
-          });
+          try {
+            await logActivity(db, {
+              companyId,
+              actorType: "plugin",
+              actorId: pluginId,
+              action: "approval.cancelled",
+              entityType: "approval",
+              entityId: cancelResult.id,
+              details: {
+                type: cancelResult.type,
+                sourcePluginId: pluginId,
+                sourcePluginKey: pluginKey,
+                issueIds,
+                linkedIssueIds: issueIds,
+                issueRefs,
+                reason: params.reason ?? null,
+                status: "cancelled",
+                decisionNote: params.reason ?? null,
+                decidedByUserId: null,
+                decidedAt: now,
+              },
+            });
+          } catch (err) {
+            logger.warn(
+              { err, approvalId: cancelResult.id, sourcePluginId: pluginId },
+              "failed to log plugin approval cancellation activity",
+            );
+          }
           if (notifyWorker) {
             try {
               notifyWorker("approvals.resolved", {

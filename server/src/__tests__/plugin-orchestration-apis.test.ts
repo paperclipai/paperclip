@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agentWakeupRequests,
@@ -26,6 +26,12 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { buildHostServices } from "../services/plugin-host-services.js";
+
+const mockLogActivity = vi.hoisted(() => vi.fn());
+
+vi.mock("../services/activity-log.js", () => ({
+  logActivity: mockLogActivity,
+}));
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -62,6 +68,10 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
   }, 20_000);
 
   afterEach(async () => {
+    mockLogActivity.mockReset();
+    mockLogActivity.mockImplementation(async (activityDb, input) => {
+      await activityDb.insert(activityLog).values(input);
+    });
     await Promise.all(tempRoots.map((root) => fs.rm(root, { recursive: true, force: true })));
     tempRoots.length = 0;
     await db.delete(activityLog);
@@ -82,6 +92,12 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  beforeAll(() => {
+    mockLogActivity.mockImplementation(async (activityDb, input) => {
+      await activityDb.insert(activityLog).values(input);
+    });
   });
 
   async function seedCompanyAndAgent() {
@@ -825,6 +841,52 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
           }),
         }),
       ]),
+    );
+  });
+
+  it("notifies plugin approval cancellation even when audit logging fails", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const pluginRecordId = randomUUID();
+    await db.insert(plugins).values({
+      id: pluginRecordId,
+      pluginKey: "paperclip.missions",
+      packageName: "@paperclip/test-missions",
+      version: "0.1.0",
+      apiVersion: 1,
+      categories: [],
+      manifestJson: {
+        id: "paperclip.missions",
+        apiVersion: 1,
+        version: "0.1.0",
+        displayName: "Missions",
+        description: "Test plugin",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["approvals.create", "approvals.read"],
+        entrypoints: { worker: "./dist/worker.js" },
+      },
+      status: "enabled",
+    });
+    const notifyWorker = vi.fn();
+    const services = buildHostServices(db, pluginRecordId, "paperclip.missions", createEventBusStub(), notifyWorker);
+    const created = await services.approvals.create({
+      companyId,
+      prompt: "Approve mission launch.",
+    });
+    mockLogActivity.mockRejectedValueOnce(new Error("audit unavailable"));
+
+    await expect(services.approvals.cancel({
+      companyId,
+      approvalId: created.approvalId,
+      reason: "mission withdrawn",
+    })).resolves.toBeUndefined();
+
+    expect(notifyWorker).toHaveBeenCalledWith(
+      "approvals.resolved",
+      expect.objectContaining({
+        approvalId: created.approvalId,
+        status: "cancelled",
+      }),
     );
   });
 });
