@@ -238,7 +238,7 @@ push_branch_to_forks() {
   local source_ref="$1"
   local target_ref="$2"
   local remote candidate pushed_any
-  local remotes=()
+  local -a remotes=()
   pushed_any="0"
 
   if [[ "$PUSH_PRIVATE" == "1" ]]; then
@@ -251,7 +251,7 @@ push_branch_to_forks() {
     remotes+=("$PUBLIC_REMOTE")
   fi
 
-  local unique_remotes=()
+  local -a unique_remotes=()
   for candidate in "${remotes[@]}"; do
     [[ -n "$candidate" ]] || continue
     local seen="0"
