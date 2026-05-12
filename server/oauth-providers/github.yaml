@@ -20,3 +20,7 @@ accountIdField: id
 accountLabelField: login
 refresh:
   supported: false
+
+broker:
+  supported: false
+  deliveryModesSupported: [env]

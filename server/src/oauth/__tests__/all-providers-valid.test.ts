@@ -39,4 +39,19 @@ describe("shipped provider yaml files", () => {
     const ids = configs.map((c) => c.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
+
+  it("every shipped provider declares broker.supported = false in M1", async () => {
+    const configs = await loadProviderConfigsFromDirectory(PROVIDERS_DIR);
+    for (const config of configs) {
+      // Schema makes broker optional; YAMLs in M1 declare it explicitly.
+      expect(
+        config.broker?.supported,
+        `provider '${config.id}' has broker.supported = true in M1; should flip to true only during M3 rollout`,
+      ).toBe(false);
+      expect(
+        config.broker?.deliveryModesSupported,
+        `provider '${config.id}' must list at least 'env' in deliveryModesSupported`,
+      ).toContain("env");
+    }
+  });
 });
