@@ -6588,7 +6588,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // — caller is already about to dispatch, and re-entering startNextQueuedRunForAgent
     // would block on its own lock for AGENT_START_LOCK_STALE_MS.
     dispatchNext: boolean;
-  }) {
+  }): Promise<boolean> {
     const { run, adapterType, adapterConfig, graceMs, maxRuntimeMs, dispatchNext } = opts;
     const now = new Date();
     const startedAt = run.processStartedAt;
@@ -6620,7 +6620,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")))
       .returning()
       .then((rows) => rows[0] ?? null);
-    if (!claimed) return;
+    if (!claimed) return false;
 
     publishLiveEvent({
       companyId: claimed.companyId,
@@ -6667,6 +6667,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (dispatchNext) {
       await startNextQueuedRunForAgent(run.agentId);
     }
+    return true;
   }
 
   async function reapStaleRunningRuns(opts?: { maxRuntimeMs?: number; graceMs?: number }) {
@@ -6684,8 +6685,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ));
     const reaped: string[] = [];
     for (const { run, adapterType, adapterConfig } of stale) {
-      await terminateRunAsOrphanReaped({ run, adapterType, adapterConfig, graceMs, maxRuntimeMs, dispatchNext: true });
-      reaped.push(run.id);
+      // Only count runs whose CAS finalize won — a concurrent reaper or natural finalize
+      // may have already moved the row out of `running`, in which case we did no work here.
+      const didReap = await terminateRunAsOrphanReaped({ run, adapterType, adapterConfig, graceMs, maxRuntimeMs, dispatchNext: true });
+      if (didReap) reaped.push(run.id);
     }
     if (reaped.length > 0) {
       logger.warn({ reapedCount: reaped.length, runIds: reaped, maxRuntimeMs }, "reaped stale running heartbeat runs");
@@ -6707,12 +6710,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         isNotNull(heartbeatRuns.processStartedAt),
         lt(heartbeatRuns.processStartedAt, cutoff),
       ));
+    let killed = 0;
     for (const { run, adapterType, adapterConfig } of stale) {
       // dispatchNext=false: caller (claimQueuedRun) already holds withAgentStartLock(agentId)
       // and is about to start the next run itself. Re-entering would stall on the lock.
-      await terminateRunAsOrphanReaped({ run, adapterType, adapterConfig, graceMs, maxRuntimeMs, dispatchNext: false });
+      // Only count CAS wins so the caller's `killedRuns` warn log reflects work this path actually did.
+      const didReap = await terminateRunAsOrphanReaped({ run, adapterType, adapterConfig, graceMs, maxRuntimeMs, dispatchNext: false });
+      if (didReap) killed++;
     }
-    return stale.length;
+    return killed;
   }
 
   async function resumeQueuedRuns() {
