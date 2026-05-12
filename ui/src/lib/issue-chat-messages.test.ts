@@ -324,14 +324,14 @@ describe("buildIssueChatMessages", () => {
     });
   });
 
-  it("renders a comment as agent-authored when derived attribution is supplied", () => {
+  it("prefers derived agent attribution when a board-authored comment is proven to come from a run", () => {
     const agentMap = new Map<string, Agent>([["agent-1", createAgent("agent-1", "Claude")]]);
     const messages = buildIssueChatMessages({
       comments: [
         createComment({
           authorUserId: "user-1",
-          derivedAgentAuthorId: "agent-1",
-          derivedAgentRunId: "run-1",
+          derivedAuthorAgentId: "agent-1",
+          derivedCreatedByRunId: "run-1",
         }),
       ],
       timelineEvents: [],
