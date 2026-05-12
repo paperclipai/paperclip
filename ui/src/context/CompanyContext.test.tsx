@@ -172,10 +172,7 @@ describe("CompanyProvider", () => {
 
   it("replaces a stale stored company id with the first loaded company", async () => {
     localStorage.setItem("paperclip.selectedCompanyId", "stale-company");
-    queryClient.setQueryData(queryKeys.companies.all, {
-      companies: [makeCompany("company-1")],
-      unauthorized: false,
-    });
+    queryClient.setQueryData(queryKeys.companies.all, [makeCompany("company-1")]);
     mockCompaniesApi.list.mockImplementation(() => new Promise(() => {}));
     const seen: Array<string | null> = [];
 
