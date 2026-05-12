@@ -889,4 +889,65 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       }),
     );
   });
+
+  it("lets plugins cancel revision-requested approvals", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const pluginRecordId = randomUUID();
+    await db.insert(plugins).values({
+      id: pluginRecordId,
+      pluginKey: "paperclip.missions",
+      packageName: "@paperclip/test-missions",
+      version: "0.1.0",
+      apiVersion: 1,
+      categories: [],
+      manifestJson: {
+        id: "paperclip.missions",
+        apiVersion: 1,
+        version: "0.1.0",
+        displayName: "Missions",
+        description: "Test plugin",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["approvals.create", "approvals.read"],
+        entrypoints: { worker: "./dist/worker.js" },
+      },
+      status: "enabled",
+    });
+    const notifyWorker = vi.fn();
+    const services = buildHostServices(db, pluginRecordId, "paperclip.missions", createEventBusStub(), notifyWorker);
+    const created = await services.approvals.create({
+      companyId,
+      prompt: "Approve mission launch.",
+    });
+
+    await db
+      .update(approvals)
+      .set({
+        status: "revision_requested",
+        decisionNote: "Need a smaller blast radius",
+        decidedByUserId: "board-user",
+        decidedAt: new Date(),
+      })
+      .where(eq(approvals.id, created.approvalId));
+
+    await expect(services.approvals.cancel({
+      companyId,
+      approvalId: created.approvalId,
+      reason: "mission withdrawn",
+    })).resolves.toBeUndefined();
+
+    const [stored] = await db.select().from(approvals).where(eq(approvals.id, created.approvalId));
+    expect(stored).toMatchObject({
+      status: "cancelled",
+      decisionNote: "mission withdrawn",
+    });
+    expect(notifyWorker).toHaveBeenCalledWith(
+      "approvals.resolved",
+      expect.objectContaining({
+        approvalId: created.approvalId,
+        status: "cancelled",
+        decisionNote: "mission withdrawn",
+      }),
+    );
+  });
 });

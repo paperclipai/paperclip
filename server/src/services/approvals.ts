@@ -266,7 +266,7 @@ export function approvalService(db: Db) {
           decidedAt: now,
           updatedAt: now,
         })
-        .where(and(eq(approvals.id, id), eq(approvals.status, "pending")))
+        .where(and(eq(approvals.id, id), inArray(approvals.status, resolvableStatuses)))
         .returning()
         .then((rows) => rows[0] ?? null);
     },

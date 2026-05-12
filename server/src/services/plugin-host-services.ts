@@ -2284,7 +2284,7 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         const row = await approvalsService.getById(params.approvalId);
         if (!row || row.companyId !== companyId || row.sourcePluginId !== pluginId) return;
-        if (row.status !== "pending") return;
+        if (row.status !== "pending" && row.status !== "revision_requested") return;
         const cancelResult = await approvalsService.cancel(params.approvalId, params.reason);
         if (cancelResult) {
           const now = cancelResult.decidedAt?.toISOString() ?? new Date().toISOString();
