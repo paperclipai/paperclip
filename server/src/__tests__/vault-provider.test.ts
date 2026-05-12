@@ -801,3 +801,58 @@ describe("VaultTokenManager.sourceMode", () => {
     expect(tm.sourceMode).toBe("kubernetes");
   });
 });
+
+describe("resolveVersion — managed", () => {
+  async function seedTwoVersions() {
+    const gw = fakeVaultGateway();
+    const provider = createVaultProvider({
+      config: {
+        address: "https://v",
+        namespace: null,
+        kvMount: "secret",
+        kvPathPrefix: "paperclip",
+        auth: { method: "token", role: null, saTokenPath: "/dev/null" },
+        versionRetention: 10,
+      },
+      gateway: gw.impl,
+    });
+    process.env.VAULT_TOKEN = "static";
+    const ctx = { companyId: "co", deploymentId: "d", secretId: "s", secretKey: "K", secretName: "K", version: 1 } as const;
+    const v1 = await provider.createSecret({ value: "v1-val", context: ctx });
+    const v2 = await provider.createVersion({ value: "v2-val", context: ctx, externalRef: v1.externalRef });
+    return { provider, gw, v1, v2 };
+  }
+
+  it("resolves the latest version when no providerVersionRef given", async () => {
+    const { provider, v2 } = await seedTwoVersions();
+    const plaintext = await provider.resolveVersion({
+      material: v2.material,
+      externalRef: v2.externalRef,
+      context: { companyId: "co", secretId: "s", secretKey: "K", version: 2 },
+    });
+    expect(plaintext).toBe("v2-val");
+  });
+
+  it("resolves a pinned version by providerVersionRef", async () => {
+    const { provider, v1 } = await seedTwoVersions();
+    const plaintext = await provider.resolveVersion({
+      material: v1.material,
+      externalRef: v1.externalRef,
+      providerVersionRef: "1",
+      context: { companyId: "co", secretId: "s", secretKey: "K", version: 1 },
+    });
+    expect(plaintext).toBe("v1-val");
+  });
+
+  it("returns not_found error for missing version", async () => {
+    const { provider, v1 } = await seedTwoVersions();
+    await expect(
+      provider.resolveVersion({
+        material: v1.material,
+        externalRef: v1.externalRef,
+        providerVersionRef: "99",
+        context: { companyId: "co", secretId: "s", secretKey: "K", version: 99 },
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
+  });
+});

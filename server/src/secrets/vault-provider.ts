@@ -552,8 +552,45 @@ export function createVaultProvider(
     async linkExternalSecret() {
       throw new Error("linkExternalSecret not implemented yet");
     },
-    async resolveVersion() {
-      throw new Error("resolveVersion not implemented yet");
+    async resolveVersion(input) {
+      const config = resolveConfig(input.providerConfig);
+      const gateway = resolveGateway(config);
+      const tokenManager = tokenManagerFor(config, gateway);
+
+      if (!input.material || (input.material as { scheme?: string }).scheme !== VAULT_MATERIAL_SCHEME) {
+        throw unprocessable("vault resolveVersion: material is not vault_kv_v2");
+      }
+      const material = input.material as unknown as VaultManagedMaterial;
+
+      const versionOverride = input.providerVersionRef
+        ? Number(input.providerVersionRef)
+        : material.version ?? undefined;
+      const version = typeof versionOverride === "number" && Number.isFinite(versionOverride) && versionOverride > 0
+        ? versionOverride
+        : undefined;
+
+      return await withVaultTokenRetry({
+        tokenManager,
+        sourceMode: tokenManager.sourceMode,
+        operation: async () => {
+          await tokenManager.acquire();
+          const { data } = await gateway.getKv({
+            mount: material.mount,
+            path: material.path,
+            version,
+          });
+          const value = data[material.dataKey ?? "value"];
+          if (typeof value !== "string") {
+            throw new SecretProviderClientError({
+              code: "not_found",
+              provider: "vault",
+              operation: "getKv",
+              message: `vault data key '${material.dataKey ?? "value"}' missing from KV response`,
+            });
+          }
+          return value;
+        },
+      });
     },
     async deleteOrArchive() { /* later */ },
     async healthCheck() {
