@@ -19,6 +19,7 @@ import {
 } from "@paperclipai/db";
 import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 import { logActivity } from "./activity-log.js";
@@ -515,20 +516,27 @@ export function agentService(db: Db) {
         });
 
       if (sweptRoutines.length > 0) {
-        await logActivity(db, {
-          companyId: existing.companyId,
-          actorType: "system",
-          actorId: "agent-terminate-sweep",
-          action: "routine.auto_paused",
-          entityType: "agent",
-          entityId: id,
-          details: {
-            cause: "agent_terminated",
-            routineIds: sweptRoutines.map((row) => row.id),
-            routineTitles: sweptRoutines.map((row) => row.title),
-            count: sweptRoutines.length,
-          },
-        });
+        try {
+          await logActivity(db, {
+            companyId: existing.companyId,
+            actorType: "system",
+            actorId: "agent-terminate-sweep",
+            action: "routine.auto_paused",
+            entityType: "agent",
+            entityId: id,
+            details: {
+              cause: "agent_terminated",
+              routineIds: sweptRoutines.map((row) => row.id),
+              routineTitles: sweptRoutines.map((row) => row.title),
+              count: sweptRoutines.length,
+            },
+          });
+        } catch (err) {
+          logger.warn(
+            { err, agentId: id, routineIds: sweptRoutines.map((row) => row.id) },
+            "failed to log routine auto-pause sweep on agent termination",
+          );
+        }
       }
 
       return getById(id);
