@@ -110,6 +110,12 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     comingSoon: true,
     disabledLabel: "Configure OpenClaw within the App",
   },
+  openswarm_local: {
+    label: "OpenSwarm",
+    description: "Local OpenSwarm orchestrator (unohee or VRSEN)",
+    icon: Bot,
+    experimental: true,
+  },
   process: {
     label: "Process",
     description: "Internal process adapter",

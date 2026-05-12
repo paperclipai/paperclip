@@ -99,6 +99,14 @@ import {
   agentConfigurationDoc as openclawGatewayAgentConfigurationDoc,
   models as openclawGatewayModels,
 } from "@paperclipai/adapter-openclaw-gateway";
+import {
+  execute as openswarmLocalExecute,
+  testEnvironment as openswarmLocalTestEnvironment,
+} from "@paperclipai/adapter-openswarm-local/server";
+import {
+  agentConfigurationDoc as openswarmLocalAgentConfigurationDoc,
+  models as openswarmLocalModels,
+} from "@paperclipai/adapter-openswarm-local";
 import { listCodexModels, refreshCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
 import {
@@ -360,6 +368,21 @@ const openclawGatewayAdapter: ServerAdapterModule = {
   agentConfigurationDoc: openclawGatewayAgentConfigurationDoc,
 };
 
+const openswarmLocalAdapter: ServerAdapterModule = {
+  type: "openswarm_local",
+  execute: openswarmLocalExecute,
+  testEnvironment: openswarmLocalTestEnvironment,
+  models: openswarmLocalModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  // OpenSwarm has two flavors that both install a binary named `openswarm`,
+  // so we cannot pick a single canonical npm package for sandbox auto-install.
+  // Operators set adapterConfig.command (or install one flavor manually).
+  agentConfigurationDoc: openswarmLocalAgentConfigurationDoc,
+};
+
 const openCodeLocalAdapter: ServerAdapterModule = {
   type: "opencode_local",
   execute: openCodeExecute,
@@ -487,6 +510,7 @@ function registerBuiltInAdapters() {
     cursorLocalAdapter,
     geminiLocalAdapter,
     openclawGatewayAdapter,
+    openswarmLocalAdapter,
     hermesLocalAdapter,
     processAdapter,
     httpAdapter,
