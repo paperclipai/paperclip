@@ -2,7 +2,7 @@ name: Build and push paperclip-prod overlay image
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     paths:
       - docker/Dockerfile.overlay
   workflow_dispatch:
