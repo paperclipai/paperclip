@@ -401,6 +401,17 @@ export function normalizeAgentMentionToken(raw: string): string {
   return s.trim();
 }
 
+export function extractAgentMentionTokens(body: string): string[] {
+  const re = /(?:^|\B)@([^\s@,!?.:;]+)/g;
+  const tokens = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(body)) !== null) {
+    const normalized = normalizeAgentMentionToken(m[1]);
+    if (normalized) tokens.add(normalized.toLowerCase());
+  }
+  return [...tokens];
+}
+
 export function deriveIssueUserContext(
   issue: IssueUserContextInput,
   userId: string,
@@ -2247,13 +2258,7 @@ export function issueService(db: Db) {
       }),
 
     findMentionedAgents: async (companyId: string, body: string) => {
-      const re = /\B@([^\s@,!?.]+)/g;
-      const tokens = new Set<string>();
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(body)) !== null) {
-        const normalized = normalizeAgentMentionToken(m[1]);
-        if (normalized) tokens.add(normalized.toLowerCase());
-      }
+      const tokens = new Set(extractAgentMentionTokens(body));
 
       const explicitAgentMentionIds = extractAgentMentionIds(body);
       if (tokens.size === 0 && explicitAgentMentionIds.length === 0) return [];

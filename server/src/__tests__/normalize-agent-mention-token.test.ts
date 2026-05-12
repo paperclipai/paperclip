@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeAgentMentionToken } from "../services/issues.ts";
+import { extractAgentMentionTokens, normalizeAgentMentionToken } from "../services/issues.ts";
 
 describe("normalizeAgentMentionToken", () => {
   it("decodes hex numeric entities such as space (&#x20;)", () => {
@@ -37,5 +37,15 @@ describe("normalizeAgentMentionToken", () => {
 
   it("trims after decoding entities", () => {
     expect(normalizeAgentMentionToken("Baba&#x20;&#x20;")).toBe("Baba");
+  });
+});
+
+describe("extractAgentMentionTokens", () => {
+  it("extracts a mention at the start of a comment", () => {
+    expect(extractAgentMentionTokens("@CRO please review")).toEqual(["cro"]);
+  });
+
+  it("stops the mention token before colon punctuation", () => {
+    expect(extractAgentMentionTokens("cc @CRO: please review")).toEqual(["cro"]);
   });
 });
