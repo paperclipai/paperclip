@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { MockAgent, setGlobalDispatcher } from "undici";
 import {
   buildManagedKvPath,
   createVaultProvider,
   detectVaultAuthSource,
   parseExternalRef,
   resolveVaultConfig,
+  UndiciVaultGateway,
   VaultTokenManager,
   withVaultTokenRetry,
   type VaultAuthSource,
@@ -1106,5 +1108,66 @@ describe("deleteOrArchive", () => {
       mode: "archive",
     });
     expect(gw.store.get("secret/paperclip/d/co/K")).toBeTruthy();
+  });
+});
+
+describe("UndiciVaultGateway", () => {
+  it("sends X-Vault-Token + X-Vault-Namespace headers on KV reads", async () => {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    setGlobalDispatcher(agent);
+    const pool = agent.get("https://vault.example:8200");
+    pool
+      .intercept({ path: "/v1/secret/data/paperclip/d/co/K", method: "GET" })
+      .reply(200, { data: { data: { value: "v" }, metadata: { version: 1 } } });
+
+    const gateway = new UndiciVaultGateway({
+      address: "https://vault.example:8200",
+      namespace: "ns1",
+      getToken: async () => "hvs.kube.1",
+    });
+    const r = await gateway.getKv({ mount: "secret", path: "paperclip/d/co/K" });
+    expect(r).toEqual({ data: { value: "v" }, version: 1 });
+    agent.assertNoPendingInterceptors();
+  });
+
+  it("maps 403 to SecretProviderClientError(code:access_denied)", async () => {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    setGlobalDispatcher(agent);
+    const pool = agent.get("https://vault.example:8200");
+    pool
+      .intercept({ path: "/v1/secret/data/paperclip/d/co/K", method: "GET" })
+      .reply(403, { errors: ["permission denied"] });
+    const gateway = new UndiciVaultGateway({
+      address: "https://vault.example:8200",
+      namespace: null,
+      getToken: async () => "hvs.k",
+    });
+    await expect(gateway.getKv({ mount: "secret", path: "paperclip/d/co/K" })).rejects.toMatchObject({
+      code: "access_denied",
+    });
+  });
+
+  it("maps 404 to not_found, 429 to throttled, 500 to provider_error", async () => {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    setGlobalDispatcher(agent);
+    const pool = agent.get("https://vault.example:8200");
+    for (const [status, code] of [
+      [404, "not_found"],
+      [429, "throttled"],
+      [500, "provider_error"],
+    ] as const) {
+      pool.intercept({ path: "/v1/secret/data/x", method: "GET" }).reply(status, { errors: [] });
+    }
+    const gateway = new UndiciVaultGateway({
+      address: "https://vault.example:8200",
+      namespace: null,
+      getToken: async () => "t",
+    });
+    await expect(gateway.getKv({ mount: "secret", path: "x" })).rejects.toMatchObject({ code: "not_found" });
+    await expect(gateway.getKv({ mount: "secret", path: "x" })).rejects.toMatchObject({ code: "throttled" });
+    await expect(gateway.getKv({ mount: "secret", path: "x" })).rejects.toMatchObject({ code: "provider_error" });
   });
 });

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
+import { request as undiciRequest } from "undici";
 import type {
   PreparedSecretVersion,
   SecretProviderClientErrorCode,
@@ -418,6 +419,136 @@ function fingerprintFromVersionAndPath(mount: string, path: string, version: num
   return createHash("sha256").update(`${mount}/${path}@v${version}`).digest("hex");
 }
 
+export class UndiciVaultGateway implements VaultHttpGateway {
+  private readonly address: string;
+  private readonly namespace: string | null;
+  private readonly getToken: () => Promise<string>;
+
+  constructor(input: { address: string; namespace: string | null; getToken: () => Promise<string> }) {
+    this.address = input.address.replace(/\/$/, "");
+    this.namespace = input.namespace;
+    this.getToken = input.getToken;
+  }
+
+  private async call<T>(input: {
+    method: "GET" | "POST" | "PUT" | "DELETE" | "LIST";
+    path: string;
+    body?: unknown;
+    authenticated?: boolean;
+  }): Promise<T> {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (input.authenticated !== false) {
+      headers["x-vault-token"] = await this.getToken();
+    }
+    if (this.namespace) headers["x-vault-namespace"] = this.namespace;
+
+    const url = `${this.address}${input.path}`;
+    const response = await undiciRequest(url, {
+      method: input.method,
+      headers,
+      body: input.body !== undefined ? JSON.stringify(input.body) : undefined,
+    });
+    const text = await response.body.text();
+    const status = response.statusCode;
+    if (status >= 200 && status < 300) {
+      return (text ? JSON.parse(text) : {}) as T;
+    }
+    const errBody = (() => { try { return JSON.parse(text); } catch { return { errors: [text] }; } })();
+    const errors = Array.isArray(errBody?.errors) ? errBody.errors.join("; ") : String(text);
+    const code = mapStatusToCode(status);
+    throw new SecretProviderClientError({
+      code,
+      provider: "vault",
+      operation: input.path,
+      message: `vault ${input.method} ${input.path} returned ${status}: ${errors}`,
+      status,
+      rawMessage: errors,
+    });
+  }
+
+  async health() {
+    return this.call({ method: "GET", path: "/v1/sys/health?standbycode=200&sealedcode=200", authenticated: false });
+  }
+  async loginKubernetes(input: { role: string; jwt: string }) {
+    const r = await this.call<{ auth: { client_token: string; lease_duration: number; renewable: boolean } }>({
+      method: "POST",
+      path: "/v1/auth/kubernetes/login",
+      body: { role: input.role, jwt: input.jwt },
+      authenticated: false,
+    });
+    return {
+      clientToken: r.auth.client_token,
+      leaseDurationSec: r.auth.lease_duration,
+      renewable: r.auth.renewable,
+    };
+  }
+  async renewSelf() {
+    const r = await this.call<{ auth: { lease_duration: number; renewable: boolean } }>({
+      method: "POST",
+      path: "/v1/auth/token/renew-self",
+    });
+    return { leaseDurationSec: r.auth.lease_duration, renewable: r.auth.renewable };
+  }
+  async lookupSelf() {
+    const r = await this.call<{ data: { ttl: number; renewable: boolean; policies: string[] } }>({
+      method: "GET",
+      path: "/v1/auth/token/lookup-self",
+    });
+    return { leaseDurationSec: r.data.ttl, renewable: r.data.renewable, policies: r.data.policies };
+  }
+  async capabilitiesSelf(paths: string[]) {
+    const r = await this.call<Record<string, string[]>>({
+      method: "POST",
+      path: "/v1/sys/capabilities-self",
+      body: { paths },
+    });
+    return r;
+  }
+  async readMount(mount: string) {
+    return this.call<{ type: string; options: Record<string, string> }>({
+      method: "GET",
+      path: `/v1/sys/mounts/${encodeURIComponent(mount)}`,
+    });
+  }
+  async putKv(input: { mount: string; path: string; data: Record<string, string>; cas?: number }) {
+    const body: Record<string, unknown> = { data: input.data };
+    if (input.cas !== undefined) body.options = { cas: input.cas };
+    const r = await this.call<{ data: { version: number } }>({
+      method: "POST",
+      path: `/v1/${input.mount}/data/${input.path}`,
+      body,
+    });
+    return { version: r.data.version };
+  }
+  async getKv(input: { mount: string; path: string; version?: number }) {
+    const query = input.version !== undefined ? `?version=${input.version}` : "";
+    const r = await this.call<{ data: { data: Record<string, string>; metadata: { version: number } } }>({
+      method: "GET",
+      path: `/v1/${input.mount}/data/${input.path}${query}`,
+    });
+    return { data: r.data.data, version: r.data.metadata.version };
+  }
+  async setKvMetadata(input: { mount: string; path: string; maxVersions: number }) {
+    await this.call({
+      method: "POST",
+      path: `/v1/${input.mount}/metadata/${input.path}`,
+      body: { max_versions: input.maxVersions },
+    });
+  }
+  async deleteKv(input: { mount: string; path: string }) {
+    await this.call({ method: "DELETE", path: `/v1/${input.mount}/data/${input.path}` });
+  }
+}
+
+function mapStatusToCode(status: number): SecretProviderClientErrorCode {
+  if (status === 401 || status === 403) return "access_denied";
+  if (status === 404) return "not_found";
+  if (status === 409 || status === 400) return "conflict";
+  if (status === 429) return "throttled";
+  if (status === 502 || status === 503 || status === 504) return "provider_unavailable";
+  return "provider_error";
+}
+
 export function createVaultProvider(
   options?: { config?: VaultProviderConfig; gateway?: VaultHttpGateway },
 ): SecretProviderModule {
@@ -444,13 +575,10 @@ export function createVaultProvider(
     return resolved.config;
   }
 
-  function resolveGateway(_config: VaultProviderConfig): VaultHttpGateway {
-    if (options?.gateway) return options.gateway;
-    throw unprocessable(
-      "vault provider has no http gateway configured; production gateway is added in a follow-up task",
-    );
-    // Replaced by UndiciVaultGateway construction in Task 17.
-  }
+  // Invariant: activeTokenSupplier is set by tokenManagerFor() before any gateway HTTP call.
+  // The UndiciVaultGateway captures it lazily so construction order is safe even though
+  // the gateway is built before the token manager exists.
+  let activeTokenSupplier: (() => Promise<string>) | null = null;
 
   function tokenManagerFor(config: VaultProviderConfig, gateway: VaultHttpGateway): VaultTokenManager {
     const source = detectVaultAuthSource({
@@ -458,7 +586,21 @@ export function createVaultProvider(
       env: process.env,
       readSaToken,
     });
-    return new VaultTokenManager({ source, gateway });
+    const tm = new VaultTokenManager({ source, gateway });
+    activeTokenSupplier = () => tm.acquire();
+    return tm;
+  }
+
+  function resolveGateway(config: VaultProviderConfig): VaultHttpGateway {
+    if (options?.gateway) return options.gateway;
+    return new UndiciVaultGateway({
+      address: config.address,
+      namespace: config.namespace,
+      getToken: () => {
+        if (!activeTokenSupplier) throw unprocessable("vault token supplier not initialized");
+        return activeTokenSupplier();
+      },
+    });
   }
 
   function deploymentId(): string {
