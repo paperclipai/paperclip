@@ -22,15 +22,16 @@ function redactRoutineDetailForClient(detail: unknown): unknown {
   const assignee = (detail as { assignee?: unknown }).assignee;
   if (!assignee || typeof assignee !== "object" || Array.isArray(assignee)) return detail;
   const a = assignee as Record<string, unknown>;
+  const redactedAssignee: Record<string, unknown> = { ...a };
   const adapterConfig = a.adapterConfig;
   if (adapterConfig && typeof adapterConfig === "object" && !Array.isArray(adapterConfig)) {
-    a.adapterConfig = sanitizeRecord(adapterConfig as Record<string, unknown>);
+    redactedAssignee.adapterConfig = sanitizeRecord(adapterConfig as Record<string, unknown>);
   }
   const runtimeConfig = a.runtimeConfig;
   if (runtimeConfig && typeof runtimeConfig === "object" && !Array.isArray(runtimeConfig)) {
-    a.runtimeConfig = sanitizeRecord(runtimeConfig as Record<string, unknown>);
+    redactedAssignee.runtimeConfig = sanitizeRecord(runtimeConfig as Record<string, unknown>);
   }
-  return detail;
+  return { ...(detail as Record<string, unknown>), assignee: redactedAssignee };
 }
 
 export function routineRoutes(
