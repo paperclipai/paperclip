@@ -3125,6 +3125,8 @@ export function issueService(db: Db) {
           {
             id: existing.id,
             priority: typeof patch.priority === "string" ? patch.priority : existing.priority,
+            assigneeAgentId:
+              issueData.assigneeAgentId !== undefined ? issueData.assigneeAgentId : existing.assigneeAgentId,
             executionPolicy: existing.executionPolicy,
           },
           { nextExecutionPolicy: patch.executionPolicy },

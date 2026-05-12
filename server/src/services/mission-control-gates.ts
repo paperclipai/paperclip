@@ -11,6 +11,7 @@ import { unprocessable } from "../errors.js";
 export type MissionControlCompletionGateIssue = {
   id: string;
   priority: string;
+  assigneeAgentId?: string | null;
   executionPolicy?: unknown;
 };
 
@@ -83,6 +84,8 @@ export async function listMissionControlCompletionDocumentsForIssues(
       issueId: issueDocuments.issueId,
       key: issueDocuments.key,
       body: documents.latestBody,
+      createdByAgentId: documents.createdByAgentId,
+      updatedByAgentId: documents.updatedByAgentId,
       updatedAt: documents.updatedAt,
     })
     .from(issueDocuments)
@@ -94,12 +97,16 @@ export async function listMissionControlCompletionDocumentsForIssues(
     issueId: string;
     key: string;
     body: string | null;
+    createdByAgentId: string | null;
+    updatedByAgentId: string | null;
     updatedAt: Date | string | null;
   }>) {
     const existing = documentsByIssue.get(row.issueId) ?? [];
     existing.push({
       key: row.key,
       body: row.body,
+      createdByAgentId: row.createdByAgentId,
+      updatedByAgentId: row.updatedByAgentId,
       updatedAt: row.updatedAt,
     });
     documentsByIssue.set(row.issueId, existing);

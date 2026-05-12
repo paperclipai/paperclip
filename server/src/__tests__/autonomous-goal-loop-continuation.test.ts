@@ -5,6 +5,8 @@ import {
   buildAutonomousGoalLoopState,
 } from "../services/autonomous-goal-loop-continuation.ts";
 
+const validatorAgentId = "agent-validator";
+
 const parentIssue = {
   id: "parent-issue-1",
   companyId: "company-1",
@@ -44,7 +46,12 @@ function missionDocsWithDecision(
   return [
     { key: "validation-contract", body: "objective/pass criteria" },
     { key: "worker-handoff", body: "completed/checks" },
-    { key: "validator-report", body: "Verdict: PASS" },
+    {
+      key: "validator-report",
+      body: "Verdict: PASS",
+      createdByAgentId: validatorAgentId,
+      updatedByAgentId: validatorAgentId,
+    },
     {
       key: "ceo-loop-decision",
       body: JSON.stringify(decision),
@@ -188,6 +195,39 @@ describe("autonomous goal loop continuation planning", () => {
       action: "create_child",
       reason: "next_iteration",
     });
+  });
+
+  it("blocks continuation when the parent assignee wrote the validator report", () => {
+    const docs = missionDocsWithDecision({
+      version: 1,
+      iteration: 1,
+      decision: "next_iteration",
+      rationale: "Self-validation must not continue the loop.",
+      nextTask: {
+        title: "Unsafe continuation",
+        acceptanceCriteria: ["Should not be created"],
+        safeToRunWithoutUserApproval: true,
+      },
+      evidence: ["validator-report PASS"],
+    }).map((doc) =>
+      doc.key === "validator-report"
+        ? {
+            ...doc,
+            createdByAgentId: parentIssue.assigneeAgentId,
+            updatedByAgentId: parentIssue.assigneeAgentId,
+          }
+        : doc,
+    );
+
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: parentIssue,
+      documents: docs,
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan.action).toBe("blocked");
+    expect(plan.reason).toBe("validator_self_attested");
+    expect(plan.gate.validatorVerdict).toBe("PASS");
   });
 
   it("does not create a child when required mission-control artifacts are missing", () => {

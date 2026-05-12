@@ -32,16 +32,27 @@ const autonomousLoopIssue = {
         startedAt: "2026-05-11T08:00:00.000Z",
         iteration: 2,
         maxIterations: 5,
-        maxRuntimeHours: 24,
+        maxRuntimeHours: 2160,
+        maxDecisionAgeMinutes: null,
       },
     },
   },
 };
 
+const validatorAgentId = "validator-agent-1";
+const workerAgentId = "worker-agent-1";
+
+const validatorPassDocument = {
+  key: "validator-report",
+  body: "Verdict: PASS",
+  createdByAgentId: validatorAgentId,
+  updatedByAgentId: validatorAgentId,
+};
+
 const completedMissionDocuments = [
   { key: "validation-contract", body: "objective/pass criteria" },
   { key: "worker-handoff", body: "completed/checks" },
-  { key: "validator-report", body: "Verdict: PASS" },
+  validatorPassDocument,
 ];
 
 describe("mission-control completion gate service", () => {
@@ -84,7 +95,12 @@ describe("mission-control completion gate service", () => {
         documents: [
           { key: "validation-contract", body: "objective/pass criteria" },
           { key: "worker-handoff", body: "completed/checks" },
-          { key: "validator-report", body: "Verdict: REQUEST_CHANGES" },
+          {
+            key: "validator-report",
+            body: "Verdict: REQUEST_CHANGES",
+            createdByAgentId: validatorAgentId,
+            updatedByAgentId: validatorAgentId,
+          },
         ],
       }),
     ).toThrow(/Mission-control completion gate blocked issue/);
@@ -116,7 +132,7 @@ describe("mission-control completion gate service", () => {
       documents: [
         { key: "validation-contract", body: "objective/pass criteria" },
         { key: "worker-handoff", body: "completed/checks" },
-        { key: "validator-report", body: "Verdict: PASS" },
+        validatorPassDocument,
       ],
     });
 
@@ -125,6 +141,34 @@ describe("mission-control completion gate service", () => {
       enabled: true,
       validatorVerdict: "PASS",
       reason: "allowed",
+    });
+  });
+
+  it("blocks completion when the assigned worker wrote the validator-report", () => {
+    let selfAttestedError: unknown;
+    try {
+      assertMissionControlCompletionGate({
+        issue: { ...missionControlledIssue, assigneeAgentId: workerAgentId },
+        documents: [
+          { key: "validation-contract", body: "objective/pass criteria" },
+          { key: "worker-handoff", body: "completed/checks" },
+          {
+            key: "validator-report",
+            body: "Verdict: PASS",
+            createdByAgentId: workerAgentId,
+            updatedByAgentId: workerAgentId,
+          },
+        ],
+      });
+    } catch (err) {
+      selfAttestedError = err;
+    }
+
+    expect(selfAttestedError).toBeInstanceOf(HttpError);
+    expect((selfAttestedError as HttpError).details).toMatchObject({
+      reason: "validator_self_attested",
+      validatorVerdict: "PASS",
+      requiredApprovalGate: "board",
     });
   });
 

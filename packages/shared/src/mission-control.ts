@@ -327,6 +327,7 @@ export type MissionControlWorkerHandoff = z.infer<typeof missionControlWorkerHan
 export const missionControlValidatorReportSchema = z
   .object({
     version: z.literal(1),
+    writtenByAgentId: z.string().trim().min(1),
     verdict: z.enum(MISSION_CONTROL_VALIDATOR_VERDICTS),
     completionScore: z.number().min(0).max(10),
     criteriaChecked: requiredTextArraySchema,
@@ -375,12 +376,15 @@ export type MissionControlSideEffectApprovalEnvelope = z.infer<
 
 export type MissionControlCompletionGateIssue = {
   priority: IssuePriority | string;
+  assigneeAgentId?: string | null;
   executionPolicy?: unknown;
 };
 
 export type MissionControlCompletionGateDocument = {
   key: string;
   body?: string | null;
+  createdByAgentId?: string | null;
+  updatedByAgentId?: string | null;
   updatedAt?: string | Date | null;
 };
 
@@ -423,6 +427,7 @@ export type MissionControlCompletionGateResult = {
     | "mission_control_disabled"
     | "missing_documents"
     | "validator_not_passed"
+    | "validator_self_attested"
     | "missing_ceo_loop_decision"
     | "invalid_ceo_loop_decision"
     | "ceo_loop_iteration_mismatch"
@@ -492,22 +497,35 @@ function parseMarkdownValidatorVerdict(body: string): MissionControlValidatorVer
   return null;
 }
 
-function parseValidatorReportFromBody(body: string | null | undefined): MissionControlValidatorReport | null {
+function parseValidatorReportFromBody(
+  body: string | null | undefined,
+  options?: { writtenByAgentId?: string | null },
+): MissionControlValidatorReport | null {
   if (!body?.trim()) return null;
   const trimmed = body.trim();
+  const trustedWrittenByAgentId = options?.writtenByAgentId?.trim() || null;
+  let sawJsonCandidate = false;
   for (const candidate of jsonDocumentCandidatesFromBody(trimmed)) {
     try {
-      const parsedJson = JSON.parse(candidate);
-      const parsedReport = missionControlValidatorReportSchema.safeParse(parsedJson);
+      const parsedJson = JSON.parse(candidate) as unknown;
+      sawJsonCandidate = true;
+      const reportCandidate =
+        trustedWrittenByAgentId && parsedJson && typeof parsedJson === "object" && !Array.isArray(parsedJson)
+          ? { ...parsedJson, writtenByAgentId: trustedWrittenByAgentId }
+          : parsedJson;
+      const parsedReport = missionControlValidatorReportSchema.safeParse(reportCandidate);
       if (parsedReport.success) return parsedReport.data;
     } catch {
       // Markdown reports are supported below via a conservative verdict scan.
     }
   }
+
+  if (sawJsonCandidate) return null;
   const verdict = parseMarkdownValidatorVerdict(trimmed);
-  if (!verdict) return null;
+  if (!verdict || !trustedWrittenByAgentId) return null;
   return {
     version: 1,
+    writtenByAgentId: trustedWrittenByAgentId,
     verdict,
     completionScore: verdict === "PASS" ? 8 : 0,
     criteriaChecked: ["markdown validator verdict present"],
@@ -819,7 +837,11 @@ export function evaluateMissionControlCompletionGate(input: {
     ? policy.requiredDocumentKeys
     : [...MISSION_CONTROL_DEFAULT_REQUIRED_DOCUMENT_KEYS];
   const missingDocumentKeys = requiredKeys.filter((key) => !docsByKey.has(key));
-  const validatorReport = parseValidatorReportFromBody(docsByKey.get("validator-report")?.body);
+  const validatorDocument = docsByKey.get("validator-report");
+  const validatorReportWriterAgentId = validatorDocument?.updatedByAgentId ?? validatorDocument?.createdByAgentId ?? null;
+  const validatorReport = parseValidatorReportFromBody(validatorDocument?.body, {
+    writtenByAgentId: validatorReportWriterAgentId,
+  });
   const validatorVerdict = validatorReport?.verdict ?? null;
   const requiredApprovalGate = requiredGateForRisk(policy);
 
@@ -846,6 +868,20 @@ export function evaluateMissionControlCompletionGate(input: {
       ceoLoopDecision: null,
       requiredApprovalGate,
       reason: "validator_not_passed",
+    };
+  }
+
+  const assignedWorkerAgentId = input.issue.assigneeAgentId?.trim() || null;
+  if (assignedWorkerAgentId && validatorReport?.writtenByAgentId === assignedWorkerAgentId) {
+    return {
+      allowed: false,
+      enabled: true,
+      policy,
+      missingDocumentKeys: [],
+      validatorVerdict,
+      ceoLoopDecision: null,
+      requiredApprovalGate,
+      reason: "validator_self_attested",
     };
   }
 
