@@ -37,7 +37,7 @@ async function openOnboarding(page: Page) {
     { timeout: 20_000, intervals: [500, 1_000, 2_000] }
   ).not.toBe("waiting");
 
-  if (await startButton.isVisible()) {
+  if (!(await wizardHeading.isVisible()) && await startButton.isVisible()) {
     await startButton.click();
   }
 
