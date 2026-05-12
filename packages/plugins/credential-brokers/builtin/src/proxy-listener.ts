@@ -70,13 +70,22 @@ export interface CreateProxyListenerInput {
   store: SessionStore;
   /** Optional log sink; defaults to a no-op. */
   log?: ProxyLogger;
+  /**
+   * Optional TLS overrides applied to upstream https.request calls.
+   * Production deployments leave this undefined and rely on the host's
+   * system CA bundle. Tests use this to supply a self-signed test CA
+   * so the proxy can verify the stub upstream's cert without globally
+   * disabling TLS verification.
+   */
+  upstreamTlsOpts?: { ca?: string | Buffer };
 }
 
-// Internal: attach the session + upstream host to the TLS socket so the
+// Internal: attach the session + upstream host:port to the TLS socket so the
 // inner HTTP server can recover them when it sees the request.
 interface AnnotatedTlsSocket extends TLSSocket {
   __brokerSession?: BrokerSession;
   __brokerUpstreamHost?: string;
+  __brokerUpstreamPort?: number;
 }
 
 export function createProxyListener(
@@ -91,6 +100,7 @@ export function createProxyListener(
       const sock = req.socket as AnnotatedTlsSocket;
       const session = sock.__brokerSession;
       const upstreamHost = sock.__brokerUpstreamHost;
+      const upstreamPort = sock.__brokerUpstreamPort ?? 443;
       const startedAt = Date.now();
       if (!session || !upstreamHost) {
         res.writeHead(500);
@@ -120,10 +130,11 @@ export function createProxyListener(
 
       const upstreamOpts: RequestOptions = {
         host: upstreamHost,
-        port: 443,
+        port: upstreamPort,
         method: req.method,
         path: req.url,
         headers: upstreamHeaders,
+        ...(input.upstreamTlsOpts ?? {}),
       };
       const upstreamReq = httpsRequest(upstreamOpts, (upstreamRes) => {
         res.writeHead(
@@ -180,6 +191,7 @@ export function createProxyListener(
     const startedAt = Date.now();
     const target = (req.url ?? "").split(":");
     const host = target[0] ?? "";
+    const port = target[1] ? Number.parseInt(target[1], 10) : 443;
     const auth = req.headers["proxy-authorization"];
     const authToken = typeof auth === "string"
       ? auth.replace(/^\s*Bearer\s+/i, "")
@@ -234,10 +246,13 @@ export function createProxyListener(
     const tlsSocket = new TLSSocket(socket, {
       isServer: true,
       key: keyPem,
-      cert: certPem,
+      // Concatenate leaf + session CA so clients that don't already
+      // have the CA in their trust list still see a complete chain.
+      cert: `${certPem}${session.ca.caPem}`,
     }) as AnnotatedTlsSocket;
     tlsSocket.__brokerSession = session;
     tlsSocket.__brokerUpstreamHost = host;
+    tlsSocket.__brokerUpstreamPort = Number.isFinite(port) ? port : 443;
     if (head.length > 0) tlsSocket.unshift(head);
 
     tlsSocket.on("error", () => {
