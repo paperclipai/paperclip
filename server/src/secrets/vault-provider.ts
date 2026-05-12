@@ -10,6 +10,7 @@ import type {
   StoredSecretVersionMaterial,
 } from "./types.js";
 import { SecretProviderClientError } from "./types.js";
+import { unprocessable } from "../errors.js";
 
 export const VAULT_MATERIAL_SCHEME = "vault_kv_v2";
 export const DEFAULT_KV_MOUNT = "secret";
@@ -49,8 +50,74 @@ export interface VaultProviderConfig {
   versionRetention: number;
 }
 
+export interface ParsedExternalRef {
+  mount: string;
+  path: string;
+  dataKey: string;
+}
+
+export function parseExternalRef(raw: string): ParsedExternalRef {
+  if (!raw || raw === "/") throw unprocessable("vault external ref is empty");
+  const [pathPart, dataKey = "value"] = raw.split("#", 2);
+  const segments = pathPart.split("/").filter((s) => s.length > 0);
+  if (segments.length < 2) {
+    throw unprocessable(
+      `vault external ref must be '<mount>/<path>[#<dataKey>]'; got ${raw}`,
+    );
+  }
+  const [mount, ...rest] = segments;
+  return { mount, path: rest.join("/"), dataKey };
+}
+
+export function buildManagedKvPath(input: {
+  config: VaultProviderConfig;
+  deploymentId: string;
+  companyId: string;
+  secretKey: string;
+}): string {
+  const segments = [
+    input.config.kvPathPrefix,
+    input.deploymentId,
+    input.companyId,
+    input.secretKey,
+  ].filter((s) => s.length > 0);
+  return segments.join("/");
+}
+
 export interface VaultHttpGateway {
-  // Filled in over subsequent tasks.
+  health(): Promise<{
+    initialized?: boolean;
+    sealed?: boolean;
+    standby?: boolean;
+    version?: string;
+    cluster_name?: string;
+  }>;
+  loginKubernetes(input: { role: string; jwt: string }): Promise<{
+    clientToken: string;
+    leaseDurationSec: number;
+    renewable: boolean;
+  }>;
+  renewSelf(): Promise<{ leaseDurationSec: number; renewable: boolean }>;
+  lookupSelf(): Promise<{ leaseDurationSec: number; renewable: boolean; policies: string[] }>;
+  capabilitiesSelf(paths: string[]): Promise<Record<string, string[]>>;
+  readMount(mount: string): Promise<{ type: string; options: Record<string, string> }>;
+  putKv(input: {
+    mount: string;
+    path: string;
+    data: Record<string, string>;
+    cas?: number;
+  }): Promise<{ version: number }>;
+  getKv(input: {
+    mount: string;
+    path: string;
+    version?: number;
+  }): Promise<{ data: Record<string, string>; version: number }>;
+  setKvMetadata(input: {
+    mount: string;
+    path: string;
+    maxVersions: number;
+  }): Promise<void>;
+  deleteKv(input: { mount: string; path: string }): Promise<void>;
 }
 
 function asString(value: unknown): string | null {

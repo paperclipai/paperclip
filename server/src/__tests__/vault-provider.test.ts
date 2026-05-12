@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  buildManagedKvPath,
   createVaultProvider,
   detectVaultAuthSource,
+  parseExternalRef,
   resolveVaultConfig,
   type VaultAuthSource,
 } from "../secrets/vault-provider.js";
@@ -342,5 +344,69 @@ describe("detectVaultAuthSource", () => {
       readSaToken: () => "eyJ.fake",
     });
     expect(r.mode).toBe("kubernetes");
+  });
+});
+
+describe("buildManagedKvPath", () => {
+  it("joins prefix, deployment, company, key", () => {
+    const path = buildManagedKvPath({
+      config: {
+        address: "https://v",
+        namespace: null,
+        kvMount: "secret",
+        kvPathPrefix: "paperclip",
+        auth: { method: "token", role: null, saTokenPath: "/dev/null" },
+        versionRetention: 10,
+      },
+      deploymentId: "prod-eu1",
+      companyId: "co_12345",
+      secretKey: "GH_TOKEN",
+    });
+    expect(path).toBe("paperclip/prod-eu1/co_12345/GH_TOKEN");
+  });
+
+  it("does not include the mount or 'data/' segment", () => {
+    const path = buildManagedKvPath({
+      config: {
+        address: "https://v",
+        namespace: null,
+        kvMount: "kv",
+        kvPathPrefix: "team/secrets",
+        auth: { method: "token", role: null, saTokenPath: "/dev/null" },
+        versionRetention: 10,
+      },
+      deploymentId: "d",
+      companyId: "c",
+      secretKey: "k",
+    });
+    expect(path).toBe("team/secrets/d/c/k");
+    expect(path.startsWith("kv/")).toBe(false);
+    expect(path.includes("/data/")).toBe(false);
+  });
+});
+
+describe("parseExternalRef", () => {
+  it("parses mount/path with default key", () => {
+    const r = parseExternalRef("secret/teams/platform/github-token");
+    expect(r).toEqual({
+      mount: "secret",
+      path: "teams/platform/github-token",
+      dataKey: "value",
+    });
+  });
+
+  it("parses mount/path#dataKey", () => {
+    const r = parseExternalRef("secret/teams/platform/gh#token");
+    expect(r).toEqual({
+      mount: "secret",
+      path: "teams/platform/gh",
+      dataKey: "token",
+    });
+  });
+
+  it("rejects missing mount or path", () => {
+    expect(() => parseExternalRef("secret")).toThrow();
+    expect(() => parseExternalRef("")).toThrow();
+    expect(() => parseExternalRef("/")).toThrow();
   });
 });
