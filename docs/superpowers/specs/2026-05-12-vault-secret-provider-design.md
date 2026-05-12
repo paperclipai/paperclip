@@ -531,3 +531,9 @@ oversight:
 - Multi-key Vault payloads (currently the payload is `{ "value": "..." }`;
   Vault KV v2 supports arbitrary maps, but Paperclip's binding model is
   one-key-per-secret today).
+- `listRemoteSecrets` for the vault provider (the optional method on
+  `SecretProviderModule` that powers the "Import from Vault" UI dialog).
+  The AWS provider implements it; the Vault provider does not at M1. The
+  dialog already handles "not supported" gracefully by hiding the
+  vault-provider import option. Adding it later requires a recursive
+  `LIST /v1/<mount>/metadata/<prefix>` walk and is a small follow-up.
