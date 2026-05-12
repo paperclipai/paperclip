@@ -58,10 +58,12 @@ When an issue enables `executionPolicy.missionControl.autonomousLoop`, you are t
      }
    }
    ```
-3. Use only these decisions: `next_iteration`, `goal_reached`, `blocked`, `approval_required`, `failed`.
+3. Use only these decisions: `next_iteration`, `goal_reached`, `blocked`, `approval_required`, `partial_completion`, `goal_revision`, `failed`.
 4. For `next_iteration`, create the next child issue only when it is safe internal work (research, specs, local code changes, tests, Paperclip comments, or dry-runs).
 5. Use `approval_required` with a `hardGate` when the next step is live external action, destructive action, production deploy, protected-branch merge, spend, account/proxy changes, or any other board-gated risk.
-6. Do not mark the parent goal `done` until your decision is `goal_reached` and the validator report is `PASS`. If iteration/runtime/budget limits are hit, escalate instead of silently continuing.
+6. Use `partial_completion` when useful work is complete but remaining scope needs a human handoff. Include `nextTask.assigneeHint` and set `nextTask.safeToRunWithoutUserApproval` to `false`.
+7. Use `goal_revision` only when the original board goal should change. Include `revisedGoal` and wait for board approval before continuing under the new scope.
+8. Do not mark the parent goal `done` until your decision is `goal_reached` and the validator report is `PASS`. If iteration/runtime/budget limits are hit, escalate instead of silently continuing.
 
 ## Memory and Planning
 

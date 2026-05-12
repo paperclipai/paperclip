@@ -87,7 +87,10 @@ import {
   continueAutonomousGoalLoopFromDecision,
   summarizeAutonomousGoalLoopContinuationOutcome,
 } from "../services/autonomous-goal-loop-continuation.js";
-import { listAutonomousGoalLoopWatchdogPreview } from "../services/autonomous-loop-watchdog-preview.js";
+import {
+  isValidAutonomousGoalLoopWatchdogCursor,
+  listAutonomousGoalLoopWatchdogPreview,
+} from "../services/autonomous-loop-watchdog-preview.js";
 import { listAutonomousGoalLoopWatchdogRecoveryPlanPreview } from "../services/autonomous-loop-watchdog-recovery-plan.js";
 import { listMissionControlCompletionDocuments } from "../services/mission-control-gates.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
@@ -1379,8 +1382,18 @@ export function issueRoutes(
       res.status(400).json({ error: "Invalid limit", details: limitParsed.error.issues });
       return;
     }
+    const cursorParsed = z.string().min(1).optional().safeParse(req.query.cursor);
+    if (!cursorParsed.success) {
+      res.status(400).json({ error: "Invalid cursor", details: cursorParsed.error.issues });
+      return;
+    }
+    if (cursorParsed.data && !isValidAutonomousGoalLoopWatchdogCursor(cursorParsed.data)) {
+      res.status(400).json({ error: "Invalid cursor" });
+      return;
+    }
     const preview = await listAutonomousGoalLoopWatchdogPreview(db, companyId, {
       limit: limitParsed.data,
+      cursor: cursorParsed.data,
     });
     res.json(preview);
   });

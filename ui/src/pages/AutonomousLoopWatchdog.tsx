@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useCallback, useEffect, useState } from "react";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import { AlertTriangle, Eye, ShieldCheck } from "lucide-react";
 import { Link } from "@/lib/router";
 import { autonomousLoopWatchdogApi } from "../api/autonomousLoopWatchdog";
@@ -11,10 +11,49 @@ import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 
 const WATCHDOG_PREVIEW_LIMIT = 25;
+const WATCHDOG_SNOOZED_STORAGE_PREFIX = "paperclip:autonomous-loop-watchdog:snoozed:";
+
+export function watchdogPreviewRefetchInterval(query: { state: { error: unknown } }) {
+  return query.state.error ? false : 30_000;
+}
+
+export function watchdogPreviewRetryDelay(attempt: number) {
+  return Math.min(1_000 * 2 ** attempt, 30_000);
+}
+
+export function watchdogPreviewShouldRetry(failureCount: number, error: unknown) {
+  const message = error instanceof Error ? error.message : "";
+  if (/board access|unauthorized|forbidden/i.test(message)) return false;
+  return failureCount < 3;
+}
+
+function snoozedStorageKey(companyId: string) {
+  return `${WATCHDOG_SNOOZED_STORAGE_PREFIX}${companyId}`;
+}
+
+function readSnoozedCandidateIds(companyId: string | null | undefined) {
+  if (!companyId || typeof window === "undefined") return new Set<string>();
+  try {
+    const raw = window.localStorage.getItem(snoozedStorageKey(companyId));
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return new Set<string>();
+    return new Set(parsed.filter((candidateId): candidateId is string => typeof candidateId === "string"));
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function writeSnoozedCandidateIds(companyId: string, candidateIds: Set<string>) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(snoozedStorageKey(companyId), JSON.stringify([...candidateIds].sort()));
+  } catch {
+    // localStorage can be unavailable in private browsing or locked-down embeds.
+  }
+}
 
 function severityClassName(severity: string) {
   switch (severity) {
-    case "critical":
     case "high":
       return "border-destructive/30 bg-destructive/10 text-destructive";
     case "medium":
@@ -24,13 +63,21 @@ function severityClassName(severity: string) {
   }
 }
 
-function CandidateCard({ candidate }: { candidate: AutonomousLoopWatchdogCandidate }) {
+function CandidateCard({
+  candidate,
+  isSnoozed,
+  onSnooze,
+}: {
+  candidate: AutonomousLoopWatchdogCandidate;
+  isSnoozed: boolean;
+  onSnooze: () => void;
+}) {
   const issueLabel = candidate.identifier ?? candidate.issueId;
   const issuePathId = candidate.identifier ?? candidate.issueId;
   const isInternalRepair = candidate.userVisible === false;
 
   return (
-    <article className="rounded-lg border border-border bg-card p-4 shadow-sm">
+    <article className={`rounded-lg border border-border bg-card p-4 shadow-sm ${isSnoozed ? "opacity-60" : ""}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -39,6 +86,11 @@ function CandidateCard({ candidate }: { candidate: AutonomousLoopWatchdogCandida
             </span>
             <span>owner: {candidate.owner}</span>
             {isInternalRepair ? <span>Internal repair</span> : <span>User-visible</span>}
+            {isSnoozed ? (
+              <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 font-medium text-sky-700">
+                Snoozed
+              </span>
+            ) : null}
           </div>
           <h2 className="text-base font-semibold text-foreground">
             <Link to={`/issues/${issuePathId}`} className="hover:underline">
@@ -49,8 +101,18 @@ function CandidateCard({ candidate }: { candidate: AutonomousLoopWatchdogCandida
             {issueLabel} · {candidate.status ?? "unknown status"}
           </p>
         </div>
-        <div className="rounded-full border border-border bg-background px-2 py-1 text-xs font-medium text-muted-foreground">
-          {candidate.kind}
+        <div className="flex flex-col items-end gap-2">
+          <div className="rounded-full border border-border bg-background px-2 py-1 text-xs font-medium text-muted-foreground">
+            {candidate.kind}
+          </div>
+          <button
+            type="button"
+            className="rounded-md border border-border bg-background px-2 py-1 text-xs font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={isSnoozed}
+            onClick={onSnooze}
+          >
+            {isSnoozed ? "Snoozed locally" : "I'm on this"}
+          </button>
         </div>
       </div>
 
@@ -62,10 +124,6 @@ function CandidateCard({ candidate }: { candidate: AutonomousLoopWatchdogCandida
         <div>
           <dt className="text-xs uppercase tracking-wide text-muted-foreground">Recovery action</dt>
           <dd className="mt-1 font-mono text-xs text-foreground">{candidate.recoveryAction ?? "manual_review"}</dd>
-        </div>
-        <div>
-          <dt className="text-xs uppercase tracking-wide text-muted-foreground">Metric</dt>
-          <dd className="mt-1 font-mono text-xs text-foreground">{candidate.metricKey ?? "not_set"}</dd>
         </div>
         <div>
           <dt className="text-xs uppercase tracking-wide text-muted-foreground">Generated</dt>
@@ -83,16 +141,45 @@ function CandidateCard({ candidate }: { candidate: AutonomousLoopWatchdogCandida
 export function AutonomousLoopWatchdog() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const [snoozedCandidateIds, setSnoozedCandidateIds] = useState<Set<string>>(() =>
+    readSnoozedCandidateIds(selectedCompanyId),
+  );
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Observability" }]);
   }, [setBreadcrumbs]);
 
-  const { data, error, isLoading } = useQuery({
-    queryKey: queryKeys.autonomousLoopWatchdog.preview(selectedCompanyId!, WATCHDOG_PREVIEW_LIMIT),
-    queryFn: () => autonomousLoopWatchdogApi.preview(selectedCompanyId!, { limit: WATCHDOG_PREVIEW_LIMIT }),
+  useEffect(() => {
+    setSnoozedCandidateIds(readSnoozedCandidateIds(selectedCompanyId));
+  }, [selectedCompanyId]);
+
+  const snoozeCandidate = useCallback(
+    (candidateId: string) => {
+      if (!selectedCompanyId) return;
+      setSnoozedCandidateIds((previous) => {
+        const next = new Set(previous);
+        next.add(candidateId);
+        writeSnoozedCandidateIds(selectedCompanyId, next);
+        return next;
+      });
+    },
+    [selectedCompanyId],
+  );
+
+  const { data, error, isLoading, hasNextPage, isFetchingNextPage, fetchNextPage } = useInfiniteQuery({
+    queryKey: [...queryKeys.autonomousLoopWatchdog.preview(selectedCompanyId!, WATCHDOG_PREVIEW_LIMIT), "infinite"],
+    queryFn: ({ pageParam }) =>
+      autonomousLoopWatchdogApi.preview(
+        selectedCompanyId!,
+        pageParam ? { limit: WATCHDOG_PREVIEW_LIMIT, cursor: pageParam } : { limit: WATCHDOG_PREVIEW_LIMIT },
+      ),
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => (lastPage.hasMore ? lastPage.nextCursor : undefined),
     enabled: !!selectedCompanyId,
-    refetchInterval: 30_000,
+    refetchInterval: watchdogPreviewRefetchInterval,
+    refetchOnWindowFocus: true,
+    retry: watchdogPreviewShouldRetry,
+    retryDelay: watchdogPreviewRetryDelay,
   });
 
   if (!selectedCompanyId) {
@@ -103,7 +190,10 @@ export function AutonomousLoopWatchdog() {
     return <PageSkeleton variant="list" />;
   }
 
-  const candidates = data?.candidates ?? [];
+  const pages = data?.pages ?? [];
+  const candidates = pages.flatMap((page) => page.candidates);
+  const totalIssuesScanned = pages.reduce((total, page) => total + page.totalIssuesScanned, 0);
+  const readOnly = pages.some((page) => page.readOnly === true);
 
   return (
     <div className="space-y-5">
@@ -120,36 +210,56 @@ export function AutonomousLoopWatchdog() {
           </p>
         </div>
         <div className="rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
-          <div className="font-medium text-foreground">{data?.totalIssuesScanned ?? 0} issues scanned</div>
+          <div className="font-medium text-foreground">{totalIssuesScanned} issues scanned</div>
           <div>{candidates.length} candidates</div>
         </div>
       </div>
 
       {error ? (
         <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
-          Failed to load watchdog preview: {error.message}
+          Failed to load watchdog preview: {error instanceof Error ? error.message : "Unknown error"}
         </div>
       ) : null}
 
-      {data?.readOnly === true ? (
+      {readOnly ? (
         <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
           <ShieldCheck className="h-4 w-4" />
           Preview mode is read-only. Operator actions stay outside this panel.
         </div>
       ) : null}
 
-      {data && candidates.length === 0 ? (
+      {pages.length > 0 && candidates.length === 0 ? (
         <EmptyState
           icon={AlertTriangle}
-          message={`No watchdog candidates in the latest ${data.totalIssuesScanned} scanned open issues.`}
+          message={`No watchdog candidates in the latest ${totalIssuesScanned} scanned open issues.`}
         />
       ) : null}
 
       {candidates.length > 0 ? (
         <div className="space-y-3">
           {candidates.map((candidate) => (
-            <CandidateCard key={candidate.id} candidate={candidate} />
+            <CandidateCard
+              key={candidate.id}
+              candidate={candidate}
+              isSnoozed={snoozedCandidateIds.has(candidate.id)}
+              onSnooze={() => snoozeCandidate(candidate.id)}
+            />
           ))}
+        </div>
+      ) : null}
+
+      {hasNextPage ? (
+        <div className="flex justify-center">
+          <button
+            type="button"
+            className="rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={isFetchingNextPage}
+            onClick={() => {
+              void fetchNextPage({ cancelRefetch: false });
+            }}
+          >
+            Load more watchdog candidates{isFetchingNextPage ? "…" : ""}
+          </button>
         </div>
       ) : null}
     </div>

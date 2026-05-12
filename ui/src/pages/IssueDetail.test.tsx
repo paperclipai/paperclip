@@ -974,7 +974,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.get.mockResolvedValue(createIssue());
     mockIssuesApi.getAutonomousLoopState.mockResolvedValue({
       enabled: true,
-      status: "failed",
+      status: "approval_required",
       goal: "Ship autonomous creator traffic ops workflow",
       iteration: 2,
       maxIterations: 5,
@@ -988,7 +988,6 @@ describe("IssueDetail", () => {
         reason: "ceo_loop_decision_stale",
         recoveryAction: "repair_loop_decision",
         owner: "operator",
-        metricKey: "autonomous_loop_decision_freshness_failure",
         userVisible: false,
       },
     });
@@ -1011,7 +1010,8 @@ describe("IssueDetail", () => {
       expect(container.textContent).toContain("operator");
       expect(container.textContent).toContain("Repair action");
       expect(container.textContent).toContain("repair_loop_decision");
-      expect(container.textContent).toContain("autonomous_loop_decision_freshness_failure");
+      expect(container.textContent).not.toContain("Metric key");
+      expect(container.textContent).not.toContain("autonomous_loop_decision_freshness_failure");
       expect(container.textContent).not.toContain("Supervisor: Needs approval");
       expect(container.textContent).not.toContain("approval_required");
       expect(container.textContent).not.toContain("Deploy stale loop slice");

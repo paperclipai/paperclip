@@ -43,6 +43,8 @@ export const MISSION_CONTROL_AUTONOMOUS_LOOP_DECISIONS = [
   "goal_reached",
   "blocked",
   "approval_required",
+  "partial_completion",
+  "goal_revision",
   "failed",
 ] as const;
 export type MissionControlAutonomousLoopDecision =
@@ -58,6 +60,8 @@ export const MISSION_CONTROL_AUTONOMOUS_LOOP_STATES = [
   "goal_reached",
   "blocked",
   "approval_required",
+  "partial_completion",
+  "goal_revision",
   "failed",
 ] as const;
 export type MissionControlAutonomousLoopState =
@@ -65,8 +69,10 @@ export type MissionControlAutonomousLoopState =
 
 export const MISSION_CONTROL_AUTONOMOUS_LOOP_REPORT_EVENTS = [
   "goal_reached",
+  "partial_completion",
   "blocker",
   "approval_required",
+  "periodic_checkpoint_required",
   "budget_exceeded",
   "runtime_exceeded",
   "iteration_exceeded",
@@ -109,13 +115,23 @@ export const missionControlAutonomousLoopPolicySchema = z
     iteration: z.number().int().nonnegative().max(1000).optional().default(0),
     maxIterations: z.number().int().positive().max(100).optional().nullable().default(null),
     maxRuntimeHours: z.number().positive().max(24 * 90).optional().nullable().default(null),
-    maxDecisionAgeMinutes: z.number().positive().max(24 * 90 * 60).optional().nullable().default(null),
+    maxDecisionAgeMinutes: z.number().positive().max(24 * 90 * 60).optional().nullable().default(60),
+    userApprovalEveryNIterations: z.number().int().positive().max(1000).optional().nullable().default(null),
     maxBudgetCents: z.number().int().positive().optional().nullable().default(null),
     requireValidatorPass: z.boolean().optional().default(true),
     reportToUserOnlyOn: z
       .array(z.enum(MISSION_CONTROL_AUTONOMOUS_LOOP_REPORT_EVENTS))
       .optional()
-      .default(["goal_reached", "blocker", "approval_required", "runtime_exceeded", "iteration_exceeded", "failed"]),
+      .default([
+        "goal_reached",
+        "partial_completion",
+        "blocker",
+        "approval_required",
+        "periodic_checkpoint_required",
+        "runtime_exceeded",
+        "iteration_exceeded",
+        "failed",
+      ]),
     ceoCanApprove: z
       .array(z.enum(MISSION_CONTROL_AUTONOMOUS_LOOP_CEO_APPROVALS))
       .optional()
@@ -192,6 +208,7 @@ export const missionControlCeoLoopDecisionSchema = z
     decision: z.enum(MISSION_CONTROL_AUTONOMOUS_LOOP_DECISIONS),
     decisionWrittenAt: z.string().datetime().optional().nullable().default(null),
     rationale: z.string().trim().min(1).max(4000),
+    revisedGoal: z.string().trim().min(1).max(4000).optional().nullable().default(null),
     nextTask: missionControlCeoLoopNextTaskSchema.optional().nullable().default(null),
     hardGate: missionControlCeoLoopHardGateSchema.optional().nullable().default(null),
     validatorVerdict: z.enum(MISSION_CONTROL_VALIDATOR_VERDICTS).optional().nullable().default(null),
@@ -213,7 +230,42 @@ export const missionControlCeoLoopDecisionSchema = z
         path: ["hardGate"],
       });
     }
-    if (value.nextTask && !value.nextTask.safeToRunWithoutUserApproval && value.decision !== "approval_required") {
+    if (value.decision === "partial_completion") {
+      if (!value.nextTask) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "partial_completion decisions require nextTask",
+          path: ["nextTask"],
+        });
+      }
+      if (!value.nextTask?.assigneeHint) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "partial_completion decisions require a nextTask assigneeHint",
+          path: ["nextTask", "assigneeHint"],
+        });
+      }
+      if (value.nextTask?.safeToRunWithoutUserApproval !== false) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "partial_completion handoffs must require user approval",
+          path: ["nextTask", "safeToRunWithoutUserApproval"],
+        });
+      }
+    }
+    if (value.decision === "goal_revision" && !value.revisedGoal) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "goal_revision decisions require revisedGoal",
+        path: ["revisedGoal"],
+      });
+    }
+    if (
+      value.nextTask &&
+      !value.nextTask.safeToRunWithoutUserApproval &&
+      value.decision !== "approval_required" &&
+      value.decision !== "partial_completion"
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "Unsafe next tasks must use approval_required",
@@ -341,6 +393,8 @@ export type MissionControlAutonomousLoopGateReason =
   | "ceo_loop_decision_from_future"
   | "runtime_exceeded"
   | "iteration_exceeded"
+  | "periodic_checkpoint_required"
+  | "partial_completion"
   | "approval_required"
   | "validator_pass_required"
   | "autonomous_loop_not_complete"
@@ -376,6 +430,8 @@ export type MissionControlCompletionGateResult = {
     | "ceo_loop_decision_from_future"
     | "runtime_exceeded"
     | "iteration_exceeded"
+    | "periodic_checkpoint_required"
+    | "partial_completion"
     | "approval_required"
     | "validator_pass_required"
     | "autonomous_loop_not_complete"
@@ -397,13 +453,49 @@ function requiredGateForRisk(policy: MissionControlIssuePolicy): MissionControlA
   return "lead";
 }
 
+function jsonDocumentCandidatesFromBody(body: string): string[] {
+  const trimmed = body.trim();
+  const candidates = [trimmed];
+  const pushCandidate = (candidate: string) => {
+    const normalized = candidate.trim();
+    if (!normalized || candidates.some((existing) => existing === normalized)) return;
+    candidates.push(normalized);
+  };
+
+  const fencedBlockPattern = /```(?:[\w-]+)?\s*([\s\S]*?)\s*```/gi;
+  trimmed.replace(fencedBlockPattern, (_match, fencedBody: string) => {
+    pushCandidate(fencedBody);
+    return "";
+  });
+
+  return candidates;
+}
+
+function parseMarkdownValidatorVerdict(body: string): MissionControlValidatorVerdict | null {
+  const trimmed = body.trim();
+  const exactVerdict = trimmed.toUpperCase();
+  if (exactVerdict === "PASS" || exactVerdict === "REQUEST_CHANGES" || exactVerdict === "ESCALATE") {
+    return exactVerdict as MissionControlValidatorVerdict;
+  }
+
+  const verdictPatterns = [
+    /^\s*(?:validator\s+)?verdict\s*[:=-]\s*(PASS|REQUEST_CHANGES|ESCALATE)\b/im,
+    /^\s*\|\s*(?:validator\s+)?verdict\s*\|\s*(PASS|REQUEST_CHANGES|ESCALATE)\s*\|/im,
+    /^\s*#{1,6}\s*(?:validator\s+)?verdict\s*\n\s*(PASS|REQUEST_CHANGES|ESCALATE)\b/im,
+  ];
+
+  for (const pattern of verdictPatterns) {
+    const match = trimmed.match(pattern);
+    if (match?.[1]) return match[1] as MissionControlValidatorVerdict;
+  }
+
+  return null;
+}
+
 function parseValidatorReportFromBody(body: string | null | undefined): MissionControlValidatorReport | null {
   if (!body?.trim()) return null;
   const trimmed = body.trim();
-  const candidates = [trimmed];
-  const fenced = /```(?:json)?\s*([\s\S]*?)\s*```/i.exec(trimmed);
-  if (fenced?.[1]) candidates.unshift(fenced[1].trim());
-  for (const candidate of candidates) {
+  for (const candidate of jsonDocumentCandidatesFromBody(trimmed)) {
     try {
       const parsedJson = JSON.parse(candidate);
       const parsedReport = missionControlValidatorReportSchema.safeParse(parsedJson);
@@ -412,17 +504,17 @@ function parseValidatorReportFromBody(body: string | null | undefined): MissionC
       // Markdown reports are supported below via a conservative verdict scan.
     }
   }
-  const verdictMatch = /\b(PASS|REQUEST_CHANGES|ESCALATE)\b/.exec(trimmed.toUpperCase());
-  if (!verdictMatch) return null;
+  const verdict = parseMarkdownValidatorVerdict(trimmed);
+  if (!verdict) return null;
   return {
     version: 1,
-    verdict: verdictMatch[1] as MissionControlValidatorVerdict,
-    completionScore: verdictMatch[1] === "PASS" ? 8 : 0,
+    verdict,
+    completionScore: verdict === "PASS" ? 8 : 0,
     criteriaChecked: ["markdown validator verdict present"],
     evidence: ["validator-report document body"],
     hallucinationFlags: [],
     regressionChecks: [],
-    blockingIssues: verdictMatch[1] === "PASS" ? [] : ["validator did not pass"],
+    blockingIssues: verdict === "PASS" ? [] : ["validator did not pass"],
     exactFixIfFailed: null,
   };
 }
@@ -434,10 +526,7 @@ function parseCeoLoopDecisionFromBody(
 ): MissionControlCeoLoopDecision | typeof INVALID_CEO_LOOP_DECISION | null {
   if (!body?.trim()) return null;
   const trimmed = body.trim();
-  const candidates = [trimmed];
-  const fenced = /```(?:json)?\s*([\s\S]*?)\s*```/i.exec(trimmed);
-  if (fenced?.[1]) candidates.unshift(fenced[1].trim());
-  for (const candidate of candidates) {
+  for (const candidate of jsonDocumentCandidatesFromBody(trimmed)) {
     try {
       const parsedJson = JSON.parse(candidate);
       const parsedDecision = missionControlCeoLoopDecisionSchema.safeParse(parsedJson);
@@ -622,6 +711,50 @@ export function evaluateMissionControlAutonomousLoopGate(input: {
       ceoLoopDecision,
       requiredApprovalGate: "board",
       reason: "approval_required",
+    };
+  }
+
+  if (
+    decisionContinuesLoop &&
+    autonomousLoopPolicy.userApprovalEveryNIterations &&
+    autonomousLoopPolicy.iteration > 0 &&
+    autonomousLoopPolicy.iteration % autonomousLoopPolicy.userApprovalEveryNIterations === 0
+  ) {
+    return {
+      allowed: false,
+      enabled: true,
+      policy,
+      autonomousLoopPolicy,
+      missingDocumentKeys: [],
+      ceoLoopDecision,
+      requiredApprovalGate: "board",
+      reason: "periodic_checkpoint_required",
+    };
+  }
+
+  if (ceoLoopDecision.decision === "goal_revision") {
+    return {
+      allowed: false,
+      enabled: true,
+      policy,
+      autonomousLoopPolicy,
+      missingDocumentKeys: [],
+      ceoLoopDecision,
+      requiredApprovalGate: "board",
+      reason: "approval_required",
+    };
+  }
+
+  if (ceoLoopDecision.decision === "partial_completion") {
+    return {
+      allowed: false,
+      enabled: true,
+      policy,
+      autonomousLoopPolicy,
+      missingDocumentKeys: [],
+      ceoLoopDecision,
+      requiredApprovalGate: "lead",
+      reason: "partial_completion",
     };
   }
 

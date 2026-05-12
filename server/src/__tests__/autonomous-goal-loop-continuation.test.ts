@@ -45,7 +45,11 @@ function missionDocsWithDecision(
     { key: "validation-contract", body: "objective/pass criteria" },
     { key: "worker-handoff", body: "completed/checks" },
     { key: "validator-report", body: "Verdict: PASS" },
-    { key: "ceo-loop-decision", body: JSON.stringify(decision), updatedAt: options.decisionUpdatedAt },
+    {
+      key: "ceo-loop-decision",
+      body: JSON.stringify(decision),
+      updatedAt: options.decisionUpdatedAt ?? "2026-05-11T09:00:00.000Z",
+    },
   ];
 }
 
@@ -103,6 +107,86 @@ describe("autonomous goal loop continuation planning", () => {
         acceptedValidatorVerdicts: ["PASS"],
         autonomousLoop: null,
       },
+    });
+  });
+
+  it("blocks CEO-safe next tasks when deterministic scan detects user-gated actions", () => {
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "Validation passed; the CEO claims this is safe to run autonomously.",
+        nextTask: {
+          title: "Deploy public campaign",
+          description: "Deploy to production, merge into main, and post to Telegram after deleting stale accounts.",
+          acceptanceCriteria: [
+            "Purchase the required account credits before launch",
+            "Rotate secret keys and change proxy settings for the campaign account",
+          ],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["validator-report PASS"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "ceo_self_attestation_conflict",
+      reportToUser: true,
+    });
+  });
+
+  it("blocks direct currency spend even when no budget noun is present", () => {
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "Validation passed; the CEO claims this payment is safe.",
+        nextTask: {
+          title: "Pay vendor amount",
+          description: "Pay $500 to the vendor and store the receipt internally.",
+          acceptanceCriteria: ["Receipt is linked back to the parent issue"],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["validator-report PASS"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "ceo_self_attestation_conflict",
+      reportToUser: true,
+    });
+  });
+
+  it("does not treat ordinary lowercase 'of' near post as an external-platform gate", () => {
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "Validation passed; continue with an internal summary.",
+        nextTask: {
+          title: "Post summary of findings internally",
+          description: "Post summary of findings to the internal Paperclip issue comment thread.",
+          acceptanceCriteria: ["Internal Paperclip summary of findings is available for review"],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["validator-report PASS"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "create_child",
+      reason: "next_iteration",
     });
   });
 
@@ -196,6 +280,138 @@ describe("autonomous goal loop continuation planning", () => {
       action: "blocked",
       reason: "approval_required",
       reportToUser: true,
+    });
+  });
+
+  it("reports partial completion instead of creating child work", () => {
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "partial_completion",
+        rationale: "The core implementation shipped, but product scope needs a human handoff.",
+        nextTask: {
+          title: "Review remaining product scope",
+          acceptanceCriteria: ["Owner chooses the final launch scope"],
+          assigneeHint: "product owner",
+          safeToRunWithoutUserApproval: false,
+        },
+        evidence: ["core implementation merged to the feature branch"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "report",
+      reason: "partial_completion",
+      reportToUser: true,
+    });
+  });
+
+  it("routes goal revision decisions to user approval instead of child work", () => {
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "goal_revision",
+        revisedGoal: "Ship a smaller observability-first loop before enabling recovery actions.",
+        rationale: "The current goal is too broad for the available iteration budget.",
+        evidence: ["scope review"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "approval_required",
+      reportToUser: true,
+    });
+  });
+
+  it("blocks autonomous continuation at configured periodic user checkpoints", () => {
+    const checkpointIssue = {
+      ...parentIssue,
+      executionPolicy: {
+        missionControl: {
+          ...parentIssue.executionPolicy.missionControl,
+          autonomousLoop: {
+            ...parentIssue.executionPolicy.missionControl.autonomousLoop,
+            iteration: 2,
+            userApprovalEveryNIterations: 2,
+          },
+        },
+      },
+    };
+
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: checkpointIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 2,
+        decision: "next_iteration",
+        rationale: "Continue after the periodic user checkpoint.",
+        nextTask: {
+          title: "Continue safe internal implementation",
+          acceptanceCriteria: ["Checkpoint blocks first"],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["validator-report PASS"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "periodic_checkpoint_required",
+      reportToUser: true,
+    });
+  });
+
+  it("surfaces periodic checkpoints as user-owned supervisor attention", () => {
+    const checkpointIssue = {
+      ...parentIssue,
+      executionPolicy: {
+        missionControl: {
+          ...parentIssue.executionPolicy.missionControl,
+          autonomousLoop: {
+            ...parentIssue.executionPolicy.missionControl.autonomousLoop,
+            iteration: 2,
+            userApprovalEveryNIterations: 2,
+          },
+        },
+      },
+    };
+
+    const state = buildAutonomousGoalLoopState({
+      issue: checkpointIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 2,
+        decision: "next_iteration",
+        rationale: "Continue after the periodic user checkpoint.",
+        nextTask: {
+          title: "Continue safe internal implementation",
+          acceptanceCriteria: ["Checkpoint blocks first"],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["validator-report PASS"],
+      }),
+      childIssues: [],
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(state).toMatchObject({
+      enabled: true,
+      status: "approval_required",
+      supervisor: {
+        attentionRequired: true,
+        reason: "periodic_checkpoint_required",
+        recoveryAction: "request_user_approval",
+        owner: "user",
+        userVisible: true,
+      },
     });
   });
 
@@ -434,6 +650,40 @@ describe("autonomous goal loop continuation planning", () => {
     ]);
   });
 
+  it("marks CEO self-attestation conflicts as user-visible blocked loop states", () => {
+    const state = buildAutonomousGoalLoopState({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "Validation passed; the CEO claims the next step is safe.",
+        nextTask: {
+          title: "Release social campaign",
+          description: "Publish to X and deploy to production without waiting for the board.",
+          acceptanceCriteria: ["Protected branch merge is complete"],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["validator-report PASS"],
+      }),
+      childIssues: [],
+      now: "2026-05-11T10:00:00.000Z",
+    });
+
+    expect(state).toMatchObject({
+      enabled: true,
+      status: "blocked",
+      supervisor: {
+        attentionRequired: true,
+        reason: "ceo_self_attestation_conflict",
+        recoveryAction: "request_user_approval",
+        owner: "user",
+        userVisible: true,
+      },
+    });
+    expect(state.supervisor).not.toHaveProperty("metricKey");
+  });
+
   it("renders stale approval decisions as an internal repair state", () => {
     const staleIterationIssue = {
       ...parentIssue,
@@ -474,10 +724,10 @@ describe("autonomous goal loop continuation planning", () => {
         reason: "ceo_loop_decision_stale",
         recoveryAction: "repair_loop_decision",
         owner: "operator",
-        metricKey: "autonomous_loop_decision_freshness_failure",
         userVisible: false,
       },
     });
+    expect(state.supervisor).not.toHaveProperty("metricKey");
   });
 
   it("marks approval and blocked loop states for supervisor attention", () => {

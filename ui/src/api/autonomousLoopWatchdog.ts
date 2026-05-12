@@ -5,7 +5,6 @@ export type AutonomousLoopWatchdogCandidate = {
   kind: string;
   severity: "low" | "medium" | "high" | "critical" | string;
   owner: "operator" | "user" | "none" | string;
-  metricKey: string | null;
   issueId: string;
   identifier: string | null;
   title: string | null;
@@ -23,14 +22,18 @@ export type AutonomousLoopWatchdogPreview = {
   readOnly: boolean;
   generatedAt: string;
   totalIssuesScanned: number;
+  hasMore: boolean;
+  nextCursor: string | null;
   candidates: AutonomousLoopWatchdogCandidate[];
 };
 
 export const autonomousLoopWatchdogApi = {
-  preview: (companyId: string, options: { limit?: number } = {}) => {
-    const limit = options.limit ?? 25;
+  preview: (companyId: string, options: { limit?: number; cursor?: string | null } = {}) => {
+    const params = new URLSearchParams();
+    params.set("limit", String(options.limit ?? 25));
+    if (options.cursor) params.set("cursor", options.cursor);
     return api.get<AutonomousLoopWatchdogPreview>(
-      `/companies/${companyId}/autonomous-loop-watchdog/preview?limit=${limit}`,
+      `/companies/${companyId}/autonomous-loop-watchdog/preview?${params.toString()}`,
     );
   },
 };

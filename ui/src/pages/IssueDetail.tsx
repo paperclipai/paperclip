@@ -34,6 +34,7 @@ import {
 } from "../lib/issueDetailBreadcrumb";
 import { resolveIssueActiveRun, shouldTrackIssueActiveRun } from "../lib/issueActiveRun";
 import { getIssueDetailQueryOptions } from "../lib/issueDetailCache";
+import { deriveAutonomousLoopUiState } from "../lib/autonomousLoopUiState";
 import {
   hasBlockingShortcutDialog,
   resolveIssueDetailGoKeyAction,
@@ -211,43 +212,15 @@ function treeControlPreviewErrorCopy(error: unknown): string {
   return error instanceof Error ? error.message : "Unable to load preview.";
 }
 
-function formatAutonomousLoopProgress(state: AutonomousLoopState): string {
-  if (state.progressLabel) return state.progressLabel;
-  if (typeof state.iteration === "number" && typeof state.maxIterations === "number") {
-    return `${state.iteration} / ${state.maxIterations}`;
-  }
-  if (typeof state.iteration === "number") return `Iteration ${state.iteration}`;
-  return "—";
-}
-
-function autonomousLoopSupervisorLabel(state: AutonomousLoopState): string {
-  if (state.status === "approval_required") return "Needs approval";
-  if (state.supervisor?.attentionRequired && state.supervisor.userVisible !== false) return "Needs approval";
-  if (state.supervisor?.attentionRequired) return "Needs repair";
-  return "clear";
-}
-
-function autonomousLoopDecisionLabel(state: AutonomousLoopState): string {
-  if (state.supervisor?.attentionRequired && state.supervisor.userVisible === false) {
-    return state.supervisor.reason ?? state.status ?? "internal_repair";
-  }
-  return state.currentDecision?.decision ?? state.status ?? "unknown";
-}
-
-function autonomousLoopNextTaskTitle(state: AutonomousLoopState): string | null {
-  if (state.supervisor?.attentionRequired && state.supervisor.userVisible === false) return null;
-  return state.currentDecision?.nextTaskTitle ?? state.planner?.nextTaskTitle ?? null;
-}
-
 function IssueAutonomousLoopPanel({ state }: { state?: AutonomousLoopState | null }) {
   if (!state?.enabled) return null;
 
-  const progress = formatAutonomousLoopProgress(state);
-  const decision = autonomousLoopDecisionLabel(state);
-  const nextTaskTitle = autonomousLoopNextTaskTitle(state);
+  const uiState = deriveAutonomousLoopUiState(state);
+  const progress = uiState.progress;
+  const decision = uiState.decisionLabel;
+  const nextTaskTitle = uiState.nextTaskTitle;
   const latestIteration = state.iterations?.at(-1) ?? null;
-  const supervisorLabel = autonomousLoopSupervisorLabel(state);
-  const supervisorNeedsAttention = supervisorLabel !== "clear";
+  const supervisor = uiState.supervisor;
   const observabilityChain = state.observability?.chain ?? [];
 
   return (
@@ -261,11 +234,11 @@ function IssueAutonomousLoopPanel({ state }: { state?: AutonomousLoopState | nul
         </div>
         <div className={cn(
           "rounded-full border px-2 py-0.5 text-xs font-medium",
-          supervisorNeedsAttention
+          supervisor.needsAttention
             ? "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300"
             : "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300",
         )}>
-          Supervisor: {supervisorLabel}
+          Supervisor: {supervisor.label}
         </div>
       </div>
 
@@ -288,22 +261,16 @@ function IssueAutonomousLoopPanel({ state }: { state?: AutonomousLoopState | nul
         </div>
       </div>
 
-      {state.supervisor?.attentionRequired ? (
-        <div className="grid gap-2 rounded-md border border-amber-200 bg-amber-50/60 px-3 py-2 text-sm dark:border-amber-900/60 dark:bg-amber-950/20 sm:grid-cols-3">
+      {supervisor.kind !== "clear" ? (
+        <div className="grid gap-2 rounded-md border border-amber-200 bg-amber-50/60 px-3 py-2 text-sm dark:border-amber-900/60 dark:bg-amber-950/20 sm:grid-cols-2">
           <div>
             <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Repair owner</div>
-            <div className="font-mono text-foreground">{state.supervisor.owner ?? "operator"}</div>
+            <div className="font-mono text-foreground">{supervisor.owner}</div>
           </div>
           <div>
             <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Repair action</div>
-            <div className="font-mono text-foreground">{state.supervisor.recoveryAction ?? "manual_review"}</div>
+            <div className="font-mono text-foreground">{supervisor.recoveryAction}</div>
           </div>
-          {state.supervisor.metricKey ? (
-            <div>
-              <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Metric key</div>
-              <div className="font-mono text-foreground">{state.supervisor.metricKey}</div>
-            </div>
-          ) : null}
         </div>
       ) : null}
 
