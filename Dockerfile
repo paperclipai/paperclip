@@ -25,6 +25,7 @@ COPY packages/mcp-server/package.json packages/mcp-server/
 COPY packages/adapters/acpx-local/package.json packages/adapters/acpx-local/
 COPY packages/adapters/claude-local/package.json packages/adapters/claude-local/
 COPY packages/adapters/codex-local/package.json packages/adapters/codex-local/
+COPY packages/adapters/cursor-cloud/package.json packages/adapters/cursor-cloud/
 COPY packages/adapters/cursor-local/package.json packages/adapters/cursor-local/
 COPY packages/adapters/gemini-local/package.json packages/adapters/gemini-local/
 COPY packages/adapters/openclaw-gateway/package.json packages/adapters/openclaw-gateway/
