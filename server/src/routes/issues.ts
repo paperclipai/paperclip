@@ -3427,7 +3427,12 @@ export function issueRoutes(
         const idempotencyKey = comment
           ? issueCommentWakeupIdempotencyKey({ issueId: issue.id, commentId: comment.id, agentId, reason })
           : null;
-        if (comment && idempotencyKey && !commentInserted && reason === "issue_commented") {
+        if (
+          comment &&
+          idempotencyKey &&
+          !commentInserted &&
+          (reason === "issue_commented" || reason === "issue_comment_mentioned")
+        ) {
           const reopenIdempotencyKey = issueCommentWakeupIdempotencyKey({
             issueId: issue.id,
             commentId: comment.id,

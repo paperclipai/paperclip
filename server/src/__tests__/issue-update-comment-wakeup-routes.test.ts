@@ -414,13 +414,13 @@ describe("issue update comment wakeups", () => {
     ));
   });
 
-  it("does not let assignee mentions overwrite reopen wakeup keys on deduped retries", async () => {
+  it("skips mention-overwritten retries after the original reopen wakeup exists", async () => {
     const existing = makeIssue({
       assigneeAgentId: ASSIGNEE_AGENT_ID,
       assigneeUserId: null,
-      status: "done",
+      status: "todo",
     });
-    const updated = { ...existing, status: "todo" };
+    const updated = { ...existing };
     mockIssueService.getById.mockResolvedValue(existing);
     mockIssueService.update.mockResolvedValue(updated);
     mockIssueService.findMentionedAgents.mockResolvedValue([ASSIGNEE_AGENT_ID]);
@@ -440,7 +440,6 @@ describe("issue update comment wakeups", () => {
     const res = await request(await createApp())
       .patch(`/api/issues/${existing.id}`)
       .send({
-        status: "todo",
         comment: "@Engineer please revise this",
       });
 
