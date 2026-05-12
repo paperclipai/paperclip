@@ -717,7 +717,11 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
     getInvocationBlock: async (
       companyId: string,
       agentId: string,
-      context?: { issueId?: string | null; projectId?: string | null },
+      context?: {
+        issueId?: string | null;
+        projectId?: string | null;
+        contextSnapshot?: Record<string, unknown> | null;
+      },
     ) => {
       const agent = await db
         .select({
@@ -727,6 +731,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           name: agents.name,
           adapterType: agents.adapterType,
           adapterConfig: agents.adapterConfig,
+          runtimeConfig: agents.runtimeConfig,
         })
         .from(agents)
         .where(eq(agents.id, agentId))
@@ -817,7 +822,12 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       // Provider rate-limit gate (orthogonal to budget checks).
       {
         const providerRateLimits = providerRateLimitService(db);
-        const model = (agent.adapterConfig as Record<string, unknown> | null)?.model as string | null ?? null;
+        const model = await providerRateLimits.resolveEffectiveRunModel({
+          companyId,
+          agent,
+          issueId: context?.issueId ?? null,
+          contextSnapshot: context?.contextSnapshot ?? null,
+        });
         const block = await providerRateLimits.getActiveBlockForAgent(companyId, agent.adapterType, model);
         if (block) {
           const stillBlocked = await providerRateLimits.isWindowStillBlocked(block.adapterType, block.limitKind);
@@ -892,6 +902,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         .select({
           adapterType: agents.adapterType,
           adapterConfig: agents.adapterConfig,
+          runtimeConfig: agents.runtimeConfig,
           companyId: agents.companyId,
         })
         .from(agents)
@@ -900,7 +911,10 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       if (!agent || agent.companyId !== companyId) return null;
 
       const providerRateLimits = providerRateLimitService(db);
-      const model = (agent.adapterConfig as Record<string, unknown> | null)?.model as string | null ?? null;
+      const model = await providerRateLimits.resolveEffectiveRunModel({
+        companyId,
+        agent,
+      });
       const block = await providerRateLimits.getActiveBlockForAgent(companyId, agent.adapterType, model);
       if (!block) return null;
 

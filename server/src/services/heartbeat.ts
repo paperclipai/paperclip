@@ -3980,6 +3980,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? await budgets.getInvocationBlock(issue.companyId, agent.id, {
           issueId: issue.id,
           projectId: issue.projectId,
+          contextSnapshot: context,
         })
         : null;
     if (issue) {
@@ -4285,6 +4286,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? budgets.getInvocationBlock(issue.companyId, run.agentId, {
           issueId: issue.id,
           projectId: issue.projectId,
+          contextSnapshot: context,
         })
         : Promise.resolve(null),
       issue
@@ -4884,6 +4886,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
       issueId,
       projectId,
+      contextSnapshot,
     });
     if (budgetBlock) {
       return {
@@ -5912,6 +5915,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
       issueId: readNonEmptyString(context.issueId),
       projectId: readNonEmptyString(context.projectId),
+      contextSnapshot: context,
     });
     if (budgetBlock) {
       await cancelRunInternal(run.id, budgetBlock.reason);
@@ -6702,6 +6706,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     for (const agentId of agentIds) {
       await startNextQueuedRunForAgent(agentId);
     }
+  }
+
+  async function resumeQueuedRunsForAgent(agentId: string) {
+    await startNextQueuedRunForAgent(agentId);
   }
 
   async function reconcileStrandedAssignedIssues() {
@@ -8780,6 +8788,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const budgetBlock = await budgets.getInvocationBlock(agent.companyId, agentId, {
       issueId,
       projectId,
+      contextSnapshot: enrichedContextSnapshot,
     });
     if (budgetBlock) {
       await writeSkippedRequest("budget.blocked");
@@ -9862,6 +9871,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     retryScheduledRetryNow,
 
     resumeQueuedRuns,
+    resumeQueuedRunsForAgent,
 
     scheduleBoundedRetry: async (
       runId: string,

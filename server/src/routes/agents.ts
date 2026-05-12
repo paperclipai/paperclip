@@ -99,6 +99,7 @@ import {
 import { getTelemetryClient } from "../telemetry.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { recoveryService } from "../services/recovery/service.js";
+import { providerRateLimitService } from "../services/provider-rate-limits.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
@@ -2584,6 +2585,9 @@ export function agentRoutes(
     const touchesAdapterConfiguration =
       hasOwn(patchData, "adapterType") ||
       hasOwn(patchData, "adapterConfig");
+    const touchesProviderRateLimitScope =
+      touchesAdapterConfiguration ||
+      hasOwn(patchData, "runtimeConfig");
     if (touchesAdapterConfiguration) {
       const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
       const changingAdapterType =
@@ -2656,7 +2660,7 @@ export function agentRoutes(
     }
 
     const actor = getActorInfo(req);
-    const agent = await svc.update(id, patchData, {
+    let agent = await svc.update(id, patchData, {
       recordRevision: {
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -2674,6 +2678,29 @@ export function agentRoutes(
         { targetType: "agent", targetId: agent.id },
         agentEnv,
       );
+    }
+
+    if (touchesProviderRateLimitScope) {
+      const reconciliation = await providerRateLimitService(db).reconcileAgentProviderLimitPause(agent.id);
+      if (reconciliation.released) {
+        await logActivity(db, {
+          companyId: agent.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "agent.provider_rate_limit_scope_reconciled",
+          entityType: "agent",
+          entityId: agent.id,
+          details: {
+            issueIds: reconciliation.issueIds,
+            wakeupsQueued: reconciliation.wakeupsQueued,
+            wakeupsSkipped: reconciliation.wakeupsSkipped,
+          },
+        });
+        await heartbeat.resumeQueuedRunsForAgent(agent.id);
+        agent = await svc.getById(agent.id) ?? agent;
+      }
     }
 
     await logActivity(db, {
