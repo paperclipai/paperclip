@@ -3747,7 +3747,7 @@ export function issueService(db: Db) {
         const anchor = await db
           .select({
             id: issueComments.id,
-            createdAt: issueComments.createdAt,
+            createdAtCursor: sql<string>`to_char(${issueComments.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
           })
           .from(issueComments)
           .where(and(eq(issueComments.issueId, issueId), eq(issueComments.id, afterCommentId)))
@@ -3756,14 +3756,8 @@ export function issueService(db: Db) {
         if (!anchor) return [];
         conditions.push(
           order === "asc"
-            ? or(
-                gt(issueComments.createdAt, anchor.createdAt),
-                and(eq(issueComments.createdAt, anchor.createdAt), gt(issueComments.id, anchor.id)),
-              )!
-            : or(
-                lt(issueComments.createdAt, anchor.createdAt),
-                and(eq(issueComments.createdAt, anchor.createdAt), lt(issueComments.id, anchor.id)),
-              )!,
+            ? sql`(${issueComments.createdAt}, ${issueComments.id}) > (${anchor.createdAtCursor}::timestamptz, ${anchor.id}::uuid)`
+            : sql`(${issueComments.createdAt}, ${issueComments.id}) < (${anchor.createdAtCursor}::timestamptz, ${anchor.id}::uuid)`,
         );
       }
 
