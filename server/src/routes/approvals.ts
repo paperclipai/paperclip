@@ -361,15 +361,19 @@ export function approvalRoutes(
 	          : await listLinkedIssueRefs(approval.id, [], { action: "approval.revision_requested", phase: "after" }),
 	      );
 
-      await logActivity(db, {
-        companyId: approval.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
-        action: "approval.revision_requested",
-        entityType: "approval",
-        entityId: approval.id,
-        details: { type: approval.type, ...linkedIssueDetails },
-      });
+      try {
+        await logActivity(db, {
+          companyId: approval.companyId,
+          actorType: "user",
+          actorId: req.actor.userId ?? "board",
+          action: "approval.revision_requested",
+          entityType: "approval",
+          entityId: approval.id,
+          details: { type: approval.type, ...linkedIssueDetails },
+        });
+      } catch (err) {
+        logger.warn({ err, approvalId: approval.id }, "failed to log approval revision request activity");
+      }
 
       res.json(redactApprovalPayload(approval));
     },
@@ -406,16 +410,20 @@ export function approvalRoutes(
 	        : await listLinkedIssueRefs(approval.id, [], { action: "approval.resubmitted", phase: "after" }),
 	    );
     const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId: approval.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      action: "approval.resubmitted",
-      entityType: "approval",
-      entityId: approval.id,
-      details: { type: approval.type, ...linkedIssueDetails },
-    });
+    try {
+      await logActivity(db, {
+        companyId: approval.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "approval.resubmitted",
+        entityType: "approval",
+        entityId: approval.id,
+        details: { type: approval.type, ...linkedIssueDetails },
+      });
+    } catch (err) {
+      logger.warn({ err, approvalId: approval.id }, "failed to log approval resubmit activity");
+    }
     res.json(redactApprovalPayload(approval));
   });
 

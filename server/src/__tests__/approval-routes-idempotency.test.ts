@@ -355,6 +355,65 @@ describe("approval routes idempotent retries", () => {
     );
   });
 
+  it("does not fail revision requests when activity logging fails", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-revision-audit-fail",
+      companyId: "company-1",
+      type: "plugin_workflow",
+      status: "pending",
+      payload: {},
+    });
+    mockApprovalService.requestRevision.mockResolvedValue({
+      id: "approval-revision-audit-fail",
+      companyId: "company-1",
+      type: "plugin_workflow",
+      status: "revision_requested",
+      payload: {},
+    });
+    mockLogActivity.mockRejectedValue(new Error("audit unavailable"));
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-revision-audit-fail/request-revision")
+      .send({ decisionNote: "needs changes" });
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.requestRevision).toHaveBeenCalledWith(
+      "approval-revision-audit-fail",
+      "user-1",
+      "needs changes",
+    );
+  });
+
+  it("does not fail resubmits when activity logging fails", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-resubmit-audit-fail",
+      companyId: "company-1",
+      type: "plugin_workflow",
+      status: "revision_requested",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+    mockApprovalService.resubmit.mockResolvedValue({
+      id: "approval-resubmit-audit-fail",
+      companyId: "company-1",
+      type: "plugin_workflow",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+    mockLogActivity.mockRejectedValue(new Error("audit unavailable"));
+
+    const res = await request(await createAgentApp())
+      .post("/api/approvals/approval-resubmit-audit-fail/resubmit")
+      .send({ payload: { prompt: "try again" } });
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.resubmit).toHaveBeenCalledWith(
+      "approval-resubmit-audit-fail",
+      { prompt: "try again" },
+    );
+  });
+
   it("derives approval attribution from the authenticated actor on reject", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-5",
