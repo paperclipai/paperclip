@@ -10,6 +10,7 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   materializePaperclipSkillCopy,
   refreshPaperclipWorkspaceEnvForExecution,
+  renderTemplate,
   renderPaperclipWakePrompt,
   runningProcesses,
   runChildProcess,
@@ -60,6 +61,29 @@ describe("buildInvocationEnvForLogs", () => {
     expect(loggedEnv.SAFE_VALUE).toBe("visible");
     expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(
       "env OPENAI_API_KEY=***REDACTED*** custom-acp --token ***REDACTED***",
+    );
+  });
+});
+
+describe("DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE", () => {
+  it("renders Paperclip runtime governance markdown before the general execution contract", () => {
+    const rendered = renderTemplate(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE, {
+      agent: { id: "agent-1", name: "Lead Agent" },
+      context: {
+        paperclipRuntimeGovernanceMarkdown: [
+          "## Paperclip runtime governance brief",
+          "### Governance gates",
+          "- Delegation gate: required before completion.",
+        ].join("\n"),
+      },
+    });
+
+    expect(rendered).toContain("## Paperclip runtime governance brief");
+    expect(rendered.indexOf("## Paperclip runtime governance brief")).toBeGreaterThan(
+      rendered.indexOf("You are agent agent-1"),
+    );
+    expect(rendered.indexOf("## Paperclip runtime governance brief")).toBeLessThan(
+      rendered.indexOf("Execution contract:"),
     );
   });
 });

@@ -22,6 +22,7 @@ import {
 } from "@paperclipai/shared";
 import {
   agents,
+  companies,
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
@@ -162,12 +163,14 @@ import {
 } from "@paperclipai/adapter-utils";
 import {
   readPaperclipSkillSyncPreference,
+  resolvePaperclipDesiredSkillNames,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { extractSkillMentionIds } from "@paperclipai/shared";
 import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
+import { buildRuntimeGovernanceBrief } from "./runtime-governance-brief.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
@@ -2496,6 +2499,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         executionWorkspacePreference: issues.executionWorkspacePreference,
         assigneeAgentId: issues.assigneeAgentId,
         assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+        executionPolicy: issues.executionPolicy,
         executionWorkspaceSettings: issues.executionWorkspaceSettings,
       })
       .from(issues)
@@ -7152,6 +7156,61 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       runScopedMentionedSkillKeys,
     );
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
+    const runtimeGovernanceDesiredSkillKeys = resolvePaperclipDesiredSkillNames(
+      effectiveResolvedConfig,
+      runtimeSkillEntries,
+    );
+    const companyContext = await db
+      .select({
+        id: companies.id,
+        name: companies.name,
+      })
+      .from(companies)
+      .where(eq(companies.id, agent.companyId))
+      .then((rows) => rows[0] ?? null);
+    const runtimeGovernanceBrief = buildRuntimeGovernanceBrief({
+      company: companyContext
+        ? {
+            id: companyContext.id,
+            name: companyContext.name,
+          }
+        : {
+            id: agent.companyId,
+            name: null,
+          },
+      agent: {
+        id: agent.id,
+        name: agent.name,
+        role: agent.role,
+      },
+      issue: issueContext
+        ? {
+            id: issueContext.id,
+            identifier: issueContext.identifier,
+            title: issueContext.title,
+            workMode: issueContext.workMode,
+            executionPolicy: parseObject(issueContext.executionPolicy),
+          }
+        : null,
+      skills: runtimeSkillEntries,
+      desiredSkillKeys: runtimeGovernanceDesiredSkillKeys,
+      continuationSummary: continuationSummary
+        ? {
+            key: continuationSummary.key,
+            title: continuationSummary.title,
+            updatedAt: continuationSummary.updatedAt.toISOString(),
+          }
+        : null,
+    });
+    context.paperclipRuntimeGovernanceBrief = runtimeGovernanceBrief;
+    context.paperclipRuntimeGovernanceMarkdown = runtimeGovernanceBrief.markdown;
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: context,
+        updatedAt: new Date(),
+      })
+      .where(eq(heartbeatRuns.id, run.id));
     let runtimeConfig = {
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,

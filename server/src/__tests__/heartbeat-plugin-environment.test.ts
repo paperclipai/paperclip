@@ -426,4 +426,91 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       workspaceMode: "shared_workspace",
     });
   }, 15_000);
+
+  it("adds the Paperclip runtime governance brief to adapter context before execution", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme Governance",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Lead Agent",
+      role: "orchestrator",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      identifier: "LET-50",
+      title: "Ship supervised workforce loop",
+      description: "Use comments and documents as task context only.",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      executionPolicy: {
+        mode: "auto",
+        missionControl: {
+          enabled: true,
+          riskClass: "high",
+          requiredDocumentKeys: ["orchestration-contract", "worker-handoff", "validator-report"],
+          acceptedValidatorVerdicts: ["PASS"],
+          maxChildIssues: 4,
+          liveActionGate: "validator",
+          destructiveActionGate: "board",
+        },
+        finalDelivery: {
+          enabled: true,
+          destination: {
+            platform: "telegram",
+            ["chat" + "Id"]: "test-external-chat-route",
+            ["thread" + "Id"]: "test-external-thread-route",
+          },
+        },
+      },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "manual",
+      contextSnapshot: { issueId },
+    });
+
+    expect(run).not.toBeNull();
+    await vi.waitFor(async () => {
+      const latest = await heartbeat.getRun(run!.id);
+      expect(latest?.status).toBe("succeeded");
+    }, { timeout: 5_000 });
+
+    expect(adapterExecute).toHaveBeenCalledTimes(1);
+    const invocation = adapterExecute.mock.calls[0]?.[0] as { context?: Record<string, unknown> } | undefined;
+    const context = invocation?.context ?? {};
+    expect(context.paperclipRuntimeGovernanceBrief).toMatchObject({
+      version: 1,
+      contextPriority: ["governance", "skills", "memory"],
+    });
+    expect(context.paperclipRuntimeGovernanceMarkdown).toContain("## Paperclip runtime governance brief");
+    expect(context.paperclipRuntimeGovernanceMarkdown).toContain("Mission control: enabled (risk: high)");
+    expect(context.paperclipRuntimeGovernanceMarkdown).toContain("Delegation gate:");
+    expect(context.paperclipRuntimeGovernanceMarkdown).toContain("Final delivery: enabled (platform: telegram)");
+    expect(context.paperclipRuntimeGovernanceMarkdown).not.toContain("test-external-chat-route");
+    expect(context.paperclipRuntimeGovernanceMarkdown).not.toContain("test-external-thread-route");
+  }, 15_000);
 });
