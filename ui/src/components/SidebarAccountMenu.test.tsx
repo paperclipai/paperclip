@@ -117,11 +117,15 @@ describe("SidebarAccountMenu", () => {
     });
   });
 
-  it("clears cached instance-admin and plugin-secret data on sign out", async () => {
+  it("clears cached authenticated data and pins the session to signed out on sign out", async () => {
     mockAuthApi.signOut.mockResolvedValue(undefined);
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(["auth", "session"], {
+      session: { id: "session-1", userId: "user-1" },
+      user: { id: "user-1", name: "Jane Example", email: "jane@example.com", image: null },
     });
     queryClient.setQueryData(["access", "current-board-access"], { isInstanceAdmin: true });
     queryClient.setQueryData(["instance", "plugin-secrets"], [
@@ -157,7 +161,7 @@ describe("SidebarAccountMenu", () => {
     expect(mockAuthApi.signOut).toHaveBeenCalled();
     expect(queryClient.getQueryData(["access", "current-board-access"])).toBeUndefined();
     expect(queryClient.getQueryData(["instance", "plugin-secrets"])).toBeUndefined();
-    expect(queryClient.getQueryData(["auth", "session"])?.user.id).toBe("user-1");
+    expect(queryClient.getQueryData(["auth", "session"])).toBeNull();
 
     await act(async () => {
       root.unmount();
