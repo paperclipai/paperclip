@@ -1,6 +1,8 @@
 import { sql } from "drizzle-orm";
 import { backoffSeconds } from "./backoff.js";
 import { refreshConnection, type RefreshSecretService } from "./refresh.js";
+import { buildCredentialBrokerCtx } from "./apply-credential-broker-resolver.js";
+import { resolveCredentialBroker } from "../plugins/credential-broker-registry.js";
 import { oauthLogger } from "./logger.js";
 import type { ProviderRegistry } from "./registry.js";
 
@@ -83,14 +85,46 @@ export async function runRefreshTick(deps: RefreshWorkerDeps): Promise<void> {
     });
 
     const refreshFn = deps.refreshFn ?? refreshConnection;
+    const broker = await resolveCredentialBroker(
+      buildCredentialBrokerCtx({
+        db: deps.db,
+        registry: deps.registry,
+        logger: oauthLogger,
+      }),
+    );
     for (const row of eligible) {
       try {
-        await refreshFn({
+        const result = await refreshFn({
           connectionId: row.id,
           db: tx,
           registry: deps.registry,
           secretService: deps.secretService,
         });
+        // After a successful rotation, push the new access token into
+        // the credential broker's bearer cache so any live sessions
+        // see the fresh value on their next outbound request.
+        // Failures here are non-fatal — the DB write is the source of
+        // truth; if the broker push fails, dispatched runs will pick up
+        // the new token on the next mintSession (or via the 401-driven
+        // retry path in M4).
+        if (result && result.outcome === "success" && broker) {
+          try {
+            await broker.pushCredential({
+              companyId: (row as { companyId: string }).companyId,
+              connectionId: row.id,
+              field: "access",
+              value: result.accessToken,
+            });
+          } catch (pushErr) {
+            oauthLogger.warn(
+              {
+                connectionId: row.id,
+                err: { message: (pushErr as Error).message },
+              },
+              "credential-broker pushCredential failed after refresh",
+            );
+          }
+        }
       } catch (err) {
         oauthLogger.error(
           {

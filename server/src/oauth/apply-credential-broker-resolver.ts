@@ -43,6 +43,51 @@ import {
  */
 
 /**
+ * Build the RegisterCredentialBrokerCtx the credential broker needs to mint
+ * sessions. Exposed so the refresh worker can pass the same ctx shape as
+ * the dispatch path — first call wins for the cached broker, so consistency
+ * matters more than recency.
+ */
+export function buildCredentialBrokerCtx(deps: {
+  db: Db;
+  registry: ProviderRegistry;
+  logger: Logger;
+}) {
+  return {
+    resolveConnections: async (companyId: string) => {
+      const connRows = await deps.db
+        .select({
+          id: oauthConnections.id,
+          providerId: oauthConnections.providerId,
+        })
+        .from(oauthConnections)
+        .where(eq(oauthConnections.companyId, companyId));
+      const out: Array<{
+        id: string;
+        providerId: string;
+        hosts: string[];
+        headerInjection: { header: string; format: string };
+      }> = [];
+      for (const row of connRows) {
+        const provider = deps.registry.get(row.providerId);
+        if (!provider) continue;
+        if (provider.config.broker?.supported !== true) continue;
+        const hosts = extractHostsFromProviderConfig(provider.config);
+        if (hosts.length === 0) continue;
+        out.push({
+          id: row.id,
+          providerId: row.providerId,
+          hosts,
+          headerInjection: { header: "Authorization", format: "Bearer {value}" },
+        });
+      }
+      return out;
+    },
+    logger: deps.logger,
+  };
+}
+
+/**
  * Pull unique hostnames out of a provider's endpoints URLs. These are
  * the upstream hosts the broker's proxy will allowlist for the
  * provider's OAuth bindings.
@@ -189,41 +234,7 @@ export async function applyCredentialBrokerResolver(
 
   const byId = new Map(rows.map((r) => [r.id, r] as const));
 
-  const broker = await resolveCredentialBroker({
-    resolveConnections: async (companyId) => {
-      const connRows = await deps.db
-        .select({
-          id: oauthConnections.id,
-          providerId: oauthConnections.providerId,
-        })
-        .from(oauthConnections)
-        .where(eq(oauthConnections.companyId, companyId));
-      const out: Array<{
-        id: string;
-        providerId: string;
-        hosts: string[];
-        headerInjection: { header: string; format: string };
-      }> = [];
-      for (const row of connRows) {
-        const provider = deps.registry.get(row.providerId);
-        if (!provider) continue;
-        if (provider.config.broker?.supported !== true) continue;
-        const hosts = extractHostsFromProviderConfig(provider.config);
-        if (hosts.length === 0) continue;
-        out.push({
-          id: row.id,
-          providerId: row.providerId,
-          hosts,
-          // OAuth bearer is the convention for all the providers we
-          // ship in M3 (github, slack, linear, …). Per-provider header
-          // overrides can be added later by extending the YAML.
-          headerInjection: { header: "Authorization", format: "Bearer {value}" },
-        });
-      }
-      return out;
-    },
-    logger: deps.logger,
-  });
+  const broker = await resolveCredentialBroker(buildCredentialBrokerCtx(deps));
 
   const decision = resolveCredentialDelivery({
     explicit: input.explicit,
