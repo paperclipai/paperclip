@@ -213,19 +213,23 @@ export function approvalRoutes(
       const linkedIssueIds = linkedIssueDetails.issueIds;
       const primaryIssueId = linkedIssueIds[0] ?? null;
 
-      await logActivity(db, {
-        companyId: approval.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
-        action: "approval.approved",
-        entityType: "approval",
-        entityId: approval.id,
-        details: {
-          type: approval.type,
-          requestedByAgentId: approval.requestedByAgentId,
-          ...linkedIssueDetails,
-        },
-      });
+      try {
+        await logActivity(db, {
+          companyId: approval.companyId,
+          actorType: "user",
+          actorId: req.actor.userId ?? "board",
+          action: "approval.approved",
+          entityType: "approval",
+          entityId: approval.id,
+          details: {
+            type: approval.type,
+            requestedByAgentId: approval.requestedByAgentId,
+            ...linkedIssueDetails,
+          },
+        });
+      } catch (err) {
+        logger.warn({ err, approvalId: approval.id }, "failed to log approval approval activity");
+      }
 
       notifyApprovalResolved(approval);
 
@@ -310,15 +314,19 @@ export function approvalRoutes(
       const linkedIssueRefs = await listLinkedIssueRefs(approval.id, [], { action: "approval.rejected", phase: "after" });
       const linkedIssueDetails = linkedIssueActivityDetails(linkedIssueRefs);
 
-      await logActivity(db, {
-        companyId: approval.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
-        action: "approval.rejected",
-        entityType: "approval",
-        entityId: approval.id,
-        details: { type: approval.type, ...linkedIssueDetails },
-      });
+      try {
+        await logActivity(db, {
+          companyId: approval.companyId,
+          actorType: "user",
+          actorId: req.actor.userId ?? "board",
+          action: "approval.rejected",
+          entityType: "approval",
+          entityId: approval.id,
+          details: { type: approval.type, ...linkedIssueDetails },
+        });
+      } catch (err) {
+        logger.warn({ err, approvalId: approval.id }, "failed to log approval rejection activity");
+      }
 
       notifyApprovalResolved(approval);
     }

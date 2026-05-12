@@ -2181,27 +2181,34 @@ export function buildHostServices(
         const issueIds = linkedIssues.map((issue) => issue.id);
         const issueRefs = linkedIssues.map((issue) => ({ id: issue.id, identifier: issue.identifier ?? null }));
 
-        await logActivity(db, {
-          companyId,
-          actorType: "plugin",
-          actorId: pluginId,
-          agentId: params.actorAgentId ?? undefined,
-          runId: params.actorRunId ?? undefined,
-          action: "approval.created",
-          entityType: "approval",
-          entityId: row.id,
-          details: {
-            type: row.type,
-            sourcePluginId: pluginId,
-            sourcePluginKey: pluginKey,
-            issueIds,
-            linkedIssueIds: issueIds,
-            issueRefs,
-            initiatingActorType: params.actorAgentId ? "agent" : "plugin",
-            initiatingActorId: params.actorAgentId ?? pluginId,
-            ...(params.actorRunId ? { initiatingRunId: params.actorRunId } : {}),
-          },
-        });
+        try {
+          await logActivity(db, {
+            companyId,
+            actorType: "plugin",
+            actorId: pluginId,
+            agentId: params.actorAgentId ?? undefined,
+            runId: params.actorRunId ?? undefined,
+            action: "approval.created",
+            entityType: "approval",
+            entityId: row.id,
+            details: {
+              type: row.type,
+              sourcePluginId: pluginId,
+              sourcePluginKey: pluginKey,
+              issueIds,
+              linkedIssueIds: issueIds,
+              issueRefs,
+              initiatingActorType: params.actorAgentId ? "agent" : "plugin",
+              initiatingActorId: params.actorAgentId ?? pluginId,
+              ...(params.actorRunId ? { initiatingRunId: params.actorRunId } : {}),
+            },
+          });
+        } catch (err) {
+          logger.warn(
+            { err, approvalId: row.id, sourcePluginId: pluginId },
+            "failed to log plugin approval creation activity",
+          );
+        }
 
         return { approvalId: row.id, status: row.status };
       },

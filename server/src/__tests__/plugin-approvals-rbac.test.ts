@@ -328,6 +328,64 @@ describe("WF-1 RBAC: approve / reject require board actor", () => {
     );
   });
 
+  it("approve: still notifies the plugin worker when audit logging fails", async () => {
+    const notifyMock = vi.fn();
+    const mockWorker = { notify: notifyMock };
+    const mockWorkerManager = {
+      getWorker: vi.fn(() => mockWorker),
+    };
+    mockLogActivity.mockRejectedValueOnce(new Error("audit unavailable"));
+
+    mockApprovalService.approve.mockResolvedValue({
+      approval: {
+        ...pluginApproval,
+        status: "approved",
+        decidedByUserId: "user-board",
+        decidedAt: new Date("2026-05-01T12:00:00.000Z"),
+      },
+      applied: true,
+    });
+
+    const res = await request(await createApp("board", ["company-1"], mockWorkerManager as any))
+      .post("/api/approvals/approval-pw-1/approve")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(notifyMock).toHaveBeenCalledWith(
+      "approvals.resolved",
+      expect.objectContaining({ approvalId: "approval-pw-1", status: "approved" }),
+    );
+  });
+
+  it("reject: still notifies the plugin worker when audit logging fails", async () => {
+    const notifyMock = vi.fn();
+    const mockWorker = { notify: notifyMock };
+    const mockWorkerManager = {
+      getWorker: vi.fn(() => mockWorker),
+    };
+    mockLogActivity.mockRejectedValueOnce(new Error("audit unavailable"));
+
+    mockApprovalService.reject.mockResolvedValue({
+      approval: {
+        ...pluginApproval,
+        status: "rejected",
+        decidedByUserId: "user-board",
+        decidedAt: new Date("2026-05-01T12:00:00.000Z"),
+      },
+      applied: true,
+    });
+
+    const res = await request(await createApp("board", ["company-1"], mockWorkerManager as any))
+      .post("/api/approvals/approval-pw-1/reject")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(notifyMock).toHaveBeenCalledWith(
+      "approvals.resolved",
+      expect.objectContaining({ approvalId: "approval-pw-1", status: "rejected" }),
+    );
+  });
+
   it("approve: skips notification when worker is not running", async () => {
     const mockWorkerManager = { getWorker: vi.fn(() => null) };
 
