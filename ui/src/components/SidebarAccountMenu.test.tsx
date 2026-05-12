@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarAccountMenu } from "./SidebarAccountMenu";
+import { sidebarAccountMenu } from "../lib/i18n";
 
 const mockAuthApi = vi.hoisted(() => ({
   getSession: vi.fn(),
@@ -97,7 +98,7 @@ describe("SidebarAccountMenu", () => {
     expect(container.textContent).toContain("Jane Example");
     expect(container.textContent).not.toContain("jane@example.com");
 
-    const trigger = container.querySelector('button[aria-label="Open account menu"]');
+    const trigger = container.querySelector(`button[aria-label="${sidebarAccountMenu.openMenuAria}"]`);
     expect(trigger).not.toBeNull();
 
     await act(async () => {
@@ -105,9 +106,9 @@ describe("SidebarAccountMenu", () => {
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Edit profile");
-    expect(document.body.textContent).toContain("Documentation");
-    expect(document.body.textContent).toContain("Paperclip v1.2.3");
+    expect(document.body.textContent).toContain(sidebarAccountMenu.editProfile);
+    expect(document.body.textContent).toContain(sidebarAccountMenu.documentation);
+    expect(document.body.textContent).toContain(`${sidebarAccountMenu.versionPrefix}1.2.3`);
     expect(document.body.textContent).toContain("jane@example.com");
     expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
       .toContain("w-[var(--radix-popover-trigger-width)]");

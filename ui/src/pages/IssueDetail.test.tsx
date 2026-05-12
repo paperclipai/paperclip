@@ -6,6 +6,7 @@ import { act, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueDetail } from "./IssueDetail";
+import { issueDetailUi } from "../lib/i18n";
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -931,13 +932,13 @@ describe("IssueDetail", () => {
     await flushReact();
 
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("Subtree pause is active.");
-      expect(mockIssuesListRender.mock.calls.at(-1)?.[0].issueBadgeById.get("child-1")).toBe("Paused");
+      expect(container.textContent).toContain(issueDetailUi.subtreePauseActive);
+      expect(mockIssuesListRender.mock.calls.at(-1)?.[0].issueBadgeById.get("child-1")).toBe(issueDetailUi.childPausedBadge);
       expect(mockIssuesListRender.mock.calls.at(-1)?.[0].showProgressSummary).toBe(true);
     });
 
     const resumeButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.trim() === "Resume subtree");
+      .find((button) => button.textContent?.trim() === issueDetailUi.resumeSubtree);
     expect(resumeButton).toBeTruthy();
 
     await act(async () => {
@@ -946,7 +947,7 @@ describe("IssueDetail", () => {
     await flushReact();
 
     const applyResumeButton = Array.from(container.querySelectorAll("button"))
-      .filter((button) => button.textContent?.trim() === "Resume subtree")
+      .filter((button) => button.textContent?.trim() === issueDetailUi.resumeSubtree)
       .at(-1);
     expect(applyResumeButton).toBeTruthy();
     expect(container.textContent).toContain("CodexCoder");
@@ -963,11 +964,11 @@ describe("IssueDetail", () => {
     });
     expect(mockIssuesApi.getTreeControlState.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({
-      title: "Subtree resumed",
+      title: issueDetailUi.toastSubtreeResumed,
       body: "Ready to continue",
     }));
     await waitForAssertion(() => {
-      expect(container.textContent).not.toContain("Subtree pause is active.");
+      expect(container.textContent).not.toContain(issueDetailUi.subtreePauseActive);
       expect(mockIssuesListRender.mock.calls.at(-1)?.[0].issueBadgeById.has("child-1")).toBe(false);
     });
   });
@@ -1010,7 +1011,9 @@ describe("IssueDetail", () => {
     await flushReact();
     await flushReact();
 
-    const moreButton = container.querySelector('button[aria-label="More issue actions"]') as HTMLButtonElement | null;
+    const moreButton = container.querySelector(
+      `button[aria-label="${issueDetailUi.moreIssueActionsAria}"]`,
+    ) as HTMLButtonElement | null;
     expect(moreButton).toBeTruthy();
 
     await act(async () => {
@@ -1019,7 +1022,7 @@ describe("IssueDetail", () => {
     await flushReact();
 
     const pauseMenuButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.trim() === "Pause subtree...");
+      .find((button) => button.textContent?.trim() === issueDetailUi.pauseSubtreeEllipsis);
     expect(pauseMenuButton).toBeTruthy();
 
     await act(async () => {
@@ -1038,10 +1041,10 @@ describe("IssueDetail", () => {
     expect(container.textContent).not.toContain("Active runs cancelled");
     expect(container.textContent).toContain("Paused child");
     expect(container.textContent).toContain("Completed child");
-    expect(container.textContent).toContain("Complete");
+    expect(container.textContent).toContain(issueDetailUi.previewSkippedTerminalStatus);
 
     const pauseApplyButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.trim() === "Pause and stop work");
+      .find((button) => button.textContent?.trim() === issueDetailUi.pauseSubtreeStopWork);
     expect(pauseApplyButton).toBeTruthy();
 
     await act(async () => {
@@ -1099,13 +1102,13 @@ describe("IssueDetail", () => {
     await flushReact();
 
     expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
-      stopRunLabel: "Pause work",
-      stoppingRunLabel: "Pausing...",
+      stopRunLabel: issueDetailUi.pauseWork,
+      stoppingRunLabel: issueDetailUi.pausingWork,
       issueWorkMode: "standard",
     });
 
     const chatPauseButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.trim() === "Pause work");
+      .find((button) => button.textContent?.trim() === issueDetailUi.pauseWork);
     expect(chatPauseButton).toBeTruthy();
 
     await act(async () => {
@@ -1115,12 +1118,14 @@ describe("IssueDetail", () => {
 
     expect(mockIssuesApi.createTreeHold).toHaveBeenCalledWith("PAP-1", {
       mode: "pause",
-      reason: "Paused from active run controls.",
+      reason: issueDetailUi.pausedFromActiveRunReason,
       releasePolicy: { strategy: "manual", note: "leaf_pause" },
       metadata: { source: "issue_active_run_control", runId: "run-active-1" },
     });
 
-    const moreButton = container.querySelector('button[aria-label="More issue actions"]') as HTMLButtonElement | null;
+    const moreButton = container.querySelector(
+      `button[aria-label="${issueDetailUi.moreIssueActionsAria}"]`,
+    ) as HTMLButtonElement | null;
     expect(moreButton).toBeTruthy();
     await act(async () => {
       moreButton!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
@@ -1128,7 +1133,7 @@ describe("IssueDetail", () => {
     await flushReact();
 
     const pauseMenuButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.trim() === "Pause work...");
+      .find((button) => button.textContent?.trim() === issueDetailUi.pauseWorkEllipsis);
     expect(pauseMenuButton).toBeTruthy();
   });
 
@@ -1146,7 +1151,7 @@ describe("IssueDetail", () => {
     expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
       issueWorkMode: "planning",
     });
-    expect(container.textContent).toContain("Planning");
+    expect(container.textContent).toContain(issueDetailUi.planningModeChip);
   });
 
   it("forwards composer work mode changes to the issues API", async () => {
@@ -1239,13 +1244,13 @@ describe("IssueDetail", () => {
     await flushReact();
 
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("Paused by board.");
+      expect(container.textContent).toContain(issueDetailUi.pausedByBoard);
       expect(container.textContent).toContain("in_review");
-      expect(container.textContent).not.toContain("Subtree pause is active.");
+      expect(container.textContent).not.toContain(issueDetailUi.subtreePauseActive);
     });
 
     const resumeButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.trim() === "Resume work");
+      .find((button) => button.textContent?.trim() === issueDetailUi.resumeWorkLeaf);
     expect(resumeButton).toBeTruthy();
 
     await act(async () => {
@@ -1258,7 +1263,7 @@ describe("IssueDetail", () => {
     expect(wakeCheckbox?.checked).toBe(true);
 
     const applyResumeButton = Array.from(container.querySelectorAll("button"))
-      .filter((button) => button.textContent?.trim() === "Resume work")
+      .filter((button) => button.textContent?.trim() === issueDetailUi.resumeWorkLeaf)
       .at(-1);
     expect(applyResumeButton).toBeTruthy();
 
@@ -1324,7 +1329,9 @@ describe("IssueDetail", () => {
     await flushReact();
     await flushReact();
 
-    const moreButton = container.querySelector('button[aria-label="More issue actions"]') as HTMLButtonElement | null;
+    const moreButton = container.querySelector(
+      `button[aria-label="${issueDetailUi.moreIssueActionsAria}"]`,
+    ) as HTMLButtonElement | null;
     expect(moreButton).toBeTruthy();
 
     await act(async () => {
@@ -1333,7 +1340,7 @@ describe("IssueDetail", () => {
     await flushReact();
 
     const restoreMenuButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.trim() === "Restore subtree...");
+      .find((button) => button.textContent?.trim() === issueDetailUi.restoreSubtreeEllipsis);
     expect(restoreMenuButton).toBeTruthy();
 
     await act(async () => {
@@ -1346,11 +1353,11 @@ describe("IssueDetail", () => {
       mode: "restore",
       releasePolicy: { strategy: "manual" },
     });
-    expect(container.textContent).toContain("Restore issues cancelled by this subtree operation so work can resume.");
+    expect(container.textContent).toContain(issueDetailUi.restoreSubtreeHelp);
     expect(container.textContent).toContain("Cancelled child");
 
     const restoreApplyButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.trim() === "Restore 1 issues");
+      .find((button) => button.textContent?.trim() === issueDetailUi.restoreIssuesButton(1));
     expect(restoreApplyButton).toBeTruthy();
 
     await act(async () => {
@@ -1396,7 +1403,7 @@ describe("IssueDetail", () => {
     await flushReact();
 
     const cancelMenuButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.trim() === "Cancel subtree...");
+      .find((button) => button.textContent?.trim() === issueDetailUi.cancelSubtreeEllipsis);
     expect(cancelMenuButton).toBeTruthy();
 
     await act(async () => {
@@ -1420,13 +1427,13 @@ describe("IssueDetail", () => {
       .find((element) =>
         typeof element.className === "string"
         && element.className.includes("overflow-y-auto")
-        && element.textContent?.includes("Reason (optional)"),
+        && element.textContent?.includes(issueDetailUi.treeControlReasonOptional),
       );
     expect(bodyScrollRegion?.className).toContain("min-h-0");
     expect(bodyScrollRegion?.className).toContain("overscroll-contain");
 
     const cancelApplyButton = Array.from(dialogContent!.querySelectorAll("button"))
-      .find((button) => button.textContent?.trim() === "Cancel 24 issues") as HTMLButtonElement | undefined;
+      .find((button) => button.textContent?.trim() === issueDetailUi.cancelIssuesButton(24)) as HTMLButtonElement | undefined;
     expect(cancelApplyButton).toBeTruthy();
     expect(cancelApplyButton!.disabled).toBe(true);
 
@@ -1442,7 +1449,7 @@ describe("IssueDetail", () => {
       .find((element) =>
         typeof element.className === "string"
         && element.className.includes("border-t")
-        && element.textContent?.includes("Close"),
+        && element.textContent?.includes(issueDetailUi.closeDialog),
       );
     expect(footer?.className).toContain("bg-background");
   });

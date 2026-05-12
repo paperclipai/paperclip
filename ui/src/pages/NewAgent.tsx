@@ -17,6 +17,7 @@ import {
 import { Shield } from "lucide-react";
 import { cn, agentUrl } from "../lib/utils";
 import { roleLabels } from "../components/agent-config-primitives";
+import { agentDetail, newAgentAdvancedPage } from "../lib/i18n";
 import {
   AgentConfigForm,
   AdapterEnvironmentResult,
@@ -98,8 +99,8 @@ export function NewAgent() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Agents", href: "/agents" },
-      { label: "New Agent" },
+      { label: agentDetail.agentsCrumb, href: "/agents" },
+      { label: newAgentAdvancedPage.breadcrumbNew },
     ]);
   }, [setBreadcrumbs]);
 
@@ -129,7 +130,7 @@ export function NewAgent() {
       navigate(agentUrl(result.agent));
     },
     onError: (error) => {
-      setFormError(error instanceof Error ? error.message : "Failed to create agent");
+      setFormError(error instanceof Error ? error.message : newAgentAdvancedPage.hireFailedFallback);
     },
   });
 
@@ -143,7 +144,7 @@ export function NewAgent() {
     setFormError(null);
     if (configValues.adapterType === "opencode_local") {
       if (!isValidOpenCodeModelId(configValues.model)) {
-        setFormError("OpenCode requires an explicit model in provider/model format.");
+        setFormError(newAgentAdvancedPage.openCodeModelRequired);
         return;
       }
     }
@@ -189,10 +190,8 @@ export function NewAgent() {
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <div>
-        <h1 className="text-lg font-semibold">New Agent</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Advanced agent configuration
-        </p>
+        <h1 className="text-lg font-semibold">{newAgentAdvancedPage.pageTitle}</h1>
+        <p className="text-sm text-muted-foreground mt-1">{newAgentAdvancedPage.pageSubtitle}</p>
       </div>
 
       <div className="border border-border">
@@ -200,7 +199,7 @@ export function NewAgent() {
         <div className="px-4 pt-4 pb-2">
           <input
             className="w-full text-lg font-semibold bg-transparent outline-none placeholder:text-muted-foreground/50"
-            placeholder="Agent name"
+            placeholder={newAgentAdvancedPage.namePlaceholder}
             value={name}
             onChange={(e) => setName(e.target.value)}
             autoFocus
@@ -211,7 +210,7 @@ export function NewAgent() {
         <div className="px-4 pb-2">
           <input
             className="w-full bg-transparent outline-none text-sm text-muted-foreground placeholder:text-muted-foreground/40"
-            placeholder="Title (e.g. VP of Engineering)"
+            placeholder={newAgentAdvancedPage.titlePlaceholder}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
           />
@@ -269,15 +268,11 @@ export function NewAgent() {
         <div className="border-t border-border px-4 py-4">
           <div className="space-y-3">
             <div>
-              <h2 className="text-sm font-medium">Company skills</h2>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Optional skills from the company library. Built-in Paperclip runtime skills are added automatically.
-              </p>
+              <h2 className="text-sm font-medium">{newAgentAdvancedPage.companySkillsHeading}</h2>
+              <p className="mt-1 text-xs text-muted-foreground">{newAgentAdvancedPage.companySkillsHint}</p>
             </div>
             {availableSkills.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                No optional company skills installed yet.
-              </p>
+              <p className="text-xs text-muted-foreground">{newAgentAdvancedPage.noOptionalSkills}</p>
             ) : (
               <div className="space-y-3">
                 {availableSkills.map((skill) => {
@@ -307,7 +302,7 @@ export function NewAgent() {
         {/* Footer */}
         <div className="border-t border-border px-4 py-3">
           {isFirstAgent && (
-            <p className="text-xs text-muted-foreground mb-2">This will be the CEO</p>
+            <p className="text-xs text-muted-foreground mb-2">{newAgentAdvancedPage.ceoFirstAgentNote}</p>
           )}
           {formError && (
             <p className="text-xs text-destructive mb-2">{formError}</p>
@@ -323,7 +318,7 @@ export function NewAgent() {
             )}
             <div className="flex items-center justify-between gap-2">
               <Button variant="outline" size="sm" onClick={() => navigate("/agents")}>
-                Cancel
+                {newAgentAdvancedPage.cancel}
               </Button>
               <div className="flex items-center gap-2">
                 <Button
@@ -333,14 +328,14 @@ export function NewAgent() {
                   disabled={testAgentState.disabled}
                   onClick={() => testAgentAction?.()}
                 >
-                  {testAgentState.pending ? "Testing..." : "Test Agent"}
+                  {testAgentState.pending ? newAgentAdvancedPage.testingEllipsis : newAgentAdvancedPage.testAgent}
                 </Button>
                 <Button
                   size="sm"
                   disabled={!name.trim() || createAgent.isPending}
                   onClick={handleSubmit}
                 >
-                  {createAgent.isPending ? "Creating…" : "Create agent"}
+                  {createAgent.isPending ? newAgentAdvancedPage.creatingEllipsis : newAgentAdvancedPage.createAgent}
                 </Button>
               </div>
             </div>

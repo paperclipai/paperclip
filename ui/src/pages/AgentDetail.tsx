@@ -22,7 +22,7 @@ import { useToastActions } from "../context/ToastContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
-import { agentDetail, agentDetailUi, nav } from "../lib/i18n";
+import { agentDetail, agentDetailUi, nav, companiesPage } from "../lib/i18n";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { PageTabBar } from "../components/PageTabBar";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
@@ -802,7 +802,7 @@ export function AgentDetail() {
       }
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Action failed");
+      setActionError(err instanceof Error ? err.message : agentDetailUi.actionFailedFallback);
     },
   });
 
@@ -844,7 +844,7 @@ export function AgentDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.taskSessions(agentLookupRef) });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reset session");
+      setActionError(err instanceof Error ? err.message : agentDetailUi.resetSessionFailedFallback);
     },
   });
 
@@ -860,7 +860,7 @@ export function AgentDetail() {
       }
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to update permissions");
+      setActionError(err instanceof Error ? err.message : agentDetailUi.updatePermissionsFailedFallback);
     },
   });
 
@@ -948,7 +948,7 @@ export function AgentDetail() {
           <RunButton
             onClick={() => agentAction.mutate("invoke")}
             disabled={agentAction.isPending || isPendingApproval}
-            label="Run Heartbeat"
+            label={agentDetailUi.runHeartbeat}
           />
           <PauseResumeButton
             isPaused={agent.status === "paused"}
@@ -986,7 +986,7 @@ export function AgentDetail() {
                 }}
               >
                 <Copy className="h-3 w-3" />
-                Copy Agent ID
+                {agentDetailUi.copyAgentId}
               </button>
               <button
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
@@ -996,7 +996,7 @@ export function AgentDetail() {
                 }}
               >
                 <RotateCcw className="h-3 w-3" />
-                Reset Sessions
+                {agentDetailUi.resetSessions}
               </button>
               <button
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
@@ -1006,7 +1006,7 @@ export function AgentDetail() {
                 }}
               >
                 <Trash2 className="h-3 w-3" />
-                Terminate
+                {agentDetailUi.terminateAgent}
               </button>
             </PopoverContent>
           </Popover>
@@ -1059,14 +1059,14 @@ export function AgentDetail() {
               onClick={() => cancelConfigActionRef.current?.()}
               disabled={configSaving}
             >
-              Cancel
+              {companiesPage.cancel}
             </Button>
             <Button
               size="sm"
               onClick={() => saveConfigActionRef.current?.()}
               disabled={configSaving}
             >
-              {configSaving ? "Saving…" : "Save"}
+              {configSaving ? agentDetailUi.savingEllipsis : agentDetailUi.saveButton}
             </Button>
           </div>
         </div>
@@ -1085,14 +1085,14 @@ export function AgentDetail() {
               onClick={() => cancelConfigActionRef.current?.()}
               disabled={configSaving}
             >
-              Cancel
+              {companiesPage.cancel}
             </Button>
             <Button
               size="sm"
               onClick={() => saveConfigActionRef.current?.()}
               disabled={configSaving}
             >
-              {configSaving ? "Saving…" : "Save"}
+              {configSaving ? agentDetailUi.savingEllipsis : agentDetailUi.saveButton}
             </Button>
           </div>
         </div>
@@ -1289,16 +1289,16 @@ function AgentOverview({
 
       {/* Charts */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <ChartCard title="Run Activity" subtitle="Last 14 days">
+        <ChartCard title={agentDetailUi.chartRunActivity} subtitle={agentDetailUi.chartLast14Days}>
           <RunActivityChart runs={runs} />
         </ChartCard>
-        <ChartCard title="Issues by Priority" subtitle="Last 14 days">
+        <ChartCard title={agentDetailUi.chartIssuesByPriority} subtitle={agentDetailUi.chartLast14Days}>
           <PriorityChart issues={assignedIssues} />
         </ChartCard>
-        <ChartCard title="Issues by Status" subtitle="Last 14 days">
+        <ChartCard title={agentDetailUi.chartIssuesByStatus} subtitle={agentDetailUi.chartLast14Days}>
           <IssueStatusChart issues={assignedIssues} />
         </ChartCard>
-        <ChartCard title="Success Rate" subtitle="Last 14 days">
+        <ChartCard title={agentDetailUi.chartSuccessRate} subtitle={agentDetailUi.chartLast14Days}>
           <SuccessRateChart runs={runs} />
         </ChartCard>
       </div>
@@ -1311,7 +1311,7 @@ function AgentOverview({
             to={`/issues?participantAgentId=${agentId}`}
             className="text-xs text-muted-foreground hover:text-foreground transition-colors"
           >
-            See All &rarr;
+            {agentDetailUi.seeAllIssues}
           </Link>
         </div>
         {assignedIssues.length === 0 ? (
@@ -1329,7 +1329,7 @@ function AgentOverview({
             ))}
             {assignedIssues.length > 10 && (
               <div className="px-3 py-2 text-xs text-muted-foreground text-center border-t border-border">
-                +{assignedIssues.length - 10} more issues
+                {agentDetailUi.moreIssuesFooter(assignedIssues.length - 10)}
               </div>
             )}
           </div>
@@ -1588,8 +1588,8 @@ function ConfigurationTab({
           ? err.message
           : err instanceof Error
             ? err.message
-            : "Could not save agent";
-      pushToast({ title: "Save failed", body: message, tone: "error" });
+            : agentDetailUi.couldNotSaveAgent;
+      pushToast({ title: agentDetailUi.saveFailedToastTitle, body: message, tone: "error" });
     },
   });
 
@@ -2136,7 +2136,7 @@ function PromptsTab({
                         });
                       }}
                       className="font-mono text-sm"
-                      placeholder="/absolute/path/to/agent/prompts"
+                      placeholder={agentDetailUi.bundlePathPlaceholder}
                     />
                     {currentRootPath && (
                       <CopyText text={currentRootPath} className="shrink-0">
@@ -2233,7 +2233,7 @@ function PromptsTab({
               <Input
                 value={newFilePath}
                 onChange={(event) => setNewFilePath(event.target.value)}
-                placeholder="TOOLS.md"
+                placeholder={agentDetailUi.newInstructionFilePlaceholder}
                 className="font-mono text-sm"
                 autoFocus
                 onKeyDown={(event) => {
@@ -2360,7 +2360,7 @@ function PromptsTab({
                 <CopyText
                   text={displayValue}
                   ariaLabel="Copy instructions file as markdown"
-                  title="Copy as markdown"
+                  title={agentDetailUi.copyAsMarkdownTitle}
                   copiedLabel="Copied"
                   className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-accent hover:text-foreground"
                 >
@@ -2397,7 +2397,7 @@ function PromptsTab({
               key={selectedOrEntryFile}
               value={displayValue}
               onChange={(value) => setDraft(value ?? "")}
-              placeholder="# Agent instructions"
+              placeholder={agentDetailUi.instructionsHeadingPlaceholder}
               className="min-w-0 overflow-hidden"
               contentClassName="min-h-[420px] max-w-full break-words text-sm font-mono"
               imageUploadHandler={async (file) => {
@@ -2411,7 +2411,7 @@ function PromptsTab({
               value={displayValue}
               onChange={(event) => setDraft(event.target.value)}
               className="min-h-[420px] w-full min-w-0 rounded-md border border-border bg-transparent px-3 py-2 font-mono text-sm outline-none"
-              placeholder="File contents"
+              placeholder={agentDetailUi.fileContentsPlaceholder}
             />
           )}
         </div>
@@ -2647,13 +2647,13 @@ export function AgentSkillsTab({
   const skillApplicationLabel = useMemo(() => {
     switch (skillSnapshot?.mode) {
       case "persistent":
-        return "Kept in the workspace";
+        return agentDetailUi.skillModePersistent;
       case "ephemeral":
-        return "Applied when the agent runs";
+        return agentDetailUi.skillModeEphemeral;
       case "unsupported":
-        return "Tracked only";
+        return agentDetailUi.skillModeUnsupported;
       default:
-        return "Unknown";
+        return agentDetailUi.skillModeUnknown;
     }
   }, [skillSnapshot?.mode]);
   const unsupportedSkillMessage = useMemo(() => {
@@ -2663,18 +2663,18 @@ export function AgentSkillsTab({
       typeof agent.adapterConfig.agent === "string" &&
       agent.adapterConfig.agent === "custom"
     ) {
-      return "Paperclip cannot manage skills for custom ACP commands yet.";
+      return agentDetailUi.unsupportedSkillAcpxCustom;
     }
     if (agent.adapterType === "openclaw_gateway") {
-      return "Paperclip cannot manage OpenClaw skills here. Visit your OpenClaw instance to manage this agent's skills.";
+      return agentDetailUi.unsupportedSkillOpenclaw;
     }
-    return "Paperclip cannot manage skills for this adapter yet. Manage them in the adapter directly.";
+    return agentDetailUi.unsupportedSkillGeneric;
   }, [agent.adapterConfig.agent, agent.adapterType, skillSnapshot?.mode]);
   const hasUnsavedChanges = !arraysEqual(skillDraft, lastSavedSkills);
   const saveStatusLabel = syncSkills.isPending
-    ? "Saving changes..."
+    ? agentDetailUi.skillSavingChanges
     : hasUnsavedChanges
-      ? "Saving soon..."
+      ? agentDetailUi.skillSavingSoon
       : null;
 
   return (
@@ -2684,7 +2684,7 @@ export function AgentSkillsTab({
           to="/skills"
           className="text-sm font-medium text-foreground underline-offset-4 no-underline transition-colors hover:text-foreground/70 hover:underline"
         >
-          View company skills library
+          {agentDetailUi.viewCompanySkillsLibrary}
         </Link>
         {saveStatusLabel ? (
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -3107,7 +3107,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
         payload: retryPayload,
       }, run.companyId);
       if (!("id" in result)) {
-        throw new Error(result.message ?? "Retry was skipped.");
+        throw new Error(result.message ?? agentDetailUi.retrySkippedFallback);
       }
       return result;
     },
@@ -3163,8 +3163,8 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   }, [isRunning, run.startedAt]);
 
   const timeFormat: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false };
-  const startTime = run.startedAt ? new Date(run.startedAt).toLocaleTimeString("en-US", timeFormat) : null;
-  const endTime = run.finishedAt ? new Date(run.finishedAt).toLocaleTimeString("en-US", timeFormat) : null;
+  const startTime = run.startedAt ? new Date(run.startedAt).toLocaleTimeString("zh-CN", timeFormat) : null;
+  const endTime = run.finishedAt ? new Date(run.finishedAt).toLocaleTimeString("zh-CN", timeFormat) : null;
   const durationSec = run.startedAt && run.finishedAt
     ? Math.round((new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 1000)
     : null;
@@ -3193,7 +3193,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   onClick={() => cancelRun.mutate()}
                   disabled={cancelRun.isPending}
                 >
-                  {cancelRun.isPending ? "Cancelling…" : "Cancel"}
+                  {cancelRun.isPending ? agentDetailUi.cancellingEllipsis : agentDetailUi.cancelRunButton}
                 </Button>
               )}
               {canResumeLostRun && (
@@ -3205,7 +3205,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   disabled={resumeRun.isPending}
                 >
                   <RotateCcw className="h-3.5 w-3.5 mr-1" />
-                  {resumeRun.isPending ? "Resuming…" : "Resume"}
+                  {resumeRun.isPending ? agentDetailUi.resumingEllipsis : agentDetailUi.resumeRunButton}
                 </Button>
               )}
               {canRetryRun && !canResumeLostRun && (
@@ -3217,7 +3217,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   disabled={retryRun.isPending}
                 >
                   <RotateCcw className="h-3.5 w-3.5 mr-1" />
-                  {retryRun.isPending ? "Retrying…" : "Retry"}
+                  {retryRun.isPending ? agentDetailUi.retryingEllipsis : agentDetailUi.retryRunButton}
                 </Button>
               )}
             </div>
@@ -3244,12 +3244,12 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
             })()}
             {resumeRun.isError && (
               <div className="text-xs text-destructive">
-                {resumeRun.error instanceof Error ? resumeRun.error.message : "Failed to resume run"}
+                {resumeRun.error instanceof Error ? resumeRun.error.message : agentDetailUi.failedResumeRun}
               </div>
             )}
             {retryRun.isError && (
               <div className="text-xs text-destructive">
-                {retryRun.error instanceof Error ? retryRun.error.message : "Failed to retry run"}
+                {retryRun.error instanceof Error ? retryRun.error.message : agentDetailUi.failedRetryRun}
               </div>
             )}
             {startTime && (
@@ -3265,7 +3265,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 </div>
                 {displayDurationSec !== null && (
                   <div className="text-xs text-muted-foreground">
-                    Duration: {displayDurationSec >= 60 ? `${Math.floor(displayDurationSec / 60)}m ${displayDurationSec % 60}s` : `${displayDurationSec}s`}
+                    {agentDetailUi.durationLabel}{displayDurationSec >= 60 ? `${Math.floor(displayDurationSec / 60)} 分 ${displayDurationSec % 60} 秒` : `${displayDurationSec} 秒`}
                   </div>
                 )}
               </div>
@@ -3285,18 +3285,18 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   onClick={() => runClaudeLogin.mutate()}
                   disabled={runClaudeLogin.isPending}
                 >
-                  {runClaudeLogin.isPending ? "Running claude login..." : "Login to Claude Code"}
+                  {runClaudeLogin.isPending ? agentDetailUi.claudeLoginRunning : agentDetailUi.loginToClaudeCode}
                 </Button>
                 {runClaudeLogin.isError && (
                   <p className="text-xs text-destructive">
                     {runClaudeLogin.error instanceof Error
                       ? runClaudeLogin.error.message
-                      : "Failed to run Claude login"}
+                      : agentDetailUi.failedClaudeLogin}
                   </p>
                 )}
                 {claudeLoginResult?.loginUrl && (
                   <p className="text-xs">
-                    Login URL:
+                    {agentDetailUi.loginUrlLabel}
                     <a
                       href={claudeLoginResult.loginUrl}
                       className="text-blue-600 underline underline-offset-2 ml-1 break-all dark:text-blue-400"
@@ -3325,8 +3325,8 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
             )}
             {hasNonZeroExit && (
               <div className="text-xs text-red-600 dark:text-red-400">
-                Exit code {run.exitCode}
-                {run.signal && <span className="text-muted-foreground ml-1">(signal: {run.signal})</span>}
+                {agentDetailUi.exitCodeLabel} {run.exitCode}
+                {run.signal && <span className="text-muted-foreground ml-1">（{agentDetailUi.signalLabel}: {run.signal}）</span>}
               </div>
             )}
             {retryState && (
@@ -3673,7 +3673,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
             setLogLoading(false);
             return;
           }
-          setLogError(err instanceof Error ? err.message : "Failed to load run log");
+          setLogError(err instanceof Error ? err.message : agentDetailUi.failedLoadRunLog);
         }
       } finally {
         if (!cancelled) setLogLoading(false);
@@ -3697,7 +3697,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       setLogOffset(next);
       setHasMoreLog(result.nextOffset !== undefined);
     } catch (err) {
-      setLogError(err instanceof Error ? err.message : "Failed to load more run log");
+      setLogError(err instanceof Error ? err.message : agentDetailUi.failedLoadMoreRunLog);
     } finally {
       setLoadingMoreLog(false);
     }

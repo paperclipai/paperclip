@@ -615,7 +615,7 @@ export function IssueRunLedgerContent({
                     decision: "snooze",
                     evaluationIssueId: latestSilentRun.outputSilence?.evaluationIssueId ?? null,
                     snoozedUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-                    reason: "Snoozed from issue run ledger",
+                    reason: runLedger.snoozeReasonLedger,
                   })}
                 disabled={pendingWatchdogDecision != null}
               >
@@ -629,7 +629,7 @@ export function IssueRunLedgerContent({
                     runId: latestSilentRun.runId,
                     decision: "dismissed_false_positive",
                     evaluationIssueId: latestSilentRun.outputSilence?.evaluationIssueId ?? null,
-                    reason: "Dismissed from issue run ledger",
+                    reason: runLedger.dismissReasonLedger,
                   })}
                 disabled={pendingWatchdogDecision != null}
               >
