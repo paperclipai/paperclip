@@ -2159,7 +2159,16 @@ export function buildHostServices(
         if (params.issueId && row) {
           await issueApprovals.link(params.issueId, row.id);
         }
-        const linkedIssues = row ? await issueApprovals.listIssuesForApproval(row.id) : [];
+        let linkedIssues: Awaited<ReturnType<typeof issueApprovals.listIssuesForApproval>> = [];
+        try {
+          linkedIssues = row ? await issueApprovals.listIssuesForApproval(row.id) : [];
+        } catch (err) {
+          logger.warn(
+            { err, approvalId: row?.id, fallbackIssueId: params.issueId ?? null },
+            "failed to load linked issue refs for plugin approval creation activity",
+          );
+          linkedIssues = params.issueId ? [{ id: params.issueId, identifier: null } as typeof linkedIssues[number]] : [];
+        }
         const issueIds = linkedIssues.map((issue) => issue.id);
         const issueRefs = linkedIssues.map((issue) => ({ id: issue.id, identifier: issue.identifier ?? null }));
 
@@ -2258,7 +2267,15 @@ export function buildHostServices(
         const cancelResult = await approvalsService.cancel(params.approvalId, params.reason);
         if (cancelResult) {
           const now = cancelResult.decidedAt?.toISOString() ?? new Date().toISOString();
-          const linkedIssues = await issueApprovals.listIssuesForApproval(cancelResult.id);
+          let linkedIssues: Awaited<ReturnType<typeof issueApprovals.listIssuesForApproval>> = [];
+          try {
+            linkedIssues = await issueApprovals.listIssuesForApproval(cancelResult.id);
+          } catch (err) {
+            logger.warn(
+              { err, approvalId: cancelResult.id },
+              "failed to load linked issue refs for plugin approval cancellation activity",
+            );
+          }
           const issueIds = linkedIssues.map((issue) => issue.id);
           const issueRefs = linkedIssues.map((issue) => ({ id: issue.id, identifier: issue.identifier ?? null }));
           await logActivity(db, {

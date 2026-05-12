@@ -303,6 +303,12 @@ describe("approval routes idempotent retries", () => {
       createdAt: new Date("2026-04-06T00:00:00.000Z"),
       updatedAt: new Date("2026-04-06T00:00:00.000Z"),
     });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+      {
+        id: "00000000-0000-0000-0000-000000000001",
+        identifier: "PAP-approval",
+      },
+    ]);
 
     const res = await request(await createAgentApp())
       .post("/api/companies/company-1/approvals")
@@ -333,6 +339,16 @@ describe("approval routes idempotent retries", () => {
         actorType: "agent",
         actorId: "agent-1",
         action: "approval.created",
+        details: expect.objectContaining({
+          issueIds: ["00000000-0000-0000-0000-000000000001"],
+          linkedIssueIds: ["00000000-0000-0000-0000-000000000001"],
+          issueRefs: [
+            {
+              id: "00000000-0000-0000-0000-000000000001",
+              identifier: "PAP-approval",
+            },
+          ],
+        }),
       }),
     );
   });

@@ -791,6 +791,13 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
             sourcePluginId: pluginRecordId,
             sourcePluginKey: "paperclip.missions",
             issueIds: [issueId],
+            linkedIssueIds: [issueId],
+            issueRefs: [
+              {
+                id: issueId,
+                identifier: `${issuePrefix(companyId)}-approval`,
+              },
+            ],
             initiatingActorType: "agent",
             initiatingActorId: agentId,
             initiatingRunId: runId,
@@ -805,6 +812,13 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
             sourcePluginId: pluginRecordId,
             sourcePluginKey: "paperclip.missions",
             issueIds: [issueId],
+            linkedIssueIds: [issueId],
+            issueRefs: [
+              {
+                id: issueId,
+                identifier: `${issuePrefix(companyId)}-approval`,
+              },
+            ],
             reason: "mission withdrawn",
             status: "cancelled",
             decisionNote: "mission withdrawn",
