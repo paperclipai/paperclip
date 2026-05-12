@@ -29,6 +29,10 @@ import { Activity } from "./pages/Activity";
 import { Inbox } from "./pages/Inbox";
 import { Chat } from "./pages/Chat";
 import { CompanySettings } from "./pages/CompanySettings";
+import { CompanyContextPage } from "./pages/CompanyContext";
+import { CompanyReferencesPage } from "./pages/CompanyReferences";
+import { CompanyIntegrationsPage } from "./pages/CompanyIntegrations";
+import { ProjectBuilderPage } from "./pages/ProjectBuilder";
 import { CompanyEnvironments } from "./pages/CompanyEnvironments";
 import { CompanyAccess } from "./pages/CompanyAccess";
 import { CompanyInvites } from "./pages/CompanyInvites";
@@ -68,6 +72,10 @@ function boardRoutes() {
       <Route path="dashboard/live" element={<DashboardLive />} />
       <Route path="onboarding" element={<OnboardingRoutePage />} />
       <Route path="companies" element={<Companies />} />
+      <Route path="company/context" element={<CompanyContextPage />} />
+      <Route path="company/references" element={<CompanyReferencesPage />} />
+      <Route path="company/integrations" element={<CompanyIntegrationsPage />} />
+      <Route path="company/diagnose" element={<ProjectBuilderPage />} />
       <Route path="company/settings" element={<CompanySettings />} />
       <Route path="company/settings/environments" element={<CompanyEnvironments />} />
       <Route path="company/settings/access" element={<CompanyAccess />} />

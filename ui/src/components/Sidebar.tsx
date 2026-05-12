@@ -13,8 +13,15 @@ import {
   Repeat,
   GitBranch,
   Settings,
+  Sparkles,
+  Library,
+  Compass,
+  Plug,
+  GraduationCap,
+  Code2,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { NavLink } from "@/lib/router";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
@@ -29,8 +36,10 @@ import { useInboxBadge } from "../hooks/useInboxBadge";
 import { Button } from "@/components/ui/button";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
+import { useBeginnerMode } from "../hooks/useBeginnerMode";
 
 export function Sidebar() {
+  const { t } = useTranslation("nav");
   const { openNewIssue } = useDialogActions();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const inboxBadge = useInboxBadge(selectedCompanyId);
@@ -45,7 +54,10 @@ export function Sidebar() {
     refetchInterval: 10_000,
   });
   const liveRunCount = liveRuns?.length ?? 0;
-  const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
+  const { beginnerMode, toggle: toggleBeginner } = useBeginnerMode();
+  const showAdvanced = !beginnerMode;
+  const showWorkspacesLink =
+    showAdvanced && experimentalSettings?.enableIsolatedWorkspaces === true;
 
   const pluginContext = {
     companyId: selectedCompanyId,
@@ -62,8 +74,8 @@ export function Sidebar() {
           variant="ghost"
           size="icon-sm"
           className="text-muted-foreground shrink-0"
-          aria-label="Search"
-          title="Search"
+          aria-label={t("item.search")}
+          title={t("item.search")}
         >
           <NavLink to="/search">
             <Search className="h-4 w-4" />
@@ -79,13 +91,13 @@ export function Sidebar() {
             className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
           >
             <SquarePen className="h-4 w-4 shrink-0" />
-            <span className="truncate">New Issue</span>
+            <span className="truncate">{t("item.newIssue")}</span>
           </button>
-          <SidebarNavItem to="/chat" label="Chat" icon={MessagesSquare} />
-          <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
+          <SidebarNavItem to="/chat" label={t("item.chat")} icon={MessagesSquare} />
+          <SidebarNavItem to="/dashboard" label={t("item.dashboard")} icon={LayoutDashboard} liveCount={liveRunCount} />
           <SidebarNavItem
             to="/inbox"
-            label="Inbox"
+            label={t("item.inbox")}
             icon={Inbox}
             badge={inboxBadge.inbox}
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
@@ -100,12 +112,13 @@ export function Sidebar() {
           />
         </div>
 
-        <SidebarSection label="Work">
-          <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
-          <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
-          <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+        <SidebarSection label={t("section.work")}>
+          <SidebarNavItem to="/company/diagnose" label={t("item.diagnose", { defaultValue: "Diagnóstico" })} icon={Compass} />
+          <SidebarNavItem to="/issues" label={t("item.issues")} icon={CircleDot} />
+          <SidebarNavItem to="/routines" label={t("item.routines")} icon={Repeat} />
+          <SidebarNavItem to="/goals" label={t("item.goals")} icon={Target} />
           {showWorkspacesLink ? (
-            <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
+            <SidebarNavItem to="/workspaces" label={t("item.workspaces")} icon={GitBranch} />
           ) : null}
         </SidebarSection>
 
@@ -113,12 +126,19 @@ export function Sidebar() {
 
         <SidebarAgents />
 
-        <SidebarSection label="Company">
-          <SidebarNavItem to="/org" label="Org" icon={Network} />
-          <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
-          <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
-          <SidebarNavItem to="/activity" label="Activity" icon={History} />
-          <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
+        <SidebarSection label={t("section.company")}>
+          <SidebarNavItem to="/company/context" label={t("item.context", { defaultValue: "Contexto" })} icon={Sparkles} />
+          <SidebarNavItem to="/company/references" label={t("item.references", { defaultValue: "Referências" })} icon={Library} />
+          <SidebarNavItem to="/company/integrations" label={t("item.integrations", { defaultValue: "Integrações" })} icon={Plug} />
+          <SidebarNavItem to="/org" label={t("item.org")} icon={Network} />
+          {showAdvanced ? (
+            <SidebarNavItem to="/skills" label={t("item.skills")} icon={Boxes} />
+          ) : null}
+          <SidebarNavItem to="/costs" label={t("item.costs")} icon={DollarSign} />
+          {showAdvanced ? (
+            <SidebarNavItem to="/activity" label={t("item.activity")} icon={History} />
+          ) : null}
+          <SidebarNavItem to="/company/settings" label={t("item.settings")} icon={Settings} />
         </SidebarSection>
 
         <PluginSlotOutlet
@@ -129,6 +149,38 @@ export function Sidebar() {
           missingBehavior="placeholder"
         />
       </nav>
+      <div className="shrink-0 border-t border-border px-3 py-2">
+        <button
+          type="button"
+          onClick={toggleBeginner}
+          className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+          title={
+            beginnerMode
+              ? "Ativar modo avançado (Skills, Activity, etc)"
+              : "Voltar para modo iniciante (esconde itens técnicos)"
+          }
+        >
+          <span className="flex items-center gap-1.5">
+            {beginnerMode ? (
+              <GraduationCap className="h-3 w-3" />
+            ) : (
+              <Code2 className="h-3 w-3" />
+            )}
+            {beginnerMode ? "Modo iniciante" : "Modo avançado"}
+          </span>
+          <span
+            className={`inline-block h-3 w-6 rounded-full transition-colors ${
+              beginnerMode ? "bg-muted" : "bg-foreground"
+            }`}
+          >
+            <span
+              className={`block h-3 w-3 rounded-full bg-background transition-transform ${
+                beginnerMode ? "translate-x-0" : "translate-x-3"
+              }`}
+            />
+          </span>
+        </button>
+      </div>
     </aside>
   );
 }
