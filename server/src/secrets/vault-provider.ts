@@ -79,6 +79,90 @@ function validateAddress(raw: unknown, warnings: string[]): URL | null {
   return parsed;
 }
 
+const KV_MOUNT_PATTERN = /^[A-Za-z0-9._-]+$/;
+const KV_PREFIX_PATTERN = /^[A-Za-z0-9._/-]+$/;
+const ROLE_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+
+function validateKvMount(raw: unknown, warnings: string[]): string | null {
+  if (raw === undefined || raw === null || raw === "") return DEFAULT_KV_MOUNT;
+  const value = asString(raw);
+  if (!value) {
+    warnings.push("kvMount must be a non-empty string");
+    return null;
+  }
+  if (value.startsWith("/") || value.startsWith("data/")) {
+    warnings.push(`kvMount must not start with '/' or 'data/'; got ${value}`);
+    return null;
+  }
+  if (!KV_MOUNT_PATTERN.test(value)) {
+    warnings.push(`kvMount must match [A-Za-z0-9._-]; got ${value}`);
+    return null;
+  }
+  return value;
+}
+
+function validateKvPathPrefix(raw: unknown, warnings: string[]): string | null {
+  if (raw === undefined || raw === null || raw === "") return DEFAULT_KV_PATH_PREFIX;
+  const value = asString(raw);
+  if (!value) {
+    warnings.push("kvPathPrefix must be a non-empty string");
+    return null;
+  }
+  if (value.startsWith("/")) {
+    warnings.push(`kvPathPrefix must not start with '/'; got ${value}`);
+    return null;
+  }
+  if (!KV_PREFIX_PATTERN.test(value)) {
+    warnings.push(`kvPathPrefix must match [A-Za-z0-9._/-]; got ${value}`);
+    return null;
+  }
+  return value;
+}
+
+function validateAuthBlock(
+  raw: unknown,
+  warnings: string[],
+): { method: "kubernetes" | "token"; role: string | null; saTokenPath: string } | null {
+  const block = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const methodRaw = asString(block.method);
+  if (methodRaw && methodRaw !== "kubernetes" && methodRaw !== "token") {
+    warnings.push(`auth.method must be 'kubernetes' or 'token'; got ${methodRaw}`);
+    return null;
+  }
+  const method = (methodRaw ?? "token") as "kubernetes" | "token";
+  const role = asString(block.role);
+  if (method === "kubernetes") {
+    if (!role) {
+      warnings.push("auth.role is required when auth.method = 'kubernetes'");
+      return null;
+    }
+    if (!ROLE_PATTERN.test(role)) {
+      warnings.push(`auth.role must match [A-Za-z0-9_-]{1,128}; got ${role}`);
+      return null;
+    }
+  }
+  return {
+    method,
+    role,
+    saTokenPath: asString(block.saTokenPath) ?? DEFAULT_SA_TOKEN_PATH,
+  };
+}
+
+function validateVersionRetention(raw: unknown, warnings: string[]): number | null {
+  if (raw === undefined || raw === null) return DEFAULT_VERSION_RETENTION;
+  if (typeof raw !== "number" || !Number.isInteger(raw)) {
+    warnings.push("versionRetention must be an integer");
+    return null;
+  }
+  if (raw < MIN_VERSION_RETENTION || raw > MAX_VERSION_RETENTION) {
+    warnings.push(
+      `versionRetention must be between ${MIN_VERSION_RETENTION} and ${MAX_VERSION_RETENTION}; got ${raw}`,
+    );
+    return null;
+  }
+  return raw;
+}
+
 export function createVaultProvider(
   _options?: { config?: VaultProviderConfig; gateway?: VaultHttpGateway },
 ): SecretProviderModule {
@@ -98,6 +182,10 @@ export function createVaultProvider(
       const warnings: string[] = [];
       const rawConfig = (input?.providerConfig?.config ?? {}) as Record<string, unknown>;
       validateAddress(rawConfig.address, warnings);
+      validateKvMount(rawConfig.kvMount, warnings);
+      validateKvPathPrefix(rawConfig.kvPathPrefix, warnings);
+      validateAuthBlock(rawConfig.auth, warnings);
+      validateVersionRetention(rawConfig.versionRetention, warnings);
       return { ok: warnings.length === 0, warnings };
     },
     async createSecret() {

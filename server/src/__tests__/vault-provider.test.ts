@@ -122,3 +122,65 @@ describe("validateConfig — address rules", () => {
     expect(r.warnings.join(" ")).toMatch(/address/i);
   });
 });
+
+describe("validateConfig — mount, prefix, role, retention", () => {
+  function check(config: Record<string, unknown>) {
+    return createVaultProvider({ gateway: {} as never }).validateConfig({
+      providerConfig: {
+        id: "v1",
+        provider: "vault",
+        status: "ready",
+        config: { address: "https://vault.example:8200", ...config },
+      },
+    });
+  }
+
+  it("rejects kvMount with slashes", async () => {
+    const r = await check({ kvMount: "secret/foo" });
+    expect(r.ok).toBe(false);
+    expect(r.warnings.join(" ")).toMatch(/kvMount/);
+  });
+
+  it("rejects kvMount that starts with 'data/'", async () => {
+    const r = await check({ kvMount: "data/foo" });
+    expect(r.ok).toBe(false);
+  });
+
+  it("rejects kvPathPrefix with leading slash", async () => {
+    const r = await check({ kvPathPrefix: "/paperclip" });
+    expect(r.ok).toBe(false);
+  });
+
+  it("requires role when auth.method = kubernetes", async () => {
+    const r = await check({ auth: { method: "kubernetes" } });
+    expect(r.ok).toBe(false);
+    expect(r.warnings.join(" ")).toMatch(/role/);
+  });
+
+  it("rejects malformed role string", async () => {
+    const r = await check({
+      auth: { method: "kubernetes", role: "bad role!" },
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  it("rejects versionRetention below MIN_VERSION_RETENTION", async () => {
+    const r = await check({ versionRetention: 1 });
+    expect(r.ok).toBe(false);
+  });
+
+  it("rejects versionRetention above MAX_VERSION_RETENTION", async () => {
+    const r = await check({ versionRetention: 101 });
+    expect(r.ok).toBe(false);
+  });
+
+  it("accepts a fully valid kubernetes-auth config", async () => {
+    const r = await check({
+      kvMount: "secret",
+      kvPathPrefix: "paperclip",
+      auth: { method: "kubernetes", role: "paperclip-server" },
+      versionRetention: 25,
+    });
+    expect(r.ok).toBe(true);
+  });
+});
