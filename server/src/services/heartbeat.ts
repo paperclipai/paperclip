@@ -5098,6 +5098,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         reason: string;
         errorCode: BlockedScheduledRetryGate["errorCode"];
       }
+    | {
+        outcome: "deferred";
+        run: typeof heartbeatRuns.$inferSelect;
+        reason: string;
+        errorCode: BlockedScheduledRetryGate["errorCode"];
+      }
     | { outcome: "not_promoted"; run: typeof heartbeatRuns.$inferSelect | null }
   > {
     const agent = await getAgent(dueRun.agentId);
@@ -5130,9 +5136,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 	      enforceEnqueuePause: true,
 	    });
 	    if (!gate.allowed) {
-	      if (gate.errorCode === "scheduled_retry_paused") {
-	        return { outcome: "not_promoted", run: dueRun };
-	      }
+      if (gate.errorCode === "scheduled_retry_paused" || gate.errorCode === "budget_blocked") {
+        return {
+          outcome: "deferred",
+          run: dueRun,
+          reason: gate.reason,
+          errorCode: gate.errorCode,
+        };
+      }
       if (
         gate.errorCode === "issue_not_found" &&
         dueRun.scheduledRetryReason !== MAX_TURN_CONTINUATION_RETRY_REASON
@@ -5799,6 +5810,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         scheduledRetry,
       };
     }
+    if (promotion.outcome === "deferred") {
+      return {
+        outcome: "deferred" as const,
+        message: promotion.reason,
+        scheduledRetry,
+      };
+    }
 	    if (promotion.outcome === "gate_suppressed") {
 	      return {
 	        outcome: "gate_suppressed" as const,
@@ -5807,11 +5825,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 	      };
 	    }
 	    if (promotion.outcome === "not_promoted") {
-	      return {
-	        outcome: "already_promoted" as const,
-	        message: "Scheduled retry was already promoted",
-	        scheduledRetry,
-	      };
+      const current = await getIssueRetryRun(issue.companyId, issue.id, ["scheduled_retry", "queued", "running", "cancelled"]);
+      if (current?.run.status === "scheduled_retry") {
+        return {
+          outcome: "deferred" as const,
+          message: "Scheduled retry remains deferred",
+          scheduledRetry: summarizeIssueScheduledRetryRun(current),
+        };
+      }
+      if (current && (current.run.status === "queued" || current.run.status === "running")) {
+        return {
+          outcome: "already_promoted" as const,
+          message: "Scheduled retry was already promoted",
+          scheduledRetry: summarizeIssueScheduledRetryRun(current),
+        };
+      }
+      return {
+        outcome: "no_scheduled_retry" as const,
+        message: "No live scheduled retry exists for this issue",
+        scheduledRetry: null,
+      };
 	    }
 	    return {
 	      outcome: "already_promoted" as const,
@@ -5884,11 +5917,50 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  function isScheduledRetryRun(run: typeof heartbeatRuns.$inferSelect) {
+    return Boolean(run.retryOfRunId || run.scheduledRetryAt || run.scheduledRetryReason || run.scheduledRetryAttempt > 0);
+  }
+
+  async function deferQueuedScheduledRetry(run: typeof heartbeatRuns.$inferSelect, reason: string) {
+    const deferred = await db
+      .update(heartbeatRuns)
+      .set({
+        status: "scheduled_retry",
+        error: reason,
+        errorCode: "scheduled_retry_paused",
+        updatedAt: new Date(),
+      })
+      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+
+    if (deferred) {
+      await appendRunEvent(deferred, await nextRunEventSeq(deferred.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: reason,
+        payload: {
+          scheduledRetryAttempt: deferred.scheduledRetryAttempt,
+          scheduledRetryAt: deferred.scheduledRetryAt ? new Date(deferred.scheduledRetryAt).toISOString() : null,
+          scheduledRetryReason: deferred.scheduledRetryReason,
+          deferredFromQueued: true,
+        },
+      });
+    }
+
+    return deferred;
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
     if (!agent) {
       await cancelRunInternal(run.id, "Cancelled because the agent no longer exists");
+      return null;
+    }
+    if (agent.status === "paused" && agent.pauseReason === "budget" && isScheduledRetryRun(run)) {
+      await deferQueuedScheduledRetry(run, "Scheduled retry deferred because budget policy paused the agent");
       return null;
     }
     if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
@@ -5902,6 +5974,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       projectId: readNonEmptyString(context.projectId),
     });
     if (budgetBlock) {
+      if (isScheduledRetryRun(run)) {
+        await deferQueuedScheduledRetry(run, budgetBlock.reason);
+        return null;
+      }
       await cancelRunInternal(run.id, budgetBlock.reason);
       return null;
     }

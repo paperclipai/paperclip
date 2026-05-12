@@ -313,7 +313,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toMatchObject({
-      outcome: "already_promoted",
+      outcome: "deferred",
       scheduledRetry: {
         runId: retryRunId,
         status: "scheduled_retry",
@@ -358,7 +358,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     expect(res.status).toBe(403);
   });
 
-  it("suppresses retry-now when the issue is under a budget hard-stop", async () => {
+  it("defers retry-now when the issue is under a budget hard-stop", async () => {
     const { companyId, agentId, issueId, retryRunId } = await seedIssueWithRetry();
     await db
       .update(agents)
@@ -371,11 +371,11 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toMatchObject({
-      outcome: "gate_suppressed",
+      outcome: "deferred",
       scheduledRetry: {
         runId: retryRunId,
-        status: "cancelled",
-        errorCode: "budget_blocked",
+        status: "scheduled_retry",
+        errorCode: null,
       },
     });
   });

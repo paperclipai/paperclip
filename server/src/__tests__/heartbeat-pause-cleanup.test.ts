@@ -79,7 +79,7 @@ describeWithEmbeddedPostgres("heartbeat pause cleanup", () => {
     return { companyId, agentId };
   }
 
-  async function seedQueuedRun(companyId: string, agentId: string) {
+  async function seedQueuedRun(companyId: string, agentId: string, overrides: Partial<typeof heartbeatRuns.$inferInsert> = {}) {
     const runId = randomUUID();
     const now = new Date();
     await db.insert(heartbeatRuns).values({
@@ -91,6 +91,7 @@ describeWithEmbeddedPostgres("heartbeat pause cleanup", () => {
       contextSnapshot: { issueId: randomUUID(), wakeReason: "issue_assigned" },
       updatedAt: now,
       createdAt: now,
+      ...overrides,
     });
     return runId;
   }
@@ -177,5 +178,36 @@ describeWithEmbeddedPostgres("heartbeat pause cleanup", () => {
       .where(eq(heartbeatRuns.id, retryRunId));
     expect(queuedRun?.status).toBe("cancelled");
     expect(retryRun?.status).toBe("scheduled_retry");
+  });
+
+  it("resumeQueuedRuns: defers scheduled retries that were promoted during a budget pause", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const now = new Date();
+    await db
+      .update(companies)
+      .set({ status: "paused", pauseReason: "budget" })
+      .where(eq(companies.id, companyId));
+    const retryRunId = await seedQueuedRun(companyId, agentId, {
+      invocationSource: "automation",
+      status: "queued",
+      scheduledRetryAt: now,
+      scheduledRetryAttempt: 2,
+      scheduledRetryReason: "transient_error",
+      contextSnapshot: { issueId: randomUUID(), wakeReason: "scheduled_retry" },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    const [retryRun] = await db
+      .select({
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, retryRunId));
+    expect(retryRun).toEqual({
+      status: "scheduled_retry",
+      errorCode: "scheduled_retry_paused",
+    });
   });
 });

@@ -25,6 +25,7 @@ export const RETRY_NOW_OUTCOME_HEADLINE: Record<IssueRetryNowOutcome, string> = 
   promoted: "Retry promoted",
   already_promoted: "Retry already running",
   no_scheduled_retry: "No scheduled retry",
+  deferred: "Retry deferred",
   gate_suppressed: "Couldn't retry now",
 };
 
@@ -55,11 +56,11 @@ export function useRetryNowMutation(
           body: response.message,
           tone: "success",
         });
-      } else if (response.outcome === "gate_suppressed") {
+      } else if (response.outcome === "deferred" || response.outcome === "gate_suppressed") {
         pushToast({
-          title: RETRY_NOW_OUTCOME_HEADLINE.gate_suppressed,
+          title: RETRY_NOW_OUTCOME_HEADLINE[response.outcome],
           body: response.message,
-          tone: "error",
+          tone: response.outcome === "deferred" ? "warn" : "error",
         });
       }
     },
@@ -84,7 +85,7 @@ export function useRetryNowMutation(
         status: apiError?.status ?? null,
       };
     }
-    if (mutation.data && mutation.data.outcome === "gate_suppressed") {
+    if (mutation.data && (mutation.data.outcome === "deferred" || mutation.data.outcome === "gate_suppressed")) {
       return {
         message: mutation.data.message,
         outcomeMessage: mutation.data.message,
