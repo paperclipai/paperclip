@@ -5960,7 +5960,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return null;
     }
     if (agent.status === "paused" && agent.pauseReason === "budget" && isScheduledRetryRun(run)) {
-      await deferQueuedScheduledRetry(run, "Scheduled retry deferred because budget policy paused the agent");
+      if (!(await deferQueuedScheduledRetry(run, "Scheduled retry deferred because budget policy paused the agent"))) {
+        await cancelRunInternal(run.id, "Cancelled because the agent is not invokable");
+      }
       return null;
     }
     if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
@@ -5975,7 +5977,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     if (budgetBlock) {
       if (isScheduledRetryRun(run)) {
-        await deferQueuedScheduledRetry(run, budgetBlock.reason);
+        if (!(await deferQueuedScheduledRetry(run, budgetBlock.reason))) {
+          await cancelRunInternal(run.id, budgetBlock.reason);
+        }
         return null;
       }
       await cancelRunInternal(run.id, budgetBlock.reason);
@@ -9670,8 +9674,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     for (const run of runs) {
       if (run.status === "queued" && isScheduledRetryRun(run)) {
-        await deferQueuedScheduledRetry(run, "Scheduled retry deferred because budget policy paused the agent");
-        continue;
+        if (await deferQueuedScheduledRetry(run, "Scheduled retry deferred because budget policy paused the agent")) {
+          continue;
+        }
       }
       await setRunStatus(run.id, "cancelled", {
         finishedAt: new Date(),
@@ -9732,10 +9737,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     for (const run of runs) {
       if (run.status === "queued" && isScheduledRetryRun(run)) {
-        await deferQueuedScheduledRetry(run, "Scheduled retry deferred because budget policy paused its scope");
-      } else {
-        await cancelRunInternal(run.id, "Cancelled due to budget pause");
+        if (await deferQueuedScheduledRetry(run, "Scheduled retry deferred because budget policy paused its scope")) {
+          continue;
+        }
       }
+      await cancelRunInternal(run.id, "Cancelled due to budget pause");
     }
 
     await cancelPendingWakeupsForBudgetScope(scope);
