@@ -48,7 +48,9 @@ describeEmbeddedPostgres("buildPaperclipWakePayload agent thread", () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const threadId = randomUUID();
-    const messageId = randomUUID();
+    const firstMessageId = randomUUID();
+    const secondMessageId = randomUUID();
+    const thirdMessageId = randomUUID();
     const now = new Date("2026-05-04T09:00:00.000Z");
 
     await db.insert(companies).values({
@@ -82,7 +84,31 @@ describeEmbeddedPostgres("buildPaperclipWakePayload agent thread", () => {
     });
 
     await db.insert(agentThreadMessages).values({
-      id: messageId,
+      id: firstMessageId,
+      threadId,
+      companyId,
+      role: "user",
+      authorUserId: "user-1",
+      authorAgentId: null,
+      producingHeartbeatRunId: null,
+      body: "first ask",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(agentThreadMessages).values({
+      id: secondMessageId,
+      threadId,
+      companyId,
+      role: "assistant",
+      authorUserId: null,
+      authorAgentId: agentId,
+      producingHeartbeatRunId: null,
+      body: "first reply",
+      createdAt: new Date("2026-05-04T09:01:00.000Z"),
+      updatedAt: new Date("2026-05-04T09:01:00.000Z"),
+    });
+    await db.insert(agentThreadMessages).values({
+      id: thirdMessageId,
       threadId,
       companyId,
       role: "user",
@@ -90,8 +116,8 @@ describeEmbeddedPostgres("buildPaperclipWakePayload agent thread", () => {
       authorAgentId: null,
       producingHeartbeatRunId: null,
       body: "make 3 follow-up issues",
-      createdAt: now,
-      updatedAt: now,
+      createdAt: new Date("2026-05-04T09:02:00.000Z"),
+      updatedAt: new Date("2026-05-04T09:02:00.000Z"),
     });
 
     const payload = await buildPaperclipWakePayload({
@@ -100,7 +126,7 @@ describeEmbeddedPostgres("buildPaperclipWakePayload agent thread", () => {
       contextSnapshot: {
         wakeReason: "agent_thread_message",
         agentThreadId: threadId,
-        agentThreadMessageId: messageId,
+        agentThreadMessageId: thirdMessageId,
       },
     });
 
@@ -111,16 +137,33 @@ describeEmbeddedPostgres("buildPaperclipWakePayload agent thread", () => {
         agentId,
         agentName: "CTO",
       },
-      threadMessageIds: [messageId],
-      latestThreadMessageId: messageId,
+      threadMessageIds: [firstMessageId, secondMessageId, thirdMessageId],
+      latestThreadMessageId: thirdMessageId,
       threadMessages: [
         {
-          id: messageId,
+          id: firstMessageId,
+          threadId,
+          role: "user",
+          body: "first ask",
+        },
+        {
+          id: secondMessageId,
+          threadId,
+          role: "assistant",
+          body: "first reply",
+        },
+        {
+          id: thirdMessageId,
           threadId,
           role: "user",
           body: "make 3 follow-up issues",
         },
       ],
+      threadMessageWindow: {
+        requestedCount: 3,
+        includedCount: 3,
+        missingCount: 0,
+      },
       fallbackFetchNeeded: false,
     });
   });

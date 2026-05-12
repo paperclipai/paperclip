@@ -2679,7 +2679,7 @@ export function agentRoutes(db: Db) {
           agentThreadMessageId: result.message.id,
           agentThreadMessageBody: result.message.body,
           taskKey: `agent-thread:${result.thread.id}`,
-          forceFreshSession: false,
+          forceFreshSession: true,
         },
       });
     } catch (err) {
