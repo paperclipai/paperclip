@@ -530,6 +530,16 @@ export interface HostToWorkerMethods {
     params: PluginEnvironmentExecuteParams,
     result: PluginEnvironmentExecuteResult,
   ];
+  "approvals.resolved": [
+    params: {
+      approvalId: string;
+      status: "approved" | "rejected" | "cancelled";
+      decisionNote: string | null;
+      decidedByUserId: string | null;
+      decidedAt: string;
+    },
+    result: void,
+  ];
 }
 
 /** Union of all host→worker method names. */
@@ -553,6 +563,7 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "getData",
   "performAction",
   "executeTool",
+  "approvals.resolved",
   "environmentValidateConfig",
   "environmentProbe",
   "environmentAcquireLease",
@@ -573,6 +584,40 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
  * These represent the SDK client calls that the worker makes back to the
  * host to access platform services (state, entities, config, etc.).
  */
+
+/** A plugin-created approval record returned by the approvals SDK. */
+export interface PluginApproval {
+  id: string;
+  companyId: string;
+  sourcePluginId: string;
+  sourcePluginKey: string;
+  issueId: string | null;
+  prompt: string;
+  /**
+   * Current approval status. Treat `"revision_requested"` the same as
+   * `"pending"` — a board reviewer has asked for more information but has not
+   * yet reached a final decision. `onResolved` does NOT fire for
+   * `"revision_requested"` transitions; only `approved`, `rejected`, and
+   * `cancelled` trigger the callback.
+   */
+  status: "pending" | "approved" | "rejected" | "cancelled" | "revision_requested";
+  payload: Record<string, unknown>;
+  decisionNote: string | null;
+  decidedByUserId: string | null;
+  decidedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Payload delivered to `ctx.approvals.onResolved` handlers. */
+export interface PluginApprovalResolutionEvent {
+  approvalId: string;
+  status: "approved" | "rejected" | "cancelled";
+  decisionNote: string | null;
+  decidedByUserId: string | null;
+  decidedAt: string;
+}
+
 export interface WorkerToHostMethods {
   // Config
   "config.get": [params: Record<string, never>, result: Record<string, unknown>];
@@ -1119,6 +1164,44 @@ export interface WorkerToHostMethods {
       companyId: string;
     },
     result: Goal,
+  ];
+
+  // Plugin Approvals (WF-1)
+  "approvals.create": [
+    params: {
+      companyId: string;
+      issueId?: string | null;
+      prompt: string;
+      payload?: Record<string, unknown>;
+      actorAgentId?: string | null;
+      actorRunId?: string | null;
+    },
+    result: { approvalId: string; status: string },
+  ];
+
+  "approvals.get": [
+    params: { approvalId: string; companyId: string },
+    result: PluginApproval | null,
+  ];
+
+  "approvals.list": [
+    params: {
+      companyId: string;
+      status?: string;
+      limit?: number;
+      offset?: number;
+    },
+    result: PluginApproval[],
+  ];
+
+  "approvals.subscribe": [
+    params: { approvalId: string },
+    result: { status: string },
+  ];
+
+  "approvals.cancel": [
+    params: { approvalId: string; companyId: string; reason?: string },
+    result: void,
   ];
 }
 

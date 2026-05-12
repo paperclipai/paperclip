@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Puzzle, ArrowLeft, ShieldAlert, ActivitySquare, CheckCircle, XCircle, Loader2, Clock, Cpu, Webhook, CalendarClock, AlertTriangle, FolderOpen, Save } from "lucide-react";
+import { Puzzle, ArrowLeft, ShieldAlert, ShieldCheck, ActivitySquare, CheckCircle, XCircle, Loader2, Clock, Cpu, Webhook, CalendarClock, AlertTriangle, FolderOpen, Save } from "lucide-react";
 import type { PluginLocalFolderDeclaration } from "@paperclipai/shared";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { Link, Navigate, useParams } from "@/lib/router";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import { pluginsApi, type PluginLocalFolderStatus } from "@/api/plugins";
+import { approvalsApi } from "@/api/approvals";
 import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -91,6 +92,16 @@ export function PluginSettings() {
     enabled: !!pluginId && plugin?.status === "ready",
     refetchInterval: 30000,
   });
+
+  const { data: pluginApprovalsData } = useQuery({
+    queryKey: queryKeys.approvals.list(selectedCompanyId!, undefined, plugin?.id),
+    queryFn: () => approvalsApi.list(selectedCompanyId!, undefined, plugin?.id),
+    enabled: !!selectedCompanyId && !!plugin?.id && activeTab === "status",
+    refetchInterval: 30000,
+  });
+  const actionablePluginApprovals = (pluginApprovalsData ?? []).filter(
+    (approval) => approval.status === "pending" || approval.status === "revision_requested",
+  );
 
   // Fetch existing config for the plugin
   const configSchema = plugin?.manifestJson?.instanceConfigSchema as JsonSchemaNode | undefined;
@@ -561,6 +572,33 @@ export function PluginSettings() {
                   )}
                 </CardContent>
               </Card>
+
+              {pluginCapabilities.includes("approvals.create") ? (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base flex items-center gap-1.5">
+                      <ShieldCheck className="h-4 w-4" />
+                      Plugin Approvals
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {actionablePluginApprovals.length > 0 ? (
+                      <div className="space-y-2">
+                        <p className="text-sm text-muted-foreground">
+                          {actionablePluginApprovals.length} open approval{actionablePluginApprovals.length !== 1 ? "s" : ""} from this plugin.
+                        </p>
+                        <Link to={`/approvals/pending`}>
+                          <Button variant="outline" size="sm" className="w-full">
+                            Review Approvals
+                          </Button>
+                        </Link>
+                      </div>
+                    ) : (
+                      <p className="text-sm text-muted-foreground italic">No open approvals.</p>
+                    )}
+                  </CardContent>
+                </Card>
+              ) : null}
             </div>
           </div>
         </TabsContent>

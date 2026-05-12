@@ -38,6 +38,7 @@ import type {
   PluginLocalFolderEntry,
   PluginLocalFolderStatus,
 } from "./types.js";
+import type { PluginApproval, PluginApprovalResolutionEvent } from "./protocol.js";
 import type {
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
@@ -96,6 +97,8 @@ export interface TestHarness {
   getState(input: ScopeKey): unknown;
   /** Simulate a streaming event arriving for an active session. */
   simulateSessionEvent(sessionId: string, event: Omit<AgentSessionEvent, "sessionId">): void;
+  /** Simulate an approval resolution notification arriving for a subscribed approval. */
+  simulateApprovalResolved(approvalId: string, event: Omit<PluginApprovalResolutionEvent, "approvalId">): Promise<void>;
   logs: TestHarnessLogEntry[];
   activity: Array<{ message: string; entityType?: string; entityId?: string; metadata?: Record<string, unknown> }>;
   metrics: Array<{ name: string; value: number; tags?: Record<string, string> }>;
@@ -443,6 +446,12 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
 
   const sessions = new Map<string, AgentSession>();
   const sessionEventCallbacks = new Map<string, (event: AgentSessionEvent) => void>();
+
+  const approvalsStore = new Map<string, PluginApproval>();
+  const approvalResolutionCallbacks = new Map<
+    string,
+    (event: PluginApprovalResolutionEvent) => Promise<void>
+  >();
 
   const events: EventRegistration[] = [];
   const jobs = new Map<string, (job: PluginJobContext) => Promise<void>>();
@@ -2011,6 +2020,75 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         telemetry.push({ eventName, dimensions });
       },
     },
+    approvals: {
+      async create(params) {
+        requireCapability(manifest, capabilitySet, "approvals.create");
+        const now = new Date().toISOString();
+        const approval: PluginApproval = {
+          id: randomUUID(),
+          companyId: params.companyId,
+          sourcePluginId: manifest.id,
+          sourcePluginKey: manifest.id,
+          issueId: params.issueId ?? null,
+          prompt: params.prompt,
+          status: "pending",
+          payload: params.payload ?? {},
+          decisionNote: null,
+          decidedByUserId: null,
+          decidedAt: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        approvalsStore.set(approval.id, approval);
+        return { approvalId: approval.id, status: approval.status };
+      },
+      async get(params) {
+        requireCapability(manifest, capabilitySet, "approvals.read");
+        const approval = approvalsStore.get(params.approvalId);
+        if (!approval || approval.companyId !== params.companyId) return null;
+        return approval;
+      },
+      async list(params) {
+        requireCapability(manifest, capabilitySet, "approvals.read");
+        let out = [...approvalsStore.values()].filter((a) => a.companyId === params.companyId);
+        if (params.status) out = out.filter((a) => a.status === params.status);
+        const offset = params.offset ?? 0;
+        const limit = Math.min(params.limit ?? 100, 100);
+        return out.slice(offset, offset + limit);
+      },
+      onResolved(approvalId, handler) {
+        requireCapability(manifest, capabilitySet, "approvals.read");
+        approvalResolutionCallbacks.set(approvalId, handler);
+        return () => {
+          approvalResolutionCallbacks.delete(approvalId);
+        };
+      },
+      async cancel(params) {
+        requireCapability(manifest, capabilitySet, "approvals.create");
+        const approval = approvalsStore.get(params.approvalId);
+        if (!approval || approval.companyId !== params.companyId) return;
+        if (approval.status !== "pending") return;
+        const now = new Date().toISOString();
+        approvalsStore.set(params.approvalId, {
+          ...approval,
+          status: "cancelled",
+          decisionNote: params.reason ?? null,
+          decidedAt: now,
+          updatedAt: now,
+        });
+        const cb = approvalResolutionCallbacks.get(params.approvalId);
+        if (cb) {
+          approvalResolutionCallbacks.delete(params.approvalId);
+          await cb({
+            approvalId: params.approvalId,
+            status: "cancelled",
+            decisionNote: params.reason ?? null,
+            decidedByUserId: null,
+            decidedAt: now,
+          });
+        }
+      },
+    },
     logger: {
       info(message, meta) {
         logs.push({ level: "info", message, meta });
@@ -2110,6 +2188,12 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       const cb = sessionEventCallbacks.get(sessionId);
       if (!cb) throw new Error(`No active session event callback for session: ${sessionId}`);
       cb({ ...event, sessionId });
+    },
+    async simulateApprovalResolved(approvalId, event) {
+      const cb = approvalResolutionCallbacks.get(approvalId);
+      if (!cb) throw new Error(`No active approval resolution callback for approval: ${approvalId}`);
+      approvalResolutionCallbacks.delete(approvalId);
+      await cb({ ...event, approvalId });
     },
     logs,
     activity,

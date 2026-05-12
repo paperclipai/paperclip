@@ -307,6 +307,8 @@ describe("CommentThread", () => {
       decisionNote: null,
       decidedByUserId: null,
       decidedAt: null,
+      sourcePluginId: null,
+      sourcePluginKey: null,
       createdAt: new Date("2026-03-11T09:00:00.000Z"),
       updatedAt: new Date("2026-03-11T09:00:00.000Z"),
     };

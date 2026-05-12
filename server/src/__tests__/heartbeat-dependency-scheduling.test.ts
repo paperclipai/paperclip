@@ -98,51 +98,98 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   }, 20_000);
 
   afterEach(async () => {
-    mockAdapterExecute.mockReset();
-    mockAdapterExecute.mockImplementation(async () => ({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
-      errorMessage: null,
-      summary: "Dependency-aware heartbeat test run.",
-      provider: "test",
-      model: "test-model",
-    }));
-    runningProcesses.clear();
-    let idlePolls = 0;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const runs = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns);
-      const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
-      if (!hasActiveRun) {
-        idlePolls += 1;
-        if (idlePolls >= 3) break;
-      } else {
-        idlePolls = 0;
+    try {
+      mockAdapterExecute.mockReset();
+      mockAdapterExecute.mockImplementation(async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Dependency-aware heartbeat test run.",
+        provider: "test",
+        model: "test-model",
+      }));
+      let idlePolls = 0;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const runs = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns);
+        const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
+        if (!hasActiveRun && runningProcesses.size === 0) {
+          idlePolls += 1;
+          if (idlePolls >= 3) break;
+        } else {
+          idlePolls = 0;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
       }
       await new Promise((resolve) => setTimeout(resolve, 50));
+      await db.delete(environmentLeases);
+      await db.delete(activityLog);
+      await db.delete(companySkills);
+      await db.delete(issueComments);
+      await db.delete(issueDocuments);
+      await db.delete(documentRevisions);
+      await db.delete(documents);
+      await db.delete(issueRelations);
+      await db.delete(issueTreeHolds);
+      await db.delete(issues);
+      await db.delete(heartbeatRunEvents);
+      await db.delete(activityLog);
+      await db.delete(heartbeatRuns);
+      await db.delete(agentWakeupRequests);
+      await db.delete(agentRuntimeState);
+      await db.delete(agents);
+      await db.delete(companySkills);
+      await db.delete(environments);
+      for (let attempt = 0, emptyPolls = 0; attempt < 20 && emptyPolls < 3; attempt += 1) {
+        await db.delete(activityLog);
+        await db.delete(issueComments);
+        await db.delete(issueDocuments);
+        await db.delete(documentRevisions);
+        await db.delete(documents);
+        await db.delete(issueRelations);
+        await db.delete(issueTreeHolds);
+        await db.delete(heartbeatRunEvents);
+        await db.delete(heartbeatRuns);
+        await db.delete(agentWakeupRequests);
+        const remainingDocuments = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(documents)
+          .then((rows) => rows[0]?.count ?? 0);
+        const remainingRevisions = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(documentRevisions)
+          .then((rows) => rows[0]?.count ?? 0);
+        const remainingComments = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(issueComments)
+          .then((rows) => rows[0]?.count ?? 0);
+        const remainingWakeups = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(agentWakeupRequests)
+          .then((rows) => rows[0]?.count ?? 0);
+        const remainingRuns = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(heartbeatRuns)
+          .then((rows) => rows[0]?.count ?? 0);
+        if (
+          remainingDocuments === 0 &&
+          remainingRevisions === 0 &&
+          remainingComments === 0 &&
+          remainingWakeups === 0 &&
+          remainingRuns === 0
+        ) {
+          emptyPolls += 1;
+        } else {
+          emptyPolls = 0;
+        }
+        if (emptyPolls < 3) await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      await db.delete(companies);
+    } finally {
+      runningProcesses.clear();
     }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    await db.delete(environmentLeases);
-    await db.delete(activityLog);
-    await db.delete(companySkills);
-    await db.delete(issueComments);
-    await db.delete(issueDocuments);
-    await db.delete(documentRevisions);
-    await db.delete(documents);
-    await db.delete(issueRelations);
-    await db.delete(issueTreeHolds);
-    await db.delete(issues);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(activityLog);
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(agentRuntimeState);
-    await db.delete(agents);
-    await db.delete(companySkills);
-    await db.delete(environments);
-    await db.delete(companies);
   });
 
   afterAll(async () => {

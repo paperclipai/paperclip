@@ -280,6 +280,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   // Agent session event callbacks (populated by sendMessage, cleared by close)
   const sessionEventCallbacks = new Map<string, (event: AgentSessionEvent) => void>();
 
+  // Approval resolution callbacks: approvalId → handler (populated by approvals.subscribe)
+  const approvalResolutionCallbacks = new Map<
+    string,
+    (event: import("./protocol.js").PluginApprovalResolutionEvent) => Promise<void>
+  >();
+
   // Pending outbound (worker→host) requests
   const pendingRequests = new Map<string | number, {
     resolve: (response: JsonRpcResponse) => void;
@@ -1123,6 +1129,38 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
+      approvals: {
+        async create(params) {
+          return callHost("approvals.create", params);
+        },
+
+        async get(params) {
+          return callHost("approvals.get", params);
+        },
+
+        async list(params) {
+          return callHost("approvals.list", params);
+        },
+
+        onResolved(approvalId, handler) {
+          approvalResolutionCallbacks.set(approvalId, handler);
+          void callHost("approvals.subscribe", { approvalId }).catch((err) => {
+            approvalResolutionCallbacks.delete(approvalId);
+            notifyHost("log", {
+              level: "error",
+              message: `approvals.subscribe failed for ${approvalId}: ${err instanceof Error ? err.message : String(err)}`,
+            });
+          });
+          return () => {
+            approvalResolutionCallbacks.delete(approvalId);
+          };
+        },
+
+        async cancel(params) {
+          await callHost("approvals.cancel", params);
+        },
+      },
+
       logger: {
         info(message: string, meta?: Record<string, unknown>): void {
           notifyHost("log", { level: "info", message, meta });
@@ -1582,6 +1620,18 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         const event = notif.params as AgentSessionEvent;
         const cb = sessionEventCallbacks.get(event.sessionId);
         if (cb) cb(event);
+      } else if (notif.method === "approvals.resolved" && notif.params) {
+        const event = notif.params as import("./protocol.js").PluginApprovalResolutionEvent;
+        const cb = approvalResolutionCallbacks.get(event.approvalId);
+        if (cb) {
+          approvalResolutionCallbacks.delete(event.approvalId);
+          cb(event).catch((err) => {
+            notifyHost("log", {
+              level: "error",
+              message: `approvals.resolved handler failed for ${event.approvalId}: ${err instanceof Error ? err.message : String(err)}`,
+            });
+          });
+        }
       } else if (notif.method === "onEvent" && notif.params) {
         // Plugin event bus notifications — dispatch to registered event handlers
         handleOnEvent(notif.params as OnEventParams).catch((err) => {
@@ -1620,6 +1670,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     }
     pendingRequests.clear();
     sessionEventCallbacks.clear();
+    approvalResolutionCallbacks.clear();
   }
 
   // -----------------------------------------------------------------------

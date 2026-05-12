@@ -33,6 +33,7 @@ import { documentService } from "./documents.js";
 import { heartbeatService } from "./heartbeat.js";
 import { budgetService } from "./budgets.js";
 import { issueApprovalService } from "./issue-approvals.js";
+import { approvalService } from "./approvals.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -527,6 +528,7 @@ export function buildHostServices(
   const costs = costService(db);
   const budgets = budgetService(db);
   const issueApprovals = issueApprovalService(db);
+  const approvalsService = approvalService(db);
   const assets = assetService(db);
   const scopedBus = eventBus.forPlugin(pluginKey);
 
@@ -2118,6 +2120,227 @@ export function buildHostServices(
           .returning()
           .then((rows) => rows.length);
         if (deleted === 0) throw new Error(`Session not found: ${params.sessionId}`);
+      },
+    },
+
+    approvals: {
+      async create(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+
+        if (typeof params.prompt !== "string" || params.prompt.length === 0) {
+          throw new Error("approvals.create: prompt is required");
+        }
+        if (params.prompt.length > 2048) {
+          throw new Error("approvals.create: prompt must not exceed 2048 characters");
+        }
+
+        if (params.issueId) {
+          const issue = await issues.getById(params.issueId);
+          if (!inCompany(issue, companyId)) {
+            throw new Error("approvals.create: issueId does not belong to this company");
+          }
+        }
+
+        const { row, linkedIssues } = await db.transaction(async (tx) => {
+          const txDb = tx as unknown as Db;
+          const txApprovals = approvalService(txDb);
+          const txIssueApprovals = issueApprovalService(txDb);
+          const row = await txApprovals.create(companyId, {
+            type: "plugin_workflow",
+            requestedByAgentId: params.actorAgentId ?? null,
+            requestedByUserId: null,
+            status: "pending",
+            payload: {
+              ...(params.payload ?? {}),
+              prompt: params.prompt,
+              ...(params.actorRunId ? { actorRunId: params.actorRunId } : {}),
+            },
+            sourcePluginId: pluginId,
+            sourcePluginKey: pluginKey,
+          });
+
+          if (params.issueId) {
+            await txIssueApprovals.link(params.issueId, row.id);
+          }
+          let linkedIssues: Array<{ id: string; identifier?: string | null }> = [];
+          try {
+            linkedIssues = await txIssueApprovals.listIssuesForApproval(row.id);
+          } catch (err) {
+            logger.warn({ err, approvalId: row.id, issueId: params.issueId }, "failed to read plugin approval linked issue refs for activity");
+          }
+          if (params.issueId && !linkedIssues.some((issue) => issue.id === params.issueId)) {
+            logger.warn(
+              { approvalId: row.id, issueId: params.issueId },
+              "plugin approval activity linked issue refs empty after link",
+            );
+            linkedIssues = [...linkedIssues, { id: params.issueId, identifier: null }];
+          }
+          return { row, linkedIssues };
+        });
+        const issueIds = linkedIssues.map((issue) => issue.id);
+        const issueRefs = linkedIssues.map((issue) => ({ id: issue.id, identifier: issue.identifier ?? null }));
+
+        try {
+          await logActivity(db, {
+            companyId,
+            actorType: "plugin",
+            actorId: pluginId,
+            agentId: params.actorAgentId ?? undefined,
+            runId: params.actorRunId ?? undefined,
+            action: "approval.created",
+            entityType: "approval",
+            entityId: row.id,
+            details: {
+              type: row.type,
+              sourcePluginId: pluginId,
+              sourcePluginKey: pluginKey,
+              issueIds,
+              linkedIssueIds: issueIds,
+              issueRefs,
+              initiatingActorType: params.actorAgentId ? "agent" : "plugin",
+              initiatingActorId: params.actorAgentId ?? pluginId,
+              ...(params.actorRunId ? { initiatingRunId: params.actorRunId } : {}),
+            },
+          });
+        } catch (err) {
+          logger.warn(
+            { err, approvalId: row.id, sourcePluginId: pluginId },
+            "failed to log plugin approval creation activity",
+          );
+        }
+
+        return { approvalId: row.id, status: row.status };
+      },
+
+      async get(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const row = await approvalsService.getById(params.approvalId);
+        if (!row || row.companyId !== companyId || row.sourcePluginId !== pluginId) return null;
+        let linkedIssues: Array<{ id: string }> = [];
+        try {
+          linkedIssues = await issueApprovals.listIssuesForApproval(row.id);
+        } catch (err) {
+          logger.warn({ err, approvalId: row.id }, "failed to read plugin approval linked issue refs");
+        }
+        const issueId = linkedIssues[0]?.id ?? null;
+        const rowPayload = (row.payload ?? {}) as Record<string, unknown>;
+        return {
+          id: row.id,
+          companyId: row.companyId,
+          sourcePluginId: row.sourcePluginId ?? pluginId,
+          sourcePluginKey: row.sourcePluginKey ?? pluginKey,
+          issueId,
+          prompt: typeof rowPayload.prompt === "string" ? rowPayload.prompt : "",
+          status: row.status as "pending" | "approved" | "rejected" | "cancelled" | "revision_requested",
+          payload: rowPayload,
+          decisionNote: row.decisionNote ?? null,
+          decidedByUserId: row.decidedByUserId ?? null,
+          decidedAt: row.decidedAt?.toISOString() ?? null,
+          createdAt: row.createdAt.toISOString(),
+          updatedAt: row.updatedAt.toISOString(),
+        };
+      },
+
+      async list(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const limit = Math.min(typeof params.limit === "number" ? params.limit : 100, 100);
+        const offset = typeof params.offset === "number" ? params.offset : 0;
+        const rows = await approvalsService.listByPlugin(pluginId, companyId, params.status, limit, offset);
+        return rows.map((row) => {
+          const rowPayload = (row.payload ?? {}) as Record<string, unknown>;
+          return {
+            id: row.id,
+            companyId: row.companyId,
+            sourcePluginId: row.sourcePluginId ?? pluginId,
+            sourcePluginKey: row.sourcePluginKey ?? pluginKey,
+            issueId: null,
+            prompt: typeof rowPayload.prompt === "string" ? rowPayload.prompt : "",
+            status: row.status as "pending" | "approved" | "rejected" | "cancelled" | "revision_requested",
+            payload: rowPayload,
+            decisionNote: row.decisionNote ?? null,
+            decidedByUserId: row.decidedByUserId ?? null,
+            decidedAt: row.decidedAt?.toISOString() ?? null,
+            createdAt: row.createdAt.toISOString(),
+            updatedAt: row.updatedAt.toISOString(),
+          };
+        });
+      },
+
+      async subscribe(params) {
+        const row = await approvalsService.getById(params.approvalId);
+        // sourcePluginId check is sufficient isolation: pluginId is server-enforced
+        // (from the plugin worker's registered identity), not caller-supplied.
+        if (!row || row.sourcePluginId !== pluginId) {
+          return { status: "not_found" };
+        }
+        return { status: row.status };
+      },
+
+      async cancel(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const row = await approvalsService.getById(params.approvalId);
+        if (!row || row.companyId !== companyId || row.sourcePluginId !== pluginId) return;
+        if (row.status !== "pending" && row.status !== "revision_requested") return;
+        const cancelResult = await approvalsService.cancel(params.approvalId, params.reason);
+        if (cancelResult) {
+          const now = cancelResult.decidedAt?.toISOString() ?? new Date().toISOString();
+          let linkedIssues: Array<{ id: string; identifier?: string | null }> = [];
+          try {
+            linkedIssues = await issueApprovals.listIssuesForApproval(cancelResult.id);
+          } catch (err) {
+            logger.warn({ err, approvalId: cancelResult.id }, "failed to read plugin approval linked issue refs for cancellation activity");
+          }
+          const issueIds = linkedIssues.map((issue) => issue.id);
+          const issueRefs = linkedIssues.map((issue) => ({ id: issue.id, identifier: issue.identifier ?? null }));
+          try {
+            await logActivity(db, {
+              companyId,
+              actorType: "plugin",
+              actorId: pluginId,
+              action: "approval.cancelled",
+              entityType: "approval",
+              entityId: cancelResult.id,
+              details: {
+                type: cancelResult.type,
+                sourcePluginId: pluginId,
+                sourcePluginKey: pluginKey,
+                issueIds,
+                linkedIssueIds: issueIds,
+                issueRefs,
+                reason: params.reason ?? null,
+                status: "cancelled",
+                decisionNote: params.reason ?? null,
+                decidedByUserId: null,
+                decidedAt: now,
+              },
+            });
+          } catch (err) {
+            logger.warn(
+              { err, approvalId: cancelResult.id, sourcePluginId: pluginId },
+              "failed to log plugin approval cancellation activity",
+            );
+          }
+          if (notifyWorker) {
+            try {
+              notifyWorker("approvals.resolved", {
+                approvalId: params.approvalId,
+                status: "cancelled",
+                decisionNote: params.reason ?? null,
+                decidedByUserId: null,
+                decidedAt: now,
+              });
+            } catch (err) {
+              logger.warn(
+                { err, approvalId: params.approvalId, sourcePluginId: pluginId },
+                "failed to notify plugin worker that approval resolved",
+              );
+            }
+          }
+        }
       },
     },
 

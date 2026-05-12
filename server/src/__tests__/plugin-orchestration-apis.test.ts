@@ -3,17 +3,20 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agentWakeupRequests,
   agents,
+  approvals,
   companies,
   costEvents,
   createDb,
   heartbeatRuns,
+  issueApprovals,
   issueRelations,
   issues,
+  plugins,
   pluginManagedResources,
   plugins,
   projects,
@@ -23,6 +26,12 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { buildHostServices } from "../services/plugin-host-services.js";
+
+const mockLogActivity = vi.hoisted(() => vi.fn());
+
+vi.mock("../services/activity-log.js", () => ({
+  logActivity: mockLogActivity,
+}));
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -59,12 +68,18 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
   }, 20_000);
 
   afterEach(async () => {
+    mockLogActivity.mockReset();
+    mockLogActivity.mockImplementation(async (activityDb, input) => {
+      await activityDb.insert(activityLog).values(input);
+    });
     await Promise.all(tempRoots.map((root) => fs.rm(root, { recursive: true, force: true })));
     tempRoots.length = 0;
     await db.delete(activityLog);
     await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(issueApprovals);
+    await db.delete(approvals);
     await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(pluginManagedResources);
@@ -72,10 +87,17 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await db.delete(plugins);
     await db.delete(agents);
     await db.delete(companies);
+    await db.delete(plugins);
   });
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  beforeAll(() => {
+    mockLogActivity.mockImplementation(async (activityDb, input) => {
+      await activityDb.insert(activityLog).values(input);
+    });
   });
 
   async function seedCompanyAndAgent() {
@@ -673,5 +695,259 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       cachedInputTokens: 3,
       outputTokens: 6,
     });
+  });
+
+  it("keeps the validated approval prompt when payload contains prompt", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const pluginRecordId = randomUUID();
+    await db.insert(plugins).values({
+      id: pluginRecordId,
+      pluginKey: "paperclip.missions",
+      packageName: "@paperclip/test-missions",
+      version: "0.1.0",
+      apiVersion: 1,
+      categories: [],
+      manifestJson: {
+        id: "paperclip.missions",
+        apiVersion: 1,
+        version: "0.1.0",
+        displayName: "Missions",
+        description: "Test plugin",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["approvals.create"],
+        entrypoints: { worker: "./dist/worker.js" },
+      },
+      status: "enabled",
+    });
+    const services = buildHostServices(db, pluginRecordId, "paperclip.missions", createEventBusStub());
+
+    const created = await services.approvals.create({
+      companyId,
+      prompt: "Validated prompt",
+      payload: { prompt: "spoofed prompt", detail: "kept" },
+    });
+
+    const [stored] = await db.select().from(approvals).where(eq(approvals.id, created.approvalId));
+    expect(stored?.payload).toMatchObject({
+      prompt: "Validated prompt",
+      detail: "kept",
+    });
+  });
+
+  it("logs activity when plugin host services create and cancel approvals", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Approval target",
+      status: "todo",
+      priority: "medium",
+      identifier: `${issuePrefix(companyId)}-approval`,
+      assigneeAgentId: agentId,
+    });
+    const pluginRecordId = randomUUID();
+    await db.insert(plugins).values({
+      id: pluginRecordId,
+      pluginKey: "paperclip.missions",
+      packageName: "@paperclip/test-missions",
+      version: "0.1.0",
+      apiVersion: 1,
+      categories: [],
+      manifestJson: {
+        id: "paperclip.missions",
+        apiVersion: 1,
+        version: "0.1.0",
+        displayName: "Missions",
+        description: "Test plugin",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["approvals.create", "approvals.read"],
+        entrypoints: { worker: "./dist/worker.js" },
+      },
+      status: "enabled",
+    });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+    });
+    const services = buildHostServices(db, pluginRecordId, "paperclip.missions", createEventBusStub());
+
+    const created = await services.approvals.create({
+      companyId,
+      prompt: "Approve mission launch.",
+      issueId,
+      actorAgentId: agentId,
+      actorRunId: runId,
+    });
+    await services.approvals.cancel({
+      companyId,
+      approvalId: created.approvalId,
+      reason: "mission withdrawn",
+    });
+
+    const activities = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.entityType, "approval"), eq(activityLog.entityId, created.approvalId)));
+    expect(activities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          companyId,
+          actorType: "plugin",
+          actorId: pluginRecordId,
+          agentId,
+          runId,
+          action: "approval.created",
+          details: expect.objectContaining({
+            sourcePluginId: pluginRecordId,
+            sourcePluginKey: "paperclip.missions",
+            issueIds: [issueId],
+            linkedIssueIds: [issueId],
+            issueRefs: [
+              {
+                id: issueId,
+                identifier: `${issuePrefix(companyId)}-approval`,
+              },
+            ],
+            initiatingActorType: "agent",
+            initiatingActorId: agentId,
+            initiatingRunId: runId,
+          }),
+        }),
+        expect.objectContaining({
+          companyId,
+          actorType: "plugin",
+          actorId: pluginRecordId,
+          action: "approval.cancelled",
+          details: expect.objectContaining({
+            sourcePluginId: pluginRecordId,
+            sourcePluginKey: "paperclip.missions",
+            issueIds: [issueId],
+            linkedIssueIds: [issueId],
+            issueRefs: [
+              {
+                id: issueId,
+                identifier: `${issuePrefix(companyId)}-approval`,
+              },
+            ],
+            reason: "mission withdrawn",
+            status: "cancelled",
+            decisionNote: "mission withdrawn",
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("notifies plugin approval cancellation even when audit logging fails", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const pluginRecordId = randomUUID();
+    await db.insert(plugins).values({
+      id: pluginRecordId,
+      pluginKey: "paperclip.missions",
+      packageName: "@paperclip/test-missions",
+      version: "0.1.0",
+      apiVersion: 1,
+      categories: [],
+      manifestJson: {
+        id: "paperclip.missions",
+        apiVersion: 1,
+        version: "0.1.0",
+        displayName: "Missions",
+        description: "Test plugin",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["approvals.create", "approvals.read"],
+        entrypoints: { worker: "./dist/worker.js" },
+      },
+      status: "enabled",
+    });
+    const notifyWorker = vi.fn();
+    const services = buildHostServices(db, pluginRecordId, "paperclip.missions", createEventBusStub(), notifyWorker);
+    const created = await services.approvals.create({
+      companyId,
+      prompt: "Approve mission launch.",
+    });
+    mockLogActivity.mockRejectedValueOnce(new Error("audit unavailable"));
+
+    await expect(services.approvals.cancel({
+      companyId,
+      approvalId: created.approvalId,
+      reason: "mission withdrawn",
+    })).resolves.toBeUndefined();
+
+    expect(notifyWorker).toHaveBeenCalledWith(
+      "approvals.resolved",
+      expect.objectContaining({
+        approvalId: created.approvalId,
+        status: "cancelled",
+      }),
+    );
+  });
+
+  it("lets plugins cancel revision-requested approvals", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const pluginRecordId = randomUUID();
+    await db.insert(plugins).values({
+      id: pluginRecordId,
+      pluginKey: "paperclip.missions",
+      packageName: "@paperclip/test-missions",
+      version: "0.1.0",
+      apiVersion: 1,
+      categories: [],
+      manifestJson: {
+        id: "paperclip.missions",
+        apiVersion: 1,
+        version: "0.1.0",
+        displayName: "Missions",
+        description: "Test plugin",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["approvals.create", "approvals.read"],
+        entrypoints: { worker: "./dist/worker.js" },
+      },
+      status: "enabled",
+    });
+    const notifyWorker = vi.fn();
+    const services = buildHostServices(db, pluginRecordId, "paperclip.missions", createEventBusStub(), notifyWorker);
+    const created = await services.approvals.create({
+      companyId,
+      prompt: "Approve mission launch.",
+    });
+
+    await db
+      .update(approvals)
+      .set({
+        status: "revision_requested",
+        decisionNote: "Need a smaller blast radius",
+        decidedByUserId: "board-user",
+        decidedAt: new Date(),
+      })
+      .where(eq(approvals.id, created.approvalId));
+
+    await expect(services.approvals.cancel({
+      companyId,
+      approvalId: created.approvalId,
+      reason: "mission withdrawn",
+    })).resolves.toBeUndefined();
+
+    const [stored] = await db.select().from(approvals).where(eq(approvals.id, created.approvalId));
+    expect(stored).toMatchObject({
+      status: "cancelled",
+      decisionNote: "mission withdrawn",
+    });
+    expect(notifyWorker).toHaveBeenCalledWith(
+      "approvals.resolved",
+      expect.objectContaining({
+        approvalId: created.approvalId,
+        status: "cancelled",
+        decisionNote: "mission withdrawn",
+      }),
+    );
   });
 });

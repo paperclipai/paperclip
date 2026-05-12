@@ -16,10 +16,18 @@ const mockPluginsApi = vi.hoisted(() => ({
   configureLocalFolder: vi.fn(),
 }));
 
+const mockApprovalsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/plugins", () => ({
   pluginsApi: mockPluginsApi,
+}));
+
+vi.mock("@/api/approvals", () => ({
+  approvalsApi: mockApprovalsApi,
 }));
 
 vi.mock("@/context/BreadcrumbContext", () => ({
@@ -47,7 +55,21 @@ vi.mock("@/plugins/slots", () => ({
 }));
 
 vi.mock("@/components/PageTabBar", () => ({
-  PageTabBar: () => null,
+  PageTabBar: ({
+    items,
+    onValueChange,
+  }: {
+    items: Array<{ value: string; label: string }>;
+    onValueChange: (value: string) => void;
+  }) => (
+    <div>
+      {items.map((item) => (
+        <button key={item.value} type="button" onClick={() => onValueChange(item.value)}>
+          {item.label}
+        </button>
+      ))}
+    </div>
+  ),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -147,6 +169,7 @@ describe("PluginSettings", () => {
     mockPluginsApi.dashboard.mockResolvedValue(null);
     mockPluginsApi.health.mockResolvedValue({ pluginId: "plugin-1", status: "ready", healthy: true, checks: [] });
     mockPluginsApi.logs.mockResolvedValue([]);
+    mockApprovalsApi.list.mockResolvedValue([]);
     mockPluginsApi.listLocalFolders.mockResolvedValue({
       pluginId: "plugin-1",
       companyId: "company-1",
@@ -329,6 +352,40 @@ describe("PluginSettings", () => {
     expect(container.textContent).toContain("WritableYes");
     expect(container.textContent).toContain("Present");
     expect(container.textContent).not.toContain("Validation problems");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("counts revision-requested plugin approvals as open", async () => {
+    mockPluginsApi.get.mockResolvedValue(basePlugin({
+      status: "ready",
+      manifestJson: {
+        displayName: "Approval Plugin",
+        version: "0.1.0",
+        description: "Approval automation.",
+        author: "Paperclip",
+        capabilities: ["approvals.create"],
+      },
+    }));
+    mockApprovalsApi.list.mockResolvedValue([
+      { id: "approval-1", status: "revision_requested", companyId: "company-1", sourcePluginId: "plugin-1" },
+      { id: "approval-2", status: "approved", companyId: "company-1", sourcePluginId: "plugin-1" },
+    ]);
+
+    const root = await renderSettings(container);
+
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Status")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockApprovalsApi.list).toHaveBeenCalledWith("company-1", undefined, "plugin-1");
+    expect(container.textContent).toContain("1 open approval from this plugin.");
+    expect(container.textContent).not.toContain("No open approvals.");
 
     await act(async () => {
       root.unmount();

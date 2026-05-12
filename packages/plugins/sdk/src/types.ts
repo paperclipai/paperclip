@@ -1602,6 +1602,62 @@ export interface PluginStreamsClient {
  *
  * @see PLUGIN_SPEC.md §14 — SDK Surface
  */
+
+import type { PluginApproval, PluginApprovalResolutionEvent } from "./protocol.js";
+
+/**
+ * Client for creating and subscribing to plugin-scoped approval requests.
+ *
+ * Push delivery via `onResolved` is best-effort. Plugin code must reconcile
+ * state on restart by calling `list({ status: "pending" })`.
+ *
+ * **Status lifecycle for plugin approvals:**
+ * - `"pending"` — awaiting a board decision
+ * - `"revision_requested"` — board has asked for more information; treat the
+ *   same as `"pending"` (still awaiting a final decision). `onResolved` does
+ *   NOT fire for this transition.
+ * - `"approved"` / `"rejected"` / `"cancelled"` — terminal states that trigger
+ *   `onResolved` callbacks.
+ */
+export interface PluginApprovalsClient {
+  create(params: {
+    companyId: string;
+    issueId?: string | null;
+    prompt: string;
+    payload?: Record<string, unknown>;
+    actorAgentId?: string | null;
+    actorRunId?: string | null;
+  }): Promise<{ approvalId: string; status: string }>;
+
+  get(params: {
+    approvalId: string;
+    companyId: string;
+  }): Promise<PluginApproval | null>;
+
+  /**
+   * Returns up to 100 approvals for this plugin. `issueId` is always `null`
+   * in list results — call `get` on individual approvals if you need the linked
+   * issue id.
+   */
+  list(params: {
+    companyId: string;
+    status?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<PluginApproval[]>;
+
+  onResolved(
+    approvalId: string,
+    handler: (event: PluginApprovalResolutionEvent) => Promise<void>,
+  ): () => void;
+
+  cancel(params: {
+    approvalId: string;
+    companyId: string;
+    reason?: string;
+  }): Promise<void>;
+}
+
 export interface PluginContext {
   /** The plugin's manifest as validated at install time. */
   manifest: PaperclipPluginManifestV1;
@@ -1680,4 +1736,7 @@ export interface PluginContext {
 
   /** Structured logger. Output is captured and surfaced in the plugin health dashboard. */
   logger: PluginLogger;
+
+  /** Create and subscribe to plugin-scoped approvals. Requires `approvals.create` / `approvals.read`. */
+  approvals: PluginApprovalsClient;
 }

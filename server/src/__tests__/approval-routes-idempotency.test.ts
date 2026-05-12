@@ -233,6 +233,187 @@ describe("approval routes idempotent retries", () => {
     expect(mockApprovalService.approve).toHaveBeenCalledWith("approval-4", "user-1", "ship it");
   });
 
+  it("does not fail approval after mutation if linked issue refs cannot be read", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-linked-fail",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+    mockIssueApprovalService.listIssuesForApproval.mockRejectedValue(new Error("read failed"));
+    mockApprovalService.approve.mockResolvedValue({
+      approval: {
+        id: "approval-linked-fail",
+        companyId: "company-1",
+        type: "hire_agent",
+        status: "approved",
+        payload: {},
+        requestedByAgentId: "agent-1",
+      },
+      applied: true,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-linked-fail/approve")
+      .send({ decisionNote: "ship it" });
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.approve).toHaveBeenCalledWith("approval-linked-fail", "user-1", "ship it");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "approval.approved",
+        details: expect.objectContaining({
+          issueIds: [],
+          issueRefs: [],
+        }),
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({
+        reason: "approval_approved",
+        payload: expect.objectContaining({ issueIds: [] }),
+      }),
+    );
+  });
+
+  it("does not fail approval when requester wakeup audit logging fails", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-wakeup-audit-fail",
+      companyId: "company-1",
+      type: "plugin_workflow",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+    mockApprovalService.approve.mockResolvedValue({
+      approval: {
+        id: "approval-wakeup-audit-fail",
+        companyId: "company-1",
+        type: "plugin_workflow",
+        status: "approved",
+        payload: {},
+        requestedByAgentId: "agent-1",
+      },
+      applied: true,
+    });
+    mockLogActivity.mockImplementation(async (_db, input) => {
+      if (input.action === "approval.requester_wakeup_queued") {
+        throw new Error("audit unavailable");
+      }
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-wakeup-audit-fail/approve")
+      .send({ decisionNote: "ship it" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({ reason: "approval_approved" }),
+    );
+  });
+
+  it("does not fail approval when requester wakeup and failure audit logging both fail", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-wakeup-fail-audit-fail",
+      companyId: "company-1",
+      type: "plugin_workflow",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+    mockApprovalService.approve.mockResolvedValue({
+      approval: {
+        id: "approval-wakeup-fail-audit-fail",
+        companyId: "company-1",
+        type: "plugin_workflow",
+        status: "approved",
+        payload: {},
+        requestedByAgentId: "agent-1",
+      },
+      applied: true,
+    });
+    mockHeartbeatService.wakeup.mockRejectedValue(new Error("wakeup unavailable"));
+    mockLogActivity.mockImplementation(async (_db, input) => {
+      if (input.action === "approval.requester_wakeup_failed") {
+        throw new Error("audit unavailable");
+      }
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-wakeup-fail-audit-fail/approve")
+      .send({ decisionNote: "ship it" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({ reason: "approval_approved" }),
+    );
+  });
+
+  it("does not fail revision requests when activity logging fails", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-revision-audit-fail",
+      companyId: "company-1",
+      type: "plugin_workflow",
+      status: "pending",
+      payload: {},
+    });
+    mockApprovalService.requestRevision.mockResolvedValue({
+      id: "approval-revision-audit-fail",
+      companyId: "company-1",
+      type: "plugin_workflow",
+      status: "revision_requested",
+      payload: {},
+    });
+    mockLogActivity.mockRejectedValue(new Error("audit unavailable"));
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-revision-audit-fail/request-revision")
+      .send({ decisionNote: "needs changes" });
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.requestRevision).toHaveBeenCalledWith(
+      "approval-revision-audit-fail",
+      "user-1",
+      "needs changes",
+    );
+  });
+
+  it("does not fail resubmits when activity logging fails", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-resubmit-audit-fail",
+      companyId: "company-1",
+      type: "plugin_workflow",
+      status: "revision_requested",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+    mockApprovalService.resubmit.mockResolvedValue({
+      id: "approval-resubmit-audit-fail",
+      companyId: "company-1",
+      type: "plugin_workflow",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+    mockLogActivity.mockRejectedValue(new Error("audit unavailable"));
+
+    const res = await request(await createAgentApp())
+      .post("/api/approvals/approval-resubmit-audit-fail/resubmit")
+      .send({ payload: { prompt: "try again" } });
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.resubmit).toHaveBeenCalledWith(
+      "approval-resubmit-audit-fail",
+      { prompt: "try again" },
+    );
+  });
+
   it("derives approval attribution from the authenticated actor on reject", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-5",
@@ -303,6 +484,12 @@ describe("approval routes idempotent retries", () => {
       createdAt: new Date("2026-04-06T00:00:00.000Z"),
       updatedAt: new Date("2026-04-06T00:00:00.000Z"),
     });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+      {
+        id: "00000000-0000-0000-0000-000000000001",
+        identifier: "PAP-approval",
+      },
+    ]);
 
     const res = await request(await createAgentApp())
       .post("/api/companies/company-1/approvals")
@@ -333,6 +520,99 @@ describe("approval routes idempotent retries", () => {
         actorType: "agent",
         actorId: "agent-1",
         action: "approval.created",
+        details: expect.objectContaining({
+          issueIds: ["00000000-0000-0000-0000-000000000001"],
+          linkedIssueIds: ["00000000-0000-0000-0000-000000000001"],
+          issueRefs: [
+            {
+              id: "00000000-0000-0000-0000-000000000001",
+              identifier: "PAP-approval",
+            },
+          ],
+        }),
+      }),
+    );
+  });
+
+  it("does not fail approval creation when activity logging fails", async () => {
+    mockApprovalService.create.mockResolvedValue({
+      id: "approval-create-audit-fail",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: { title: "Approve hosting spend" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-04-06T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-06T00:00:00.000Z"),
+    });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+      {
+        id: "00000000-0000-0000-0000-000000000001",
+        identifier: "PAP-approval",
+      },
+    ]);
+    mockLogActivity.mockRejectedValue(new Error("audit unavailable"));
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        issueIds: ["00000000-0000-0000-0000-000000000001"],
+        payload: { title: "Approve hosting spend" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockApprovalService.create).toHaveBeenCalled();
+    expect(mockIssueApprovalService.linkManyForApproval).toHaveBeenCalledWith(
+      "approval-create-audit-fail",
+      ["00000000-0000-0000-0000-000000000001"],
+      { agentId: "agent-1", userId: null },
+    );
+  });
+
+  it("falls back to requested issue ids when created approval issue ref read is partial", async () => {
+    mockApprovalService.create.mockResolvedValue({
+      id: "approval-1",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: {},
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-04-06T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-06T00:00:00.000Z"),
+    });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([]);
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        issueIds: ["00000000-0000-0000-0000-000000000001"],
+        payload: { title: "Approve hosting spend" },
+      });
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "approval.created",
+        details: expect.objectContaining({
+          issueIds: ["00000000-0000-0000-0000-000000000001"],
+          issueRefs: [
+            {
+              id: "00000000-0000-0000-0000-000000000001",
+              identifier: null,
+            },
+          ],
+        }),
       }),
     );
   });

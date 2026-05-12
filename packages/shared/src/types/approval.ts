@@ -13,6 +13,8 @@ export interface Approval {
   decidedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+  sourcePluginId: string | null;
+  sourcePluginKey: string | null;
 }
 
 export interface ApprovalComment {

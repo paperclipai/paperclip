@@ -252,6 +252,15 @@ export interface HostServices {
     create(params: WorkerToHostMethods["goals.create"][0]): Promise<WorkerToHostMethods["goals.create"][1]>;
     update(params: WorkerToHostMethods["goals.update"][0]): Promise<WorkerToHostMethods["goals.update"][1]>;
   };
+
+  /** Provides `approvals.create`, `approvals.get`, `approvals.list`, `approvals.subscribe`, `approvals.cancel`. */
+  approvals: {
+    create(params: WorkerToHostMethods["approvals.create"][0]): Promise<WorkerToHostMethods["approvals.create"][1]>;
+    get(params: WorkerToHostMethods["approvals.get"][0]): Promise<WorkerToHostMethods["approvals.get"][1]>;
+    list(params: WorkerToHostMethods["approvals.list"][0]): Promise<WorkerToHostMethods["approvals.list"][1]>;
+    subscribe(params: WorkerToHostMethods["approvals.subscribe"][0]): Promise<WorkerToHostMethods["approvals.subscribe"][1]>;
+    cancel(params: WorkerToHostMethods["approvals.cancel"][0]): Promise<void>;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -425,6 +434,13 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "goals.get": "goals.read",
   "goals.create": "goals.create",
   "goals.update": "goals.update",
+
+  // Approvals
+  "approvals.create": "approvals.create",
+  "approvals.get": "approvals.read",
+  "approvals.list": "approvals.read",
+  "approvals.subscribe": "approvals.read",
+  "approvals.cancel": "approvals.create",
 };
 
 // ---------------------------------------------------------------------------
@@ -762,6 +778,23 @@ export function createHostClientHandlers(
     }),
     "goals.update": gated("goals.update", async (params) => {
       return services.goals.update(params);
+    }),
+
+    // Approvals
+    "approvals.create": gated("approvals.create", async (params) => {
+      return services.approvals.create(params);
+    }),
+    "approvals.get": gated("approvals.get", async (params) => {
+      return services.approvals.get(params);
+    }),
+    "approvals.list": gated("approvals.list", async (params) => {
+      return services.approvals.list(params);
+    }),
+    "approvals.subscribe": gated("approvals.subscribe", async (params) => {
+      return services.approvals.subscribe(params);
+    }),
+    "approvals.cancel": gated("approvals.cancel", async (params) => {
+      return services.approvals.cancel(params);
     }),
   };
 }
