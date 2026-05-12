@@ -1,5 +1,5 @@
 CREATE INDEX IF NOT EXISTS "issues_company_status_updated_idx" ON "issues" USING btree ("company_id","status","updated_at" DESC);--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "issues_company_parent_status_idx" ON "issues" USING btree ("company_id","parent_id","status");--> statement-breakpoint
+DROP INDEX IF EXISTS "issues_company_parent_idx";--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "issues_company_hidden_priority_updated_idx" ON "issues" USING btree (
   "company_id",
   "hidden_at",

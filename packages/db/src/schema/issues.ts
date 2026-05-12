@@ -99,12 +99,6 @@ export const issues = pgTable(
       table.assigneeUserId,
       table.status,
     ),
-    parentIdx: index("issues_company_parent_idx").on(table.companyId, table.parentId),
-    companyParentStatusIdx: index("issues_company_parent_status_idx").on(
-      table.companyId,
-      table.parentId,
-      table.status,
-    ),
     companyParentStatusHiddenPriorityUpdatedIdx: index("issues_company_parent_status_hidden_priority_updated_idx").on(
       table.companyId,
       table.parentId,
