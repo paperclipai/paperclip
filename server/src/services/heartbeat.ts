@@ -3598,7 +3598,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
     await fs.mkdir(cwd, { recursive: true });
     const warnings: string[] = [];
-    if (sessionCwd) {
+    if (sessionCwd && sessionCwdLooksUnsafe) {
+      warnings.push(
+        `Saved session workspace "${sessionCwd}" points at a system temp root and was rejected as untrusted (likely persisted from a previous remote-target run). Using fallback workspace "${cwd}" for this run.`,
+      );
+    } else if (sessionCwd) {
       warnings.push(
         `Saved session workspace "${sessionCwd}" is not available. Using fallback workspace "${cwd}" for this run.`,
       );

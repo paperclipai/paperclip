@@ -93,6 +93,10 @@ async function readSnapshotEntry(root: string, relative: string): Promise<Snapsh
       target: await fs.readlink(fullPath),
     };
   }
+  // Same guard as walkDirectory: hashing a UNIX socket / FIFO / device
+  // node via createReadStream throws EOPNOTSUPP. Treat unhashable entries
+  // as if they don't exist for snapshot-comparison purposes.
+  if (!stats.isFile()) return null;
   return {
     kind: "file",
     mode: stats.mode,
