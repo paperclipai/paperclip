@@ -57,24 +57,45 @@ export function qslBridgeRoutes(db?: Db) {
   // Mounted at both /qsl/findings and /companies/:companyId/qsl/findings
   async function handleListFindings(req: any, res: any) {
     const companyId = resolveCompanyId(req);
+    const debugInfo: Record<string, unknown> = {
+      source: "unknown",
+      companyId,
+      reviewSvcAvailable: !!reviewSvc,
+      bridgePath: process.env.QSL_BRIDGE_PATH ?? null,
+      resolvedFrom: req.params?.companyId ? "url_param" : req.actor?.companyIds?.length === 1 ? "actor_session" : "header_or_null",
+    };
+
     if (!reviewSvc || !companyId) {
       // Fallback: read from bridge
+      debugInfo.source = "bridge_fallback";
+      debugInfo.reason = !reviewSvc ? "no_review_service" : "no_company_id";
+      console.warn("[QSL:LIST] returning bridge-only data:", JSON.stringify(debugInfo));
       const bridgePath = process.env.QSL_BRIDGE_PATH;
       if (!bridgePath) {
+        res.set("X-QSL-Source", "empty");
         res.json([]);
         return;
       }
       const issues = await readBridgeIssues(bridgePath);
+      res.set("X-QSL-Source", "bridge");
+      res.set("X-QSL-Debug", JSON.stringify(debugInfo));
       res.json(issues);
       return;
     }
 
     // Sync bridge issues into DB first
     const bridgePath = process.env.QSL_BRIDGE_PATH;
+    let syncedCount = 0;
     if (bridgePath) {
       const bridgeIssues = await readBridgeIssues(bridgePath);
       if (bridgeIssues.length > 0) {
-        await reviewSvc.syncFindings(companyId, bridgeIssues);
+        try {
+          await reviewSvc.syncFindings(companyId, bridgeIssues);
+          syncedCount = bridgeIssues.length;
+        } catch (syncErr) {
+          console.error("[QSL:LIST] syncFindings FAILED:", syncErr);
+          debugInfo.syncError = syncErr instanceof Error ? syncErr.message : String(syncErr);
+        }
       }
     }
 
@@ -82,8 +103,35 @@ export function qslBridgeRoutes(db?: Db) {
       ? { reviewState: req.query.reviewState }
       : undefined;
 
-    const findings = await reviewSvc.listFindings(companyId, filter);
-    res.json(findings);
+    try {
+      const findings = await reviewSvc.listFindings(companyId, filter);
+      debugInfo.source = "database";
+      debugInfo.syncedCount = syncedCount;
+      debugInfo.findingsReturned = findings.length;
+      debugInfo.filter = filter?.reviewState ?? "none";
+      debugInfo.reviewStates = findings.reduce((acc: Record<string, number>, f) => {
+        acc[f.reviewState] = (acc[f.reviewState] ?? 0) + 1;
+        return acc;
+      }, {});
+      console.log("[QSL:LIST]", JSON.stringify(debugInfo));
+      res.set("X-QSL-Source", "database");
+      res.set("X-QSL-Debug", JSON.stringify(debugInfo));
+      res.json(findings);
+    } catch (listErr) {
+      console.error("[QSL:LIST] listFindings FAILED, falling back to bridge:", listErr);
+      debugInfo.source = "bridge_error_fallback";
+      debugInfo.listError = listErr instanceof Error ? listErr.message : String(listErr);
+      // Fall back to bridge data on DB error
+      if (bridgePath) {
+        const issues = await readBridgeIssues(bridgePath);
+        res.set("X-QSL-Source", "bridge_error_fallback");
+        res.set("X-QSL-Debug", JSON.stringify(debugInfo));
+        res.json(issues);
+      } else {
+        res.set("X-QSL-Source", "empty");
+        res.json([]);
+      }
+    }
   }
 
   router.get("/findings", handleListFindings);
@@ -105,9 +153,18 @@ export function qslBridgeRoutes(db?: Db) {
     }
 
     const reviewerId = (req as any).actor?.userId ?? "board";
+    console.log("[QSL:REVIEW] request:", JSON.stringify({ findingId, decision, reviewerId, notes: notes ?? null }));
 
     try {
       const finding = await reviewSvc.reviewFinding(findingId, decision, reviewerId, notes);
+      console.log("[QSL:REVIEW] success:", JSON.stringify({
+        findingId: finding.id,
+        reviewState: finding.reviewState,
+        reviewDecision: finding.reviewDecision,
+        companyId: finding.companyId,
+        fingerprint: finding.fingerprint,
+        reviewedAt: finding.reviewedAt,
+      }));
 
       // Also write to approvals.jsonl for backward compat with the bridge
       const bridgePath = process.env.QSL_BRIDGE_PATH;
@@ -189,6 +246,57 @@ export function qslBridgeRoutes(db?: Db) {
 
   router.post("/findings/:id/state", handleSetFindingState);
   router.post("/companies/:companyId/findings/:id/state", handleSetFindingState);
+
+  // ── Debug diagnostic endpoint ─────────────────────────────────────
+  router.get("/companies/:companyId/findings/debug", async (req: any, res: any) => {
+    const companyId = req.params.companyId;
+    const bridgePath = process.env.QSL_BRIDGE_PATH;
+
+    const diag: Record<string, unknown> = {
+      companyId,
+      reviewSvcAvailable: !!reviewSvc,
+      bridgePath: bridgePath ?? null,
+      qslBridgePathSet: !!bridgePath,
+    };
+
+    // Check bridge issues
+    if (bridgePath) {
+      try {
+        const bridgeIssues = await readBridgeIssues(bridgePath);
+        diag.bridgeIssueCount = bridgeIssues.length;
+        diag.bridgeIssueSample = bridgeIssues.slice(0, 2).map((i) => ({
+          title: i.title,
+          severity: i.severity,
+          threat_category: i.threat_category,
+        }));
+      } catch (err) {
+        diag.bridgeError = err instanceof Error ? err.message : String(err);
+      }
+    }
+
+    // Check DB findings
+    if (reviewSvc && companyId) {
+      try {
+        const allFindings = await reviewSvc.listFindings(companyId);
+        diag.dbFindingCount = allFindings.length;
+        diag.dbFindings = allFindings.map((f) => ({
+          id: f.id,
+          fingerprint: f.fingerprint.slice(0, 12) + "...",
+          title: f.title.slice(0, 60),
+          reviewState: f.reviewState,
+          reviewDecision: f.reviewDecision,
+          reviewedAt: f.reviewedAt,
+          occurrenceCount: f.occurrenceCount,
+        }));
+      } catch (err) {
+        diag.dbError = err instanceof Error ? err.message : String(err);
+      }
+    } else {
+      diag.dbSkipped = !reviewSvc ? "no_review_service" : "no_company_id";
+    }
+
+    res.json(diag);
+  });
 
   // ── Legacy bridge file endpoints (kept for backward compat) ───────
   for (const name of ALLOWED_FILES) {
