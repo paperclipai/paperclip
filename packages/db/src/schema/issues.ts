@@ -9,6 +9,7 @@ import {
   jsonb,
   index,
   uniqueIndex,
+  boolean,
 } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 import { projects } from "./projects.js";
@@ -65,6 +66,7 @@ export const issues = pgTable(
     completedAt: timestamp("completed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
     hiddenAt: timestamp("hidden_at", { withTimezone: true }),
+    isCeoChat: boolean("is_ceo_chat").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -139,5 +141,12 @@ export const issues = pgTable(
           and ${table.hiddenAt} is null
           and ${table.status} not in ('done', 'cancelled')`,
       ),
+    companyCeoChatIdx: uniqueIndex("issues_company_ceo_chat_uq")
+      .on(table.companyId)
+      .where(sql`${table.isCeoChat} = true`),
+    companyIsCeoChatIdx: index("issues_company_is_ceo_chat_idx").on(
+      table.companyId,
+      table.isCeoChat,
+    ),
   }),
 );
