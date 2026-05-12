@@ -97,7 +97,7 @@
   {
     "dir": "packages/plugins/sandbox-providers/kubernetes",
     "name": "@paperclipai/plugin-kubernetes",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/plugins/sandbox-providers/exe-dev",
