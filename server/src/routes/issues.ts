@@ -3419,6 +3419,15 @@ export function issueRoutes(
         const idempotencyKey = comment
           ? issueCommentWakeupIdempotencyKey({ issueId: issue.id, commentId: comment.id, agentId, reason })
           : null;
+        if (comment && idempotencyKey && !commentInserted && reason === "issue_commented") {
+          const reopenIdempotencyKey = issueCommentWakeupIdempotencyKey({
+            issueId: issue.id,
+            commentId: comment.id,
+            agentId,
+            reason: "issue_reopened_via_comment",
+          });
+          if (await hasWakeupRequest(reopenIdempotencyKey)) continue;
+        }
         if (idempotencyKey && !commentInserted && await hasWakeupRequest(idempotencyKey)) continue;
         heartbeat
           .wakeup(agentId, {
@@ -4426,6 +4435,15 @@ export function issueRoutes(
           agentId,
           reason,
         });
+        if (!commentInserted && reason === "issue_commented") {
+          const reopenIdempotencyKey = issueCommentWakeupIdempotencyKey({
+            issueId: currentIssue.id,
+            commentId: comment.id,
+            agentId,
+            reason: "issue_reopened_via_comment",
+          });
+          if (await hasWakeupRequest(reopenIdempotencyKey)) continue;
+        }
         if (!commentInserted && await hasWakeupRequest(idempotencyKey)) continue;
         heartbeat
           .wakeup(agentId, {

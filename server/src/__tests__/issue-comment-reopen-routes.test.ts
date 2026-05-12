@@ -511,6 +511,33 @@ describe.sequential("issue comment reopen routes", () => {
     ));
   });
 
+  it("skips a comment-only retry when the original reopen wakeup key already exists", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    const dedupedComment = {
+      id: "comment-reopen-retry",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "hello",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: null,
+      authorUserId: "local-board",
+    };
+    Object.defineProperty(dedupedComment, "wasInserted", {
+      value: false,
+      enumerable: false,
+    });
+    mockIssueService.addComment.mockResolvedValue(dedupedComment);
+    mockDbSelectLimit.mockResolvedValueOnce([{ id: "existing-wakeup" }]);
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "hello" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("rejects non-assignee agent POST comments on closed issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.addComment.mockResolvedValue({
