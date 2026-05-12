@@ -9455,12 +9455,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return newRun;
   }
 
-  async function listProjectScopedRunIds(companyId: string, projectId: string) {
+  async function listProjectScopedRuns(companyId: string, projectId: string) {
     const runIssueId = sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
     const effectiveProjectId = sql<string | null>`coalesce(${heartbeatRuns.contextSnapshot} ->> 'projectId', ${issues.projectId}::text)`;
 
     const rows = await db
-      .selectDistinctOn([heartbeatRuns.id], { id: heartbeatRuns.id })
+      .selectDistinctOn([heartbeatRuns.id], { run: heartbeatRuns })
       .from(heartbeatRuns)
       .leftJoin(
         issues,
@@ -9477,7 +9477,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ),
       );
 
-    return rows.map((row) => row.id);
+    return rows.map((row) => row.run);
   }
 
   async function listProjectScopedWakeupIds(companyId: string, projectId: string) {
@@ -9654,17 +9654,62 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return runs.length;
   }
 
+  async function cancelBudgetScopeAgentWork(agentId: string) {
+    const agent = await getAgent(agentId);
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...PAUSE_CANCELLABLE_HEARTBEAT_RUN_STATUSES])));
+
+    for (const run of runs) {
+      if (run.status === "queued" && isScheduledRetryRun(run)) {
+        await deferQueuedScheduledRetry(run, "Scheduled retry deferred because budget policy paused the agent");
+        continue;
+      }
+      await setRunStatus(run.id, "cancelled", {
+        finishedAt: new Date(),
+        error: "Cancelled due to budget pause",
+        errorCode: "cancelled",
+        ...(agent ? {
+          resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
+            resultJson: parseObject(run.resultJson),
+            errorCode: "cancelled",
+            errorMessage: "Cancelled due to budget pause",
+          }),
+        } : {}),
+      });
+
+      const running = runningProcesses.get(run.id);
+      if (running) {
+        await terminateHeartbeatRunProcess({
+          pid: running.child.pid ?? run.processPid,
+          processGroupId: running.processGroupId ?? run.processGroupId,
+          graceMs: Math.max(1, running.graceSec) * 1000,
+        });
+        runningProcesses.delete(run.id);
+      } else if (run.processPid || run.processGroupId) {
+        await terminateHeartbeatRunProcess({
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        });
+      }
+      await releaseIssueExecutionAndPromote(run);
+    }
+
+    return runs.length;
+  }
+
   async function cancelBudgetScopeWork(scope: BudgetEnforcementScope) {
     if (scope.scopeType === "agent") {
-      await cancelActiveForAgentInternal(scope.scopeId, "Cancelled due to budget pause");
+      await cancelBudgetScopeAgentWork(scope.scopeId);
       await cancelPendingWakeupsForBudgetScope(scope);
       return;
     }
 
-    const runIds =
+    const runs =
       scope.scopeType === "company"
         ? await db
-          .select({ id: heartbeatRuns.id })
+          .select()
           .from(heartbeatRuns)
           .where(
             and(
@@ -9672,11 +9717,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               inArray(heartbeatRuns.status, [...PAUSE_CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
             ),
           )
-          .then((rows) => rows.map((row) => row.id))
-        : await listProjectScopedRunIds(scope.companyId, scope.scopeId);
+        : await listProjectScopedRuns(scope.companyId, scope.scopeId);
 
-    for (const runId of runIds) {
-      await cancelRunInternal(runId, "Cancelled due to budget pause");
+    for (const run of runs) {
+      if (run.status === "queued" && isScheduledRetryRun(run)) {
+        await deferQueuedScheduledRetry(run, "Scheduled retry deferred because budget policy paused its scope");
+      } else {
+        await cancelRunInternal(run.id, "Cancelled due to budget pause");
+      }
     }
 
     await cancelPendingWakeupsForBudgetScope(scope);
