@@ -4,7 +4,7 @@ import multer from "multer";
 import { z } from "zod";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, executionWorkspaces, issueExecutionDecisions, projectWorkspaces } from "@paperclipai/db";
+import { activityLog, agentWakeupRequests, executionWorkspaces, issueExecutionDecisions, projectWorkspaces } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
@@ -104,6 +104,18 @@ const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
+
+function wasIssueCommentInserted(comment: unknown) {
+  return !comment || typeof comment !== "object" || (comment as { wasInserted?: boolean }).wasInserted !== false;
+}
+
+function isUniqueViolation(err: unknown) {
+  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "23505";
+}
+
+function issueCommentWakeupIdempotencyKey(input: { issueId: string; commentId: string; agentId: string; reason: string }) {
+  return `issue-comment-wakeup:${input.issueId}:${input.commentId}:${input.agentId}:${input.reason}`;
+}
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
@@ -889,24 +901,44 @@ export function issueRoutes(
     source: string;
   }) {
     for (const interaction of input.interactions) {
-      await logActivity(db, {
-        companyId: input.issue.companyId,
-        actorType: input.actor.actorType,
-        actorId: input.actor.actorId,
-        agentId: input.actor.agentId,
-        runId: input.actor.runId,
-        action: "issue.thread_interaction_expired",
-        entityType: "issue",
-        entityId: input.issue.id,
-        details: {
-          identifier: input.issue.identifier ?? null,
-          interactionId: interaction.id,
-          interactionKind: interaction.kind,
-          interactionStatus: interaction.status,
-          source: input.source,
-          result: interaction.result ?? null,
-        },
-      });
+      try {
+        await logActivity(db, {
+          companyId: input.issue.companyId,
+          actorType: input.actor.actorType,
+          actorId: input.actor.actorId,
+          agentId: input.actor.agentId,
+          runId: input.actor.runId,
+          action: "issue.thread_interaction_expired",
+          entityType: "issue",
+          entityId: input.issue.id,
+          details: {
+            identifier: input.issue.identifier ?? null,
+            interactionId: interaction.id,
+            interactionKind: interaction.kind,
+            interactionStatus: interaction.status,
+            source: input.source,
+            result: interaction.result ?? null,
+          },
+        });
+      } catch (err) {
+        if (!isUniqueViolation(err)) {
+          throw err;
+        }
+      }
+    }
+  }
+
+  async function hasWakeupRequest(idempotencyKey: string) {
+    try {
+      const existing = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.idempotencyKey, idempotencyKey))
+        .limit(1);
+      return existing.length > 0;
+    } catch (err) {
+      logger.warn({ err, idempotencyKey }, "failed to check existing comment wakeup request");
+      return false;
     }
   }
 
@@ -2535,6 +2567,7 @@ export function issueRoutes(
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
 
     const actor = getActorInfo(req);
+
     const isClosed = isClosedIssueStatus(existing.status);
     const isBlocked = existing.status === "blocked";
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
@@ -2857,13 +2890,6 @@ export function issueRoutes(
         blocks: updatedRelations.blocks,
       };
     }
-    await routinesSvc.syncRunStatusForIssue(issue.id);
-
-    if (actor.runId) {
-      await heartbeat.reportRunActivity(actor.runId).catch((err) =>
-        logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue activity"));
-    }
-
     // Build activity details with previous values for changed fields
     const previous: Record<string, unknown> = {};
     for (const key of Object.keys(updateFields)) {
@@ -3090,14 +3116,16 @@ export function issueRoutes(
     }
 
     let comment = null;
+    let commentInserted = false;
     if (commentBody) {
       const commentReferenceSummaryBefore = updateReferenceSummaryAfter
         ?? await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       comment = await svc.addComment(id, commentBody, {
         agentId: actor.agentId ?? undefined,
-        userId: actor.actorType === "user" ? actor.actorId : undefined,
+        userId: actor.actorType === "agent" ? undefined : (actor.actorType === "user" ? actor.actorId : undefined),
         runId: actor.runId,
       });
+      commentInserted = wasIssueCommentInserted(comment);
       await issueReferencesSvc.syncComment(comment.id);
       const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
@@ -3112,31 +3140,37 @@ export function issueRoutes(
         ),
       };
 
-      await logActivity(db, {
-        companyId: issue.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        action: "issue.comment_added",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          commentId: comment.id,
-          bodySnippet: comment.body.slice(0, 120),
-          identifier: issue.identifier,
-          issueTitle: issue.title,
-          ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
-          ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
-          ...(interruptedRunId ? { interruptedRunId } : {}),
-          ...(hasFieldChanges ? { updated: true } : {}),
-          ...summarizeIssueReferenceActivityDetails({
-            addedReferencedIssues: commentReferenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
-            removedReferencedIssues: commentReferenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
-            currentReferencedIssues: commentReferenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
-          }),
-        },
-      });
+      try {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.comment_added",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            commentId: comment.id,
+            bodySnippet: comment.body.slice(0, 120),
+            identifier: issue.identifier,
+            issueTitle: issue.title,
+            ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+            ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
+            ...(interruptedRunId ? { interruptedRunId } : {}),
+            ...(hasFieldChanges ? { updated: true } : {}),
+            ...summarizeIssueReferenceActivityDetails({
+              addedReferencedIssues: commentReferenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
+              removedReferencedIssues: commentReferenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
+              currentReferencedIssues: commentReferenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
+            }),
+          },
+        });
+      } catch (err) {
+        if (!isUniqueViolation(err)) {
+          throw err;
+        }
+      }
 
       const expiredInteractions = await issueThreadInteractionService(db).expireRequestConfirmationsSupersededByComment(
         issue,
@@ -3197,7 +3231,15 @@ export function issueRoutes(
           wakeup.payload && typeof wakeup.payload === "object" && typeof wakeup.payload.issueId === "string"
             ? wakeup.payload.issueId
             : issue.id;
-        wakeups.set(`${agentId}:${wakeIssueId}`, { agentId, wakeup });
+        const key = `${agentId}:${wakeIssueId}`;
+        const existingWakeup = wakeups.get(key);
+        if (
+          existingWakeup?.wakeup.reason === "issue_reopened_via_comment" &&
+          wakeup.reason === "issue_comment_mentioned"
+        ) {
+          return;
+        }
+        wakeups.set(key, { agentId, wakeup });
       };
 
       if (executionStageWakeup) {
@@ -3260,15 +3302,15 @@ export function issueRoutes(
 
       if (commentBody && comment) {
         const assigneeId = issue.assigneeAgentId;
-        const actorIsAgent = actor.actorType === "agent";
-        const selfComment = actorIsAgent && actor.actorId === assigneeId;
+        const selfComment = actor.actorType === "agent" && actor.agentId === assigneeId;
         const skipAssigneeCommentWake = selfComment || isClosed;
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
+          const reason = reopened ? "issue_reopened_via_comment" : "issue_commented";
           addWakeup(assigneeId, {
             source: "automation",
             triggerDetail: "system",
-            reason: reopened ? "issue_reopened_via_comment" : "issue_commented",
+            reason,
             payload: {
               issueId: id,
               commentId: comment.id,
@@ -3285,7 +3327,7 @@ export function issueRoutes(
               commentId: comment.id,
               wakeCommentId: comment.id,
               source: reopened ? "issue.comment.reopen" : "issue.comment",
-              wakeReason: reopened ? "issue_reopened_via_comment" : "issue_commented",
+              wakeReason: reason,
               ...(reopened ? { reopenedFrom: reopenFromStatus } : {}),
               ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
               ...(interruptedRunId ? { interruptedRunId } : {}),
@@ -3301,7 +3343,7 @@ export function issueRoutes(
         }
 
         for (const mentionedId of mentionedIds) {
-          if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
+          if (actor.actorType === "agent" && actor.agentId === mentionedId) continue;
           addWakeup(mentionedId, {
             source: "automation",
             triggerDetail: "system",
@@ -3381,11 +3423,42 @@ export function issueRoutes(
       }
 
       for (const { agentId, wakeup } of wakeups.values()) {
+        const reason = typeof wakeup.reason === "string" && wakeup.reason.length > 0 ? wakeup.reason : "issue_wakeup";
+        const idempotencyKey = comment
+          ? issueCommentWakeupIdempotencyKey({ issueId: issue.id, commentId: comment.id, agentId, reason })
+          : null;
+        if (
+          comment &&
+          idempotencyKey &&
+          !commentInserted &&
+          (reason === "issue_commented" || reason === "issue_comment_mentioned")
+        ) {
+          const reopenIdempotencyKey = issueCommentWakeupIdempotencyKey({
+            issueId: issue.id,
+            commentId: comment.id,
+            agentId,
+            reason: "issue_reopened_via_comment",
+          });
+          if (await hasWakeupRequest(reopenIdempotencyKey)) continue;
+        }
+        if (idempotencyKey && !commentInserted && await hasWakeupRequest(idempotencyKey)) continue;
         heartbeat
-          .wakeup(agentId, wakeup)
+          .wakeup(agentId, {
+            ...wakeup,
+            idempotencyKey,
+          })
           .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update"));
       }
     })();
+
+    if (!commentBody || hasFieldChanges || comment) {
+      await routinesSvc.syncRunStatusForIssue(issue.id);
+
+      if (actor.runId) {
+        await heartbeat.reportRunActivity(actor.runId).catch((err) =>
+          logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue activity"));
+      }
+    }
 
     res.json({ ...issueResponse, comment });
   });
@@ -4119,6 +4192,7 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+
     const reopenRequested = req.body.reopen === true;
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;
@@ -4209,13 +4283,14 @@ export function issueRoutes(
 
     const comment = await svc.addComment(id, req.body.body, {
       agentId: actor.agentId ?? undefined,
-      userId: actor.actorType === "user" ? actor.actorId : undefined,
+      userId: actor.actorType === "agent" ? undefined : (actor.actorType === "user" ? actor.actorId : undefined),
       runId: actor.runId,
     }, {
       authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
       presentation: req.body.presentation ?? null,
       metadata: req.body.metadata ?? null,
     });
+    const commentInserted = wasIssueCommentInserted(comment);
     await issueReferencesSvc.syncComment(comment.id);
     const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(currentIssue.id);
     const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
@@ -4228,30 +4303,36 @@ export function issueRoutes(
         logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue comment"));
     }
 
-    await logActivity(db, {
-      companyId: currentIssue.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "issue.comment_added",
-      entityType: "issue",
-      entityId: currentIssue.id,
-      details: {
-        commentId: comment.id,
-        bodySnippet: comment.body.slice(0, 120),
-        identifier: currentIssue.identifier,
-        issueTitle: currentIssue.title,
-        ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
-        ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
-        ...(interruptedRunId ? { interruptedRunId } : {}),
-        ...summarizeIssueReferenceActivityDetails({
-          addedReferencedIssues: commentReferenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
-          removedReferencedIssues: commentReferenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
-          currentReferencedIssues: commentReferenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
-        }),
-      },
-    });
+    try {
+      await logActivity(db, {
+        companyId: currentIssue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.comment_added",
+        entityType: "issue",
+        entityId: currentIssue.id,
+        details: {
+          commentId: comment.id,
+          bodySnippet: comment.body.slice(0, 120),
+          identifier: currentIssue.identifier,
+          issueTitle: currentIssue.title,
+          ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+          ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
+          ...(interruptedRunId ? { interruptedRunId } : {}),
+          ...summarizeIssueReferenceActivityDetails({
+            addedReferencedIssues: commentReferenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
+            removedReferencedIssues: commentReferenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
+            currentReferencedIssues: commentReferenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
+          }),
+        },
+      });
+    } catch (err) {
+      if (!isUniqueViolation(err)) {
+        throw err;
+      }
+    }
 
     const expiredInteractions = await issueThreadInteractionService(db).expireRequestConfirmationsSupersededByComment(
       currentIssue,
@@ -4272,8 +4353,7 @@ export function issueRoutes(
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
       const assigneeId = currentIssue.assigneeAgentId;
-      const actorIsAgent = actor.actorType === "agent";
-      const selfComment = actorIsAgent && actor.actorId === assigneeId;
+      const selfComment = actor.actorType === "agent" && actor.agentId === assigneeId;
       const skipWake = selfComment || isClosed;
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
@@ -4340,7 +4420,7 @@ export function issueRoutes(
 
       for (const mentionedId of mentionedIds) {
         if (wakeups.has(mentionedId)) continue;
-        if (actorIsAgent && actor.actorId === mentionedId) continue;
+        if (actor.actorType === "agent" && actor.agentId === mentionedId) continue;
         wakeups.set(mentionedId, {
           source: "automation",
           triggerDetail: "system",
@@ -4360,13 +4440,34 @@ export function issueRoutes(
       }
 
       for (const [agentId, wakeup] of wakeups.entries()) {
+        if (!wakeup) continue;
+        const reason = typeof wakeup.reason === "string" && wakeup.reason.length > 0 ? wakeup.reason : "issue_wakeup";
+        const idempotencyKey = issueCommentWakeupIdempotencyKey({
+          issueId: currentIssue.id,
+          commentId: comment.id,
+          agentId,
+          reason,
+        });
+        if (!commentInserted && (reason === "issue_commented" || reason === "issue_comment_mentioned")) {
+          const reopenIdempotencyKey = issueCommentWakeupIdempotencyKey({
+            issueId: currentIssue.id,
+            commentId: comment.id,
+            agentId,
+            reason: "issue_reopened_via_comment",
+          });
+          if (await hasWakeupRequest(reopenIdempotencyKey)) continue;
+        }
+        if (!commentInserted && await hasWakeupRequest(idempotencyKey)) continue;
         heartbeat
-          .wakeup(agentId, wakeup)
+          .wakeup(agentId, {
+            ...wakeup,
+            idempotencyKey,
+          })
           .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));
       }
     })();
 
-    res.status(201).json(comment);
+    res.status(commentInserted ? 201 : 200).json(comment);
   });
 
   router.post("/issues/:id/feedback-votes", validate(upsertIssueFeedbackVoteSchema), async (req, res) => {

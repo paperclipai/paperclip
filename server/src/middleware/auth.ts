@@ -2,7 +2,15 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, agents, authUsers, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import {
+  agentApiKeys,
+  agents,
+  authUsers,
+  companies,
+  companyMemberships,
+  heartbeatRuns,
+  instanceUserRoles,
+} from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -12,6 +20,8 @@ import { boardAuthService } from "../services/board-auth.js";
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 interface ActorMiddlewareOptions {
   deploymentMode: DeploymentMode;
@@ -37,6 +47,46 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
+      if (opts.deploymentMode === "local_trusted" && runIdHeader && UUID_RE.test(runIdHeader)) {
+        const run = await db
+          .select({
+            id: heartbeatRuns.id,
+            agentId: heartbeatRuns.agentId,
+            companyId: heartbeatRuns.companyId,
+            status: heartbeatRuns.status,
+          })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runIdHeader))
+          .then((rows) => rows[0] ?? null);
+
+        if (run?.agentId && run.status === "running") {
+          const agentRecord = await db
+            .select()
+            .from(agents)
+            .where(eq(agents.id, run.agentId))
+            .then((rows) => rows[0] ?? null);
+
+          if (
+            agentRecord &&
+            agentRecord.companyId === run.companyId &&
+            agentRecord.status === "active"
+          ) {
+            req.actor = {
+              type: "agent",
+              agentId: run.agentId,
+              companyId: run.companyId,
+              companyIds: [run.companyId],
+              memberships: [],
+              keyId: undefined,
+              runId: run.id,
+              source: "agent_run_id",
+            };
+            next();
+            return;
+          }
+        }
+      }
+
       if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
         const cloudTenantActor = await resolveCloudTenantActor(db, req);
         if (cloudTenantActor) {

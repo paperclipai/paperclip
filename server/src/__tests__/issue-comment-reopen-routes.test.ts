@@ -38,8 +38,9 @@ const mockTxInsert = vi.hoisted(() => vi.fn(() => ({ values: mockTxInsertValues 
 const mockTx = vi.hoisted(() => ({
   insert: mockTxInsert,
 }));
+const mockDbSelectLimit = vi.hoisted(() => vi.fn(async () => []));
 const mockDbSelectOrderBy = vi.hoisted(() => vi.fn(async () => []));
-const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({ orderBy: mockDbSelectOrderBy })));
+const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({ orderBy: mockDbSelectOrderBy, limit: mockDbSelectLimit })));
 const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
 const mockDb = vi.hoisted(() => ({
@@ -66,6 +67,19 @@ const mockRoutineService = vi.hoisted(() => ({
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+}));
+const mockIssueReferenceService = vi.hoisted(() => ({
+  deleteDocumentSource: vi.fn(async () => undefined),
+  diffIssueReferenceSummary: vi.fn(() => ({
+    addedReferencedIssues: [],
+    removedReferencedIssues: [],
+    currentReferencedIssues: [],
+  })),
+  emptySummary: vi.fn(() => ({ outbound: [], inbound: [] })),
+  listIssueReferenceSummary: vi.fn(async () => ({ outbound: [], inbound: [] })),
+  syncComment: vi.fn(async () => undefined),
+  syncDocument: vi.fn(async () => undefined),
+  syncIssue: vi.fn(async () => undefined),
 }));
 const mockIssueTreeControlService = vi.hoisted(() => ({
   getActivePauseHoldGate: vi.fn(async () => null),
@@ -125,19 +139,7 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => mockHeartbeatService,
   instanceSettingsService: () => mockInstanceSettingsService,
   issueApprovalService: () => ({}),
-  issueReferenceService: () => ({
-    deleteDocumentSource: async () => undefined,
-    diffIssueReferenceSummary: () => ({
-      addedReferencedIssues: [],
-      removedReferencedIssues: [],
-      currentReferencedIssues: [],
-    }),
-    emptySummary: () => ({ outbound: [], inbound: [] }),
-    listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
-    syncComment: async () => undefined,
-    syncDocument: async () => undefined,
-    syncIssue: async () => undefined,
-  }),
+  issueReferenceService: () => mockIssueReferenceService,
   issueService: () => mockIssueService,
   issueThreadInteractionService: () => mockIssueThreadInteractionService,
   issueTreeControlService: () => mockIssueTreeControlService,
@@ -222,6 +224,13 @@ describe.sequential("issue comment reopen routes", () => {
     mockIssueService.findMentionedAgents.mockReset();
     mockIssueService.listWakeableBlockedDependents.mockReset();
     mockIssueService.getWakeableParentAfterChildCompletion.mockReset();
+    mockIssueReferenceService.deleteDocumentSource.mockReset();
+    mockIssueReferenceService.diffIssueReferenceSummary.mockReset();
+    mockIssueReferenceService.emptySummary.mockReset();
+    mockIssueReferenceService.listIssueReferenceSummary.mockReset();
+    mockIssueReferenceService.syncComment.mockReset();
+    mockIssueReferenceService.syncDocument.mockReset();
+    mockIssueReferenceService.syncIssue.mockReset();
     mockAccessService.canUser.mockReset();
     mockAccessService.hasPermission.mockReset();
     mockHeartbeatService.wakeup.mockReset();
@@ -248,8 +257,9 @@ describe.sequential("issue comment reopen routes", () => {
     mockDb.transaction.mockReset();
     mockTxInsertValues.mockResolvedValue(undefined);
     mockTxInsert.mockImplementation(() => ({ values: mockTxInsertValues }));
+    mockDbSelectLimit.mockResolvedValue([]);
     mockDbSelectOrderBy.mockResolvedValue([]);
-    mockDbSelectWhere.mockImplementation(() => ({ orderBy: mockDbSelectOrderBy }));
+    mockDbSelectWhere.mockImplementation(() => ({ orderBy: mockDbSelectOrderBy, limit: mockDbSelectLimit }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDb.transaction.mockImplementation(async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx));
@@ -296,6 +306,14 @@ describe.sequential("issue comment reopen routes", () => {
     });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    mockIssueReferenceService.diffIssueReferenceSummary.mockReturnValue({
+      addedReferencedIssues: [],
+      removedReferencedIssues: [],
+      currentReferencedIssues: [],
+    });
+    mockIssueReferenceService.emptySummary.mockReturnValue({ outbound: [], inbound: [] });
+    mockIssueReferenceService.listIssueReferenceSummary.mockResolvedValue({ outbound: [], inbound: [] });
+    mockIssueReferenceService.syncComment.mockResolvedValue(undefined);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.hasPermission.mockResolvedValue(false);
@@ -493,6 +511,88 @@ describe.sequential("issue comment reopen routes", () => {
     ));
   });
 
+  it("skips a comment-only retry when the original reopen wakeup key already exists", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    const dedupedComment = {
+      id: "comment-reopen-retry",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "hello",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: null,
+      authorUserId: "local-board",
+    };
+    Object.defineProperty(dedupedComment, "wasInserted", {
+      value: false,
+      enumerable: false,
+    });
+    mockIssueService.addComment.mockResolvedValue(dedupedComment);
+    mockDbSelectLimit.mockResolvedValueOnce([{ id: "existing-wakeup" }]);
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "hello" });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(mockDbSelectLimit).toHaveBeenCalled());
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("skips mentioned-agent POST retries after the original reopen wakeup exists for a prior assignee", async () => {
+    const priorAssigneeId = "33333333-3333-4333-8333-333333333333";
+    const currentAssigneeId = "22222222-2222-4222-8222-222222222222";
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("todo"),
+      assigneeAgentId: currentAssigneeId,
+    });
+    mockIssueService.findMentionedAgents.mockResolvedValue([priorAssigneeId]);
+    const dedupedComment = {
+      id: "comment-reopen-mention-retry",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "@Reviewer please revise this",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: null,
+      authorUserId: "local-board",
+    };
+    Object.defineProperty(dedupedComment, "wasInserted", {
+      value: false,
+      enumerable: false,
+    });
+    mockIssueService.addComment.mockResolvedValue(dedupedComment);
+    mockDbSelectWhere.mockImplementation((whereClause: { queryChunks?: Array<{ value?: unknown }> }) => {
+      const idempotencyKey = whereClause.queryChunks?.find((chunk) => typeof chunk?.value === "string")?.value;
+      return {
+        orderBy: mockDbSelectOrderBy,
+        limit: vi.fn(async () => {
+          mockDbSelectLimit(idempotencyKey);
+          return typeof idempotencyKey === "string" &&
+            idempotencyKey ===
+              "issue-comment-wakeup:11111111-1111-4111-8111-111111111111:comment-reopen-mention-retry:33333333-3333-4333-8333-333333333333:issue_reopened_via_comment"
+            ? [{ id: "existing-reopen-wakeup" }]
+            : [];
+        }),
+      };
+    });
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "@Reviewer please revise this" });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(mockDbSelectLimit).toHaveBeenCalledTimes(3));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      priorAssigneeId,
+      expect.objectContaining({ reason: "issue_comment_mentioned" }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      currentAssigneeId,
+      expect.objectContaining({ reason: "issue_commented" }),
+    );
+  });
+
   it("rejects non-assignee agent POST comments on closed issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.addComment.mockResolvedValue({
@@ -686,6 +786,82 @@ describe.sequential("issue comment reopen routes", () => {
 
     expect(res.status).toBe(201);
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("repairs direct comment side effects without waking agents on a deduped retry", async () => {
+    const issue = makeIssue("in_progress");
+    mockIssueService.getById.mockResolvedValue(issue);
+    const dedupedComment = {
+      id: "comment-deduped-direct",
+      issueId: issue.id,
+      companyId: issue.companyId,
+      body: "hello",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: null,
+      authorUserId: "local-board",
+    };
+    Object.defineProperty(dedupedComment, "wasInserted", {
+      value: false,
+      enumerable: false,
+    });
+    mockIssueService.addComment.mockResolvedValue(dedupedComment);
+    mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([
+      {
+        id: "interaction-expired",
+        kind: "request_confirmation",
+        status: "expired",
+        result: { version: 1, outcome: "superseded_by_comment", commentId: "comment-deduped-direct" },
+      },
+    ]);
+    mockLogActivity.mockImplementation(async (_db, input) => {
+      if (input.action === "issue.thread_interaction_expired") {
+        throw Object.assign(new Error("duplicate"), { code: "23505" });
+      }
+    });
+
+    const res = await request(await installActor(createApp(), {
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+      runId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "hello" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueReferenceService.syncComment).toHaveBeenCalledWith("comment-deduped-direct");
+    expect(mockHeartbeatService.reportRunActivity).toHaveBeenCalledWith("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.comment_added",
+        entityId: issue.id,
+        details: expect.objectContaining({ commentId: "comment-deduped-direct" }),
+      }),
+    );
+    expect(mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment).toHaveBeenCalledWith(
+      issue,
+      dedupedComment,
+      expect.any(Object),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.thread_interaction_expired",
+        entityId: issue.id,
+        details: expect.objectContaining({ interactionId: "interaction-expired" }),
+      }),
+    );
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        reason: "issue_commented",
+        idempotencyKey: "issue-comment-wakeup:11111111-1111-4111-8111-111111111111:comment-deduped-direct:22222222-2222-4222-8222-222222222222:issue_commented",
+      }),
+    ));
   });
 
   it("moves assigned blocked issues back to todo via the PATCH comment path", async () => {

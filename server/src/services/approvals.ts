@@ -1,4 +1,5 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
@@ -249,24 +250,59 @@ export function approvalService(db: Db) {
     addComment: async (
       approvalId: string,
       body: string,
-      actor: { agentId?: string; userId?: string },
+      actor: { agentId?: string; userId?: string; runId?: string | null },
     ) => {
       const existing = await getExistingApproval(approvalId);
       const currentUserRedactionOptions = {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
       };
       const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
-      return db
+      const now = new Date();
+      const idempotencyKey = actor.agentId && actor.runId
+        ? createHash("sha256").update(`${actor.runId}:${approvalId}:${body}`).digest("hex")
+        : null;
+      const inserted = await db
         .insert(approvalComments)
         .values({
           companyId: existing.companyId,
           approvalId,
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
+          createdByRunId: actor.runId ?? null,
+          idempotencyKey,
           body: redactedBody,
         })
-        .returning()
-        .then((rows) => redactApprovalComment(rows[0], currentUserRedactionOptions.enabled));
+        .onConflictDoNothing({
+          target: approvalComments.idempotencyKey,
+          where: sql.raw('"idempotency_key" IS NOT NULL'),
+        })
+        .returning();
+
+      const [comment] = inserted.length > 0 || !idempotencyKey
+        ? inserted
+        : await db
+          .select()
+          .from(approvalComments)
+          .where(eq(approvalComments.idempotencyKey, idempotencyKey))
+          .limit(1);
+
+      if (!comment) {
+        throw new Error("Failed to insert or retrieve deduplicated approval comment");
+      }
+
+      if (inserted.length > 0) {
+        await db
+          .update(approvals)
+          .set({ updatedAt: now })
+          .where(eq(approvals.id, approvalId));
+      }
+
+      const redacted = redactApprovalComment(comment, currentUserRedactionOptions.enabled);
+      Object.defineProperty(redacted, "wasInserted", {
+        value: inserted.length > 0,
+        enumerable: false,
+      });
+      return redacted;
     },
   };
 }

@@ -1,5 +1,6 @@
 import type { IssueCommentAuthorType, IssueCommentMetadata, IssueCommentPresentation } from "@paperclipai/shared";
-import { pgTable, uuid, text, timestamp, index, jsonb } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { pgTable, uuid, text, timestamp, index, uniqueIndex, jsonb } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
 import { agents } from "./agents.js";
@@ -15,6 +16,7 @@ export const issueComments = pgTable(
     authorUserId: text("author_user_id"),
     authorType: text("author_type").$type<IssueCommentAuthorType>(),
     createdByRunId: uuid("created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    idempotencyKey: text("idempotency_key"),
     body: text("body").notNull(),
     presentation: jsonb("presentation").$type<IssueCommentPresentation | null>(),
     metadata: jsonb("metadata").$type<IssueCommentMetadata | null>(),
@@ -36,5 +38,6 @@ export const issueComments = pgTable(
       table.createdAt,
     ),
     bodySearchIdx: index("issue_comments_body_search_idx").using("gin", table.body.op("gin_trgm_ops")),
+    idempotencyKeyIdx: uniqueIndex("issue_comments_idempotency_key_uq").on(table.idempotencyKey).where(sql`"idempotency_key" IS NOT NULL`),
   }),
 );

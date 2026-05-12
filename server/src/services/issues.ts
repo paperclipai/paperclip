@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -3865,6 +3866,7 @@ export function issueService(db: Db) {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
       };
       const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+
       const authorType = issueCommentAuthorTypeSchema.parse(
         options?.authorType ?? (actor.agentId ? "agent" : actor.userId ? "user" : "system"),
       );
@@ -3872,7 +3874,16 @@ export function issueService(db: Db) {
       const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
       const metadata = issueCommentMetadataSchema.nullable().parse(options?.metadata ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
-      const [comment] = await db
+      // Deduplicate agent-authored comments: if the same run posts the same raw body
+      // at any point during the run's lifetime, return the existing comment instead
+      // of inserting a new one. The unique partial index on idempotency_key makes
+      // this atomic — concurrent duplicate inserts are collapsed at the DB level
+      // via ON CONFLICT DO NOTHING.
+      const idempotencyKey = actor.agentId && actor.runId && authorType === "agent"
+        ? createHash("sha256").update(`${actor.runId}:${issueId}:${body}`).digest("hex")
+        : null;
+
+      const inserted = await db
         .insert(issueComments)
         .values({
           companyId: issue.companyId,
@@ -3881,20 +3892,45 @@ export function issueService(db: Db) {
           authorUserId: actor.userId ?? null,
           authorType,
           createdByRunId: actor.runId ?? null,
+          idempotencyKey,
           body: redactedBody,
           presentation,
           metadata,
           ...(createdAt && !Number.isNaN(createdAt.getTime()) ? { createdAt } : {}),
         })
+        .onConflictDoNothing({
+          target: issueComments.idempotencyKey,
+          where: sql.raw('"idempotency_key" IS NOT NULL'),
+        })
         .returning();
 
-      // Update issue's updatedAt so comment activity is reflected in recency sorting
-      await db
-        .update(issues)
-        .set({ updatedAt: new Date() })
-        .where(eq(issues.id, issueId));
+      const [comment] = inserted.length > 0 || !idempotencyKey
+        ? inserted
+        : await db
+          .select()
+          .from(issueComments)
+          .where(eq(issueComments.idempotencyKey, idempotencyKey))
+          .limit(1);
 
-      return redactIssueComment(comment, currentUserRedactionOptions.enabled);
+      if (!comment) {
+        throw new Error("Failed to insert or retrieve deduplicated comment");
+      }
+
+      // Update issue's updatedAt only for a newly inserted comment so duplicate
+      // retries do not create fresh activity.
+      if (inserted.length > 0) {
+        await db
+          .update(issues)
+          .set({ updatedAt: new Date() })
+          .where(eq(issues.id, issueId));
+      }
+
+      const redacted = redactIssueComment(comment, currentUserRedactionOptions.enabled);
+      Object.defineProperty(redacted, "wasInserted", {
+        value: inserted.length > 0,
+        enumerable: false,
+      });
+      return redacted;
     },
 
     createAttachment: async (input: {

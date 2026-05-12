@@ -979,15 +979,25 @@ export function issueThreadInteractionService(db: Db) {
           eq(issueThreadInteractions.companyId, issue.companyId),
           eq(issueThreadInteractions.issueId, issue.id),
           eq(issueThreadInteractions.kind, "request_confirmation"),
-          eq(issueThreadInteractions.status, "pending"),
+          inArray(issueThreadInteractions.status, ["pending", "expired"]),
         ));
 
+      const alreadyExpired = rows
+        .filter((row) => {
+          if (row.status !== "expired") return false;
+          const interaction = hydrateInteraction(row) as RequestConfirmationInteraction;
+          const result = interaction.result as { outcome?: unknown; commentId?: unknown } | null;
+          return result?.outcome === "superseded_by_comment" && result.commentId === comment.id;
+        })
+        .map((row) => hydrateInteraction(row));
+
       const superseded = rows.filter((row) => {
+        if (row.status !== "pending") return false;
         const interaction = hydrateInteraction(row) as RequestConfirmationInteraction;
         return interaction.payload.supersedeOnUserComment === true;
       });
 
-      if (superseded.length === 0) return [];
+      if (superseded.length === 0) return alreadyExpired;
 
       const now = new Date();
       const expired: IssueThreadInteraction[] = [];
@@ -1017,7 +1027,7 @@ export function issueThreadInteractionService(db: Db) {
       if (expired.length > 0) {
         await touchIssue(db, issue.id);
       }
-      return expired;
+      return [...alreadyExpired, ...expired];
     },
 
     expireStaleRequestConfirmationsForIssueDocument: async (

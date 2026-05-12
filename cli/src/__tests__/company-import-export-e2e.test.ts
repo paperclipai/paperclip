@@ -200,7 +200,11 @@ async function stopServerProcess(child: ServerProcess | null) {
 }
 
 async function api<T>(baseUrl: string, pathname: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${baseUrl}${pathname}`, init);
+  const headers = new Headers(init?.headers);
+  if (!headers.has("origin")) {
+    headers.set("origin", "http://localhost:3100");
+  }
+  const res = await fetch(`${baseUrl}${pathname}`, { ...init, headers });
   const text = await res.text();
   if (!res.ok) {
     throw new Error(`Request failed ${res.status} ${pathname}: ${text}`);
