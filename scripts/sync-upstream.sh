@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Syncs local fork master with paperclipai/paperclip upstream/master.
-# Fast-forward: merges directly and pushes. Non-FF: opens chore/sync-YYYYMMDD branch.
+# Syncs local fork master with upstream/master.
+# Fast-forward: merges directly and pushes to private and public fork remotes.
+# Non-FF: opens chore/sync-YYYYMMDD branch.
 # By default, brings local feature branches forward after master is current.
 # Posts result as a comment on the Paperclip issue ($PAPERCLIP_TASK_ID).
 
@@ -10,7 +11,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATE="$(date +%Y%m%d)"
 BRANCH="chore/sync-${DATE}"
 UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
-ORIGIN_REMOTE="${ORIGIN_REMOTE:-origin}"
+PRIVATE_REMOTE="${PRIVATE_REMOTE:-${ORIGIN_REMOTE:-origin}}"
+PUBLIC_REMOTE="${PUBLIC_REMOTE:-github-fork}"
+ORIGIN_REMOTE="$PRIVATE_REMOTE"
 UPSTREAM_REF="${UPSTREAM_REF:-${UPSTREAM_REMOTE}/master}"
 LOCAL_REF="${LOCAL_REF:-master}"
 SYNC_FEATURES_SPEC="${SYNC_FEATURES:-all}"
@@ -18,6 +21,8 @@ SYNC_FEATURES_EXPLICIT="0"
 EXCLUDE_FEATURES_SPEC="${EXCLUDE_FEATURES:-}"
 FEATURE_MODE="${SYNC_FEATURE_MODE:-rebase}"
 PUSH_FEATURES="${SYNC_PUSH_FEATURES:-1}"
+PUSH_PRIVATE="${SYNC_PUSH_PRIVATE:-1}"
+PUSH_PUBLIC="${SYNC_PUSH_PUBLIC:-1}"
 EXCLUDED_FEATURES_FILE=""
 
 log() { echo "[sync-upstream] $*"; }
@@ -30,7 +35,24 @@ Usage: scripts/sync-upstream.sh [options]
 Sync master with upstream/master. By default, local feature branches are rebased
 onto master after master is current, then pushed with --force-with-lease.
 
+Default remotes:
+  upstream     canonical upstream repository
+  origin       private fork remote
+  github-fork  public fork remote
+
 Options:
+  --private-remote remote
+      Private fork remote to push the base branch to. Default: origin.
+
+  --public-remote remote
+      Public fork remote to push the base branch to. Default: github-fork.
+
+  --no-push-private
+      Do not push the synced base branch or sync branch to the private remote.
+
+  --no-push-public
+      Do not push the synced base branch or sync branch to the public remote.
+
   --sync-features [all|branch[,branch...]]
       Update selected local feature branches after master is current.
       This is enabled by default with "all".
@@ -67,6 +89,8 @@ Options:
 Examples:
   scripts/sync-upstream.sh
   scripts/sync-upstream.sh --no-sync-features
+  scripts/sync-upstream.sh --private-remote origin --public-remote github-fork
+  scripts/sync-upstream.sh --no-push-public
   scripts/sync-upstream.sh --exclude-features feat/a,tik-1300-fix
   scripts/sync-upstream.sh --feature-branches feat/a,tik-1300-fix
 EOF
@@ -74,6 +98,25 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --private-remote)
+      [[ $# -gt 1 ]] || die "--private-remote requires a remote name"
+      PRIVATE_REMOTE="$2"
+      ORIGIN_REMOTE="$PRIVATE_REMOTE"
+      shift 2
+      ;;
+    --public-remote)
+      [[ $# -gt 1 ]] || die "--public-remote requires a remote name"
+      PUBLIC_REMOTE="$2"
+      shift 2
+      ;;
+    --no-push-private)
+      PUSH_PRIVATE="0"
+      shift
+      ;;
+    --no-push-public)
+      PUSH_PUBLIC="0"
+      shift
+      ;;
     --sync-features)
       if [[ $# -gt 1 && "${2:-}" != --* ]]; then
         SYNC_FEATURES_SPEC="$2"
@@ -177,6 +220,58 @@ update_issue() {
 ensure_clean_worktree() {
   git diff --quiet || die "Working tree has unstaged changes; commit or stash before syncing."
   git diff --cached --quiet || die "Index has staged changes; commit or stash before syncing."
+}
+
+remote_exists() {
+  local remote="$1"
+  [[ -n "$remote" ]] || return 1
+  git remote get-url "$remote" >/dev/null 2>&1
+}
+
+fetch_remote() {
+  local remote="$1"
+  remote_exists "$remote" || die "Git remote not found: $remote"
+  git fetch "$remote" 2>&1
+}
+
+push_branch_to_forks() {
+  local source_ref="$1"
+  local target_ref="$2"
+  local remote candidate pushed_any
+  local remotes=()
+  pushed_any="0"
+
+  if [[ "$PUSH_PRIVATE" == "1" ]]; then
+    remote_exists "$PRIVATE_REMOTE" || die "Private remote not found: $PRIVATE_REMOTE"
+    remotes+=("$PRIVATE_REMOTE")
+  fi
+
+  if [[ "$PUSH_PUBLIC" == "1" ]]; then
+    remote_exists "$PUBLIC_REMOTE" || die "Public remote not found: $PUBLIC_REMOTE"
+    remotes+=("$PUBLIC_REMOTE")
+  fi
+
+  local unique_remotes=()
+  for candidate in "${remotes[@]}"; do
+    [[ -n "$candidate" ]] || continue
+    local seen="0"
+    for remote in "${unique_remotes[@]}"; do
+      if [[ "$remote" == "$candidate" ]]; then
+        seen="1"
+        break
+      fi
+    done
+    [[ "$seen" == "1" ]] && continue
+    unique_remotes+=("$candidate")
+  done
+
+  for remote in "${unique_remotes[@]}"; do
+    log "Pushing ${source_ref}:${target_ref} to ${remote}..."
+    git push "$remote" "${source_ref}:${target_ref}" 2>&1
+    pushed_any="1"
+  done
+
+  [[ "$pushed_any" == "1" ]] || log "No fork remotes selected for push."
 }
 
 list_contains() {
@@ -365,8 +460,11 @@ ORIGINAL_BRANCH="$(git branch --show-current || true)"
 EXCLUDED_FEATURES_FILE="$(git rev-parse --git-path paperclip-sync-excluded-features)"
 
 log "Fetching remotes..."
-git fetch "$UPSTREAM_REMOTE" 2>&1
-git fetch "$ORIGIN_REMOTE" 2>&1
+fetch_remote "$UPSTREAM_REMOTE"
+fetch_remote "$PRIVATE_REMOTE"
+if [[ "$PUBLIC_REMOTE" != "$PRIVATE_REMOTE" ]]; then
+  fetch_remote "$PUBLIC_REMOTE"
+fi
 
 LOCAL_SHA="$(git rev-parse "$LOCAL_REF")"
 UPSTREAM_SHA="$(git rev-parse "$UPSTREAM_REF")"
@@ -377,9 +475,11 @@ ISSUE_STATUS="done"
 
 if [[ "$LOCAL_SHA" == "$UPSTREAM_SHA" ]]; then
   log "Already up-to-date with $UPSTREAM_REF — nothing to do."
+  push_branch_to_forks "$LOCAL_REF" "$LOCAL_REF"
   BASE_READY_FOR_FEATURES="1"
 elif git merge-base --is-ancestor "$UPSTREAM_REF" "$LOCAL_REF"; then
   log "$LOCAL_REF already contains $UPSTREAM_REF; local fork is ${LOCAL_ONLY} commit(s) ahead."
+  push_branch_to_forks "$LOCAL_REF" "$LOCAL_REF"
   BASE_READY_FOR_FEATURES="1"
 else
   DIFF_STAT="$(git diff --stat "$LOCAL_REF" "$UPSTREAM_REF" 2>/dev/null | tail -1 || echo '(diff unavailable)')"
@@ -390,12 +490,12 @@ else
 
   if git merge --ff-only "$UPSTREAM_REF" 2>&1; then
     NEW_SHA="$(git rev-parse HEAD)"
-    log "Fast-forward succeeded. Pushing to $ORIGIN_REMOTE..."
-    git push "$ORIGIN_REMOTE" "$LOCAL_REF" 2>&1
+    log "Fast-forward succeeded. Pushing synced base branch to fork remotes..."
+    push_branch_to_forks "$LOCAL_REF" "$LOCAL_REF"
     BASE_READY_FOR_FEATURES="1"
 
-    SUMMARY="$(printf '## Sync upstream: fast-forward OK ✓\n\n- Upstream: %s → %s\n- Commits merged: %s\n- Diff: %s\n\nPushed to %s/%s.' \
-      "${LOCAL_SHA:0:8}" "${NEW_SHA:0:8}" "$UPSTREAM_ONLY" "$DIFF_STAT" "$ORIGIN_REMOTE" "$LOCAL_REF")"
+    SUMMARY="$(printf '## Sync upstream: fast-forward OK ✓\n\n- Upstream: %s → %s\n- Commits merged: %s\n- Diff: %s\n\nPushed %s to selected fork remotes.' \
+      "${LOCAL_SHA:0:8}" "${NEW_SHA:0:8}" "$UPSTREAM_ONLY" "$DIFF_STAT" "$LOCAL_REF")"
 
     log "Done. $SUMMARY"
   else
@@ -407,8 +507,8 @@ else
     CONFLICTS="$(git diff --name-only --diff-filter=U 2>/dev/null | head -20 || echo '')"
 
     if [[ -z "$CONFLICTS" ]]; then
-      git push "$ORIGIN_REMOTE" "$BRANCH" 2>&1
-      SUMMARY="$(printf '## Sync upstream: non-FF merge on branch %s\n\nMerge completed without conflicts — PR required to land on %s.\n\n- Branch: %s\n- Upstream commits: %s\n- Local-only commits: %s\n- Diff: %s\n\nPush output:\n```\n%s\n```' \
+      push_branch_to_forks "$BRANCH" "$BRANCH"
+      SUMMARY="$(printf '## Sync upstream: non-FF merge on branch %s\n\nMerge completed without conflicts — PR required to land on %s.\n\n- Branch: %s\n- Upstream commits: %s\n- Local-only commits: %s\n- Diff: %s\n- Pushed to selected fork remotes\n\nMerge output:\n```\n%s\n```' \
         "$BRANCH" "$LOCAL_REF" "$BRANCH" "$UPSTREAM_ONLY" "$LOCAL_ONLY" "$DIFF_STAT" "$MERGE_OUTPUT")"
       log "Non-FF merge done, pushed $BRANCH"
       ISSUE_STATUS="in_review"
