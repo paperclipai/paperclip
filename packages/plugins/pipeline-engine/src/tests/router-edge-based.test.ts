@@ -22,14 +22,13 @@ const featurePipeline: PipelineDefinition = {
   description: "",
   trigger: { label: "pipeline:feature" },
   stages: [
-    { id: "spec-review", type: "classifier", agent_role: "spec-reviewer" },
-    { id: "decompose", type: "classifier", agent_role: "decomposer" },
-    // implement has retry config because the error edge from validate points here
-    { id: "implement", type: "worker", agent_role: "code-writer", retry: { max_retries: 3 } },
-    { id: "validate", type: "worker", agent_role: "validator" },
+    { id: "spec-review", type: "stage", agent_role: "spec-reviewer" },
+    { id: "decompose", type: "stage", agent_role: "decomposer" },
+    { id: "implement", type: "stage", agent_role: "code-writer" },
+    { id: "validate", type: "stage", agent_role: "validator" },
   ],
   edges: [
-    { id: "e1", from: "spec-review", to: "decompose", when: "output.status = 'approved'" },
+    { id: "e1", from: "spec-review", to: "decompose", sourceHandle: "approved" },
     { id: "e2", from: "decompose", to: "implement" },
     { id: "e3", from: "implement", to: "validate" },
     { id: "e4", from: "validate", to: "implement", type: "error" },
@@ -47,9 +46,9 @@ describe("router (edge-based)", () => {
       expect(ready.map((s) => s.id)).toContain("spec-review");
     });
 
-    it("returns next stage when edge source is completed and no condition", async () => {
+    it("returns next stage when unconditional edge source is completed", async () => {
       const stages = [
-        makeStage("spec-review", "completed", { status: "approved" }),
+        makeStage("spec-review", "completed", { decision: "approved" }),
         makeStage("decompose", "completed"),
         makeStage("implement", "pending"),
         makeStage("validate", "pending"),
@@ -58,22 +57,22 @@ describe("router (edge-based)", () => {
       expect(ready.map((s) => s.id)).toContain("implement");
     });
 
-    it("does not return stage when conditional edge evaluates false", async () => {
+    it("returns stage when sourceHandle matches source decision", async () => {
       const stages = [
-        makeStage("spec-review", "completed", { status: "rejected" }),
-        makeStage("decompose", "pending"),
-      ];
-      const ready = await router.getReadyStages(featurePipeline, stages, "company-1");
-      expect(ready.map((s) => s.id)).not.toContain("decompose");
-    });
-
-    it("returns stage when conditional edge evaluates true", async () => {
-      const stages = [
-        makeStage("spec-review", "completed", { status: "approved" }),
+        makeStage("spec-review", "completed", { decision: "approved" }),
         makeStage("decompose", "pending"),
       ];
       const ready = await router.getReadyStages(featurePipeline, stages, "company-1");
       expect(ready.map((s) => s.id)).toContain("decompose");
+    });
+
+    it("does not return stage when sourceHandle does not match source decision", async () => {
+      const stages = [
+        makeStage("spec-review", "completed", { decision: "rejected" }),
+        makeStage("decompose", "pending"),
+      ];
+      const ready = await router.getReadyStages(featurePipeline, stages, "company-1");
+      expect(ready.map((s) => s.id)).not.toContain("decompose");
     });
 
     it("does not return already-running stages", async () => {
@@ -86,7 +85,7 @@ describe("router (edge-based)", () => {
       const pipelineWithSubPipeline: PipelineDefinition = {
         ...featurePipeline,
         stages: [
-          { id: "start", type: "worker", agent_role: "worker" },
+          { id: "start", type: "stage", agent_role: "worker" },
           { id: "sub", type: "sub-pipeline", pipeline: "other" },
         ],
         edges: [{ id: "e1", from: "start", to: "sub" }],
@@ -99,15 +98,15 @@ describe("router (edge-based)", () => {
       expect(ready.map((s) => s.id)).not.toContain("sub");
     });
 
-    it("handles fan_in=first_complete: ready when any source completes", async () => {
+    it("handles fan_in with first_complete strategy: ready when any source completes", async () => {
       const fanPipeline: PipelineDefinition = {
         name: "fan",
         description: "",
         trigger: { label: "fan" },
         stages: [
-          { id: "a", type: "worker", agent_role: "r" },
-          { id: "b", type: "worker", agent_role: "r" },
-          { id: "join", type: "worker", agent_role: "r", fan_in: "first_complete" },
+          { id: "a", type: "stage", agent_role: "r" },
+          { id: "b", type: "stage", agent_role: "r" },
+          { id: "join", type: "fan_in", fan_in_strategy: "first_complete" },
         ],
         edges: [
           { id: "e1", from: "a", to: "join" },
@@ -124,15 +123,15 @@ describe("router (edge-based)", () => {
       expect(ready.map((s) => s.id)).toContain("join");
     });
 
-    it("handles all_complete fan_in: waits for all sources", async () => {
+    it("handles fan_in with all_complete strategy: waits for all sources", async () => {
       const fanPipeline: PipelineDefinition = {
         name: "fan",
         description: "",
         trigger: { label: "fan" },
         stages: [
-          { id: "a", type: "worker", agent_role: "r" },
-          { id: "b", type: "worker", agent_role: "r" },
-          { id: "join", type: "worker", agent_role: "r", fan_in: "all_complete" },
+          { id: "a", type: "stage", agent_role: "r" },
+          { id: "b", type: "stage", agent_role: "r" },
+          { id: "join", type: "fan_in", fan_in_strategy: "all_complete" },
         ],
         edges: [
           { id: "e1", from: "a", to: "join" },
@@ -151,22 +150,32 @@ describe("router (edge-based)", () => {
   });
 
   describe("getSkippedStages", () => {
-    it("marks stage as skipped when all conditional edges evaluate false", async () => {
+    it("marks stage as skipped when sourceHandle does not match source decision", async () => {
       const stages = [
-        makeStage("spec-review", "completed", { status: "rejected" }),
+        makeStage("spec-review", "completed", { decision: "rejected" }),
         makeStage("decompose", "pending"),
       ];
       const skipped = await router.getSkippedStages(featurePipeline, stages, "company-1");
       expect(skipped.map((s) => s.id)).toContain("decompose");
     });
 
-    it("does not skip stage when conditional edge evaluates true", async () => {
+    it("does not skip stage when sourceHandle matches source decision", async () => {
       const stages = [
-        makeStage("spec-review", "completed", { status: "approved" }),
+        makeStage("spec-review", "completed", { decision: "approved" }),
         makeStage("decompose", "pending"),
       ];
       const skipped = await router.getSkippedStages(featurePipeline, stages, "company-1");
       expect(skipped.map((s) => s.id)).not.toContain("decompose");
+    });
+
+    it("does not skip stage with unconditional edge from completed source", async () => {
+      const stages = [
+        makeStage("spec-review", "completed", { decision: "approved" }),
+        makeStage("decompose", "completed"),
+        makeStage("implement", "pending"),
+      ];
+      const skipped = await router.getSkippedStages(featurePipeline, stages, "company-1");
+      expect(skipped.map((s) => s.id)).not.toContain("implement");
     });
 
     it("does not skip root stages", async () => {
@@ -177,21 +186,13 @@ describe("router (edge-based)", () => {
   });
 
   describe("evaluateFailure", () => {
-    it("returns goto action when error edge exists and retry count below max", () => {
+    it("returns goto action when error edge exists", () => {
       const stageRow = makeStage("validate", "failed", { errors: ["test failed"] }, 0);
-      const targetRow = makeStage("implement", "completed", undefined, 0);
-      const result = router.evaluateFailure(featurePipeline, "validate", stageRow, targetRow);
+      const result = router.evaluateFailure(featurePipeline, "validate", stageRow);
       expect(result.action).toBe("goto");
       if (result.action === "goto") {
         expect(result.targetStageId).toBe("implement");
       }
-    });
-
-    it("returns escalate when retry count equals max_retries", () => {
-      const stageRow = makeStage("validate", "failed", { errors: [] }, 0);
-      const targetRow = makeStage("implement", "completed", undefined, 3);
-      const result = router.evaluateFailure(featurePipeline, "validate", stageRow, targetRow);
-      expect(result.action).toBe("escalate");
     });
 
     it("returns escalate when no error edges exist for the failed stage", () => {
@@ -199,36 +200,25 @@ describe("router (edge-based)", () => {
       const result = router.evaluateFailure(featurePipeline, "spec-review", stageRow);
       expect(result.action).toBe("escalate");
     });
-
-    it("falls back to stageRow retry count when no targetStageRow provided", () => {
-      const stageRow = makeStage("validate", "failed", undefined, 3);
-      const result = router.evaluateFailure(featurePipeline, "validate", stageRow);
-      expect(result.action).toBe("escalate");
-    });
   });
 
   describe("requiresAgentDispatch", () => {
-    it("returns true for worker stages", () => {
-      const stage = featurePipeline.stages.find((s) => s.type === "worker")!;
+    it("returns true for stage type", () => {
+      const stage = featurePipeline.stages.find((s) => s.type === "stage")!;
       expect(router.requiresAgentDispatch(stage)).toBe(true);
     });
 
-    it("returns true for classifier stages", () => {
-      const stage = featurePipeline.stages.find((s) => s.type === "classifier")!;
+    it("returns true for fan_out type", () => {
+      const stage = { id: "fan", type: "fan_out" as const, agent_role: "r" };
       expect(router.requiresAgentDispatch(stage)).toBe(true);
     });
 
-    it("returns true for parallel_fan_out stages", () => {
-      const stage = { id: "fan", type: "parallel_fan_out" as const };
-      expect(router.requiresAgentDispatch(stage)).toBe(true);
-    });
-
-    it("returns false for gate stages", () => {
-      const stage = { id: "gate1", type: "gate" as const };
+    it("returns false for fan_in type", () => {
+      const stage = { id: "join", type: "fan_in" as const, fan_in_strategy: "all_complete" as const };
       expect(router.requiresAgentDispatch(stage)).toBe(false);
     });
 
-    it("returns false for sub-pipeline stages", () => {
+    it("returns false for sub-pipeline type", () => {
       const stage = { id: "sub", type: "sub-pipeline" as const, pipeline: "other" };
       expect(router.requiresAgentDispatch(stage)).toBe(false);
     });

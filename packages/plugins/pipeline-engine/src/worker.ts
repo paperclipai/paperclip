@@ -10,7 +10,7 @@ import {
 } from "@paperclipai/plugin-sdk";
 import { parsePipeline, validateDAG } from "./dag-parser.js";
 import { Dispatcher } from "./dispatcher.js";
-import { buildExpressionContext, evaluateCondition } from "./expression-engine.js";
+import { buildExpressionContext } from "./expression-engine.js";
 import { buildAdjacencyFromEdges } from "./edge-utils.js";
 import { extractOutput, loadSchema, validateOutput } from "./output-parser.js";
 import { Router } from "./router.js";
@@ -210,17 +210,9 @@ async function advancePipeline(
         return;
       }
 
-      let advancedGate = false;
-
       for (const stageDef of readyStages) {
         const stageRow = currentRows.find((s) => s.stageId === stageDef.id);
         if (!stageRow) continue;
-
-        if (stageDef.type === "gate") {
-          await handleGateStage(ctx, runId, pipeline, stageDef, stageRow, companyId);
-          advancedGate = true;
-          continue;
-        }
 
         if (!router.requiresAgentDispatch(stageDef)) {
           ctx.logger.warn("Stage type not dispatchable", { stageId: stageDef.id, type: stageDef.type });
@@ -266,7 +258,7 @@ async function advancePipeline(
         }
       }
 
-      if (!advancedGate) return;
+      return;
     } finally {
       await stateMachine.releaseAdvisoryLock(runId);
     }
@@ -275,54 +267,6 @@ async function advancePipeline(
   ctx.logger.error("Pipeline advancement hit iteration limit — possible infinite loop", { runId });
 }
 
-async function handleGateStage(
-  ctx: PluginContext,
-  runId: string,
-  pipeline: PipelineDefinition,
-  stageDef: StageDefinition,
-  stageRow: { id: string },
-  companyId: string,
-): Promise<void> {
-  const stageRows = await stateMachine.getRunStages(runId);
-
-  const context = buildExpressionContext(
-    stageRows.map((s) => ({ stageId: s.stageId, status: s.status, output: s.output, retryCount: s.retryCount })),
-    pipeline.name,
-    1,
-    "",
-    companyId,
-  );
-
-  // Gate condition: evaluate the outgoing edge conditions
-  // (Gates pass if any outgoing edge condition is truthy or no condition exists)
-  const outgoingEdges = (pipeline.edges ?? []).filter((e) => e.from === stageDef.id && e.type !== "error");
-  let conditionMet = outgoingEdges.length === 0; // no edges = pass-through
-
-  for (const edge of outgoingEdges) {
-    if (!edge.when) {
-      conditionMet = true;
-      break;
-    }
-    try {
-      const result = await evaluateCondition(edge.when, context);
-      if (result) {
-        conditionMet = true;
-        break;
-      }
-    } catch (err) {
-      ctx.logger.error("Gate edge condition evaluation failed", { stageId: stageDef.id, edgeId: edge.id, error: String(err) });
-    }
-  }
-
-  if (conditionMet) {
-    await stateMachine.updateStageStatus(stageRow.id, "completed");
-    ctx.streams.emit("run-progress", { runId, stageId: stageDef.id, status: "completed" });
-  } else {
-    await stateMachine.updateStageStatus(stageRow.id, "failed");
-    ctx.streams.emit("run-progress", { runId, stageId: stageDef.id, status: "failed" });
-    await handleStageFailure(ctx, runId, pipeline, stageDef, stageRow.id, companyId);
-  }
-}
 
 async function handleCommentEvent(ctx: PluginContext, event: PluginEvent): Promise<void> {
   const issueId = event.entityId;

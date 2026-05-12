@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { parsePipeline, validateDAG } from "../dag-parser.js";
-import { evaluateCondition, buildExpressionContext } from "../expression-engine.js";
+import { buildExpressionContext } from "../expression-engine.js";
 import { Router } from "../router.js";
 import type { PipelineDefinition, PipelineStage, StageStatus } from "../types.js";
 
@@ -9,20 +9,20 @@ const FEATURE_JSON: PipelineDefinition = {
   description: "Full feature development pipeline",
   trigger: { label: "pipeline:feature" },
   stages: [
-    { id: "spec-review", type: "classifier", agent_role: "spec-reviewer", output_schema: "spec-review-output", timeout: "2m" },
-    { id: "decompose", type: "classifier", agent_role: "decomposer", output_schema: "decomposition-output", checkpoint: true, timeout: "3m" },
-    { id: "write-tests", type: "worker", agent_role: "test-writer", per_task: true, ordering: "from_output", output_schema: "test-writing-output", timeout: "5m" },
-    { id: "implement", type: "worker", agent_role: "implementer", per_task: true, ordering: "from_output", output_schema: "implementation-output", timeout: "10m", retry: { max_retries: 3, body: "Fix validation failures: {{ output.errors }}" } },
-    { id: "validate", type: "worker", agent_role: "validator", fan_in: "all_complete", output_schema: "validation-output", timeout: "2m" },
-    { id: "review", type: "parallel_fan_out", agent_role: "reviewer", timeout: "3m", fan_in: "all_complete" },
-    { id: "merge-gate", type: "gate" },
+    { id: "spec-review", type: "stage", agent_role: "spec-reviewer" },
+    { id: "decompose", type: "stage", agent_role: "decomposer" },
+    { id: "write-tests", type: "fan_out", agent_role: "test-writer", per_task: true, ordering: "from_output" },
+    { id: "implement", type: "fan_out", agent_role: "implementer", per_task: true, ordering: "from_output" },
+    { id: "validate", type: "fan_in", fan_in_strategy: "all_complete" },
+    { id: "review", type: "fan_out", agent_role: "reviewer" },
+    { id: "merge-gate", type: "fan_in", fan_in_strategy: "all_complete" },
   ],
   edges: [
-    { id: "e1", from: "spec-review", to: "decompose", when: "output.status = 'approved'" },
+    { id: "e1", from: "spec-review", to: "decompose", sourceHandle: "approved" },
     { id: "e2", from: "decompose", to: "write-tests" },
     { id: "e3", from: "write-tests", to: "implement" },
     { id: "e4", from: "implement", to: "validate" },
-    { id: "e5", from: "validate", to: "review", when: "output.status = 'pass'" },
+    { id: "e5", from: "validate", to: "review" },
     { id: "e6", from: "validate", to: "implement", type: "error" },
     { id: "e7", from: "review", to: "merge-gate" },
   ],
@@ -34,15 +34,15 @@ const BUG_JSON: PipelineDefinition = {
   description: "Bug fix pipeline",
   trigger: { label: "pipeline:bug" },
   stages: [
-    { id: "write-tests", type: "worker", agent_role: "test-writer", output_schema: "test-writing-output", timeout: "5m" },
-    { id: "implement", type: "worker", agent_role: "implementer", output_schema: "implementation-output", timeout: "10m", retry: { max_retries: 2, body: "Fix validation failures: {{ output.errors }}" } },
-    { id: "validate", type: "worker", agent_role: "validator", output_schema: "validation-output", timeout: "2m" },
-    { id: "review", type: "classifier", agent_role: "reviewer", output_schema: "review-output", timeout: "3m" },
+    { id: "write-tests", type: "stage", agent_role: "test-writer" },
+    { id: "implement", type: "stage", agent_role: "implementer" },
+    { id: "validate", type: "stage", agent_role: "validator" },
+    { id: "review", type: "stage", agent_role: "reviewer" },
   ],
   edges: [
     { id: "e1", from: "write-tests", to: "implement" },
     { id: "e2", from: "implement", to: "validate" },
-    { id: "e3", from: "validate", to: "review", when: "output.status = 'pass'" },
+    { id: "e3", from: "validate", to: "review", sourceHandle: "pass" },
     { id: "e4", from: "validate", to: "implement", type: "error" },
   ],
   positions: {},
@@ -53,8 +53,8 @@ const FAST_TRACK_JSON: PipelineDefinition = {
   description: "Fast-track pipeline for trivial changes",
   trigger: { label: "pipeline:fast-track" },
   stages: [
-    { id: "implement", type: "worker", agent_role: "implementer", output_schema: "implementation-output", timeout: "5m" },
-    { id: "validate", type: "worker", agent_role: "validator", output_schema: "validation-output", timeout: "2m" },
+    { id: "implement", type: "stage", agent_role: "implementer" },
+    { id: "validate", type: "stage", agent_role: "validator" },
   ],
   edges: [
     { id: "e1", from: "implement", to: "validate" },
@@ -121,85 +121,39 @@ describe("IDP pipeline compatibility", () => {
     });
   });
 
-  describe("expression evaluation with IDP syntax", () => {
-    it("evaluates == operator (normalized to =)", async () => {
+  describe("buildExpressionContext with IDP stages", () => {
+    it("builds context with underscore-normalized stage keys", () => {
       const ctx = buildExpressionContext(
-        [{ stageId: "spec-review", status: "completed", output: { status: "approved" }, retryCount: 0 }],
+        [{ stageId: "spec-review", status: "completed", output: { decision: "approved" }, retryCount: 0 }],
         "feature", 1, "", "co-1",
       );
-      const result = await evaluateCondition("stages.spec_review.output.status == 'approved'", ctx);
-      expect(result).toBe(true);
+      expect(ctx.stages["spec_review"]).toBeDefined();
+      expect(ctx.stages["spec_review"].output).toEqual({ decision: "approved" });
     });
 
-    it("resolves underscore-normalized stage keys", async () => {
+    it("preserves original hyphenated keys", () => {
       const ctx = buildExpressionContext(
-        [{ stageId: "spec-review", status: "completed", output: { status: "approved" }, retryCount: 0 }],
+        [{ stageId: "spec-review", status: "completed", output: { decision: "approved" }, retryCount: 0 }],
         "feature", 1, "", "co-1",
       );
-      const result = await evaluateCondition("stages.spec_review.output.status = 'approved'", ctx);
-      expect(result).toBe(true);
-    });
-
-    it("still works with quoted hyphenated keys", async () => {
-      const ctx = buildExpressionContext(
-        [{ stageId: "spec-review", status: "completed", output: { status: "approved" }, retryCount: 0 }],
-        "feature", 1, "", "co-1",
-      );
-      const result = await evaluateCondition('stages."spec-review".output.status = \'approved\'', ctx);
-      expect(result).toBe(true);
-    });
-
-    it("evaluates .every() pattern (normalized to $count filter)", async () => {
-      const ctx = buildExpressionContext(
-        [{ stageId: "review", status: "completed", output: { every_result: true }, retryCount: 0 }],
-        "feature", 1, "", "co-1",
-      );
-      const reviewOutput = [
-        { decision: "approve" },
-        { decision: "approve" },
-      ];
-      const ctxWithArray = {
-        ...ctx,
-        stages: { ...ctx.stages, review: { ...ctx.stages.review, output: reviewOutput } },
-      };
-      const result = await evaluateCondition(
-        "stages.review.output.every(r => r.decision == 'approve')",
-        ctxWithArray,
-      );
-      expect(result).toBe(true);
-    });
-
-    it(".every() returns false when one item doesn't match", async () => {
-      const reviewOutput = [
-        { decision: "approve" },
-        { decision: "request-changes" },
-      ];
-      const ctx = {
-        stages: { review: { output: reviewOutput, status: "completed" as StageStatus, retry_count: 0 } },
-        pipeline: { name: "feature", version: 1, parent_issue_id: "" },
-        env: { company_id: "co-1" },
-      };
-      const result = await evaluateCondition(
-        "stages.review.output.every(r => r.decision == 'approve')",
-        ctx,
-      );
-      expect(result).toBe(false);
+      expect(ctx.stages["spec-review"]).toBeDefined();
+      expect(ctx.stages["spec-review"].output).toEqual({ decision: "approved" });
     });
   });
 
-  describe("router handles parallel_fan_out stages", () => {
-    it("marks parallel_fan_out as requiring agent dispatch", () => {
+  describe("router handles fan_out stages", () => {
+    it("marks fan_out as requiring agent dispatch", () => {
       const router = new Router();
-      expect(router.requiresAgentDispatch({ id: "review", type: "parallel_fan_out", agent_role: "reviewer" })).toBe(true);
+      expect(router.requiresAgentDispatch({ id: "review", type: "fan_out", agent_role: "reviewer" })).toBe(true);
     });
 
-    it("includes parallel_fan_out in ready stages when deps met", async () => {
-      const pipeline = parsePipeline(loadPipelineJson("feature"));
+    it("includes fan_out in ready stages when deps met", async () => {
+      const pipeline = FEATURE_JSON;
       const router = new Router();
 
       const stages = pipeline.stages.map((s) => {
         if (s.id === "review") return makeStage(s.id, "pending");
-        return makeStage(s.id, "completed", s.id === "validate" ? { status: "pass" } : {});
+        return makeStage(s.id, "completed", {});
       });
 
       const ready = await router.getReadyStages(pipeline, stages, "co-1");
@@ -207,13 +161,13 @@ describe("IDP pipeline compatibility", () => {
     });
   });
 
-  describe("router handles checkpoint stages", () => {
-    it("blocks downstream when checkpoint not yet completed", async () => {
-      const pipeline = parsePipeline(loadPipelineJson("feature"));
+  describe("router blocks downstream when source not completed", () => {
+    it("blocks downstream when source is still running", async () => {
+      const pipeline = FEATURE_JSON;
       const router = new Router();
 
       const stages = [
-        makeStage("spec-review", "completed", { status: "approved" }),
+        makeStage("spec-review", "completed", { decision: "approved" }),
         makeStage("decompose", "running"),
         makeStage("write-tests", "pending"),
       ];
@@ -221,12 +175,12 @@ describe("IDP pipeline compatibility", () => {
       expect(ready.map((s) => s.id)).not.toContain("write-tests");
     });
 
-    it("allows downstream after checkpoint completed", async () => {
-      const pipeline = parsePipeline(loadPipelineJson("feature"));
+    it("allows downstream after source completed", async () => {
+      const pipeline = FEATURE_JSON;
       const router = new Router();
 
       const stages = [
-        makeStage("spec-review", "completed", { status: "approved" }),
+        makeStage("spec-review", "completed", { decision: "approved" }),
         makeStage("decompose", "completed", { tasks: ["t1", "t2"] }),
         makeStage("write-tests", "pending"),
       ];
@@ -237,7 +191,7 @@ describe("IDP pipeline compatibility", () => {
 
   describe("router handles fast-track pipeline end-to-end", () => {
     it("advances through fast-track correctly", async () => {
-      const pipeline = parsePipeline(loadPipelineJson("fast-track"));
+      const pipeline = FAST_TRACK_JSON;
       const router = new Router();
 
       const initial = pipeline.stages.map((s) => makeStage(s.id, "pending"));

@@ -1,6 +1,4 @@
-import { buildEdgeExpressionContext } from "./expression-engine.js";
-import { evaluateCondition } from "./expression-engine.js";
-import { getIncomingEdges, getOutgoingEdges, getErrorEdges, getRootStageIds } from "./edge-utils.js";
+import { getIncomingEdges, getErrorEdges, getRootStageIds } from "./edge-utils.js";
 import type { EdgeDefinition, FailureAction, PipelineDefinition, PipelineStage, StageDefinition } from "./types.js";
 
 export class Router {
@@ -32,8 +30,8 @@ export class Router {
       if (incomingEdges.length === 0) continue;
 
       // Determine fan_in strategy
-      const fanIn = "fan_in" in stageDef ? stageDef.fan_in : undefined;
-      const useFirstComplete = fanIn === "first_complete";
+      const fanInStrategy = stageDef.type === "fan_in" ? stageDef.fan_in_strategy : undefined;
+      const useFirstComplete = fanInStrategy === "first_complete";
 
       // Evaluate which source stages have completed and which edges are satisfied
       const satisfiedEdges: EdgeDefinition[] = [];
@@ -53,23 +51,10 @@ export class Router {
           continue;
         }
 
-        // Evaluate edge `when` condition if present
-        if (edge.when) {
-          const context = buildEdgeExpressionContext(
-            edge.from,
-            stageRows.map((s) => ({ stageId: s.stageId, status: s.status, output: s.output, retryCount: s.retryCount })),
-            pipeline.name,
-            1,
-            "",
-            companyId,
-          );
-          let conditionMet: boolean;
-          try {
-            conditionMet = await evaluateCondition(edge.when, context);
-          } catch {
-            conditionMet = false;
-          }
-          if (conditionMet) {
+        // sourceHandle-based routing: edge satisfied only if source decision matches
+        if (edge.sourceHandle) {
+          const sourceOutput = sourceRow.output as Record<string, unknown> | null;
+          if (sourceOutput?.decision === edge.sourceHandle) {
             satisfiedEdges.push(edge);
           }
         } else {
@@ -120,43 +105,30 @@ export class Router {
       });
       if (!allSourcesResolved) continue;
 
-      // Evaluate conditional edges
-      let hasUnsatisfiedConditional = false;
-      let hasUnconditionalWithCompletedSource = false;
+      // Check if any edge is satisfied
+      let anySatisfied = false;
 
       for (const edge of incomingEdges) {
         const sourceRow = stageStatusMap.get(edge.from);
         const sourceCompleted = sourceRow?.status === "completed";
 
-        if (!edge.when) {
-          if (sourceCompleted) {
-            hasUnconditionalWithCompletedSource = true;
+        if (!sourceCompleted) continue;
+
+        if (edge.sourceHandle) {
+          const sourceOutput = sourceRow.output as Record<string, unknown> | null;
+          if (sourceOutput?.decision === edge.sourceHandle) {
+            anySatisfied = true;
+            break;
           }
         } else {
-          if (sourceCompleted) {
-            const context = buildEdgeExpressionContext(
-              edge.from,
-              stageRows.map((s) => ({ stageId: s.stageId, status: s.status, output: s.output, retryCount: s.retryCount })),
-              pipeline.name,
-              1,
-              "",
-              companyId,
-            );
-            let conditionMet: boolean;
-            try {
-              conditionMet = await evaluateCondition(edge.when, context);
-            } catch {
-              conditionMet = false;
-            }
-            if (!conditionMet) {
-              hasUnsatisfiedConditional = true;
-            }
-          }
+          // Unconditional edge from completed source — satisfied
+          anySatisfied = true;
+          break;
         }
       }
 
-      // Skip if all conditional edges from completed sources evaluated false, and no unconditional completed source
-      if (hasUnsatisfiedConditional && !hasUnconditionalWithCompletedSource) {
+      // Skip if all sources resolved but no edge is satisfied
+      if (!anySatisfied) {
         skipped.push(stageDef);
       }
     }
@@ -177,30 +149,15 @@ export class Router {
       return { action: "escalate" };
     }
 
-    // Find first error edge that targets a stage with retry config
-    for (const errorEdge of errorEdgesFromFailed) {
-      const targetStageDef = pipeline.stages.find((s) => s.id === errorEdge.to);
-      if (!targetStageDef) continue;
-
-      const retry = targetStageDef.retry;
-      if (!retry) continue;
-
-      const retryRow = targetStageRow ?? stageRow;
-      if (retryRow.retryCount >= retry.max_retries) {
-        return { action: "escalate" };
-      }
-
-      return {
-        action: "goto",
-        targetStageId: errorEdge.to,
-        body: retry.body,
-      };
-    }
-
-    return { action: "escalate" };
+    // Use first error edge as the goto target
+    const errorEdge = errorEdgesFromFailed[0];
+    return {
+      action: "goto",
+      targetStageId: errorEdge.to,
+    };
   }
 
   requiresAgentDispatch(stageDef: StageDefinition): boolean {
-    return stageDef.type === "worker" || stageDef.type === "classifier" || stageDef.type === "parallel_fan_out";
+    return stageDef.type === "stage" || stageDef.type === "fan_out";
   }
 }

@@ -13,13 +13,12 @@ const FEATURE_JSON = JSON.stringify({
   description: "Full feature development",
   trigger: { label: "pipeline:feature" },
   stages: [
-    { id: "spec-review", type: "classifier", agent_role: "spec-reviewer", output_schema: "spec-review-output" },
-    // implement has retry config because error edge from validate points here
-    { id: "implement", type: "worker", agent_role: "code-writer", retry: { max_retries: 2 } },
-    { id: "validate", type: "worker", agent_role: "validator" },
+    { id: "spec-review", type: "stage", agent_role: "spec-reviewer", output_schema: "spec-review-output" },
+    { id: "implement", type: "stage", agent_role: "code-writer" },
+    { id: "validate", type: "stage", agent_role: "validator" },
   ],
   edges: [
-    { id: "e1", from: "spec-review", to: "implement", when: "output.status = 'approved'" },
+    { id: "e1", from: "spec-review", to: "implement", sourceHandle: "approved" },
     { id: "e2", from: "implement", to: "validate" },
     { id: "e3", from: "validate", to: "implement", type: "error" },
   ],
@@ -78,19 +77,19 @@ describe("integration: end-to-end pipeline flow", () => {
     expect(dispatchResult.issueId).toBe("issue-1");
 
     // Simulate spec-review output extraction
-    const commentBody = `Done reviewing.\n\n<!-- pipeline-output -->\n\`\`\`json\n{"status": "approved", "completeness_score": 0.95}\n\`\`\``;
+    const commentBody = `Done reviewing.\n\n<!-- pipeline-output -->\n\`\`\`json\n{"decision": "approved", "completeness_score": 0.95}\n\`\`\``;
     const extraction = extractOutput(commentBody);
     expect(extraction.found).toBe(true);
     expect(extraction.data).not.toBeNull();
-    expect(extraction.data!.status).toBe("approved");
+    expect(extraction.data!.decision).toBe("approved");
 
     const schema = loadSchema("spec-review-output");
     const validated = validateOutput(extraction.data!, schema);
     expect(validated.valid).toBe(true);
 
-    // After spec-review completes with approved status, implement should be ready
+    // After spec-review completes with decision: "approved", implement should be ready
     const afterSpecReview: PipelineStage[] = [
-      { ...initialStages[0], status: "completed", output: { status: "approved", completeness_score: 0.95 } },
+      { ...initialStages[0], status: "completed", output: { decision: "approved", completeness_score: 0.95 } },
       { ...initialStages[1] },
       { ...initialStages[2] },
     ];
@@ -98,28 +97,26 @@ describe("integration: end-to-end pipeline flow", () => {
     expect(nextReady).toHaveLength(1);
     expect(nextReady[0].id).toBe("implement");
 
-    // When spec-review status is rejected, implement should be skipped
+    // When spec-review decision is "rejected", implement should be skipped
     const afterRejected: PipelineStage[] = [
-      { ...initialStages[0], status: "completed", output: { status: "rejected", completeness_score: 0.4 } },
+      { ...initialStages[0], status: "completed", output: { decision: "rejected", completeness_score: 0.4 } },
       { ...initialStages[1] },
       { ...initialStages[2] },
     ];
     const skipped = await router.getSkippedStages(pipeline, afterRejected, "company-1");
     expect(skipped.map((s) => s.id)).toContain("implement");
 
-    // Retry logic via error edges
+    // Failure routing via error edges — goto when error edge exists
     const failedValidateStage: PipelineStage = { ...initialStages[2], status: "failed", output: { errors: ["test_a failed"] }, retryCount: 0 };
-    const implementTargetRow: PipelineStage = { ...initialStages[1], status: "completed", retryCount: 0 };
-    const failureAction = router.evaluateFailure(pipeline, "validate", failedValidateStage, implementTargetRow);
+    const failureAction = router.evaluateFailure(pipeline, "validate", failedValidateStage);
     expect(failureAction.action).toBe("goto");
     if (failureAction.action === "goto") {
       expect(failureAction.targetStageId).toBe("implement");
     }
 
-    // Escalate when max retries exceeded
-    const maxRetriedTarget: PipelineStage = { ...implementTargetRow, retryCount: 2 };
-    const escalateAction = router.evaluateFailure(pipeline, "validate", failedValidateStage, maxRetriedTarget);
-    expect(escalateAction.action).toBe("escalate");
+    // Escalate when no error edge exists
+    const specFailure = router.evaluateFailure(pipeline, "spec-review", failedValidateStage);
+    expect(specFailure.action).toBe("escalate");
   });
 
   it("spec-review conditional edge: stage ready when approved, skipped when rejected", async () => {
@@ -127,7 +124,7 @@ describe("integration: end-to-end pipeline flow", () => {
     const router = new Router();
 
     const stagesApproved: PipelineStage[] = [
-      { id: "r1", pipelineRunId: "run-2", stageId: "spec-review", subIssueId: null, status: "completed", retryCount: 0, output: { status: "approved", completeness_score: 0.9 }, error: null, startedAt: null, completedAt: null },
+      { id: "r1", pipelineRunId: "run-2", stageId: "spec-review", subIssueId: null, status: "completed", retryCount: 0, output: { decision: "approved", completeness_score: 0.9 }, error: null, startedAt: null, completedAt: null },
       { id: "r2", pipelineRunId: "run-2", stageId: "implement", subIssueId: null, status: "pending", retryCount: 0, output: null, error: null, startedAt: null, completedAt: null },
       { id: "r3", pipelineRunId: "run-2", stageId: "validate", subIssueId: null, status: "pending", retryCount: 0, output: null, error: null, startedAt: null, completedAt: null },
     ];
@@ -135,7 +132,7 @@ describe("integration: end-to-end pipeline flow", () => {
     expect(readyApproved.map((s) => s.id)).toContain("implement");
 
     const stagesRejected: PipelineStage[] = [
-      { ...stagesApproved[0], output: { status: "rejected", completeness_score: 0.3 } },
+      { ...stagesApproved[0], output: { decision: "rejected", completeness_score: 0.3 } },
       { ...stagesApproved[1] },
       { ...stagesApproved[2] },
     ];
