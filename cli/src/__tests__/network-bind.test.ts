@@ -50,6 +50,7 @@ describe("network bind helpers", () => {
 
   it("falls back to loopback when no tailscale address is available for tailnet presets", () => {
     delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
+    process.env.PATH = "/definitely-missing-paperclip-bin";
 
     const preset = buildPresetServerConfig("tailnet", {
       port: 3100,
