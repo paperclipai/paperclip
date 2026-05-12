@@ -169,25 +169,27 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function openUrl(url: string): boolean {
+export async function openUrl(url: string): Promise<boolean> {
   const platform = process.platform;
-  try {
-    if (platform === "darwin") {
-      const child = spawn("open", [url], { detached: true, stdio: "ignore" });
-      child.unref();
-      return true;
+  return new Promise((resolve) => {
+    try {
+      let child;
+      if (platform === "darwin") {
+        child = spawn("open", [url], { detached: true, stdio: "ignore" });
+      } else if (platform === "win32") {
+        child = spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" });
+      } else {
+        child = spawn("xdg-open", [url], { detached: true, stdio: "ignore" });
+      }
+      child.once("error", () => resolve(false));
+      child.once("spawn", () => {
+        child.unref();
+        resolve(true);
+      });
+    } catch {
+      resolve(false);
     }
-    if (platform === "win32") {
-      const child = spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" });
-      child.unref();
-      return true;
-    }
-    const child = spawn("xdg-open", [url], { detached: true, stdio: "ignore" });
-    child.unref();
-    return true;
-  } catch {
-    return false;
-  }
+  });
 }
 
 export async function loginBoardCli(params: {
@@ -219,7 +221,7 @@ export async function loginBoardCli(params: {
     console.error(`Open this URL in your browser to approve CLI access:\n${approvalUrl}`);
   }
 
-  const opened = openUrl(approvalUrl);
+  const opened = await openUrl(approvalUrl);
   if (params.print !== false && opened) {
     console.error(pc.dim("Opened the approval page in your browser."));
   }
