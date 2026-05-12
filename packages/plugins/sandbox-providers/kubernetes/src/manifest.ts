@@ -1,15 +1,15 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 const PLUGIN_ID = "paperclip.kubernetes-sandbox-provider";
-const PLUGIN_VERSION = "0.1.0";
+const PLUGIN_VERSION = "0.1.0-alpha.1";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
   version: PLUGIN_VERSION,
-  displayName: "Kubernetes Sandbox Provider",
+  displayName: "Kubernetes Sandbox (alpha)",
   description:
-    "First-party sandbox provider plugin that runs agents as one-shot batch/v1 Jobs in per-tenant Kubernetes namespaces. Uses only stable k8s APIs — no CRD prerequisite.",
+    "Built on kubernetes-sigs/agent-sandbox (v1alpha1). ALPHA — expect breaking changes as the upstream CRD evolves. Falls back to stable batch/v1 Job mode for clusters without agent-sandbox installed. First-party Paperclip sandbox-provider plugin for Kubernetes.",
   author: "Paperclip",
   categories: ["automation"],
   capabilities: ["environment.drivers.register"],
@@ -22,7 +22,7 @@ const manifest: PaperclipPluginManifestV1 = {
       kind: "sandbox_provider",
       displayName: "Kubernetes",
       description:
-        "Dispatches agent runs as one-shot Kubernetes Jobs in per-tenant namespaces. Requires only a kubeconfig (or in-cluster ServiceAccount) and a target cluster running k8s 1.27+ — no CRDs or operators to install.",
+        "Dispatches agent runs in per-tenant Kubernetes namespaces. Default backend (sandbox-cr, alpha) uses kubernetes-sigs/agent-sandbox for multi-command exec; fallback backend (job) uses stable batch/v1 Job for clusters without agent-sandbox installed.",
       configSchema: {
         type: "object",
         properties: {
@@ -101,6 +101,12 @@ const manifest: PaperclipPluginManifestV1 = {
             type: "string",
             description:
               "The adapter type that Jobs in this environment will run (e.g. `claude_local`, `codex_local`). Defaults to `claude_local`. Each environment is bound to one adapter; create multiple environments for different adapters.",
+          },
+          backend: {
+            type: "string",
+            enum: ["sandbox-cr", "job"],
+            description:
+              "sandbox-cr (default, alpha — requires kubernetes-sigs/agent-sandbox installed) | job (stable fallback — batch/v1 Job, one-shot entrypoint, no multi-command exec)",
           },
         },
         anyOf: [

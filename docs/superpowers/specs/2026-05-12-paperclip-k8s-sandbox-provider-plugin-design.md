@@ -577,3 +577,45 @@ One new scenario: configure a kubernetes sandbox environment in the UI, bind a C
 1. **Adapter image registry default** — should the plugin default to `ghcr.io/paperclipai/agent-runtime-*:v1` or require operators to specify? *Recommendation: default to the public registry, allow override via `imageRegistry` config.*
 2. **CRD upgrade path** — if we later want a CRD (for `kubectl get paperclipruns` UX), can the plugin migrate cleanly? *Recommendation: the plugin's resource labels (`paperclip.io/run-id`, etc.) already provide a `kubectl get pods -l paperclip.io/run-id=...` UX; defer CRDs until there's a real need.*
 3. **Probe scope** — should probe just confirm cluster reachability (cheap, fast) or also dispatch a transient pod (slower, more thorough)? *Recommendation: cheap by default (`canList` pods in the tenant ns), with optional thorough probe via env config.*
+
+## Update 2026-05-12 (post-smoke-test pivot)
+
+**Summary:** Smoke testing the initial `batch/v1` Job backend against the local kind cluster revealed a fundamental architectural mismatch: paperclip-server's adapter-install pattern requires N exec calls into a long-lived workload (install deps, configure, run agent), not a single one-shot entrypoint. The Job backend cannot support this pattern — each Job runs one entrypoint and exits.
+
+### Problem: Job model ≠ adapter-install pattern
+
+The adapter-install flow sends multiple sequential commands to the sandbox environment (e.g. `pip install adapter-deps`, then `paperclip-agent-shim start`). With the Job backend, the container entrypoint is baked into the Job spec at creation time. There is no mechanism to exec additional commands into a completed or running one-shot Job without redesigning the Job's entrypoint to behave like a daemon — at which point you've effectively reimplemented a Sandbox controller.
+
+### Pivot: primary backend = `kubernetes-sigs/agent-sandbox` Sandbox CRD
+
+The `kubernetes-sigs/agent-sandbox` CRD (`sandboxes.agents.x-k8s.io/v1alpha1`) was already validated working on the kind cluster during the initial spike (Ready pod in ~5s). It provides exactly what we need: a long-lived pod with `sleep infinity` entrypoint managed by a controller, into which paperclip-server can exec commands via the Kubernetes exec API.
+
+We accept the alpha-stage risk, mitigated by:
+
+1. **Clear "alpha" labeling** — plugin `displayName` is "Kubernetes Sandbox (alpha)", version bumped to `0.1.0-alpha.1`, README and manifest description lead with ALPHA callout.
+2. **Stable fallback** — `backend: "job"` config option retains the original `batch/v1` Job behavior for operators who cannot install agent-sandbox or need strictly stable APIs.
+3. **Clean interface seam** — `SandboxOrchestrator` interface in `src/sandbox-orchestrator.ts` isolates both backends. Swapping backends (or adding a third) is a one-import change in `plugin.ts`.
+
+### New files added
+
+- `src/sandbox-cr-builder.ts` — builds the Sandbox CR manifest (same security baseline as `pod-spec-builder.ts`, entrypoint is `sleep infinity` via Tini).
+- `src/sandbox-cr-orchestrator.ts` — `SandboxOrchestrator` implementation using `CustomObjectsApi`. Key semantic change: `waitForCompletion` means "wait until pod is Ready to exec" (phase=Ready), NOT "wait until workload finishes".
+- `src/pod-exec.ts` — `execInPod()` wraps `@kubernetes/client-node`'s `Exec` class for WebSocket-based exec with exit code extraction from `V1Status.details.causes`.
+
+### Changed semantics
+
+- `onEnvironmentExecute` for `sandbox-cr` backend: resolves pod name from Sandbox CR, waits for Ready, calls `execInPod(kc, ns, podName, "agent", ["/bin/sh", "-lc", command])`. Returns `{exitCode, stdout, stderr}` directly from exec result.
+- `onEnvironmentExecute` for `job` backend: unchanged (wait for Job completion, scrape logs).
+- `onEnvironmentAcquireLease`: picks orchestrator and manifest builder based on `config.backend`. Secret `ownerRef` is Sandbox CR for sandbox-cr mode, Job for job mode.
+- `onEnvironmentReleaseLease`: reads `leaseMetadata.backend` to route to the correct orchestrator for release.
+
+### Updated roadmap
+
+- **Phase A (this PR):** `sandbox-cr` backend with multi-command exec via agent-sandbox CRD.
+- **Phase B:** Warm pool — pre-provisioned Sandbox CRs for sub-second cold starts.
+- **Phase C:** Kata-FC + VM snapshots for stronger isolation and fast restore.
+- **Phase D:** Contribute back to agent-sandbox upstream if their Beta model diverges from our exec-into-running-pod needs.
+
+### Why we accepted alpha risk now
+
+The original "wait for Beta" position assumed the Job backend could tide us over. The smoke test disproved that assumption: the Job backend fundamentally cannot serve the adapter-install pattern. The choice is now "alpha CRD with exec" vs "no functional product" — not "stable Job" vs "alpha CRD". Given that framing, accepting the alpha CRD with the mitigations above is the correct call.

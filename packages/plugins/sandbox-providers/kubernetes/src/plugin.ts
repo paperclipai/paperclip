@@ -22,9 +22,15 @@ import { createKubeConfig, makeKubeClients } from "./kube-client.js";
 import { getAdapterDefaults } from "./adapter-defaults.js";
 import { resolveImage } from "./image-allowlist.js";
 import { buildJobManifest } from "./pod-spec-builder.js";
+import { buildSandboxCrManifest } from "./sandbox-cr-builder.js";
 import { ensureTenant } from "./tenant-orchestrator.js";
 import { createPerRunSecret } from "./secret-manager.js";
 import { jobOrchestrator, JobTimeoutError } from "./job-orchestrator.js";
+import {
+  sandboxCrOrchestrator,
+  SandboxCrTimeoutError,
+} from "./sandbox-cr-orchestrator.js";
+import { execInPod } from "./pod-exec.js";
 import {
   deriveCompanySlug,
   deriveNamespaceName,
@@ -220,41 +226,63 @@ const plugin = definePlugin({
       { imageAllowList: config.imageAllowList, imageRegistry: config.imageRegistry },
     );
 
-    const manifest = buildJobManifest({
-      namespace,
-      jobName,
-      adapterType: config.adapterType,
-      image,
-      envSecretName: secretName,
-      serviceAccountName: TENANT_SERVICE_ACCOUNT,
-      labels,
-      resources: config.defaultResources ?? {},
-      runtimeClassName: config.runtimeClassName,
-      activeDeadlineSec: config.podActivityDeadlineSec,
-      ttlSecondsAfterFinished: config.jobTtlSecondsAfterFinished,
-      imagePullSecrets: config.imagePullSecrets,
-    });
+    // Pick the orchestrator and build the appropriate manifest based on backend.
+    const isSandboxCrBackend = config.backend === "sandbox-cr";
+    const orchestrator = isSandboxCrBackend ? sandboxCrOrchestrator : jobOrchestrator;
 
-    const { uid: ownerUid } = await jobOrchestrator.claim(clients, namespace, manifest);
+    const manifest = isSandboxCrBackend
+      ? buildSandboxCrManifest({
+          namespace,
+          sandboxName: jobName,
+          adapterType: config.adapterType,
+          image,
+          envSecretName: secretName,
+          serviceAccountName: TENANT_SERVICE_ACCOUNT,
+          labels,
+          resources: config.defaultResources ?? {},
+          runtimeClassName: config.runtimeClassName,
+          imagePullSecrets: config.imagePullSecrets,
+        })
+      : buildJobManifest({
+          namespace,
+          jobName,
+          adapterType: config.adapterType,
+          image,
+          envSecretName: secretName,
+          serviceAccountName: TENANT_SERVICE_ACCOUNT,
+          labels,
+          resources: config.defaultResources ?? {},
+          runtimeClassName: config.runtimeClassName,
+          activeDeadlineSec: config.podActivityDeadlineSec,
+          ttlSecondsAfterFinished: config.jobTtlSecondsAfterFinished,
+          imagePullSecrets: config.imagePullSecrets,
+        });
+
+    const { uid: ownerUid } = await orchestrator.claim(clients, namespace, manifest);
 
     // M4b: adapter env vars are sourced from the plugin worker's own process
     // environment (paperclip-server pod has them injected at deploy time).
     const adapterEnv = extractAdapterEnvFromProcess(adapterDefaults.envKeys);
     const bootstrapToken = generateBootstrapToken();
 
+    // Secret ownerRef: for job backend, the Job owns the Secret (cascade delete).
+    // For sandbox-cr backend, the Sandbox CR owns the Secret.
+    // NOTE: For sandbox-cr, if the Secret outlives the Sandbox due to a cluster
+    // quirk, the release() call will still clean it up via namespace GC or
+    // explicit delete in a future milestone.
     await createPerRunSecret(clients, {
       namespace,
       secretName,
       runId: params.runId,
-      ownerKind: "Job",
-      ownerApiVersion: "batch/v1",
+      ownerKind: isSandboxCrBackend ? "Sandbox" : "Job",
+      ownerApiVersion: isSandboxCrBackend ? "agents.x-k8s.io/v1alpha1" : "batch/v1",
       ownerName: jobName,
       ownerUid,
       bootstrapToken,
       adapterEnv,
     });
 
-    const podName = await jobOrchestrator.findPod(clients, namespace, jobName);
+    const podName = await orchestrator.findPod(clients, namespace, jobName);
 
     const leaseMetadata: KubernetesLeaseMetadata = {
       namespace,
@@ -262,6 +290,7 @@ const plugin = definePlugin({
       podName,
       secretName,
       phase: "Pending",
+      backend: config.backend,
     };
 
     return {
@@ -305,10 +334,17 @@ const plugin = definePlugin({
     });
     const clients = makeKubeClients(kc);
 
+    const leaseBackend =
+      typeof params.leaseMetadata?.backend === "string"
+        ? (params.leaseMetadata.backend as "sandbox-cr" | "job")
+        : config.backend;
+    const releaseOrchestrator =
+      leaseBackend === "sandbox-cr" ? sandboxCrOrchestrator : jobOrchestrator;
+
     try {
-      await jobOrchestrator.release(clients, namespace, params.providerLeaseId);
+      await releaseOrchestrator.release(clients, namespace, params.providerLeaseId);
     } catch (err) {
-      // If the Job is already gone (404), that's fine.
+      // If the resource is already gone (404), that's fine.
       const code = (err as { code?: number; statusCode?: number }).code
         ?? (err as { code?: number; statusCode?: number }).statusCode;
       if (code !== 404) throw err;
@@ -318,15 +354,6 @@ const plugin = definePlugin({
   async onEnvironmentExecute(
     params: PluginEnvironmentExecuteParams,
   ): Promise<PluginEnvironmentExecuteResult> {
-    // For the Kubernetes Job-backed plugin, the container entrypoint is baked
-    // into the Job spec (Tini + paperclip-agent-shim). We do NOT re-exec
-    // command/args here — instead we wait for the already-running Job to
-    // complete and collect its logs.
-    //
-    // params.command / params.args / params.stdin are intentionally ignored.
-    // params.env is also not used here since secrets were injected via the
-    // per-run Secret at acquireLease time.
-
     const { lease, timeoutMs } = params;
 
     if (!lease.providerLeaseId) {
@@ -344,68 +371,183 @@ const plugin = definePlugin({
         ? lease.metadata.namespace
         : deriveTenantNamespace(config, params.companyId);
 
+    // Determine which backend this lease was created with.
+    const leaseBackend =
+      typeof lease.metadata?.backend === "string"
+        ? (lease.metadata.backend as "sandbox-cr" | "job")
+        : config.backend;
+
     const kc = createKubeConfig({
       inCluster: config.inCluster,
       kubeconfig: config.kubeconfig,
     });
     const clients = makeKubeClients(kc);
 
-    const effectiveTimeoutMs = typeof timeoutMs === "number" && timeoutMs > 0
-      ? timeoutMs
-      : config.podActivityDeadlineSec * 1000;
+    const effectiveTimeoutMs =
+      typeof timeoutMs === "number" && timeoutMs > 0
+        ? timeoutMs
+        : config.podActivityDeadlineSec * 1000;
 
-    let status;
-    let timedOut = false;
-    try {
-      status = await jobOrchestrator.waitForCompletion(
-        clients,
-        namespace,
-        lease.providerLeaseId,
-        { timeoutMs: effectiveTimeoutMs, pollMs: 2000 },
-      );
-    } catch (err) {
-      if (err instanceof JobTimeoutError) {
-        timedOut = true;
-        status = null;
-      } else {
+    if (leaseBackend === "sandbox-cr") {
+      // ── Sandbox-CR backend ──────────────────────────────────────────────────
+      // 1. Ensure the Sandbox pod is Ready (wait if needed).
+      // 2. Exec the command into the running pod.
+      // 3. Return exec result directly (no log scraping needed).
+
+      let podName =
+        typeof lease.metadata?.podName === "string" && lease.metadata.podName
+          ? lease.metadata.podName
+          : null;
+
+      // Wait for pod Ready if we don't have a pod name yet (or as a health check).
+      try {
+        await sandboxCrOrchestrator.waitForCompletion(
+          clients,
+          namespace,
+          lease.providerLeaseId,
+          { timeoutMs: effectiveTimeoutMs, pollMs: 2000 },
+        );
+      } catch (err) {
+        if (err instanceof SandboxCrTimeoutError) {
+          return {
+            exitCode: null,
+            timedOut: true,
+            stdout: "",
+            stderr: `Sandbox pod did not become Ready within ${effectiveTimeoutMs}ms`,
+            metadata: {
+              provider: "kubernetes",
+              backend: "sandbox-cr",
+              namespace,
+              sandboxName: lease.providerLeaseId,
+            },
+          };
+        }
         throw err;
       }
-    }
 
-    // Collect logs from the pod.
-    const podName =
-      typeof lease.metadata?.podName === "string"
-        ? lease.metadata.podName
-        : await jobOrchestrator.findPod(clients, namespace, lease.providerLeaseId);
+      // Resolve pod name (may now be populated in Sandbox status).
+      if (!podName) {
+        podName = await sandboxCrOrchestrator.findPod(
+          clients,
+          namespace,
+          lease.providerLeaseId,
+        );
+      }
 
-    const stdoutChunks: string[] = [];
-    const stderrChunks: string[] = [];
+      if (!podName) {
+        return {
+          exitCode: 1,
+          timedOut: false,
+          stdout: "",
+          stderr: "Sandbox pod is Ready but podName could not be resolved.",
+          metadata: {
+            provider: "kubernetes",
+            backend: "sandbox-cr",
+            namespace,
+            sandboxName: lease.providerLeaseId,
+          },
+        };
+      }
 
-    if (podName) {
-      await jobOrchestrator.streamLogs(
-        clients,
+      // Build the command to exec. If params.command is provided use it;
+      // otherwise wrap in a login shell so profile scripts run.
+      const rawCommand =
+        typeof params.command === "string" && params.command.trim().length > 0
+          ? params.command
+          : params.args?.join(" ") ?? "";
+
+      const execCommand = rawCommand.length > 0
+        ? ["/bin/sh", "-lc", rawCommand]
+        : ["/bin/sh", "-l"];
+
+      const execResult = await execInPod(
+        kc,
         namespace,
         podName,
-        async (stream, text) => {
-          if (stream === "stdout") stdoutChunks.push(text);
-          else stderrChunks.push(text);
-        },
+        "agent",
+        execCommand,
+        typeof params.stdin === "string" ? params.stdin : undefined,
       );
-    }
 
-    return {
-      exitCode: timedOut ? null : (status?.phase === "Succeeded" ? 0 : 1),
-      timedOut,
-      stdout: stdoutChunks.join(""),
-      stderr: stderrChunks.join(""),
-      metadata: {
-        provider: "kubernetes",
-        namespace,
-        jobName: lease.providerLeaseId,
-        podName: podName ?? null,
-        phase: status?.phase ?? null,
-      },
-    };
+      return {
+        exitCode: execResult.exitCode,
+        timedOut: false,
+        stdout: execResult.stdout,
+        stderr: execResult.stderr,
+        metadata: {
+          provider: "kubernetes",
+          backend: "sandbox-cr",
+          namespace,
+          sandboxName: lease.providerLeaseId,
+          podName,
+        },
+      };
+    } else {
+      // ── Job backend (legacy / stable fallback) ──────────────────────────────
+      // The container entrypoint is baked into the Job spec (Tini + paperclip-agent-shim).
+      // We do NOT re-exec command/args — instead we wait for the Job to finish
+      // and collect its logs.
+      //
+      // params.command / params.args / params.stdin are intentionally ignored.
+
+      let status;
+      let timedOut = false;
+      try {
+        status = await jobOrchestrator.waitForCompletion(
+          clients,
+          namespace,
+          lease.providerLeaseId,
+          { timeoutMs: effectiveTimeoutMs, pollMs: 2000 },
+        );
+      } catch (err) {
+        if (err instanceof JobTimeoutError) {
+          timedOut = true;
+          status = null;
+        } else {
+          throw err;
+        }
+      }
+
+      // Collect logs from the pod.
+      const podName =
+        typeof lease.metadata?.podName === "string"
+          ? lease.metadata.podName
+          : await jobOrchestrator.findPod(
+              clients,
+              namespace,
+              lease.providerLeaseId,
+            );
+
+      const stdoutChunks: string[] = [];
+      const stderrChunks: string[] = [];
+
+      if (podName) {
+        await jobOrchestrator.streamLogs(
+          clients,
+          namespace,
+          podName,
+          async (stream, text) => {
+            if (stream === "stdout") stdoutChunks.push(text);
+            else stderrChunks.push(text);
+          },
+        );
+      }
+
+      return {
+        exitCode: timedOut ? null : status?.phase === "Succeeded" ? 0 : 1,
+        timedOut,
+        stdout: stdoutChunks.join(""),
+        stderr: stderrChunks.join(""),
+        metadata: {
+          provider: "kubernetes",
+          backend: "job",
+          namespace,
+          jobName: lease.providerLeaseId,
+          podName: podName ?? null,
+          phase: status?.phase ?? null,
+        },
+      };
+    }
   },
 });
 

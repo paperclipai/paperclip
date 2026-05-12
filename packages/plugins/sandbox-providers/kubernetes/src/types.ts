@@ -44,6 +44,20 @@ export const kubernetesProviderConfigSchema = z
       .refine((v) => KNOWN_ADAPTER_TYPES.has(v), {
         message: "adapterType must be one of the known adapter types",
       }),
+
+    /**
+     * The sandbox backend to use.
+     *
+     * - `"sandbox-cr"` (default, alpha) — uses the kubernetes-sigs/agent-sandbox
+     *   Sandbox CRD (agents.x-k8s.io/v1alpha1). Creates a long-lived pod that
+     *   paperclip-server can exec into for multi-command adapter-install workflows.
+     *   Requires the agent-sandbox controller to be installed in the cluster.
+     *
+     * - `"job"` — uses batch/v1 Job (stable fallback). One-shot entrypoint; does
+     *   NOT support multi-command exec. Use this for clusters without agent-sandbox
+     *   installed, or when you need stable (non-alpha) k8s APIs.
+     */
+    backend: z.enum(["sandbox-cr", "job"]).default("sandbox-cr"),
   })
   .refine(
     (cfg) => cfg.inCluster || cfg.kubeconfig,
@@ -61,8 +75,11 @@ export function parseKubernetesProviderConfig(input: unknown): KubernetesProvide
 
 export interface KubernetesLeaseMetadata {
   namespace: string;
+  /** Name of the workload resource (Job name for job backend, Sandbox CR name for sandbox-cr backend). */
   jobName: string;
   podName: string | null;
   secretName: string;
   phase: "Pending" | "Running" | "Succeeded" | "Failed";
+  /** Which backend provisioned this lease. */
+  backend: "sandbox-cr" | "job";
 }
