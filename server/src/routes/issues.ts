@@ -613,8 +613,12 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
 }) {
   // Only human comments should implicitly reopen finished work.
   // Agent-authored comments remain communicative unless reopen was explicit.
+  // Blocked issues are NOT implicitly reopened — an explicit block (executive, rate-limit,
+  // or strategic) should only be lifted by an explicit unblock action, not by a comment.
+  // Dependency-blocked issues that are ready are unblocked by the preflight blocker recheck
+  // or the wake-path hygiene, not by comment side-effects.
   if (input.actorType !== "user") return false;
-  if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
+  if (!isClosedIssueStatus(input.issueStatus)) return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
 }
@@ -2800,12 +2804,22 @@ export function issueRoutes(
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
       ? await issueReferencesSvc.listIssueReferenceSummary(existing.id)
       : null;
-    const hasUnresolvedFirstClassBlockers =
+    const dependencyReadiness =
       isBlocked && effectiveMoveToTodoRequested
-        ? (await svc.getDependencyReadiness(existing.id)).unresolvedBlockerCount > 0
-        : false;
+        ? await svc.getDependencyReadiness(existing.id)
+        : null;
+    const hasUnresolvedFirstClassBlockers =
+      dependencyReadiness ? dependencyReadiness.unresolvedBlockerCount > 0 : false;
+    const hasDependencyBlockers =
+      dependencyReadiness ? dependencyReadiness.blockerIssueIds.length > 0 : false;
     if (resumeRequested === true && isBlocked && hasUnresolvedFirstClassBlockers) {
       res.status(409).json({ error: "Issue follow-up blocked by unresolved blockers" });
+      return;
+    }
+    // Guard: blocked issues without dependency blockers should not be reopened by comment.
+    // Only dependency-blocked issues whose blockers have resolved can be auto-reopened.
+    if (isBlocked && !hasDependencyBlockers && effectiveMoveToTodoRequested) {
+      res.status(409).json({ error: "Issue is blocked without dependency blockers. Unblock it explicitly to resume work." });
       return;
     }
     let interruptedRunId: string | null = null;
@@ -2858,7 +2872,7 @@ export function issueRoutes(
     if (
       commentBody &&
       effectiveMoveToTodoRequested &&
-      (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers)) &&
+      (isClosed || (isBlocked && hasDependencyBlockers && !hasUnresolvedFirstClassBlockers)) &&
       updateFields.status === undefined
     ) {
       updateFields.status = "todo";
@@ -3111,7 +3125,7 @@ export function issueRoutes(
     const reopened =
       commentBody &&
       effectiveMoveToTodoRequested &&
-      (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers)) &&
+      (isClosed || (isBlocked && hasDependencyBlockers && !hasUnresolvedFirstClassBlockers)) &&
       previous.status !== undefined &&
       issue.status === "todo";
     const reopenFromStatus = reopened ? existing.status : null;
@@ -4356,12 +4370,22 @@ export function issueRoutes(
         actorType: actor.actorType,
         actorId: actor.actorId,
       });
-    const hasUnresolvedFirstClassBlockers =
+    const dependencyReadiness =
       isBlocked && effectiveMoveToTodoRequested
-        ? (await svc.getDependencyReadiness(issue.id)).unresolvedBlockerCount > 0
-        : false;
+        ? await svc.getDependencyReadiness(issue.id)
+        : null;
+    const hasUnresolvedFirstClassBlockers =
+      dependencyReadiness ? dependencyReadiness.unresolvedBlockerCount > 0 : false;
+    const hasDependencyBlockers =
+      dependencyReadiness ? dependencyReadiness.blockerIssueIds.length > 0 : false;
     if (resumeRequested === true && isBlocked && hasUnresolvedFirstClassBlockers) {
       res.status(409).json({ error: "Issue follow-up blocked by unresolved blockers" });
+      return;
+    }
+    // Guard: blocked issues without dependency blockers should not be reopened by comment.
+    // Only dependency-blocked issues whose blockers have resolved can be auto-reopened.
+    if (isBlocked && !hasDependencyBlockers && effectiveMoveToTodoRequested) {
+      res.status(409).json({ error: "Issue is blocked without dependency blockers. Unblock it explicitly to resume work." });
       return;
     }
     let reopened = false;
@@ -4370,7 +4394,7 @@ export function issueRoutes(
     let currentIssue = issue;
     const commentReferenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
 
-    if (effectiveMoveToTodoRequested && (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers))) {
+    if (effectiveMoveToTodoRequested && (isClosed || (isBlocked && hasDependencyBlockers && !hasUnresolvedFirstClassBlockers))) {
       const reopenedIssue = await svc.update(id, { status: "todo" });
       if (!reopenedIssue) {
         res.status(404).json({ error: "Issue not found" });

@@ -529,37 +529,25 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
-  it("moves assigned blocked issues back to todo via POST comments", async () => {
+  it("does NOT implicitly reopen non-dependency-blocked issues via POST comments", async () => {
+    // MON-335: Blocked issues without dependency blockers should NOT be implicitly reopened.
+    // Only dependency-blocked issues with resolved blockers can be auto-reopened.
     mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("blocked"),
-      ...patch,
-    }));
 
     const res = await request(await installActor(createApp()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "please continue" });
 
     expect(res.status).toBe(201);
-    expect(mockIssueService.update).toHaveBeenCalledWith(
+    // Blocked without dependency blockers — should NOT be moved to todo
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       { status: "todo" },
     );
     await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       "22222222-2222-4222-8222-222222222222",
       expect.objectContaining({
-        reason: "issue_reopened_via_comment",
-        payload: expect.objectContaining({
-          commentId: "comment-1",
-          reopenedFrom: "blocked",
-          mutation: "comment",
-        }),
-        contextSnapshot: expect.objectContaining({
-          issueId: "11111111-1111-4111-8111-111111111111",
-          wakeCommentId: "comment-1",
-          wakeReason: "issue_reopened_via_comment",
-          reopenedFrom: "blocked",
-        }),
+        reason: "issue_commented",
       }),
     ));
   });
@@ -694,8 +682,18 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
-  it("moves assigned blocked issues back to todo via the PATCH comment path", async () => {
+  it("reopens blocked issues with resolved dependency blockers via PATCH comment path", async () => {
+    // MON-335: Blocked issues WITH resolved dependency blockers CAN be reopened.
+    // The user must explicitly request reopen, and the blockers must be resolved.
     mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: "11111111-1111-4111-8111-111111111111",
+      blockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      unresolvedBlockerIssueIds: [],
+      unresolvedBlockerCount: 0,
+      allBlockersDone: true,
+      isDependencyReady: true,
+    });
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue("blocked"),
       ...patch,
@@ -703,7 +701,7 @@ describe.sequential("issue comment reopen routes", () => {
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ comment: "please continue" });
+      .send({ comment: "dependencies resolved, continuing", reopen: true });
 
     expect(res.status).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalledWith(
