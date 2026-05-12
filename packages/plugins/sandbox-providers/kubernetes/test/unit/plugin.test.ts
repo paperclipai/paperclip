@@ -45,4 +45,23 @@ describe("plugin", () => {
     const result = await plugin.definition.onHealth!();
     expect(result.status).toBe("ok");
   });
+
+  it("validateConfig warns about FQDN limitation in standard mode", async () => {
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: "kubernetes",
+      config: { inCluster: true, adapterType: "claude_local" },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.warnings).toBeDefined();
+    expect(result.warnings?.some((w) => w.includes("api.anthropic.com"))).toBe(true);
+  });
+
+  it("validateConfig does NOT warn when egressMode is cilium", async () => {
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: "kubernetes",
+      config: { inCluster: true, adapterType: "claude_local", egressMode: "cilium" },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.warnings).toBeUndefined();
+  });
 });

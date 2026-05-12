@@ -67,6 +67,12 @@ export async function streamPodLogs(
   podName: string,
   onChunk: (stream: "stdout" | "stderr", text: string) => Promise<void>,
 ): Promise<void> {
+  // V1 limitation: readNamespacedPodLog returns combined stdout (the kubectl-style
+  // log view). stderr is not separately exposed via this API path — agent
+  // containers that need stderr/stdout separation should use a sidecar log
+  // scraper or wrap their CLI to emit structured output on stdout. We always
+  // emit chunks as "stdout"; the "stderr" callback slot in SandboxOrchestrator
+  // is unused by the Job-backed implementation.
   const result = await clients.core.readNamespacedPodLog({ namespace, name: podName });
   const text = (result as string) ?? "";
   if (text.length > 0) await onChunk("stdout", text);

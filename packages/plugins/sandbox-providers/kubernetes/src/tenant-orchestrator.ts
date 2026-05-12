@@ -25,6 +25,22 @@ const ROLE_BINDING_NAME = "paperclip-tenant-rb";
 const RESOURCE_QUOTA_NAME = "paperclip-quota";
 const LIMIT_RANGE_NAME = "paperclip-limits";
 
+/**
+ * Lazy, first-write-wins tenant provisioning. Each helper checks if the named
+ * resource exists and creates it only on 404; if it already exists, it is
+ * left as-is — config-driven values (quota limits, RBAC permissions, network
+ * policies, egress allow-list) are FROZEN at first provisioning time.
+ *
+ * V1 limitation: changing KubernetesProviderConfig after a tenant namespace
+ * is provisioned does NOT update the in-cluster resources. To apply config
+ * changes, an operator must delete the per-tenant resources manually (or
+ * the namespace itself). A future iteration should add strategic-merge
+ * reconciliation here.
+ *
+ * Particular gotcha: switching egressMode "standard" → "cilium" leaves the
+ * old paperclip-egress-allow NetworkPolicy in place alongside the new
+ * CiliumNetworkPolicy. Both apply; the effective egress is the intersection.
+ */
 export async function ensureTenant(clients: KubeClients, input: EnsureTenantInput): Promise<void> {
   await ensureNamespace(clients, input);
   await ensureServiceAccount(clients, input);

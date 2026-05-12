@@ -99,10 +99,16 @@ const plugin = definePlugin({
         errors: parsed.error.issues.map((i) => i.message),
       };
     }
-    return {
-      ok: true,
-      normalizedConfig: parsed.data as Record<string, unknown>,
-    };
+    const warnings: string[] = [];
+    const cfg = parsed.data;
+    const adapterDefaults = getAdapterDefaults(cfg.adapterType);
+    const totalFqdns = [...adapterDefaults.allowFqdns, ...cfg.egressAllowFqdns];
+    if (cfg.egressMode === "standard" && totalFqdns.length > 0) {
+      warnings.push(
+        `egressMode=standard cannot enforce FQDN-based egress rules. The following FQDNs will NOT be reachable from agent pods: ${totalFqdns.join(", ")}. Switch egressMode to "cilium" (requires Cilium CNI) or add the FQDNs' IP CIDRs to egressAllowCidrs.`,
+      );
+    }
+    return { ok: true, normalizedConfig: cfg as Record<string, unknown>, warnings: warnings.length > 0 ? warnings : undefined };
   },
 
   async onEnvironmentProbe(
@@ -161,6 +167,17 @@ const plugin = definePlugin({
   ): Promise<PluginEnvironmentLease> {
     const config = kubernetesProviderConfigSchema.parse(params.config);
     const namespace = deriveTenantNamespace(config, params.companyId);
+
+    // Emit a runtime warning if FQDNs are configured but egressMode=standard
+    // cannot enforce them. Mirrors the validateConfig warning so operators see
+    // it in paperclip-server logs even if they missed the validation step.
+    const adapterDefaultsForWarn = getAdapterDefaults(config.adapterType);
+    const totalFqdnsForWarn = [...adapterDefaultsForWarn.allowFqdns, ...config.egressAllowFqdns];
+    if (config.egressMode === "standard" && totalFqdnsForWarn.length > 0) {
+      console.warn(
+        `[plugin-kubernetes] egressMode=standard cannot enforce FQDN-based egress rules. The following FQDNs will NOT be reachable from agent pods: ${totalFqdnsForWarn.join(", ")}. Switch egressMode to "cilium" (requires Cilium CNI) or add the FQDNs' IP CIDRs to egressAllowCidrs.`,
+      );
+    }
 
     const kc = createKubeConfig({
       inCluster: config.inCluster,
