@@ -164,7 +164,31 @@ type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
   queueState?: "queued";
   queueTargetRunId?: string | null;
   queueReason?: "hold" | "active_run" | "other";
+  derivedAgentAuthorId?: string | null;
+  derivedAgentRunId?: string | null;
 };
+
+function deriveAgentAttributionFromRunWindow(
+  comment: { createdAt: Date | string },
+  linkedRuns: readonly RunForIssue[],
+): { agentId: string; runId: string } | null {
+  const commentTimeMs = new Date(comment.createdAt).getTime();
+  if (!Number.isFinite(commentTimeMs)) return null;
+  let match: { agentId: string; runId: string } | null = null;
+  for (const run of linkedRuns) {
+    if (!run.agentId) continue;
+    const startSource = run.startedAt ?? run.createdAt;
+    const endSource = run.finishedAt ?? run.createdAt;
+    if (!startSource || !endSource) continue;
+    const startMs = new Date(startSource).getTime();
+    const endMs = new Date(endSource).getTime();
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) continue;
+    if (commentTimeMs < startMs || commentTimeMs > endMs) continue;
+    if (match && match.agentId !== run.agentId) return null;
+    match = { agentId: run.agentId, runId: run.runId };
+  }
+  return match;
+}
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 const ISSUE_COMMENT_PAGE_SIZE = 50;
@@ -792,6 +816,18 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     return comments.map((comment) => {
       const meta = runMetaByCommentId.get(comment.id);
       const nextComment: IssueDetailComment = meta ? { ...comment, ...meta } : { ...comment };
+      if (
+        !nextComment.authorAgentId
+        && !nextComment.runId
+        && !nextComment.runAgentId
+        && nextComment.authorUserId
+      ) {
+        const derived = deriveAgentAttributionFromRunWindow(comment, resolvedLinkedRuns);
+        if (derived) {
+          nextComment.derivedAgentAuthorId = derived.agentId;
+          nextComment.derivedAgentRunId = derived.runId;
+        }
+      }
       if (followUpCommentIds.has(comment.id)) {
         nextComment.followUpRequested = true;
       }

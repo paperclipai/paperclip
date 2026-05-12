@@ -32,6 +32,8 @@ export interface IssueChatComment extends IssueComment {
   queueTargetRunId?: string | null;
   queueReason?: "hold" | "active_run" | "other";
   followUpRequested?: boolean;
+  derivedAgentAuthorId?: string | null;
+  derivedAgentRunId?: string | null;
 }
 
 export interface IssueChatLinkedRun {
@@ -337,14 +339,19 @@ function createAssistantMetadata(custom: Record<string, unknown>) {
   } as const;
 }
 
+function effectiveAgentAuthorId(comment: IssueChatComment) {
+  return comment.authorAgentId ?? comment.runAgentId ?? comment.derivedAgentAuthorId ?? null;
+}
+
 function authorNameForComment(
   comment: IssueChatComment,
   agentMap?: Map<string, Agent>,
   currentUserId?: string | null,
   userLabelMap?: ReadonlyMap<string, string> | null,
 ) {
-  if (comment.authorAgentId) {
-    return agentMap?.get(comment.authorAgentId)?.name ?? comment.authorAgentId.slice(0, 8);
+  const agentAuthorId = effectiveAgentAuthorId(comment);
+  if (agentAuthorId) {
+    return agentMap?.get(agentAuthorId)?.name ?? agentAuthorId.slice(0, 8);
   }
   const authorUserId = comment.authorUserId ?? null;
   if (!authorUserId) return "You";
@@ -369,18 +376,24 @@ function createCommentMessage(args: {
   const createdAt = toDate(comment.createdAt);
   const authorName = authorNameForComment(comment, agentMap, currentUserId, userLabelMap);
   const isSystemNotice = comment.authorType === "system";
+  const agentAuthorId = effectiveAgentAuthorId(comment);
+  const effectiveAuthorType = comment.authorAgentId
+    ? comment.authorType
+    : agentAuthorId
+      ? "agent"
+      : comment.authorType;
   const custom = {
     kind: isSystemNotice ? "system_notice" : "comment",
     commentId: comment.id,
     anchorId: `comment-${comment.id}`,
     authorName,
-    authorType: comment.authorType,
-    authorAgentId: comment.authorAgentId,
+    authorType: effectiveAuthorType,
+    authorAgentId: agentAuthorId,
     authorUserId: comment.authorUserId,
     companyId: companyId ?? comment.companyId,
     projectId: projectId ?? null,
-    runId: comment.runId ?? null,
-    runAgentId: comment.runAgentId ?? null,
+    runId: comment.runId ?? comment.derivedAgentRunId ?? null,
+    runAgentId: comment.runAgentId ?? comment.derivedAgentAuthorId ?? null,
     clientStatus: comment.clientStatus ?? null,
     queueState: comment.queueState ?? null,
     queueTargetRunId: comment.queueTargetRunId ?? null,
@@ -402,7 +415,7 @@ function createCommentMessage(args: {
     return message;
   }
 
-  if (comment.authorAgentId) {
+  if (agentAuthorId) {
     const message: ThreadAssistantMessage = {
       id: comment.id,
       role: "assistant",
