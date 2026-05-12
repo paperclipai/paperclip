@@ -2140,30 +2140,48 @@ export function pluginRoutes(
     const plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) throw notFound("Plugin not found");
 
-    const svc = createPluginRuntimeConfigService(db);
-    await svc.clearRuntime(plugin.id);
-
-    if (bridgeDeps?.workerManager.isRunning(plugin.id)) {
-      try {
-        await lifecycle.restartWorker(plugin.id);
-      } catch {
-        // Runtime config is already cleared; restart failure is non-fatal.
-      }
-    }
+	    const svc = createPluginRuntimeConfigService(db);
+	    await svc.clearRuntime(plugin.id);
+	
+	    let restartStatus: "not_running" | "restarted" | "failed" = "not_running";
+	    let restartError: string | null = null;
+	    if (bridgeDeps?.workerManager.isRunning(plugin.id)) {
+	      try {
+	        await lifecycle.restartWorker(plugin.id);
+	        restartStatus = "restarted";
+	      } catch (err) {
+	        restartStatus = "failed";
+	        restartError = err instanceof Error ? err.message : "Worker restart failed";
+	        // Runtime config is already cleared; restart failure is non-fatal.
+	      }
+	    }
 
     try {
       await logPluginMutationActivity(req, "plugin.runtime-config.cleared", plugin.id, {
-        pluginId: plugin.id,
-        pluginKey: plugin.pluginKey,
-      });
+	        pluginId: plugin.id,
+	        pluginKey: plugin.pluginKey,
+	        restartStatus,
+	        ...(restartError ? { restartError } : {}),
+	      });
     } catch (err) {
       logger.error(
         { err, pluginId: plugin.id, pluginKey: plugin.pluginKey },
         "failed to audit plugin runtime config clear after mutation",
       );
     }
-    res.status(204).end();
-  });
+	    if (restartStatus === "failed") {
+	      res.status(202).json({
+	        cleared: true,
+	        restart: {
+	          attempted: true,
+	          status: restartStatus,
+	          error: restartError,
+	        },
+	      });
+	      return;
+	    }
+	    res.status(204).end();
+	  });
 
   // ===========================================================================
   // Job scheduling routes

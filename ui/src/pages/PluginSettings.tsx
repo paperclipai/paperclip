@@ -127,12 +127,18 @@ export function PluginSettings() {
     enabled: !!pluginId,
   });
 
-  const clearRuntimeConfigMutation = useMutation({
-    mutationFn: () => pluginsApi.clearRuntimeConfig(pluginId!),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["plugins", pluginId, "runtime-config"] });
-    },
-  });
+	  const clearRuntimeConfigMutation = useMutation({
+	    mutationFn: () => pluginsApi.clearRuntimeConfig(pluginId!),
+	    onSuccess: () => {
+	      void queryClient.invalidateQueries({ queryKey: ["plugins", pluginId, "runtime-config"] });
+	    },
+	  });
+	  const clearRuntimeConfigRestartError =
+	    clearRuntimeConfigMutation.data && typeof clearRuntimeConfigMutation.data === "object"
+	      && "restart" in clearRuntimeConfigMutation.data
+	      && clearRuntimeConfigMutation.data.restart.status === "failed"
+	      ? clearRuntimeConfigMutation.data.restart.error ?? "Worker restart failed"
+	      : null;
 
   // Filter slots to only show settings pages for this specific plugin
   const pluginSlots = slots.filter((slot) => slot.pluginId === pluginId);
@@ -612,20 +618,32 @@ export function PluginSettings() {
                   ) : (
                     <p className="text-sm text-muted-foreground italic">No runtime config stored.</p>
                   )}
-                  {canClearRuntimeConfig && runtimeConfigData && Object.keys(runtimeConfigData.values).length > 0 && (
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      disabled={clearRuntimeConfigMutation.isPending}
-                      onClick={() => clearRuntimeConfigMutation.mutate()}
-                    >
-                      {clearRuntimeConfigMutation.isPending ? (
-                        <><Loader2 className="mr-2 h-3 w-3 animate-spin" />Clearing...</>
-                      ) : (
-                        "Clear Runtime Config"
-                      )}
-                    </Button>
-                  )}
+	                  {canClearRuntimeConfig && runtimeConfigData && Object.keys(runtimeConfigData.values).length > 0 && (
+	                    <>
+	                      <Button
+	                        variant="destructive"
+	                        size="sm"
+	                        disabled={clearRuntimeConfigMutation.isPending}
+	                        onClick={() => clearRuntimeConfigMutation.mutate()}
+	                      >
+	                        {clearRuntimeConfigMutation.isPending ? (
+	                          <><Loader2 className="mr-2 h-3 w-3 animate-spin" />Clearing...</>
+	                        ) : (
+	                          "Clear Runtime Config"
+	                        )}
+	                      </Button>
+	                      {clearRuntimeConfigMutation.isError && (
+	                        <p className="text-sm text-destructive">
+	                          Failed to clear runtime config: {clearRuntimeConfigMutation.error instanceof Error ? clearRuntimeConfigMutation.error.message : "Unknown error"}
+	                        </p>
+	                      )}
+	                      {clearRuntimeConfigRestartError && (
+	                        <p className="text-sm text-amber-600 dark:text-amber-400">
+	                          Runtime config cleared, but worker restart failed: {clearRuntimeConfigRestartError}
+	                        </p>
+	                      )}
+	                    </>
+	                  )}
                 </CardContent>
               </Card>
             </div>

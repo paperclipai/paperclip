@@ -450,6 +450,55 @@ describe("PluginSettings", () => {
     });
   });
 
+  it("surfaces runtime config clear failures and restart warnings", async () => {
+    mockPluginsApi.get.mockResolvedValue(basePlugin({
+      status: "ready",
+      manifestJson: {
+        displayName: "Runtime Plugin",
+        version: "0.1.0",
+        description: "Runtime config plugin.",
+        author: "Paperclip",
+        capabilities: [],
+      },
+    }));
+    mockPluginsApi.getRuntimeConfig.mockResolvedValue({
+      values: { mode: "paused" },
+      revision: "7",
+    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
+      isInstanceAdmin: true,
+      userId: "user-1",
+      boardUserId: "board-user-1",
+      source: "session",
+    });
+    mockPluginsApi.clearRuntimeConfig.mockResolvedValue({
+      cleared: true,
+      restart: { attempted: true, status: "failed", error: "restart failed" },
+    });
+
+    const root = await renderSettings(container);
+
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Status")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const clearButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent === "Clear Runtime Config");
+    await act(async () => {
+      clearButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Runtime config cleared, but worker restart failed: restart failed");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("shows runtime config fetch errors instead of the empty state", async () => {
     mockPluginsApi.get.mockResolvedValue(basePlugin({
       status: "ready",

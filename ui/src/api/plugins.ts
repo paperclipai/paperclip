@@ -447,7 +447,10 @@ export const pluginsApi = {
    * @param pluginId - UUID of the plugin.
    */
   clearRuntimeConfig: (pluginId: string) =>
-    api.delete<void>(`/plugins/${pluginId}/runtime-config`),
+    api.delete<void | {
+      cleared: true;
+      restart: { attempted: boolean; status: "failed"; error: string | null };
+    }>(`/plugins/${pluginId}/runtime-config`),
 
   // ===========================================================================
   // Bridge proxy endpoints — used by the plugin UI bridge runtime

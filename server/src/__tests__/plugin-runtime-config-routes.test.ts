@@ -235,7 +235,7 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
     );
   });
 
-  it("still returns 204 if the runtime config restart fails after clearing", async () => {
+  it("returns a warning payload if the runtime config restart fails after clearing", async () => {
     readyPlugin();
     mockRuntimeConfig.clearRuntime.mockResolvedValue(undefined);
     mockWorkerManager.isRunning.mockReturnValue(true);
@@ -243,7 +243,15 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
     const app = await createApp(boardActor({ isInstanceAdmin: true }));
 
     const res = await request(app).delete(`/api/plugins/${pluginId}/runtime-config`);
-    expect(res.status).toBe(204);
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({
+      cleared: true,
+      restart: {
+        attempted: true,
+        status: "failed",
+        error: "restart failed",
+      },
+    });
     expect(mockLifecycle.restartWorker).toHaveBeenCalledWith(pluginId);
     expect(mockWorkerManager.call).not.toHaveBeenCalled();
     expect(mockLifecycle.restartWorker.mock.invocationCallOrder[0]).toBeLessThan(
@@ -254,6 +262,10 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
       expect.objectContaining({
         action: "plugin.runtime-config.cleared",
         entityId: pluginId,
+        details: expect.objectContaining({
+          restartStatus: "failed",
+          restartError: "restart failed",
+        }),
       }),
     );
   });
@@ -365,7 +377,7 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
 
     for (const call of mockLogActivity.mock.calls) {
       const details = call[1]?.details ?? {};
-      expect(Object.keys(details).sort()).toEqual(["pluginId", "pluginKey"]);
+      expect(Object.keys(details).sort()).toEqual(["pluginId", "pluginKey", "restartStatus"]);
       expect(JSON.stringify(call)).not.toMatch(SENSITIVE_RUNTIME_CONFIG_PATTERN);
     }
   });
