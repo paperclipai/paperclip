@@ -10,15 +10,22 @@ import {
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import {
+  agentService,
   approvalService,
+  companyService,
   heartbeatService,
   issueApprovalService,
+  issueService,
   logActivity,
   secretService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import {
+  buildApprovalSystemCommentBody,
+  type ApprovalIssueCommentEventKind,
+} from "../services/approval-issue-comments.js";
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
   return {
@@ -38,7 +45,60 @@ export function approvalRoutes(
   });
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
+  const companiesSvc = companyService(db);
+  const agentsSvc = agentService(db);
+  const issuesSvc = issueService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+
+  async function postApprovalSystemCommentToLinkedIssues(
+    approvalId: string,
+    event: ApprovalIssueCommentEventKind,
+    options: { issueIds?: string[] } = {},
+  ) {
+    try {
+      const approval = await svc.getById(approvalId);
+      if (!approval) return;
+
+      const issueIds =
+        options.issueIds ??
+        (await issueApprovalsSvc.listIssuesForApproval(approvalId)).map((issue) => issue.id);
+      if (issueIds.length === 0) return;
+
+      const [company, requesterAgent] = await Promise.all([
+        companiesSvc.getById(approval.companyId),
+        approval.requestedByAgentId ? agentsSvc.getById(approval.requestedByAgentId) : null,
+      ]);
+      if (!company) return;
+
+      const body = buildApprovalSystemCommentBody({
+        event,
+        approval: {
+          id: approval.id,
+          type: approval.type,
+          status: approval.status,
+          payload: (approval.payload as Record<string, unknown> | null) ?? {},
+          decisionNote: approval.decisionNote,
+        },
+        issuePrefix: company.issuePrefix,
+        requesterAgentName: requesterAgent?.name ?? null,
+      });
+
+      await Promise.all(
+        issueIds.map((issueId) =>
+          issuesSvc
+            .addComment(issueId, body, {}, { authorType: "system" })
+            .catch((err) => {
+              logger.warn(
+                { err, approvalId, issueId, event },
+                "failed to post approval system comment to linked issue",
+              );
+            }),
+        ),
+      );
+    } catch (err) {
+      logger.warn({ err, approvalId, event }, "approval system-comment posting failed");
+    }
+  }
 
   async function requireApprovalAccess(req: Request, id: string) {
     const approval = await svc.getById(id);
@@ -105,6 +165,9 @@ export function approvalRoutes(
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
+      await postApprovalSystemCommentToLinkedIssues(approval.id, "created", {
+        issueIds: uniqueIssueIds,
+      });
     }
 
     await logActivity(db, {
@@ -147,6 +210,10 @@ export function approvalRoutes(
       const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
       const linkedIssueIds = linkedIssues.map((issue) => issue.id);
       const primaryIssueId = linkedIssueIds[0] ?? null;
+
+      await postApprovalSystemCommentToLinkedIssues(approval.id, "approved", {
+        issueIds: linkedIssueIds,
+      });
 
       await logActivity(db, {
         companyId: approval.companyId,
@@ -240,6 +307,8 @@ export function approvalRoutes(
     const { approval, applied } = await svc.reject(id, decidedByUserId, req.body.decisionNote);
 
     if (applied) {
+      await postApprovalSystemCommentToLinkedIssues(approval.id, "rejected");
+
       await logActivity(db, {
         companyId: approval.companyId,
         actorType: "user",
@@ -266,6 +335,8 @@ export function approvalRoutes(
       }
       const decidedByUserId = req.actor.userId ?? "board";
       const approval = await svc.requestRevision(id, decidedByUserId, req.body.decisionNote);
+
+      await postApprovalSystemCommentToLinkedIssues(approval.id, "revision_requested");
 
       await logActivity(db, {
         companyId: approval.companyId,
@@ -305,6 +376,7 @@ export function approvalRoutes(
         : req.body.payload
       : undefined;
     const approval = await svc.resubmit(id, normalizedPayload);
+    await postApprovalSystemCommentToLinkedIssues(approval.id, "resubmitted");
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: approval.companyId,
