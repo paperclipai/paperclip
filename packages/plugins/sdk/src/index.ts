@@ -51,6 +51,19 @@
 
 export { definePlugin } from "./define-plugin.js";
 export { defineOAuthProvider } from "./define-oauth-provider.js";
+export {
+  registerCredentialBroker,
+  __consumeRegisteredCredentialBrokerFactory,
+} from "./credential-broker.js";
+export type {
+  CredentialDeliveryMode,
+  CredentialBroker,
+  CredentialBrokerSession,
+  MintSessionInput,
+  ExecutionTargetSummary,
+  RegisterCredentialBrokerCtx,
+  CredentialBrokerFactory,
+} from "./credential-broker.js";
 export { createTestHarness, createEnvironmentTestHarness, createFakeEnvironmentDriver, filterEnvironmentEvents, assertEnvironmentEventOrder, assertLeaseLifecycle, assertWorkspaceRealizationLifecycle, assertExecutionLifecycle, assertEnvironmentError } from "./testing.js";
 export { createPluginBundlerPresets } from "./bundlers.js";
 export { startPluginDevServer, getUiBuildSnapshot } from "./dev-server.js";
