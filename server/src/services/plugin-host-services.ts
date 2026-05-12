@@ -2160,6 +2160,26 @@ export function buildHostServices(
           await issueApprovals.link(params.issueId, row.id);
         }
 
+        await logActivity(db, {
+          companyId,
+          actorType: "plugin",
+          actorId: pluginId,
+          agentId: params.actorAgentId ?? undefined,
+          runId: params.actorRunId ?? undefined,
+          action: "approval.created",
+          entityType: "approval",
+          entityId: row!.id,
+          details: {
+            type: row!.type,
+            sourcePluginId: pluginId,
+            sourcePluginKey: pluginKey,
+            issueIds: params.issueId ? [params.issueId] : [],
+            initiatingActorType: params.actorAgentId ? "agent" : "plugin",
+            initiatingActorId: params.actorAgentId ?? pluginId,
+            ...(params.actorRunId ? { initiatingRunId: params.actorRunId } : {}),
+          },
+        });
+
         return { approvalId: row!.id, status: row!.status };
       },
 
@@ -2231,15 +2251,31 @@ export function buildHostServices(
         if (!row || row.companyId !== companyId || row.sourcePluginId !== pluginId) return;
         if (row.status !== "pending") return;
         const cancelResult = await approvalsService.cancel(params.approvalId, params.reason);
-        if (cancelResult && notifyWorker) {
-          const now = new Date().toISOString();
-          notifyWorker("approvals.resolved", {
-            approvalId: params.approvalId,
-            status: "cancelled",
-            decisionNote: params.reason ?? null,
-            decidedByUserId: null,
-            decidedAt: now,
+        if (cancelResult) {
+          const now = cancelResult.decidedAt?.toISOString() ?? new Date().toISOString();
+          await logActivity(db, {
+            companyId,
+            actorType: "plugin",
+            actorId: pluginId,
+            action: "approval.cancelled",
+            entityType: "approval",
+            entityId: cancelResult.id,
+            details: {
+              type: cancelResult.type,
+              sourcePluginId: pluginId,
+              sourcePluginKey: pluginKey,
+              reason: params.reason ?? null,
+            },
           });
+          if (notifyWorker) {
+            notifyWorker("approvals.resolved", {
+              approvalId: params.approvalId,
+              status: "cancelled",
+              decisionNote: params.reason ?? null,
+              decidedByUserId: null,
+              decidedAt: now,
+            });
+          }
         }
       },
     },

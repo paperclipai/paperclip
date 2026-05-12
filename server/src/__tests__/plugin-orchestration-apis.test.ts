@@ -718,4 +718,84 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       detail: "kept",
     });
   });
+
+  it("logs activity when plugin host services create and cancel approvals", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const pluginRecordId = randomUUID();
+    await db.insert(plugins).values({
+      id: pluginRecordId,
+      pluginKey: "paperclip.missions",
+      packageName: "@paperclip/test-missions",
+      version: "0.1.0",
+      apiVersion: 1,
+      categories: [],
+      manifestJson: {
+        id: "paperclip.missions",
+        apiVersion: 1,
+        version: "0.1.0",
+        displayName: "Missions",
+        description: "Test plugin",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["approvals.create", "approvals.read"],
+        entrypoints: { worker: "./dist/worker.js" },
+      },
+      status: "enabled",
+    });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+    });
+    const services = buildHostServices(db, pluginRecordId, "paperclip.missions", createEventBusStub());
+
+    const created = await services.approvals.create({
+      companyId,
+      prompt: "Approve mission launch.",
+      actorAgentId: agentId,
+      actorRunId: runId,
+    });
+    await services.approvals.cancel({
+      companyId,
+      approvalId: created.approvalId,
+      reason: "mission withdrawn",
+    });
+
+    const activities = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.entityType, "approval"), eq(activityLog.entityId, created.approvalId)));
+    expect(activities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          companyId,
+          actorType: "plugin",
+          actorId: pluginRecordId,
+          agentId,
+          runId,
+          action: "approval.created",
+          details: expect.objectContaining({
+            sourcePluginId: pluginRecordId,
+            sourcePluginKey: "paperclip.missions",
+            initiatingActorType: "agent",
+            initiatingActorId: agentId,
+            initiatingRunId: runId,
+          }),
+        }),
+        expect.objectContaining({
+          companyId,
+          actorType: "plugin",
+          actorId: pluginRecordId,
+          action: "approval.cancelled",
+          details: expect.objectContaining({
+            sourcePluginId: pluginRecordId,
+            sourcePluginKey: "paperclip.missions",
+            reason: "mission withdrawn",
+          }),
+        }),
+      ]),
+    );
+  });
 });
