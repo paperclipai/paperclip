@@ -42,6 +42,32 @@ import {
  * runtimes, which is the same observable outcome as the legacy path.
  */
 
+/**
+ * Pull unique hostnames out of a provider's endpoints URLs. These are
+ * the upstream hosts the broker's proxy will allowlist for the
+ * provider's OAuth bindings.
+ */
+function extractHostsFromProviderConfig(config: {
+  endpoints: { authorize: string; token: string; accountInfo: string; revoke?: string };
+}): string[] {
+  const urls = [
+    config.endpoints.authorize,
+    config.endpoints.token,
+    config.endpoints.accountInfo,
+    config.endpoints.revoke ?? "",
+  ];
+  const hosts = new Set<string>();
+  for (const u of urls) {
+    if (!u) continue;
+    try {
+      hosts.add(new URL(u).hostname);
+    } catch {
+      // ignore malformed
+    }
+  }
+  return Array.from(hosts);
+}
+
 export class CredentialBrokerRequiredError extends Error {
   constructor(
     public readonly reason: string,
@@ -164,7 +190,38 @@ export async function applyCredentialBrokerResolver(
   const byId = new Map(rows.map((r) => [r.id, r] as const));
 
   const broker = await resolveCredentialBroker({
-    resolveConnections: async () => [],
+    resolveConnections: async (companyId) => {
+      const connRows = await deps.db
+        .select({
+          id: oauthConnections.id,
+          providerId: oauthConnections.providerId,
+        })
+        .from(oauthConnections)
+        .where(eq(oauthConnections.companyId, companyId));
+      const out: Array<{
+        id: string;
+        providerId: string;
+        hosts: string[];
+        headerInjection: { header: string; format: string };
+      }> = [];
+      for (const row of connRows) {
+        const provider = deps.registry.get(row.providerId);
+        if (!provider) continue;
+        if (provider.config.broker?.supported !== true) continue;
+        const hosts = extractHostsFromProviderConfig(provider.config);
+        if (hosts.length === 0) continue;
+        out.push({
+          id: row.id,
+          providerId: row.providerId,
+          hosts,
+          // OAuth bearer is the convention for all the providers we
+          // ship in M3 (github, slack, linear, …). Per-provider header
+          // overrides can be added later by extending the YAML.
+          headerInjection: { header: "Authorization", format: "Bearer {value}" },
+        });
+      }
+      return out;
+    },
     logger: deps.logger,
   });
 
