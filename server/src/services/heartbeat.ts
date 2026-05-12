@@ -7585,7 +7585,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         runId: run.id,
         agent,
         runtime: runtimeForAdapter,
-        config: runtimeConfig,
+        config: { ...runtimeConfig, ...config },
         context,
         runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
         executionTarget,

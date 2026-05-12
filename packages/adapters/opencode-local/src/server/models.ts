@@ -80,7 +80,11 @@ function normalizeEnv(input: unknown): Record<string, string> {
     : {};
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(envInput)) {
-    if (typeof value === "string") env[key] = value;
+    if (typeof value === "string") {
+      env[key] = value;
+    } else if (typeof value === "object" && value !== null && "value" in value && typeof (value as { value: unknown }).value === "string") {
+      env[key] = (value as { value: string }).value;
+    }
   }
   return env;
 }

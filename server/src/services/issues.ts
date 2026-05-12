@@ -69,6 +69,7 @@ import {
 import { parseIssueGraphLivenessIncidentKey } from "./recovery/origins.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
@@ -105,6 +106,15 @@ function readStringFromRecord(record: unknown, key: string) {
   if (!record || typeof record !== "object") return null;
   const value = (record as Record<string, unknown>)[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function normalizeOriginFingerprint(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function shouldReuseOpenIssueForOriginFingerprint(originKind: string, originFingerprint: string | null): boolean {
+  if (!originFingerprint || originFingerprint === "default") return false;
+  return originKind === "manual" || originKind === "interactive";
 }
 
 function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
@@ -2823,7 +2833,28 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
+      const normalizedOriginKind = data.originKind ?? "manual";
+      const normalizedOriginFingerprint = normalizeOriginFingerprint(data.originFingerprint);
+      const persistedOriginFingerprint = normalizedOriginFingerprint ?? "default";
       return db.transaction(async (tx) => {
+        if (shouldReuseOpenIssueForOriginFingerprint(normalizedOriginKind, normalizedOriginFingerprint)) {
+          const existing = await tx
+            .select()
+            .from(issues)
+            .where(and(
+              eq(issues.companyId, companyId),
+              eq(issues.originKind, normalizedOriginKind),
+              eq(issues.originFingerprint, normalizedOriginFingerprint),
+              inArray(issues.status, OPEN_ISSUE_STATUSES as unknown as string[]),
+              isNull(issues.hiddenAt),
+            ))
+            .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+            .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+          if (existing) {
+            const [enriched] = await withIssueLabels(tx, [existing]);
+            return enriched;
+          }
+        }
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
@@ -2973,7 +3004,8 @@ export function issueService(db: Db) {
         const values = {
           ...issueData,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
-          originKind: issueData.originKind ?? "manual",
+          originKind: normalizedOriginKind,
+          originFingerprint: persistedOriginFingerprint,
           goalId: resolveIssueGoalId({
             projectId: issueData.projectId,
             goalId: issueData.goalId,

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import {
@@ -1665,6 +1665,58 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(reassigned!.executionWorkspaceSettings).toMatchObject({
       environmentId: operatorEnvironmentId,
     });
+  });
+
+  it("reuses an open manual issue when originFingerprint matches", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const originFingerprint = "telegram:5395944622:199";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Karl",
+      role: "operator",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const first = await svc.create(companyId, {
+      title: "Inbound Telegram task",
+      description: "First create.",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      originKind: "manual",
+      originFingerprint,
+    });
+
+    const second = await svc.create(companyId, {
+      title: "Inbound Telegram task duplicate",
+      description: "Second create should coalesce.",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      originKind: "manual",
+      originFingerprint,
+    });
+
+    expect(second.id).toBe(first.id);
+    const matchingIssues = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originFingerprint, originFingerprint)));
+    expect(matchingIssues).toHaveLength(1);
   });
 
   it("keeps explicit workspace fields instead of inheriting the parent linkage", async () => {

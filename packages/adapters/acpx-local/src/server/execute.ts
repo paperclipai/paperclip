@@ -716,7 +716,11 @@ async function buildRuntime(input: {
     executionTargetIsRemote,
   });
   for (const [key, value] of Object.entries(shapedEnvConfig)) {
-    if (typeof value === "string") env[key] = value;
+    if (typeof value === "string") {
+      env[key] = value;
+    } else if (typeof value === "object" && value !== null && "value" in value && typeof (value as { value: unknown }).value === "string") {
+      env[key] = (value as { value: string }).value;
+    }
   }
   if (!hasExplicitApiKey && authToken) env.PAPERCLIP_API_KEY = authToken;
 
