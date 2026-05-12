@@ -1431,6 +1431,13 @@ export function shouldAutoCheckoutIssueForWake(input: {
   if (wakeReason === "issue_comment_mentioned") return false;
   if (wakeReason.startsWith("execution_")) return false;
 
+  // For comment/child-completed wakes, only auto-checkout active issues
+  // or those with an explicit resume intent — parked todo/blocked issues stay parked.
+  if (wakeReason === "issue_commented" || wakeReason === "issue_children_completed") {
+    if (issueStatus === "in_progress") return true;
+    return Boolean(input.contextSnapshot?.resumeIntent);
+  }
+
   return true;
 }
 
