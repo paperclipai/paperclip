@@ -2,49 +2,32 @@ export type PipelineRunStatus = "running" | "paused" | "completed" | "failed" | 
 
 export type StageStatus = "pending" | "running" | "completed" | "failed" | "skipped";
 
-export type StageType = "worker" | "classifier" | "parallel_fan_out" | "gate" | "sub-pipeline";
+export type StageType = "stage" | "fan_out" | "fan_in" | "sub-pipeline";
 
-export type FanInStrategy = "all_complete" | "first_complete";
-
-export interface StageRetry {
-  max_retries: number;
-  body?: string;
-}
+export type FanInStrategy = "all_complete" | "first_complete" | "n_of_m";
 
 interface BaseStage {
   id: string;
-  timeout?: string;
-  checkpoint?: boolean;
-  retry?: StageRetry;
 }
 
-export interface WorkerStage extends BaseStage {
-  type: "worker";
+export interface Stage extends BaseStage {
+  type: "stage";
   agent_role: string;
-  output_schema?: string;
-  fan_in?: FanInStrategy;
-  per_task?: boolean;
-  ordering?: string;
-}
-
-export interface ClassifierStage extends BaseStage {
-  type: "classifier";
-  agent_role: string;
+  instructions?: string;
   output_schema?: string;
 }
 
-export interface ParallelFanOutStage extends BaseStage {
-  type: "parallel_fan_out";
+export interface FanOutStage extends BaseStage {
+  type: "fan_out";
   agent_role?: string;
-  fan_in?: FanInStrategy;
+  instructions?: string;
   per_task?: boolean;
   ordering?: string;
 }
 
-export interface GateStage extends BaseStage {
-  type: "gate";
-  fan_in?: FanInStrategy;
-  requires_approval?: boolean;
+export interface FanInStage extends BaseStage {
+  type: "fan_in";
+  fan_in_strategy: FanInStrategy;
 }
 
 export interface SubPipelineStage extends BaseStage {
@@ -54,7 +37,7 @@ export interface SubPipelineStage extends BaseStage {
   ordering?: string;
 }
 
-export type StageDefinition = WorkerStage | ClassifierStage | ParallelFanOutStage | GateStage | SubPipelineStage;
+export type StageDefinition = Stage | FanOutStage | FanInStage | SubPipelineStage;
 
 export interface PipelineTrigger {
   label: string;
@@ -65,7 +48,7 @@ export interface EdgeDefinition {
   from: string;
   to: string;
   type?: "default" | "error";
-  when?: string;
+  sourceHandle?: string;  // decision enum value
   label?: string;
 }
 
