@@ -37,10 +37,6 @@ const manifest: PaperclipPluginManifestV1 = {
             description:
               "Inline kubeconfig YAML. Paste a kubeconfig or an existing Paperclip secret reference; pasted values are stored as company secrets.",
           },
-          kubeconfigSecretRef: {
-            type: "string",
-            description: "Reference to an existing Paperclip secret containing a kubeconfig YAML.",
-          },
           namespacePrefix: {
             type: "string",
             description: "Prefix for the per-company tenant namespace (default: paperclip-).",
@@ -110,7 +106,6 @@ const manifest: PaperclipPluginManifestV1 = {
         anyOf: [
           { required: ["inCluster"] },
           { required: ["kubeconfig"] },
-          { required: ["kubeconfigSecretRef"] },
         ],
       },
     },

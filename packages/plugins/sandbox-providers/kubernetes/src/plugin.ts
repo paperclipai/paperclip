@@ -22,7 +22,7 @@ import { resolveImage } from "./image-allowlist.js";
 import { buildJobManifest } from "./pod-spec-builder.js";
 import { ensureTenant } from "./tenant-orchestrator.js";
 import { createPerRunSecret } from "./secret-manager.js";
-import { jobOrchestrator } from "./job-orchestrator.js";
+import { jobOrchestrator, JobTimeoutError } from "./job-orchestrator.js";
 import {
   deriveCompanySlug,
   deriveNamespaceName,
@@ -326,8 +326,7 @@ const plugin = definePlugin({
         { timeoutMs: effectiveTimeoutMs, pollMs: 2000 },
       );
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("did not complete within")) {
+      if (err instanceof JobTimeoutError) {
         timedOut = true;
         status = null;
       } else {

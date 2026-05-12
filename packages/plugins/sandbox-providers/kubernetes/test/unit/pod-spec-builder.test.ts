@@ -81,6 +81,11 @@ describe("buildJobManifest", () => {
     expect(job.spec.template.spec.restartPolicy).toBe("Never");
   });
 
+  it("disables automountServiceAccountToken to avoid exposing an unnecessary SA token", () => {
+    const job = buildJobManifest(baseInput);
+    expect(job.spec.template.spec.automountServiceAccountToken).toBe(false);
+  });
+
   it("applies the provided labels to both Job metadata and pod template", () => {
     const job = buildJobManifest(baseInput);
     expect(job.metadata.labels["paperclip.io/run-id"]).toBe("r1");

@@ -7,7 +7,6 @@ export const kubernetesProviderConfigSchema = z
   .object({
     inCluster: z.boolean().default(false),
     kubeconfig: z.string().optional(),
-    kubeconfigSecretRef: z.string().uuid().optional(),
 
     namespacePrefix: z.string().regex(/^[a-z0-9-]{1,32}$/).default("paperclip-"),
     companySlug: z.string().regex(/^[a-z0-9-]{1,32}$/).optional(),
@@ -47,10 +46,10 @@ export const kubernetesProviderConfigSchema = z
       }),
   })
   .refine(
-    (cfg) => cfg.inCluster || cfg.kubeconfig || cfg.kubeconfigSecretRef,
+    (cfg) => cfg.inCluster || cfg.kubeconfig,
     {
       message:
-        "kubernetes provider requires one of `inCluster`, `kubeconfig`, or `kubeconfigSecretRef`",
+        "kubernetes provider requires one of `inCluster` or `kubeconfig`",
     },
   );
 

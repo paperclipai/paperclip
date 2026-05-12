@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { createJob, deleteJob, getJobStatus, findPodForJob } from "../../src/job-orchestrator.js";
+import { createJob, deleteJob, getJobStatus, findPodForJob, JobTimeoutError, waitForJobCompletion } from "../../src/job-orchestrator.js";
 
 describe("createJob", () => {
   it("calls batch.createNamespacedJob with the manifest", async () => {
@@ -73,5 +73,15 @@ describe("deleteJob", () => {
         body: expect.objectContaining({ propagationPolicy: "Foreground" }),
       }),
     );
+  });
+});
+
+describe("waitForJobCompletion", () => {
+  it("throws JobTimeoutError when the deadline is exceeded", async () => {
+    const get = vi.fn().mockResolvedValue({ body: { status: { active: 1 } } });
+    const clients = { batch: { readNamespacedJobStatus: get } };
+    await expect(
+      waitForJobCompletion(clients as never, "ns", "r-1", { timeoutMs: 50, pollMs: 10 }),
+    ).rejects.toBeInstanceOf(JobTimeoutError);
   });
 });

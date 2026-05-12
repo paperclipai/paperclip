@@ -1,6 +1,13 @@
 import type { KubeClients } from "./kube-client.js";
 import type { SandboxOrchestrator, SandboxStatus } from "./sandbox-orchestrator.js";
 
+export class JobTimeoutError extends Error {
+  constructor(namespace: string, name: string, timeoutMs: number) {
+    super(`Job ${namespace}/${name} did not complete within ${timeoutMs}ms`);
+    this.name = "JobTimeoutError";
+  }
+}
+
 export async function createJob(
   clients: KubeClients,
   namespace: string,
@@ -91,7 +98,7 @@ export async function waitForJobCompletion(
     if (status.phase === "Succeeded" || status.phase === "Failed") return status;
     await sleep(pollMs);
   }
-  throw new Error(`Job ${namespace}/${name} did not complete within ${opts.timeoutMs}ms`);
+  throw new JobTimeoutError(namespace, name, opts.timeoutMs);
 }
 
 function sleep(ms: number): Promise<void> {

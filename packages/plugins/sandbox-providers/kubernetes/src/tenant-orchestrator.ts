@@ -53,6 +53,7 @@ async function ensureNamespace(clients: KubeClients, input: EnsureTenantInput): 
           "paperclip.io/managed-by": "paperclip-k8s-plugin",
           "pod-security.kubernetes.io/enforce": "restricted",
           "pod-security.kubernetes.io/audit": "restricted",
+          "pod-security.kubernetes.io/warn": "restricted",
         },
       },
     },

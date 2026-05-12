@@ -21,7 +21,7 @@ describe("kubernetesProviderConfigSchema", () => {
 
   it("rejects when neither inCluster nor any kubeconfig source is set", () => {
     expect(() => parseKubernetesProviderConfig({ inCluster: false })).toThrow(
-      /requires one of `inCluster`, `kubeconfig`, or `kubeconfigSecretRef`/,
+      /requires one of `inCluster` or `kubeconfig`/,
     );
   });
 
