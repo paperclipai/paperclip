@@ -54,6 +54,8 @@ export { defineOAuthProvider } from "./define-oauth-provider.js";
 export {
   registerCredentialBroker,
   __consumeRegisteredCredentialBrokerFactory,
+  __resetRegistryForTests,
+  __getRegisteredBrokerFactoryForTests,
 } from "./credential-broker.js";
 export type {
   CredentialDeliveryMode,
