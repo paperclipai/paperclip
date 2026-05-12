@@ -37,7 +37,7 @@ describe("createPerRunSecret", () => {
     expect(body.stringData.ANTHROPIC_API_KEY).toBe("sk-test");
   });
 
-  it("sets ownerReferences to the Sandbox for cascade delete", async () => {
+  it("sets ownerReferences to the owner resource for cascade delete", async () => {
     const created: { body: Record<string, unknown> }[] = [];
     const clients = {
       core: { createNamespacedSecret: vi.fn(async (args: { body: Record<string, unknown> }) => { created.push(args); }) },
@@ -47,5 +47,22 @@ describe("createPerRunSecret", () => {
     expect(body.metadata.ownerReferences).toHaveLength(1);
     expect(body.metadata.ownerReferences[0].uid).toBe("11111111-1111-1111-1111-111111111111");
     expect(body.metadata.ownerReferences[0].controller).toBe(true);
+  });
+
+  it("throws if adapterEnv contains BOOTSTRAP_TOKEN", async () => {
+    const clients = { core: { createNamespacedSecret: vi.fn() } };
+    await expect(
+      createPerRunSecret(clients as never, {
+        ...baseInput,
+        adapterEnv: { BOOTSTRAP_TOKEN: "evil" },
+      }),
+    ).rejects.toThrow(/BOOTSTRAP_TOKEN/);
+  });
+
+  it("throws if ownerUid is empty", async () => {
+    const clients = { core: { createNamespacedSecret: vi.fn() } };
+    await expect(
+      createPerRunSecret(clients as never, { ...baseInput, ownerUid: "" }),
+    ).rejects.toThrow(/ownerUid/);
   });
 });
