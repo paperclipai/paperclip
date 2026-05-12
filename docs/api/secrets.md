@@ -110,12 +110,25 @@ Per-provider `config` shapes:
   `secretNamePrefix`, `kmsKeyId`, `ownerTag`, `environmentTag`.
 - `gcp_secret_manager` (coming soon): optional `projectId`, `location`,
   `namespace`, `secretNamePrefix`.
-- `vault` (coming soon): optional origin-only HTTPS `address`, `namespace`,
-  `mountPath`, `secretPathPrefix`. `address` values with embedded credentials,
-  paths, query strings, or fragments are rejected.
+- `vault`: required origin-only `http(s)://host[:port]` `address`; optional
+  `namespace` (Vault Enterprise only; ignored on OpenBao), `kvMount`
+  (default `secret`; must not start with `/` or `data/`), `kvPathPrefix`
+  (default `paperclip`), `auth.method` (`"kubernetes"` or `"token"`; defaults
+  to `kubernetes` in-cluster and `token` locally), `auth.role` (required when
+  `auth.method = "kubernetes"`; matches `[A-Za-z0-9_-]{1,128}`),
+  `auth.saTokenPath`, `versionRetention` (integer between 2 and 100; default
+  10; maps to KV v2 `max_versions`). `address` values with embedded
+  credentials, paths, query strings, or fragments are rejected. The vault
+  provider works against both OpenBao and HashiCorp Vault via the same Vault
+  HTTP API. Credential-shaped fields (`token`, `password`, `roleId`,
+  `secretId`, `unsealKey`, `clientCert`, `privateKey`, `accessKeyId`,
+  `secretAccessKey`, `serviceAccountJson`, `keyFile`) are rejected at
+  validation time — bootstrap credentials live in workload identity or
+  `VAULT_TOKEN` env, never in vault config. See `doc/SECRETS-VAULT-PROVIDER.md`
+  for the full operational contract.
 
-`status` defaults to `ready` for `local_encrypted` and `aws_secrets_manager`,
-and to `coming_soon` for `gcp_secret_manager` and `vault`. Coming-soon and
+`status` defaults to `ready` for `local_encrypted`, `aws_secrets_manager`,
+and `vault`, and to `coming_soon` for `gcp_secret_manager`. Coming-soon and
 disabled vaults cannot be marked `isDefault`. Setting `isDefault: true` clears
 the previous default for the same provider in the same transaction.
 
