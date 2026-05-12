@@ -81,6 +81,7 @@ import { ScrollToBottom } from "../components/ScrollToBottom";
 import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
 import { ProductivityReviewBadge } from "../components/ProductivityReviewBadge";
+import { IssueOrphanDeliverableBadge } from "../components/IssueOrphanDeliverableBadge";
 import { Identity } from "../components/Identity";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
@@ -3234,6 +3235,10 @@ export function IssueDetail() {
 
           {issue.productivityReview ? (
             <ProductivityReviewBadge review={issue.productivityReview} />
+          ) : null}
+
+          {issue.orphanDeliverable ? (
+            <IssueOrphanDeliverableBadge signal={issue.orphanDeliverable} />
           ) : null}
 
           {issue.originKind === "issue_productivity_review" ? (

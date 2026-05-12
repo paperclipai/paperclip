@@ -85,6 +85,7 @@ import { executionWorkspaceService as executionWorkspaceServiceDirect } from "..
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { environmentService } from "../services/environments.js";
+import { computeOrphanDeliverableSignal } from "../services/orphan-deliverable.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
   createCompanySearchRateLimiter,
@@ -1541,6 +1542,8 @@ export function issueRoutes(
       attachments,
       continuationSummary,
       currentExecutionWorkspace,
+      nonSystemDocuments,
+      agentCommentCount,
     ] =
       await Promise.all([
         resolveIssueProjectAndGoal(issue),
@@ -1554,7 +1557,17 @@ export function issueRoutes(
         svc.listAttachments(issue.id),
         documentsSvc.getIssueDocumentByKey(issue.id, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
         currentExecutionWorkspacePromise,
+        documentsSvc.listIssueDocuments(issue.id),
+        svc.countAgentComments(issue.id),
       ]);
+
+    const orphanDeliverable = computeOrphanDeliverableSignal({
+      status: issue.status,
+      startedAt: issue.startedAt,
+      completedAt: issue.completedAt,
+      hasNonSystemDocuments: nonSystemDocuments.length > 0,
+      hasAgentComments: agentCommentCount > 0,
+    });
 
     res.json({
       issue: {
@@ -1565,6 +1578,7 @@ export function issueRoutes(
         status: issue.status,
         workMode: issue.workMode,
         ...(blockerAttention ? { blockerAttention } : {}),
+        orphanDeliverable,
         productivityReview,
         scheduledRetry,
         priority: issue.priority,
@@ -1649,6 +1663,7 @@ export function issueRoutes(
       referenceSummary,
       successfulRunHandoffStates,
       scheduledRetry,
+      agentCommentCount,
     ] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
@@ -1660,6 +1675,7 @@ export function issueRoutes(
       issueReferencesSvc.listIssueReferenceSummary(issue.id),
       listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id]),
       svc.getCurrentScheduledRetry(issue.id),
+      svc.countAgentComments(issue.id),
     ]);
     const mentionedProjects = mentionedProjectIds.length > 0
       ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
@@ -1668,11 +1684,19 @@ export function issueRoutes(
       ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
       : null;
     const workProducts = await workProductsSvc.listForIssue(issue.id);
+    const orphanDeliverable = computeOrphanDeliverableSignal({
+      status: issue.status,
+      startedAt: issue.startedAt,
+      completedAt: issue.completedAt,
+      hasNonSystemDocuments: documentPayload.documentSummaries.length > 0,
+      hasAgentComments: agentCommentCount > 0,
+    });
     res.json({
       ...issue,
       goalId: goal?.id ?? issue.goalId,
       ancestors,
       ...(blockerAttention ? { blockerAttention } : {}),
+      orphanDeliverable,
       productivityReview,
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
       scheduledRetry,

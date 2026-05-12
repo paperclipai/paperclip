@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, like, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -3807,6 +3807,15 @@ export function issueService(db: Db) {
         latestCommentId: latest?.latestCommentId ?? null,
         latestCommentAt: latest?.latestCommentAt ?? null,
       };
+    },
+
+    countAgentComments: async (issueId: string): Promise<number> => {
+      const row = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(issueComments)
+        .where(and(eq(issueComments.issueId, issueId), isNotNull(issueComments.authorAgentId)))
+        .then((rows) => rows[0] ?? null);
+      return Number(row?.count ?? 0);
     },
 
     getComment: (commentId: string) =>
