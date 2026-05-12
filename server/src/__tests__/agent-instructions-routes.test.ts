@@ -53,6 +53,17 @@ vi.mock("../services/index.js", () => ({
   workspaceOperationService: () => ({}),
 }));
 
+vi.mock("../services/provider-rate-limits.js", () => ({
+  providerRateLimitService: () => ({
+    reconcileAgentProviderLimitPause: vi.fn().mockResolvedValue({
+      released: false,
+      issueIds: [],
+      wakeupsQueued: 0,
+      wakeupsSkipped: 0,
+    }),
+  }),
+}));
+
 vi.mock("../services/secrets.js", () => ({
   secretService: () => mockSecretService,
 }));
