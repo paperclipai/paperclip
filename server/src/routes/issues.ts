@@ -611,10 +611,10 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   actorType: "agent" | "user";
   actorId: string;
 }) {
-  // Only human comments should implicitly reopen finished work.
-  // Agent-authored comments remain communicative unless reopen was explicit.
+  // Only human comments on active blocked work should implicitly resume an agent.
+  // Closed historical issues must stay inert unless reopen/resume is explicit.
   if (input.actorType !== "user") return false;
-  if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
+  if (input.issueStatus !== "blocked") return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
 }
@@ -3421,7 +3421,12 @@ export function issueRoutes(
 
       if (executionStageWakeup) {
         addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
-      } else if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
+      } else if (
+        assigneeChanged &&
+        issue.assigneeAgentId &&
+        issue.status !== "backlog" &&
+        !isClosedIssueStatus(issue.status)
+      ) {
         addWakeup(issue.assigneeAgentId, {
           source: "assignment",
           triggerDetail: "system",
@@ -3520,6 +3525,7 @@ export function issueRoutes(
         }
 
         for (const mentionedId of mentionedIds) {
+          if (isClosed && !reopened) continue;
           if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
           addWakeup(mentionedId, {
             source: "automation",
@@ -4558,6 +4564,7 @@ export function issueRoutes(
       }
 
       for (const mentionedId of mentionedIds) {
+        if (isClosed && !reopened) continue;
         if (wakeups.has(mentionedId)) continue;
         if (actorIsAgent && actor.actorId === mentionedId) continue;
         wakeups.set(mentionedId, {

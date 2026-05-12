@@ -8243,58 +8243,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           };
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
-        const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
-        // Only human/comment-reopen interactions should revive completed issues;
-        // system follow-ups such as retry or cleanup wakes must not reopen closed work.
-        const shouldReopenDeferredCommentWake =
-          deferredCommentIds.length > 0 &&
-          (issue.status === "done" || issue.status === "cancelled") &&
-          (
-            deferred.requestedByActorType === "user" ||
-            deferredWakeReason === "issue_reopened_via_comment"
-          );
-        let reopenedActivity: LogActivityInput | null = null;
-
-        if (shouldReopenDeferredCommentWake) {
-          const reopenedFromStatus = issue.status;
-          const reopenedIssue = await issuesSvc.update(
-            issue.id,
-            {
-              status: "todo",
-              executionState: null,
-            },
-            tx,
-          );
-          if (reopenedIssue) {
-            issue = {
-              ...issue,
-              identifier: reopenedIssue.identifier,
-              status: reopenedIssue.status,
-              executionRunId: reopenedIssue.executionRunId,
-            };
-            if (!readNonEmptyString(promotedContextSeed.reopenedFrom)) {
-              promotedContextSeed.reopenedFrom = reopenedFromStatus;
-            }
-            reopenedActivity = {
-              companyId: issue.companyId,
-              actorType: "system",
-              actorId: "heartbeat",
-              agentId: deferred.agentId,
-              runId: run.id,
-              action: "issue.updated",
-              entityType: "issue",
-              entityId: issue.id,
-              details: {
-                status: "todo",
-                reopened: true,
-                reopenedFrom: reopenedFromStatus,
-                source: "deferred_comment_wake",
-                identifier: issue.identifier,
-              },
-            };
-          }
+        // A deferred comment is only a follow-up while the issue remains open. If the
+        // active run closed/cancelled the issue, drop the deferred wake instead of
+        // resurrecting completed historical work.
+        if (deferredCommentIds.length > 0 && (issue.status === "done" || issue.status === "cancelled")) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: new Date(),
+              error: `Deferred comment wake suppressed because issue reached terminal status (${issue.status})`,
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
         }
-
         const promotedReason = readNonEmptyString(deferred.reason) ?? "issue_execution_promoted";
         const promotedSource =
           (readNonEmptyString(deferred.source) as WakeupOptions["source"]) ?? "automation";
@@ -8364,7 +8327,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return {
           kind: "promoted" as const,
           run: newRun,
-          reopenedActivity,
         };
       }
 
@@ -8518,10 +8480,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const promotedRun = promotionResult?.run ?? null;
     if (!promotedRun) return;
-
-    if (promotionResult?.kind === "promoted" && promotionResult.reopenedActivity) {
-      await logActivity(db, promotionResult.reopenedActivity);
-    }
 
     publishLiveEvent({
       companyId: promotedRun.companyId,
