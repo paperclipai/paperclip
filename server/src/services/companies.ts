@@ -125,16 +125,36 @@ export function companyService(db: Db) {
   }
 
   function isIssuePrefixConflict(error: unknown) {
-    const constraint = typeof error === "object" && error !== null && "constraint" in error
-      ? (error as { constraint?: string }).constraint
-      : typeof error === "object" && error !== null && "constraint_name" in error
-        ? (error as { constraint_name?: string }).constraint_name
-        : undefined;
-    return typeof error === "object"
-      && error !== null
-      && "code" in error
-      && (error as { code?: string }).code === "23505"
-      && constraint === "companies_issue_prefix_idx";
+    const err = error as Record<string, unknown> | null;
+    if (typeof err !== "object" || err === null) return false;
+
+    const message = typeof err.message === "string" ? err.message : "";
+
+    // Direct match on Drizzle/Postgres message — most reliable fallback
+    if (message.includes("companies_issue_prefix_idx")) return true;
+
+    // Try top-level constraint and code fields
+    let constraint = "constraint" in err ? (err.constraint as string | undefined) : undefined;
+    if (!constraint && "constraint_name" in err) {
+      constraint = err.constraint_name as string | undefined;
+    }
+    let errorCode = (err.code as string | undefined);
+
+    // Dig into nested cause / original for Drizzle wrapping
+    if (!constraint || !errorCode) {
+      const candidates = ["cause", "original", "innerError", "__cause", "causeError"] as const;
+      for (const key of candidates) {
+        const inner = (err as Record<string, unknown>)[key] as Record<string, unknown> | undefined;
+        if (inner && typeof inner === "object") {
+          if (!constraint && "constraint" in inner) constraint = inner.constraint as string;
+          if (!constraint && "constraint_name" in inner) constraint = inner.constraint_name as string;
+          if (!errorCode && "code" in inner) errorCode = inner.code as string;
+          if (constraint && errorCode) break;
+        }
+      }
+    }
+
+    return errorCode === "23505" && constraint === "companies_issue_prefix_idx";
   }
 
   async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
