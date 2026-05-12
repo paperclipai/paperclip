@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   summarizeHeartbeatRunResultJson,
   buildHeartbeatRunIssueComment,
+  extractHeartbeatRunIssueDocumentPromotions,
   mergeHeartbeatRunResultJson,
 } from "../services/heartbeat-run-summary.js";
 
@@ -62,6 +63,51 @@ describe("buildHeartbeatRunIssueComment", () => {
 
   it("returns null when there is no usable final text", () => {
     expect(buildHeartbeatRunIssueComment({ costUsd: 1.2 })).toBeNull();
+  });
+});
+
+describe("extractHeartbeatRunIssueDocumentPromotions", () => {
+  it("extracts tagged issue documents from the final summary", () => {
+    const promotions = extractHeartbeatRunIssueDocumentPromotions({
+      summary: [
+        "## Summary",
+        "",
+        "<issue-document key=\"competitive-landscape\" title=\"Competitive Landscape\">",
+        "# Competitive Landscape",
+        "",
+        "- Acme",
+        "- Umbra",
+        "</issue-document>",
+      ].join("\n"),
+    });
+
+    expect(promotions).toEqual([{
+      key: "competitive-landscape",
+      title: "Competitive Landscape",
+      body: "# Competitive Landscape\n\n- Acme\n- Umbra",
+    }]);
+  });
+
+  it("falls back to a legacy Deliverable section", () => {
+    const promotions = extractHeartbeatRunIssueDocumentPromotions({
+      summary: [
+        "## Summary",
+        "",
+        "- Research complete",
+        "",
+        "## Deliverable: Market Map",
+        "",
+        "# Market Map",
+        "",
+        "- Segment A",
+      ].join("\n"),
+    });
+
+    expect(promotions).toEqual([{
+      key: "market-map",
+      title: "Market Map",
+      body: "# Market Map\n\n- Segment A",
+    }]);
   });
 });
 

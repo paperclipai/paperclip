@@ -55,6 +55,7 @@ import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
   buildHeartbeatRunIssueComment,
+  extractHeartbeatRunIssueDocumentPromotions,
   HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS,
   HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS,
   HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES,
@@ -88,6 +89,7 @@ import {
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
 import { agentThreadService } from "./agent-threads.js";
+import { documentService } from "./documents.js";
 import { workProductService } from "./work-products.js";
 import { recordRunStatus } from "../otel.js";
 import {
@@ -2007,6 +2009,7 @@ export function heartbeatService(db: Db) {
   const secretsSvc = secretService(db);
   const companySkills = companySkillService(db);
   const issuesSvc = issueService(db);
+  const documentsSvc = documentService(db);
   const workProductsSvc = workProductService(db);
   const agentThreadsSvc = agentThreadService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
@@ -6533,6 +6536,38 @@ export function heartbeatService(db: Db) {
         await refreshContinuationSummaryForRun(livenessRun, agent);
         if (issueId && outcome === "succeeded") {
           try {
+            for (const promotion of extractHeartbeatRunIssueDocumentPromotions(persistedResultJson)) {
+              const existingDocument = await documentsSvc.getIssueDocumentByKey(issueId, promotion.key);
+              const result = await documentsSvc.upsertIssueDocument({
+                issueId,
+                key: promotion.key,
+                title: promotion.title,
+                format: "markdown",
+                body: promotion.body,
+                changeSummary: "Promoted from heartbeat run summary",
+                baseRevisionId: existingDocument?.latestRevisionId ?? null,
+                createdByAgentId: agent.id,
+                createdByRunId: livenessRun.id,
+              });
+              await logActivity(db, {
+                companyId: livenessRun.companyId,
+                actorType: "agent",
+                actorId: agent.id,
+                agentId: agent.id,
+                runId: livenessRun.id,
+                action: result.created ? "issue.document_created" : "issue.document_updated",
+                entityType: "issue",
+                entityId: issueId,
+                details: {
+                  key: result.document.key,
+                  documentId: result.document.id,
+                  title: result.document.title,
+                  format: result.document.format,
+                  revisionNumber: result.document.latestRevisionNumber,
+                  source: "heartbeat_run_summary_promotion",
+                },
+              });
+            }
             const existingRunComment = await findRunIssueComment(livenessRun.id, livenessRun.companyId, issueId);
             if (!existingRunComment) {
               const issueComment = buildHeartbeatRunIssueComment(persistedResultJson);
