@@ -420,4 +420,74 @@ export function createVaultProvider(
   };
 }
 
+export class VaultTokenManager {
+  private readonly source: VaultAuthSource;
+  private readonly gateway: Pick<VaultHttpGateway, "loginKubernetes" | "renewSelf">;
+  private readonly now: () => number;
+  private cached: { token: string; acquiredAt: number; ttlMs: number; renewable: boolean } | null = null;
+  private inflight: Promise<string> | null = null;
+
+  constructor(input: {
+    source: VaultAuthSource;
+    gateway: Pick<VaultHttpGateway, "loginKubernetes" | "renewSelf">;
+    now?: () => number;
+  }) {
+    this.source = input.source;
+    this.gateway = input.gateway;
+    this.now = input.now ?? (() => Date.now());
+  }
+
+  invalidate(): void {
+    this.cached = null;
+  }
+
+  async acquire(): Promise<string> {
+    if (this.source.mode === "token") return this.source.token;
+    if (this.source.mode === "error") throw unprocessable(this.source.message);
+
+    if (this.inflight) return this.inflight;
+    this.inflight = this.acquireInner().finally(() => { this.inflight = null; });
+    return this.inflight;
+  }
+
+  private async acquireInner(): Promise<string> {
+    if (this.source.mode !== "kubernetes") {
+      throw new Error("acquireInner only used in kubernetes mode");
+    }
+    const now = this.now();
+    if (this.cached) {
+      const elapsed = now - this.cached.acquiredAt;
+      const ttlMs = this.cached.ttlMs;
+      const renewThreshold = ttlMs * TOKEN_RENEWAL_THRESHOLD;
+      if (elapsed < renewThreshold) return this.cached.token;
+      if (this.cached.renewable) {
+        try {
+          const renewed = await this.gateway.renewSelf();
+          this.cached = {
+            token: this.cached.token,
+            acquiredAt: now,
+            ttlMs: renewed.leaseDurationSec * 1000,
+            renewable: renewed.renewable,
+          };
+          return this.cached.token;
+        } catch {
+          // fallthrough to re-login
+        }
+      }
+    }
+    if (this.source.mode !== "kubernetes") throw new Error("unreachable");
+    const login = await this.gateway.loginKubernetes({
+      role: this.source.role,
+      jwt: this.source.jwt,
+    });
+    this.cached = {
+      token: login.clientToken,
+      acquiredAt: now,
+      ttlMs: login.leaseDurationSec * 1000,
+      renewable: login.renewable,
+    };
+    return this.cached.token;
+  }
+}
+
 export const vaultProvider: SecretProviderModule = createVaultProvider();

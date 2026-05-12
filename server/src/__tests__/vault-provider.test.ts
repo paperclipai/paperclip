@@ -5,6 +5,7 @@ import {
   detectVaultAuthSource,
   parseExternalRef,
   resolveVaultConfig,
+  VaultTokenManager,
   type VaultAuthSource,
 } from "../secrets/vault-provider.js";
 
@@ -408,5 +409,82 @@ describe("parseExternalRef", () => {
     expect(() => parseExternalRef("secret")).toThrow();
     expect(() => parseExternalRef("")).toThrow();
     expect(() => parseExternalRef("/")).toThrow();
+  });
+});
+
+describe("VaultTokenManager", () => {
+  function fakeGateway() {
+    return {
+      loginKubernetes: vi.fn(async () => ({
+        clientToken: "hvs.kube.1",
+        leaseDurationSec: 100,
+        renewable: true,
+      })),
+      renewSelf: vi.fn(async () => ({ leaseDurationSec: 100, renewable: true })),
+    };
+  }
+
+  it("performs initial login on first acquire (kubernetes mode)", async () => {
+    const gw = fakeGateway();
+    const tm = new VaultTokenManager({
+      source: { mode: "kubernetes", role: "r", jwt: "j", saTokenPath: "/sa" },
+      gateway: gw as never,
+      now: () => 0,
+    });
+    expect(await tm.acquire()).toBe("hvs.kube.1");
+    expect(gw.loginKubernetes).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns the static token in token mode without calling the gateway", async () => {
+    const gw = { loginKubernetes: vi.fn(), renewSelf: vi.fn() };
+    const tm = new VaultTokenManager({
+      source: { mode: "token", token: "static" },
+      gateway: gw as never,
+      now: () => 0,
+    });
+    expect(await tm.acquire()).toBe("static");
+    expect(gw.loginKubernetes).not.toHaveBeenCalled();
+  });
+
+  it("renews proactively past the 70% TTL threshold", async () => {
+    const gw = fakeGateway();
+    let t = 0;
+    const tm = new VaultTokenManager({
+      source: { mode: "kubernetes", role: "r", jwt: "j", saTokenPath: "/sa" },
+      gateway: gw as never,
+      now: () => t,
+    });
+    await tm.acquire();              // t=0, ttl 100s
+    t = 71_000;                       // 71% elapsed
+    await tm.acquire();
+    expect(gw.renewSelf).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats tokens within the 30s skew window as expired and re-logs-in", async () => {
+    const gw = fakeGateway();
+    let t = 0;
+    const tm = new VaultTokenManager({
+      source: { mode: "kubernetes", role: "r", jwt: "j", saTokenPath: "/sa" },
+      gateway: gw as never,
+      now: () => t,
+    });
+    await tm.acquire();
+    t = 75_000;                       // within 30s of 100s expiry
+    gw.renewSelf.mockRejectedValueOnce(new Error("renewal failed"));
+    await tm.acquire();
+    expect(gw.loginKubernetes).toHaveBeenCalledTimes(2);
+  });
+
+  it("invalidate() forces a fresh login next acquire", async () => {
+    const gw = fakeGateway();
+    const tm = new VaultTokenManager({
+      source: { mode: "kubernetes", role: "r", jwt: "j", saTokenPath: "/sa" },
+      gateway: gw as never,
+      now: () => 0,
+    });
+    await tm.acquire();
+    tm.invalidate();
+    await tm.acquire();
+    expect(gw.loginKubernetes).toHaveBeenCalledTimes(2);
   });
 });
