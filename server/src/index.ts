@@ -38,6 +38,8 @@ import {
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
+import { createCapabilityDriftService } from "./services/capability-drift.js";
+import { createCapabilityCoverageService } from "./services/capability-coverage.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -672,6 +674,8 @@ export async function startServer(): Promise<StartedServer> {
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
+    const capabilityDrift = createCapabilityDriftService(db as any, logger);
+    const capabilityCoverage = createCapabilityCoverageService(db as any, logger);
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
@@ -783,6 +787,25 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
     }, config.heartbeatSchedulerIntervalMs);
+
+    // Daily capability drift + coverage sweep (~every 24h)
+    const DAILY_MS = 24 * 60 * 60 * 1000;
+    setTimeout(() => {
+      void capabilityDrift.sweepRecentRuns().then((result) => {
+        if (result.driftRecords > 0) {
+          logger.info({ ...result }, "capability drift sweep found mismatches");
+        }
+      }).catch((err) => logger.error({ err }, "capability drift sweep failed"));
+      void capabilityCoverage.sweepAgents().then((result) => {
+        if (result.gaps > 0) {
+          logger.info({ ...result }, "capability coverage sweep found gaps");
+        }
+      }).catch((err) => logger.error({ err }, "capability coverage sweep failed"));
+      setInterval(() => {
+        void capabilityDrift.sweepRecentRuns().catch((err) => logger.error({ err }, "capability drift sweep failed"));
+        void capabilityCoverage.sweepAgents().catch((err) => logger.error({ err }, "capability coverage sweep failed"));
+      }, DAILY_MS);
+    }, 5 * 60 * 1000); // 5-min startup delay
   }
   
   if (config.databaseBackupEnabled) {

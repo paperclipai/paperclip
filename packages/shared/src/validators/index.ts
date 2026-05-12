@@ -428,3 +428,10 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./plugin.js";
+
+export {
+  agentCapabilitiesSchema,
+  parseCapabilities,
+  validateCapabilitiesString,
+  type AgentCapabilities,
+} from "./capabilities.js";

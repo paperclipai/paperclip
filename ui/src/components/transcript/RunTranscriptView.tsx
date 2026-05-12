@@ -126,6 +126,14 @@ type TranscriptBlock =
         changeType: "add" | "remove" | "context" | "hunk" | "file_header" | "truncation";
         text: string;
       }>;
+    }
+  | {
+      type: "wake_payload";
+      ts: string;
+      text: string;
+      isResume: boolean;
+      issue?: string;
+      reason?: string;
     };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -416,6 +424,24 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
 
   for (const entry of entries) {
     const previous = blocks[blocks.length - 1];
+
+    if (entry.kind === "user" && entry.text.startsWith("<!-- PAPERCLIP_WAKE_PAYLOAD_START -->")) {
+      const stripped = entry.text
+        .replace("<!-- PAPERCLIP_WAKE_PAYLOAD_START -->", "")
+        .replace("<!-- PAPERCLIP_WAKE_PAYLOAD_END -->", "")
+        .trim();
+      const reasonMatch = stripped.match(/^- reason:\s*(.+)$/m);
+      const issueMatch = stripped.match(/^- issue:\s*(\S+)/m);
+      blocks.push({
+        type: "wake_payload",
+        ts: entry.ts,
+        text: stripped,
+        isResume: stripped.startsWith("## Paperclip Resume Delta") || stripped.startsWith("## Resume Delta"),
+        issue: issueMatch?.[1],
+        reason: reasonMatch?.[1]?.trim(),
+      });
+      continue;
+    }
 
     if (entry.kind === "assistant" || entry.kind === "user") {
       const isStreaming = streaming && entry.kind === "assistant" && entry.delta === true;
@@ -1314,6 +1340,50 @@ function TranscriptSystemGroup({
   );
 }
 
+function TranscriptWakePayloadBlock({
+  block,
+  density,
+}: {
+  block: Extract<TranscriptBlock, { type: "wake_payload" }>;
+  density: TranscriptDensity;
+}) {
+  const [open, setOpen] = useState(false);
+  const compact = density === "compact";
+  const label = block.isResume ? "Resume delta" : "Wake payload";
+  const summary = [
+    block.issue && `issue ${block.issue}`,
+    block.reason && `reason: ${block.reason}`,
+  ].filter(Boolean).join(", ");
+
+  return (
+    <div className="rounded-xl border border-violet-500/20 bg-violet-500/[0.04] p-2 text-violet-700 dark:text-violet-300">
+      <div
+        role="button"
+        tabIndex={0}
+        className="flex cursor-pointer items-center gap-2"
+        onClick={() => setOpen((v) => !v)}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen((v) => !v); } }}
+      >
+        {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
+        <span className="text-[10px] font-semibold uppercase tracking-[0.14em]">
+          {label}
+          {summary && <span className="font-normal normal-case tracking-normal"> — {summary}</span>}
+        </span>
+      </div>
+      {open && (
+        <div className="mt-2 pl-5">
+          <MarkdownBody className={cn(
+            "text-violet-700/80 dark:text-violet-300/80 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+            compact ? "text-xs leading-5" : "text-sm",
+          )}>
+            {block.text}
+          </MarkdownBody>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TranscriptStdoutRow({
   block,
   density,
@@ -1514,6 +1584,7 @@ export function RunTranscriptView({
           {block.type === "diff_group" && <TranscriptDiffGroup block={block} density={density} />}
           {block.type === "stderr_group" && <TranscriptStderrGroup block={block} density={density} />}
           {block.type === "system_group" && <TranscriptSystemGroup block={block} density={density} />}
+          {block.type === "wake_payload" && <TranscriptWakePayloadBlock block={block} density={density} />}
           {block.type === "stdout" && (
             <TranscriptStdoutRow block={block} density={density} collapseByDefault={collapseStdout} />
           )}

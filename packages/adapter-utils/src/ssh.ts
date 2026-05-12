@@ -753,7 +753,7 @@ async function integrateImportedGitHead(input: {
       "-p",
       input.importedHead,
       "-m",
-      `Paperclip SSH sync merge ${input.importedHead.slice(0, 12)}`,
+      `SSH sync merge ${input.importedHead.slice(0, 12)}`,
     ],
     {
       timeout: 60_000,

@@ -25,6 +25,8 @@ import {
   wakeAgentSchema,
   updateAgentSchema,
   supportedEnvironmentDriversForAdapter,
+  validateCapabilitiesString,
+  parseCapabilities,
 } from "@paperclipai/shared";
 import {
   readPaperclipSkillSyncPreference,
@@ -717,6 +719,27 @@ export function agentRoutes(
       throw unprocessable(`Unknown adapter type: ${adapterType}`);
     }
     return adapterType;
+  }
+
+  function assertCapabilitiesValid(
+    capabilitiesStr: string | null | undefined,
+    adapterConfigEnv: Record<string, unknown> | null | undefined,
+  ): void {
+    if (!capabilitiesStr) return;
+    const err = validateCapabilitiesString(capabilitiesStr);
+    if (err) throw unprocessable(err);
+    if (adapterConfigEnv) {
+      const caps = parseCapabilities(capabilitiesStr);
+      if (caps?.external_apis_used?.length) {
+        for (const entry of caps.external_apis_used) {
+          if (!(entry.env_key in adapterConfigEnv)) {
+            throw unprocessable(
+              `Declared env_key '${entry.env_key}' for external API '${entry.name}' not found in agent environment`,
+            );
+          }
+        }
+      }
+    }
   }
 
   async function assertAgentDefaultEnvironmentSelection(
@@ -2153,6 +2176,10 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, createInput.runtimeConfig);
+    assertCapabilitiesValid(
+      createInput.capabilities,
+      (rawCreateAdapterConfig.env as Record<string, unknown> | null | undefined) ?? null,
+    );
     const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
       createInput.adapterType,
       rawCreateAdapterConfig,
@@ -2659,6 +2686,13 @@ export function agentRoutes(
           allowedSandboxProviders: allowedSandboxProvidersForAgent(requestedAdapterType),
         },
       );
+    }
+
+    if (hasOwn(patchData, "capabilities")) {
+      const newEnv = patchData.adapterConfig
+        ? ((asRecord(patchData.adapterConfig)?.env as Record<string, unknown> | null | undefined) ?? null)
+        : ((asRecord(existing.adapterConfig)?.env as Record<string, unknown> | null | undefined) ?? null);
+      assertCapabilitiesValid(patchData.capabilities as string | null | undefined, newEnv);
     }
 
     const actor = getActorInfo(req);
