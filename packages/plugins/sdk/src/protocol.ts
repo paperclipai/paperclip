@@ -574,8 +574,13 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
  * host to access platform services (state, entities, config, etc.).
  */
 export interface WorkerToHostMethods {
-  // Config
+  // Config (operator-provided, read-only to plugins)
   "config.get": [params: Record<string, never>, result: Record<string, unknown>];
+
+  // Runtime config (plugin-managed mutable config, requires plugin.config.write capability)
+  "config.runtime.get": [params: Record<string, never>, result: { values: Record<string, unknown>; revision: string }];
+  "config.runtime.set": [params: { patch: Record<string, unknown> }, result: { revision: string }];
+  "config.runtime.unset": [params: { key: string }, result: { revision: string }];
 
   // Trusted local folders
   "localFolders.declarations": [

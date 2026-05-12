@@ -366,6 +366,20 @@ export interface PluginWorkspace {
  * @see PLUGIN_SPEC.md §13.3 — `validateConfig`
  * @see PLUGIN_SPEC.md §13.4 — `configChanged`
  */
+/** Sub-client for plugin-managed mutable runtime configuration. Requires `plugin.config.write`. */
+export interface PluginConfigRuntimeClient {
+  /** Returns the current runtime config values and an opaque revision string. */
+  get(): Promise<{ values: Record<string, unknown>; revision: string }>;
+  /**
+   * Merges `patch` into the stored runtime config and increments the revision.
+   * Keys in `patch` must not be reserved (`__proto__`, `constructor`, `prototype`,
+   * empty string, or strings starting/ending with a dot).
+   */
+  set(patch: Record<string, unknown>): Promise<{ revision: string }>;
+  /** Removes a single key from the stored runtime config and increments the revision. */
+  unset(key: string): Promise<{ revision: string }>;
+}
+
 export interface PluginConfigClient {
   /**
    * Returns the resolved operator configuration for this plugin instance.
@@ -373,6 +387,17 @@ export interface PluginConfigClient {
    * host before being passed to the worker.
    */
   get(): Promise<Record<string, unknown>>;
+
+  /**
+   * Plugin-managed mutable runtime configuration. Requires `plugin.config.write` capability.
+   *
+   * Unlike operator-provided config (read-only), runtime config is written by the plugin
+   * worker and persists across restarts. Operators can inspect and clear it from the
+   * instance settings UI.
+   *
+   * @see PLUGIN_SPEC.md §CC-G3 — ctx.config.runtime
+   */
+  runtime: PluginConfigRuntimeClient;
 }
 
 export interface PluginLocalFolderProblem {

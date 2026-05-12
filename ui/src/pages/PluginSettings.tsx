@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Puzzle, ArrowLeft, ShieldAlert, ActivitySquare, CheckCircle, XCircle, Loader2, Clock, Cpu, Webhook, CalendarClock, AlertTriangle, FolderOpen, Save } from "lucide-react";
+import { Puzzle, ArrowLeft, ShieldAlert, ActivitySquare, CheckCircle, XCircle, Loader2, Clock, Cpu, Webhook, CalendarClock, AlertTriangle, Database, FolderOpen, Save } from "lucide-react";
 import type { PluginLocalFolderDeclaration } from "@paperclipai/shared";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { Link, Navigate, useParams } from "@/lib/router";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import { pluginsApi, type PluginLocalFolderStatus } from "@/api/plugins";
+import { accessApi } from "@/api/access";
 import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -108,8 +109,50 @@ export function PluginSettings() {
     enabled: !!selectedCompanyId,
   });
 
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+  });
+  const canClearRuntimeConfig = boardAccess?.source === "local_implicit" || (boardAccess?.isInstanceAdmin ?? false);
+
+  const queryClient = useQueryClient();
+  const {
+    data: runtimeConfigData,
+    error: runtimeConfigError,
+    isError: runtimeConfigIsError,
+    isLoading: runtimeConfigLoading,
+  } = useQuery({
+    queryKey: ["plugins", pluginId, "runtime-config"],
+    queryFn: () => pluginsApi.getRuntimeConfig(pluginId!),
+    enabled: !!pluginId,
+  });
+
+  const [runtimeConfigRestartWarning, setRuntimeConfigRestartWarning] = useState<string | null>(null);
+  const clearRuntimeConfigMutation = useMutation({
+    mutationFn: async (clearedPluginId: string) => {
+      const result = await pluginsApi.clearRuntimeConfig(clearedPluginId);
+      return { clearedPluginId, result };
+    },
+    onSuccess: ({ clearedPluginId, result }) => {
+      if (clearedPluginId !== pluginId) return;
+      const restartWarning =
+        result && typeof result === "object" && "restart" in result && result.restart.status === "failed"
+          ? result.restart.message
+          : null;
+      setRuntimeConfigRestartWarning(restartWarning);
+      void queryClient.invalidateQueries({ queryKey: ["plugins", pluginId, "runtime-config"] });
+    },
+  });
+
   // Filter slots to only show settings pages for this specific plugin
   const pluginSlots = slots.filter((slot) => slot.pluginId === pluginId);
+  const clearRuntimeConfigPluginId = clearRuntimeConfigMutation.variables;
+  const clearRuntimeConfigMatchesPlugin = clearRuntimeConfigPluginId === pluginId;
+  const clearRuntimeConfigPending = clearRuntimeConfigMutation.isPending && clearRuntimeConfigMatchesPlugin;
+  const clearRuntimeConfigError =
+    clearRuntimeConfigMutation.isError && clearRuntimeConfigMatchesPlugin
+      ? clearRuntimeConfigMutation.error
+      : null;
 
   // If the plugin has a custom settingsPage slot, prefer that over auto-generated form
   const hasCustomSettingsPage = pluginSlots.length > 0;
@@ -125,6 +168,8 @@ export function PluginSettings() {
 
   useEffect(() => {
     setActiveTab("configuration");
+    setRuntimeConfigRestartWarning(null);
+    clearRuntimeConfigMutation.reset();
   }, [pluginId]);
 
   if (pluginLoading) {
@@ -558,6 +603,59 @@ export function PluginSettings() {
                     </ul>
                   ) : (
                     <p className="text-sm text-muted-foreground italic">No special permissions requested.</p>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base flex items-center gap-1.5">
+                    <Database className="h-4 w-4" />
+                    Runtime Config
+                  </CardTitle>
+                  <CardDescription>
+                    Plugin-managed mutable configuration. Revision {runtimeConfigData?.revision ?? "0"}.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {runtimeConfigLoading ? (
+                    <p className="text-sm text-muted-foreground">Loading...</p>
+                  ) : runtimeConfigIsError ? (
+                    <p className="text-sm text-destructive">
+                      Failed to load runtime config: {runtimeConfigError instanceof Error ? runtimeConfigError.message : "Unknown error"}
+                    </p>
+                  ) : runtimeConfigData && Object.keys(runtimeConfigData.values).length > 0 ? (
+                    <pre className="max-h-48 overflow-y-auto rounded bg-muted px-3 py-2 text-xs font-mono text-foreground/85 whitespace-pre-wrap break-all">
+                      {JSON.stringify(runtimeConfigData.values, null, 2)}
+                    </pre>
+                  ) : (
+                    <p className="text-sm text-muted-foreground italic">No runtime config stored.</p>
+                  )}
+                  {canClearRuntimeConfig && runtimeConfigData && Object.keys(runtimeConfigData.values).length > 0 && (
+	                    <>
+	                      <Button
+	                        variant="destructive"
+	                        size="sm"
+	                        disabled={clearRuntimeConfigPending}
+	                        onClick={() => clearRuntimeConfigMutation.mutate(pluginId!)}
+	                      >
+	                        {clearRuntimeConfigPending ? (
+	                          <><Loader2 className="mr-2 h-3 w-3 animate-spin" />Clearing...</>
+	                        ) : (
+	                          "Clear Runtime Config"
+	                        )}
+	                      </Button>
+	                      {clearRuntimeConfigError && (
+	                        <p className="text-sm text-destructive">
+	                          Failed to clear runtime config: {clearRuntimeConfigError instanceof Error ? clearRuntimeConfigError.message : "Unknown error"}
+	                        </p>
+	                      )}
+                    </>
+                  )}
+                  {runtimeConfigRestartWarning && (
+                    <p className="text-sm text-amber-600 dark:text-amber-400">
+                      Runtime config cleared, but worker restart failed: {runtimeConfigRestartWarning}
+                    </p>
                   )}
                 </CardContent>
               </Card>

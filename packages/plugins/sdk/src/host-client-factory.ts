@@ -85,9 +85,14 @@ export class CapabilityDeniedError extends Error {
  * All methods return promises to support async I/O (database, HTTP, etc.).
  */
 export interface HostServices {
-  /** Provides `config.get`. */
+  /** Provides `config.get` and `config.runtime.*`. */
   config: {
     get(): Promise<Record<string, unknown>>;
+    runtime: {
+      get(): Promise<WorkerToHostMethods["config.runtime.get"][1]>;
+      set(params: WorkerToHostMethods["config.runtime.set"][0]): Promise<WorkerToHostMethods["config.runtime.set"][1]>;
+      unset(params: WorkerToHostMethods["config.runtime.unset"][0]): Promise<WorkerToHostMethods["config.runtime.unset"][1]>;
+    };
   };
 
   /** Provides trusted company-scoped local folder helpers. */
@@ -313,6 +318,10 @@ export type HostClientHandlers = {
 const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | null> = {
   // Config — always allowed
   "config.get": null,
+  // Runtime config — requires plugin.config.write
+  "config.runtime.get": "plugin.config.write",
+  "config.runtime.set": "plugin.config.write",
+  "config.runtime.unset": "plugin.config.write",
 
   // Trusted local folders
   "localFolders.declarations": null,
@@ -493,6 +502,15 @@ export function createHostClientHandlers(
     // Config
     "config.get": gated("config.get", async () => {
       return services.config.get();
+    }),
+    "config.runtime.get": gated("config.runtime.get", async () => {
+      return services.config.runtime.get();
+    }),
+    "config.runtime.set": gated("config.runtime.set", async (params) => {
+      return services.config.runtime.set(params);
+    }),
+    "config.runtime.unset": gated("config.runtime.unset", async (params) => {
+      return services.config.runtime.unset(params);
     }),
 
     "localFolders.declarations": gated("localFolders.declarations", async (params) => {

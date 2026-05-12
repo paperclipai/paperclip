@@ -577,6 +577,17 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       async get() {
         return { ...currentConfig };
       },
+      runtime: {
+        async get() {
+          return { values: {}, revision: "0" };
+        },
+        async set(_patch: Record<string, unknown>) {
+          return { revision: "1" };
+        },
+        async unset(_key: string) {
+          return { revision: "1" };
+        },
+      },
     },
     localFolders: {
       declarations() {

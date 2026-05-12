@@ -589,6 +589,34 @@
       "when": 1778074536410,
       "tag": "0083_company_secret_provider_configs",
       "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1777384535071,
+      "tag": "0084_heartbeat_run_cancel_source",
+      "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1777384535072,
+      "tag": "0085_agent_wakeup_request_idempotency",
+      "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1777384535073,
+      "tag": "0086_issue_comment_idempotency",
+      "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1746182400000,
+      "tag": "0087_plugin_config_runtime",
+      "breakpoints": true
     }
   ]
 }

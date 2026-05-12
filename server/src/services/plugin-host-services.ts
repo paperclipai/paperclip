@@ -41,6 +41,7 @@ import { costService } from "./costs.js";
 import { assetService } from "./assets.js";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { pluginStateStore } from "./plugin-state-store.js";
+import { createPluginRuntimeConfigService } from "./plugin-runtime-config.js";
 import { pluginDatabaseService } from "./plugin-database.js";
 import { pluginManagedAgentService } from "./plugin-managed-agents.js";
 import { pluginManagedRoutineService } from "./plugin-managed-routines.js";
@@ -482,6 +483,7 @@ export function buildHostServices(
 ): HostServices & { dispose(): void } {
   const registry = pluginRegistryService(db);
   const stateStore = pluginStateStore(db);
+  const runtimeConfig = createPluginRuntimeConfigService(db);
   const pluginDb = pluginDatabaseService(db);
   const secretsHandler = createPluginSecretsHandler({ db, pluginId });
   const companies = companyService(db);
@@ -814,6 +816,17 @@ export function buildHostServices(
       async get() {
         const configRow = await registry.getConfig(pluginId);
         return configRow?.configJson ?? {};
+      },
+      runtime: {
+        async get() {
+          return runtimeConfig.getRuntime(pluginId);
+        },
+        async set(params: { patch: Record<string, unknown> }) {
+          return runtimeConfig.setRuntime(pluginId, params.patch);
+        },
+        async unset(params: { key: string }) {
+          return runtimeConfig.unsetRuntime(pluginId, params.key);
+        },
       },
     },
 

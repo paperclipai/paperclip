@@ -67,6 +67,7 @@ export { secretAccessEvents } from "./secret_access_events.js";
 export { companySkills } from "./company_skills.js";
 export { plugins } from "./plugins.js";
 export { pluginConfig } from "./plugin_config.js";
+export { pluginConfigRuntime } from "./plugin_config_runtime.js";
 export { pluginCompanySettings } from "./plugin_company_settings.js";
 export { pluginManagedResources } from "./plugin_managed_resources.js";
 export { pluginState } from "./plugin_state.js";

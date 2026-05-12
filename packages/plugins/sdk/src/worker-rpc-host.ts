@@ -385,6 +385,17 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         async get() {
           return callHost("config.get", {} as Record<string, never>);
         },
+        runtime: {
+          async get() {
+            return callHost("config.runtime.get", {} as Record<string, never>);
+          },
+          async set(patch: Record<string, unknown>) {
+            return callHost("config.runtime.set", { patch });
+          },
+          async unset(key: string) {
+            return callHost("config.runtime.unset", { key });
+          },
+        },
       },
 
       localFolders: {

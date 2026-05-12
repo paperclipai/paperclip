@@ -66,6 +66,7 @@ import {
   getActorInfo,
 } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
+import { createPluginRuntimeConfigService } from "../services/plugin-runtime-config.js";
 import {
   findLocalFolderDeclaration,
   getStoredLocalFolders,
@@ -78,6 +79,7 @@ import {
   PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
 } from "../services/plugin-secrets-handler.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 
 /** UI slot declaration extracted from plugin manifest */
 type PluginUiSlotDeclaration = NonNullable<NonNullable<PaperclipPluginManifestV1["ui"]>["slots"]>[number];
@@ -2096,6 +2098,87 @@ export function pluginRoutes(
       res.status(502).json(bridgeError);
     }
   });
+
+  // ===========================================================================
+  // Runtime config routes (operator inspect / clear)
+  // ===========================================================================
+
+  /**
+   * GET /api/plugins/:pluginId/runtime-config
+   *
+   * Returns the current plugin-managed runtime configuration and revision.
+   * Accessible to any board member (read-only inspect).
+   *
+   * Response: { values: Record<string, unknown>; revision: string }
+   * Errors: 404 if plugin not found
+   */
+  router.get("/plugins/:pluginId/runtime-config", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const { pluginId } = req.params;
+    const registry = pluginRegistryService(db);
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) throw notFound("Plugin not found");
+
+    const svc = createPluginRuntimeConfigService(db);
+    const result = await svc.getRuntime(plugin.id);
+    res.json(result);
+  });
+
+  /**
+   * DELETE /api/plugins/:pluginId/runtime-config
+   *
+   * Clears all plugin-managed runtime configuration for this plugin.
+   * Restricted to instance admins.
+   *
+   * Response: 204 No Content
+   * Errors: 404 if plugin not found, 403 if not instance admin
+   */
+  router.delete("/plugins/:pluginId/runtime-config", async (req, res) => {
+    assertInstanceAdmin(req);
+    const { pluginId } = req.params;
+    const registry = pluginRegistryService(db);
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) throw notFound("Plugin not found");
+
+    const svc = createPluginRuntimeConfigService(db);
+    await svc.clearRuntime(plugin.id);
+
+    let restartStatus: "not_running" | "restarted" | "failed" = "not_running";
+    if (bridgeDeps?.workerManager.isRunning(plugin.id)) {
+      try {
+        await lifecycle.restartWorker(plugin.id);
+        restartStatus = "restarted";
+      } catch {
+        restartStatus = "failed";
+        // Runtime config is already cleared; restart failure is non-fatal.
+      }
+    }
+
+    try {
+      await logPluginMutationActivity(req, "plugin.runtime-config.cleared", plugin.id, {
+	        pluginId: plugin.id,
+	        pluginKey: plugin.pluginKey,
+        restartStatus,
+      });
+    } catch (err) {
+      logger.error(
+        { err, pluginId: plugin.id, pluginKey: plugin.pluginKey },
+        "failed to audit plugin runtime config clear after mutation",
+      );
+    }
+	    if (restartStatus === "failed") {
+	      res.status(202).json({
+	        cleared: true,
+	        restart: {
+	          attempted: true,
+	          status: restartStatus,
+	          message: "Worker restart failed after runtime config was cleared.",
+	        },
+	      });
+	      return;
+	    }
+	    res.status(204).end();
+	  });
 
   // ===========================================================================
   // Job scheduling routes
