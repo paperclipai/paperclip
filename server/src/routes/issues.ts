@@ -654,6 +654,18 @@ export function issueRoutes(
       res.status(403).json({ error: "Agent authentication required" });
       return false;
     }
+    if (req.actor.companyId !== issue.companyId) {
+      res.status(403).json({
+        error: "Cross-company issue access rejected",
+        details: {
+          issueId: issue.id,
+          actorCompanyId: req.actor.companyId,
+          issueCompanyId: issue.companyId,
+          securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+        },
+      });
+      return false;
+    }
     if (issue.assigneeAgentId === null) {
       return true;
     }

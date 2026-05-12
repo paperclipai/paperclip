@@ -51,6 +51,7 @@ type IssueWakeTarget = {
   assigneeAgentId: string | null;
   assigneeUserId?: string | null;
   status: string;
+  companyId: string;
 };
 
 type ResolvedInteractionResult = {
@@ -541,6 +542,7 @@ export function issueThreadInteractionService(db: Db) {
             assigneeAgentId: returnedIssue.assigneeAgentId ?? null,
             assigneeUserId: returnedIssue.assigneeUserId ?? null,
             status: returnedIssue.status,
+            companyId: returnedIssue.companyId,
           };
         }
       } else {
@@ -866,6 +868,7 @@ export function issueThreadInteractionService(db: Db) {
             id: createdIssue.id,
             assigneeAgentId: createdIssue.assigneeAgentId ?? null,
             status: createdIssue.status,
+            companyId: createdIssue.companyId,
           });
         }
 

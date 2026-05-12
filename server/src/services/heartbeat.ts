@@ -39,7 +39,7 @@ import {
   projectWorkspaces,
   workspaceOperations,
 } from "@paperclipai/db";
-import { conflict, HttpError, notFound } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
@@ -7910,11 +7910,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
     if (!projectId && issueId) {
-      projectId = await db
-        .select({ projectId: issues.projectId })
+      const issueRow = await db
+        .select({ projectId: issues.projectId, companyId: issues.companyId })
         .from(issues)
-        .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
-        .then((rows) => rows[0]?.projectId ?? null);
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (issueRow) {
+        if (issueRow.companyId !== agent.companyId) {
+          logger.error(
+            { agentId, agentCompanyId: agent.companyId, issueId, issueCompanyId: issueRow.companyId },
+            "cross_company_wakeup_rejected",
+          );
+          throw forbidden("Cross-company wakeup rejected: issue does not belong to agent's company");
+        }
+        projectId = issueRow.projectId;
+      }
     }
 
     const budgetBlock = await budgets.getInvocationBlock(agent.companyId, agentId, {
@@ -9047,6 +9057,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        // Guard: skip timer wakeup if agent's current active run is working on a cross-company issue.
+        // enqueueWakeup's cross-company guard only fires when an explicit issueId is passed,
+        // but tickTimers passes none. Without this guard the adapter picks up the cross-company
+        // issueId from the task session and injects it as PAPERCLIP_TASK_ID anyway.
+        {
+          const activeRun = await db
+            .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+            .from(heartbeatRuns)
+            .where(and(eq(heartbeatRuns.agentId, agent.id), inArray(heartbeatRuns.status, ["running", "queued"])))
+            .orderBy(desc(heartbeatRuns.startedAt))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (activeRun) {
+            const activeCtx = parseObject(activeRun.contextSnapshot);
+            const activeIssueId = readNonEmptyString(activeCtx.issueId) ?? readNonEmptyString(activeCtx.taskId);
+            if (activeIssueId) {
+              const issueCompanyId = await db
+                .select({ companyId: issues.companyId })
+                .from(issues)
+                .where(eq(issues.id, activeIssueId))
+                .then((rows) => rows[0]?.companyId ?? null);
+              if (issueCompanyId && issueCompanyId !== agent.companyId) {
+                logger.warn(
+                  { agentId: agent.id, agentCompanyId: agent.companyId, activeIssueId, issueCompanyId },
+                  "tickTimers: skipping wakeup — agent has cross-company active issue in task session",
+                );
+                skipped += 1;
+                continue;
+              }
+            }
+          }
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
