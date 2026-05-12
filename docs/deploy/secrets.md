@@ -119,10 +119,11 @@ using `managedMode: "external_reference"` plus a provider `externalRef`.
 Paperclip stores metadata and a non-sensitive fingerprint, never the value.
 Runtime resolution remains server-side and binding-enforced.
 
-The built-in AWS, GCP, and Vault provider IDs currently accept external
-reference metadata, but runtime resolution requires provider configuration in the
-deployment. Their provider health check reports this as a warning until
-configured.
+The built-in AWS and Vault provider IDs accept both managed values and
+external reference metadata once configured. The GCP provider ID accepts
+external reference metadata only and remains `coming_soon` for runtime
+resolution until the GCP module ships. The provider health check reports
+any unconfigured provider as a warning.
 
 For hosted Paperclip Cloud on AWS, see the AWS Secrets Manager operational
 contract — required env vars, IAM/KMS scoping, naming and tag conventions, and
@@ -181,9 +182,9 @@ Each vault carries a status that drives what the runtime can do with it:
 | `coming_soon` | Visible and editable as draft metadata, but locked out of all runtime operations.            |
 | `disabled`    | Soft-deleted. Hidden from the secret create/rotate flow.                                      |
 
-`gcp_secret_manager` and `vault` are pinned to `coming_soon` until their
-runtime modules ship. The settings UI lets you save draft configuration for
-those providers (and surfaces them on the vault list), but secret create,
+`gcp_secret_manager` is pinned to `coming_soon` until its
+runtime module ships. The settings UI lets you save draft configuration for
+it (and surfaces it on the vault list), but secret create,
 rotate, and resolve calls that target a coming-soon vault fail with a clear
 runtime-locked error.
 
@@ -241,12 +242,18 @@ can override) the deployment-level `PAPERCLIP_SECRETS_AWS_*` env. Bootstrap
 credentials still come from the AWS SDK default credential chain — see
 `doc/SECRETS-AWS-PROVIDER.md` for the full IAM and KMS contract.
 
-**GCP Secret Manager** and **HashiCorp Vault** vaults are coming soon. You can
-save draft `projectId`, `location`, `namespace`, `address`, and `mountPath`
-metadata so the company is ready to flip them on when the provider modules
-ship. Vault `address` values must be origin-only `http(s)://host[:port]` URLs;
+**HashiCorp Vault / OpenBao** vaults read the per-vault `address`,
+`namespace`, `kvMount`, `kvPathPrefix`, `auth.method` (`kubernetes` or
+`token`), `auth.role`, and `versionRetention`. See
+`doc/SECRETS-VAULT-PROVIDER.md` for the full operational contract,
+required Vault policy, helm-chart OpenBao bundling, and runbooks. Vault
+`address` values must be origin-only `http(s)://host[:port]` URLs;
 addresses with embedded credentials, paths, query strings, or fragments are
 rejected.
+
+**GCP Secret Manager** vaults are coming soon. You can save draft
+`projectId`, `location`, and `namespace` metadata so the company is ready
+to flip them on when the GCP provider module ships.
 
 ### Remote Import From AWS Vaults
 
@@ -327,9 +334,14 @@ Each provider family has a different backup story:
   same AWS namespace and confirming the runtime role still has
   `GetSecretValue` plus KMS decrypt. The full restore checklist lives in
   `doc/SECRETS-AWS-PROVIDER.md`.
-- `gcp_secret_manager` and `vault`: while these are coming soon, only the
-  draft vault config exists in Paperclip. Database backups capture it. There
-  is nothing to restore on the provider side until runtime support lands.
+- `gcp_secret_manager`: while this is coming soon, only the draft vault config
+  exists in Paperclip. Database backups capture it. There is nothing to restore
+  on the provider side until runtime support lands.
+- `vault`: The full vault config (address, namespace, mount, path prefix, auth
+  method and role, version retention, secrets created, and secret versions) is
+  backed up. Restore by pointing the same Paperclip company at the same Vault
+  instance and confirming the runtime authentication still works. The full
+  restore checklist lives in `doc/SECRETS-VAULT-PROVIDER.md`.
 
 ### AWS Provider Bootstrap Boundary
 
