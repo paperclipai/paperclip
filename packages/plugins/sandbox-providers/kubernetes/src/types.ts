@@ -1,0 +1,55 @@
+import { z } from "zod";
+
+const cidrRegex = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
+
+export const kubernetesProviderConfigSchema = z
+  .object({
+    inCluster: z.boolean().default(false),
+    kubeconfig: z.string().optional(),
+    kubeconfigSecretRef: z.string().uuid().optional(),
+
+    namespacePrefix: z.string().regex(/^[a-z0-9-]{1,32}$/).default("paperclip-"),
+    companySlug: z.string().regex(/^[a-z0-9-]{1,32}$/).optional(),
+
+    imageRegistry: z.string().url().optional(),
+    imageAllowList: z.array(z.string()).default([]),
+    imagePullSecrets: z.array(z.string()).default([]),
+
+    egressAllowFqdns: z.array(z.string()).default([]),
+    egressAllowCidrs: z.array(z.string().regex(cidrRegex, "Invalid CIDR")).default([]),
+    egressMode: z.enum(["cilium", "standard"]).default("standard"),
+
+    defaultResources: z
+      .object({
+        requests: z.object({ cpu: z.string(), memory: z.string() }).partial().optional(),
+        limits: z.object({ cpu: z.string(), memory: z.string() }).partial().optional(),
+      })
+      .optional(),
+
+    runtimeClassName: z.string().optional(),
+    serviceAccountAnnotations: z.record(z.string()).default({}),
+
+    jobTtlSecondsAfterFinished: z.number().int().nonnegative().default(900),
+    podActivityDeadlineSec: z.number().int().positive().default(3600),
+  })
+  .refine(
+    (cfg) => cfg.inCluster || cfg.kubeconfig || cfg.kubeconfigSecretRef,
+    {
+      message:
+        "kubernetes provider requires one of `inCluster`, `kubeconfig`, or `kubeconfigSecretRef`",
+    },
+  );
+
+export type KubernetesProviderConfig = z.infer<typeof kubernetesProviderConfigSchema>;
+
+export function parseKubernetesProviderConfig(input: unknown): KubernetesProviderConfig {
+  return kubernetesProviderConfigSchema.parse(input);
+}
+
+export interface KubernetesLeaseMetadata {
+  namespace: string;
+  jobName: string;
+  podName: string | null;
+  secretName: string;
+  phase: "Pending" | "Running" | "Succeeded" | "Failed";
+}
