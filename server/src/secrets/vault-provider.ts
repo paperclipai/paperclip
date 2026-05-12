@@ -190,6 +190,11 @@ function validateNoCredentialFields(
   }
 }
 
+export type VaultAuthSource =
+  | { mode: "token"; token: string }
+  | { mode: "kubernetes"; role: string; jwt: string; saTokenPath: string }
+  | { mode: "error"; message: string };
+
 export interface ResolvedVaultConfig {
   config: VaultProviderConfig | null;
   warnings: string[];
@@ -256,6 +261,44 @@ export function resolveVaultConfig(input: {
       versionRetention,
     },
     warnings,
+  };
+}
+
+export function detectVaultAuthSource(input: {
+  config: VaultProviderConfig;
+  env: NodeJS.ProcessEnv;
+  readSaToken: (path: string) => string | null;
+}): VaultAuthSource {
+  const { config, env, readSaToken } = input;
+
+  if (config.auth.method === "kubernetes") {
+    const jwt = readSaToken(config.auth.saTokenPath);
+    if (!jwt) {
+      return {
+        mode: "error",
+        message:
+          "auth.method = 'kubernetes' but no SA token found at " +
+          config.auth.saTokenPath,
+      };
+    }
+    if (!config.auth.role) {
+      return {
+        mode: "error",
+        message: "auth.method = 'kubernetes' requires auth.role",
+      };
+    }
+    return { mode: "kubernetes", role: config.auth.role, jwt, saTokenPath: config.auth.saTokenPath };
+  }
+
+  // method = token (explicit or defaulted)
+  const token = asString(env.VAULT_TOKEN);
+  if (token) return { mode: "token", token };
+
+  return {
+    mode: "error",
+    message:
+      "no Vault auth source detected: configure auth.method = 'kubernetes' " +
+      "with role=<role> in cluster, or set VAULT_TOKEN env for local dev",
   };
 }
 

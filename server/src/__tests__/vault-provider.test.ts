@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createVaultProvider, resolveVaultConfig } from "../secrets/vault-provider.js";
+import {
+  createVaultProvider,
+  detectVaultAuthSource,
+  resolveVaultConfig,
+  type VaultAuthSource,
+} from "../secrets/vault-provider.js";
 
 describe("vaultProvider", () => {
   const previousEnv = {
@@ -265,5 +270,77 @@ describe("resolveVaultConfig", () => {
     const r = resolveVaultConfig({ env: {}, providerConfig: null });
     expect(r.config).toBeNull();
     expect(r.warnings.join(" ")).toMatch(/address/i);
+  });
+});
+
+describe("detectVaultAuthSource", () => {
+  it("returns token mode when VAULT_TOKEN env is set", () => {
+    const r: VaultAuthSource = detectVaultAuthSource({
+      config: {
+        address: "https://v",
+        namespace: null,
+        kvMount: "secret",
+        kvPathPrefix: "paperclip",
+        auth: { method: "token", role: null, saTokenPath: "/dev/null" },
+        versionRetention: 10,
+      },
+      env: { VAULT_TOKEN: "hvs.abc" },
+      readSaToken: () => null,
+    });
+    expect(r.mode).toBe("token");
+    if (r.mode === "token") expect(r.token).toBe("hvs.abc");
+  });
+
+  it("returns kubernetes mode when SA token mount exists", () => {
+    const r = detectVaultAuthSource({
+      config: {
+        address: "https://v",
+        namespace: null,
+        kvMount: "secret",
+        kvPathPrefix: "paperclip",
+        auth: { method: "kubernetes", role: "paperclip-server", saTokenPath: "/var/run/sa" },
+        versionRetention: 10,
+      },
+      env: {},
+      readSaToken: (path) => (path === "/var/run/sa" ? "eyJ.fake.jwt" : null),
+    });
+    expect(r.mode).toBe("kubernetes");
+    if (r.mode === "kubernetes") {
+      expect(r.role).toBe("paperclip-server");
+      expect(r.jwt).toBe("eyJ.fake.jwt");
+    }
+  });
+
+  it("returns error when no auth source is detectable", () => {
+    const r = detectVaultAuthSource({
+      config: {
+        address: "https://v",
+        namespace: null,
+        kvMount: "secret",
+        kvPathPrefix: "paperclip",
+        auth: { method: "token", role: null, saTokenPath: "/dev/null" },
+        versionRetention: 10,
+      },
+      env: {},
+      readSaToken: () => null,
+    });
+    expect(r.mode).toBe("error");
+    if (r.mode === "error") expect(r.message).toMatch(/no Vault auth source/i);
+  });
+
+  it("respects explicit auth.method=kubernetes even when VAULT_TOKEN is set", () => {
+    const r = detectVaultAuthSource({
+      config: {
+        address: "https://v",
+        namespace: null,
+        kvMount: "secret",
+        kvPathPrefix: "paperclip",
+        auth: { method: "kubernetes", role: "paperclip-server", saTokenPath: "/sa" },
+        versionRetention: 10,
+      },
+      env: { VAULT_TOKEN: "hvs.shouldBeIgnored" },
+      readSaToken: () => "eyJ.fake",
+    });
+    expect(r.mode).toBe("kubernetes");
   });
 });
