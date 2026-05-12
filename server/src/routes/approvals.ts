@@ -1,6 +1,7 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
+  APPROVAL_STATUSES,
   addApprovalCommentSchema,
   createApprovalSchema,
   rejectApprovalSchema,
@@ -54,6 +55,10 @@ export function approvalRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const status = req.query.status as string | undefined;
+    if (status !== undefined && !APPROVAL_STATUSES.includes(status as any)) {
+      res.status(400).json({ error: `Invalid status filter: ${status}` });
+      return;
+    }
     const result = await svc.list(companyId, status);
     res.json(result.map((approval) => redactApprovalPayload(approval)));
   });
