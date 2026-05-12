@@ -8,6 +8,16 @@
 set -euo pipefail
 
 REPO_ROOT="${PAPERCLIP_SYNC_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+
+# Load .env from repo root if present (does not override existing env vars)
+if [[ -f "${REPO_ROOT}/.env" ]]; then
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line// }" ]] && continue
+    key="${line%%=*}"
+    [[ -z "${!key+x}" ]] && export "$line"
+  done < "${REPO_ROOT}/.env"
+fi
 DATE="$(date +%Y%m%d)"
 BRANCH="chore/sync-${DATE}"
 UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
@@ -23,6 +33,7 @@ FEATURE_MODE="${SYNC_FEATURE_MODE:-rebase}"
 PUSH_FEATURES="${SYNC_PUSH_FEATURES:-1}"
 PUSH_PRIVATE="${SYNC_PUSH_PRIVATE:-1}"
 PUSH_PUBLIC="${SYNC_PUSH_PUBLIC:-1}"
+AUTO_STASH="${SYNC_AUTO_STASH:-0}"
 EXCLUDED_FEATURES_FILE=""
 
 log() { echo "[sync-upstream] $*"; }
@@ -76,6 +87,10 @@ Options:
 
   --no-push-features
       Do not push updated feature branches.
+
+  --auto-stash
+      Automatically stash uncommitted changes before syncing and restore them
+      afterwards. Without this flag, the script aborts if the working tree is dirty.
 
   --local-ref branch
       Local base branch to sync. Default: master.
@@ -155,6 +170,10 @@ while [[ $# -gt 0 ]]; do
       PUSH_FEATURES="0"
       shift
       ;;
+    --auto-stash)
+      AUTO_STASH="1"
+      shift
+      ;;
     --local-ref)
       [[ $# -gt 1 ]] || die "--local-ref requires a branch name"
       LOCAL_REF="$2"
@@ -218,8 +237,8 @@ update_issue() {
 }
 
 ensure_clean_worktree() {
-  git diff --quiet || die "Working tree has unstaged changes; commit or stash before syncing."
-  git diff --cached --quiet || die "Index has staged changes; commit or stash before syncing."
+  git diff --quiet || die "Working tree has unstaged changes; commit or stash before syncing. To stash automatically, pass --auto-stash."
+  git diff --cached --quiet || die "Index has staged changes; commit or stash before syncing. To stash automatically, pass --auto-stash."
 }
 
 remote_exists() {
@@ -448,6 +467,17 @@ sync_feature_branches() {
 
 cd "$REPO_ROOT"
 
+STASH_REF=""
+if [[ "$AUTO_STASH" == "1" ]]; then
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    log "Auto-stashing uncommitted changes..."
+    STASH_REF="$(git stash create 'sync-upstream auto-stash')"
+    git stash store -m 'sync-upstream auto-stash' "$STASH_REF"
+    git restore --staged . 2>/dev/null || true
+    git checkout -- . 2>/dev/null || true
+  fi
+fi
+
 ensure_clean_worktree
 ORIGINAL_BRANCH="$(git branch --show-current || true)"
 EXCLUDED_FEATURES_FILE="$(git rev-parse --git-path paperclip-sync-excluded-features)"
@@ -533,6 +563,11 @@ fi
 
 if [[ -z "${SUMMARY:-}" ]]; then
   SUMMARY="$(printf 'Sync upstream: already up-to-date with %s (%s). No merge needed.' "$UPSTREAM_REF" "${UPSTREAM_SHA:0:8}")"
+fi
+
+if [[ -n "${STASH_REF:-}" ]]; then
+  log "Restoring auto-stash..."
+  git stash pop 2>&1 || log "Warning: could not restore stash automatically — run 'git stash pop' manually."
 fi
 
 update_issue "$ISSUE_STATUS" "$SUMMARY"
