@@ -142,6 +142,8 @@ import {
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { recoveryService } from "./recovery/service.js";
+import { parseRunLogChunkForLiveness } from "./recovery/api-retry-parser.js";
+import { getWatchdogConfig } from "./recovery/watchdog-config.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import {
@@ -6601,6 +6603,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return recovery.scanSilentActiveRuns(opts);
   }
 
+  async function scanRetryStalledRuns(opts?: { now?: Date; companyId?: string }) {
+    return recovery.scanRetryStalledRuns(opts);
+  }
+
   async function reconcileProductivityReviews(opts?: { now?: Date; companyId?: string }) {
     return productivityReviews.reconcileProductivityReviews(opts);
   }
@@ -7431,12 +7437,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     let stderrExcerpt = "";
     let outputSeq = Number(run.lastOutputSeq ?? 0);
     let lastOutputFlushAt: Date | null = run.lastOutputAt ?? null;
+    const watchdogConfigForRun = getWatchdogConfig();
+    const retryStallAttemptThreshold = watchdogConfigForRun.retryStallAttemptThreshold;
+    const livenessRetryState: {
+      lastObservedAttempt: number | null;
+      retryStallStartedAt: Date | null;
+      lastErrorStatus: string | null;
+      lastErrorMessage: string | null;
+    } = {
+      lastObservedAttempt: run.lastRetryAttempt ?? null,
+      retryStallStartedAt: run.retryStallStartedAt ?? null,
+      lastErrorStatus: run.lastRetryErrorStatus ?? null,
+      lastErrorMessage: run.lastRetryErrorMessage ?? null,
+    };
     const outputProgressState: {
       pending: {
       at: Date;
       seq: number;
       stream: "stdout" | "stderr";
       bytes: number;
+      hasNonRetryContent: boolean;
+      hasApiRetry: boolean;
+      livenessAt: Date;
+      retryStateChanged: boolean;
       } | null;
     } = { pending: null };
     let persistedLogBytes = Number(run.logBytes ?? 0);
@@ -7448,15 +7471,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         !lastOutputFlushAt ||
         pendingOutputProgress.at.getTime() - lastOutputFlushAt.getTime() >= ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS;
       if (!shouldFlush) return;
+      const updates: Record<string, unknown> = {
+        updatedAt: new Date(),
+        lastLivenessAt: pendingOutputProgress.livenessAt,
+      };
+      // Only bump the "output" clocks when the chunk carried real, non-retry
+      // content. A chunk made only of api_retry events keeps lastOutputAt
+      // stale so diagnostics still show when the agent last emitted real
+      // progress, while lastLivenessAt above tells the watchdog the process
+      // is actively retrying.
+      if (pendingOutputProgress.hasNonRetryContent) {
+        updates.lastOutputAt = pendingOutputProgress.at;
+        updates.lastOutputSeq = pendingOutputProgress.seq;
+        updates.lastOutputStream = pendingOutputProgress.stream;
+        updates.lastOutputBytes = pendingOutputProgress.bytes;
+      }
+      if (pendingOutputProgress.retryStateChanged) {
+        updates.lastRetryAttempt = livenessRetryState.lastObservedAttempt;
+        updates.retryStallStartedAt = livenessRetryState.retryStallStartedAt;
+        updates.lastRetryErrorStatus = livenessRetryState.lastErrorStatus;
+        updates.lastRetryErrorMessage = livenessRetryState.lastErrorMessage;
+      }
       await db
         .update(heartbeatRuns)
-        .set({
-          lastOutputAt: pendingOutputProgress.at,
-          lastOutputSeq: pendingOutputProgress.seq,
-          lastOutputStream: pendingOutputProgress.stream,
-          lastOutputBytes: pendingOutputProgress.bytes,
-          updatedAt: new Date(),
-        })
+        .set(updates)
         .where(eq(heartbeatRuns.id, run.id));
       lastOutputFlushAt = pendingOutputProgress.at;
       outputProgressState.pending = null;
@@ -7537,11 +7575,41 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           persistedLogBytes += appendedBytes;
         }
         outputSeq += 1;
+
+        // api_retry liveness parsing. When the feature flag is on, we look for
+        // `{"type":"system","subtype":"api_retry"}` events on stdout and treat
+        // them as a separate liveness signal that does NOT count as productive
+        // output. Stderr and disabled-flag fall back to the legacy behaviour.
+        const parsed = watchdogConfigForRun.apiRetryAware && stream === "stdout"
+          ? parseRunLogChunkForLiveness(sanitizedChunk)
+          : { hasApiRetry: false, hasNonRetryContent: true, latestRetry: null };
+        const at = new Date(ts);
+        let retryStateChanged = false;
+        if (parsed.hasApiRetry && parsed.latestRetry) {
+          livenessRetryState.lastObservedAttempt = parsed.latestRetry.attempt;
+          livenessRetryState.lastErrorStatus = parsed.latestRetry.errorStatus;
+          livenessRetryState.lastErrorMessage = parsed.latestRetry.errorMessage;
+          if (parsed.latestRetry.attempt >= retryStallAttemptThreshold && !livenessRetryState.retryStallStartedAt) {
+            livenessRetryState.retryStallStartedAt = at;
+          }
+          retryStateChanged = true;
+        }
+        if (parsed.hasNonRetryContent && livenessRetryState.retryStallStartedAt) {
+          // Real progress interrupts a retry stall — reset the tracker so the
+          // budget detector starts fresh next time attempts climb again.
+          livenessRetryState.retryStallStartedAt = null;
+          livenessRetryState.lastObservedAttempt = null;
+          retryStateChanged = true;
+        }
         outputProgressState.pending = {
-          at: new Date(ts),
+          at,
           seq: outputSeq,
           stream,
           bytes: persistedLogBytes,
+          hasNonRetryContent: parsed.hasNonRetryContent,
+          hasApiRetry: parsed.hasApiRetry,
+          livenessAt: at,
+          retryStateChanged,
         };
         await flushOutputProgress();
 
@@ -9714,6 +9782,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reconcileIssueGraphLiveness,
 
     scanSilentActiveRuns,
+
+    scanRetryStalledRuns,
 
     reconcileProductivityReviews,
 

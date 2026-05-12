@@ -547,4 +547,178 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     });
     expect(decision.createdByRunId).toBe(managerRunId);
   });
+
+  // ---------------------------------------------------------------------
+  // AUR-33: api_retry-aware liveness, retry-stall detector, cascade guard
+  // ---------------------------------------------------------------------
+
+  it("does not classify a retry-active run as silent when lastLivenessAt is fresh", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    // stdout has been stale beyond the suspicion threshold, but api_retry
+    // events have kept lastLivenessAt within the last 5 minutes. The
+    // watchdog must treat the run as healthy.
+    await db
+      .update(heartbeatRuns)
+      .set({ lastLivenessAt: new Date(now.getTime() - 5 * 60 * 1000) })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+    const scan = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(scan).toMatchObject({ scanned: 0, created: 0 });
+  });
+
+  it("falls back to lastOutputAt when PAPERCLIP_WATCHDOG_API_RETRY_AWARE=false", async () => {
+    const prev = process.env.PAPERCLIP_WATCHDOG_API_RETRY_AWARE;
+    process.env.PAPERCLIP_WATCHDOG_API_RETRY_AWARE = "false";
+    try {
+      const now = new Date("2026-04-22T20:00:00.000Z");
+      const { companyId, runId } = await seedRunningRun({
+        now,
+        ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      });
+      await db
+        .update(heartbeatRuns)
+        .set({ lastLivenessAt: new Date(now.getTime() - 5 * 60 * 1000) })
+        .where(eq(heartbeatRuns.id, runId));
+      const heartbeat = heartbeatService(db);
+      const scan = await heartbeat.scanSilentActiveRuns({ now, companyId });
+      // Flag off ⇒ liveness clock ignored ⇒ legacy behaviour creates the
+      // suspicious evaluation just like the original stdout-only watchdog.
+      expect(scan.created).toBe(1);
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCLIP_WATCHDOG_API_RETRY_AWARE;
+      else process.env.PAPERCLIP_WATCHDOG_API_RETRY_AWARE = prev;
+    }
+  });
+
+  it("hard cascade guard suppresses emission when source issue is itself watchdog-emitted", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, issueId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+    });
+    // Promote the source issue itself to a watchdog-emitted origin. This is
+    // the synthetic cascade scenario: a CLI started to "review a silent
+    // run" goes silent in turn — depth-cap MUST kick in.
+    await db
+      .update(issues)
+      .set({ originKind: "stale_active_run_evaluation" })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+    const scan = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(scan.cascadeSuppressed).toBe(1);
+    expect(scan.created).toBe(0);
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation"), eq(issues.originId, runId)));
+    expect(evaluations).toHaveLength(0);
+  });
+
+  it("hard cascade guard suppresses retry-stall emission for watchdog-emitted source issues too", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, issueId, runId } = await seedRunningRun({
+      now,
+      ageMs: 30 * 60 * 1000,
+    });
+    await db
+      .update(issues)
+      .set({ originKind: "runtime_api_retry_exhausted" })
+      .where(eq(issues.id, issueId));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        lastLivenessAt: new Date(now.getTime() - 2 * 60 * 1000),
+        retryStallStartedAt: new Date(now.getTime() - 10 * 60 * 1000),
+        lastRetryAttempt: 5,
+        lastRetryErrorStatus: "529",
+        lastRetryErrorMessage: "Overloaded",
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+    const scan = await heartbeat.scanRetryStalledRuns({ now, companyId });
+    expect(scan.cascadeSuppressed).toBe(1);
+    expect(scan.terminated).toBe(0);
+  });
+
+  it("retry-stall detector fires only after both attempt and budget thresholds are crossed", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: 30 * 60 * 1000,
+    });
+    // attempt below threshold ⇒ no fire
+    await db
+      .update(heartbeatRuns)
+      .set({
+        lastLivenessAt: new Date(now.getTime() - 2 * 60 * 1000),
+        retryStallStartedAt: new Date(now.getTime() - 10 * 60 * 1000),
+        lastRetryAttempt: 1,
+        lastRetryErrorStatus: "529",
+        lastRetryErrorMessage: "Overloaded",
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+    expect(await heartbeat.scanRetryStalledRuns({ now, companyId })).toMatchObject({ scanned: 0, terminated: 0 });
+
+    // budget elapsed (≥300s default) AND attempt ≥ threshold (default 3)
+    await db
+      .update(heartbeatRuns)
+      .set({
+        lastRetryAttempt: 3,
+        retryStallStartedAt: new Date(now.getTime() - 6 * 60 * 1000),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    const fired = await heartbeat.scanRetryStalledRuns({ now, companyId });
+    expect(fired.scanned).toBe(1);
+    // The run had no real PID/PGID seeded, so killProcessGroup returns
+    // `{ skipped: "no_pid" }`. The detector still creates the review issue
+    // and marks the run terminal — that is the contract.
+    expect(fired.terminated + fired.existing).toBe(1);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("runtime_api_retry_exhausted");
+    const [review] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "runtime_api_retry_exhausted"), eq(issues.originId, runId)));
+    expect(review).toBeTruthy();
+    expect(review?.originFingerprint).toBe(`runtime_api_retry_exhausted:${companyId}:${runId}`);
+  });
+
+  it("retry-stall detector no-ops when PAPERCLIP_WATCHDOG_API_RETRY_AWARE=false", async () => {
+    const prev = process.env.PAPERCLIP_WATCHDOG_API_RETRY_AWARE;
+    process.env.PAPERCLIP_WATCHDOG_API_RETRY_AWARE = "false";
+    try {
+      const now = new Date("2026-04-22T20:00:00.000Z");
+      const { companyId, runId } = await seedRunningRun({
+        now,
+        ageMs: 30 * 60 * 1000,
+      });
+      await db
+        .update(heartbeatRuns)
+        .set({
+          lastLivenessAt: new Date(now.getTime() - 2 * 60 * 1000),
+          retryStallStartedAt: new Date(now.getTime() - 10 * 60 * 1000),
+          lastRetryAttempt: 5,
+        })
+        .where(eq(heartbeatRuns.id, runId));
+      const heartbeat = heartbeatService(db);
+      const scan = await heartbeat.scanRetryStalledRuns({ now, companyId });
+      expect(scan).toEqual({
+        scanned: 0,
+        terminated: 0,
+        existing: 0,
+        cascadeSuppressed: 0,
+        skipped: 0,
+        evaluationIssueIds: [],
+      });
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCLIP_WATCHDOG_API_RETRY_AWARE;
+      else process.env.PAPERCLIP_WATCHDOG_API_RETRY_AWARE = prev;
+    }
+  });
 });
