@@ -309,6 +309,19 @@ describe("issue update comment wakeups", () => {
       enumerable: false,
     });
     mockIssueService.addComment.mockResolvedValue(dedupedComment);
+    mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([
+      {
+        id: "interaction-patch-expired",
+        kind: "request_confirmation",
+        status: "expired",
+        result: { version: 1, outcome: "superseded_by_comment", commentId: "comment-deduped-only" },
+      },
+    ]);
+    mockLogActivity.mockImplementation(async (_db, input) => {
+      if (input.action === "issue.thread_interaction_expired") {
+        throw Object.assign(new Error("duplicate"), { code: "23505" });
+      }
+    });
 
     const res = await request(await createApp())
       .patch(`/api/issues/${existing.id}`)
@@ -363,6 +376,14 @@ describe("issue update comment wakeups", () => {
       updated,
       dedupedComment,
       expect.any(Object),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.thread_interaction_expired",
+        entityId: existing.id,
+        details: expect.objectContaining({ interactionId: "interaction-patch-expired" }),
+      }),
     );
     expect(mockRoutineService.syncRunStatusForIssue).toHaveBeenCalledWith(existing.id);
     expect(mockHeartbeatService.reportRunActivity).toHaveBeenCalledWith("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
