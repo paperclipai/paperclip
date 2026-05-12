@@ -72,7 +72,7 @@ const manifest: PaperclipPluginManifestV1 = {
           egressAllowCidrs: {
             type: "array",
             items: { type: "string" },
-            description: "Additional CIDRs to allow egress to from agent pods.",
+            description: "Additional CIDRs to allow HTTPS egress to from agent pods. CIDR egress is restricted to TCP port 443.",
           },
           egressMode: {
             type: "string",

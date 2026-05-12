@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import plugin from "../../src/plugin.js";
+import plugin, { extractAdapterEnvFromProcess } from "../../src/plugin.js";
 
 describe("plugin", () => {
   it("exports the kubernetes driver", () => {
@@ -90,5 +90,34 @@ describe("plugin", () => {
     });
     expect(result.ok).toBe(true);
     expect(result.warnings).toBeUndefined();
+  });
+
+  it("warns when adapter env keys are missing from the worker process", () => {
+    const warnMessages: string[] = [];
+    const originalPresent = process.env.PAPERCLIP_TEST_PRESENT_KEY;
+    const originalMissing = process.env.PAPERCLIP_TEST_MISSING_KEY;
+    process.env.PAPERCLIP_TEST_PRESENT_KEY = "secret-value";
+    delete process.env.PAPERCLIP_TEST_MISSING_KEY;
+    try {
+      const result = extractAdapterEnvFromProcess(
+        ["PAPERCLIP_TEST_PRESENT_KEY", "PAPERCLIP_TEST_MISSING_KEY"],
+        (message) => warnMessages.push(message),
+      );
+      expect(result).toEqual({ PAPERCLIP_TEST_PRESENT_KEY: "secret-value" });
+      expect(warnMessages).toHaveLength(1);
+      expect(warnMessages[0]).toContain("PAPERCLIP_TEST_MISSING_KEY");
+      expect(warnMessages[0]).not.toContain("secret-value");
+    } finally {
+      if (originalPresent === undefined) {
+        delete process.env.PAPERCLIP_TEST_PRESENT_KEY;
+      } else {
+        process.env.PAPERCLIP_TEST_PRESENT_KEY = originalPresent;
+      }
+      if (originalMissing === undefined) {
+        delete process.env.PAPERCLIP_TEST_MISSING_KEY;
+      } else {
+        process.env.PAPERCLIP_TEST_MISSING_KEY = originalMissing;
+      }
+    }
   });
 });

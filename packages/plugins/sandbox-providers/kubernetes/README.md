@@ -68,7 +68,7 @@ Common optional fields:
 | `imageAllowList` | `[]` | Glob patterns of allowed `target.imageOverride` values. Empty = no override permitted. |
 | `imagePullSecrets` | `[]` | Names of pre-created Docker image pull secrets in the tenant namespace. |
 | `egressAllowFqdns` | `[]` | Additional FQDNs (beyond adapter defaults like `api.anthropic.com`). |
-| `egressAllowCidrs` | `[]` | Additional CIDRs to allow egress to. |
+| `egressAllowCidrs` | `[]` | Additional CIDRs to allow HTTPS egress to. CIDR egress is restricted to TCP port 443. |
 | `egressMode` | `"standard"` | `standard` (NetworkPolicy + CIDRs, plus public HTTPS fallback when adapter FQDNs are configured) or `cilium` (CiliumNetworkPolicy + exact FQDN allow-list). |
 | `runtimeClassName` | (none) | e.g. `kata-fc` for Firecracker-backed microVMs. Cluster must have the RuntimeClass installed. |
 | `serviceAccountAnnotations` | `{}` | Annotations applied to per-tenant ServiceAccount (e.g. IRSA `eks.amazonaws.com/role-arn`). |

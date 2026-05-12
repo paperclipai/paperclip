@@ -72,11 +72,24 @@ function deriveTenantNamespace(config: KubernetesProviderConfig, companyId: stri
  * TODO: future milestones may thread per-run secrets differently (e.g. via
  * a secret store reference on the environment config).
  */
-function extractAdapterEnvFromProcess(envKeys: string[]): Record<string, string> {
+export function extractAdapterEnvFromProcess(
+  envKeys: string[],
+  warn: (message: string) => void = console.warn,
+): Record<string, string> {
   const out: Record<string, string> = {};
+  const missing: string[] = [];
   for (const k of envKeys) {
     const v = process.env[k];
-    if (v) out[k] = v;
+    if (v) {
+      out[k] = v;
+    } else {
+      missing.push(k);
+    }
+  }
+  if (missing.length > 0) {
+    warn(
+      `[plugin-kubernetes] adapter environment variable(s) missing from plugin worker process: ${missing.join(", ")}. Agent pods may fail provider authentication unless these keys are optional for the selected adapter.`,
+    );
   }
   return out;
 }

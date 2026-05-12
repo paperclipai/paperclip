@@ -3,7 +3,7 @@ import manifest from "../../src/manifest.js";
 
 describe("manifest", () => {
   const configSchema = manifest.environmentDrivers[0]?.configSchema as {
-    properties: Record<string, { const?: unknown; maxLength?: number; pattern?: string }>;
+    properties: Record<string, { const?: unknown; description?: string; maxLength?: number; pattern?: string }>;
     anyOf: Array<{
       properties?: Record<string, { const?: unknown }>;
       required?: string[];
@@ -22,5 +22,9 @@ describe("manifest", () => {
       required: ["inCluster"],
     });
     expect(configSchema.anyOf).toContainEqual({ required: ["kubeconfig"] });
+  });
+
+  it("documents that CIDR egress is HTTPS-only", () => {
+    expect(configSchema.properties.egressAllowCidrs.description).toContain("TCP port 443");
   });
 });
