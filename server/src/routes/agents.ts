@@ -76,6 +76,8 @@ import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { bootstrapCeoDirectReports } from "../services/bootstrap-direct-reports.js";
+import { ensureCeoChatIssue } from "../services/ceo-chat.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
 import {
   DEFAULT_ACPX_LOCAL_AGENT,
@@ -2104,6 +2106,25 @@ export function agentRoutes(
       actor.actorType === "user" ? actor.actorId : null,
     );
 
+    if (agent.role === "ceo") {
+      try {
+        await ensureCeoChatIssue(db, companyId, agent.id);
+      } catch (error) {
+        // Non-fatal: the chat issue can be created later. Log and continue.
+        console.warn("Failed to seed CEO chat issue", {
+          companyId,
+          agentId: agent.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    // Note: auto-bootstrap of CTO/CMO/Organizador was removed by design.
+    // The CEO is expected to hire its own direct reports as soon as it
+    // receives a meaningful task — see onboarding-assets/ceo/AGENTS.md.
+    // The manual endpoint `POST /companies/:companyId/bootstrap-direct-reports`
+    // remains available for users who want to seed the standard org chart.
+
     if (approval) {
       await logActivity(db, {
         companyId,
@@ -2119,6 +2140,73 @@ export function agentRoutes(
     }
 
     res.status(201).json({ agent, approval });
+  });
+
+  router.post("/companies/:companyId/bootstrap-direct-reports", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCanCreateAgentsForCompany(req, companyId);
+
+    const force = Boolean((req.body as { force?: unknown } | null | undefined)?.force);
+
+    const ceo = await db
+      .select({
+        id: agentsTable.id,
+        role: agentsTable.role,
+        companyId: agentsTable.companyId,
+      })
+      .from(agentsTable)
+      .where(and(eq(agentsTable.companyId, companyId), eq(agentsTable.role, "ceo")))
+      .then((rows) => rows[0] ?? null);
+    if (!ceo) {
+      throw notFound("Company has no CEO agent; hire one before bootstrapping direct reports");
+    }
+
+    const actor = getActorInfo(req);
+    const bootstrapResult = await bootstrapCeoDirectReports(
+      db,
+      companyId,
+      { id: ceo.id, role: ceo.role, companyId },
+      { force },
+    );
+
+    const materialized: typeof bootstrapResult.created = [];
+    for (const rawReport of bootstrapResult.created) {
+      const report = await materializeDefaultInstructionsBundleForNewAgent(rawReport);
+      materialized.push(report);
+      await applyDefaultAgentTaskAssignGrant(
+        companyId,
+        report.id,
+        actor.actorType === "user" ? actor.actorId : null,
+      );
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "agent.bootstrap_direct_report",
+        entityType: "agent",
+        entityId: report.id,
+        details: {
+          role: report.role,
+          name: report.name,
+          adapterType: report.adapterType,
+          ceoId: ceo.id,
+          manual: true,
+          force,
+        },
+      });
+    }
+
+    res.json({
+      created: materialized.map((a) => ({
+        id: a.id,
+        role: a.role,
+        name: a.name,
+        adapterType: a.adapterType,
+      })),
+      skipped: bootstrapResult.skipped,
+    });
   });
 
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {

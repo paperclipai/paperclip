@@ -108,6 +108,8 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
   getGeneral: vi.fn(),
 }));
 
+const mockEnsureCeoChatIssue = vi.hoisted(() => vi.fn());
+
 function registerModuleMocks() {
   vi.doMock("@paperclipai/adapter-opencode-local/server", async () => {
     const actual = await vi.importActual<typeof import("@paperclipai/adapter-opencode-local/server")>("@paperclipai/adapter-opencode-local/server");
@@ -181,6 +183,10 @@ function registerModuleMocks() {
 
   vi.doMock("../services/instance-settings.js", () => ({
     instanceSettingsService: () => mockInstanceSettingsService,
+  }));
+
+  vi.doMock("../services/ceo-chat.js", () => ({
+    ensureCeoChatIssue: mockEnsureCeoChatIssue,
   }));
 
   vi.doMock("../services/index.js", () => ({
@@ -286,6 +292,7 @@ describe.sequential("agent permission routes", () => {
     vi.doUnmock("../services/secrets.js");
     vi.doUnmock("../services/environments.js");
     vi.doUnmock("../services/workspace-operations.js");
+    vi.doUnmock("../services/ceo-chat.js");
     vi.doUnmock("../adapters/index.js");
     vi.doUnmock("../routes/agents.js");
     vi.doUnmock("../routes/authz.js");
@@ -382,6 +389,15 @@ describe.sequential("agent permission routes", () => {
       censorUsernameInLogs: false,
     });
     mockLogActivity.mockResolvedValue(undefined);
+    mockEnsureCeoChatIssue.mockReset();
+    mockEnsureCeoChatIssue.mockResolvedValue({
+      id: "ceo-chat-issue-1",
+      companyId,
+      assigneeAgentId: agentId,
+      isCeoChat: true,
+      status: "in_progress",
+      title: "CEO Chat",
+    });
   });
 
   it("redacts agent detail for authenticated company members without agent admin permission", async () => {
@@ -1432,5 +1448,89 @@ describe.sequential("agent permission routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("seeds CEO chat issue automatically when hiring a CEO agent", async () => {
+    const ceoAgent = {
+      ...baseAgent,
+      role: "ceo",
+    };
+    mockAgentService.create.mockResolvedValue(ceoAgent);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "CEO",
+        role: "ceo",
+        adapterType: "process",
+        adapterConfig: {},
+      }));
+
+    expect(res.status).toBe(201);
+    expect(mockEnsureCeoChatIssue).toHaveBeenCalledWith(
+      expect.anything(),
+      companyId,
+      ceoAgent.id,
+    );
+  });
+
+  it("does not seed CEO chat issue when hiring a non-CEO agent", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "Engineer",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {},
+      }));
+
+    expect(res.status).toBe(201);
+    expect(mockEnsureCeoChatIssue).not.toHaveBeenCalled();
+  });
+
+  it("completes the CEO hire successfully even if the chat issue seeder throws", async () => {
+    const ceoAgent = {
+      ...baseAgent,
+      role: "ceo",
+    };
+    mockAgentService.create.mockResolvedValue(ceoAgent);
+    mockEnsureCeoChatIssue.mockRejectedValue(new Error("DB write failed"));
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "CEO",
+        role: "ceo",
+        adapterType: "process",
+        adapterConfig: {},
+      }));
+
+    // The hire must succeed even when the seeder fails (non-fatal)
+    expect(res.status).toBe(201);
+    expect(res.body.agent).toBeDefined();
   });
 });
