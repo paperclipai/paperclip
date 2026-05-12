@@ -4808,35 +4808,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
   type BlockedScheduledRetryGate = Extract<ScheduledRetryGate, { allowed: false }>;
 
-  async function evaluateScheduledRetryGate(input: {
-    run: typeof heartbeatRuns.$inferSelect;
-    agent: typeof agents.$inferSelect;
-    contextSnapshot: Record<string, unknown>;
-    retryReason?: string | null;
-    enforceIssueExecutionLock?: boolean;
-  }): Promise<ScheduledRetryGate> {
-    const { run, agent, contextSnapshot } = input;
-    const retryReason =
-      input.retryReason ?? readNonEmptyString(contextSnapshot.retryReason) ?? run.scheduledRetryReason ?? null;
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
-    const projectId = readNonEmptyString(contextSnapshot.projectId);
-    const enqueueCheck = await canEnqueueForAgent(agent.id);
-    if (!enqueueCheck.allowed) {
-      return {
-        allowed: false,
-        reason: "Scheduled retry deferred because enqueue is paused",
-        errorCode: "scheduled_retry_paused",
-        issueId,
-        details: {
-          agentId: agent.id,
-          pauseReason: enqueueCheck.reason ?? "unknown",
-        },
-      };
-    }
+	  async function evaluateScheduledRetryGate(input: {
+	    run: typeof heartbeatRuns.$inferSelect;
+	    agent: typeof agents.$inferSelect;
+	    contextSnapshot: Record<string, unknown>;
+	    retryReason?: string | null;
+	    enforceIssueExecutionLock?: boolean;
+	    enforceEnqueuePause?: boolean;
+	  }): Promise<ScheduledRetryGate> {
+	    const { run, agent, contextSnapshot } = input;
+	    const retryReason =
+	      input.retryReason ?? readNonEmptyString(contextSnapshot.retryReason) ?? run.scheduledRetryReason ?? null;
+	    const issueId = readNonEmptyString(contextSnapshot.issueId);
+	    const projectId = readNonEmptyString(contextSnapshot.projectId);
 
-    const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
-      issueId,
-      projectId,
+	    const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
+	      issueId,
+	      projectId,
     });
     if (budgetBlock) {
       return {
@@ -4847,14 +4835,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         details: {
           scopeType: budgetBlock.scopeType,
           scopeId: budgetBlock.scopeId,
-        },
-      };
-    }
+	        },
+	      };
+	    }
 
-    if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
-      return {
-        allowed: false,
-        reason: "Scheduled retry suppressed because the agent is not invokable",
+	    if (agent.status === "paused" && agent.pauseReason === "budget") {
+	      return {
+	        allowed: false,
+	        reason: "Scheduled retry suppressed because budget policy paused the agent",
+	        errorCode: "budget_blocked",
+	        issueId,
+	        details: {
+	          agentId: agent.id,
+	          scopeType: "agent",
+	          scopeId: agent.id,
+	        },
+	      };
+	    }
+
+	    if (input.enforceEnqueuePause) {
+	      const enqueueCheck = await canEnqueueForAgent(agent.id);
+	      if (!enqueueCheck.allowed) {
+	        return {
+	          allowed: false,
+	          reason: "Scheduled retry deferred because enqueue is paused",
+	          errorCode: "scheduled_retry_paused",
+	          issueId,
+	          details: {
+	            agentId: agent.id,
+	            pauseReason: enqueueCheck.reason ?? "unknown",
+	          },
+	        };
+	      }
+	    }
+
+	    if (agent.status === "terminated" || agent.status === "pending_approval") {
+	      return {
+	        allowed: false,
+	        reason: "Scheduled retry suppressed because the agent is not invokable",
         errorCode: "agent_not_invokable",
         issueId,
         details: {
@@ -5105,14 +5123,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const gate = await evaluateScheduledRetryGate({
       run: dueRun,
       agent,
-      contextSnapshot,
-      retryReason: dueRun.scheduledRetryReason,
-      enforceIssueExecutionLock: dueRun.scheduledRetryReason === MAX_TURN_CONTINUATION_RETRY_REASON,
-    });
-    if (!gate.allowed) {
-      if (gate.errorCode === "scheduled_retry_paused") {
-        return { outcome: "not_promoted", run: dueRun };
-      }
+	      contextSnapshot,
+	      retryReason: dueRun.scheduledRetryReason,
+	      enforceIssueExecutionLock: dueRun.scheduledRetryReason === MAX_TURN_CONTINUATION_RETRY_REASON,
+	      enforceEnqueuePause: true,
+	    });
+	    if (!gate.allowed) {
+	      if (gate.errorCode === "scheduled_retry_paused") {
+	        return { outcome: "not_promoted", run: dueRun };
+	      }
       if (
         gate.errorCode === "issue_not_found" &&
         dueRun.scheduledRetryReason !== MAX_TURN_CONTINUATION_RETRY_REASON
@@ -5779,15 +5798,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         scheduledRetry,
       };
     }
-    if (promotion.outcome === "gate_suppressed") {
-      return {
-        outcome: "gate_suppressed" as const,
-        message: promotion.reason,
-        scheduledRetry,
-      };
-    }
-    return {
-      outcome: "already_promoted" as const,
+	    if (promotion.outcome === "gate_suppressed") {
+	      return {
+	        outcome: "gate_suppressed" as const,
+	        message: promotion.reason,
+	        scheduledRetry,
+	      };
+	    }
+	    if (promotion.outcome === "not_promoted") {
+	      return {
+	        outcome: "gate_suppressed" as const,
+	        message: "Scheduled retry deferred because enqueue is paused",
+	        scheduledRetry,
+	      };
+	    }
+	    return {
+	      outcome: "already_promoted" as const,
       message: "Scheduled retry was already promoted",
       scheduledRetry,
     };

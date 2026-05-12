@@ -332,6 +332,30 @@ describe("SidebarAgents", () => {
     expect(container.querySelector('[title="3 queued runs"]')).not.toBeNull();
   });
 
+  it("does not load or render queued run counts for non-admins", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
+      user: { id: "user-1", email: null, name: null, image: null },
+      userId: "user-1",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+      source: "session",
+      keyId: null,
+    });
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" }),
+    ]);
+    mockInstanceSettingsApi.getAgentQueuedCounts.mockResolvedValue([
+      { agentId: "agent-a", queuedCount: 3 },
+    ]);
+
+    await renderSidebarAgents();
+    await flushReact();
+
+    expect(mockAccessApi.getCurrentBoardAccess).toHaveBeenCalled();
+    expect(mockInstanceSettingsApi.getAgentQueuedCounts).not.toHaveBeenCalled();
+    expect(container.querySelector('[title="3 queued runs"]')).toBeNull();
+  });
+
   it("sorts recent agents by heartbeat, updated time, and created time descending", async () => {
     mockAgentsApi.list.mockResolvedValue([
       makeAgent({
