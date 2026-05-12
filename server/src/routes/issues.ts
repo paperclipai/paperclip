@@ -3395,7 +3395,7 @@ export function issueRoutes(
       }
     })();
 
-    if (!commentBody || hasFieldChanges || (comment && wasIssueCommentInserted(comment))) {
+    if (!commentBody || hasFieldChanges || comment) {
       await routinesSvc.syncRunStatusForIssue(issue.id);
 
       if (actor.runId) {
@@ -4235,25 +4235,19 @@ export function issueRoutes(
       metadata: req.body.metadata ?? null,
     });
     const commentInserted = wasIssueCommentInserted(comment);
-    if (commentInserted) {
-      await issueReferencesSvc.syncComment(comment.id);
-    }
-    const commentReferenceSummaryAfter = commentInserted
-      ? await issueReferencesSvc.listIssueReferenceSummary(currentIssue.id)
-      : commentReferenceSummaryBefore;
-    const commentReferenceDiff = commentInserted
-      ? issueReferencesSvc.diffIssueReferenceSummary(
-        commentReferenceSummaryBefore,
-        commentReferenceSummaryAfter,
-      )
-      : { addedReferencedIssues: [], removedReferencedIssues: [], currentReferencedIssues: [] };
+    await issueReferencesSvc.syncComment(comment.id);
+    const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(currentIssue.id);
+    const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
+      commentReferenceSummaryBefore,
+      commentReferenceSummaryAfter,
+    );
 
-    if (commentInserted && actor.runId) {
+    if (actor.runId) {
       await heartbeat.reportRunActivity(actor.runId).catch((err) =>
         logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue comment"));
     }
 
-    if (commentInserted) {
+    try {
       await logActivity(db, {
         companyId: currentIssue.companyId,
         actorType: actor.actorType,
@@ -4278,24 +4272,26 @@ export function issueRoutes(
           }),
         },
       });
+    } catch (err) {
+      if (!isUniqueViolation(err)) {
+        throw err;
+      }
     }
 
-    if (commentInserted) {
-      const expiredInteractions = await issueThreadInteractionService(db).expireRequestConfirmationsSupersededByComment(
-        currentIssue,
-        comment,
-        {
-          agentId: actor.agentId,
-          userId: actor.actorType === "user" ? actor.actorId : null,
-        },
-      );
-      await logExpiredRequestConfirmations({
-        issue: currentIssue,
-        interactions: expiredInteractions,
-        actor,
-        source: "issue.comment",
-      });
-    }
+    const expiredInteractions = await issueThreadInteractionService(db).expireRequestConfirmationsSupersededByComment(
+      currentIssue,
+      comment,
+      {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      },
+    );
+    await logExpiredRequestConfirmations({
+      issue: currentIssue,
+      interactions: expiredInteractions,
+      actor,
+      source: "issue.comment",
+    });
 
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
     if (commentInserted) void (async () => {

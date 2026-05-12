@@ -364,6 +364,8 @@ describe("issue update comment wakeups", () => {
       dedupedComment,
       expect.any(Object),
     );
+    expect(mockRoutineService.syncRunStatusForIssue).toHaveBeenCalledWith(existing.id);
+    expect(mockHeartbeatService.reportRunActivity).toHaveBeenCalledWith("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 });
