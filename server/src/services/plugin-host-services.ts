@@ -2142,64 +2142,68 @@ export function buildHostServices(
           }
         }
 
-        const row = await approvalsService.create(companyId, {
-          type: "plugin_workflow",
-          requestedByAgentId: params.actorAgentId ?? null,
-          requestedByUserId: null,
-          status: "pending",
-          payload: {
-            ...(params.payload ?? {}),
-            prompt: params.prompt,
-            ...(params.actorRunId ? { actorRunId: params.actorRunId } : {}),
-          },
-          sourcePluginId: pluginId,
-          sourcePluginKey: pluginKey,
-        });
-
-        if (params.issueId && row) {
-          await issueApprovals.link(params.issueId, row.id);
-        }
-	        let linkedIssues: Array<{ id: string; identifier?: string | null }> = [];
-	        if (row) {
-	          try {
-	            linkedIssues = await issueApprovals.listIssuesForApproval(row.id);
-	          } catch (err) {
-	            logger.warn({ err, approvalId: row.id, issueId: params.issueId }, "failed to read plugin approval linked issue refs for activity");
-	          }
-	        }
-	        if (params.issueId && !linkedIssues.some((issue) => issue.id === params.issueId)) {
-	          logger.warn(
-	            { approvalId: row?.id, issueId: params.issueId },
-	            "plugin approval activity linked issue refs empty after link",
-	          );
-	          linkedIssues = [...linkedIssues, { id: params.issueId, identifier: null }];
-	        }
-        const issueIds = linkedIssues.map((issue) => issue.id);
-        const issueRefs = linkedIssues.map((issue) => ({ id: issue.id, identifier: issue.identifier ?? null }));
-
-        await logActivity(db, {
-          companyId,
-          actorType: "plugin",
-          actorId: pluginId,
-          agentId: params.actorAgentId ?? undefined,
-          runId: params.actorRunId ?? undefined,
-          action: "approval.created",
-          entityType: "approval",
-          entityId: row!.id,
-          details: {
-            type: row!.type,
+        const { row } = await db.transaction(async (tx) => {
+          const txDb = tx as unknown as Db;
+          const txApprovals = approvalService(txDb);
+          const txIssueApprovals = issueApprovalService(txDb);
+          const row = await txApprovals.create(companyId, {
+            type: "plugin_workflow",
+            requestedByAgentId: params.actorAgentId ?? null,
+            requestedByUserId: null,
+            status: "pending",
+            payload: {
+              ...(params.payload ?? {}),
+              prompt: params.prompt,
+              ...(params.actorRunId ? { actorRunId: params.actorRunId } : {}),
+            },
             sourcePluginId: pluginId,
             sourcePluginKey: pluginKey,
-            issueIds,
-            linkedIssueIds: issueIds,
-            issueRefs,
-            initiatingActorType: params.actorAgentId ? "agent" : "plugin",
-            initiatingActorId: params.actorAgentId ?? pluginId,
-            ...(params.actorRunId ? { initiatingRunId: params.actorRunId } : {}),
-          },
+          });
+
+          if (params.issueId) {
+            await txIssueApprovals.link(params.issueId, row.id);
+          }
+          let linkedIssues: Array<{ id: string; identifier?: string | null }> = [];
+          try {
+            linkedIssues = await txIssueApprovals.listIssuesForApproval(row.id);
+          } catch (err) {
+            logger.warn({ err, approvalId: row.id, issueId: params.issueId }, "failed to read plugin approval linked issue refs for activity");
+          }
+          if (params.issueId && !linkedIssues.some((issue) => issue.id === params.issueId)) {
+            logger.warn(
+              { approvalId: row.id, issueId: params.issueId },
+              "plugin approval activity linked issue refs empty after link",
+            );
+            linkedIssues = [...linkedIssues, { id: params.issueId, identifier: null }];
+          }
+          const issueIds = linkedIssues.map((issue) => issue.id);
+          const issueRefs = linkedIssues.map((issue) => ({ id: issue.id, identifier: issue.identifier ?? null }));
+
+          await logActivity(txDb, {
+            companyId,
+            actorType: "plugin",
+            actorId: pluginId,
+            agentId: params.actorAgentId ?? undefined,
+            runId: params.actorRunId ?? undefined,
+            action: "approval.created",
+            entityType: "approval",
+            entityId: row.id,
+            details: {
+              type: row.type,
+              sourcePluginId: pluginId,
+              sourcePluginKey: pluginKey,
+              issueIds,
+              linkedIssueIds: issueIds,
+              issueRefs,
+              initiatingActorType: params.actorAgentId ? "agent" : "plugin",
+              initiatingActorId: params.actorAgentId ?? pluginId,
+              ...(params.actorRunId ? { initiatingRunId: params.actorRunId } : {}),
+            },
+          });
+          return { row };
         });
 
-        return { approvalId: row!.id, status: row!.status };
+        return { approvalId: row.id, status: row.status };
       },
 
       async get(params) {
@@ -2207,7 +2211,12 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         const row = await approvalsService.getById(params.approvalId);
         if (!row || row.companyId !== companyId || row.sourcePluginId !== pluginId) return null;
-        const linkedIssues = await issueApprovals.listIssuesForApproval(row.id);
+        let linkedIssues: Array<{ id: string }> = [];
+        try {
+          linkedIssues = await issueApprovals.listIssuesForApproval(row.id);
+        } catch (err) {
+          logger.warn({ err, approvalId: row.id }, "failed to read plugin approval linked issue refs");
+        }
         const issueId = linkedIssues[0]?.id ?? null;
         const rowPayload = (row.payload ?? {}) as Record<string, unknown>;
         return {
@@ -2272,12 +2281,12 @@ export function buildHostServices(
         const cancelResult = await approvalsService.cancel(params.approvalId, params.reason);
         if (cancelResult) {
           const now = cancelResult.decidedAt?.toISOString() ?? new Date().toISOString();
-	          let linkedIssues: Array<{ id: string; identifier?: string | null }> = [];
-	          try {
-	            linkedIssues = await issueApprovals.listIssuesForApproval(cancelResult.id);
-	          } catch (err) {
-	            logger.warn({ err, approvalId: cancelResult.id }, "failed to read plugin approval linked issue refs for cancellation activity");
-	          }
+          let linkedIssues: Array<{ id: string; identifier?: string | null }> = [];
+          try {
+            linkedIssues = await issueApprovals.listIssuesForApproval(cancelResult.id);
+          } catch (err) {
+            logger.warn({ err, approvalId: cancelResult.id }, "failed to read plugin approval linked issue refs for cancellation activity");
+          }
           const issueIds = linkedIssues.map((issue) => issue.id);
           const issueRefs = linkedIssues.map((issue) => ({ id: issue.id, identifier: issue.identifier ?? null }));
           await logActivity(db, {
@@ -2302,13 +2311,20 @@ export function buildHostServices(
             },
           });
           if (notifyWorker) {
-            notifyWorker("approvals.resolved", {
-              approvalId: params.approvalId,
-              status: "cancelled",
-              decisionNote: params.reason ?? null,
-              decidedByUserId: null,
-              decidedAt: now,
-            });
+            try {
+              notifyWorker("approvals.resolved", {
+                approvalId: params.approvalId,
+                status: "cancelled",
+                decisionNote: params.reason ?? null,
+                decidedByUserId: null,
+                decidedAt: now,
+              });
+            } catch (err) {
+              logger.warn(
+                { err, approvalId: params.approvalId, sourcePluginId: pluginId },
+                "failed to notify plugin worker that approval resolved",
+              );
+            }
           }
         }
       },

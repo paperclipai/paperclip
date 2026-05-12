@@ -76,6 +76,26 @@ export function approvalRoutes(
     };
   }
 
+  function notifyApprovalResolved(approval: { id: string; sourcePluginId: string | null; status: string; decisionNote: string | null; decidedByUserId: string | null; decidedAt: Date | null }) {
+    if (!approval.sourcePluginId || !options.pluginWorkerManager) return;
+    const worker = options.pluginWorkerManager.getWorker(approval.sourcePluginId);
+    if (!worker) return;
+    try {
+      worker.notify("approvals.resolved", {
+        approvalId: approval.id,
+        status: approval.status,
+        decisionNote: approval.decisionNote ?? null,
+        decidedByUserId: approval.decidedByUserId ?? null,
+        decidedAt: approval.decidedAt?.toISOString() ?? new Date().toISOString(),
+      });
+    } catch (err) {
+      logger.warn(
+        { err, approvalId: approval.id, sourcePluginId: approval.sourcePluginId },
+        "failed to notify plugin worker that approval resolved",
+      );
+    }
+  }
+
   async function requireApprovalAccess(req: Request, id: string) {
     const approval = await svc.getById(id);
     if (!approval) {
@@ -187,11 +207,13 @@ export function approvalRoutes(
 	    const decidedByUserId = req.actor.userId ?? "board";
 	    const { approval, applied } = await svc.approve(id, decidedByUserId, req.body.decisionNote);
 	
-	    if (applied) {
-	      const linkedIssueRefs = await listLinkedIssueRefs(approval.id, [], { action: "approval.approved", phase: "after" });
+    if (applied) {
+      const linkedIssueRefs = await listLinkedIssueRefs(approval.id, [], { action: "approval.approved", phase: "after" });
       const linkedIssueDetails = linkedIssueActivityDetails(linkedIssueRefs);
       const linkedIssueIds = linkedIssueDetails.issueIds;
       const primaryIssueId = linkedIssueIds[0] ?? null;
+
+      notifyApprovalResolved(approval);
 
       await logActivity(db, {
         companyId: approval.companyId,
@@ -206,19 +228,6 @@ export function approvalRoutes(
           ...linkedIssueDetails,
         },
       });
-
-      if (approval.sourcePluginId && options.pluginWorkerManager) {
-        const worker = options.pluginWorkerManager.getWorker(approval.sourcePluginId);
-        if (worker) {
-          worker.notify("approvals.resolved", {
-            approvalId: approval.id,
-            status: "approved",
-            decisionNote: approval.decisionNote ?? null,
-            decidedByUserId: approval.decidedByUserId ?? null,
-            decidedAt: approval.decidedAt?.toISOString() ?? new Date().toISOString(),
-          });
-        }
-      }
 
       if (approval.requestedByAgentId) {
         try {
@@ -297,21 +306,10 @@ export function approvalRoutes(
 	    const decidedByUserId = req.actor.userId ?? "board";
 	    const { approval, applied } = await svc.reject(id, decidedByUserId, req.body.decisionNote);
 	
-	    if (applied) {
-	      const linkedIssueRefs = await listLinkedIssueRefs(approval.id, [], { action: "approval.rejected", phase: "after" });
+    if (applied) {
+      const linkedIssueRefs = await listLinkedIssueRefs(approval.id, [], { action: "approval.rejected", phase: "after" });
       const linkedIssueDetails = linkedIssueActivityDetails(linkedIssueRefs);
-      if (approval.sourcePluginId && options.pluginWorkerManager) {
-        const worker = options.pluginWorkerManager.getWorker(approval.sourcePluginId);
-        if (worker) {
-          worker.notify("approvals.resolved", {
-            approvalId: approval.id,
-            status: "rejected",
-            decisionNote: approval.decisionNote ?? null,
-            decidedByUserId: approval.decidedByUserId ?? null,
-            decidedAt: approval.decidedAt?.toISOString() ?? new Date().toISOString(),
-          });
-        }
-      }
+      notifyApprovalResolved(approval);
 
       await logActivity(db, {
         companyId: approval.companyId,

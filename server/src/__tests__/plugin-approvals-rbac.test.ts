@@ -294,6 +294,40 @@ describe("WF-1 RBAC: approve / reject require board actor", () => {
     );
   });
 
+  it("approve: continues when plugin worker notification throws", async () => {
+    const notifyMock = vi.fn(() => {
+      throw new Error("worker gone");
+    });
+    const mockWorker = { notify: notifyMock };
+    const mockWorkerManager = {
+      getWorker: vi.fn(() => mockWorker),
+    };
+
+    mockApprovalService.approve.mockResolvedValue({
+      approval: {
+        ...pluginApproval,
+        status: "approved",
+        decidedByUserId: "user-board",
+        decidedAt: new Date("2026-05-01T12:00:00.000Z"),
+      },
+      applied: true,
+    });
+
+    const res = await request(await createApp("board", ["company-1"], mockWorkerManager as any))
+      .post("/api/approvals/approval-pw-1/approve")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(notifyMock).toHaveBeenCalledWith(
+      "approvals.resolved",
+      expect.objectContaining({ approvalId: "approval-pw-1", status: "approved" }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "approval.approved" }),
+    );
+  });
+
   it("approve: skips notification when worker is not running", async () => {
     const mockWorkerManager = { getWorker: vi.fn(() => null) };
 
