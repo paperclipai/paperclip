@@ -71,6 +71,13 @@ const mockAssertPluginAuthorizedForCompany = vi.hoisted(() =>
 vi.mock("../services/plugin-company-auth.js", () => ({
   assertPluginAuthorizedForCompany: (...args: unknown[]) =>
     mockAssertPluginAuthorizedForCompany(...args),
+  PluginCompanyAuthorizationError: class PluginCompanyAuthorizationError extends Error {
+    code = -32001;
+    constructor(companyId: string) {
+      super(`Plugin is not authorized for company ${companyId}`);
+      this.name = "PluginCompanyAuthorizationError";
+    }
+  },
 }));
 
 // ---------------------------------------------------------------------------
@@ -413,11 +420,20 @@ describe("write() adversarial fixes", () => {
     handler = createPluginSecretsHandler({ db: makeFakeDb(), pluginId: PLUGIN_ID });
   });
 
-  it("rejects writes to a non-existent company", async () => {
+  it("rejects writes to a non-existent company without exposing company existence", async () => {
     mockGetCompanyById.mockResolvedValueOnce(null);
     await expect(
       handler.write({ companyId: "nonexistent-co", name: "TOKEN", value: "val" }),
-    ).rejects.toThrow(/Company not found/);
+    ).rejects.toMatchObject({ name: "PluginCompanyAuthorizationError" });
+  });
+
+  it("checks plugin authorization before company lookup on write", async () => {
+    mockAssertPluginAuthorizedForCompany.mockRejectedValueOnce(new Error("denied"));
+    await expect(
+      handler.write({ companyId: "other-co", name: "TOKEN", value: "val" }),
+    ).rejects.toThrow("denied");
+    expect(mockGetCompanyById).not.toHaveBeenCalled();
+    expect(mockGetByName).not.toHaveBeenCalled();
   });
 
   it("audit log is awaited — mockLogActivity rejection propagates", async () => {
@@ -451,11 +467,20 @@ describe("delete() adversarial fixes", () => {
     ).rejects.toThrow(/alphanumeric/);
   });
 
-  it("rejects deletes for a non-existent company", async () => {
+  it("rejects deletes for a non-existent company without exposing company existence", async () => {
     mockGetCompanyById.mockResolvedValueOnce(null);
     await expect(
       handler.delete({ companyId: "nonexistent-co", name: "TOKEN" }),
-    ).rejects.toThrow(/Company not found/);
+    ).rejects.toMatchObject({ name: "PluginCompanyAuthorizationError" });
+  });
+
+  it("checks plugin authorization before company lookup or secret lookup on delete", async () => {
+    mockAssertPluginAuthorizedForCompany.mockRejectedValueOnce(new Error("denied"));
+    await expect(
+      handler.delete({ companyId: "other-co", name: "TOKEN" }),
+    ).rejects.toThrow("denied");
+    expect(mockGetCompanyById).not.toHaveBeenCalled();
+    expect(mockGetByName).not.toHaveBeenCalled();
   });
 });
 

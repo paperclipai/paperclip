@@ -43,7 +43,7 @@ import {
   isUuidSecretRef,
   readConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
-import { assertPluginAuthorizedForCompany } from "./plugin-company-auth.js";
+import { assertPluginAuthorizedForCompany, PluginCompanyAuthorizationError } from "./plugin-company-auth.js";
 
 export const PLUGIN_SECRET_REFS_DISABLED_MESSAGE =
   "Plugin secret references are disabled until company-scoped plugin config lands";
@@ -308,13 +308,13 @@ export function createPluginSecretsHandler(
       }
 
       // ---------------------------------------------------------------
-      // 2. Company existence check + plugin authorization
+      // 2. Plugin authorization + company existence check
       // ---------------------------------------------------------------
+      await assertPluginAuthorizedForCompany(db, pluginId, companyId);
       const company = await companyService(db).getById(companyId);
       if (!company) {
-        throw new Error(`Company not found: ${companyId}`);
+        throw new PluginCompanyAuthorizationError(companyId);
       }
-      await assertPluginAuthorizedForCompany(db, pluginId, companyId);
 
       // ---------------------------------------------------------------
       // 3. Resolve default provider from environment
@@ -397,13 +397,13 @@ export function createPluginSecretsHandler(
       }
 
       // ---------------------------------------------------------------
-      // 2. Company existence check + plugin authorization
+      // 2. Plugin authorization + company existence check
       // ---------------------------------------------------------------
+      await assertPluginAuthorizedForCompany(db, pluginId, companyId);
       const company = await companyService(db).getById(companyId);
       if (!company) {
-        throw new Error(`Company not found: ${companyId}`);
+        throw new PluginCompanyAuthorizationError(companyId);
       }
-      await assertPluginAuthorizedForCompany(db, pluginId, companyId);
 
       const svc = secretService(db);
       const existing = await svc.getByName(companyId, name);

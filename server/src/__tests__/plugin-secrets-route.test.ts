@@ -173,6 +173,7 @@ describe("GET /instance/secrets/plugin", () => {
 
       const res = await request(app).get("/instance/secrets/plugin");
       expect(res.status).toBe(200);
+      expect(res.headers["cache-control"]).toBe("no-store");
       expect(res.body).toHaveLength(2);
       expect(res.body.map((r: any) => r.name)).toEqual(["GITHUB_TOKEN", "SLACK_TOKEN"]);
     });
