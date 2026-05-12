@@ -974,7 +974,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.get.mockResolvedValue(createIssue());
     mockIssuesApi.getAutonomousLoopState.mockResolvedValue({
       enabled: true,
-      status: "failed",
+      status: "approval_required",
       goal: "Ship autonomous creator traffic ops workflow",
       iteration: 2,
       maxIterations: 5,
