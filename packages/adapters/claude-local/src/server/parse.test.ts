@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   extractClaudeRetryNotBefore,
   isClaudeTransientUpstreamError,
+  parseClaudeStreamJson,
 } from "./parse.js";
 
 describe("isClaudeTransientUpstreamError", () => {
@@ -63,6 +64,17 @@ describe("isClaudeTransientUpstreamError", () => {
     ).toBe(true);
   });
 
+  it("classifies the 'You've hit your limit' message variant as transient", () => {
+    // Observed in claude CLI output 2026-05-12: assistant message text was
+    // "You've hit your limit · resets 2pm (Asia/Shanghai)" — does not match
+    // any of the legacy prefix variants, but should still be transient.
+    expect(
+      isClaudeTransientUpstreamError({
+        errorMessage: "You've hit your limit · resets 2pm (Asia/Shanghai)",
+      }),
+    ).toBe(true);
+  });
+
   it("does not classify login/auth failures as transient", () => {
     expect(
       isClaudeTransientUpstreamError({
@@ -119,5 +131,78 @@ describe("extractClaudeRetryNotBefore", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
     ).toBeNull();
+  });
+
+  it("extracts the reset time from the 'You've hit your limit' message variant", () => {
+    // claude CLI 2026-05-12 message format. Without the new prefix in the
+    // regex, this would return null and force a default-backoff retry storm.
+    const now = new Date("2026-05-12T05:38:40.000Z");
+    const extracted = extractClaudeRetryNotBefore(
+      { errorMessage: "You've hit your limit · resets 2pm (Asia/Shanghai)" },
+      now,
+    );
+    // 2pm Asia/Shanghai = 06:00 UTC same day.
+    expect(extracted?.toISOString()).toBe("2026-05-12T06:00:00.000Z");
+  });
+
+  it("prefers the structured rate_limit_event resetsAt over text regex", () => {
+    // Future resetsAt — should be used directly even when no regex would match.
+    const now = new Date("2026-05-12T05:38:40.000Z");
+    const futureResetsAt = Math.floor(new Date("2026-05-12T06:00:00.000Z").getTime() / 1000);
+    const extracted = extractClaudeRetryNotBefore(
+      {
+        errorMessage: "(no text reset hint here)",
+        rateLimitResetAtUnix: futureResetsAt,
+      },
+      now,
+    );
+    expect(extracted?.toISOString()).toBe("2026-05-12T06:00:00.000Z");
+  });
+
+  it("falls through to regex when structured rateLimitResetAtUnix is in the past", () => {
+    // Past resetsAt is treated as stale; regex path takes over.
+    const now = new Date("2026-05-12T10:00:00.000Z");
+    const pastResetsAt = Math.floor(new Date("2026-05-12T06:00:00.000Z").getTime() / 1000);
+    const extracted = extractClaudeRetryNotBefore(
+      {
+        errorMessage: "You're out of extra usage · resets 4pm (America/Chicago)",
+        rateLimitResetAtUnix: pastResetsAt,
+      },
+      now,
+    );
+    // Regex path: 4pm America/Chicago = 21:00 UTC.
+    expect(extracted?.toISOString()).toBe("2026-05-12T21:00:00.000Z");
+  });
+});
+
+describe("parseClaudeStreamJson — rate_limit_event", () => {
+  it("captures rate_limit_info.resetsAt as rateLimitResetAtUnix", () => {
+    // Real shape observed in claude CLI stdout 2026-05-12 (SIM-1753 incident).
+    const stdout = [
+      JSON.stringify({
+        type: "rate_limit_event",
+        rate_limit_info: {
+          status: "rejected",
+          resetsAt: 1778565600,
+          rateLimitType: "five_hour",
+          overageStatus: "rejected",
+          overageDisabledReason: "org_level_disabled_until",
+          isUsingOverage: false,
+        },
+      }),
+    ].join("\n");
+    const parsed = parseClaudeStreamJson(stdout);
+    expect(parsed.rateLimitResetAtUnix).toBe(1778565600);
+  });
+
+  it("leaves rateLimitResetAtUnix null when no rate_limit_event is present", () => {
+    const stdout = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      session_id: "abc",
+      result: "fine",
+    });
+    const parsed = parseClaudeStreamJson(stdout);
+    expect(parsed.rateLimitResetAtUnix).toBeNull();
   });
 });

@@ -10,14 +10,20 @@ const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
 const CLAUDE_TRANSIENT_UPSTREAM_RE =
-  /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
+  /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|you['’]?ve\s+hit\s+your\s+limit)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
-  /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+  /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached|you['’]?ve\s+hit\s+your\s+limit)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
 
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
   let model = "";
   let finalResult: Record<string, unknown> | null = null;
+  // Structured rate-limit signal — claude CLI emits a `rate_limit_event` JSON
+  // line with `rate_limit_info.resetsAt` (Unix epoch seconds) when the account
+  // is over its Max-plan window. Prefer this over text regex on the human
+  // message — newer message variants (e.g. "You've hit your limit · resets …")
+  // don't always match the legacy text patterns.
+  let rateLimitResetAtUnix: number | null = null;
   const assistantTexts: string[] = [];
 
   for (const rawLine of stdout.split(/\r?\n/)) {
@@ -30,6 +36,13 @@ export function parseClaudeStreamJson(stdout: string) {
     if (type === "system" && asString(event.subtype, "") === "init") {
       sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
       model = asString(event.model, model);
+      continue;
+    }
+
+    if (type === "rate_limit_event") {
+      const info = parseObject(event.rate_limit_info);
+      const resetsAt = asNumber(info.resetsAt, 0);
+      if (resetsAt > 0) rateLimitResetAtUnix = resetsAt;
       continue;
     }
 
@@ -62,6 +75,7 @@ export function parseClaudeStreamJson(stdout: string) {
       usage: null as UsageSummary | null,
       summary: assistantTexts.join("\n\n").trim(),
       resultJson: null as Record<string, unknown> | null,
+      rateLimitResetAtUnix,
     };
   }
 
@@ -82,6 +96,7 @@ export function parseClaudeStreamJson(stdout: string) {
     usage,
     summary,
     resultJson: finalResult,
+    rateLimitResetAtUnix,
   };
 }
 
@@ -350,9 +365,19 @@ export function extractClaudeRetryNotBefore(
     stdout?: string | null;
     stderr?: string | null;
     errorMessage?: string | null;
+    rateLimitResetAtUnix?: number | null;
   },
   now = new Date(),
 ): Date | null {
+  // Prefer the structured signal from claude CLI's `rate_limit_event` stream
+  // event. Unix epoch seconds — convert to ms. Only honor if it's in the
+  // future relative to `now`; a stale resetsAt falls through to the regex
+  // path (and ultimately to default backoff if that also fails).
+  const structured = input.rateLimitResetAtUnix;
+  if (typeof structured === "number" && structured > 0) {
+    const candidate = new Date(structured * 1000);
+    if (candidate.getTime() > now.getTime()) return candidate;
+  }
   const haystack = buildClaudeTransientHaystack(input);
   const match = haystack.match(CLAUDE_EXTRA_USAGE_RESET_RE);
   if (!match) return null;
