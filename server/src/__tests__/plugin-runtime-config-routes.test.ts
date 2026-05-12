@@ -246,6 +246,16 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
     expect(res.status).toBe(204);
     expect(mockLifecycle.restartWorker).toHaveBeenCalledWith(pluginId);
     expect(mockWorkerManager.call).not.toHaveBeenCalled();
+    expect(mockLifecycle.restartWorker.mock.invocationCallOrder[0]).toBeLessThan(
+      mockLogActivity.mock.invocationCallOrder[0],
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "plugin.runtime-config.cleared",
+        entityId: pluginId,
+      }),
+    );
   });
 
   it("does not restart a non-running worker after runtime config is cleared", async () => {
@@ -280,7 +290,11 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
       }),
       "failed to audit plugin runtime config clear after mutation",
     );
-    expect(JSON.stringify(mockLoggerError.mock.calls)).not.toMatch(SENSITIVE_RUNTIME_CONFIG_PATTERN);
+    const serializedLoggerArgs = JSON.stringify(mockLoggerError.mock.calls, (_key, value) => {
+      if (value instanceof Error) return { message: value.message, stack: value.stack };
+      return value;
+    });
+    expect(serializedLoggerArgs).not.toMatch(SENSITIVE_RUNTIME_CONFIG_PATTERN);
   });
 
   it("resolves plugin keys before clearing runtime config", async () => {
