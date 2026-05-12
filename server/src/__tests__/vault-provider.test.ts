@@ -932,3 +932,79 @@ describe("resolveVersion — external", () => {
     expect(plaintext).toBe("tok-extra");
   });
 });
+
+describe("deleteOrArchive", () => {
+  it("soft-deletes the KV path in delete mode", async () => {
+    const gw = fakeVaultGateway();
+    const provider = createVaultProvider({
+      config: {
+        address: "https://v",
+        namespace: null,
+        kvMount: "secret",
+        kvPathPrefix: "paperclip",
+        auth: { method: "token", role: null, saTokenPath: "/dev/null" },
+        versionRetention: 10,
+      },
+      gateway: gw.impl,
+    });
+    process.env.VAULT_TOKEN = "static";
+    const ctx = { companyId: "co", deploymentId: "d", secretId: "s", secretKey: "K", secretName: "K", version: 1 } as const;
+    const created = await provider.createSecret({ value: "x", context: ctx });
+    await provider.deleteOrArchive({
+      material: created.material,
+      externalRef: created.externalRef,
+      context: ctx,
+      mode: "delete",
+    });
+    expect(gw.store.get("secret/paperclip/d/co/K")).toBeUndefined();
+  });
+
+  it("is a no-op for external_reference material", async () => {
+    const gw = fakeVaultGateway();
+    gw.store.set("secret/external/path", { versions: [[JSON.stringify({ value: "x" })]] });
+    const provider = createVaultProvider({
+      config: {
+        address: "https://v",
+        namespace: null,
+        kvMount: "secret",
+        kvPathPrefix: "paperclip",
+        auth: { method: "token", role: null, saTokenPath: "/dev/null" },
+        versionRetention: 10,
+      },
+      gateway: gw.impl,
+    });
+    process.env.VAULT_TOKEN = "static";
+    const linked = await provider.linkExternalSecret({ externalRef: "secret/external/path" });
+    await provider.deleteOrArchive({
+      material: linked.material,
+      externalRef: linked.externalRef,
+      mode: "delete",
+    });
+    expect(gw.store.get("secret/external/path")).toBeTruthy();
+  });
+
+  it("archive mode is a no-op (vault KV v2 versioning is implicit)", async () => {
+    const gw = fakeVaultGateway();
+    const provider = createVaultProvider({
+      config: {
+        address: "https://v",
+        namespace: null,
+        kvMount: "secret",
+        kvPathPrefix: "paperclip",
+        auth: { method: "token", role: null, saTokenPath: "/dev/null" },
+        versionRetention: 10,
+      },
+      gateway: gw.impl,
+    });
+    process.env.VAULT_TOKEN = "static";
+    const ctx = { companyId: "co", deploymentId: "d", secretId: "s", secretKey: "K", secretName: "K", version: 1 } as const;
+    const created = await provider.createSecret({ value: "x", context: ctx });
+    await provider.deleteOrArchive({
+      material: created.material,
+      externalRef: created.externalRef,
+      context: ctx,
+      mode: "archive",
+    });
+    expect(gw.store.get("secret/paperclip/d/co/K")).toBeTruthy();
+  });
+});

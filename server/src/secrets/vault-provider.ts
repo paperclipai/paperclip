@@ -623,7 +623,26 @@ export function createVaultProvider(
         },
       });
     },
-    async deleteOrArchive() { /* later */ },
+    async deleteOrArchive(input) {
+      if (input.mode === "archive") return;
+
+      const material = input.material as VaultManagedMaterial | undefined;
+      if (!material || material.scheme !== VAULT_MATERIAL_SCHEME) return;
+      if (material.source !== "managed") return;
+
+      const config = resolveConfig(input.providerConfig);
+      const gateway = resolveGateway(config);
+      const tokenManager = tokenManagerFor(config, gateway);
+
+      await withVaultTokenRetry({
+        tokenManager,
+        sourceMode: tokenManager.sourceMode,
+        operation: async () => {
+          await tokenManager.acquire();
+          await gateway.deleteKv({ mount: material.mount, path: material.path });
+        },
+      });
+    },
     async healthCheck() {
       return { provider: "vault", status: "warn", message: "healthCheck not implemented yet" };
     },
