@@ -190,6 +190,7 @@ export const WAKE_COOLDOWN_AUTO_SOURCES: ReadonlySet<string> = new Set([
 const wakeDedupeCache = new Map<string, number>();
 const lastWakeAtByAgentIssue = new Map<string, number>();
 const WAKE_DEDUPE_CACHE_MAX_SIZE = 5_000;
+const WAKE_COOLDOWN_CACHE_MAX_SIZE = 5_000;
 
 function readWakeFeatureFlag(name: "PAPERCLIP_ENABLE_WAKE_DEDUPE" | "PAPERCLIP_ENABLE_WAKE_COOLDOWN"): boolean {
   const raw = process.env[name];
@@ -221,6 +222,17 @@ function pruneWakeDedupeCache(now: number): void {
   }
   for (const [key, expiresAt] of wakeDedupeCache) {
     if (expiresAt <= now) wakeDedupeCache.delete(key);
+  }
+}
+
+function pruneWakeCooldownCache(now: number): void {
+  if (lastWakeAtByAgentIssue.size < WAKE_COOLDOWN_CACHE_MAX_SIZE) {
+    return;
+  }
+  // Entries older than 10× the cooldown window can never affect decisions.
+  const staleThreshold = WAKE_COOLDOWN_MS * 10;
+  for (const [key, lastAt] of lastWakeAtByAgentIssue) {
+    if (now - lastAt > staleThreshold) lastWakeAtByAgentIssue.delete(key);
   }
 }
 
@@ -8026,6 +8038,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     const wakeNowMs = Date.now();
     pruneWakeDedupeCache(wakeNowMs);
+    pruneWakeCooldownCache(wakeNowMs);
 
     const dedupeBypass = wakeForceBypass || WAKE_DEDUPE_BYPASS_SOURCES.has(source);
     const dedupeCachedExpiresAt = dedupeBypass ? undefined : wakeDedupeCache.get(wakeDedupeHash);
@@ -8037,9 +8050,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const cooldownDeltaMs = cooldownAppliesToSource ? wakeNowMs - cooldownLastAt : Number.POSITIVE_INFINITY;
     const cooldownSkip = cooldownAppliesToSource && cooldownDeltaMs < WAKE_COOLDOWN_MS;
 
+    const wakeOutcome =
+      dedupeEnabled && dedupeHit
+        ? "deduped"
+        : cooldownEnabled && cooldownSkip
+          ? "cooldown_queued"
+          : "dispatched";
     logger.info(
       {
-        evt: "wake_dispatched",
+        evt: "wake_evaluated",
+        outcome: wakeOutcome,
         agentId,
         issueId,
         reason,
