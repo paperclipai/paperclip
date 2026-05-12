@@ -7470,6 +7470,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .returning()
         .then((rows) => rows[0] ?? null);
 
+      // BRA-769: clear stuck error status when lastError is being wiped
+      if (agent.status === "error") {
+        await db
+          .update(agents)
+          .set({ status: "idle", updatedAt: new Date() })
+          .where(eq(agents.id, agentId));
+      }
+
       if (!updated) return null;
       return {
         ...updated,

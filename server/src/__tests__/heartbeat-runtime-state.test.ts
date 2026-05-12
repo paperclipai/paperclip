@@ -47,6 +47,87 @@ describeEmbeddedPostgres("heartbeat runtime state deduplication", () => {
     await tempDb?.cleanup();
   });
 
+  it("resetRuntimeSession clears agents.status from error to idle (BRA-769)", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "TestAgent",
+      role: "engineer",
+      status: "error",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(agentRuntimeState).values({
+      agentId,
+      companyId,
+      adapterType: "codex_local",
+      stateJson: {},
+      lastError: "some_previous_error",
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resetRuntimeSession(agentId);
+
+    const [runtimeRow] = await db.select().from(agentRuntimeState).where(eq(agentRuntimeState.agentId, agentId));
+    expect(runtimeRow?.lastError).toBeNull();
+
+    const [agentRow] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(agentRow?.status).toBe("idle");
+  });
+
+  it("resetRuntimeSession does not change agents.status when not in error", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "TestAgent",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(agentRuntimeState).values({
+      agentId,
+      companyId,
+      adapterType: "codex_local",
+      stateJson: {},
+      lastError: null,
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resetRuntimeSession(agentId);
+
+    const [agentRow] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(agentRow?.status).toBe("running");
+  });
+
   it("deduplicates concurrent runtime-state creation", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
