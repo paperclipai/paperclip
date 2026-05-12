@@ -7,6 +7,10 @@ import {
   envBindingSchema,
   type CredentialDelivery,
 } from "@paperclipai/shared";
+import type {
+  CredentialBroker,
+  CredentialBrokerSession,
+} from "@paperclipai/plugin-sdk";
 
 import type { ProviderRegistry } from "./registry.js";
 import {
@@ -78,6 +82,20 @@ export interface ApplyResolverInput {
 export interface ApplyResolverResult {
   ran: boolean;
   decision?: ResolveCredentialDeliveryResult;
+  /**
+   * Populated when the resolver decided `paperclip-broker` AND a broker
+   * is registered. The caller (resolveAdapterConfigForRuntime) MUST then:
+   *   1. for each oauth binding, push the just-resolved bearer to the
+   *      broker via `broker.pushCredential`,
+   *   2. replace the bearer value in the resolved env with the matching
+   *      placeholder from `brokerSession.placeholders`,
+   *   3. surface `brokerSession.proxyUrl` and `brokerSession.caCertPem`
+   *      to the sandbox runtime so the agent's HTTPS_PROXY and CA-trust
+   *      env can be set.
+   */
+  brokerSession?: CredentialBrokerSession;
+  /** Reference to the registered broker so the caller can `pushCredential`. */
+  broker?: CredentialBroker;
 }
 
 /** Pull `oauth_token` binding summaries from a parsed env record. */
@@ -195,21 +213,36 @@ export async function applyCredentialBrokerResolver(
         );
       }
     }
+  } else if (decision.mode === "paperclip-broker" && broker) {
+    // M2: actually mint a session. The caller will (1) push bearers to
+    // the broker and (2) swap env values with placeholders before
+    // returning resolved config to its caller.
+    const brokerSession = await broker.mintSession({
+      companyId: input.companyId,
+      runId: input.runId ?? "unknown",
+      connectionIds: oauthBindings.map((b) => b.connectionId),
+      oauthEnvBindings: oauthBindings.map((b) => ({
+        envVarName: b.envVarName,
+        connectionId: b.connectionId,
+        field: "access",
+      })),
+    });
+    return { ran: true, decision, brokerSession, broker };
   } else {
-    // In M1 the broker is never registered, so this branch is unreachable.
-    // M2 lands the built-in broker and exercises this path; for now,
-    // a debug log records the decision so flag-on integration tests can
-    // assert the resolver wiring works end-to-end.
+    // byo-broker path: the orchestrator doesn't mint a session;
+    // the operator's broker is fed by the refresh worker's push.
+    // Caller still uses placeholders (deterministic from the binding
+    // shape) but we don't have a CA / proxy URL to surface.
     deps.logger.debug(
       {
-        event: "credential-broker-decision-not-yet-implemented",
+        event: "credential-broker-byo-mode-selected",
         companyId: input.companyId,
         runId: input.runId,
         agentId: input.agentId,
         decided_mode: decision.mode,
         reason: decision.reason,
       },
-      "credential broker decided non-env but M1 falls through to legacy plaintext path",
+      "credential broker decided byo-broker; caller substitutes placeholders only",
     );
   }
 
