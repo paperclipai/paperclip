@@ -12,14 +12,24 @@ const mockPluginsApi = vi.hoisted(() => ({
   dashboard: vi.fn(),
   logs: vi.fn(),
   getConfig: vi.fn(),
+  getRuntimeConfig: vi.fn(),
+  clearRuntimeConfig: vi.fn(),
   listLocalFolders: vi.fn(),
   configureLocalFolder: vi.fn(),
+}));
+
+const mockAccessApi = vi.hoisted(() => ({
+  getCurrentBoardAccess: vi.fn(),
 }));
 
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/plugins", () => ({
   pluginsApi: mockPluginsApi,
+}));
+
+vi.mock("@/api/access", () => ({
+  accessApi: mockAccessApi,
 }));
 
 vi.mock("@/context/BreadcrumbContext", () => ({
@@ -47,7 +57,21 @@ vi.mock("@/plugins/slots", () => ({
 }));
 
 vi.mock("@/components/PageTabBar", () => ({
-  PageTabBar: () => null,
+  PageTabBar: ({
+    items,
+    onValueChange,
+  }: {
+    items: Array<{ value: string; label: string }>;
+    onValueChange: (value: string) => void;
+  }) => (
+    <div>
+      {items.map((item) => (
+        <button key={item.value} type="button" onClick={() => onValueChange(item.value)}>
+          {item.label}
+        </button>
+      ))}
+    </div>
+  ),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -147,11 +171,19 @@ describe("PluginSettings", () => {
     mockPluginsApi.dashboard.mockResolvedValue(null);
     mockPluginsApi.health.mockResolvedValue({ pluginId: "plugin-1", status: "ready", healthy: true, checks: [] });
     mockPluginsApi.logs.mockResolvedValue([]);
+    mockPluginsApi.getRuntimeConfig.mockResolvedValue({ values: {}, revision: "0" });
+    mockPluginsApi.clearRuntimeConfig.mockResolvedValue(undefined);
     mockPluginsApi.listLocalFolders.mockResolvedValue({
       pluginId: "plugin-1",
       companyId: "company-1",
       declarations: [],
       folders: [],
+    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
+      isInstanceAdmin: false,
+      userId: "user-1",
+      boardUserId: "board-user-1",
+      localBoard: false,
     });
   });
 
@@ -329,6 +361,41 @@ describe("PluginSettings", () => {
     expect(container.textContent).toContain("WritableYes");
     expect(container.textContent).toContain("Present");
     expect(container.textContent).not.toContain("Validation problems");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows operator runtime config even when plugin.config.write is not declared", async () => {
+    mockPluginsApi.get.mockResolvedValue(basePlugin({
+      status: "ready",
+      manifestJson: {
+        displayName: "Runtime Plugin",
+        version: "0.1.0",
+        description: "Runtime config plugin.",
+        author: "Paperclip",
+        capabilities: [],
+      },
+    }));
+    mockPluginsApi.getRuntimeConfig.mockResolvedValue({
+      values: { mode: "paused" },
+      revision: "7",
+    });
+
+    const root = await renderSettings(container);
+
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Status")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockPluginsApi.getRuntimeConfig).toHaveBeenCalledWith("plugin-1");
+    expect(container.textContent).toContain("Runtime Config");
+    expect(container.textContent).toContain("Revision 7");
+    expect(container.textContent).toContain('"mode": "paused"');
 
     await act(async () => {
       root.unmount();

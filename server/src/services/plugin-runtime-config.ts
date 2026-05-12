@@ -166,7 +166,7 @@ export function createPluginRuntimeConfigService(db: Db) {
       return { revision: "0" };
     }
 
-    if (!(key in existing.values)) {
+    if (!Object.prototype.hasOwnProperty.call(existing.values, key)) {
       // Key not present — no-op, no revision increment
       return { revision: existing.revision };
     }

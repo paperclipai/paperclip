@@ -236,6 +236,16 @@ describeEmbeddedPostgres("plugin-runtime-config service (integration)", () => {
     expect(got.revision).toBe("1");
   });
 
+  it("unsetRuntime treats inherited object properties as missing keys", async () => {
+    await svc.setRuntime(pluginId, { a: 1 });
+    const result = await svc.unsetRuntime(pluginId, "toString");
+    expect(result.revision).toBe("1");
+
+    const got = await svc.getRuntime(pluginId);
+    expect(got.values).toEqual({ a: 1 });
+    expect(got.revision).toBe("1");
+  });
+
   it("unsetRuntime on a plugin with no row is a no-op returning '0'", async () => {
     const result = await svc.unsetRuntime(pluginId, "key");
     expect(result.revision).toBe("0");
