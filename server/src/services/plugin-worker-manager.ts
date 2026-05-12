@@ -509,12 +509,16 @@ export function createPluginWorkerHandle(
       });
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
-      log.error({ method, err: errorMessage }, "host handler error");
+      const errorCode =
+        typeof (err as { code?: unknown }).code === "number"
+          ? (err as { code: number }).code
+          : JSONRPC_ERROR_CODES.INTERNAL_ERROR;
+      log.error({ method, err: errorMessage, errorCode }, "host handler error");
       try {
         sendMessage(
           createErrorResponse(
             request.id,
-            JSONRPC_ERROR_CODES.INTERNAL_ERROR,
+            errorCode,
             errorMessage,
           ),
         );
