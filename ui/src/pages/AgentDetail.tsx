@@ -1605,6 +1605,7 @@ function ConfigurationTab({
   }, [onSavingChange, isConfigSaving]);
 
   const canCreateAgents = Boolean(agent.permissions?.canCreateAgents);
+  const canCreateIssues = Boolean(agent.permissions?.canCreateIssues);
   const canAssignTasks = Boolean(agent.access?.canAssignTasks);
   const taskAssignSource = agent.access?.taskAssignSource ?? "none";
   const taskAssignLocked = agent.role === "ceo" || canCreateAgents;
@@ -1649,10 +1650,30 @@ function ConfigurationTab({
               onCheckedChange={() =>
                 updatePermissions.mutate({
                   canCreateAgents: !canCreateAgents,
+                  canCreateIssues,
                   canAssignTasks: !canCreateAgents ? true : canAssignTasks,
                 })
               }
               disabled={updatePermissions.isPending}
+            />
+          </div>
+          <div className="flex items-center justify-between gap-4 text-sm">
+            <div className="space-y-1">
+              <div>Can create issues</div>
+              <p className="text-xs text-muted-foreground">
+                Lets this agent open new issues and child tasks.
+              </p>
+            </div>
+            <ToggleSwitch
+              checked={canCreateIssues}
+              onCheckedChange={() =>
+                updatePermissions.mutate({
+                  canCreateAgents,
+                  canCreateIssues: !canCreateIssues,
+                  canAssignTasks,
+                })
+              }
+              disabled={updatePermissions.isPending || agent.role === "ceo"}
             />
           </div>
           <div className="flex items-center justify-between gap-4 text-sm">
@@ -1667,6 +1688,7 @@ function ConfigurationTab({
               onCheckedChange={() =>
                 updatePermissions.mutate({
                   canCreateAgents,
+                  canCreateIssues,
                   canAssignTasks: !canAssignTasks,
                 })
               }

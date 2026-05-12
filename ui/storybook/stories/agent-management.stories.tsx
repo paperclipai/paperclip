@@ -171,7 +171,7 @@ const agentManagementAgents: Agent[] = [
     adapterType: "codex_local",
     pauseReason: "manual",
     pausedAt: recent(18),
-    permissions: { canCreateAgents: true },
+    permissions: { canCreateAgents: true, canCreateIssues: false },
     adapterConfig: {
       command: "codex",
       model: "gpt-5.4",

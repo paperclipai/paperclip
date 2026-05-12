@@ -31,7 +31,7 @@ const baseAgent = {
   spentMonthlyCents: 0,
   pauseReason: null,
   pausedAt: null,
-  permissions: { canCreateAgents: false },
+  permissions: { canCreateAgents: false, canCreateIssues: false },
   lastHeartbeatAt: null,
   metadata: null,
   createdAt: new Date("2026-03-19T00:00:00.000Z"),
@@ -1358,7 +1358,7 @@ describe.sequential("agent permission routes", () => {
 
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
       .patch(`/api/agents/${agentId}/permissions`)
-      .send({ canCreateAgents: true, canAssignTasks: false }));
+      .send({ canCreateAgents: true, canCreateIssues: false, canAssignTasks: false }));
 
     expect(res.status).toBe(200);
     expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
@@ -1371,6 +1371,32 @@ describe.sequential("agent permission routes", () => {
     );
     expect(res.body.access.canAssignTasks).toBe(true);
     expect(res.body.access.taskAssignSource).toBe("agent_creator");
+  });
+
+  it("persists canCreateIssues flag when updating agent permissions", async () => {
+    mockAgentService.updatePermissions.mockResolvedValue({
+      ...baseAgent,
+      permissions: { canCreateAgents: false, canCreateIssues: true },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ canCreateAgents: false, canCreateIssues: true, canAssignTasks: false }));
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({ canCreateIssues: true }),
+    );
+    expect(res.body.permissions.canCreateIssues).toBe(true);
   });
 
   it("exposes a dedicated agent route for the inbox mine view", async () => {

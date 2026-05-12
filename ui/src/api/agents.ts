@@ -66,6 +66,7 @@ export interface AgentHireResponse {
 
 export interface AgentPermissionUpdate {
   canCreateAgents: boolean;
+  canCreateIssues: boolean;
   canAssignTasks: boolean;
 }
 
