@@ -12,6 +12,12 @@
  * Claude process disposes it via SIGTERM when the run completes. All HTTP
  * errors surface as MCP tool errors (`isError: true`) rather than crashing
  * the shim, so transient 401s mid-run do not take Claude down with them.
+ *
+ * The runtime artifact at `dist/server/paperclip-tools-mcp-shim.bundle.js`
+ * is a self-contained esbuild bundle (see `build:shim` in package.json) so
+ * that remote execution targets can run it from an isolated runtime asset
+ * directory with no reachable `node_modules` -- @modelcontextprotocol/sdk
+ * and its transitive deps are inlined into the bundle.
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";

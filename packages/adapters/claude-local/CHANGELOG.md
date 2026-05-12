@@ -1,5 +1,12 @@
 # @paperclipai/adapter-claude-local
 
+## 0.4.1
+
+### Patch Changes
+
+- Make the Paperclip tools MCP shim a self-contained esbuild bundle so remote execution targets can spawn it from an isolated runtime asset directory without needing @modelcontextprotocol/sdk on disk (SPO-50 QA blocking finding).
+- Add isolated remote startup test (`paperclip-tools-mcp-shim.isolated.test.ts`) that runs the built bundle from a fresh tmp dir and round-trips an MCP `initialize` + `tools/list` to guard against regression.
+
 ## 0.4.0
 
 ### Minor Changes

@@ -7,7 +7,7 @@ import type { AdapterManagedRuntimeAsset } from "@paperclipai/adapter-utils/exec
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
-const SHIM_FILENAME = "paperclip-tools-mcp-shim.js";
+const SHIM_FILENAME = "paperclip-tools-mcp-shim.bundle.js";
 const MCP_CONFIG_FILENAME = "paperclip-tools-mcp.json";
 const REMOTE_ASSET_KEY = "paperclip-tools-mcp";
 
@@ -170,6 +170,12 @@ async function safeRemoveDir(dir: string): Promise<void> {
  * path. The remote variant prepares a staging directory containing the shim
  * file; the caller passes the directory through `prepareAdapterExecutionTargetRuntime`
  * and then writes the JSON server-side using `buildRemoteMcpConfigContents`.
+ *
+ * The shim file referenced here is the self-contained esbuild bundle produced
+ * by `pnpm run build:shim`. Because @modelcontextprotocol/sdk and its
+ * transitive deps are inlined into the bundle, shipping just the single .js
+ * to a remote target is sufficient -- the remote node process does not need
+ * any reachable `node_modules` to start the shim.
  */
 export async function preparePaperclipToolsMcp(
   input: ResolvePaperclipToolsMcpInput,

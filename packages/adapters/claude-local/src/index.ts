@@ -54,4 +54,5 @@ Operational fields:
 Notes:
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
 - The adapter ships a stdio MCP shim (paperclip-tools-mcp-shim) and starts it per run via --mcp-config, projecting Paperclip plugin-registered tools (e.g. paperclip-plugin-hindsight) into Claude as mcp__paperclip__<bare_tool_name>. Requires Claude CLI >= 2.0 (any version that advertises --mcp-config in --help output); older CLIs are detected at startup and the wiring is skipped with a warning.
+- The shim runtime artifact (dist/server/paperclip-tools-mcp-shim.bundle.js) is a self-contained esbuild bundle, so remote execution targets only need to receive that single .js file -- @modelcontextprotocol/sdk and its transitive deps are inlined and need no node_modules to be reachable from the isolated runtime asset directory.
 `;

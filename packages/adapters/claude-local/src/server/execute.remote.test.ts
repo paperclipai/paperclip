@@ -285,7 +285,7 @@ describe("claude remote execution", () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-mcp-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
-    const fakeShimPath = path.join(rootDir, "paperclip-tools-mcp-shim.js");
+    const fakeShimPath = path.join(rootDir, "paperclip-tools-mcp-shim.bundle.js");
     await mkdir(workspaceDir, { recursive: true });
     await writeFile(fakeShimPath, "// fixture\n", "utf8");
     __setShimSourcePathOverrideForTesting(fakeShimPath);

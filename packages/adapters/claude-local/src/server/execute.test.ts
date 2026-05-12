@@ -55,7 +55,7 @@ describe("claude local execution -- paperclip-tools MCP wiring", () => {
     __clearProbeCacheForTesting();
     const stagingDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-shim-fixture-"));
     cleanupDirs.push(stagingDir);
-    fakeShimPath = path.join(stagingDir, "paperclip-tools-mcp-shim.js");
+    fakeShimPath = path.join(stagingDir, "paperclip-tools-mcp-shim.bundle.js");
     await writeFile(fakeShimPath, "// fixture\n", "utf8");
     __setShimSourcePathOverrideForTesting(fakeShimPath);
   });
