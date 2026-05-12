@@ -1406,7 +1406,7 @@ function describeSessionResetReason(
   return null;
 }
 
-function shouldAutoCheckoutIssueForWake(input: {
+export function shouldAutoCheckoutIssueForWake(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   issueStatus: string | null;
   issueAssigneeAgentId: string | null;
