@@ -57,6 +57,7 @@ import {
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
+import { assertMissionControlCompletionAllowed } from "./mission-control-gates.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
@@ -3116,6 +3117,18 @@ export function issueService(db: Db) {
       }
       if (nextExecutionWorkspaceId) {
         await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
+      }
+
+      if (patch.status === "done" && existing.status !== "done") {
+        await assertMissionControlCompletionAllowed(
+          dbOrTx,
+          {
+            id: existing.id,
+            priority: typeof patch.priority === "string" ? patch.priority : existing.priority,
+            executionPolicy: existing.executionPolicy,
+          },
+          { nextExecutionPolicy: patch.executionPolicy },
+        );
       }
 
       applyStatusSideEffects(issueData.status, patch);

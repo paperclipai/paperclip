@@ -108,6 +108,52 @@ describe("recovery classifier boundary", () => {
     expect(findings).toEqual([]);
   });
 
+  it("treats substantive mission-control artifacts as recovery liveness evidence", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        {
+          id: issueId,
+          companyId,
+          identifier: "PAP-3001",
+          title: "Parent blocked on implementation artifact",
+          status: "blocked",
+          assigneeAgentId: agentId,
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          executionState: null,
+        },
+        {
+          id: blockerId,
+          companyId,
+          identifier: "PAP-3002",
+          title: "Produce final blueprint",
+          status: "todo",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          executionState: null,
+          documents: [{ key: "final-orchestration-blueprint", body: "x".repeat(3500) }],
+          comments: [],
+        },
+      ],
+      relations: [{ companyId, blockerIssueId: blockerId, blockedIssueId: issueId }],
+      agents: [
+        {
+          id: agentId,
+          companyId,
+          name: "Coder",
+          role: "engineer",
+          status: "idle",
+          reportsTo: managerId,
+        },
+      ],
+    });
+
+    expect(findings).toEqual([]);
+  });
+
   it("does not treat overdue or exhausted monitors as explicit waiting paths", () => {
     const baseIssue = {
       id: issueId,

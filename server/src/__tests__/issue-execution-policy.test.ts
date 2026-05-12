@@ -132,6 +132,28 @@ describe("normalizeIssueExecutionPolicy", () => {
       },
     });
   });
+
+  it("keeps mission-control-only policies so validation gates survive create/update normalization", () => {
+    const result = normalizeIssueExecutionPolicy({
+      stages: [],
+      missionControl: {
+        enabled: true,
+        riskClass: "high",
+        requiredDocumentKeys: ["validation-contract", "worker-handoff", "validator-report"],
+      },
+    });
+
+    expect(result).toMatchObject({
+      mode: "normal",
+      commentRequired: true,
+      stages: [],
+      missionControl: {
+        enabled: true,
+        riskClass: "high",
+        requiredDocumentKeys: ["validation-contract", "worker-handoff", "validator-report"],
+      },
+    });
+  });
 });
 
 describe("parseIssueExecutionState", () => {

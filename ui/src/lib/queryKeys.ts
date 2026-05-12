@@ -50,6 +50,7 @@ export const queryKeys = {
     listByExecutionWorkspace: (companyId: string, executionWorkspaceId: string) =>
       ["issues", companyId, "execution-workspace", executionWorkspaceId] as const,
     detail: (id: string) => ["issues", "detail", id] as const,
+    autonomousLoopState: (issueId: string) => ["issues", "autonomous-loop-state", issueId] as const,
     comments: (issueId: string) => ["issues", "comments", issueId] as const,
     interactions: (issueId: string) => ["issues", "interactions", issueId] as const,
     feedbackVotes: (issueId: string) => ["issues", "feedback-votes", issueId] as const,
@@ -149,6 +150,10 @@ export const queryKeys = {
   sidebarBadges: (companyId: string) => ["sidebar-badges", companyId] as const,
   inboxDismissals: (companyId: string) => ["inbox-dismissals", companyId] as const,
   activity: (companyId: string) => ["activity", companyId] as const,
+  autonomousLoopWatchdog: {
+    preview: (companyId: string, limit: number) =>
+      ["autonomous-loop-watchdog", "preview", companyId, limit] as const,
+  },
   costs: (companyId: string, from?: string, to?: string) =>
     ["costs", companyId, from, to] as const,
   usageByProvider: (companyId: string, from?: string, to?: string) =>

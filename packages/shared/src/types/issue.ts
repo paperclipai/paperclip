@@ -26,6 +26,7 @@ import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
 import type { IssueWorkProduct } from "./work-product.js";
+import type { MissionControlIssuePolicy } from "../mission-control.js";
 
 export type { IssueWorkMode };
 
@@ -270,6 +271,7 @@ export interface IssueExecutionPolicy {
   commentRequired: boolean;
   stages: IssueExecutionStage[];
   monitor?: IssueExecutionMonitorPolicy | null;
+  missionControl?: MissionControlIssuePolicy | null;
 }
 
 export interface IssueExecutionMonitorState {

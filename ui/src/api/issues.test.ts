@@ -47,4 +47,12 @@ describe("issuesApi.list", () => {
       "/companies/company-1/issues?limit=500&offset=1500",
     );
   });
+
+  it("fetches autonomous loop state from the issue endpoint", async () => {
+    mockApi.get.mockResolvedValue({ enabled: false, status: "disabled" });
+
+    await issuesApi.getAutonomousLoopState("PAP-1");
+
+    expect(mockApi.get).toHaveBeenCalledWith("/issues/PAP-1/autonomous-loop-state");
+  });
 });
