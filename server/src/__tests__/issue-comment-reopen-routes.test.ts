@@ -535,6 +535,7 @@ describe.sequential("issue comment reopen routes", () => {
       .send({ body: "hello" });
 
     expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(mockDbSelectLimit).toHaveBeenCalled());
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
