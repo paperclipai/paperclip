@@ -416,6 +416,56 @@ export async function createApp(
     }
   });
 
+  // GET /api/creator/config — exposes public Supabase config for the landing page auth
+  app.get("/api/creator/config", (_req, res) => {
+    const supabaseUrl     = supabaseBase();
+    const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || "";
+    res.json({ supabaseUrl, supabaseAnonKey: supabaseAnonKey || null });
+  });
+
+  // GET /api/admin/users?secret=X — list all Supabase Auth users
+  app.get("/api/admin/users", async (req, res) => {
+    const secret = (req.query.secret as string) ?? "";
+    if (!secret || secret !== (process.env.ADMIN_SECRET ?? "")) {
+      res.status(403).json({ error: "forbidden" }); return;
+    }
+    try {
+      const base = supabaseBase();
+      const key  = supabaseKey();
+      const r = await fetch(`${base}/auth/v1/admin/users?per_page=1000`, {
+        headers: { apikey: key, Authorization: `Bearer ${key}` },
+      });
+      if (!r.ok) { res.status(r.status).json({ error: "Supabase error" }); return; }
+      const data = await r.json();
+      res.json(data);
+    } catch (e) {
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  // PATCH /api/admin/users/:id?secret=X — update user plan in metadata
+  app.patch("/api/admin/users/:id", async (req, res) => {
+    const secret = (req.query.secret as string) ?? "";
+    if (!secret || secret !== (process.env.ADMIN_SECRET ?? "")) {
+      res.status(403).json({ error: "forbidden" }); return;
+    }
+    const { plan } = req.body as { plan?: string };
+    if (!plan) { res.status(400).json({ error: "plan required" }); return; }
+    try {
+      const base = supabaseBase();
+      const key  = supabaseKey();
+      const r = await fetch(`${base}/auth/v1/admin/users/${req.params.id}`, {
+        method:  "PUT",
+        headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body:    JSON.stringify({ user_metadata: { plan } }),
+      });
+      if (!r.ok) { res.status(r.status).json({ error: "Supabase error" }); return; }
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
   // GET /api/content/stats
   app.get("/api/content/stats", async (req, res) => {
     try {
@@ -962,7 +1012,7 @@ TIKTOK_OPEN_ID=${openId}
           envVar: "MARKET_SCANNER_AGENT_ID",
           title: "Polymarket Opportunity Scanner",
           role: "engineer" as const,
-          adapterConfig: { command: "python3", args: ["agents/trading/market_scanner.py"], cwd: "/app", timeoutSec: 120 },
+          adapterConfig: { command: "python3", args: ["agents/trading/stock_analyzer.py"], cwd: "/app", timeoutSec: 120 },
           budgetMonthlyCents: 4000,
           reportsTo: null as string | null,
         },
@@ -971,7 +1021,7 @@ TIKTOK_OPEN_ID=${openId}
           envVar: "PROBABILITY_ESTIMATOR_AGENT_ID",
           title: "LLM-based Probability Analyst",
           role: "engineer" as const,
-          adapterConfig: { command: "python3", args: ["agents/trading/probability_estimator.py"], cwd: "/app", timeoutSec: 120 },
+          adapterConfig: { command: "python3", args: ["agents/trading/strategy_designer.py"], cwd: "/app", timeoutSec: 120 },
           budgetMonthlyCents: 6000,
           reportsTo: null as string | null,
         },
@@ -980,7 +1030,7 @@ TIKTOK_OPEN_ID=${openId}
           envVar: "RISK_MANAGER_AGENT_ID",
           title: "Position Sizing & Risk Control",
           role: "engineer" as const,
-          adapterConfig: { command: "python3", args: ["agents/trading/risk_manager.py"], cwd: "/app", timeoutSec: 60 },
+          adapterConfig: { command: "python3", args: ["agents/trading/strategy_critic.py"], cwd: "/app", timeoutSec: 60 },
           budgetMonthlyCents: 2000,
           reportsTo: null as string | null,
         },
@@ -989,7 +1039,7 @@ TIKTOK_OPEN_ID=${openId}
           envVar: "EXECUTOR_AGENT_ID",
           title: "Polymarket Order Executor",
           role: "engineer" as const,
-          adapterConfig: { command: "python3", args: ["agents/trading/executor.py"], cwd: "/app", timeoutSec: 120 },
+          adapterConfig: { command: "python3", args: ["agents/trading/strategy_optimizer.py"], cwd: "/app", timeoutSec: 120 },
           budgetMonthlyCents: 2000,
           reportsTo: null as string | null,
         },
@@ -1084,6 +1134,198 @@ TIKTOK_OPEN_ID=${openId}
         results,
         envVars: envLines,
       });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  // ── Auth diagnostics ────────────────────────────────────────────────────────
+  // GET /api/internal/check-auth-user?email=X&secret=Y
+  app.get("/api/internal/check-auth-user", async (req, res) => {
+    const secret = (req.query.secret as string) ?? "";
+    const expectedSecret = (process.env.BETTER_AUTH_SECRET ?? "").slice(0, 16);
+    if (!secret || !expectedSecret || secret !== expectedSecret) {
+      res.status(403).json({ error: "forbidden" }); return;
+    }
+    const email = ((req.query.email as string) ?? "").toLowerCase().trim();
+    if (!email) { res.status(400).json({ error: "email required" }); return; }
+    try {
+      const { authUsers: users, authAccounts: accounts } = await import("@paperclipai/db");
+      const user = await (db as any)
+        .select({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified, createdAt: users.createdAt })
+        .from(users).where(eq(users.email, email)).limit(1).then((r: any[]) => r[0] ?? null);
+      if (!user) { res.json({ exists: false, email }); return; }
+      const accts = await (db as any)
+        .select({ providerId: accounts.providerId, hasPassword: accounts.password })
+        .from(accounts).where(eq(accounts.userId, user.id));
+      res.json({ exists: true, user, accounts: accts.map((a: any) => ({ providerId: a.providerId, hasPassword: !!a.hasPassword })) });
+    } catch (err: unknown) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // POST /api/internal/delete-auth-user — delete user so they can re-register
+  // Body: { email, secret }
+  app.post("/api/internal/delete-auth-user", async (req, res) => {
+    const secret = ((req.body as any)?.secret as string) ?? "";
+    const expectedSecret = (process.env.BETTER_AUTH_SECRET ?? "").slice(0, 16);
+    if (!secret || !expectedSecret || secret !== expectedSecret) {
+      res.status(403).json({ error: "forbidden" }); return;
+    }
+    const email = (((req.body as any)?.email as string) ?? "").toLowerCase().trim();
+    if (!email) { res.status(400).json({ error: "email required" }); return; }
+    try {
+      const { authUsers: users } = await import("@paperclipai/db");
+      const user = await (db as any)
+        .select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1).then((r: any[]) => r[0] ?? null);
+      if (!user) { res.json({ deleted: false, reason: "user not found" }); return; }
+      await (db as any).delete(users).where(eq(users.id, user.id));
+      res.json({ deleted: true, userId: user.id, email });
+    } catch (err: unknown) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // ── Restore user memberships to all companies ────────────────────────────────
+  // Usage: GET /api/internal/restore-user-access?userId=X&secret=Y
+  app.get("/api/internal/restore-user-access", async (req, res) => {
+    const secret = (req.query.secret as string) ?? "";
+    const expectedSecret = (process.env.BETTER_AUTH_SECRET ?? "").slice(0, 16);
+    if (!secret || !expectedSecret || secret !== expectedSecret) {
+      res.status(403).json({ error: "forbidden" }); return;
+    }
+    const userId = (req.query.userId as string) ?? "";
+    if (!userId) { res.status(400).json({ error: "userId required" }); return; }
+    try {
+      // Get all companies
+      const companies = await (db as any)
+        .select({ id: companiesTable.id, name: companiesTable.name })
+        .from(companiesTable);
+
+      const { and: _and } = await import("drizzle-orm");
+      const results: Record<string, string> = {};
+      for (const company of companies) {
+        // Check if membership exists FOR THIS SPECIFIC COMPANY
+        const existing = await (db as any)
+          .select({ id: companyMemberships.id })
+          .from(companyMemberships)
+          .where(_and(
+            eq(companyMemberships.principalId, userId),
+            eq(companyMemberships.companyId, company.id),
+          ))
+          .limit(1)
+          .then((r: any[]) => r[0] ?? null);
+
+        if (!existing) {
+          await (db as any).insert(companyMemberships).values({
+            companyId:      company.id,
+            principalType:  "user",
+            principalId:    userId,
+            status:         "active",
+            membershipRole: "admin",
+          });
+          results[company.name] = "granted";
+        } else {
+          results[company.name] = "already_exists";
+        }
+      }
+      res.json({ ok: true, userId, results });
+    } catch (err: unknown) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // ── Grant instance admin role to a user ──────────────────────────────────────
+  // Usage: GET /api/internal/grant-instance-admin?userId=X&secret=Y
+  app.get("/api/internal/grant-instance-admin", async (req, res) => {
+    const secret = (req.query.secret as string) ?? "";
+    const expectedSecret = (process.env.BETTER_AUTH_SECRET ?? "").slice(0, 16);
+    if (!secret || !expectedSecret || secret !== expectedSecret) {
+      res.status(403).json({ error: "forbidden" }); return;
+    }
+    const userId = (req.query.userId as string) ?? "";
+    if (!userId) { res.status(400).json({ error: "userId required" }); return; }
+    try {
+      const { instanceUserRoles } = await import("@paperclipai/db");
+      await (db as any)
+        .insert(instanceUserRoles)
+        .values({ userId, role: "instance_admin" })
+        .onConflictDoNothing();
+      res.json({ ok: true, userId, role: "instance_admin" });
+    } catch (err: unknown) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // ── Fix trading agent scripts in DiscontrolsBags ────────────────────────────
+  // Usage: GET /api/internal/fix-trading-scripts?secret=<first-16-chars-BETTER_AUTH_SECRET>
+  app.get("/api/internal/fix-trading-scripts", async (req, res) => {
+    const secret = (req.query.secret as string) ?? "";
+    const expectedSecret = (process.env.BETTER_AUTH_SECRET ?? "").slice(0, 16);
+    if (!secret || !expectedSecret || secret !== expectedSecret) {
+      res.status(403).json({ error: "forbidden" }); return;
+    }
+    const TRADING_COMPANY_ID = "866b74e7-79a7-4166-9f9f-025faa751aa1";
+    const FIXES = [
+      { name: "Market Scanner",        args: ["agents/trading/stock_analyzer.py"],     timeoutSec: 120 },
+      { name: "Probability Estimator", args: ["agents/trading/strategy_designer.py"],  timeoutSec: 120 },
+      { name: "Risk Manager",          args: ["agents/trading/strategy_critic.py"],     timeoutSec: 60  },
+      { name: "Executor",              args: ["agents/trading/strategy_optimizer.py"],  timeoutSec: 120 },
+    ];
+    try {
+      const existing: { id: string; name: string; adapterConfig: unknown }[] = await (db as any)
+        .select({ id: agentsTable.id, name: agentsTable.name, adapterConfig: agentsTable.adapterConfig })
+        .from(agentsTable)
+        .where(eq(agentsTable.companyId, TRADING_COMPANY_ID));
+
+      const results: Record<string, { id: string; updated: boolean }> = {};
+      for (const fix of FIXES) {
+        const agent = existing.find(a => a.name.toLowerCase() === fix.name.toLowerCase());
+        if (!agent) { results[fix.name] = { id: "not found", updated: false }; continue; }
+        const current = (agent.adapterConfig as Record<string, unknown>) ?? {};
+        await (db as any).update(agentsTable)
+          .set({ adapterConfig: { ...current, args: fix.args, timeoutSec: fix.timeoutSec } })
+          .where(eq(agentsTable.id, agent.id));
+        results[fix.name] = { id: agent.id, updated: true };
+      }
+      res.json({ ok: true, results });
+    } catch (err: unknown) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // ── Fix adapterConfig for TradingView agents in DiscontrolsBags ─────────────
+  // Updates all 6 agent scripts to their correct TradingView paths.
+  // Usage: GET /api/internal/fix-trading-adapters?secret=<first-16-chars>
+  app.get("/api/internal/fix-trading-adapters", async (req, res) => {
+    const secret = (req.query.secret as string) ?? "";
+    const expectedSecret = (process.env.BETTER_AUTH_SECRET ?? "").slice(0, 16);
+    if (!secret || !expectedSecret || secret !== expectedSecret) {
+      res.status(403).json({ error: "forbidden" });
+      return;
+    }
+    try {
+      const FIXES = [
+        { id: "41df12d7-71c4-494e-a503-d02ef88fb1d8", name: "CEO",                  script: "agents/trading/ceo.py",               timeout: 1800 },
+        { id: "6f75364c-0ab2-48ac-9144-f40578435d67", name: "Stock Analyzer",       script: "agents/trading/stock_analyzer.py",    timeout: 180  },
+        { id: "ff3e3f5f-118f-451d-b042-91ec19d0cf11", name: "Strategy Designer",    script: "agents/trading/strategy_designer.py", timeout: 300  },
+        { id: "149be654-dccb-4da3-a6c6-091c5b5fe1e6", name: "Strategy Critic",      script: "agents/trading/strategy_critic.py",   timeout: 180  },
+        { id: "61ced466-af5b-43be-a049-e94cf895274a", name: "Strategy Optimizer",   script: "agents/trading/strategy_optimizer.py",timeout: 300  },
+        { id: "74bc12a4-6928-4450-b472-2962c3516627", name: "Reporter",             script: "agents/trading/reporter.py",          timeout: 120  },
+      ];
+
+      const results: Record<string, string> = {};
+      for (const fix of FIXES) {
+        const adapterConfig = { command: "python3", args: [fix.script], cwd: "/app", timeoutSec: fix.timeout };
+        await (db as any)
+          .update(agentsTable)
+          .set({ adapterConfig, status: "idle" })
+          .where(eq(agentsTable.id, fix.id));
+        results[fix.name] = fix.script;
+        console.log(`  ✅ Fixed ${fix.name} → ${fix.script}`);
+      }
+      res.json({ ok: true, fixed: results });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       res.status(500).json({ error: msg });
@@ -1232,6 +1474,9 @@ TIKTOK_OPEN_ID=${openId}
     if (fs.existsSync(p)) res.sendFile(p);
     else res.status(404).send(`${file} not found.`);
   };
+  app.get("/",             serveCreatorPage("landing.html"));
+  app.get("/cuenta",       serveCreatorPage("cuenta.html"));
+  app.get("/panel",        serveCreatorPage("admin.html"));
   app.get("/studio",       serveCreatorPage("index.html"));
   app.get("/agentes",      serveCreatorPage("agentes.html"));
   app.get("/estadisticas", serveCreatorPage("estadisticas.html"));

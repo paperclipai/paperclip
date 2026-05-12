@@ -262,7 +262,8 @@ def fetch_amazon_es(category: str = "electronics") -> list:
 
 # ── LLM enrichment ───────────────────────────────────────────────────────────
 
-def enrich_with_llm(raw_products: list, niche: str, yt_signals: list, api_key: str) -> list:
+def enrich_with_llm(raw_products: list, niche: str, yt_signals: list, api_key: str,
+                    extra_context: str = "") -> list:
     """
     Analiza todos los productos y señales de YouTube para generar el ranking final.
     Devuelve los 8-10 mejores con métricas de dropshipping.
@@ -304,7 +305,7 @@ NICHO OBJETIVO EXACTO: "{niche_core}"
 Si un producto no pertenece DIRECTAMENTE a este nicho, DESCÁRTALO sin excepción.
 NO generes productos de otros nichos aunque los datos de fuentes no sean relevantes.
 Si las fuentes no tienen datos útiles, inventa 8 productos específicos del nicho "{niche_core}".
-{yt_context}
+{yt_context}{extra_context}
 
 PRODUCTOS ENCONTRADOS EN FUENTES (filtra solo los del nicho):
 {products_text}
@@ -391,9 +392,128 @@ def get_amazon_category(niche: str) -> str:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def fetch_cj_products(niche: str, cj_key: str, limit: int = 8) -> list:
+    """
+    Busca productos en CJ Dropshipping API con datos reales:
+    precio real del proveedor, imágenes reales, inventario.
+    Requiere CJ_API_KEY en Railway.
+    """
+    if not cj_key:
+        return []
+    CJ_BASE = "https://developers.cjdropshipping.com/api2.0/v1"
+    import time as _time
+
+    # 1. Obtener token (simple, sin cache en este contexto)
+    try:
+        payload = json.dumps({"apiKey": cj_key}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{CJ_BASE}/authentication/getAccessToken",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            auth_data = json.loads(r.read().decode("utf-8"))
+        print(f"  🔐 CJ auth response: result={auth_data.get('result')} msg={auth_data.get('message','?')}", flush=True)
+        if not auth_data.get("result"):
+            print(f"  ⚠️  CJ auth failed: {json.dumps(auth_data)[:200]}", flush=True)
+            return []
+        token = auth_data["data"]["accessToken"]
+        print(f"  ✅ CJ token OK: {token[:12]}...", flush=True)
+    except Exception as e:
+        print(f"  ⚠️  CJ token error: {type(e).__name__}: {e}", flush=True)
+        return []
+
+    # 2. Buscar productos
+    try:
+        # CJ requiere inglés — traducción ampliada
+        kw_map = {
+            "perro": "dog", "gato": "cat", "mascota": "pet", "mascotás": "pet",
+            "collar": "collar", "arnés": "harness", "arnes": "harness", "correa": "leash",
+            "cocina": "kitchen", "hogar": "home", "fitness": "fitness",
+            "deporte": "sport", "gadget": "gadget", "led": "led",
+            "humidificador": "humidifier", "soporte": "stand",
+            "mochila": "backpack", "bolsa": "bag", "rodillo": "roller",
+            "masaje": "massage", "facial": "facial", "cuarzo": "quartz",
+            "portátil": "portable", "portatil": "portable",
+            "recargable": "rechargeable", "inalámbrico": "wireless",
+            "luminoso": "light", "impermeable": "waterproof",
+            "para perros": "dog", "para gatos": "cat",
+            "de escritorio": "desktop", "de viaje": "travel",
+        }
+        query = niche.lower()
+        for es, en in kw_map.items():
+            query = query.replace(es, en)
+        # Limpiar: quitar artículos y preposiciones en español que quedaron
+        for word in ["para", "de", "del", "con", "sin", "los", "las", "el", "la", "un", "una"]:
+            query = re.sub(rf'\b{word}\b', '', query)
+        query = re.sub(r'\s+', ' ', query).strip()
+        print(f"  🔑 CJ keyword: '{query}'", flush=True)
+
+        params = urllib.parse.urlencode({"keyWord": query, "pageNum": 1, "pageSize": limit})
+        req = urllib.request.Request(
+            f"{CJ_BASE}/product/list?{params}",
+            headers={"CJ-Access-Token": token, "Accept": "application/json"},
+            method="GET"
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8"))
+
+        print(f"  📡 CJ response: result={data.get('result')} msg={data.get('message','?')} code={data.get('code','?')}", flush=True)
+        if not data.get("result"):
+            print(f"  ⚠️  CJ search failed full: {json.dumps(data)[:300]}", flush=True)
+            return []
+
+        data_obj = data.get("data") or {}
+        print(f"  📦 CJ data keys: {list(data_obj.keys()) if isinstance(data_obj, dict) else type(data_obj).__name__}", flush=True)
+        raw = data_obj.get("list", []) if isinstance(data_obj, dict) else []
+        print(f"  📦 CJ raw products: {len(raw)}", flush=True)
+        if raw:
+            sample = raw[0]
+            print(f"  🔍 CJ sample fields: {list(sample.keys())[:15]}", flush=True)
+            img = sample.get('productImage') or sample.get('bigImage') or sample.get('imageUrl') or ''
+            name = sample.get('productNameEn') or sample.get('productName') or sample.get('nameEn') or ''
+            print(f"  🔍 CJ sample productImage: '{img[:80] if img else 'EMPTY'}'", flush=True)
+            print(f"  🔍 CJ sample productNameEn: '{name[:60] if name else 'EMPTY'}'", flush=True)
+        products = []
+        for p in raw[:limit]:
+            # CJ puede devolver precio como "16.95 -- 22.97" (rango) — tomar el menor
+            def parse_price(val):
+                if not val: return 0.0
+                s = str(val).split("--")[0].strip().split("-")[0].strip()
+                try: return float(s)
+                except: return 0.0
+            price_usd = parse_price(p.get("sellPrice") or p.get("nowPrice"))
+            price_eur = round(price_usd * 0.92, 2)
+            # Campos correctos: productNameEn/productName, productImage (no bigImage/nameEn)
+            name  = (p.get("productNameEn") or p.get("productName") or p.get("nameEn") or "")[:100]
+            image = (p.get("productImage") or p.get("bigImage") or p.get("imageUrl") or "")
+            products.append({
+                "name":                  name,
+                "score":                 70,   # base score — se ajusta con LLM
+                "est_margin_pct":        int((1 - 1/3) * 100),  # ~66% a 3x markup
+                "competition":           "Med",
+                "suggested_price_eur":   round(price_eur * 3, 2),
+                "supplier_est_cost_eur": price_eur,
+                "why":                   f"Proveedor CJ verificado. Coste real: €{price_eur}",
+                "target_audience":       "adultos 25-45",
+                "image_url":             image,
+                "sku":                   p.get("sku", ""),
+                "cj_url":                f"https://www.cjdropshipping.com/product/-p-{p.get('id','')}.html",
+                "source":                "cj_dropshipping",
+                "yt_demand":             "unknown",
+            })
+        print(f"  → {len(products)} productos de CJ Dropshipping", flush=True)
+        return products
+    except Exception as e:
+        print(f"  ⚠️  CJ search error: {e}", flush=True)
+        return []
+
+
 def main():
     api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     yt_key  = os.environ.get("YOUTUBE_API_KEY_DEEP_SEARCH", "").strip()
+    cj_key  = os.environ.get("CJ_API_KEY", "").strip()
 
     issue_title, issue_body = resolve_issue_context()
     raw = issue_body if issue_body else (issue_title or "")
@@ -408,6 +528,7 @@ def main():
 
     sources = []
     if yt_key:  sources.append("YouTube API")
+    if cj_key:  sources.append("CJ Dropshipping")
     sources += ["Perplexity", "Google Trends", "Amazon.es"]
 
     post_issue_comment(
@@ -439,8 +560,14 @@ def main():
     print(f"\n🛒 Amazon.es ({get_amazon_category(niche)})...", flush=True)
     amazon_products = fetch_amazon_es(get_amazon_category(niche))
 
+    # 5. CJ Dropshipping — datos reales del proveedor
+    print(f"\n📦 CJ Dropshipping...", flush=True)
+    cj_products = fetch_cj_products(niche, cj_key, limit=8) if cj_key else []
+
     # ── Combinar todas las fuentes ────────────────────────────────────────────
     all_products = []
+    # CJ primero — datos reales tienen prioridad
+    all_products.extend(cj_products)
     all_products.extend(yt_signals)
     all_products.extend(perplexity_products)
     all_products.extend(relevant_trends)
@@ -449,8 +576,39 @@ def main():
     if not all_products:
         all_products = [{"name": niche, "source": "manual"}]
 
+    # Si hay productos de CJ con datos reales, el LLM los usa como base
+    cj_context = ""
+    if cj_products:
+        cj_context = f"\n\nPRODUCTOS REALES DE PROVEEDOR CJ DROPSHIPPING (precio y fotos verificados):\n"
+        for p in cj_products[:5]:
+            cj_context += f"- {p['name']} | Coste: €{p['supplier_est_cost_eur']} | Venta: €{p['suggested_price_eur']}\n"
+
     print(f"\n🤖 Analizando {len(all_products)} señales con LLM...", flush=True)
-    products = enrich_with_llm(all_products, niche, yt_signals, api_key) if api_key else all_products
+    products = enrich_with_llm(all_products, niche, yt_signals, api_key, extra_context=cj_context) if api_key else all_products
+
+    # Re-atachar image_url de CJ — el LLM borra las URLs al reescribir productos
+    if cj_products:
+        cj_image_map = {}
+        for p in cj_products:
+            if p.get("image_url") and p["image_url"].startswith("http"):
+                # Indexar por palabras clave del nombre (primeras 3 palabras)
+                key = " ".join(p["name"].lower().split()[:3])
+                cj_image_map[key] = {"image_url": p["image_url"], "cj_url": p.get("cj_url", "")}
+
+        for enriched in products:
+            if enriched.get("image_url"):
+                continue  # ya tiene imagen
+            name_lower = enriched.get("name", "").lower()
+            # Buscar match en el mapa de CJ
+            for cj_key_name, cj_data in cj_image_map.items():
+                if any(w in name_lower for w in cj_key_name.split() if len(w) > 3):
+                    enriched["image_url"] = cj_data["image_url"]
+                    enriched["cj_url"]    = cj_data["cj_url"]
+                    enriched["source"]    = "cj_dropshipping"
+                    break
+
+        attached = sum(1 for p in products if p.get("image_url"))
+        print(f"  🖼️  CJ images re-attached: {attached}/{len(products)}", flush=True)
 
     # Ordenar por score
     if products and isinstance(products[0], dict) and "score" in products[0]:
@@ -492,14 +650,17 @@ def main():
     # JSON slim para el siguiente agente (Ad Spy / Lead Qualifier)
     slim_products = [
         {
-            "name":                p.get("name", ""),
-            "score":               p.get("score", 0),
-            "est_margin_pct":      p.get("est_margin_pct", 0),
-            "competition":         p.get("competition", "Med"),
-            "suggested_price_eur": p.get("suggested_price_eur", 0),
+            "name":                  p.get("name", ""),
+            "score":                 p.get("score", 0),
+            "est_margin_pct":        p.get("est_margin_pct", 0),
+            "competition":           p.get("competition", "Med"),
+            "suggested_price_eur":   p.get("suggested_price_eur", 0),
             "supplier_est_cost_eur": p.get("supplier_est_cost_eur", 0),
-            "why":                 p.get("why", "")[:120],
-            "yt_demand":           p.get("yt_demand", "unknown"),
+            "why":                   p.get("why", "")[:120],
+            "yt_demand":             p.get("yt_demand", "unknown"),
+            "image_url":             p.get("image_url", ""),
+            "cj_url":                p.get("cj_url", ""),
+            "source":                p.get("source", ""),
         }
         for p in products[:10]
     ]

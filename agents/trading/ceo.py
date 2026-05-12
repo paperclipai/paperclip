@@ -284,6 +284,10 @@ def run_pipeline(parent_issue_id: str, headers: dict, ticker: str, style: str) -
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    print("🤖 CEO Strategy Factory arrancando...", flush=True)
+    # DiscontrolsBags — necesario para que resolve_issue_context() use el company correcto
+    os.environ["PAPERCLIP_COMPANY_ID"] = "866b74e7-79a7-4166-9f9f-025faa751aa1"
+
     secret = os.environ.get("BETTER_AUTH_SECRET", "").strip()
     if not secret:
         print("ERROR: BETTER_AUTH_SECRET no configurado", file=sys.stderr)
@@ -291,6 +295,7 @@ def main():
 
     issue_id    = os.environ.get("PAPERCLIP_ISSUE_ID", "").strip()
     issue_title, issue_body = resolve_issue_context()
+    print(f"   Input recibido: {len(issue_body)} chars body / {len(issue_title)} chars title", flush=True)
     raw = issue_body if issue_body else (issue_title or "AAPL momentum")
 
     params = parse_input(raw)

@@ -14,11 +14,13 @@ URL pública: `https://spirited-charm-production.up.railway.app`
 ## Rutas del servidor
 
 ```
+GET  /               → frontend/landing.html      (Landing page pública — hero, precios, auth)
 GET  /studio          → frontend/index.html       (Studio UI principal)
 GET  /agentes         → frontend/agentes.html      (10 agentes reales)
 GET  /estadisticas    → frontend/estadisticas.html (métricas Supabase)
 GET  /biblioteca      → frontend/biblioteca.html   (galería de vídeos)
 
+GET  /api/creator/config                   → {supabaseUrl, supabaseAnonKey} para Supabase Auth JS
 GET  /api/content/videos?limit=N&offset=N  → proxy Supabase (clave secreta segura)
 GET  /api/content/stats                    → conteo real de vídeos/imágenes
 
@@ -33,7 +35,8 @@ GET  /terms, /privacy → páginas legales TikTok
 | Variable | Uso |
 |---|---|
 | `SUPABASE_URL` | URL base Supabase — incluye `/rest/v1` (ej: `https://xxx.supabase.co/rest/v1`) |
-| `SUPABASE_KEY` | Clave secreta Supabase (formato `sb_secret_...`) |
+| `SUPABASE_KEY` | Clave secreta Supabase (formato `sb_secret_...`) — solo servidor |
+| `SUPABASE_ANON_KEY` | Clave pública Supabase (anon key) — expuesta en landing para Supabase Auth JS |
 | `OPENROUTER_API_KEY` | LLM (Claude Haiku/Sonnet via OpenRouter) |
 | `HIGGSFIELD_API_KEY` | Popcorn/DoP: `Key <key>` · Soul: `<uuid>:<secret>` |
 | `ELEVENLABS_API_KEY` | TTS narración |

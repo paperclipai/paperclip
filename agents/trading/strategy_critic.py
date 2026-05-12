@@ -54,18 +54,23 @@ def parse_response(response: str) -> dict:
 
 
 def main():
+    print("🔍 Strategy Critic arrancando...", flush=True)
+    os.environ["PAPERCLIP_COMPANY_ID"] = "866b74e7-79a7-4166-9f9f-025faa751aa1"
     api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not api_key:
-        print("ERROR: OPENROUTER_API_KEY no configurada", file=sys.stderr)
-        sys.exit(1)
+        print("ERROR: OPENROUTER_API_KEY no configurada", flush=True)
+        post_issue_result("❌ Strategy Critic: OPENROUTER_API_KEY no configurada.")
+        return
 
     issue_title, issue_body = resolve_issue_context()
     raw = issue_body if issue_body else (issue_title or "")
+    print(f"   Input: {len(raw)} chars", flush=True)
 
     pine_code = extract_pine_script(raw)
+    print(f"   Pine Script extraído: {len(pine_code)} chars", flush=True)
     if not pine_code or len(pine_code) < 50:
-        post_issue_result("ERROR: no se encontro codigo Pine Script en el input.")
-        sys.exit(1)
+        post_issue_result("❌ Strategy Critic: no se encontró Pine Script en el input.")
+        return
 
     post_issue_comment("🔍 Strategy Critic — revisando calidad del Pine Script...")
     print(f"🔍 Revisando Pine Script ({len(pine_code)} chars)...", flush=True)

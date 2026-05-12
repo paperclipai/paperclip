@@ -109,6 +109,7 @@ def parse_input(raw: str) -> dict:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    os.environ["PAPERCLIP_COMPANY_ID"] = "866b74e7-79a7-4166-9f9f-025faa751aa1"
     issue_title, issue_body = resolve_issue_context()
     raw = issue_body if issue_body else (issue_title or "")
 

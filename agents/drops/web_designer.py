@@ -24,6 +24,86 @@ def load_reference_landings() -> str:
         return ""
 
 
+def fetch_openverse_images(product_name: str) -> dict:
+    """
+    Busca imágenes relevantes en Openverse (WordPress Foundation).
+    - Sin API key requerida
+    - Funciona desde cualquier IP incluyendo Railway
+    - Busca por keyword → fotos reales relacionadas con el producto
+    - Licencias Creative Commons (uso libre)
+    API: https://api.openverse.org/v1/images/?q=QUERY
+    """
+    # Detectar categoría y usar query en inglés (Openverse solo funciona bien en inglés)
+    name_lower = product_name.lower()
+    category_queries = [
+        (["coche", "auto", "vehiculo", "consola central", "organizador coche"], "car interior organizer accessory"),
+        (["perro", "mascota", "pet", "collar", "arnes", "arnés", "correa"], "dog pet accessory"),
+        (["gato", "felino"], "cat pet accessory"),
+        (["humidificador", "humidifier", "aroma", "difusor"], "humidifier room home"),
+        (["laptop", "portatil", "portátil", "soporte laptop", "soporte ordenador"], "laptop stand desk"),
+        (["mochila", "backpack", "bolsa viaje"], "backpack travel bag"),
+        (["cocina", "kitchen", "blender", "licuadora"], "kitchen gadget cooking"),
+        (["fitness", "gym", "banda", "ejercicio", "deporte", "pistola masaje", "masaje muscular"], "fitness workout equipment"),
+        (["masaje facial", "mascarilla", "skincare", "serum", "crema", "led facial", "rejuvenecimiento"], "skincare beauty facial"),
+        # Gaming — incluye marcas conocidas
+        (["gaming", "consola", "retro", "game", "anbernic", "rg35", "powkiddy",
+          "retroid", "emulador", "juegos retro", "portatil juegos"], "retro handheld gaming console"),
+        (["led", "luz", "lampara", "ring light"], "led light product"),
+        (["soporte movil", "soporte telefono", "magsafe", "magnético", "soporte coche"], "phone holder car mount"),
+        (["joya", "collar joya", "pulsera", "anillo", "colgante", "jesus piece"], "jewelry necklace accessories"),
+        (["manta", "almohada", "cojin"], "home textile comfort"),
+        (["ps5", "playstation", "xbox", "nintendo", "switch"], "gaming console accessories"),
+        (["auricular", "cascos", "earbuds", "bluetooth audio"], "wireless earbuds headphones"),
+        (["gafas", "smartglass", "ar glass", "camara gafas"], "smart glasses technology wearable"),
+        (["smartwatch", "reloj inteligente", "wearable", "pulsera"], "smartwatch fitness wearable"),
+        (["dron", "drone", "quadcopter"], "drone flying technology"),
+        (["impresora 3d", "3d print"], "3d printer technology"),
+    ]
+    query = "tech gadget product lifestyle"  # default más específico
+    for keywords, english_query in category_queries:
+        if any(kw in name_lower for kw in keywords):
+            query = english_query
+            break
+    print(f"  🔍 Openverse query: '{query}'", flush=True)
+
+    try:
+        params = urllib.parse.urlencode({
+            "q":         query,
+            "page_size": 6,
+        })
+        req = urllib.request.Request(
+            f"https://api.openverse.org/v1/images/?{params}",
+            headers={
+                "User-Agent": "DiscontrolDrops/1.0 (dropshipping tool)",
+                "Accept":     "application/json",
+            },
+            method="GET"
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8"))
+
+        results = data.get("results", [])
+        urls = [r["url"] for r in results if r.get("url")]
+
+        if urls:
+            print(f"  ✅ Openverse: {len(urls)} imágenes relevantes para '{query}'", flush=True)
+            return {
+                "hero":    urls[:1],
+                "product": urls[1:4],
+                "context": urls[4:6],
+                "all":     urls,
+            }
+    except Exception as e:
+        print(f"  ⚠️  Openverse error: {e}", flush=True)
+
+    # Último fallback: Picsum con seed consistente
+    import hashlib
+    base_seed = int(hashlib.md5(product_name.encode()).hexdigest(), 16) % 1000
+    urls = [f"https://picsum.photos/seed/{base_seed + i}/800/600" for i in range(6)]
+    print(f"  ℹ️  Picsum fallback (seed {base_seed})", flush=True)
+    return {"hero": urls[:1], "product": urls[1:4], "context": urls[4:6], "all": urls}
+
+
 def fetch_pexels_images(product_name: str, pexels_key: str) -> dict:
     """
     Busca imágenes en Pexels para el producto.
@@ -104,7 +184,18 @@ STRUCTURE_SYSTEM = """Eres experto en CRO para Shopify en el mercado español.
 Generas landing pages de alto rendimiento para dropshipping.
 Todo en español, orientado al consumidor español: directo, garantías claras, sin exageraciones.
 Cuando se te proporcionan datos de competidores reales, úsalos como base — replica lo que ya convierte
-y mejóralo con mejor copy y estructura más clara."""
+y mejóralo con mejor copy y estructura más clara.
+
+REGLAS DE CREDIBILIDAD (críticas para convertir en España):
+1. PRECIO ANCLA REALISTA — el precio tachado debe ser máximo 2x el precio actual, nunca más.
+   ❌ MAL: ~~€279.99~~ → €69.99 (parece fake)
+   ✅ BIEN: ~~€99.99~~ → €64.99 (creíble)
+2. DESCUENTO MÁXIMO 40% — descuentos del 70-80% destruyen credibilidad.
+3. SIN CLAIMS MÉDICOS SIN FUENTE — evita "200% más colágeno", "probado clínicamente" sin citar fuente.
+   Usa en cambio: "miles de clientes notan la diferencia en 2 semanas".
+4. URGENCIA CREÍBLE — si pones stock limitado, que sea coherente con el producto (no siempre 47 unidades).
+   Mejor: "Oferta válida hasta agotar stock" o un descuento temporal.
+5. GARANTÍA ESPECÍFICA — "30 días sin preguntas, devolución del 100%" es mejor que promesas vagas."""
 
 HTML_SYSTEM = """Eres un desarrollador frontend experto en landing pages de Shopify para el mercado español.
 Generas HTML/CSS completo, limpio y visual de una landing page de dropshipping.
@@ -117,7 +208,10 @@ REGLAS:
 - Botones CTA en color llamativo (naranja o verde)
 - Incluir sección hero, beneficios, reseñas, garantía y CTA final
 - Usar los textos exactos que se te proporcionen
-- Todo en español"""
+- Todo en español
+- SIEMPRE incluir un countdown timer funcional en JavaScript que cuente desde 23:59:00 hacia atrás
+  con este formato: <div id="timer">23:59:00</div> y el JS que lo hace funcionar
+- El precio tachado NUNCA debe ser más del doble del precio actual"""
 
 
 def scrape_competitor_landings(product_name: str, max_pages: int = 3) -> str:
@@ -374,9 +468,34 @@ Responde SOLO con JSON:
 
     print(f"  ✅ Skill context: {len(skill_context)} chars", flush=True)
 
-    # ── PASO 0a: Imágenes de Pexels ───────────────────────────────────────────
-    print(f"\n🖼️  Buscando imágenes en Pexels para: {name}", flush=True)
-    images = fetch_pexels_images(name, pexels_key)
+    # ── PASO 0a: Imágenes (CJ real → Pexels → Unsplash fallback) ────────────
+    print(f"\n🖼️  Buscando imágenes para: {name}", flush=True)
+
+    # Prioridad 1: imagen real del proveedor CJ para el HERO
+    # + Openverse para el grid de producto (variedad visual)
+    cj_image = product.get("image_url", "")
+    images = {}
+
+    if cj_image and cj_image.startswith("http"):
+        print(f"  ✅ Imagen real producto (hero): {cj_image[:60]}", flush=True)
+        # Imágenes extra de Serper para el grid (si las hay)
+        extra = [u for u in product.get("extra_image_urls", []) if u.startswith("http")]
+        images = {
+            "hero":    [cj_image],
+            "product": extra[:3] if extra else [],
+            "context": extra[3:5] if len(extra) > 3 else [],
+            "all":     [cj_image] + extra[:4],
+        }
+        print(f"  🖼️  Grid: {len(extra[:3])} imágenes adicionales", flush=True)
+    # Prioridad 2: Pexels API
+    elif pexels_key:
+        images = fetch_pexels_images(name, pexels_key)
+
+    # Prioridad 3: Openverse solo si no hay imagen CJ
+    if not images.get("all"):
+        print(f"  ℹ️  Sin imagen CJ — usando Openverse", flush=True)
+        search_context = f"{name} {issue_title}".strip()
+        images = fetch_openverse_images(search_context)
     hero_imgs    = images.get("hero", []) if images else []
     hero_img     = hero_imgs[0] if hero_imgs else ""
     product_imgs = images.get("product", []) if images else []
@@ -462,10 +581,10 @@ COPY GENERADO:
 {structure[:2500]}
 
 REGLAS DE IMÁGENES:
-{"- USA las imágenes de Pexels proporcionadas arriba en las secciones correspondientes" if images.get("all") else "- Usa placeholders descriptivos: <img src='https://via.placeholder.com/800x400?text=Producto' alt='...'>"}
-- Hero section: imagen grande (100% ancho, 500px altura mínima) con overlay oscuro y texto encima
-- Sección de producto: 2-3 imágenes en grid
-- NO dejes secciones sin imágenes — usa las URLs proporcionadas
+{"- Hero: usa la imagen real del producto como fondo del hero (background-image con overlay oscuro semitransparente). NUNCA uses otras URLs que no sean las proporcionadas." if images.get("hero") else "- Sin imagen de producto disponible — usa un hero con gradiente CSS oscuro profesional, sin img tags"}
+{"- Grid de producto: NO uses imágenes adicionales. En su lugar usa CARDS CSS con iconos emoji grandes (2-3 cards) destacando las características principales del producto. Ejemplo: card con emoji 📱, título y descripción." if not images.get("product") else "- Grid: usa las imágenes del producto proporcionadas"}
+- NO inventes URLs de imágenes ni uses placeholders como via.placeholder.com
+- NO pongas img tags sin URL real — mejor sin imagen que con imagen rota
 
 Genera HTML completo con:
 - <head> con meta tags, Google Fonts (Inter o Poppins)

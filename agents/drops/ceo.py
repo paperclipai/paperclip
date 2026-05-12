@@ -32,6 +32,126 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from api_client import post_issue_result, post_issue_comment, resolve_issue_context
 
 sys.stdout.reconfigure(encoding="utf-8")
+
+
+def fetch_serper_images(product_name: str, num: int = 5) -> list:
+    """
+    Busca imágenes del producto en Google via Serper API.
+    Devuelve lista de URLs de imágenes reales del producto.
+    Serper: https://serper.dev — 2500 búsquedas gratis/mes
+    """
+    serper_key = os.environ.get("SERPER_API_KEY", "").strip()
+    if not serper_key:
+        return []
+
+    try:
+        payload = json.dumps({
+            "q":  product_name,
+            "gl": "es",
+            "hl": "es",
+            "num": num,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            "https://google.serper.dev/images",
+            data=payload,
+            headers={
+                "X-API-KEY":    serper_key,
+                "Content-Type": "application/json",
+            },
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8"))
+
+        images = data.get("images", [])
+        urls   = [img["imageUrl"] for img in images if img.get("imageUrl")]
+        print(f"  🔍 Serper: {len(urls)} imágenes para '{product_name[:40]}'", flush=True)
+        return urls[:num]
+
+    except Exception as e:
+        print(f"  ⚠️  Serper error: {e}", flush=True)
+        return []
+
+
+def fetch_cj_image_for_winner(winner_name: str) -> str:
+    """
+    Búsqueda dirigida en CJ para obtener imagen del producto ganador.
+    Usa el nombre exacto del winner — más preciso que la búsqueda por nicho.
+    """
+    cj_key = os.environ.get("CJ_API_KEY", "").strip()
+    if not cj_key:
+        return ""
+
+    CJ_BASE = "https://developers.cjdropshipping.com/api2.0/v1"
+
+    # Auth
+    try:
+        payload = json.dumps({"apiKey": cj_key}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{CJ_BASE}/authentication/getAccessToken",
+            data=payload, headers={"Content-Type": "application/json"}, method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            auth = json.loads(r.read().decode("utf-8"))
+        if not auth.get("result"):
+            return ""
+        token = auth["data"]["accessToken"]
+    except Exception:
+        return ""
+
+    # Traducir nombre del winner a inglés para CJ
+    kw_map = {
+        "enfriador": "cooler", "portátil": "portable", "smartphone": "phone",
+        "inteligente": "smart", "gafas": "glasses", "smartwatch": "smartwatch",
+        "soporte": "stand", "auricular": "headphone", "teclado": "keyboard",
+        "ratón": "mouse", "webcam": "webcam", "lampara": "lamp",
+        "altavoz": "speaker", "cargador": "charger", "cable": "cable",
+        "para movil": "phone", "gaming": "gaming", "rgb": "rgb",
+    }
+    query = winner_name.lower()
+    for es, en in kw_map.items():
+        query = query.replace(es, en)
+    # Quitar stopwords y tomar primeras 4 palabras
+    stopwords = {"para", "con", "de", "del", "anti", "y", "el", "la", "los", "las"}
+    words = [w for w in query.split() if w not in stopwords and len(w) > 2]
+    query = " ".join(words[:4])
+
+    # Buscar en CJ
+    try:
+        params = urllib.parse.urlencode({"keyWord": query, "pageNum": 1, "pageSize": 5})
+        req = urllib.request.Request(
+            f"{CJ_BASE}/product/list?{params}",
+            headers={"CJ-Access-Token": token, "Accept": "application/json"}, method="GET"
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read().decode("utf-8"))
+
+        if not data.get("result"):
+            return ""
+
+        products = data.get("data", {}).get("list", [])
+        # Extraer keywords del winner para validar relevancia
+        winner_words = set(w.lower() for w in winner_name.split() if len(w) > 3)
+        # Excluir stopwords comunes
+        stopwords = {"para", "con", "portátil", "portatil", "inteligente", "generación",
+                     "modelo", "versión", "anti", "ultra", "mini", "pro", "plus"}
+        winner_words -= stopwords
+
+        for p in products:
+            img      = p.get("productImage") or p.get("bigImage") or ""
+            p_name   = (p.get("productNameEn") or p.get("productName") or "").lower()
+            if not img or not img.startswith("http"):
+                continue
+            # Validar que el producto CJ tiene alguna relación con el winner
+            if winner_words and not any(w in p_name for w in winner_words):
+                print(f"  ⚠️  CJ product '{p_name[:40]}' no relacionado con winner — skip", flush=True)
+                continue
+            print(f"  🖼️  CJ imagen para winner '{winner_name[:30]}': {img[:60]}", flush=True)
+            return img
+    except Exception as e:
+        print(f"  ⚠️  CJ winner image search: {e}", flush=True)
+
+    return ""
 sys.stderr.reconfigure(encoding="utf-8")
 
 # ── Agent IDs — DiscontrolDrops ───────────────────────────────────────────────
@@ -214,6 +334,9 @@ def _slim_products(prods: list) -> list:
             "why":                   str(p.get("why", ""))[:100],
             "target_audience":       str(p.get("target_audience", ""))[:80],
             "yt_demand":             p.get("yt_demand", "unknown"),
+            # Imagen real del proveedor CJ — fluye hasta el Web Designer
+            "image_url":             p.get("image_url", ""),
+            "cj_url":                p.get("cj_url", ""),
         })
     return result
 
@@ -289,12 +412,38 @@ def parse_qualifier_output(result: str) -> dict | None:
         name = p.get("name", "")
         if not name:
             continue
+        # Precio: usar el del qualifier si existe, si no del producto original
+        raw_price = p.get("suggested_price_eur") or p.get("suggested_price") or 0
+        try:
+            price = float(str(raw_price).split("--")[0].strip())
+        except Exception:
+            price = 0.0
+
+        raw_cost = p.get("supplier_cost_eur") or p.get("supplier_est_cost_eur") or 0
+        try:
+            cost = float(str(raw_cost).split("--")[0].strip())
+        except Exception:
+            cost = 0.0
+
+        # Si el qualifier no dio precio, calcular desde coste (3x markup)
+        if price <= 1 and cost > 0:
+            price = round(cost * 3, 2)
+        elif price <= 1:
+            price = 29.99  # fallback solo si no hay nada
+
+        margin = p.get("est_margin_pct", 0)
+        if not margin and cost > 0 and price > 0:
+            margin = round((1 - cost / price) * 100)
+        elif not margin:
+            margin = 60
+
         return {
             "name":                name,
             "score":               score,
             "recommendation":      rec,
-            "suggested_price_eur": float(p.get("suggested_price_eur", 29.99) or 29.99),
-            "est_margin_pct":      p.get("est_margin_pct", 60),
+            "suggested_price_eur": price,
+            "supplier_cost_eur":   cost,
+            "est_margin_pct":      margin,
             "key_strength":        str(p.get("key_strength", ""))[:150],
             "main_risk":           str(p.get("main_risk", ""))[:150],
             "suggested_hook":      str(p.get("suggested_hook", ""))[:100],
@@ -406,6 +555,44 @@ def main():
         return
 
     winner_name = winner["name"]
+
+    # ── Búsqueda de imágenes reales del producto ─────────────────────────────
+    # Prioridad 1: Serper (Google Images) — imágenes reales del producto exacto
+    if not winner.get("image_url") or not winner["image_url"].startswith("http"):
+        serper_imgs = fetch_serper_images(winner_name, num=5)
+        if serper_imgs:
+            winner["image_url"]       = serper_imgs[0]
+            winner["extra_image_urls"] = serper_imgs[1:]
+            print(f"  🖼️  Serper: {len(serper_imgs)} imágenes para '{winner_name[:40]}'", flush=True)
+
+    # Prioridad 2: CJ directo si Serper no encontró nada
+    if not winner.get("image_url") or not winner["image_url"].startswith("http"):
+        cj_img = fetch_cj_image_for_winner(winner_name)
+        if cj_img:
+            winner["image_url"] = cj_img
+
+    # Recuperar image_url: 1) del qualifier output, 2) fuzzy match, 3) top CJ product
+    if not winner.get("image_url") or not winner["image_url"].startswith("http"):
+        # Intento 1: fuzzy match por nombre
+        for p in products:
+            if p.get("image_url") and p["image_url"].startswith("http") and (
+                p["name"].lower()[:30] in winner_name.lower() or
+                winner_name.lower()[:30] in p["name"].lower()
+            ):
+                winner["image_url"] = p["image_url"]
+                winner["cj_url"]    = p.get("cj_url", "")
+                print(f"  🖼️  Imagen CJ (fuzzy match): {winner['image_url'][:60]}", flush=True)
+                break
+
+        # Intento 2: tomar la imagen del primer producto CJ disponible
+        if not winner.get("image_url") or not winner["image_url"].startswith("http"):
+            for p in products:
+                if p.get("image_url") and p["image_url"].startswith("http") and p.get("source") == "cj_dropshipping":
+                    winner["image_url"] = p["image_url"]
+                    winner["cj_url"]    = p.get("cj_url", "")
+                    print(f"  🖼️  Imagen CJ (primer CJ disponible): {winner['image_url'][:60]}", flush=True)
+                    break
+
     print(f"  🏆 Ganador: {winner_name} (score={winner['score']}, rec={winner['recommendation']})",
           flush=True)
 

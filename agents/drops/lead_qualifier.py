@@ -96,7 +96,12 @@ Responde SOLO con JSON:
       "key_strength": "su mayor ventaja en 1 frase",
       "main_risk": "su mayor riesgo en 1 frase",
       "suggested_hook": "el hook de anuncio más potente en español (máx 10 palabras)",
-      "est_monthly_revenue_eur": 2400
+      "suggested_price_eur": 39.99,
+      "supplier_cost_eur": 8.50,
+      "est_margin_pct": 65,
+      "est_monthly_revenue_eur": 2400,
+      "image_url": "copia EXACTA del campo image_url del producto original si existe, si no deja vacío",
+      "cj_url": "copia EXACTA del campo cj_url del producto original si existe, si no deja vacío"
     }}
   ]
 }}"""
@@ -234,12 +239,11 @@ def main():
         "summary":   {"launch": len(launch), "test": len(test), "skip": len(skip)},
         "top_pick":  qualified[0] if qualified else None,
     }
-    lines.append("```json")
-    lines.append(json.dumps(output_json, indent=2, ensure_ascii=False))
-    lines.append("```")
+    json_block = "```json\n" + json.dumps(output_json, indent=2, ensure_ascii=False) + "\n```"
 
-    output = "\n".join(lines)
-    print(output, flush=True)
+    # JSON PRIMERO — así el CEO puede parsearlo aunque el output sea truncado
+    output = json_block + "\n\n" + "\n".join(lines)
+    print(output[:500], flush=True)
     post_issue_result(output)
 
 

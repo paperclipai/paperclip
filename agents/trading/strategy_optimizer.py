@@ -88,20 +88,28 @@ def extract_critique(raw: str) -> dict:
 
 
 def main():
+    print("⚙️ Strategy Optimizer arrancando...", flush=True)
+    # DiscontrolsBags company — sobreescribir el ID global para que api_client use el correcto
+    os.environ["PAPERCLIP_COMPANY_ID"] = "866b74e7-79a7-4166-9f9f-025faa751aa1"
+
     api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not api_key:
-        print("ERROR: OPENROUTER_API_KEY no configurada", file=sys.stderr)
-        sys.exit(1)
+        print("ERROR: OPENROUTER_API_KEY no configurada", flush=True)
+        post_issue_result("❌ Strategy Optimizer: OPENROUTER_API_KEY no configurada.")
+        return
 
     issue_title, issue_body = resolve_issue_context()
     raw = issue_body if issue_body else (issue_title or "")
+    print(f"  📥 Input: {len(raw)} chars", flush=True)
 
     critique = extract_critique(raw)
     original = critique.get("original_script", "")
+    print(f"  📝 Pine Script extraído: {len(original)} chars", flush=True)
 
     if not original or len(original) < 50:
+        print("  ⚠️  No se encontró Pine Script — abortando.", flush=True)
         post_issue_result("❌ Strategy Optimizer: no se encontró el Pine Script original en el input.")
-        sys.exit(1)
+        return
 
     # Soporta tanto claves largas (legacy) como cortas (nuevo Critic compacto)
     quality = critique.get("q", critique.get("overall_quality", "needs_improvement"))
@@ -126,7 +134,7 @@ def main():
         max_tokens  = 2000,
         temperature = 0.3,
         title       = "StrategyOptimizer",
-        model       = "anthropic/claude-sonnet-4-6",
+        model       = "anthropic/claude-3-5-haiku",
         timeout     = 90,
     )
 
