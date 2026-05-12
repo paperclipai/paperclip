@@ -176,8 +176,11 @@ describeEmbeddedPostgres("approvalService.addComment idempotency", () => {
 
   it("returns the existing approval comment when the same run retries the same body", async () => {
     const { approvalId, runId, agentId } = await seedApprovalWithRun();
+    const staleUpdatedAt = new Date("2026-04-01T00:00:00.000Z");
+    await db.update(approvals).set({ updatedAt: staleUpdatedAt }).where(eq(approvals.id, approvalId));
 
     const first = await svc.addComment(approvalId, "Ready for review.", { agentId, runId });
+    const [afterFirst] = await db.select({ updatedAt: approvals.updatedAt }).from(approvals).where(eq(approvals.id, approvalId));
     const second = await svc.addComment(approvalId, "Ready for review.", { agentId, runId });
 
     expect(second.id).toBe(first.id);
@@ -188,6 +191,7 @@ describeEmbeddedPostgres("approvalService.addComment idempotency", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.idempotencyKey).toMatch(/^[a-f0-9]{64}$/);
     expect(rows[0]?.createdByRunId).toBe(runId);
+    expect(afterFirst?.updatedAt.getTime()).toBeGreaterThan(staleUpdatedAt.getTime());
   });
 
   it("does not deduplicate non-agent approval comments even when a run id is present", async () => {

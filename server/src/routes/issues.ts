@@ -3395,7 +3395,7 @@ export function issueRoutes(
       }
     })();
 
-    if (!commentBody || (comment && wasIssueCommentInserted(comment))) {
+    if (!commentBody || hasFieldChanges || (comment && wasIssueCommentInserted(comment))) {
       await routinesSvc.syncRunStatusForIssue(issue.id);
 
       if (actor.runId) {

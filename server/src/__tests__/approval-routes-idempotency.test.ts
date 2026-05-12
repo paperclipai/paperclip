@@ -39,7 +39,7 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp(actorOverrides: Record<string, unknown> = {}) {
+async function createApp(actorOverrides: Record<string, unknown> = {}, db: Record<string, unknown> = {}) {
   const [{ errorHandler }, { approvalRoutes }] = await Promise.all([
     import("../middleware/index.js"),
     import("../routes/approvals.js"),
@@ -57,12 +57,12 @@ async function createApp(actorOverrides: Record<string, unknown> = {}) {
     };
     next();
   });
-  app.use("/api", approvalRoutes({} as any));
+  app.use("/api", approvalRoutes(db as any));
   app.use(errorHandler);
   return app;
 }
 
-async function createAgentApp() {
+async function createAgentApp(db: Record<string, unknown> = {}) {
   const [{ errorHandler }, { approvalRoutes }] = await Promise.all([
     import("../middleware/index.js"),
     import("../routes/approvals.js"),
@@ -80,9 +80,17 @@ async function createAgentApp() {
     };
     next();
   });
-  app.use("/api", approvalRoutes({} as any));
+  app.use("/api", approvalRoutes(db as any));
   app.use(errorHandler);
   return app;
+}
+
+function makeActivityLookupDb(rows: Array<Record<string, unknown>>) {
+  const limit = vi.fn(async () => rows);
+  const where = vi.fn(() => ({ limit }));
+  const from = vi.fn(() => ({ where }));
+  const select = vi.fn(() => ({ from }));
+  return { db: { select }, stubs: { select, from, where, limit } };
 }
 
 describe("approval routes idempotent retries", () => {
@@ -366,5 +374,69 @@ describe("approval routes idempotent retries", () => {
         runId: "run-1",
       },
     );
+  });
+
+  it("logs a deduped approval comment when its audit activity is missing", async () => {
+    const { db, stubs } = makeActivityLookupDb([]);
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-8",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+    });
+    const dedupedComment = {
+      id: "comment-8",
+      approvalId: "approval-8",
+      body: "Looks good.",
+    };
+    Object.defineProperty(dedupedComment, "wasInserted", {
+      value: false,
+      enumerable: false,
+    });
+    mockApprovalService.addComment.mockResolvedValue(dedupedComment);
+
+    const res = await request(await createAgentApp(db))
+      .post("/api/approvals/approval-8/comments")
+      .send({ body: "Looks good." });
+
+    expect(res.status).toBe(200);
+    expect(stubs.select).toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "approval.comment_added",
+        entityId: "approval-8",
+        details: { commentId: "comment-8" },
+      }),
+    );
+  });
+
+  it("does not log a deduped approval comment when audit activity already exists", async () => {
+    const { db } = makeActivityLookupDb([{ id: "activity-1" }]);
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-9",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+    });
+    const dedupedComment = {
+      id: "comment-9",
+      approvalId: "approval-9",
+      body: "Looks good.",
+    };
+    Object.defineProperty(dedupedComment, "wasInserted", {
+      value: false,
+      enumerable: false,
+    });
+    mockApprovalService.addComment.mockResolvedValue(dedupedComment);
+
+    const res = await request(await createAgentApp(db))
+      .post("/api/approvals/approval-9/comments")
+      .send({ body: "Looks good." });
+
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 });

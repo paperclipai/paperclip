@@ -25,6 +25,9 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
+const mockRoutineService = vi.hoisted(() => ({
+  syncRunStatusForIssue: vi.fn(async () => undefined),
+}));
 
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
@@ -77,9 +80,7 @@ vi.mock("../services/index.js", () => ({
   issueThreadInteractionService: () => mockIssueThreadInteractionService,
   logActivity: vi.fn(async () => undefined),
   projectService: () => ({}),
-  routineService: () => ({
-    syncRunStatusForIssue: vi.fn(async () => undefined),
-  }),
+  routineService: () => mockRoutineService,
   workProductService: () => ({}),
 }));
 
@@ -135,9 +136,7 @@ function registerModuleMocks() {
     issueThreadInteractionService: () => mockIssueThreadInteractionService,
     logActivity: vi.fn(async () => undefined),
     projectService: () => ({}),
-    routineService: () => ({
-      syncRunStatusForIssue: vi.fn(async () => undefined),
-    }),
+    routineService: () => mockRoutineService,
     workProductService: () => ({}),
   }));
 }
@@ -153,6 +152,7 @@ async function createApp() {
     (req as any).actor = {
       type: "board",
       userId: "local-board",
+      runId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       companyIds: ["company-1"],
       source: "local_implicit",
       isInstanceAdmin: false,
@@ -197,6 +197,7 @@ describe("issue update comment wakeups", () => {
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    mockRoutineService.syncRunStatusForIssue.mockClear();
   });
 
   it("includes the new comment in assignment wakes from issue updates", async () => {
@@ -289,5 +290,38 @@ describe("issue update comment wakeups", () => {
         }),
       }),
     );
+  });
+
+  it("still reconciles run state when field changes accompany a deduped comment", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    const updated = { ...existing, status: "done" };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    const dedupedComment = {
+      id: "comment-deduped",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "done",
+    };
+    Object.defineProperty(dedupedComment, "wasInserted", {
+      value: false,
+      enumerable: false,
+    });
+    mockIssueService.addComment.mockResolvedValue(dedupedComment);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        status: "done",
+        comment: "done",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockRoutineService.syncRunStatusForIssue).toHaveBeenCalledWith(existing.id);
+    expect(mockHeartbeatService.reportRunActivity).toHaveBeenCalledWith("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
   });
 });

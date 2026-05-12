@@ -257,6 +257,7 @@ export function approvalService(db: Db) {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
       };
       const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+      const now = new Date();
       const idempotencyKey = actor.agentId && actor.runId
         ? createHash("sha256").update(`${actor.runId}:${approvalId}:${body}`).digest("hex")
         : null;
@@ -276,6 +277,13 @@ export function approvalService(db: Db) {
           where: sql.raw('"idempotency_key" IS NOT NULL'),
         })
         .returning();
+
+      if (inserted.length > 0) {
+        await db
+          .update(approvals)
+          .set({ updatedAt: now })
+          .where(eq(approvals.id, approvalId));
+      }
 
       const [comment] = inserted.length > 0 || !idempotencyKey
         ? inserted
