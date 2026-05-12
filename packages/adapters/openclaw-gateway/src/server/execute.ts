@@ -522,6 +522,11 @@ function buildStandardPaperclipPayload(
   };
 }
 
+function renderPaperclipContextBlock(paperclipPayload: Record<string, unknown>): string {
+  const json = JSON.stringify(paperclipPayload);
+  return ["Paperclip context (structured run metadata):", "```json", json, "```"].join("\n");
+}
+
 function normalizeUrl(input: string): URL | null {
   try {
     return new URL(input);
@@ -1132,14 +1137,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
   const paperclipPayload = buildStandardPaperclipPayload(ctx, wakePayload, paperclipEnv, payloadTemplate);
 
+  // OpenClaw gateway's AgentParamsSchema is strict (additionalProperties: false)
+  // and rejects unknown root fields, so we cannot pass `paperclip` at the root.
+  // Instead we serialize the structured context into `extraSystemPrompt`, which
+  // the gateway accepts and propagates to the receiving agent. See issue #5704.
+  const paperclipContextBlock = renderPaperclipContextBlock(paperclipPayload);
+  const templateExtraSystemPrompt = nonEmpty(payloadTemplate.extraSystemPrompt);
+  const extraSystemPrompt = templateExtraSystemPrompt
+    ? `${templateExtraSystemPrompt}\n\n${paperclipContextBlock}`
+    : paperclipContextBlock;
+
   const agentParams: Record<string, unknown> = {
     ...payloadTemplate,
     message,
     sessionKey,
     idempotencyKey: ctx.runId,
+    extraSystemPrompt,
   };
   delete agentParams.text;
-  agentParams.paperclip = paperclipPayload;
+  delete agentParams.paperclip;
 
   const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
