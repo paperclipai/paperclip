@@ -1,0 +1,62 @@
+name: Deploy paperclip-prod overlay to production
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'Overlay image to deploy (ghcr.io/misterbusiness1/paperclip-prod:TAG)'
+        required: false
+        default: 'ghcr.io/misterbusiness1/paperclip-prod:latest-pwfix'
+      host:
+        description: 'Docker host IP'
+        required: false
+        default: '51.81.66.148'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.PAPERCLIP_HOST_SSH_KEY }}" > ~/.ssh/id_ed25519_host
+          chmod 600 ~/.ssh/id_ed25519_host
+          ssh-keyscan -H "${{ inputs.host }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Verify SSH connectivity
+        run: |
+          ssh -i ~/.ssh/id_ed25519_host \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=10 \
+            node@${{ inputs.host }} \
+            'echo "Connected as: $(whoami) @ $(hostname)"'
+
+      - name: Pull overlay image on host
+        run: |
+          ssh -i ~/.ssh/id_ed25519_host \
+            -o StrictHostKeyChecking=no \
+            node@${{ inputs.host }} \
+            "docker pull ${{ inputs.image }}"
+
+      - name: Update compose image tag and redeploy
+        run: |
+          ssh -i ~/.ssh/id_ed25519_host \
+            -o StrictHostKeyChecking=no \
+            node@${{ inputs.host }} << 'ENDSSH'
+          cd ~/paperclip
+          sed -i "s|image:.*paperclip-prod:.*|image: ${{ inputs.image }}|g" docker/docker-compose.yml
+          docker compose -f docker/docker-compose.yml up -d --force-recreate server
+          sleep 10
+          docker compose -f docker/docker-compose.yml ps server
+          ENDSSH
+
+      - name: Smoke-test new container
+        run: |
+          ssh -i ~/.ssh/id_ed25519_host \
+            -o StrictHostKeyChecking=no \
+            node@${{ inputs.host }} \
+            'curl -sf http://localhost:3100/api/health && echo "Health: OK"'
