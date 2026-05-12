@@ -28,7 +28,14 @@ async function openOnboarding(page: Page) {
   const wizardHeading = page.locator("h3", { hasText: "Name your company" });
   const startButton = page.getByRole("button", { name: "Start Onboarding" });
 
-  await expect(wizardHeading.or(startButton)).toBeVisible({ timeout: 20_000 });
+  await expect.poll(
+    async () => {
+      if (await wizardHeading.isVisible()) return "wizard";
+      if (await startButton.isVisible()) return "start";
+      return "waiting";
+    },
+    { timeout: 20_000, intervals: [500, 1_000, 2_000] }
+  ).not.toBe("waiting");
 
   if (await startButton.isVisible()) {
     await startButton.click();
