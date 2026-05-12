@@ -1,4 +1,5 @@
 import express, { Router, type Request as ExpressRequest } from "express";
+import compression from "compression";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -136,6 +137,12 @@ export async function createApp(
   },
 ) {
   const app = express();
+
+  // Compress responses before any route handler runs. JSON list payloads
+  // (e.g. /api/companies/:cid/issues at limit=500) shrink ~6× on the
+  // wire; the static UI bundle and CSS shrink ~3–7×. CPU overhead is
+  // ~30ms for the largest list response; trivial vs network savings.
+  app.use(compression());
 
   app.use(express.json({
     // Company import/export payloads can inline full portable packages.
