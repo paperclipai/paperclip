@@ -27,16 +27,12 @@ function sanitizeWorktreeInstanceId(rawValue: string): string {
   return normalized || "worktree";
 }
 
-function isLoopbackHost(hostname: string): boolean {
-  const value = hostname.trim().toLowerCase();
-  return value === "127.0.0.1" || value === "localhost" || value === "::1";
-}
-
 function rewriteLocalUrlPort(rawUrl: string | undefined, port: number): string | undefined {
   if (!rawUrl) return undefined;
   try {
     const parsed = new URL(rawUrl);
-    if (!isLoopbackHost(parsed.hostname)) return rawUrl;
+    // The URL API normalizes default ports like :80/:443 to "", so treat them as stable URLs.
+    if (!parsed.port) return rawUrl;
     parsed.port = String(port);
     return parsed.toString();
   } catch {
@@ -118,11 +114,19 @@ function resolveWorktreeRuntimeContext(
 
   const configPath = resolvePaperclipConfigPath(overrideConfigPath);
   const envPath = resolvePaperclipEnvPath(configPath);
+  const persistedEnv = readEnvEntries(envPath);
   const worktreeRoot = path.resolve(path.dirname(configPath), "..");
-  const worktreeName = nonEmpty(env.PAPERCLIP_WORKTREE_NAME) ?? path.basename(worktreeRoot);
-  const instanceId = nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? sanitizeWorktreeInstanceId(worktreeName);
+  const worktreeName =
+    nonEmpty(persistedEnv.PAPERCLIP_WORKTREE_NAME) ??
+    nonEmpty(env.PAPERCLIP_WORKTREE_NAME) ??
+    path.basename(worktreeRoot);
+  const instanceId =
+    nonEmpty(persistedEnv.PAPERCLIP_INSTANCE_ID) ??
+    nonEmpty(env.PAPERCLIP_INSTANCE_ID) ??
+    sanitizeWorktreeInstanceId(worktreeName);
   const homeDir = resolveHomeAwarePath(
-    nonEmpty(env.PAPERCLIP_HOME) ??
+    nonEmpty(persistedEnv.PAPERCLIP_HOME) ??
+      nonEmpty(env.PAPERCLIP_HOME) ??
       nonEmpty(env.PAPERCLIP_WORKTREES_DIR) ??
       "~/.paperclip-worktrees",
   );

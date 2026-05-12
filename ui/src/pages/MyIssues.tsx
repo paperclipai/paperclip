@@ -56,7 +56,7 @@ export function MyIssues() {
               title={issue.title}
               to={`/issues/${issue.identifier ?? issue.id}`}
               leading={
-                <StatusIcon status={issue.status} />
+                <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />
               }
               trailing={
                 <span className="text-xs text-muted-foreground">

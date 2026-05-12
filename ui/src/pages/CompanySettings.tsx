@@ -1,21 +1,22 @@
 import { ChangeEvent, useEffect, useState } from "react";
-import { Link } from "@/lib/router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION } from "@paperclipai/shared";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
+  MAX_COMPANY_ATTACHMENT_MAX_BYTES,
+} from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { useToast } from "../context/ToastContext";
-import { companiesApi, type CompanyMember } from "../api/companies";
+import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check, Download, Upload, UserPlus, Trash2 } from "lucide-react";
+import { Settings, Check, Download, Upload } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
   ToggleField,
-  HintIcon
+  HintIcon,
 } from "../components/agent-config-primitives";
 
 type AgentSnippetInput = {
@@ -24,8 +25,9 @@ type AgentSnippetInput = {
   testResolutionUrl?: string | null;
 };
 
-const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
-
+const BYTES_PER_MIB = 1024 * 1024;
+const DEFAULT_COMPANY_ATTACHMENT_MAX_MIB = DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES / BYTES_PER_MIB;
+const MAX_COMPANY_ATTACHMENT_MAX_MIB = MAX_COMPANY_ATTACHMENT_MAX_BYTES / BYTES_PER_MIB;
 export function CompanySettings() {
   const {
     companies,
@@ -34,12 +36,12 @@ export function CompanySettings() {
     setSelectedCompanyId
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { pushToast } = useToast();
   const queryClient = useQueryClient();
   // General settings local state
   const [companyName, setCompanyName] = useState("");
   const [description, setDescription] = useState("");
   const [brandColor, setBrandColor] = useState("");
+  const [attachmentMaxMiB, setAttachmentMaxMiB] = useState(String(DEFAULT_COMPANY_ATTACHMENT_MAX_MIB));
   const [logoUrl, setLogoUrl] = useState("");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
 
@@ -49,55 +51,34 @@ export function CompanySettings() {
     setCompanyName(selectedCompany.name);
     setDescription(selectedCompany.description ?? "");
     setBrandColor(selectedCompany.brandColor ?? "");
+    setAttachmentMaxMiB(String(Math.round((selectedCompany.attachmentMaxBytes ?? DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES) / BYTES_PER_MIB)));
     setLogoUrl(selectedCompany.logoUrl ?? "");
   }, [selectedCompany]);
-
-  // Members
-  const [memberEmail, setMemberEmail] = useState("");
-  const membersQuery = useQuery({
-    queryKey: ["company-members", selectedCompanyId],
-    queryFn: () => companiesApi.listMembers(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
-  const addMemberMutation = useMutation({
-    mutationFn: (email: string) => companiesApi.addMember(selectedCompanyId!, email),
-    onSuccess: () => {
-      setMemberEmail("");
-      void queryClient.invalidateQueries({ queryKey: ["company-members", selectedCompanyId] });
-      pushToast({ title: "Member added", tone: "success" });
-    },
-    onError: (err) => pushToast({ title: err instanceof Error ? err.message : "Failed to add member", tone: "error" }),
-  });
-  const removeMemberMutation = useMutation({
-    mutationFn: (userId: string) => companiesApi.removeMember(selectedCompanyId!, userId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["company-members", selectedCompanyId] });
-      pushToast({ title: "Member removed", tone: "success" });
-    },
-    onError: (err) => pushToast({ title: err instanceof Error ? err.message : "Failed to remove member", tone: "error" }),
-  });
-  const grantMemberMutation = useMutation({
-    mutationFn: (userId: string) => companiesApi.grantMember(selectedCompanyId!, userId),
-    onSuccess: () => pushToast({ title: "Issue access granted", tone: "success" }),
-    onError: (err) => pushToast({ title: err instanceof Error ? err.message : "Failed to grant access", tone: "error" }),
-  });
 
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteSnippet, setInviteSnippet] = useState<string | null>(null);
   const [snippetCopied, setSnippetCopied] = useState(false);
   const [snippetCopyDelightId, setSnippetCopyDelightId] = useState(0);
 
+  const attachmentMaxBytes = Number.parseInt(attachmentMaxMiB, 10) * BYTES_PER_MIB;
+  const attachmentMaxValid =
+    Number.isInteger(attachmentMaxBytes)
+    && attachmentMaxBytes >= BYTES_PER_MIB
+    && attachmentMaxBytes <= MAX_COMPANY_ATTACHMENT_MAX_BYTES;
+
   const generalDirty =
     !!selectedCompany &&
     (companyName !== selectedCompany.name ||
       description !== (selectedCompany.description ?? "") ||
-      brandColor !== (selectedCompany.brandColor ?? ""));
+      brandColor !== (selectedCompany.brandColor ?? "") ||
+      attachmentMaxBytes !== (selectedCompany.attachmentMaxBytes ?? DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES));
 
   const generalMutation = useMutation({
     mutationFn: (data: {
       name: string;
       description: string | null;
       brandColor: string | null;
+      attachmentMaxBytes: number;
     }) => companiesApi.update(selectedCompanyId!, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
@@ -112,27 +93,6 @@ export function CompanySettings() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     }
-  });
-
-  const feedbackSharingMutation = useMutation({
-    mutationFn: (enabled: boolean) =>
-      companiesApi.update(selectedCompanyId!, {
-        feedbackDataSharingEnabled: enabled,
-      }),
-    onSuccess: (_company, enabled) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-      pushToast({
-        title: enabled ? "Feedback sharing enabled" : "Feedback sharing disabled",
-        tone: "success",
-      });
-    },
-    onError: (err) => {
-      pushToast({
-        title: "Failed to update feedback sharing",
-        body: err instanceof Error ? err.message : "Unknown error",
-        tone: "error",
-      });
-    },
   });
 
   const inviteMutation = useMutation({
@@ -271,7 +231,8 @@ export function CompanySettings() {
     generalMutation.mutate({
       name: companyName.trim(),
       description: description.trim() || null,
-      brandColor: brandColor || null
+      brandColor: brandColor || null,
+      attachmentMaxBytes
     });
   }
 
@@ -403,6 +364,30 @@ export function CompanySettings() {
                   )}
                 </div>
               </Field>
+              <Field
+                label="Attachment size limit"
+                hint={`Accepted range: 1-${MAX_COMPANY_ATTACHMENT_MAX_MIB} MiB.`}
+              >
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min={1}
+                      max={MAX_COMPANY_ATTACHMENT_MAX_MIB}
+                      step={1}
+                      value={attachmentMaxMiB}
+                      onChange={(e) => setAttachmentMaxMiB(e.target.value)}
+                      className="w-28 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                    />
+                    <span className="text-xs text-muted-foreground">MiB</span>
+                  </div>
+                  {!attachmentMaxValid && (
+                    <span className="text-xs text-destructive">
+                      Enter a whole number from 1 to {MAX_COMPANY_ATTACHMENT_MAX_MIB}.
+                    </span>
+                  )}
+                </div>
+              </Field>
             </div>
           </div>
         </div>
@@ -414,7 +399,7 @@ export function CompanySettings() {
           <Button
             size="sm"
             onClick={handleSaveGeneral}
-            disabled={generalMutation.isPending || !companyName.trim()}
+            disabled={generalMutation.isPending || !companyName.trim() || !attachmentMaxValid}
           >
             {generalMutation.isPending ? "Saving..." : "Save changes"}
           </Button>
@@ -444,115 +429,6 @@ export function CompanySettings() {
             onChange={(v) => settingsMutation.mutate(v)}
             toggleTestId="company-settings-team-approval-toggle"
           />
-        </div>
-      </div>
-
-      <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Feedback Sharing
-        </div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
-          <ToggleField
-            label="Allow sharing voted AI outputs with Paperclip Labs"
-            hint="Only AI-generated outputs you explicitly vote on are eligible for feedback sharing."
-            checked={!!selectedCompany.feedbackDataSharingEnabled}
-            onChange={(enabled) => feedbackSharingMutation.mutate(enabled)}
-          />
-          <p className="text-sm text-muted-foreground">
-            Votes are always saved locally. This setting controls whether voted AI outputs may also be marked for sharing with Paperclip Labs.
-          </p>
-          <div className="space-y-1 text-xs text-muted-foreground">
-            <div>
-              Terms version: {selectedCompany.feedbackDataSharingTermsVersion ?? DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION}
-            </div>
-            {selectedCompany.feedbackDataSharingConsentAt ? (
-              <div>
-                Enabled {new Date(selectedCompany.feedbackDataSharingConsentAt).toLocaleString()}
-                {selectedCompany.feedbackDataSharingConsentByUserId
-                  ? ` by ${selectedCompany.feedbackDataSharingConsentByUserId}`
-                  : ""}
-              </div>
-            ) : (
-              <div>Sharing is currently disabled.</div>
-            )}
-            {FEEDBACK_TERMS_URL ? (
-              <a
-                href={FEEDBACK_TERMS_URL}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex text-foreground underline underline-offset-4"
-              >
-                Read our terms of service
-              </a>
-            ) : null}
-          </div>
-        </div>
-      </div>
-
-      {/* Members */}
-      <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Members
-        </div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
-          {/* Add member */}
-          <div className="flex items-center gap-2">
-            <input
-              className="flex-1 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none focus:border-ring"
-              type="email"
-              placeholder="Email address"
-              value={memberEmail}
-              onChange={(e) => setMemberEmail(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && memberEmail.trim()) addMemberMutation.mutate(memberEmail.trim()); }}
-            />
-            <Button
-              size="sm"
-              onClick={() => addMemberMutation.mutate(memberEmail.trim())}
-              disabled={!memberEmail.trim() || addMemberMutation.isPending}
-            >
-              <UserPlus className="mr-1.5 h-3.5 w-3.5" />
-              {addMemberMutation.isPending ? "Adding..." : "Add member"}
-            </Button>
-          </div>
-          {/* Members list */}
-          {membersQuery.isLoading ? (
-            <p className="text-xs text-muted-foreground">Loading members...</p>
-          ) : membersQuery.data?.members.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No members yet. Add someone by email above.</p>
-          ) : (
-            <div className="divide-y divide-border">
-              {(membersQuery.data?.members ?? []).map((m: CompanyMember) => (
-                <div key={m.membershipId} className="flex items-center justify-between gap-3 py-2.5">
-                  <div className="min-w-0">
-                    {m.name && <div className="text-sm font-medium truncate">{m.name}</div>}
-                    <div className="text-xs text-muted-foreground truncate">{m.email ?? m.userId}</div>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="text-xs text-muted-foreground capitalize">{m.role ?? "member"}</span>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-7 text-xs"
-                      onClick={() => grantMemberMutation.mutate(m.userId)}
-                      disabled={grantMemberMutation.isPending}
-                      title="Grant permission to assign and run issues"
-                    >
-                      Grant access
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
-                      onClick={() => removeMemberMutation.mutate(m.userId)}
-                      disabled={removeMemberMutation.isPending}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
       </div>
 
@@ -646,16 +522,16 @@ export function CompanySettings() {
           </p>
           <div className="mt-3 flex items-center gap-2">
             <Button size="sm" variant="outline" asChild>
-              <Link to="/company/export">
+              <a href="/company/export">
                 <Download className="mr-1.5 h-3.5 w-3.5" />
                 Export
-              </Link>
+              </a>
             </Button>
             <Button size="sm" variant="outline" asChild>
-              <Link to="/company/import">
+              <a href="/company/import">
                 <Upload className="mr-1.5 h-3.5 w-3.5" />
                 Import
-              </Link>
+              </a>
             </Button>
           </div>
         </div>

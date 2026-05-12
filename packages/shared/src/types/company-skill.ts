@@ -59,6 +59,11 @@ export interface CompanySkillUsageAgent {
   urlKey: string;
   adapterType: string;
   desired: boolean;
+  /**
+   * Runtime adapter skill state when a caller explicitly fetched it.
+   * Company skill detail reads intentionally return null here to avoid probing
+   * agent runtimes while loading operator-facing skill metadata.
+   */
   actualState: string | null;
 }
 

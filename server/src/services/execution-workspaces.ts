@@ -7,10 +7,12 @@ import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import type {
   ExecutionWorkspace,
+  ExecutionWorkspaceSummary,
   ExecutionWorkspaceCloseAction,
   ExecutionWorkspaceCloseGitReadiness,
   ExecutionWorkspaceCloseReadiness,
   ExecutionWorkspaceConfig,
+  WorkspaceRuntimeDesiredState,
   WorkspaceRuntimeService,
 } from "@paperclipai/shared";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
@@ -37,6 +39,20 @@ function readNullableString(value: unknown): string | null {
 function cloneRecord(value: unknown): Record<string, unknown> | null {
   if (!isRecord(value)) return null;
   return { ...value };
+}
+
+function readDesiredState(value: unknown): WorkspaceRuntimeDesiredState | null {
+  return value === "running" || value === "stopped" || value === "manual" ? value : null;
+}
+
+function readServiceStates(value: unknown): ExecutionWorkspaceConfig["serviceStates"] {
+  if (!isRecord(value)) return null;
+  const entries = Object.entries(value).filter(([, state]) =>
+    state === "running" || state === "stopped" || state === "manual"
+  );
+  return entries.length > 0
+    ? Object.fromEntries(entries) as ExecutionWorkspaceConfig["serviceStates"]
+    : null;
 }
 
 async function pathExists(value: string | null | undefined) {
@@ -187,11 +203,13 @@ export function readExecutionWorkspaceConfig(metadata: Record<string, unknown> |
   if (!raw) return null;
 
   const config: ExecutionWorkspaceConfig = {
+    environmentId: readNullableString(raw.environmentId),
     provisionCommand: readNullableString(raw.provisionCommand),
     teardownCommand: readNullableString(raw.teardownCommand),
     cleanupCommand: readNullableString(raw.cleanupCommand),
     workspaceRuntime: cloneRecord(raw.workspaceRuntime),
-    desiredState: raw.desiredState === "running" || raw.desiredState === "stopped" ? raw.desiredState : null,
+    desiredState: readDesiredState(raw.desiredState),
+    serviceStates: readServiceStates(raw.serviceStates),
   };
 
   const hasConfig = Object.values(config).some((value) => {
@@ -209,11 +227,13 @@ export function mergeExecutionWorkspaceConfig(
 ): Record<string, unknown> | null {
   const nextMetadata = isRecord(metadata) ? { ...metadata } : {};
   const current = readExecutionWorkspaceConfig(metadata) ?? {
+    environmentId: null,
     provisionCommand: null,
     teardownCommand: null,
     cleanupCommand: null,
     workspaceRuntime: null,
     desiredState: null,
+    serviceStates: null,
   };
 
   if (patch === null) {
@@ -222,16 +242,17 @@ export function mergeExecutionWorkspaceConfig(
   }
 
   const nextConfig: ExecutionWorkspaceConfig = {
+    environmentId: patch.environmentId !== undefined ? readNullableString(patch.environmentId) : current.environmentId,
     provisionCommand: patch.provisionCommand !== undefined ? readNullableString(patch.provisionCommand) : current.provisionCommand,
     teardownCommand: patch.teardownCommand !== undefined ? readNullableString(patch.teardownCommand) : current.teardownCommand,
     cleanupCommand: patch.cleanupCommand !== undefined ? readNullableString(patch.cleanupCommand) : current.cleanupCommand,
     workspaceRuntime: patch.workspaceRuntime !== undefined ? cloneRecord(patch.workspaceRuntime) : current.workspaceRuntime,
     desiredState:
       patch.desiredState !== undefined
-        ? patch.desiredState === "running" || patch.desiredState === "stopped"
-          ? patch.desiredState
-          : null
+        ? readDesiredState(patch.desiredState)
         : current.desiredState,
+    serviceStates:
+      patch.serviceStates !== undefined ? readServiceStates(patch.serviceStates) : current.serviceStates,
   };
 
   const hasConfig = Object.values(nextConfig).some((value) => {
@@ -242,11 +263,13 @@ export function mergeExecutionWorkspaceConfig(
 
   if (hasConfig) {
     nextMetadata.config = {
+      environmentId: nextConfig.environmentId,
       provisionCommand: nextConfig.provisionCommand,
       teardownCommand: nextConfig.teardownCommand,
       cleanupCommand: nextConfig.cleanupCommand,
       workspaceRuntime: nextConfig.workspaceRuntime,
       desiredState: nextConfig.desiredState,
+      serviceStates: nextConfig.serviceStates ?? null,
     };
   } else {
     delete nextMetadata.config;
@@ -321,6 +344,15 @@ function toExecutionWorkspace(
   };
 }
 
+function toExecutionWorkspaceSummary(row: Pick<ExecutionWorkspaceRow, "id" | "name" | "mode" | "projectWorkspaceId">): ExecutionWorkspaceSummary {
+  return {
+    id: row.id,
+    name: row.name,
+    mode: row.mode as ExecutionWorkspaceSummary["mode"],
+    projectWorkspaceId: row.projectWorkspaceId ?? null,
+  };
+}
+
 function usesInheritedProjectRuntimeServices(row: ExecutionWorkspaceRow) {
   if (row.mode !== "shared_workspace" || !row.projectWorkspaceId) return false;
   return !readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null)?.workspaceRuntime;
@@ -357,6 +389,33 @@ async function loadEffectiveRuntimeServicesByExecutionWorkspace(
 }
 
 export function executionWorkspaceService(db: Db) {
+  function buildListConditions(
+    companyId: string,
+    filters?: {
+      projectId?: string;
+      projectWorkspaceId?: string;
+      issueId?: string;
+      status?: string;
+      reuseEligible?: boolean;
+    },
+  ) {
+    const conditions = [eq(executionWorkspaces.companyId, companyId)];
+    if (filters?.projectId) conditions.push(eq(executionWorkspaces.projectId, filters.projectId));
+    if (filters?.projectWorkspaceId) {
+      conditions.push(eq(executionWorkspaces.projectWorkspaceId, filters.projectWorkspaceId));
+    }
+    if (filters?.issueId) conditions.push(eq(executionWorkspaces.sourceIssueId, filters.issueId));
+    if (filters?.status) {
+      const statuses = filters.status.split(",").map((value) => value.trim()).filter(Boolean);
+      if (statuses.length === 1) conditions.push(eq(executionWorkspaces.status, statuses[0]!));
+      else if (statuses.length > 1) conditions.push(inArray(executionWorkspaces.status, statuses));
+    }
+    if (filters?.reuseEligible) {
+      conditions.push(inArray(executionWorkspaces.status, ["active", "idle", "in_review"]));
+    }
+    return conditions;
+  }
+
   return {
     list: async (companyId: string, filters?: {
       projectId?: string;
@@ -365,21 +424,7 @@ export function executionWorkspaceService(db: Db) {
       status?: string;
       reuseEligible?: boolean;
     }) => {
-      const conditions = [eq(executionWorkspaces.companyId, companyId)];
-      if (filters?.projectId) conditions.push(eq(executionWorkspaces.projectId, filters.projectId));
-      if (filters?.projectWorkspaceId) {
-        conditions.push(eq(executionWorkspaces.projectWorkspaceId, filters.projectWorkspaceId));
-      }
-      if (filters?.issueId) conditions.push(eq(executionWorkspaces.sourceIssueId, filters.issueId));
-      if (filters?.status) {
-        const statuses = filters.status.split(",").map((value) => value.trim()).filter(Boolean);
-        if (statuses.length === 1) conditions.push(eq(executionWorkspaces.status, statuses[0]!));
-        else if (statuses.length > 1) conditions.push(inArray(executionWorkspaces.status, statuses));
-      }
-      if (filters?.reuseEligible) {
-        conditions.push(inArray(executionWorkspaces.status, ["active", "idle", "in_review"]));
-      }
-
+      const conditions = buildListConditions(companyId, filters);
       const rows = await db
         .select()
         .from(executionWorkspaces)
@@ -392,6 +437,27 @@ export function executionWorkspaceService(db: Db) {
           (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService),
         ),
       );
+    },
+
+    listSummaries: async (companyId: string, filters?: {
+      projectId?: string;
+      projectWorkspaceId?: string;
+      issueId?: string;
+      status?: string;
+      reuseEligible?: boolean;
+    }) => {
+      const conditions = buildListConditions(companyId, filters);
+      const rows = await db
+        .select({
+          id: executionWorkspaces.id,
+          name: executionWorkspaces.name,
+          mode: executionWorkspaces.mode,
+          projectWorkspaceId: executionWorkspaces.projectWorkspaceId,
+        })
+        .from(executionWorkspaces)
+        .where(and(...conditions))
+        .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.createdAt));
+      return rows.map((row) => toExecutionWorkspaceSummary(row));
     },
 
     getById: async (id: string) => {
@@ -676,6 +742,37 @@ export function executionWorkspaceService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
       return row ? toExecutionWorkspace(row) : null;
+    },
+
+    clearEnvironmentSelection: async (companyId: string, environmentId: string) => {
+      return db.transaction(async (tx) => {
+        const rows = await tx
+          .select({
+            id: executionWorkspaces.id,
+            metadata: executionWorkspaces.metadata,
+          })
+          .from(executionWorkspaces)
+          .where(eq(executionWorkspaces.companyId, companyId));
+
+        let cleared = 0;
+        const updatedAt = new Date();
+        for (const row of rows) {
+          const metadata = (row.metadata as Record<string, unknown> | null) ?? null;
+          const config = readExecutionWorkspaceConfig(metadata);
+          if (config?.environmentId !== environmentId) continue;
+
+          await tx
+            .update(executionWorkspaces)
+            .set({
+              metadata: mergeExecutionWorkspaceConfig(metadata, { environmentId: null }),
+              updatedAt,
+            })
+            .where(eq(executionWorkspaces.id, row.id));
+          cleared += 1;
+        }
+
+        return cleared;
+      });
     },
   };
 }
