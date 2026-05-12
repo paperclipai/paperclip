@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       upstream_image:
-        description: 'Upstream image tag (e.g. ghcr.io/misterbusiness1/paperclip:latest)'
+        description: 'Upstream image tag (e.g. ghcr.io/paperclipai/paperclip:latest)'
         required: false
-        default: 'ghcr.io/misterbusiness1/paperclip:latest'
+        default: 'ghcr.io/paperclipai/paperclip:latest'
       playwright_version:
         description: 'Playwright version (must match upstream)'
         required: false
@@ -33,7 +33,7 @@ jobs:
       - name: Set image tag
         id: tag
         run: |
-          UPSTREAM="${{ inputs.upstream_image || 'ghcr.io/misterbusiness1/paperclip:latest' }}"
+          UPSTREAM="${{ inputs.upstream_image || 'ghcr.io/paperclipai/paperclip:latest' }}"
           TAG_PART=$(echo "$UPSTREAM" | cut -d: -f2 | tr '/' '-')
           echo "tag=${TAG_PART}-pwfix" >> "$GITHUB_OUTPUT"
           echo "image=ghcr.io/${{ github.repository_owner }}/paperclip-prod:${TAG_PART}-pwfix" >> "$GITHUB_OUTPUT"
@@ -56,18 +56,18 @@ jobs:
           push: true
           tags: ${{ steps.tag.outputs.image }}
           build-args: |
-            UPSTREAM_IMAGE=${{ inputs.upstream_image || 'ghcr.io/misterbusiness1/paperclip:latest' }}
+            UPSTREAM_IMAGE=${{ inputs.upstream_image || 'ghcr.io/paperclipai/paperclip:latest' }}
             PLAYWRIGHT_VERSION=${{ inputs.playwright_version || '1.58.2' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Smoke-test overlay image
+      - name: Smoke-test overlay image (chromium launch)
         run: |
-          docker run --rm \
+          docker run --rm --user root \
             "${{ steps.tag.outputs.image }}" \
             node -e "
               const { chromium } = require('/app/node_modules/.pnpm/playwright@1.58.2/node_modules/playwright');
-              chromium.launch({args:['--no-sandbox']}).then(b=>b.close()).then(()=>{ console.log('OK'); process.exit(0); }).catch(e=>{ console.error(e); process.exit(1); });
+              chromium.launch({args:['--no-sandbox','--disable-setuid-sandbox']}).then(b=>b.close()).then(()=>{ console.log('OK'); process.exit(0); }).catch(e=>{ console.error(e.message); process.exit(1); });
             "
 
       - name: Output image reference
