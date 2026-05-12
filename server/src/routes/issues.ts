@@ -554,18 +554,31 @@ function isClosedIssueStatus(status: string | null | undefined): status is "done
   return status === "done" || status === "cancelled";
 }
 
+// Markers that signal explicit intent to reopen/revise closed work.
+// Plain operational comments ("approved for archive", sign-off text) must NOT reopen.
+// Supported: command prefix "/reopen", or phrases "please redo" / "needs revision".
+// See: THE-156, THE-591 (F-114 audit finding).
+const REOPEN_INTENT_MARKERS = ["/reopen", "please redo", "needs revision"] as const;
+
+function hasReopenIntent(commentBody: string | null | undefined): boolean {
+  if (!commentBody) return false;
+  const lower = commentBody.toLowerCase();
+  return REOPEN_INTENT_MARKERS.some((marker) => lower.includes(marker));
+}
+
 function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   issueStatus: string | null | undefined;
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
   actorId: string;
+  commentBody: string | null | undefined;
 }) {
-  // Only human comments should implicitly reopen finished work.
-  // Agent-authored comments remain communicative unless reopen was explicit.
+  // Only human comments with explicit reopen intent should implicitly reopen finished work.
+  // Operational sign-off comments must not trigger reopen.
   if (input.actorType !== "user") return false;
   if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
-  return true;
+  return hasReopenIntent(input.commentBody);
 }
 
 function isExplicitResumeCapableStatus(status: string | null | undefined) {
@@ -2581,13 +2594,13 @@ export function issueRoutes(
     const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;
     const effectiveMoveToTodoRequested =
       explicitMoveToTodoRequested ||
-      (!!commentBody &&
-        shouldImplicitlyMoveCommentedIssueToTodo({
-          issueStatus: existing.status,
-          assigneeAgentId: requestedAssigneeAgentId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-        }));
+      shouldImplicitlyMoveCommentedIssueToTodo({
+        issueStatus: existing.status,
+        assigneeAgentId: requestedAssigneeAgentId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        commentBody: commentBody ?? null,
+      });
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
       ? await issueReferencesSvc.listIssueReferenceSummary(existing.id)
       : null;
@@ -4146,6 +4159,7 @@ export function issueRoutes(
         assigneeAgentId: issue.assigneeAgentId,
         actorType: actor.actorType,
         actorId: actor.actorId,
+        commentBody: req.body.body ?? null,
       });
     const hasUnresolvedFirstClassBlockers =
       isBlocked && effectiveMoveToTodoRequested
