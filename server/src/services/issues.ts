@@ -139,6 +139,7 @@ export interface IssueFilters {
   excludeRoutineExecutions?: boolean;
   includePluginOperations?: boolean;
   includeBlockedBy?: boolean;
+  includeCeoChat?: boolean;
   q?: string;
   limit?: number;
   offset?: number;
@@ -2228,6 +2229,9 @@ export function issueService(db: Db) {
 
     list: async (companyId: string, filters?: IssueFilters) => {
       const conditions = [eq(issues.companyId, companyId)];
+      if (filters?.includeCeoChat !== true) {
+        conditions.push(eq(issues.isCeoChat, false));
+      }
       const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
         ? Math.max(1, Math.floor(filters.limit))
         : undefined;

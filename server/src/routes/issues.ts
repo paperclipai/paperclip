@@ -1444,6 +1444,7 @@ export function issueRoutes(
       includePluginOperations:
         req.query.includePluginOperations === "true" || req.query.includePluginOperations === "1",
       includeBlockedBy: req.query.includeBlockedBy === "true" || req.query.includeBlockedBy === "1",
+      includeCeoChat: req.query.includeCeoChat === "true" || req.query.includeCeoChat === "1",
       q: req.query.q as string | undefined,
       limit,
       offset,
