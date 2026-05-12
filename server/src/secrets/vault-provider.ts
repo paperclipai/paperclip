@@ -22,6 +22,20 @@ export const DEFAULT_SA_TOKEN_PATH =
 export const TOKEN_RENEWAL_THRESHOLD = 0.7;
 export const TOKEN_EXPIRY_SKEW_MS = 30_000;
 
+const CREDENTIAL_FIELD_DENYLIST = [
+  "token",
+  "password",
+  "roleid",
+  "secretid",
+  "unsealkey",
+  "clientcert",
+  "privatekey",
+  "accesskeyid",
+  "secretaccesskey",
+  "serviceaccountjson",
+  "keyfile",
+];
+
 export interface VaultProviderConfig {
   address: string;
   namespace: string | null;
@@ -163,6 +177,19 @@ function validateVersionRetention(raw: unknown, warnings: string[]): number | nu
   return raw;
 }
 
+function validateNoCredentialFields(
+  config: Record<string, unknown>,
+  warnings: string[],
+): void {
+  for (const key of Object.keys(config)) {
+    if (CREDENTIAL_FIELD_DENYLIST.includes(key.toLowerCase())) {
+      warnings.push(
+        `vault config must not contain credential-shaped field '${key}'; bootstrap credentials live in workload identity or VAULT_TOKEN env, never in vault config`,
+      );
+    }
+  }
+}
+
 export function createVaultProvider(
   _options?: { config?: VaultProviderConfig; gateway?: VaultHttpGateway },
 ): SecretProviderModule {
@@ -181,6 +208,7 @@ export function createVaultProvider(
     async validateConfig(input) {
       const warnings: string[] = [];
       const rawConfig = (input?.providerConfig?.config ?? {}) as Record<string, unknown>;
+      validateNoCredentialFields(rawConfig, warnings);
       validateAddress(rawConfig.address, warnings);
       validateKvMount(rawConfig.kvMount, warnings);
       validateKvPathPrefix(rawConfig.kvPathPrefix, warnings);

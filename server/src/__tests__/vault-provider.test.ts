@@ -184,3 +184,36 @@ describe("validateConfig — mount, prefix, role, retention", () => {
     expect(r.ok).toBe(true);
   });
 });
+
+describe("validateConfig — credential-shaped-field denylist", () => {
+  function check(extra: Record<string, unknown>) {
+    return createVaultProvider({ gateway: {} as never }).validateConfig({
+      providerConfig: {
+        id: "v1",
+        provider: "vault",
+        status: "ready",
+        config: { address: "https://vault.example:8200", ...extra },
+      },
+    });
+  }
+
+  const banned = [
+    "token", "password", "roleId", "secretId",
+    "unsealKey", "clientCert", "privateKey",
+    "accessKeyId", "secretAccessKey", "serviceAccountJson",
+    "keyFile",
+  ];
+
+  for (const key of banned) {
+    it(`rejects vault config containing key '${key}'`, async () => {
+      const r = await check({ [key]: "anything" });
+      expect(r.ok).toBe(false);
+      expect(r.warnings.join(" ")).toMatch(new RegExp(key, "i"));
+    });
+  }
+
+  it("denylist is case-insensitive", async () => {
+    const r = await check({ TOKEN: "x" });
+    expect(r.ok).toBe(false);
+  });
+});
