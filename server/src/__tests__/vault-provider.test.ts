@@ -491,6 +491,148 @@ describe("VaultTokenManager", () => {
   });
 });
 
+type FakeStore = Map<string, { versions: string[][] }>;
+
+function fakeVaultGateway(): {
+  store: FakeStore;
+  maxVersions: Map<string, number>;
+  impl: import("../secrets/vault-provider.js").VaultHttpGateway;
+} {
+  const store: FakeStore = new Map();
+  const maxVersions = new Map<string, number>();
+  return {
+    store,
+    maxVersions,
+    impl: {
+      health: async () => ({ initialized: true, sealed: false, standby: false, version: "1.0.0" }),
+      loginKubernetes: async () => ({ clientToken: "hvs.kube", leaseDurationSec: 3600, renewable: true }),
+      renewSelf: async () => ({ leaseDurationSec: 3600, renewable: true }),
+      lookupSelf: async () => ({ leaseDurationSec: 3600, renewable: true, policies: ["default", "paperclip-default"] }),
+      capabilitiesSelf: async (paths) => Object.fromEntries(paths.map((p) => [p, ["create", "read", "update", "delete"]])),
+      readMount: async () => ({ type: "kv", options: { version: "2" } }),
+      putKv: async ({ mount, path, data, cas }) => {
+        const key = `${mount}/${path}`;
+        const entry = store.get(key) ?? { versions: [] };
+        if (cas !== undefined && cas !== entry.versions.length) {
+          throw new SecretProviderClientError({
+            code: "conflict",
+            provider: "vault",
+            operation: "putKv",
+            message: "cas mismatch",
+          });
+        }
+        entry.versions.push([JSON.stringify(data)]);
+        store.set(key, entry);
+        return { version: entry.versions.length };
+      },
+      getKv: async ({ mount, path, version }) => {
+        const key = `${mount}/${path}`;
+        const entry = store.get(key);
+        if (!entry) {
+          throw new SecretProviderClientError({
+            code: "not_found",
+            provider: "vault",
+            operation: "getKv",
+            message: "path not found",
+          });
+        }
+        const idx = version === undefined ? entry.versions.length - 1 : version - 1;
+        if (idx < 0 || idx >= entry.versions.length) {
+          throw new SecretProviderClientError({
+            code: "not_found",
+            provider: "vault",
+            operation: "getKv",
+            message: "version not found",
+          });
+        }
+        return { data: JSON.parse(entry.versions[idx][0]), version: idx + 1 };
+      },
+      setKvMetadata: async ({ mount, path, maxVersions: m }) => {
+        maxVersions.set(`${mount}/${path}`, m);
+      },
+      deleteKv: async ({ mount, path }) => {
+        store.delete(`${mount}/${path}`);
+      },
+    },
+  };
+}
+
+describe("createSecret", () => {
+  const previousEnv = {
+    VAULT_TOKEN: process.env.VAULT_TOKEN,
+    PAPERCLIP_DEPLOYMENT_ID: process.env.PAPERCLIP_DEPLOYMENT_ID,
+  };
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  });
+
+  it("writes the value under the managed KV path and sets max_versions", async () => {
+    const gw = fakeVaultGateway();
+    const provider = createVaultProvider({
+      config: {
+        address: "https://v",
+        namespace: null,
+        kvMount: "secret",
+        kvPathPrefix: "paperclip",
+        auth: { method: "token", role: null, saTokenPath: "/dev/null" },
+        versionRetention: 7,
+      },
+      gateway: gw.impl,
+    });
+    // token mode picks up VAULT_TOKEN
+    process.env.VAULT_TOKEN = "static";
+
+    const result = await provider.createSecret({
+      value: "supersecret",
+      context: {
+        companyId: "co-1",
+        deploymentId: "prod-eu1",
+        secretId: "sec-1",
+        secretKey: "GH_TOKEN",
+        secretName: "GitHub Token",
+        version: 1,
+      } as never,
+    });
+
+    expect(result.externalRef).toBe("secret/paperclip/prod-eu1/co-1/GH_TOKEN");
+    expect(result.providerVersionRef).toBe("1");
+    expect((result.material as { scheme: string }).scheme).toBe("vault_kv_v2");
+
+    const stored = gw.store.get("secret/paperclip/prod-eu1/co-1/GH_TOKEN");
+    expect(stored).toBeTruthy();
+    expect(JSON.parse(stored!.versions[0][0])).toEqual({ value: "supersecret" });
+    expect(gw.maxVersions.get("secret/paperclip/prod-eu1/co-1/GH_TOKEN")).toBe(7);
+  });
+
+  it("does not store plaintext in returned material", async () => {
+    const gw = fakeVaultGateway();
+    const provider = createVaultProvider({
+      config: {
+        address: "https://v",
+        namespace: null,
+        kvMount: "secret",
+        kvPathPrefix: "paperclip",
+        auth: { method: "token", role: null, saTokenPath: "/dev/null" },
+        versionRetention: 10,
+      },
+      gateway: gw.impl,
+    });
+    process.env.VAULT_TOKEN = "static";
+    const result = await provider.createSecret({
+      value: "supersecret",
+      context: { companyId: "co", deploymentId: "d", secretId: "s", secretKey: "K", secretName: "K", version: 1 } as never,
+    });
+    expect(JSON.stringify(result.material)).not.toContain("supersecret");
+  });
+});
+
 describe("withVaultTokenRetry", () => {
   function tokenMgr(source: VaultAuthSource) {
     return {

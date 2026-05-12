@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { readFileSync, existsSync } from "node:fs";
 import type {
   PreparedSecretVersion,
   SecretProviderClientErrorCode,
@@ -369,9 +371,81 @@ export function detectVaultAuthSource(input: {
   };
 }
 
+interface VaultManagedMaterial extends StoredSecretVersionMaterial {
+  scheme: typeof VAULT_MATERIAL_SCHEME;
+  source: "managed" | "external_reference";
+  mount: string;
+  path: string;
+  dataKey: string;
+  version: number | null;
+}
+
+function managedMaterial(input: {
+  mount: string;
+  path: string;
+  version: number;
+}): VaultManagedMaterial {
+  return {
+    scheme: VAULT_MATERIAL_SCHEME,
+    source: "managed",
+    mount: input.mount,
+    path: input.path,
+    dataKey: "value",
+    version: input.version,
+  };
+}
+
+function fingerprintFromVersionAndPath(mount: string, path: string, version: number): string {
+  return createHash("sha256").update(`${mount}/${path}@v${version}`).digest("hex");
+}
+
 export function createVaultProvider(
-  _options?: { config?: VaultProviderConfig; gateway?: VaultHttpGateway },
+  options?: { config?: VaultProviderConfig; gateway?: VaultHttpGateway },
 ): SecretProviderModule {
+  function readSaToken(path: string): string | null {
+    try {
+      if (!existsSync(path)) return null;
+      return readFileSync(path, "utf8").trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  function resolveConfig(providerConfig?: SecretProviderVaultRuntimeConfig | null): VaultProviderConfig {
+    if (options?.config) return options.config;
+    const resolved = resolveVaultConfig({
+      env: process.env,
+      providerConfig: providerConfig ?? null,
+    });
+    if (!resolved.config) {
+      throw unprocessable(
+        `vault provider config invalid: ${resolved.warnings.join("; ")}`,
+      );
+    }
+    return resolved.config;
+  }
+
+  function resolveGateway(_config: VaultProviderConfig): VaultHttpGateway {
+    if (options?.gateway) return options.gateway;
+    throw unprocessable(
+      "vault provider has no http gateway configured; production gateway is added in a follow-up task",
+    );
+    // Replaced by UndiciVaultGateway construction in Task 17.
+  }
+
+  function tokenManagerFor(config: VaultProviderConfig, gateway: VaultHttpGateway): VaultTokenManager {
+    const source = detectVaultAuthSource({
+      config,
+      env: process.env,
+      readSaToken,
+    });
+    return new VaultTokenManager({ source, gateway });
+  }
+
+  function deploymentId(): string {
+    return process.env.PAPERCLIP_DEPLOYMENT_ID || "default";
+  }
+
   return {
     id: "vault",
     descriptor() {
@@ -381,7 +455,7 @@ export function createVaultProvider(
         requiresExternalRef: false,
         supportsManagedValues: true,
         supportsExternalReferences: true,
-        configured: false,
+        configured: true,
       };
     },
     async validateConfig(input) {
@@ -395,8 +469,46 @@ export function createVaultProvider(
       validateVersionRetention(rawConfig.versionRetention, warnings);
       return { ok: warnings.length === 0, warnings };
     },
-    async createSecret() {
-      throw new Error("createSecret not implemented yet");
+    async createSecret(input) {
+      const config = resolveConfig(input.providerConfig);
+      const gateway = resolveGateway(config);
+      const tokenManager = tokenManagerFor(config, gateway);
+      const ctx = input.context;
+      if (!ctx) {
+        throw unprocessable("vault createSecret requires SecretProviderWriteContext");
+      }
+      const ctxWithExtras = ctx as SecretProviderWriteContext & { deploymentId?: string };
+      const path = buildManagedKvPath({
+        config,
+        deploymentId: ctxWithExtras.deploymentId ?? deploymentId(),
+        companyId: ctx.companyId,
+        secretKey: ctx.secretKey,
+      });
+      const valueSha256 = createHash("sha256").update(input.value).digest("hex");
+      return await withVaultTokenRetry({
+        tokenManager,
+        sourceMode: (tokenManager as unknown as { source: VaultAuthSource })["source"]?.mode ?? "token",
+        operation: async () => {
+          await tokenManager.acquire();
+          const { version } = await gateway.putKv({
+            mount: config.kvMount,
+            path,
+            data: { value: input.value },
+          });
+          await gateway.setKvMetadata({
+            mount: config.kvMount,
+            path,
+            maxVersions: config.versionRetention,
+          });
+          return {
+            material: managedMaterial({ mount: config.kvMount, path, version }),
+            valueSha256,
+            fingerprintSha256: fingerprintFromVersionAndPath(config.kvMount, path, version),
+            externalRef: `${config.kvMount}/${path}`,
+            providerVersionRef: String(version),
+          };
+        },
+      });
     },
     async createVersion() {
       throw new Error("createVersion not implemented yet");
@@ -407,15 +519,9 @@ export function createVaultProvider(
     async resolveVersion() {
       throw new Error("resolveVersion not implemented yet");
     },
-    async deleteOrArchive() {
-      // no-op stub
-    },
+    async deleteOrArchive() { /* later */ },
     async healthCheck() {
-      return {
-        provider: "vault",
-        status: "warn",
-        message: "healthCheck not implemented yet",
-      };
+      return { provider: "vault", status: "warn", message: "healthCheck not implemented yet" };
     },
   };
 }
