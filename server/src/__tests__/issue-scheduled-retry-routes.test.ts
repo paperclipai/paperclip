@@ -313,7 +313,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toMatchObject({
-      outcome: "gate_suppressed",
+      outcome: "already_promoted",
       scheduledRetry: {
         runId: retryRunId,
         status: "scheduled_retry",

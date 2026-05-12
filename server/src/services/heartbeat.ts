@@ -5808,8 +5808,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 	    }
 	    if (promotion.outcome === "not_promoted") {
 	      return {
-	        outcome: "gate_suppressed" as const,
-	        message: "Scheduled retry deferred because enqueue is paused",
+	        outcome: "already_promoted" as const,
+	        message: "Scheduled retry was already promoted",
 	        scheduledRetry,
 	      };
 	    }
@@ -9396,7 +9396,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(
         and(
           eq(heartbeatRuns.companyId, companyId),
-          inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
+          inArray(heartbeatRuns.status, [...PAUSE_CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
           sql`${effectiveProjectId} = ${projectId}`,
         ),
       );
@@ -9593,7 +9593,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(
             and(
               eq(heartbeatRuns.companyId, scope.companyId),
-              inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
+              inArray(heartbeatRuns.status, [...PAUSE_CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
             ),
           )
           .then((rows) => rows.map((row) => row.id))

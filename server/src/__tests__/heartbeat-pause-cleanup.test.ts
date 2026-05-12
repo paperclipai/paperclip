@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
   agentWakeupRequests,
+  budgetPolicies,
   companies,
   createDb,
   heartbeatRunEvents,
@@ -40,6 +41,7 @@ describeWithEmbeddedPostgres("heartbeat pause cleanup", () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(budgetPolicies);
     await db.delete(agents);
     await db.delete(companies);
     await db.delete(instanceSettings);
@@ -141,6 +143,29 @@ describeWithEmbeddedPostgres("heartbeat pause cleanup", () => {
     const retryRunId = await seedScheduledRetryRun(companyId, agentId);
 
     await heartbeat.cancelActiveForAgent(agentId);
+
+    const [queuedRun] = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, queuedRunId));
+    const [retryRun] = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, retryRunId));
+    expect(queuedRun?.status).toBe("cancelled");
+    expect(retryRun?.status).toBe("scheduled_retry");
+  });
+
+  it("cancelBudgetScopeWork: preserves scheduled retries for company budget pauses", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const queuedRunId = await seedQueuedRun(companyId, agentId);
+    const retryRunId = await seedScheduledRetryRun(companyId, agentId);
+
+    await heartbeat.cancelBudgetScopeWork({
+      companyId,
+      scopeType: "company",
+      scopeId: companyId,
+    });
 
     const [queuedRun] = await db
       .select({ status: heartbeatRuns.status })
