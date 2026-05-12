@@ -5,6 +5,7 @@ import {
   evaluateMissionControlAutonomousLoopGate,
   evaluateMissionControlCompletionGate,
   MISSION_CONTROL_AUTONOMOUS_LOOP_DOCUMENT_KEY,
+  type MissionControlAutonomousLoopUserApproval,
   type MissionControlCeoLoopDecision,
   type MissionControlCompletionGateDocument,
   type MissionControlCompletionGateResult,
@@ -23,7 +24,10 @@ type MissionControlCompletionGateReason = MissionControlCompletionGateResult["re
 type AutonomousGoalLoopContinuationReason =
   | MissionControlCompletionGateReason
   | "not_next_iteration"
-  | "unsafe_next_task";
+  | "unsafe_next_task"
+  | "ceo_self_attestation_conflict";
+
+type MissionControlCeoLoopNextTask = NonNullable<MissionControlCeoLoopDecision["nextTask"]>;
 
 type AutonomousGoalLoopParentIssue = {
   id: string;
@@ -229,6 +233,73 @@ function progressLabelFor(iteration: number, maxIterations: number | null) {
   return maxIterations ? `${iteration} / ${maxIterations}` : `${iteration}`;
 }
 
+const ACTION_APPROVAL_PATTERNS: Record<MissionControlAutonomousLoopUserApproval, RegExp[]> = {
+  live_external_action: [
+    /\b(post|publish|send|message|dm|email|outreach|comment|reply|follow|unfollow|like|retweet|boost)\b[\s\S]{0,80}\b(x|twitter|telegram|tg|instagram|insta|threads|facebook|youtube|tiktok|linkedin|reddit|fansly|onlyfans|public|customer|lead|user|audience|subscriber)s?\b/i,
+    /\b(post|publish|send|message|dm|email|outreach|comment|reply|follow|unfollow|like|retweet|boost)\b[\s\S]{0,80}\bOF\b/,
+    /\b(live|external|public)\s+(campaign|launch|message|post|outreach|notification|announcement)\b/i,
+    /\b(contact|notify|invite)\b[\s\S]{0,80}\b(customer|lead|user|audience|subscriber|creator|prospect)s?\b/i,
+  ],
+  destructive_action: [
+    /\b(delete|deleting|destroy|drop|wipe|purge|truncate|erase|remove|deactivate|disable|revoke)\b[\s\S]{0,80}\b(production|prod|live|account|database|db|table|data|record|file|secret|key|credential|user|customer|proxy|profile)s?\b/i,
+    /\b(drop|truncate)\s+(table|database|db)\b/i,
+    /\brm\s+-rf\b/i,
+  ],
+  production_deploy: [
+    /\b(deploy|release|rollout|ship|restart|migrate|promote)\b[\s\S]{0,80}\b(production|prod|live|public)\b/i,
+    /\bproduction\s+(deploy|deployment|release|rollout|migration|restart)\b/i,
+    /\b(kubectl\s+apply|terraform\s+apply|systemctl\s+restart|docker\s+compose\s+up)\b/i,
+  ],
+  protected_branch_merge: [
+    /\b(merge|push|commit|rebase|force[-\s]?push)\b[\s\S]{0,80}\b(main|master|production|prod|protected\s+branch)\b/i,
+    /\b(main|master|production|prod)\s+(branch|merge|push)\b/i,
+    /\bprotected\s+branch\b/i,
+  ],
+  spend_money: [
+    /\b(buy|purchase|pay|spend|charge|subscribe|renew|order|fund|top\s*up)\b[\s\S]{0,80}\b(credit|account|subscription|plan|invoice|budget|ad|ads|campaign|proxy|server|domain|license|seat|api|token|sms|captcha)s?\b/i,
+    /\b(buy|purchase|pay|spend|charge|subscribe|renew|order|fund|top\s*up)\b[\s\S]{0,80}(?:[$€£₴]\s*\d|\d+(?:[.,]\d{1,2})?\s*(?:usd|eur|gbp|uah|dollars?|euros?|pounds?|cents?))/i,
+    /(?:[$€£₴]\s*\d+(?:[.,]\d{1,2})?|\b\d+(?:[.,]\d{1,2})?\s*(?:usd|eur|gbp|uah|dollars?|euros?|pounds?|cents?)\b|\b(budget|invoice|billing|payment|paid)\b)/i,
+  ],
+  account_or_proxy_change: [
+    /\b(change|update|rotate|replace|add|remove|switch|reset|edit|modify)\b[\s\S]{0,80}\b(account|profile|proxy|proxies|credential|password|email|totp|2fa|mfa|api\s*key|token|secret|session|cookie)s?\b/i,
+    /\b(proxy|proxies|account|profile|credential|password|email|totp|2fa|api\s*key|token|secret|session|cookie)\b[\s\S]{0,80}\b(change|rotation|update|replacement|reset)\b/i,
+  ],
+};
+
+function nextTaskTextForActionScan(task: MissionControlCeoLoopNextTask) {
+  return [task.title, task.description, task.assigneeHint, ...task.acceptanceCriteria]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join("\n");
+}
+
+function detectedUserApprovalActions(input: {
+  nextTask: MissionControlCeoLoopNextTask;
+  userApprovalRequired: MissionControlAutonomousLoopUserApproval[];
+}) {
+  const activeCategories = new Set(input.userApprovalRequired);
+  const text = nextTaskTextForActionScan(input.nextTask);
+  return (Object.keys(ACTION_APPROVAL_PATTERNS) as MissionControlAutonomousLoopUserApproval[]).filter((category) => {
+    if (!activeCategories.has(category)) return false;
+    return ACTION_APPROVAL_PATTERNS[category].some((pattern) => pattern.test(text));
+  });
+}
+
+function ceoSelfAttestationConflict(input: {
+  decision: MissionControlCeoLoopDecision | null;
+  userApprovalRequired: MissionControlAutonomousLoopUserApproval[];
+}) {
+  if (input.decision?.decision !== "next_iteration" || !input.decision.nextTask?.safeToRunWithoutUserApproval) return null;
+  const detectedCategories = detectedUserApprovalActions({
+    nextTask: input.decision.nextTask,
+    userApprovalRequired: input.userApprovalRequired,
+  });
+  if (detectedCategories.length === 0) return null;
+  return {
+    reason: "ceo_self_attestation_conflict" as const,
+    detectedCategories,
+  };
+}
+
 function isDecisionRepairReason(reason: string) {
   return reason === "invalid_ceo_loop_decision" ||
     reason === "ceo_loop_iteration_mismatch" ||
@@ -242,6 +313,7 @@ function safetyMetricKeyForReason(reason: string) {
   }
   if (reason === "ceo_loop_iteration_mismatch") return "autonomous_loop_decision_iteration_mismatch";
   if (reason === "invalid_ceo_loop_decision") return "autonomous_loop_decision_repair_required";
+  if (reason === "ceo_self_attestation_conflict") return "autonomous_loop_ceo_self_attestation_conflict";
   return null;
 }
 
@@ -257,6 +329,16 @@ function supervisorFor(input: {
       owner: "operator",
       metricKey: safetyMetricKeyForReason(input.reason),
       userVisible: false,
+    };
+  }
+  if (input.reason === "ceo_self_attestation_conflict") {
+    return {
+      attentionRequired: true,
+      reason: "ceo_self_attestation_conflict",
+      recoveryAction: "request_user_approval",
+      owner: "user",
+      metricKey: safetyMetricKeyForReason(input.reason),
+      userVisible: true,
     };
   }
   if (input.reason === "approval_required" || input.decision?.decision === "approval_required") {
@@ -325,6 +407,7 @@ function statusFor(input: {
   matchingChildIssue: AutonomousGoalLoopChildIssue | null;
 }): Extract<AutonomousGoalLoopState, { enabled: true }>["status"] {
   if (isDecisionRepairReason(input.reason)) return "failed";
+  if (input.reason === "ceo_self_attestation_conflict") return "blocked";
   if (input.reason === "approval_required" || input.decision?.decision === "approval_required") return "approval_required";
   if (input.decision?.decision === "goal_reached") return "goal_reached";
   if (input.decision?.decision === "blocked") return "blocked";
@@ -366,8 +449,13 @@ export function buildAutonomousGoalLoopState(input: {
   const loopPolicy = gate.autonomousLoopPolicy;
   const iteration = loopPolicy.iteration;
   const maxIterations = loopPolicy.maxIterations ?? null;
-  const supervisor = supervisorFor({ reason: gate.reason, decision });
-  const status = statusFor({ reason: gate.reason, decision, matchingChildIssue });
+  const selfAttestationConflict = ceoSelfAttestationConflict({
+    decision,
+    userApprovalRequired: loopPolicy.userApprovalRequired,
+  });
+  const effectiveReason = selfAttestationConflict?.reason ?? gate.reason;
+  const supervisor = supervisorFor({ reason: effectiveReason, decision });
+  const status = statusFor({ reason: effectiveReason, decision, matchingChildIssue });
   const generatedAt = input.now instanceof Date ? input.now.toISOString() : (input.now ?? new Date().toISOString());
 
   const iterations = (input.childIssues ?? [])
@@ -475,6 +563,7 @@ function reportEventFor(input: {
   reason: AutonomousGoalLoopContinuationReason;
   decision: MissionControlCeoLoopDecision | null;
 }): string | null {
+  if (input.reason === "ceo_self_attestation_conflict") return "approval_required";
   if (input.reason === "approval_required") return "approval_required";
   if (input.reason === "runtime_exceeded") return "runtime_exceeded";
   if (input.reason === "iteration_exceeded") return "iteration_exceeded";
@@ -578,6 +667,20 @@ export function buildAutonomousGoalLoopContinuationPlan(input: {
     return nonCreatePlan({
       action: "blocked",
       reason: "unsafe_next_task",
+      gate,
+      ceoLoopDecision: decision,
+      reportToUser: true,
+    });
+  }
+
+  const selfAttestationConflict = ceoSelfAttestationConflict({
+    decision,
+    userApprovalRequired: gate.policy.autonomousLoop.userApprovalRequired,
+  });
+  if (selfAttestationConflict) {
+    return nonCreatePlan({
+      action: "blocked",
+      reason: selfAttestationConflict.reason,
       gate,
       ceoLoopDecision: decision,
       reportToUser: true,
