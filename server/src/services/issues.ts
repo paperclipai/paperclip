@@ -61,6 +61,7 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getDefaultCompanyGoal } from "./goals.js";
+import { logActivity } from "./activity-log.js";
 import {
   isVerifiedIssueTreeControlInteractionWake,
   issueTreeControlService,
@@ -76,11 +77,46 @@ const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
 const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
-function assertTransition(from: string, to: string) {
+
+const REVIEW_GATE_DOCUMENT_KEYS: ReadonlySet<string> = new Set(["spec", "deliverable", "qa", "brief"]);
+
+const ALLOWED_TRANSITIONS: Readonly<Record<string, ReadonlySet<string>>> = {
+  backlog: new Set(["todo", "in_progress", "blocked", "cancelled"]),
+  todo: new Set(["backlog", "in_progress", "in_review", "blocked", "done", "cancelled"]),
+  in_progress: new Set(["todo", "in_review", "blocked", "done", "cancelled"]),
+  in_review: new Set(["in_progress", "todo", "blocked", "done", "cancelled"]),
+  blocked: new Set(["backlog", "todo", "in_progress", "cancelled"]),
+  done: new Set(["in_progress", "in_review"]),
+  cancelled: new Set(["todo"]),
+};
+
+function assertTransition(
+  from: string,
+  to: string,
+  context: { issueId: string; hasReviewGate: boolean },
+) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
     throw conflict(`Unknown issue status: ${to}`);
   }
+  const allowed = ALLOWED_TRANSITIONS[from] ?? new Set<string>();
+  if (!allowed.has(to)) {
+    throw conflict(`Invalid status transition: ${from} → ${to}`);
+  }
+  if (to === "done" && from !== "in_review" && context.hasReviewGate) {
+    throw conflict(
+      `Task ${context.issueId} has a review gate (acceptance criteria / reviewer / brief). ` +
+        `Transition through in_review required before done.`,
+    );
+  }
+}
+
+async function hasIssueReviewGate(db: Db, issueId: string): Promise<boolean> {
+  const docs = await db
+    .select({ key: issueDocuments.key })
+    .from(issueDocuments)
+    .where(eq(issueDocuments.issueId, issueId));
+  return docs.some((d: { key: string }) => REVIEW_GATE_DOCUMENT_KEYS.has(d.key));
 }
 
 function applyStatusSideEffects(
@@ -3060,7 +3096,9 @@ export function issueService(db: Db) {
       }
 
       if (issueData.status) {
-        assertTransition(existing.status, issueData.status);
+        const needsReviewGateCheck = issueData.status === "done" && existing.status !== "in_review";
+        const hasReviewGate = needsReviewGateCheck ? await hasIssueReviewGate(db, id) : false;
+        assertTransition(existing.status, issueData.status, { issueId: id, hasReviewGate });
       }
 
       const patch: Partial<typeof issues.$inferInsert> = {
@@ -3307,7 +3345,28 @@ export function issueService(db: Db) {
         return enriched;
       };
 
-      return dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx);
+      const result = await (dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx));
+      if (
+        result &&
+        issueData.status &&
+        existing.status === "done" &&
+        issueData.status !== "done"
+      ) {
+        await logActivity(db, {
+          companyId: existing.companyId,
+          actorType: "system",
+          actorId: "issues.update",
+          action: "issue.status.reverse_transition",
+          entityType: "issue",
+          entityId: id,
+          details: {
+            from: existing.status,
+            to: issueData.status,
+            reason: "done state revert",
+          },
+        });
+      }
+      return result;
     },
 
     clearExecutionWorkspaceEnvironmentSelection: async (companyId: string, environmentId: string) => {
