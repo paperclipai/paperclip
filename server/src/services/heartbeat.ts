@@ -61,6 +61,7 @@ import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
+import { parseClaudeQuotaResetTime } from "./claude-quota-reset.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
@@ -221,6 +222,9 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
+export const CLAUDE_QUOTA_EXHAUSTED_RETRY_REASON = "claude_quota_exhausted";
+export const CLAUDE_QUOTA_EXHAUSTED_WAKE_REASON = "claude_quota_reset";
+export { parseClaudeQuotaResetTime };
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
 const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
 const MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS = 1_000;
@@ -7893,6 +7897,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             );
           }
         }
+        const quotaResetAt =
+          outcome === "failed"
+            ? parseClaudeQuotaResetTime(livenessRun.error, new Date())
+            : null;
         if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
           const policy = parseMaxTurnContinuationPolicy(agent);
           if (policy.enabled && policy.maxAttempts > 0) {
@@ -7914,6 +7922,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             });
           }
+        } else if (quotaResetAt) {
+          const delayMs = Math.max(0, quotaResetAt.getTime() - Date.now());
+          await appendRunEvent(livenessRun, await nextRunEventSeq(livenessRun.id), {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "info",
+            message: `Claude Max quota exhausted; rescheduling retry at ${quotaResetAt.toISOString()}`,
+            payload: {
+              retryReason: CLAUDE_QUOTA_EXHAUSTED_RETRY_REASON,
+              quotaResetAt: quotaResetAt.toISOString(),
+              delayMs,
+            },
+          });
+          await scheduleBoundedRetryForRun(livenessRun, agent, {
+            retryReason: CLAUDE_QUOTA_EXHAUSTED_RETRY_REASON,
+            wakeReason: CLAUDE_QUOTA_EXHAUSTED_WAKE_REASON,
+            maxAttempts: 1,
+            delayMs,
+          });
         } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }

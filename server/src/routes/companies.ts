@@ -340,6 +340,22 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       res.status(404).json({ error: "Company not found" });
       return;
     }
+    if (
+      Object.prototype.hasOwnProperty.call(body, "budgetMonthlyCents")
+      && typeof company.budgetMonthlyCents === "number"
+      && company.budgetMonthlyCents !== existingCompany.budgetMonthlyCents
+    ) {
+      await budgets.upsertPolicy(
+        company.id,
+        {
+          scopeType: "company",
+          scopeId: company.id,
+          amount: company.budgetMonthlyCents,
+          windowKind: "calendar_month_utc",
+        },
+        actor.actorType === "user" ? actor.actorId : null,
+      );
+    }
     await logActivity(db, {
       companyId,
       actorType: actor.actorType,
@@ -351,7 +367,10 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       entityId: companyId,
       details: body,
     });
-    res.json(company);
+    const refreshed = Object.prototype.hasOwnProperty.call(body, "budgetMonthlyCents")
+      ? (await svc.getById(companyId)) ?? company
+      : company;
+    res.json(refreshed);
   });
 
   router.patch("/:companyId/branding", validate(updateCompanyBrandingSchema), async (req, res) => {
