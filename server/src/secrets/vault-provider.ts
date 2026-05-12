@@ -467,7 +467,13 @@ export class UndiciVaultGateway implements VaultHttpGateway {
   }
 
   async health() {
-    return this.call({ method: "GET", path: "/v1/sys/health?standbycode=200&sealedcode=200", authenticated: false });
+    return this.call<{
+      initialized?: boolean;
+      sealed?: boolean;
+      standby?: boolean;
+      version?: string;
+      cluster_name?: string;
+    }>({ method: "GET", path: "/v1/sys/health?standbycode=200&sealedcode=200", authenticated: false });
   }
   async loginKubernetes(input: { role: string; jwt: string }) {
     const r = await this.call<{ auth: { client_token: string; lease_duration: number; renewable: boolean } }>({
