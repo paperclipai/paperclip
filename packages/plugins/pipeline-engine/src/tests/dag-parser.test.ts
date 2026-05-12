@@ -7,12 +7,12 @@ const validJson = JSON.stringify({
   description: "Full feature development",
   trigger: { label: "pipeline:feature" },
   stages: [
-    { id: "spec-review", type: "classifier", agent_role: "spec-reviewer", output_schema: "spec-review-output" },
-    { id: "decompose", type: "classifier", agent_role: "decomposer", output_schema: "decomposition-output", checkpoint: true },
-    { id: "implement", type: "worker", agent_role: "code-writer" },
+    { id: "spec-review", type: "stage", agent_role: "spec-reviewer", output_schema: "spec-review-output" },
+    { id: "decompose", type: "stage", agent_role: "decomposer", output_schema: "decomposition-output" },
+    { id: "implement", type: "stage", agent_role: "code-writer" },
   ],
   edges: [
-    { id: "e1", from: "spec-review", to: "decompose", when: "stages.spec_review.output.status = 'approved'" },
+    { id: "e1", from: "spec-review", to: "decompose", sourceHandle: "approved" },
     { id: "e2", from: "decompose", to: "implement" },
   ],
   positions: {
@@ -62,7 +62,7 @@ describe("dag-parser", () => {
       const json = JSON.stringify({
         name: "test",
         trigger: { label: "x" },
-        stages: [{ id: "a", type: "worker", agent_role: "r" }],
+        stages: [{ id: "a", type: "stage", agent_role: "r" }],
         edges: [],
       });
       const result = parsePipeline(json);
@@ -84,8 +84,8 @@ describe("dag-parser", () => {
         description: "test",
         trigger: { label: "test" },
         stages: [
-          { id: "a", type: "worker", agent_role: "x" },
-          { id: "b", type: "worker", agent_role: "x" },
+          { id: "a", type: "stage", agent_role: "x" },
+          { id: "b", type: "stage", agent_role: "x" },
         ],
         edges: [
           { id: "e1", from: "a", to: "b" },
@@ -104,8 +104,8 @@ describe("dag-parser", () => {
         description: "",
         trigger: { label: "test" },
         stages: [
-          { id: "a", type: "worker", agent_role: "x" },
-          { id: "b", type: "worker", agent_role: "x" },
+          { id: "a", type: "stage", agent_role: "x" },
+          { id: "b", type: "stage", agent_role: "x" },
         ],
         edges: [
           { id: "e1", from: "a", to: "b" },
@@ -122,7 +122,7 @@ describe("dag-parser", () => {
         name: "bad-ref",
         description: "test",
         trigger: { label: "test" },
-        stages: [{ id: "a", type: "worker", agent_role: "x" }],
+        stages: [{ id: "a", type: "stage", agent_role: "x" }],
         edges: [{ id: "e1", from: "nonexistent", to: "a" }],
         positions: {},
       };
@@ -136,7 +136,7 @@ describe("dag-parser", () => {
         name: "bad-ref",
         description: "test",
         trigger: { label: "test" },
-        stages: [{ id: "a", type: "worker", agent_role: "x" }],
+        stages: [{ id: "a", type: "stage", agent_role: "x" }],
         edges: [{ id: "e1", from: "a", to: "nonexistent" }],
         positions: {},
       };
@@ -151,8 +151,8 @@ describe("dag-parser", () => {
         description: "test",
         trigger: { label: "test" },
         stages: [
-          { id: "a", type: "worker", agent_role: "x" },
-          { id: "a", type: "classifier", agent_role: "y" },
+          { id: "a", type: "stage", agent_role: "x" },
+          { id: "a", type: "stage", agent_role: "y" },
         ],
         edges: [],
         positions: {},
@@ -168,8 +168,8 @@ describe("dag-parser", () => {
         description: "test",
         trigger: { label: "test" },
         stages: [
-          { id: "a", type: "worker", agent_role: "x" },
-          { id: "b", type: "worker", agent_role: "x" },
+          { id: "a", type: "stage", agent_role: "x" },
+          { id: "b", type: "stage", agent_role: "x" },
         ],
         edges: [
           { id: "e1", from: "a", to: "b" },

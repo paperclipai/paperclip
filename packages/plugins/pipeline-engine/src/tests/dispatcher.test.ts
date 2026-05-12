@@ -28,7 +28,7 @@ describe("dispatcher", () => {
   });
 
   it("creates a sub-issue for a worker stage", async () => {
-    const stage: StageDefinition = { id: "implement", type: "worker", agent_role: "code-writer" };
+    const stage: StageDefinition = { id: "implement", type: "stage", agent_role: "code-writer" };
     const result = await dispatcher.dispatch({
       pipelineRunId: "run-1",
       stage,
@@ -43,20 +43,20 @@ describe("dispatcher", () => {
   });
 
   it("throws CONFIGURATION_ERROR for unknown role", async () => {
-    const stage: StageDefinition = { id: "unknown", type: "worker", agent_role: "nonexistent-role" };
+    const stage: StageDefinition = { id: "unknown", type: "stage", agent_role: "nonexistent-role" };
     await expect(
       dispatcher.dispatch({ pipelineRunId: "run-1", stage, companyId: "company-1", parentIssueId: "parent-1" }),
     ).rejects.toThrow("CONFIGURATION_ERROR");
   });
 
   it("requests wakeup after creating issue", async () => {
-    const stage: StageDefinition = { id: "review", type: "classifier", agent_role: "spec-reviewer" };
+    const stage: StageDefinition = { id: "review", type: "stage", agent_role: "spec-reviewer" };
     await dispatcher.dispatch({ pipelineRunId: "run-1", stage, companyId: "company-1", parentIssueId: "parent-1" });
     expect(issues.requestWakeup).toHaveBeenCalledOnce();
   });
 
   it("includes failure context in retry dispatch", async () => {
-    const stage: StageDefinition = { id: "implement", type: "worker", agent_role: "code-writer" };
+    const stage: StageDefinition = { id: "implement", type: "stage", agent_role: "code-writer" };
     await dispatcher.dispatch({
       pipelineRunId: "run-1",
       stage,
