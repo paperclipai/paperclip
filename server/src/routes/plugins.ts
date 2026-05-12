@@ -2148,22 +2148,9 @@ export function pluginRoutes(
 
     if (bridgeDeps?.workerManager.isRunning(plugin.id)) {
       try {
-        await bridgeDeps.workerManager.call(
-          plugin.id,
-          "configChanged",
-          { config: {} },
-        );
-      } catch (rpcErr) {
-        if (
-          rpcErr instanceof JsonRpcCallError &&
-          rpcErr.code === PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED
-        ) {
-          try {
-            await lifecycle.restartWorker(plugin.id);
-          } catch {
-            // Runtime config is already cleared; restart failure is non-fatal.
-          }
-        }
+        await lifecycle.restartWorker(plugin.id);
+      } catch {
+        // Runtime config is already cleared; restart failure is non-fatal.
       }
     }
     res.status(204).end();

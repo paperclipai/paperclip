@@ -172,38 +172,30 @@ describe.sequential("DELETE /api/plugins/:pluginId/runtime-config", () => {
     expect(mockRuntimeConfig.clearRuntime).toHaveBeenCalledWith(pluginId);
   });
 
-  it("notifies a running worker after runtime config is cleared", async () => {
+  it("restarts a running worker after runtime config is cleared", async () => {
     readyPlugin();
     mockRuntimeConfig.clearRuntime.mockResolvedValue(undefined);
     mockWorkerManager.isRunning.mockReturnValue(true);
-    mockWorkerManager.call.mockResolvedValue(undefined);
-    const app = await createApp(boardActor({ isInstanceAdmin: true }));
-
-    const res = await request(app).delete(`/api/plugins/${pluginId}/runtime-config`);
-    expect(res.status).toBe(204);
-    expect(mockWorkerManager.call).toHaveBeenCalledWith(
-      pluginId,
-      "configChanged",
-      { config: {} },
-    );
-    expect(mockLifecycle.restartWorker).not.toHaveBeenCalled();
-  });
-
-  it("restarts a running worker when it cannot handle runtime config clear notifications", async () => {
-    const { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } = await import("@paperclipai/plugin-sdk");
-    readyPlugin();
-    mockRuntimeConfig.clearRuntime.mockResolvedValue(undefined);
-    mockWorkerManager.isRunning.mockReturnValue(true);
-    mockWorkerManager.call.mockRejectedValue(new JsonRpcCallError({
-      code: PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED,
-      message: "method not implemented",
-    }));
     mockLifecycle.restartWorker.mockResolvedValue(undefined);
     const app = await createApp(boardActor({ isInstanceAdmin: true }));
 
     const res = await request(app).delete(`/api/plugins/${pluginId}/runtime-config`);
     expect(res.status).toBe(204);
     expect(mockLifecycle.restartWorker).toHaveBeenCalledWith(pluginId);
+    expect(mockWorkerManager.call).not.toHaveBeenCalled();
+  });
+
+  it("still returns 204 if the runtime config restart fails after clearing", async () => {
+    readyPlugin();
+    mockRuntimeConfig.clearRuntime.mockResolvedValue(undefined);
+    mockWorkerManager.isRunning.mockReturnValue(true);
+    mockLifecycle.restartWorker.mockRejectedValue(new Error("restart failed"));
+    const app = await createApp(boardActor({ isInstanceAdmin: true }));
+
+    const res = await request(app).delete(`/api/plugins/${pluginId}/runtime-config`);
+    expect(res.status).toBe(204);
+    expect(mockLifecycle.restartWorker).toHaveBeenCalledWith(pluginId);
+    expect(mockWorkerManager.call).not.toHaveBeenCalled();
   });
 
   it("rejects non-board actors with 403", async () => {
