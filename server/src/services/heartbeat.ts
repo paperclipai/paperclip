@@ -184,6 +184,23 @@ const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
+/**
+ * System tmp / config roots that must NEVER be treated as a host workspace
+ * cwd, even if a previous run's sessionParams points there. Some remote
+ * adapters historically persisted the *pod* cwd (e.g. "/tmp") into
+ * sessionParams; using that as the host workspace cwd on the next run
+ * causes catastrophic recursive tar-uploads. See resolveWorkspaceForRun.
+ */
+const SESSION_CWD_SYSTEM_ROOTS = new Set([
+  "/",
+  "/tmp",
+  "/var",
+  "/var/tmp",
+  "/usr",
+  "/etc",
+  "/private",
+  "/private/tmp",
+]);
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
@@ -3571,10 +3588,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // Reject session-resume cwds that point at system tmp roots. Some
     // remote adapters previously persisted the *pod* cwd (e.g. "/tmp")
     // into sessionParams; if we naively used it as the host workspace
-    // cwd we would walk and tar the entire host /tmp.
-    const SYSTEM_ROOTS = new Set(["/", "/tmp", "/var", "/var/tmp", "/usr", "/etc", "/private", "/private/tmp"]);
+    // cwd we would walk and tar the entire host /tmp. SESSION_CWD_SYSTEM_ROOTS
+    // is module-scoped so we don't pay an allocation per heartbeat tick.
     const sessionCwdLooksUnsafe = sessionCwd
-      ? SYSTEM_ROOTS.has(sessionCwd.replace(/\/+$/, ""))
+      ? SESSION_CWD_SYSTEM_ROOTS.has(sessionCwd.replace(/\/+$/, ""))
       : false;
     if (sessionCwd && !sessionCwdLooksUnsafe) {
       const sessionCwdExists = await fs
