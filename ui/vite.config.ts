@@ -27,7 +27,7 @@ export default defineConfig(({ mode }) => ({
     watch: createUiDevWatchOptions(process.cwd()),
     proxy: {
       "/api": {
-        target: "http://localhost:3100",
+        target: "http://localhost:4310",
         ws: true,
       },
     },

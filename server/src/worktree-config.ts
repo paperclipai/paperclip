@@ -394,7 +394,7 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
 
       if (needsWorktreeConfigRepair(parsed, context) || hasSiblingPortCollision) {
         const selectedServerPort = findNextUnclaimedPort(
-          parsed.server.port === 3100 ? 3101 : parsed.server.port,
+          parsed.server.port === 4310 ? 4311 : parsed.server.port,
           siblingPorts.serverPorts,
         );
         const selectedDatabasePort =

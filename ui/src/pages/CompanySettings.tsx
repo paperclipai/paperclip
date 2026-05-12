@@ -609,7 +609,7 @@ Suggested steps:
 - choose a hostname that resolves to the Paperclip host from your runtime
 - run: pnpm paperclipai allowed-hostname <host>
 - restart Paperclip
-- verify with: curl -fsS http://<host>:3100/api/health
+- verify with: curl -fsS http://<host>:4310/api/health
 - regenerate this invite snippet`
       : `If none are reachable, ask your user to add a reachable hostname in Paperclip, restart, and retry.
 Suggested command:

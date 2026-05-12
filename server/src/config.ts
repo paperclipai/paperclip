@@ -291,7 +291,7 @@ export function loadConfig(): Config {
     bind: resolvedBind.bind,
     customBindHost: resolvedBind.customBindHost,
     host: resolvedBind.host,
-    port: Number(process.env.PORT) || fileConfig?.server.port || 3100,
+    port: Number(process.env.PORT) || fileConfig?.server.port || 4310,
     allowedHostnames,
     authBaseUrlMode,
     authPublicBaseUrl,
