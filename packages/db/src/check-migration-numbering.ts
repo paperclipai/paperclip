@@ -1,4 +1,5 @@
 import { readdir, readFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 import { fileURLToPath } from "node:url";
 
 const migrationsDir = fileURLToPath(new URL("./migrations", import.meta.url));
@@ -46,12 +47,12 @@ function migrationPrefix(tag: string): number {
   return Number(match[1]);
 }
 
-function ensureJournalPrefixOrder(journalTags: string[]) {
+export function ensureJournalPrefixOrder(journalTags: string[]) {
   let previous = -1;
   for (const tag of journalTags) {
     const current = migrationPrefix(tag);
-    if (current < previous) {
-      throw new Error(`Migration journal numeric order moved backward at ${tag}`);
+    if (current <= previous) {
+      throw new Error(`Migration journal numeric order did not increase at ${tag}`);
     }
     previous = current;
   }
@@ -133,4 +134,6 @@ async function main() {
   ensureNamedSnapshotsMatchJournal(snapshotFiles, journalTags);
 }
 
-await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main();
+}
