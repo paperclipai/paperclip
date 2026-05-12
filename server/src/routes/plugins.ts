@@ -66,6 +66,17 @@ import {
   getActorInfo,
 } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
+import {
+  findLocalFolderDeclaration,
+  getStoredLocalFolders,
+  inspectPluginLocalFolder,
+  requireLocalFolderDeclaration,
+  setStoredLocalFolder,
+} from "../services/plugin-local-folders.js";
+import {
+  extractSecretRefPathsFromConfig,
+  PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
+} from "../services/plugin-secrets-handler.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 
 /** UI slot declaration extracted from plugin manifest */
@@ -1934,6 +1945,12 @@ export function pluginRoutes(
     }
 
     try {
+      const secretRefsByPath = extractSecretRefPathsFromConfig(body.configJson, schema);
+      if (secretRefsByPath.size > 0) {
+        res.status(422).json({ error: PLUGIN_SECRET_REFS_DISABLED_MESSAGE });
+        return;
+      }
+
       const result = await registry.upsertConfig(plugin.id, {
         configJson: body.configJson,
       });
@@ -2377,6 +2394,152 @@ export function pluginRoutes(
         error: errorMessage,
       });
     }
+  });
+
+  // ===========================================================================
+  // Company-scoped trusted local folders
+  // ===========================================================================
+
+  router.get("/plugins/:pluginId/companies/:companyId/local-folders", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const { pluginId, companyId } = req.params;
+    assertCompanyAccess(req, companyId);
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const settings = await registry.getCompanySettings(plugin.id, companyId);
+    const storedFolders = getStoredLocalFolders(settings?.settingsJson);
+    const declarations = plugin.manifestJson.localFolders ?? [];
+    const folderKeys = declarations.map((declaration) => declaration.folderKey);
+
+    const statuses = await Promise.all(folderKeys.map((folderKey) =>
+      inspectPluginLocalFolder({
+        folderKey,
+        declaration: findLocalFolderDeclaration(declarations, folderKey),
+        storedConfig: storedFolders[folderKey] ?? null,
+      })));
+
+    res.json({
+      pluginId: plugin.id,
+      companyId,
+      declarations,
+      folders: statuses,
+    });
+  });
+
+  router.get("/plugins/:pluginId/companies/:companyId/local-folders/:folderKey/status", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const { pluginId, companyId, folderKey } = req.params;
+    assertCompanyAccess(req, companyId);
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const settings = await registry.getCompanySettings(plugin.id, companyId);
+    const storedFolders = getStoredLocalFolders(settings?.settingsJson);
+    const declarations = plugin.manifestJson.localFolders ?? [];
+    const declaration = requireLocalFolderDeclaration(declarations, folderKey);
+    const status = await inspectPluginLocalFolder({
+      folderKey,
+      declaration,
+      storedConfig: storedFolders[folderKey] ?? null,
+    });
+    res.json(status);
+  });
+
+  router.post("/plugins/:pluginId/companies/:companyId/local-folders/:folderKey/validate", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const { pluginId, companyId, folderKey } = req.params;
+    assertCompanyAccess(req, companyId);
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const body = req.body as {
+      path?: unknown;
+      access?: "read" | "readWrite";
+      requiredDirectories?: string[];
+      requiredFiles?: string[];
+    } | undefined;
+    if (typeof body?.path !== "string" || body.path.trim().length === 0) {
+      res.status(400).json({ error: '"path" is required and must be a non-empty string' });
+      return;
+    }
+
+    const declaration = requireLocalFolderDeclaration(plugin.manifestJson.localFolders ?? [], folderKey);
+    const status = await inspectPluginLocalFolder({
+      folderKey,
+      declaration,
+      overrideConfig: {
+        path: body.path,
+      },
+    });
+    res.json(status);
+  });
+
+  router.put("/plugins/:pluginId/companies/:companyId/local-folders/:folderKey", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const { pluginId, companyId, folderKey } = req.params;
+    assertCompanyAccess(req, companyId);
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const body = req.body as {
+      path?: unknown;
+      access?: "read" | "readWrite";
+      requiredDirectories?: string[];
+      requiredFiles?: string[];
+    } | undefined;
+    if (typeof body?.path !== "string" || body.path.trim().length === 0) {
+      res.status(400).json({ error: '"path" is required and must be a non-empty string' });
+      return;
+    }
+
+    const existing = await registry.getCompanySettings(plugin.id, companyId);
+    const declaration = requireLocalFolderDeclaration(plugin.manifestJson.localFolders ?? [], folderKey);
+    const status = await inspectPluginLocalFolder({
+      folderKey,
+      declaration,
+      storedConfig: getStoredLocalFolders(existing?.settingsJson)[folderKey] ?? null,
+      overrideConfig: {
+        path: body.path,
+      },
+    });
+
+    const nextSettings = setStoredLocalFolder(existing?.settingsJson, folderKey, {
+      path: body.path,
+      access: status.access,
+      requiredDirectories: status.requiredDirectories,
+      requiredFiles: status.requiredFiles,
+    });
+    await registry.upsertCompanySettings(plugin.id, companyId, {
+      enabled: existing?.enabled ?? true,
+      settingsJson: nextSettings,
+      lastError: status.healthy ? null : status.problems.map((item: { message: string }) => item.message).join("; "),
+    });
+    await logPluginMutationActivity(req, "plugin.local_folder.configured", plugin.id, {
+      pluginId: plugin.id,
+      pluginKey: plugin.pluginKey,
+      companyId,
+      folderKey,
+      healthy: status.healthy,
+    });
+
+    res.json(status);
   });
 
   // ===========================================================================

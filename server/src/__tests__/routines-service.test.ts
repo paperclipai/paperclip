@@ -1,6 +1,6 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -26,10 +26,12 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { issueService } from "../services/issues.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import * as providerRegistry from "../secrets/provider-registry.ts";
 import { routineService } from "../services/routines.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const originalSecretsProviderEnv = process.env.PAPERCLIP_SECRETS_PROVIDER;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -47,6 +49,11 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   }, 20_000);
 
   afterEach(async () => {
+    if (originalSecretsProviderEnv === undefined) {
+      delete process.env.PAPERCLIP_SECRETS_PROVIDER;
+    } else {
+      process.env.PAPERCLIP_SECRETS_PROVIDER = originalSecretsProviderEnv;
+    }
     await db.delete(activityLog);
     await db.delete(issueInboxArchives);
     await db.delete(issueReadStates);
@@ -281,6 +288,201 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routine.projectId).toBeNull();
     expect(routine.assigneeAgentId).toBeNull();
     expect(routine.status).toBe("paused");
+  });
+
+  it("creates revision 1 on routine create and appends revisions for real updates only", async () => {
+    const { routine, svc } = await seedFixture();
+
+    const initialRevisions = await svc.listRevisions(routine.id);
+    expect(initialRevisions).toHaveLength(1);
+    expect(initialRevisions[0]).toMatchObject({
+      id: routine.latestRevisionId,
+      revisionNumber: 1,
+      title: "ascii frog",
+      changeSummary: "Created routine",
+    });
+    expect(initialRevisions[0]?.snapshot.routine.description).toBe("Run the frog routine");
+
+    const updated = await svc.update(
+      routine.id,
+      {
+        description: "Run the frog routine with logs",
+        baseRevisionId: routine.latestRevisionId,
+      },
+      {},
+    );
+    expect(updated?.latestRevisionNumber).toBe(2);
+    expect(updated?.latestRevisionId).not.toBe(routine.latestRevisionId);
+
+    const noOp = await svc.update(
+      routine.id,
+      {
+        description: "Run the frog routine with logs",
+        baseRevisionId: updated?.latestRevisionId,
+      },
+      {},
+    );
+    expect(noOp?.latestRevisionId).toBe(updated?.latestRevisionId);
+    expect(noOp?.latestRevisionNumber).toBe(2);
+
+    const revisions = await svc.listRevisions(routine.id);
+    expect(revisions.map((revision) => revision.revisionNumber)).toEqual([2, 1]);
+    expect(revisions[0]?.snapshot.routine.description).toBe("Run the frog routine with logs");
+    expect(revisions[1]?.snapshot.routine.description).toBe("Run the frog routine");
+  });
+
+  it("rejects stale routine baseRevisionId updates", async () => {
+    const { routine, svc } = await seedFixture();
+    const updated = await svc.update(routine.id, { description: "new description" }, {});
+    await expect(
+      svc.update(routine.id, {
+        title: "stale update",
+        baseRevisionId: routine.latestRevisionId,
+      }, {}),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: {
+        currentRevisionId: updated?.latestRevisionId,
+      },
+    });
+  });
+
+  it("restores an older routine revision append-only and preserves run history", async () => {
+    const { routine, svc } = await seedFixture();
+    const revision1Id = routine.latestRevisionId!;
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+    const revision2Routine = await svc.update(routine.id, { description: "revision 2" }, {});
+
+    const restored = await svc.restoreRevision(routine.id, revision1Id, {});
+
+    expect(restored.restoredFromRevisionId).toBe(revision1Id);
+    expect(restored.restoredFromRevisionNumber).toBe(1);
+    expect(restored.routine.latestRevisionNumber).toBe(3);
+    expect(restored.routine.latestRevisionId).not.toBe(revision2Routine?.latestRevisionId);
+    expect(restored.routine.description).toBe("Run the frog routine");
+    expect(restored.revision.restoredFromRevisionId).toBe(revision1Id);
+    expect(restored.revision.snapshot.routine.description).toBe("Run the frog routine");
+
+    const revisions = await svc.listRevisions(routine.id);
+    expect(revisions.map((revision) => revision.revisionNumber)).toEqual([3, 2, 1]);
+    await expect(db.select().from(routineRuns).where(eq(routineRuns.id, run.id))).resolves.toHaveLength(1);
+  });
+
+  it("rejects restoring the current latest routine revision", async () => {
+    const { routine, svc } = await seedFixture();
+
+    await expect(
+      svc.restoreRevision(routine.id, routine.latestRevisionId!, {}),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: {
+        currentRevisionId: routine.latestRevisionId,
+      },
+    });
+  });
+
+  it("recreates deleted webhook trigger secrets when restoring a historical revision", async () => {
+    const { routine, svc } = await seedFixture();
+    const created = await svc.createTrigger(routine.id, {
+      kind: "webhook",
+      signingMode: "bearer",
+      replayWindowSec: 300,
+    }, {});
+    await svc.deleteTrigger(created.trigger.id, {});
+
+    const restored = await svc.restoreRevision(routine.id, created.revision.id, {});
+
+    expect(restored.secretMaterials).toHaveLength(1);
+    expect(restored.secretMaterials[0]).toMatchObject({
+      triggerId: created.trigger.id,
+    });
+    expect(restored.secretMaterials[0]?.webhookSecret).toBeTruthy();
+    expect(restored.secretMaterials[0]?.webhookUrl).toContain("/api/routine-triggers/public/");
+
+    const restoredTrigger = await svc.getTrigger(created.trigger.id);
+    expect(restoredTrigger?.secretId).toBeTruthy();
+    expect(restoredTrigger?.publicId).toBeTruthy();
+    expect(restoredTrigger?.publicId).not.toBe(created.trigger.publicId);
+  });
+
+  it("blocks agents from restoring routine revisions assigned to another agent", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "OtherCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const revision1Id = routine.latestRevisionId!;
+
+    await svc.update(routine.id, { assigneeAgentId: otherAgentId }, {});
+
+    await expect(
+      svc.restoreRevision(routine.id, revision1Id, { agentId: otherAgentId }),
+    ).rejects.toMatchObject({
+      status: 403,
+      message: "Agents can only restore routine revisions assigned to themselves",
+    });
+    await expect(svc.get(routine.id)).resolves.toMatchObject({
+      assigneeAgentId: otherAgentId,
+      latestRevisionNumber: 2,
+    });
+  });
+
+  it("blocks restoring routine revisions assigned to agents that are no longer assignable", async () => {
+    const { agentId, routine, svc } = await seedFixture();
+    const revision1Id = routine.latestRevisionId!;
+    await svc.update(routine.id, { description: "revision 2" }, {});
+    await db
+      .update(agents)
+      .set({ status: "terminated" })
+      .where(eq(agents.id, agentId));
+
+    await expect(
+      svc.restoreRevision(routine.id, revision1Id, { userId: "board-user" }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "Cannot assign routines to terminated agents",
+    });
+    await expect(svc.get(routine.id)).resolves.toMatchObject({
+      description: "revision 2",
+      latestRevisionNumber: 2,
+    });
+  });
+
+  it("appends safe trigger metadata revisions without leaking webhook secrets", async () => {
+    const { routine, svc } = await seedFixture();
+    const created = await svc.createTrigger(routine.id, {
+      kind: "webhook",
+      signingMode: "bearer",
+      replayWindowSec: 300,
+    }, {});
+    expect(created.revision.revisionNumber).toBe(2);
+    expect(created.secretMaterial?.webhookSecret).toBeTruthy();
+
+    const updated = await svc.updateTrigger(created.trigger.id, { label: "deploy hook" }, {});
+    expect(updated?.revision.revisionNumber).toBe(3);
+
+    const rotated = await svc.rotateTriggerSecret(created.trigger.id, {});
+    expect(rotated.revision.revisionNumber).toBe(4);
+    expect(rotated.secretMaterial.webhookSecret).toBeTruthy();
+
+    const deleted = await svc.deleteTrigger(created.trigger.id, {});
+    expect(deleted.revision?.revisionNumber).toBe(5);
+
+    const revisions = await svc.listRevisions(routine.id);
+    const serialized = JSON.stringify(revisions.map((revision) => revision.snapshot));
+    expect(serialized).toContain(created.trigger.publicId!);
+    expect(serialized).not.toContain(created.secretMaterial!.webhookSecret);
+    expect(serialized).not.toContain(rotated.secretMaterial.webhookSecret);
+    expect(serialized).not.toContain(created.trigger.secretId!);
+    expect(revisions[0]?.snapshot.triggers).toHaveLength(0);
   });
 
   it("wakes the assignee when a routine creates a fresh execution issue", async () => {
@@ -1075,6 +1277,82 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.source).toBe("webhook");
     expect(run.status).toBe("issue_created");
     expect(run.linkedIssueId).toBeTruthy();
+  });
+
+  it("uses the configured provider for generated webhook trigger secrets", async () => {
+    process.env.PAPERCLIP_SECRETS_PROVIDER = "aws_secrets_manager";
+    const originalGetSecretProvider = providerRegistry.getSecretProvider;
+    const getSecretProviderSpy = vi.spyOn(providerRegistry, "getSecretProvider").mockImplementation((provider) => {
+      if (provider !== "aws_secrets_manager") {
+        return originalGetSecretProvider(provider);
+      }
+      return {
+        id: "aws_secrets_manager",
+        descriptor: () => ({
+          id: "aws_secrets_manager",
+          label: "AWS Secrets Manager",
+          supportsManaged: true,
+          supportsExternalReference: true,
+        }),
+        validateConfig: async () => ({ ok: true, warnings: [] }),
+        createSecret: async ({ value }) => ({
+          material: { source: "managed", secretId: "arn:aws:secretsmanager:stub", versionId: "v1" },
+          valueSha256: `sha:${value}`,
+          fingerprintSha256: `sha:${value}`,
+          externalRef: "arn:aws:secretsmanager:stub",
+          providerVersionRef: "v1",
+        }),
+        createVersion: async ({ value }) => ({
+          material: { source: "managed", secretId: "arn:aws:secretsmanager:stub", versionId: "v2" },
+          valueSha256: `sha:${value}`,
+          fingerprintSha256: `sha:${value}`,
+          externalRef: "arn:aws:secretsmanager:stub",
+          providerVersionRef: "v2",
+        }),
+        linkExternalSecret: async ({ externalRef, providerVersionRef }) => ({
+          material: { source: "external", secretId: externalRef, versionId: providerVersionRef ?? null },
+          valueSha256: "external",
+          fingerprintSha256: "external",
+          externalRef,
+          providerVersionRef: providerVersionRef ?? null,
+        }),
+        resolveVersion: async () => "resolved-secret",
+        deleteOrArchive: async () => undefined,
+        healthCheck: async () => ({
+          provider: "aws_secrets_manager",
+          status: "ok",
+          message: "stubbed",
+        }),
+      };
+    });
+
+    try {
+      const { routine, svc } = await seedFixture();
+      const { trigger } = await svc.createTrigger(
+        routine.id,
+        {
+          kind: "webhook",
+          signingMode: "hmac_sha256",
+          replayWindowSec: 300,
+        },
+        {},
+      );
+
+      const [secret] = await db
+        .select({
+          id: companySecrets.id,
+          provider: companySecrets.provider,
+        })
+        .from(companySecrets)
+        .where(eq(companySecrets.id, trigger.secretId!));
+
+      expect(secret).toMatchObject({
+        id: trigger.secretId,
+        provider: "aws_secrets_manager",
+      });
+    } finally {
+      getSecretProviderSpy.mockRestore();
+    }
   });
 
   it("accepts GitHub-style X-Hub-Signature-256 with github_hmac signing mode", async () => {

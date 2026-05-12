@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { and, asc, desc, eq, gt, inArray, isNull, lt, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -17,6 +17,7 @@ import {
   issueAttachments,
   issueInboxArchives,
   issueLabels,
+  issueRecoveryActions,
   issueRelations,
   issueComments,
   issueDocuments,
@@ -28,13 +29,26 @@ import {
   projects,
 } from "@paperclipai/db";
 import type {
+  IssueCommentAuthorType,
+  IssueCommentMetadata,
+  IssueCommentPresentation,
   IssueBlockerAttention,
   IssueProductivityReview,
   IssueProductivityReviewTrigger,
   IssueRelationIssueSummary,
 } from "@paperclipai/shared";
-import { clampIssueRequestDepth, extractAgentMentionIds, extractProjectMentionIds, isUuidLike } from "@paperclipai/shared";
+import {
+  clampIssueRequestDepth,
+  extractAgentMentionIds,
+  extractProjectMentionIds,
+  issueCommentAuthorTypeSchema,
+  issueCommentMetadataSchema,
+  issueCommentPresentationSchema,
+  isUuidLike,
+  normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { parseObject } from "../adapters/utils.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
@@ -43,9 +57,11 @@ import {
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
+import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
+import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import {
   isVerifiedIssueTreeControlInteractionWake,
@@ -62,6 +78,10 @@ const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
 const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
+const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
+const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
+const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
+const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -104,6 +124,86 @@ function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
   };
 }
 
+function toTimestampMs(value: Date | string | null | undefined) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  const timestamp = date.getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+type IssueCommentRunLogAttributionCandidate = {
+  id: string;
+  createdAt: Date | string;
+  authorAgentId?: string | null;
+  authorUserId?: string | null;
+  createdByRunId?: string | null;
+};
+
+type IssueCommentRunLogAttributionRun = {
+  runId: string;
+  agentId: string;
+  createdAt: Date | string;
+  startedAt?: Date | string | null;
+  finishedAt?: Date | string | null;
+  logContent: string;
+};
+
+export function deriveIssueCommentRunLogAttribution(
+  comments: readonly IssueCommentRunLogAttributionCandidate[],
+  runs: readonly IssueCommentRunLogAttributionRun[],
+) {
+  const derivedByCommentId = new Map<string, {
+    derivedAuthorAgentId: string;
+    derivedCreatedByRunId: string;
+    derivedAuthorSource: "run_log_comment_post";
+  }>();
+
+  for (const comment of comments) {
+    if (comment.authorAgentId || !comment.authorUserId || comment.createdByRunId) continue;
+    const commentCreatedAtMs = toTimestampMs(comment.createdAt);
+    if (commentCreatedAtMs === null) continue;
+
+    let bestMatch:
+      | {
+        runId: string;
+        agentId: string;
+        distanceMs: number;
+      }
+      | null = null;
+
+    for (const run of runs) {
+      const runStartMs = toTimestampMs(run.startedAt ?? run.createdAt);
+      const runEndMs = toTimestampMs(run.finishedAt ?? run.createdAt);
+      if (runStartMs === null || runEndMs === null) continue;
+      if (
+        commentCreatedAtMs < runStartMs
+        || commentCreatedAtMs > runEndMs + ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS
+      ) {
+        continue;
+      }
+      if (!run.logContent.includes(`comment id: ${comment.id}`)) continue;
+
+      const distanceMs = Math.abs(runEndMs - commentCreatedAtMs);
+      if (!bestMatch || distanceMs < bestMatch.distanceMs) {
+        bestMatch = {
+          runId: run.runId,
+          agentId: run.agentId,
+          distanceMs,
+        };
+      }
+    }
+
+    if (!bestMatch) continue;
+    derivedByCommentId.set(comment.id, {
+      derivedAuthorAgentId: bestMatch.agentId,
+      derivedCreatedByRunId: bestMatch.runId,
+      derivedAuthorSource: "run_log_comment_post",
+    });
+  }
+
+  return derivedByCommentId;
+}
+
 export interface IssueFilters {
   status?: string;
   assigneeAgentId?: string;
@@ -119,9 +219,11 @@ export interface IssueFilters {
   descendantOf?: string;
   labelId?: string;
   originKind?: string;
+  originKindPrefix?: string;
   originId?: string;
   includeRoutineExecutions?: boolean;
   excludeRoutineExecutions?: boolean;
+  includePluginOperations?: boolean;
   includeBlockedBy?: boolean;
   q?: string;
   limit?: number;
@@ -139,6 +241,19 @@ type IssueActiveRunRow = {
   startedAt: Date | null;
   finishedAt: Date | null;
   createdAt: Date;
+};
+type IssueScheduledRetryRow = {
+  runId: string;
+  status: "scheduled_retry" | "queued" | "running" | "cancelled";
+  agentId: string;
+  agentName: string | null;
+  retryOfRunId: string | null;
+  scheduledRetryAt: Date | null;
+  scheduledRetryAttempt: number;
+  scheduledRetryReason: string | null;
+  retryExhaustedReason?: string | null;
+  error?: string | null;
+  errorCode?: string | null;
 };
 type IssueWithLabels = IssueRow & { labels: IssueLabelRow[]; labelIds: string[] };
 type IssueWithLabelsAndRun = IssueWithLabels & { activeRun: IssueActiveRunRow | null };
@@ -553,6 +668,19 @@ function inboxVisibleForUserCondition(companyId: string, userId: string) {
         AND ${issueInboxArchives.archivedAt} >= ${issueLastActivityAt}
     )
   `;
+}
+
+function nonPluginOperationIssueCondition() {
+  return sql<boolean>`NOT (${issues.originKind} LIKE 'plugin:%:operation' OR ${issues.originKind} LIKE 'plugin:%:operation:%')`;
+}
+
+function shouldIncludePluginOperationIssues(filters: IssueFilters | undefined) {
+  return Boolean(
+    filters?.includePluginOperations ||
+    filters?.originKind ||
+    filters?.originId ||
+    filters?.projectId,
+  );
 }
 
 /** Named entities commonly emitted in saved issue bodies; unknown `&name;` sequences are left unchanged. */
@@ -1228,6 +1356,18 @@ async function listIssueBlockerAttentionMap(
       explicitWaitingIssueIds.add(parsed.issueId);
       explicitWaitingIssueIds.add(parsed.leafIssueId);
     }
+
+    const recoveryActionRows: Array<{ sourceIssueId: string }> = await dbOrTx
+      .select({ sourceIssueId: issueRecoveryActions.sourceIssueId })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          inArray(issueRecoveryActions.sourceIssueId, explicitWaitCandidateIds),
+        ),
+      );
+    for (const row of recoveryActionRows) explicitWaitingIssueIds.add(row.sourceIssueId);
   }
 
   const agentRows: IssueBlockerAttentionAgentRow[] = agentIds.size > 0
@@ -1267,6 +1407,9 @@ async function listIssueBlockerAttentionMap(
     if (explicitWaitingIssueIds.has(node.id)) {
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
+    if (node.assigneeUserId && node.status !== "cancelled") {
+      return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
+    }
     if (node.status === "in_review") {
       const hasWaitingPath = activeIssueIds.has(node.id) || Boolean(node.assigneeUserId);
       if (hasWaitingPath) {
@@ -1278,6 +1421,9 @@ async function listIssueBlockerAttentionMap(
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
     if (node.status === "cancelled") {
+      return { covered: false, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
+    }
+    if (node.status === "backlog" && node.assigneeAgentId) {
       return { covered: false, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
 
@@ -1401,6 +1547,7 @@ const issueListSelect = {
     END
   `,
   status: issues.status,
+  workMode: issues.workMode,
   priority: issues.priority,
   assigneeAgentId: issues.assigneeAgentId,
   assigneeUserId: issues.assigneeUserId,
@@ -1421,6 +1568,12 @@ const issueListSelect = {
   assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
   executionPolicy: sql<null>`null`,
   executionState: sql<null>`null`,
+  monitorNextCheckAt: issues.monitorNextCheckAt,
+  monitorWakeRequestedAt: issues.monitorWakeRequestedAt,
+  monitorLastTriggeredAt: issues.monitorLastTriggeredAt,
+  monitorAttemptCount: issues.monitorAttemptCount,
+  monitorNotes: issues.monitorNotes,
+  monitorScheduledBy: issues.monitorScheduledBy,
   executionWorkspaceId: issues.executionWorkspaceId,
   executionWorkspacePreference: issues.executionWorkspacePreference,
   executionWorkspaceSettings: sql<null>`null`,
@@ -1650,11 +1803,196 @@ export function issueService(db: Db) {
     return enriched;
   }
 
-  function redactIssueComment<T extends { body: string }>(comment: T, censorUsernameInLogs: boolean): T {
+  async function getCurrentScheduledRetryForIssue(issueId: string, companyId: string): Promise<IssueScheduledRetryRow | null> {
+    const row = await db
+      .select({
+        runId: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        agentId: heartbeatRuns.agentId,
+        agentName: agents.name,
+        retryOfRunId: heartbeatRuns.retryOfRunId,
+        scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+        scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+        error: heartbeatRuns.error,
+        errorCode: heartbeatRuns.errorCode,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.status, "scheduled_retry"),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .orderBy(asc(heartbeatRuns.scheduledRetryAt), asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    return row ? { ...row, status: "scheduled_retry" } : null;
+  }
+
+  function deriveIssueCommentAuthorType(comment: {
+    authorType?: string | null;
+    authorAgentId?: string | null;
+    authorUserId?: string | null;
+  }): IssueCommentAuthorType {
+    const explicit = issueCommentAuthorTypeSchema.safeParse(comment.authorType);
+    if (explicit.success) return explicit.data;
+    if (comment.authorAgentId) return "agent";
+    if (comment.authorUserId) return "user";
+    return "system";
+  }
+
+  function assertIssueCommentAuthorTypeAllowed(
+    actor: { agentId?: string | null; userId?: string | null },
+    authorType: IssueCommentAuthorType,
+  ) {
+    if (actor.agentId && authorType !== "agent") {
+      throw unprocessable("Comment authorType must match authenticated actor");
+    }
+    if (actor.userId && authorType !== "user") {
+      throw unprocessable("Comment authorType must match authenticated actor");
+    }
+    if (!actor.agentId && !actor.userId && authorType !== "system") {
+      throw unprocessable("System comments cannot use user or agent authorType without an author id");
+    }
+  }
+
+  function redactIssueComment<T extends { body: string; authorType?: string | null; authorAgentId?: string | null; authorUserId?: string | null; presentation?: unknown; metadata?: unknown }>(
+    comment: T,
+    censorUsernameInLogs: boolean,
+  ): T & {
+    authorType: IssueCommentAuthorType;
+    presentation: IssueCommentPresentation | null;
+    metadata: IssueCommentMetadata | null;
+  } {
     return {
       ...comment,
+      authorType: deriveIssueCommentAuthorType(comment),
       body: redactCurrentUserText(comment.body, { enabled: censorUsernameInLogs }),
+      presentation: issueCommentPresentationSchema.nullable().catch(null).parse(comment.presentation ?? null),
+      metadata: issueCommentMetadataSchema.nullable().catch(null).parse(comment.metadata ?? null),
     };
+  }
+
+  async function readRunLogText(run: {
+    logStore: string | null;
+    logRef: string | null;
+    logBytes: number | null;
+  }) {
+    if (run.logStore !== "local_file" || !run.logRef) return "";
+    const logBytes = Number(run.logBytes ?? 0);
+    if (!Number.isFinite(logBytes) || logBytes <= 0) return "";
+
+    const store = getRunLogStore();
+    let offset = 0;
+    let content = "";
+    let nextOffset: number | undefined = 0;
+
+    while (nextOffset !== undefined) {
+      const remainingBytes = ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES - Buffer.byteLength(content, "utf8");
+      if (remainingBytes <= 0) break;
+      const chunk = await store.read(
+        { store: "local_file", logRef: run.logRef },
+        {
+          offset,
+          limitBytes: Math.min(ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES, remainingBytes),
+        },
+      );
+      content += chunk.content;
+      nextOffset = chunk.nextOffset;
+      offset = chunk.nextOffset ?? 0;
+    }
+
+    return content;
+  }
+
+  async function enrichCommentsWithDerivedAgentAttribution<
+    T extends {
+      id: string;
+      companyId: string;
+      issueId: string;
+      authorAgentId?: string | null;
+      authorUserId?: string | null;
+      createdByRunId?: string | null;
+      createdAt: Date | string;
+    },
+  >(comments: readonly T[]) {
+    const candidates = comments.filter((comment) =>
+      !comment.authorAgentId
+      && !!comment.authorUserId
+      && !comment.createdByRunId,
+    );
+    if (candidates.length === 0) return comments;
+
+    const companyId = comments[0]?.companyId ?? null;
+    const issueId = comments[0]?.issueId ?? null;
+    if (!companyId || !issueId) return comments;
+
+    const minCommentCreatedAtMs = candidates.reduce<number | null>((min, comment) => {
+      const timestamp = toTimestampMs(comment.createdAt);
+      if (timestamp === null) return min;
+      return min === null ? timestamp : Math.min(min, timestamp);
+    }, null);
+    const maxCommentCreatedAtMs = candidates.reduce<number | null>((max, comment) => {
+      const timestamp = toTimestampMs(comment.createdAt);
+      if (timestamp === null) return max;
+      return max === null ? timestamp : Math.max(max, timestamp);
+    }, null);
+    if (minCommentCreatedAtMs === null || maxCommentCreatedAtMs === null) return comments;
+
+    const runs = await db
+      .select({
+        runId: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        createdAt: heartbeatRuns.createdAt,
+        startedAt: heartbeatRuns.startedAt,
+        finishedAt: heartbeatRuns.finishedAt,
+        logStore: heartbeatRuns.logStore,
+        logRef: heartbeatRuns.logRef,
+        logBytes: heartbeatRuns.logBytes,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          or(
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+            sql`exists (
+              select 1
+              from ${activityLog}
+              where ${activityLog.companyId} = ${companyId}
+                and ${activityLog.entityType} = 'issue'
+                and ${activityLog.entityId} = ${issueId}
+                and ${activityLog.runId} = ${heartbeatRuns.id}
+            )`,
+          ),
+          sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${new Date(minCommentCreatedAtMs)}`,
+          sql`coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${new Date(maxCommentCreatedAtMs + ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS)}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt));
+
+    if (runs.length === 0) return comments;
+
+    const runsWithLogs: Array<(typeof runs)[number] & { logContent: string }> = [];
+    for (let index = 0; index < runs.length; index += ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS) {
+      const batch = runs.slice(index, index + ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS);
+      const batchWithLogs = await Promise.all(batch.map(async (run) => ({
+        ...run,
+        logContent: await readRunLogText(run),
+      })));
+      runsWithLogs.push(...batchWithLogs);
+    }
+    const derivedByCommentId = deriveIssueCommentRunLogAttribution(candidates, runsWithLogs);
+    if (derivedByCommentId.size === 0) return comments;
+
+    return comments.map((comment) => {
+      const derived = derivedByCommentId.get(comment.id);
+      return derived ? { ...comment, ...derived } : comment;
+    });
   }
 
   async function assertAssignableAgent(companyId: string, agentId: string) {
@@ -2187,7 +2525,11 @@ export function issueService(db: Db) {
       }
       if (filters?.parentId) conditions.push(eq(issues.parentId, filters.parentId));
       if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
+      if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
       if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
+      if (!shouldIncludePluginOperationIssues(filters)) {
+        conditions.push(nonPluginOperationIssueCondition());
+      }
       if (filters?.labelId) {
         const labeledIssueIds = await db
           .select({ issueId: issueLabels.issueId })
@@ -2319,6 +2661,7 @@ export function issueService(db: Db) {
       const conditions = [
         eq(issues.companyId, companyId),
         isNull(issues.hiddenAt),
+        nonPluginOperationIssueCondition(),
         unreadForUserCondition(companyId, userId),
       ];
       if (status) {
@@ -2410,8 +2753,9 @@ export function issueService(db: Db) {
 
     getById: async (raw: string) => {
       const id = raw.trim();
-      if (/^[A-Z]+-\d+$/i.test(id)) {
-        return getIssueByIdentifier(id);
+      const identifier = normalizeIssueReferenceIdentifier(id);
+      if (identifier) {
+        return getIssueByIdentifier(identifier);
       }
       if (!isUuidLike(id)) {
         return null;
@@ -2421,6 +2765,16 @@ export function issueService(db: Db) {
 
     getByIdentifier: async (identifier: string) => {
       return getIssueByIdentifier(identifier);
+    },
+
+    getCurrentScheduledRetry: async (issueId: string) => {
+      const issue = await db
+        .select({ id: issues.id, companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) throw notFound("Issue not found");
+      return getCurrentScheduledRetryForIssue(issue.id, issue.companyId);
     },
 
     getRelationSummaries: async (issueId: string) => {
@@ -2726,23 +3080,67 @@ export function issueService(db: Db) {
             }
           }
         }
+        // Cache the project policy lookup for this insert. Both the
+        // default-settings block and the assignee-environment-promotion block
+        // need the same row; without caching they'd issue two round-trips.
+        let projectPolicyCached: ReturnType<typeof parseProjectExecutionWorkspacePolicy> | null = null;
+        let projectPolicyLoaded = false;
+        const loadProjectPolicyOnce = async () => {
+          if (projectPolicyLoaded) return projectPolicyCached;
+          projectPolicyLoaded = true;
+          if (!issueData.projectId) return null;
+          const projectRow = await tx
+            .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+            .from(projects)
+            .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
+            .then((rows) => rows[0] ?? null);
+          projectPolicyCached = parseProjectExecutionWorkspacePolicy(projectRow?.executionWorkspacePolicy);
+          return projectPolicyCached;
+        };
+
         if (
           executionWorkspaceSettings == null &&
           executionWorkspaceId == null &&
           issueData.projectId
         ) {
-          const project = await tx
-            .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
-            .from(projects)
-            .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
-            .then((rows) => rows[0] ?? null);
           executionWorkspaceSettings =
             defaultIssueExecutionWorkspaceSettingsForProject(
               gateProjectExecutionWorkspacePolicy(
-                parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy),
+                await loadProjectPolicyOnce(),
                 isolatedWorkspacesEnabled,
               ),
             ) as Record<string, unknown> | null;
+        }
+        if (data.assigneeAgentId && isolatedWorkspacesEnabled) {
+          const currentWorkspaceSettings = executionWorkspaceSettings == null
+            ? {}
+            : parseObject(executionWorkspaceSettings);
+          const issueHasEnvironmentSelection =
+            Object.prototype.hasOwnProperty.call(currentWorkspaceSettings, "environmentId");
+          // Don't promote the assignee agent's defaultEnvironmentId if either
+          // the issue or the project policy already specifies an environment.
+          // resolveExecutionWorkspaceEnvironmentId treats issue settings as
+          // higher priority than project policy, so promoting the agent's
+          // default to issue settings would invert the documented priority
+          // (project policy must win over agent default when explicitly set).
+          let projectHasEnvironmentSelection = false;
+          if (!issueHasEnvironmentSelection && issueData.projectId) {
+            const projectPolicy = await loadProjectPolicyOnce();
+            projectHasEnvironmentSelection = projectPolicy?.environmentId !== undefined;
+          }
+          if (!issueHasEnvironmentSelection && !projectHasEnvironmentSelection) {
+            const assigneeAgent = await tx
+              .select({ defaultEnvironmentId: agents.defaultEnvironmentId })
+              .from(agents)
+              .where(and(eq(agents.id, data.assigneeAgentId), eq(agents.companyId, companyId)))
+              .then((rows) => rows[0] ?? null);
+            if (typeof assigneeAgent?.defaultEnvironmentId === "string" && assigneeAgent.defaultEnvironmentId.length > 0) {
+              executionWorkspaceSettings = {
+                ...currentWorkspaceSettings,
+                environmentId: assigneeAgent.defaultEnvironmentId,
+              };
+            }
+          }
         }
         if (!projectWorkspaceId && issueData.projectId) {
           const project = await tx
@@ -2815,6 +3213,15 @@ export function issueService(db: Db) {
         if (values.status === "cancelled") {
           values.cancelledAt = new Date();
         }
+        Object.assign(
+          values,
+          buildInitialIssueMonitorFields({
+            policy: normalizeIssueExecutionPolicy(issueData.executionPolicy ?? null),
+            status: values.status ?? "backlog",
+            assigneeAgentId: values.assigneeAgentId ?? null,
+            assigneeUserId: values.assigneeUserId ?? null,
+          }),
+        );
 
         const [issue] = await tx.insert(issues).values(values).returning();
         if (inputLabelIds) {
@@ -2962,6 +3369,94 @@ export function issueService(db: Db) {
             issueData.projectId !== undefined ? issueData.projectId : existing.projectId,
           ),
         ]);
+
+        // Mirror the create() path: when the assignee changes to a non-null
+        // agent, default the issue's executionWorkspaceSettings.environmentId
+        // to the new agent's defaultEnvironmentId. Skip when:
+        //   - this update explicitly sets executionWorkspaceSettings.environmentId
+        //     (caller is making a deliberate override; respect it), OR
+        //   - the project policy already specifies an environmentId (project
+        //     policy must win over agent default per the documented priority
+        //     order in resolveExecutionWorkspaceEnvironmentId), OR
+        //   - the issue already has an environmentId that was *not* the prior
+        //     assignee's default (i.e., the operator set it explicitly in an
+        //     earlier update; preserve their choice). When the existing
+        //     environmentId matches the prior assignee's default, treat it as
+        //     auto-promoted and refresh it to the new assignee's default.
+        const assigneeChanged =
+          issueData.assigneeAgentId !== undefined &&
+          issueData.assigneeAgentId !== null &&
+          issueData.assigneeAgentId !== existing.assigneeAgentId;
+        const explicitEnvInThisUpdate =
+          issueData.executionWorkspaceSettings !== undefined &&
+          Object.prototype.hasOwnProperty.call(
+            parseObject(issueData.executionWorkspaceSettings),
+            "environmentId",
+          );
+        if (assigneeChanged && isolatedWorkspacesEnabled && !explicitEnvInThisUpdate) {
+          let projectHasEnvironmentSelection = false;
+          if (nextProjectId) {
+            const projectRow = await tx
+              .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+              .from(projects)
+              .where(and(eq(projects.id, nextProjectId), eq(projects.companyId, existing.companyId)))
+              .then((rows: Array<{ executionWorkspacePolicy: unknown }>) => rows[0] ?? null);
+            const projectPolicy = parseProjectExecutionWorkspacePolicy(projectRow?.executionWorkspacePolicy);
+            projectHasEnvironmentSelection = projectPolicy?.environmentId !== undefined;
+          }
+          if (!projectHasEnvironmentSelection) {
+            const baseSettings = nextExecutionWorkspaceSettings == null
+              ? {}
+              : parseObject(nextExecutionWorkspaceSettings);
+            const existingEnvId = typeof baseSettings.environmentId === "string"
+              ? baseSettings.environmentId
+              : null;
+
+            // Look up both the prior assignee (to detect auto-promoted env)
+            // and the new assignee in a single query.
+            type AgentRow = { id: string; defaultEnvironmentId: string | null };
+            const agentRows: AgentRow[] = await tx
+              .select({ id: agents.id, defaultEnvironmentId: agents.defaultEnvironmentId })
+              .from(agents)
+              .where(
+                and(
+                  eq(agents.companyId, existing.companyId),
+                  inArray(
+                    agents.id,
+                    [issueData.assigneeAgentId!, existing.assigneeAgentId].filter(
+                      (value): value is string => typeof value === "string",
+                    ),
+                  ),
+                ),
+              );
+
+            const newAssignee = agentRows.find((row: AgentRow) => row.id === issueData.assigneeAgentId);
+            const previousAssignee = existing.assigneeAgentId
+              ? agentRows.find((row: AgentRow) => row.id === existing.assigneeAgentId)
+              : null;
+
+            const newDefaultEnvId =
+              typeof newAssignee?.defaultEnvironmentId === "string" && newAssignee.defaultEnvironmentId.length > 0
+                ? newAssignee.defaultEnvironmentId
+                : null;
+            const previousDefaultEnvId =
+              typeof previousAssignee?.defaultEnvironmentId === "string" && previousAssignee.defaultEnvironmentId.length > 0
+                ? previousAssignee.defaultEnvironmentId
+                : null;
+
+            const existingEnvWasAutoPromoted =
+              existingEnvId === null ||
+              (previousDefaultEnvId !== null && existingEnvId === previousDefaultEnvId);
+
+            if (newDefaultEnvId && existingEnvWasAutoPromoted) {
+              patch.executionWorkspaceSettings = {
+                ...baseSettings,
+                environmentId: newDefaultEnvId,
+              };
+            }
+          }
+        }
+
         patch.goalId = resolveNextIssueGoalId({
           currentProjectId: existing.projectId,
           currentGoalId: existing.goalId,
@@ -3499,7 +3994,8 @@ export function issueService(db: Db) {
 
       const comments = limit ? await query.limit(limit) : await query;
       const { censorUsernameInLogs } = await instanceSettings.getGeneral();
-      return comments.map((comment) => redactIssueComment(comment, censorUsernameInLogs));
+      const enrichedComments = await enrichCommentsWithDerivedAgentAttribution(comments);
+      return enrichedComments.map((comment) => redactIssueComment(comment, censorUsernameInLogs));
     },
 
     getCommentCursor: async (issueId: string) => {
@@ -3530,16 +4026,17 @@ export function issueService(db: Db) {
       };
     },
 
-    getComment: (commentId: string) =>
-      instanceSettings.getGeneral().then(({ censorUsernameInLogs }) =>
-        db
+    getComment: async (commentId: string) => {
+      const { censorUsernameInLogs } = await instanceSettings.getGeneral();
+      const comment = await db
         .select()
         .from(issueComments)
         .where(eq(issueComments.id, commentId))
-        .then((rows) => {
-          const comment = rows[0] ?? null;
-          return comment ? redactIssueComment(comment, censorUsernameInLogs) : null;
-        })),
+        .then((rows) => rows[0] ?? null);
+      if (!comment) return null;
+      const [enrichedComment] = await enrichCommentsWithDerivedAgentAttribution([comment]);
+      return redactIssueComment(enrichedComment ?? comment, censorUsernameInLogs);
+    },
 
     removeComment: async (commentId: string) => {
       const currentUserRedactionOptions = {
@@ -3567,6 +4064,12 @@ export function issueService(db: Db) {
       issueId: string,
       body: string,
       actor: { agentId?: string; userId?: string; runId?: string | null },
+      options?: {
+        authorType?: IssueCommentAuthorType | null;
+        presentation?: IssueCommentPresentation | null;
+        metadata?: IssueCommentMetadata | null;
+        createdAt?: Date | string | null;
+      },
     ) => {
       const issue = await db
         .select({ companyId: issues.companyId })
@@ -3580,6 +4083,13 @@ export function issueService(db: Db) {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
       };
       const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+      const authorType = issueCommentAuthorTypeSchema.parse(
+        options?.authorType ?? (actor.agentId ? "agent" : actor.userId ? "user" : "system"),
+      );
+      assertIssueCommentAuthorTypeAllowed(actor, authorType);
+      const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
+      const metadata = issueCommentMetadataSchema.nullable().parse(options?.metadata ?? null);
+      const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
       const [comment] = await db
         .insert(issueComments)
         .values({
@@ -3587,8 +4097,12 @@ export function issueService(db: Db) {
           issueId,
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
+          authorType,
           createdByRunId: actor.runId ?? null,
           body: redactedBody,
+          presentation,
+          metadata,
+          ...(createdAt && !Number.isNaN(createdAt.getTime()) ? { createdAt } : {}),
         })
         .returning();
 

@@ -14,6 +14,7 @@ import {
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetDirectory,
+  maybeRunSandboxInstallCommand,
   runAdapterExecutionTargetProcess,
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
@@ -21,6 +22,8 @@ import {
 import path from "node:path";
 import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
 import { isBedrockModelId } from "./models.js";
+import { buildClaudeProbePermissionArgs } from "./permissions.js";
+import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -62,6 +65,7 @@ export async function testEnvironment(
   const command = asString(config.command, "claude");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
+  const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   const targetLabel = targetIsRemote
     ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
@@ -102,6 +106,15 @@ export async function testEnvironment(
     if (typeof value === "string") env[key] = value;
   }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const installCheck = await maybeRunSandboxInstallCommand({
+    runId,
+    target,
+    adapterKey: "claude",
+    installCommand: SANDBOX_INSTALL_COMMAND,
+    detectCommand: command,
+    env,
+  });
+  if (installCheck) checks.push(installCheck);
   try {
     await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
     checks.push({
@@ -189,7 +202,7 @@ export async function testEnvironment(
       })();
 
       const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
-      if (dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
+      args.push(...buildClaudeProbePermissionArgs({ dangerouslySkipPermissions, targetIsSandbox }));
       if (chrome) args.push("--chrome");
       // For Bedrock: only pass --model when the ID is a Bedrock-native identifier.
       if (model && (!hasBedrock || isBedrockModelId(model))) {

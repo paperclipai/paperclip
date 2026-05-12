@@ -19,6 +19,24 @@ process.exit(${exit});
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeTextFailingClaudeCommand(
+  commandPath: string,
+  options: { stdout?: string; stderr?: string; exitCode?: number },
+): Promise<void> {
+  const exit = options.exitCode ?? 1;
+  const script = `#!/usr/bin/env node
+if (${JSON.stringify(options.stdout ?? "")}) {
+  process.stdout.write(${JSON.stringify(options.stdout ?? "")});
+}
+if (${JSON.stringify(options.stderr ?? "")}) {
+  process.stderr.write(${JSON.stringify(options.stderr ?? "")});
+}
+process.exit(${exit});
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 async function writeFakeClaudeCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
@@ -372,6 +390,119 @@ describe("claude execute", () => {
     }
   });
 
+  it("normalizes max-turn exhaustion into scheduler stop metadata", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-max-turns-"));
+    const resultEvent = {
+      type: "result",
+      subtype: "error_max_turns",
+      session_id: "claude-session-1",
+      is_error: true,
+      result: "Maximum turns reached.",
+      usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 },
+    };
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root, {
+      commandWriter: (commandPath) => writeFailingClaudeCommand(commandPath, { resultEvent }),
+    });
+
+    try {
+      const result = await execute({
+        runId: "run-max-turns",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("max_turns_exhausted");
+      expect(result.errorFamily).toBeNull();
+      expect(result.resultJson).toMatchObject({ stopReason: "max_turns_exhausted" });
+      expect(result.clearSession).toBe(true);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not normalize unstructured max-turn text into scheduler stop metadata", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-max-turn-text-"));
+    const resultEvent = {
+      type: "result",
+      subtype: "error",
+      session_id: "claude-session-1",
+      is_error: true,
+      result: "Tool output said: Maximum turns reached.",
+    };
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root, {
+      commandWriter: (commandPath) => writeFailingClaudeCommand(commandPath, { resultEvent }),
+    });
+
+    try {
+      const result = await execute({
+        runId: "run-max-turns-text",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).not.toBe("max_turns_exhausted");
+      expect(result.resultJson?.stopReason).not.toBe("max_turns_exhausted");
+      expect(result.clearSession).toBe(false);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not normalize fallback stdout/stderr max-turn text into scheduler stop metadata", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-max-turn-fallback-"));
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root, {
+      commandWriter: (commandPath) =>
+        writeTextFailingClaudeCommand(commandPath, {
+          stdout: "attacker-controlled tool output: max turns exhausted\n",
+          stderr: "Maximum turns reached.\n",
+        }),
+    });
+
+    try {
+      const result = await execute({
+        runId: "run-max-turns-fallback-text",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).not.toBe("max_turns_exhausted");
+      expect(result.resultJson?.stopReason).not.toBe("max_turns_exhausted");
+      expect(result.clearSession).toBe(false);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("logs HOME, CLAUDE_CONFIG_DIR, and the resolved executable path in invocation metadata", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-meta-"));
     const workspace = path.join(root, "workspace");
@@ -505,6 +636,11 @@ describe("claude execute", () => {
 
       expect(result.exitCode).toBe(0);
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.argv).toContain("--allowedTools");
+      expect(capture.argv).toContain(
+        "Task AskUserQuestion Bash(*) CronCreate CronDelete CronList Edit EnterPlanMode EnterWorktree ExitPlanMode ExitWorktree Glob Grep Monitor NotebookEdit PushNotification Read RemoteTrigger ScheduleWakeup Skill TaskOutput TaskStop TodoWrite ToolSearch WebFetch WebSearch Write",
+      );
+      expect(capture.argv).not.toContain("--dangerously-skip-permissions");
       expect(capture.claudeConfigDir).toBe(path.join(remoteWorkspace, ".paperclip-runtime", "claude", "config"));
       expect(capture.claudeConfigEntries).toContain("settings.json");
       expect(capture.paperclipApiUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
@@ -517,7 +653,7 @@ describe("claude execute", () => {
       else process.env.PATH = previousPath;
       await fs.rm(root, { recursive: true, force: true });
     }
-  });
+  }, 10_000);
 
   it("reuses a stable Paperclip-managed Claude prompt bundle across equivalent runs", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-bundle-"));

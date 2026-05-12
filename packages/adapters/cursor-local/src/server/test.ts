@@ -12,6 +12,7 @@ import {
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetDirectory,
+  maybeRunSandboxInstallCommand,
   runAdapterExecutionTargetProcess,
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
@@ -19,7 +20,7 @@ import {
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { DEFAULT_CURSOR_LOCAL_MODEL } from "../index.js";
+import { DEFAULT_CURSOR_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { parseCursorJsonl } from "./parse.js";
 import { isDefaultCursorCommand, prepareCursorSandboxCommand } from "./remote-command.js";
 import { hasCursorTrustBypassArg } from "../shared/trust.js";
@@ -147,6 +148,27 @@ export async function testEnvironment(
   });
   command = sandboxCommand.command;
   env = sandboxCommand.env;
+  const installCheck = await maybeRunSandboxInstallCommand({
+    runId,
+    target,
+    adapterKey: "cursor",
+    installCommand: SANDBOX_INSTALL_COMMAND,
+    detectCommand: command,
+    env,
+  });
+  if (installCheck) checks.push(installCheck);
+  const finalSandboxCommand = await prepareCursorSandboxCommand({
+    runId,
+    target,
+    command,
+    cwd,
+    env,
+    remoteSystemHomeDirHint: sandboxCommand.remoteSystemHomeDir,
+    timeoutSec: 45,
+    graceSec: 5,
+  });
+  command = finalSandboxCommand.command;
+  env = finalSandboxCommand.env;
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   try {
     await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
@@ -208,6 +230,58 @@ export async function testEnvironment(
         hint: "Use `agent` or `cursor-agent` to run the automatic installation and auth probe.",
       });
     } else {
+      const versionProbe = await runAdapterExecutionTargetProcess(
+        runId,
+        target,
+        command,
+        ["--version"],
+        {
+          cwd,
+          env,
+          timeoutSec: 45,
+          graceSec: 5,
+          onLog: async () => {},
+        },
+      );
+      const versionDetail = summarizeProbeDetail(versionProbe.stdout, versionProbe.stderr, null);
+      if (versionProbe.timedOut) {
+        checks.push({
+          code: "cursor_version_probe_timed_out",
+          level: "error",
+          message: "Cursor version probe timed out.",
+          hint: "Run `agent --version` manually in this working directory to confirm the installed CLI is reachable non-interactively.",
+        });
+      } else if ((versionProbe.exitCode ?? 1) === 0) {
+        checks.push({
+          code: "cursor_version_probe_passed",
+          level: "info",
+          message: "Cursor version probe succeeded.",
+          ...(versionDetail ? { detail: versionDetail } : {}),
+        });
+      } else {
+        checks.push({
+          code: "cursor_version_probe_failed",
+          level: "error",
+          message: "Cursor version probe failed.",
+          ...(versionDetail ? { detail: versionDetail } : {}),
+          hint: "Run `agent --version` manually in this working directory to confirm the installed CLI is reachable non-interactively.",
+        });
+      }
+
+      const canRunHelloProbe = checks.every(
+        (check) =>
+          check.code !== "cursor_version_probe_failed" &&
+          check.code !== "cursor_version_probe_timed_out",
+      );
+      if (!canRunHelloProbe) {
+        return {
+          adapterType: ctx.adapterType,
+          status: summarizeStatus(checks),
+          checks,
+          testedAt: new Date().toISOString(),
+        };
+      }
+
       const model = asString(config.model, DEFAULT_CURSOR_LOCAL_MODEL).trim();
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);

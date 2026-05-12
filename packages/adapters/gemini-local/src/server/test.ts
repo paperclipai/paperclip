@@ -14,12 +14,13 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
+  maybeRunSandboxInstallCommand,
   ensureAdapterExecutionTargetDirectory,
   runAdapterExecutionTargetProcess,
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
 } from "@paperclipai/adapter-utils/execution-target";
-import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
+import { DEFAULT_GEMINI_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { detectGeminiAuthRequired, detectGeminiQuotaExhausted, parseGeminiJsonl } from "./parse.js";
 import { firstNonEmptyLine } from "./utils.js";
 
@@ -93,7 +94,19 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  if (targetIsRemote && typeof env.GEMINI_CLI_TRUST_WORKSPACE !== "string") {
+    env.GEMINI_CLI_TRUST_WORKSPACE = "true";
+  }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const installCheck = await maybeRunSandboxInstallCommand({
+    runId,
+    target,
+    adapterKey: "gemini",
+    installCommand: SANDBOX_INSTALL_COMMAND,
+    detectCommand: command,
+    env,
+  });
+  if (installCheck) checks.push(installCheck);
   try {
     await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
     checks.push({
@@ -157,7 +170,7 @@ export async function testEnvironment(
       const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
       const approvalMode = asString(config.approvalMode, asBoolean(config.yolo, false) ? "yolo" : "default");
       const sandbox = asBoolean(config.sandbox, false);
-      const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, 10));
+      const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, 60));
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;
