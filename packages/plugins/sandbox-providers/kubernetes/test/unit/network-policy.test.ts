@@ -52,4 +52,44 @@ describe("buildNetworkPolicyManifests", () => {
     expect(callbackRule).toBeDefined();
     expect(callbackRule.ports[0].port).toBe(3100);
   });
+
+  it("adds public-IPv4 fallback (with private/link-local excluded) when FQDNs are configured and no CIDRs are supplied", () => {
+    const [, egress] = buildNetworkPolicyManifests({
+      ...baseInput,
+      egressAllowFqdns: ["api.anthropic.com"],
+    });
+    const fallback = egress.spec.egress.find((r: { to: { ipBlock?: { cidr: string } }[] }) =>
+      r.to.some((t) => t.ipBlock?.cidr === "0.0.0.0/0"),
+    );
+    expect(fallback).toBeDefined();
+    expect(fallback.to[0].ipBlock.except).toEqual(
+      expect.arrayContaining(["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "127.0.0.0/8"]),
+    );
+    expect(fallback.ports).toEqual(
+      expect.arrayContaining([
+        { protocol: "TCP", port: 443 },
+        { protocol: "TCP", port: 80 },
+      ]),
+    );
+  });
+
+  it("does NOT add the public-IPv4 fallback when operator supplied egressAllowCidrs", () => {
+    const [, egress] = buildNetworkPolicyManifests({
+      ...baseInput,
+      egressAllowFqdns: ["api.anthropic.com"],
+      egressAllowCidrs: ["203.0.113.0/24"],
+    });
+    const fallback = egress.spec.egress.find((r: { to: { ipBlock?: { cidr: string } }[] }) =>
+      r.to.some((t) => t.ipBlock?.cidr === "0.0.0.0/0"),
+    );
+    expect(fallback).toBeUndefined();
+  });
+
+  it("does NOT add the public-IPv4 fallback when no FQDNs are configured", () => {
+    const [, egress] = buildNetworkPolicyManifests(baseInput);
+    const fallback = egress.spec.egress.find((r: { to: { ipBlock?: { cidr: string } }[] }) =>
+      r.to.some((t) => t.ipBlock?.cidr === "0.0.0.0/0"),
+    );
+    expect(fallback).toBeUndefined();
+  });
 });

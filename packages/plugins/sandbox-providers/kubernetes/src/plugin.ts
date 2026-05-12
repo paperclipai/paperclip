@@ -118,9 +118,15 @@ const plugin = definePlugin({
     const adapterDefaults = getAdapterDefaults(cfg.adapterType);
     const totalFqdns = [...adapterDefaults.allowFqdns, ...cfg.egressAllowFqdns];
     if (cfg.egressMode === "standard" && totalFqdns.length > 0) {
-      warnings.push(
-        `egressMode=standard cannot enforce FQDN-based egress rules. The following FQDNs will NOT be reachable from agent pods: ${totalFqdns.join(", ")}. Switch egressMode to "cilium" (requires Cilium CNI) or add the FQDNs' IP CIDRs to egressAllowCidrs.`,
-      );
+      if (cfg.egressAllowCidrs.length === 0) {
+        warnings.push(
+          `egressMode=standard cannot enforce FQDN-based egress rules (Kubernetes NetworkPolicy is CIDR-only). To keep the configured FQDNs reachable (${totalFqdns.join(", ")}) without operator intervention, the plugin will allow public IPv4 egress on TCP 80/443 with private/link-local/loopback/multicast ranges excluded. This is broader than exact FQDN allow-listing — switch egressMode to "cilium" (requires Cilium CNI) for precise enforcement, or set egressAllowCidrs explicitly to override the fallback.`,
+        );
+      } else {
+        warnings.push(
+          `egressMode=standard cannot enforce FQDN-based egress rules. The following FQDNs are reachable only via the operator-supplied egressAllowCidrs: ${totalFqdns.join(", ")}. Switch egressMode to "cilium" (requires Cilium CNI) for exact FQDN allow-listing.`,
+        );
+      }
     }
     return { ok: true, normalizedConfig: cfg as Record<string, unknown>, warnings: warnings.length > 0 ? warnings : undefined };
   },
@@ -188,9 +194,15 @@ const plugin = definePlugin({
     const adapterDefaultsForWarn = getAdapterDefaults(config.adapterType);
     const totalFqdnsForWarn = [...adapterDefaultsForWarn.allowFqdns, ...config.egressAllowFqdns];
     if (config.egressMode === "standard" && totalFqdnsForWarn.length > 0) {
-      console.warn(
-        `[plugin-kubernetes] egressMode=standard cannot enforce FQDN-based egress rules. The following FQDNs will NOT be reachable from agent pods: ${totalFqdnsForWarn.join(", ")}. Switch egressMode to "cilium" (requires Cilium CNI) or add the FQDNs' IP CIDRs to egressAllowCidrs.`,
-      );
+      if (config.egressAllowCidrs.length === 0) {
+        console.warn(
+          `[plugin-kubernetes] egressMode=standard cannot enforce FQDN-based egress rules; falling back to public-IPv4 (TCP 80/443) with private/link-local ranges excluded so the configured FQDNs (${totalFqdnsForWarn.join(", ")}) remain reachable. Switch egressMode to "cilium" for exact FQDN allow-listing.`,
+        );
+      } else {
+        console.warn(
+          `[plugin-kubernetes] egressMode=standard cannot enforce FQDN-based egress rules. The following FQDNs are reachable only via operator-supplied egressAllowCidrs: ${totalFqdnsForWarn.join(", ")}. Switch egressMode to "cilium" for exact FQDN allow-listing.`,
+        );
+      }
     }
 
     const kc = createKubeConfig({

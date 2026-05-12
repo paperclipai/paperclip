@@ -199,6 +199,7 @@ async function ensureNetworkPolicies(clients: KubeClients, input: EnsureTenantIn
     namespace: input.namespace,
     paperclipServerNamespace: input.paperclipServerNamespace,
     egressAllowCidrs: input.egressAllowCidrs,
+    egressAllowFqdns: input.egressAllowFqdns,
   });
 
   await ensureNetworkPolicy(clients, input.namespace, denyAll);
