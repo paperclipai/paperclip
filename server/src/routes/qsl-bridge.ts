@@ -40,16 +40,23 @@ export function qslBridgeRoutes(db?: Db) {
   const router = Router();
   const reviewSvc = db ? qslReviewService(db) : null;
 
-  // Resolve company ID from request header or default
-  function getCompanyId(req: { headers: Record<string, string | string[] | undefined> }): string | null {
-    const header = req.headers["x-company-id"];
+  /**
+   * Resolve company ID from: URL param > actor session > header fallback.
+   */
+  function resolveCompanyId(req: any): string | null {
+    // URL param (preferred — matches /companies/:companyId/qsl/findings)
+    if (req.params?.companyId) return req.params.companyId;
+    // Actor session — use first company membership if only one
+    if (req.actor?.companyIds?.length === 1) return req.actor.companyIds[0];
+    // Header fallback
+    const header = req.headers?.["x-company-id"];
     return typeof header === "string" ? header : null;
   }
 
   // ── DB-backed findings endpoint ───────────────────────────────────
-  // Returns persisted findings with review state. Falls back to bridge files if no DB.
-  router.get("/findings", async (req, res) => {
-    const companyId = getCompanyId(req);
+  // Mounted at both /qsl/findings and /companies/:companyId/qsl/findings
+  async function handleListFindings(req: any, res: any) {
+    const companyId = resolveCompanyId(req);
     if (!reviewSvc || !companyId) {
       // Fallback: read from bridge
       const bridgePath = process.env.QSL_BRIDGE_PATH;
@@ -77,10 +84,13 @@ export function qslBridgeRoutes(db?: Db) {
 
     const findings = await reviewSvc.listFindings(companyId, filter);
     res.json(findings);
-  });
+  }
+
+  router.get("/findings", handleListFindings);
+  router.get("/companies/:companyId/findings", handleListFindings);
 
   // ── Review a finding (approve/deny) ───────────────────────────────
-  router.post("/findings/:id/review", async (req, res) => {
+  async function handleReviewFinding(req: any, res: any) {
     if (!reviewSvc) {
       res.status(501).json({ error: "QSL review persistence not available (no database)" });
       return;
@@ -143,10 +153,13 @@ export function qslBridgeRoutes(db?: Db) {
       }
       res.status(500).json({ error: "Failed to review finding" });
     }
-  });
+  }
+
+  router.post("/findings/:id/review", handleReviewFinding);
+  router.post("/companies/:companyId/findings/:id/review", handleReviewFinding);
 
   // ── Set review state (acknowledge, suppress, accept_risk, escalate) ──
-  router.post("/findings/:id/state", async (req, res) => {
+  async function handleSetFindingState(req: any, res: any) {
     if (!reviewSvc) {
       res.status(501).json({ error: "QSL review persistence not available (no database)" });
       return;
@@ -173,7 +186,10 @@ export function qslBridgeRoutes(db?: Db) {
       }
       res.status(500).json({ error: "Failed to update finding state" });
     }
-  });
+  }
+
+  router.post("/findings/:id/state", handleSetFindingState);
+  router.post("/companies/:companyId/findings/:id/state", handleSetFindingState);
 
   // ── Legacy bridge file endpoints (kept for backward compat) ───────
   for (const name of ALLOWED_FILES) {

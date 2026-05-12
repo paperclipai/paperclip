@@ -97,18 +97,25 @@ export function qslReviewService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (existing) {
-          // Update existing finding: bump occurrence, update last_seen and payload
+          // Only bump occurrence count if last_seen is more than 5 minutes ago
+          // (prevents inflation from page refreshes hitting the same scan data)
+          const msSinceLastSeen = now.getTime() - existing.lastSeen.getTime();
+          const isNewOccurrence = msSinceLastSeen > 5 * 60 * 1000;
+
           const updateFields: Record<string, unknown> = {
             lastSeen: now,
-            occurrenceCount: sql`${qslFindings.occurrenceCount} + 1`,
             latestRiskScore: issue.risk_score ?? existing.latestRiskScore,
             latestPayload: issue as Record<string, unknown>,
             updatedAt: now,
           };
 
-          // If it was "new" and is seen again, mark as "recurring" (unless already reviewed)
-          if (existing.reviewState === "new") {
-            updateFields.reviewState = "recurring";
+          if (isNewOccurrence) {
+            updateFields.occurrenceCount = sql`${qslFindings.occurrenceCount} + 1`;
+
+            // If it was "new" and is seen again in a new scan, mark as "recurring"
+            if (existing.reviewState === "new") {
+              updateFields.reviewState = "recurring";
+            }
           }
 
           // Update rule_id if we now have a better one

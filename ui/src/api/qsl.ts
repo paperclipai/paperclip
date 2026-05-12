@@ -85,12 +85,12 @@ export const qslApi = {
     api.post<QslApprovalResponse>("/qsl/approve", data),
 
   // ── Persistent findings API ──────────────────────────────────────
-  listFindings: async (reviewState?: string): Promise<QslFinding[]> => {
+  listFindings: async (companyId: string, reviewState?: string): Promise<QslFinding[]> => {
     const params = reviewState ? `?reviewState=${reviewState}` : "";
-    return api.get<QslFinding[]>(`/qsl/findings${params}`);
+    return api.get<QslFinding[]>(`/qsl/companies/${companyId}/findings${params}`);
   },
-  reviewFinding: (findingId: string, data: QslReviewRequest) =>
-    api.post<QslFinding>(`/qsl/findings/${findingId}/review`, data),
-  setFindingState: (findingId: string, data: QslStateChangeRequest) =>
-    api.post<QslFinding>(`/qsl/findings/${findingId}/state`, data),
+  reviewFinding: (companyId: string, findingId: string, data: QslReviewRequest) =>
+    api.post<QslFinding>(`/qsl/companies/${companyId}/findings/${findingId}/review`, data),
+  setFindingState: (companyId: string, findingId: string, data: QslStateChangeRequest) =>
+    api.post<QslFinding>(`/qsl/companies/${companyId}/findings/${findingId}/state`, data),
 };

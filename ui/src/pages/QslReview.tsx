@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { qslApi, type QslFinding, type QslRule } from "../api/qsl";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -83,10 +84,11 @@ type CardStatus = "idle" | "loading" | "done" | "error";
 interface FindingCardProps {
   finding: QslFinding;
   rule?: QslRule;
+  companyId: string;
   onDecision: () => void;
 }
 
-function FindingCard({ finding, rule, onDecision }: FindingCardProps) {
+function FindingCard({ finding, rule, companyId, onDecision }: FindingCardProps) {
   const [status, setStatus] = useState<CardStatus>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -94,7 +96,7 @@ function FindingCard({ finding, rule, onDecision }: FindingCardProps) {
 
   const reviewMutation = useMutation({
     mutationFn: (decision: "approved" | "denied") =>
-      qslApi.reviewFinding(finding.id, { decision }),
+      qslApi.reviewFinding(companyId, finding.id, { decision }),
     onMutate: () => {
       setStatus("loading");
       setErrorMsg(null);
@@ -111,7 +113,7 @@ function FindingCard({ finding, rule, onDecision }: FindingCardProps) {
 
   const stateMutation = useMutation({
     mutationFn: (state: string) =>
-      qslApi.setFindingState(finding.id, { state }),
+      qslApi.setFindingState(companyId, finding.id, { state }),
     onMutate: () => {
       setStatus("loading");
     },
@@ -258,6 +260,7 @@ function FindingCard({ finding, rule, onDecision }: FindingCardProps) {
 
 export function QslReview() {
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState<ReviewFilter>("all");
 
@@ -265,9 +268,12 @@ export function QslReview() {
     setBreadcrumbs([{ label: "QSL Review" }]);
   }, [setBreadcrumbs]);
 
+  const companyId = selectedCompanyId ?? "";
+
   const { data: findings, isLoading, error } = useQuery({
-    queryKey: [...queryKeys.qsl.issues, "findings", filter],
-    queryFn: () => qslApi.listFindings(filter === "all" ? undefined : filter),
+    queryKey: [...queryKeys.qsl.issues, "findings", companyId, filter],
+    queryFn: () => qslApi.listFindings(companyId, filter === "all" ? undefined : filter),
+    enabled: !!companyId,
   });
 
   const { data: stateData } = useQuery({
@@ -359,6 +365,7 @@ export function QslReview() {
                 key={finding.id}
                 finding={finding}
                 rule={rule}
+                companyId={companyId}
                 onDecision={refetchAll}
               />
             );
