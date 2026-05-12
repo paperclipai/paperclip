@@ -132,6 +132,7 @@ export type AutonomousGoalLoopState =
         | "validating"
         | "ceo_review"
         | "goal_reached"
+        | "partial_completion"
         | "blocked"
         | "approval_required"
         | "failed";
@@ -328,11 +329,29 @@ function supervisorFor(input: {
       userVisible: true,
     };
   }
+  if (input.reason === "periodic_checkpoint_required") {
+    return {
+      attentionRequired: true,
+      reason: "periodic_checkpoint_required",
+      recoveryAction: "request_user_approval",
+      owner: "user",
+      userVisible: true,
+    };
+  }
   if (input.reason === "approval_required" || input.decision?.decision === "approval_required") {
     return {
       attentionRequired: true,
       reason: "approval_required",
       recoveryAction: "request_user_approval",
+      owner: "user",
+      userVisible: true,
+    };
+  }
+  if (input.reason === "partial_completion" || input.decision?.decision === "partial_completion") {
+    return {
+      attentionRequired: true,
+      reason: "partial_completion",
+      recoveryAction: "manual_review",
       owner: "user",
       userVisible: true,
     };
@@ -389,8 +408,10 @@ function statusFor(input: {
 }): Extract<AutonomousGoalLoopState, { enabled: true }>["status"] {
   if (isDecisionRepairReason(input.reason)) return "failed";
   if (input.reason === "ceo_self_attestation_conflict") return "blocked";
+  if (input.reason === "periodic_checkpoint_required") return "approval_required";
   if (input.reason === "approval_required" || input.decision?.decision === "approval_required") return "approval_required";
   if (input.decision?.decision === "goal_reached") return "goal_reached";
+  if (input.reason === "partial_completion" || input.decision?.decision === "partial_completion") return "partial_completion";
   if (input.decision?.decision === "blocked") return "blocked";
   if (input.decision?.decision === "failed") return "failed";
   if (input.reason === "runtime_exceeded" || input.reason === "iteration_exceeded") return "blocked";
@@ -546,9 +567,11 @@ function reportEventFor(input: {
 }): string | null {
   if (input.reason === "ceo_self_attestation_conflict") return "approval_required";
   if (input.reason === "approval_required") return "approval_required";
+  if (input.reason === "periodic_checkpoint_required") return "periodic_checkpoint_required";
   if (input.reason === "runtime_exceeded") return "runtime_exceeded";
   if (input.reason === "iteration_exceeded") return "iteration_exceeded";
   if (input.decision?.decision === "goal_reached") return "goal_reached";
+  if (input.reason === "partial_completion" || input.decision?.decision === "partial_completion") return "partial_completion";
   if (input.decision?.decision === "blocked") return "blocker";
   if (input.decision?.decision === "failed") return "failed";
   return null;
@@ -628,7 +651,7 @@ export function buildAutonomousGoalLoopContinuationPlan(input: {
 
   if (decision.decision !== "next_iteration") {
     return nonCreatePlan({
-      action: decision.decision === "goal_reached" ? "report" : "blocked",
+      action: decision.decision === "goal_reached" || decision.decision === "partial_completion" ? "report" : "blocked",
       reason: gate.reason === "allowed" ? "not_next_iteration" : gate.reason,
       gate,
       ceoLoopDecision: decision,

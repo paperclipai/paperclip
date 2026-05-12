@@ -43,6 +43,8 @@ export const MISSION_CONTROL_AUTONOMOUS_LOOP_DECISIONS = [
   "goal_reached",
   "blocked",
   "approval_required",
+  "partial_completion",
+  "goal_revision",
   "failed",
 ] as const;
 export type MissionControlAutonomousLoopDecision =
@@ -58,6 +60,8 @@ export const MISSION_CONTROL_AUTONOMOUS_LOOP_STATES = [
   "goal_reached",
   "blocked",
   "approval_required",
+  "partial_completion",
+  "goal_revision",
   "failed",
 ] as const;
 export type MissionControlAutonomousLoopState =
@@ -65,8 +69,10 @@ export type MissionControlAutonomousLoopState =
 
 export const MISSION_CONTROL_AUTONOMOUS_LOOP_REPORT_EVENTS = [
   "goal_reached",
+  "partial_completion",
   "blocker",
   "approval_required",
+  "periodic_checkpoint_required",
   "budget_exceeded",
   "runtime_exceeded",
   "iteration_exceeded",
@@ -109,13 +115,23 @@ export const missionControlAutonomousLoopPolicySchema = z
     iteration: z.number().int().nonnegative().max(1000).optional().default(0),
     maxIterations: z.number().int().positive().max(100).optional().nullable().default(null),
     maxRuntimeHours: z.number().positive().max(24 * 90).optional().nullable().default(null),
-    maxDecisionAgeMinutes: z.number().positive().max(24 * 90 * 60).optional().nullable().default(null),
+    maxDecisionAgeMinutes: z.number().positive().max(24 * 90 * 60).optional().nullable().default(60),
+    userApprovalEveryNIterations: z.number().int().positive().max(1000).optional().nullable().default(null),
     maxBudgetCents: z.number().int().positive().optional().nullable().default(null),
     requireValidatorPass: z.boolean().optional().default(true),
     reportToUserOnlyOn: z
       .array(z.enum(MISSION_CONTROL_AUTONOMOUS_LOOP_REPORT_EVENTS))
       .optional()
-      .default(["goal_reached", "blocker", "approval_required", "runtime_exceeded", "iteration_exceeded", "failed"]),
+      .default([
+        "goal_reached",
+        "partial_completion",
+        "blocker",
+        "approval_required",
+        "periodic_checkpoint_required",
+        "runtime_exceeded",
+        "iteration_exceeded",
+        "failed",
+      ]),
     ceoCanApprove: z
       .array(z.enum(MISSION_CONTROL_AUTONOMOUS_LOOP_CEO_APPROVALS))
       .optional()
@@ -192,6 +208,7 @@ export const missionControlCeoLoopDecisionSchema = z
     decision: z.enum(MISSION_CONTROL_AUTONOMOUS_LOOP_DECISIONS),
     decisionWrittenAt: z.string().datetime().optional().nullable().default(null),
     rationale: z.string().trim().min(1).max(4000),
+    revisedGoal: z.string().trim().min(1).max(4000).optional().nullable().default(null),
     nextTask: missionControlCeoLoopNextTaskSchema.optional().nullable().default(null),
     hardGate: missionControlCeoLoopHardGateSchema.optional().nullable().default(null),
     validatorVerdict: z.enum(MISSION_CONTROL_VALIDATOR_VERDICTS).optional().nullable().default(null),
@@ -213,7 +230,42 @@ export const missionControlCeoLoopDecisionSchema = z
         path: ["hardGate"],
       });
     }
-    if (value.nextTask && !value.nextTask.safeToRunWithoutUserApproval && value.decision !== "approval_required") {
+    if (value.decision === "partial_completion") {
+      if (!value.nextTask) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "partial_completion decisions require nextTask",
+          path: ["nextTask"],
+        });
+      }
+      if (!value.nextTask?.assigneeHint) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "partial_completion decisions require a nextTask assigneeHint",
+          path: ["nextTask", "assigneeHint"],
+        });
+      }
+      if (value.nextTask?.safeToRunWithoutUserApproval !== false) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "partial_completion handoffs must require user approval",
+          path: ["nextTask", "safeToRunWithoutUserApproval"],
+        });
+      }
+    }
+    if (value.decision === "goal_revision" && !value.revisedGoal) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "goal_revision decisions require revisedGoal",
+        path: ["revisedGoal"],
+      });
+    }
+    if (
+      value.nextTask &&
+      !value.nextTask.safeToRunWithoutUserApproval &&
+      value.decision !== "approval_required" &&
+      value.decision !== "partial_completion"
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "Unsafe next tasks must use approval_required",
@@ -341,6 +393,8 @@ export type MissionControlAutonomousLoopGateReason =
   | "ceo_loop_decision_from_future"
   | "runtime_exceeded"
   | "iteration_exceeded"
+  | "periodic_checkpoint_required"
+  | "partial_completion"
   | "approval_required"
   | "validator_pass_required"
   | "autonomous_loop_not_complete"
@@ -376,6 +430,8 @@ export type MissionControlCompletionGateResult = {
     | "ceo_loop_decision_from_future"
     | "runtime_exceeded"
     | "iteration_exceeded"
+    | "periodic_checkpoint_required"
+    | "partial_completion"
     | "approval_required"
     | "validator_pass_required"
     | "autonomous_loop_not_complete"
@@ -622,6 +678,50 @@ export function evaluateMissionControlAutonomousLoopGate(input: {
       ceoLoopDecision,
       requiredApprovalGate: "board",
       reason: "approval_required",
+    };
+  }
+
+  if (
+    decisionContinuesLoop &&
+    autonomousLoopPolicy.userApprovalEveryNIterations &&
+    autonomousLoopPolicy.iteration > 0 &&
+    autonomousLoopPolicy.iteration % autonomousLoopPolicy.userApprovalEveryNIterations === 0
+  ) {
+    return {
+      allowed: false,
+      enabled: true,
+      policy,
+      autonomousLoopPolicy,
+      missingDocumentKeys: [],
+      ceoLoopDecision,
+      requiredApprovalGate: "board",
+      reason: "periodic_checkpoint_required",
+    };
+  }
+
+  if (ceoLoopDecision.decision === "goal_revision") {
+    return {
+      allowed: false,
+      enabled: true,
+      policy,
+      autonomousLoopPolicy,
+      missingDocumentKeys: [],
+      ceoLoopDecision,
+      requiredApprovalGate: "board",
+      reason: "approval_required",
+    };
+  }
+
+  if (ceoLoopDecision.decision === "partial_completion") {
+    return {
+      allowed: false,
+      enabled: true,
+      policy,
+      autonomousLoopPolicy,
+      missingDocumentKeys: [],
+      ceoLoopDecision,
+      requiredApprovalGate: "lead",
+      reason: "partial_completion",
     };
   }
 

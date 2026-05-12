@@ -35,6 +35,8 @@ describe("mission-control workflow contracts", () => {
       "goal_reached",
       "blocked",
       "approval_required",
+      "partial_completion",
+      "goal_revision",
       "failed",
     ]);
 
@@ -49,7 +51,8 @@ describe("mission-control workflow contracts", () => {
     });
 
     expect(policy.requireValidatorPass).toBe(true);
-    expect(policy.maxDecisionAgeMinutes).toBeNull();
+    expect(policy.maxDecisionAgeMinutes).toBe(60);
+    expect(policy.userApprovalEveryNIterations).toBeNull();
     expect(policy.reportToUserOnlyOn).toEqual(expect.arrayContaining(["goal_reached", "approval_required"]));
     expect(policy.ceoCanApprove).toEqual(expect.arrayContaining(["local_code_changes", "dry_runs"]));
     expect(policy.userApprovalRequired).toEqual(expect.arrayContaining(["live_external_action", "production_deploy"]));
@@ -69,6 +72,247 @@ describe("mission-control workflow contracts", () => {
 
     expect(decision.nextTask?.safeToRunWithoutUserApproval).toBe(true);
     expect(decision.decisionWrittenAt).toBe("2026-05-11T08:30:00.000Z");
+  });
+
+  it("defaults autonomous loop decision freshness while allowing explicit opt-out", () => {
+    expect(
+      missionControlAutonomousLoopPolicySchema.parse({
+        enabled: true,
+        goal: "Keep the loop fresh",
+        startedAt: "2026-05-11T08:00:00.000Z",
+        maxIterations: 5,
+        maxRuntimeHours: 24,
+      }).maxDecisionAgeMinutes,
+    ).toBe(60);
+
+    expect(
+      missionControlAutonomousLoopPolicySchema.parse({
+        enabled: true,
+        goal: "Opt out of decision freshness",
+        startedAt: "2026-05-11T08:00:00.000Z",
+        maxIterations: 5,
+        maxRuntimeHours: 24,
+        maxDecisionAgeMinutes: null,
+      }).maxDecisionAgeMinutes,
+    ).toBeNull();
+
+    expect(
+      missionControlAutonomousLoopPolicySchema.parse({
+        enabled: true,
+        goal: "Preserve existing long freshness caps",
+        startedAt: "2026-05-11T08:00:00.000Z",
+        maxIterations: 5,
+        maxRuntimeHours: 24,
+        maxDecisionAgeMinutes: 60 * 24 * 30,
+      }).maxDecisionAgeMinutes,
+    ).toBe(60 * 24 * 30);
+
+    expect(() =>
+      missionControlAutonomousLoopPolicySchema.parse({
+        enabled: true,
+        goal: "Reject stale freshness caps beyond the legacy maximum",
+        startedAt: "2026-05-11T08:00:00.000Z",
+        maxIterations: 5,
+        maxRuntimeHours: 24,
+        maxDecisionAgeMinutes: 60 * 24 * 90 + 1,
+      }),
+    ).toThrow();
+  });
+
+  it("validates partial completion and goal revision CEO decisions", () => {
+    expect(
+      missionControlCeoLoopDecisionSchema.parse({
+        version: 1,
+        iteration: 2,
+        decision: "partial_completion",
+        rationale: "Most work is done, but a human owner must decide the final scope.",
+        nextTask: {
+          title: "Review remaining launch tradeoffs",
+          acceptanceCriteria: ["Owner chooses which launch scope to ship"],
+          assigneeHint: "product owner",
+          safeToRunWithoutUserApproval: false,
+        },
+        evidence: ["implementation is partially complete"],
+      }).decision,
+    ).toBe("partial_completion");
+
+    expect(() =>
+      missionControlCeoLoopDecisionSchema.parse({
+        version: 1,
+        iteration: 2,
+        decision: "partial_completion",
+        rationale: "Missing the required human handoff.",
+        nextTask: {
+          title: "Review remaining launch tradeoffs",
+          acceptanceCriteria: ["Owner chooses which launch scope to ship"],
+          safeToRunWithoutUserApproval: false,
+        },
+        evidence: ["implementation is partially complete"],
+      }),
+    ).toThrow();
+
+    expect(
+      missionControlCeoLoopDecisionSchema.parse({
+        version: 1,
+        iteration: 3,
+        decision: "goal_revision",
+        revisedGoal: "Ship only the read-only observability slice before continuing automation.",
+        rationale: "The original target was too broad for the current budget.",
+        evidence: ["scope review"],
+      }).revisedGoal,
+    ).toBe("Ship only the read-only observability slice before continuing automation.");
+
+    expect(() =>
+      missionControlCeoLoopDecisionSchema.parse({
+        version: 1,
+        iteration: 3,
+        decision: "goal_revision",
+        rationale: "Missing the proposed revised goal.",
+        evidence: ["scope review"],
+      }),
+    ).toThrow();
+  });
+
+  it("requires periodic user checkpoints before autonomous continuation", () => {
+    const executionPolicy = {
+      missionControl: missionControlIssuePolicySchema.parse({
+        enabled: true,
+        riskClass: "high",
+        autonomousLoop: {
+          enabled: true,
+          goal: "Checkpoint every two iterations",
+          startedAt: "2026-05-11T08:00:00.000Z",
+          iteration: 2,
+          maxIterations: 5,
+          maxRuntimeHours: 24,
+          userApprovalEveryNIterations: 2,
+        },
+      }),
+    };
+
+    const checkpoint = evaluateMissionControlAutonomousLoopGate({
+      issue: { priority: "high", executionPolicy },
+      now: "2026-05-11T08:30:00.000Z",
+      documents: [
+        {
+          key: MISSION_CONTROL_AUTONOMOUS_LOOP_DOCUMENT_KEY,
+          updatedAt: "2026-05-11T08:25:00.000Z",
+          body: JSON.stringify({
+            version: 1,
+            iteration: 2,
+            decision: "next_iteration",
+            rationale: "Continue after checkpoint approval.",
+            nextTask: {
+              title: "Continue implementation",
+              acceptanceCriteria: ["checkpoint blocks first"],
+              safeToRunWithoutUserApproval: true,
+            },
+            evidence: ["ready for checkpoint"],
+          }),
+        },
+      ],
+    });
+
+    expect(checkpoint).toMatchObject({
+      allowed: false,
+      requiredApprovalGate: "board",
+      reason: "periodic_checkpoint_required",
+    });
+  });
+
+  it("does not downgrade explicit hard gates at periodic checkpoints", () => {
+    const executionPolicy = {
+      missionControl: missionControlIssuePolicySchema.parse({
+        enabled: true,
+        riskClass: "high",
+        autonomousLoop: {
+          enabled: true,
+          goal: "Checkpoint every two iterations",
+          startedAt: "2026-05-11T08:00:00.000Z",
+          iteration: 2,
+          maxIterations: 5,
+          maxRuntimeHours: 24,
+          userApprovalEveryNIterations: 2,
+        },
+      }),
+    };
+
+    const result = evaluateMissionControlAutonomousLoopGate({
+      issue: { priority: "high", executionPolicy },
+      now: "2026-05-11T08:30:00.000Z",
+      documents: [
+        {
+          key: MISSION_CONTROL_AUTONOMOUS_LOOP_DOCUMENT_KEY,
+          updatedAt: "2026-05-11T08:25:00.000Z",
+          body: JSON.stringify({
+            version: 1,
+            iteration: 2,
+            decision: "next_iteration",
+            rationale: "Needs explicit user approval before the checkpoint can matter.",
+            hardGate: {
+              required: true,
+              reason: "live external action requires board approval",
+              category: "live_external_action",
+            },
+            nextTask: {
+              title: "Launch a live external step",
+              acceptanceCriteria: ["board approval is captured first"],
+              safeToRunWithoutUserApproval: true,
+            },
+            evidence: ["live action proposed"],
+          }),
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      allowed: false,
+      requiredApprovalGate: "board",
+      reason: "approval_required",
+    });
+  });
+
+  it("routes goal revision decisions through board approval", () => {
+    const executionPolicy = {
+      missionControl: missionControlIssuePolicySchema.parse({
+        enabled: true,
+        riskClass: "high",
+        autonomousLoop: {
+          enabled: true,
+          goal: "Original broad goal",
+          startedAt: "2026-05-11T08:00:00.000Z",
+          iteration: 3,
+          maxIterations: 5,
+          maxRuntimeHours: 24,
+        },
+      }),
+    };
+
+    const result = evaluateMissionControlAutonomousLoopGate({
+      issue: { priority: "high", executionPolicy },
+      now: "2026-05-11T08:30:00.000Z",
+      documents: [
+        {
+          key: MISSION_CONTROL_AUTONOMOUS_LOOP_DOCUMENT_KEY,
+          updatedAt: "2026-05-11T08:25:00.000Z",
+          body: JSON.stringify({
+            version: 1,
+            iteration: 3,
+            decision: "goal_revision",
+            revisedGoal: "Ship a smaller trusted-agent workflow first.",
+            rationale: "The original goal needs user-approved rescoping.",
+            evidence: ["scope review"],
+          }),
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      allowed: false,
+      requiredApprovalGate: "board",
+      reason: "approval_required",
+      ceoLoopDecision: { decision: "goal_revision", revisedGoal: "Ship a smaller trusted-agent workflow first." },
+    });
   });
 
   it("accepts PASS / REQUEST_CHANGES / ESCALATE validator reports", () => {
@@ -217,6 +461,7 @@ describe("mission-control completion gate", () => {
         ...baseDocuments,
         {
           key: MISSION_CONTROL_AUTONOMOUS_LOOP_DOCUMENT_KEY,
+          updatedAt: "2026-05-11T08:30:00.000Z",
           body: JSON.stringify({
             version: 1,
             iteration: 2,
@@ -230,6 +475,7 @@ describe("mission-control completion gate", () => {
           }),
         },
       ],
+      now: "2026-05-11T08:30:00.000Z",
     });
     expect(nextIteration).toMatchObject({
       allowed: false,
@@ -243,6 +489,7 @@ describe("mission-control completion gate", () => {
         ...baseDocuments,
         {
           key: MISSION_CONTROL_AUTONOMOUS_LOOP_DOCUMENT_KEY,
+          updatedAt: "2026-05-11T08:45:00.000Z",
           body: JSON.stringify({
             version: 1,
             iteration: 2,
@@ -251,6 +498,7 @@ describe("mission-control completion gate", () => {
           }),
         },
       ],
+      now: "2026-05-11T08:45:00.000Z",
     });
     expect(goalReached).toMatchObject({
       allowed: true,
@@ -282,6 +530,7 @@ describe("mission-control completion gate", () => {
         documents: [
           {
             key: MISSION_CONTROL_AUTONOMOUS_LOOP_DOCUMENT_KEY,
+            updatedAt: "2026-05-11T09:00:00.000Z",
             body: JSON.stringify({
               version: 1,
               iteration: 5,
