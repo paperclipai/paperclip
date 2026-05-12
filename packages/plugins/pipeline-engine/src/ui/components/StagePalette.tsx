@@ -10,32 +10,25 @@ interface StageTypeCard {
 
 const STAGE_TYPES: StageTypeCard[] = [
   {
-    type: "worker",
-    label: "Worker",
-    description: "Agent performs work and outputs structured data",
+    type: "stage",
+    label: "Stage",
+    description: "Agent performs work and routes by decision",
     color: "#3b82f6",
-    badge: "WRK",
+    badge: "STG",
   },
   {
-    type: "classifier",
-    label: "Classifier",
-    description: "Agent classifies input and routes based on output",
-    color: "#f59e0b",
-    badge: "CLS",
-  },
-  {
-    type: "parallel_fan_out",
+    type: "fan_out",
     label: "Fan Out",
     description: "Distribute work across multiple parallel agents",
     color: "#06b6d4",
     badge: "FAN",
   },
   {
-    type: "gate",
-    label: "Gate",
-    description: "Conditional check before pipeline continues",
+    type: "fan_in",
+    label: "Fan In",
+    description: "Wait for parallel branches to complete",
     color: "#8b5cf6",
-    badge: "GTE",
+    badge: "FIN",
   },
   {
     type: "sub-pipeline",
