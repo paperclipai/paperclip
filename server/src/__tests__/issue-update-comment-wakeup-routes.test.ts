@@ -42,6 +42,14 @@ const mockIssueReferenceService = vi.hoisted(() => ({
   syncIssue: vi.fn(async () => undefined),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockDbSelectLimit = vi.hoisted(() => vi.fn(async () => []));
+const mockDbSelectOrderBy = vi.hoisted(() => vi.fn(async () => []));
+const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({ limit: mockDbSelectLimit, orderBy: mockDbSelectOrderBy })));
+const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
+const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
+const mockDb = vi.hoisted(() => ({
+  select: mockDbSelect,
+}));
 
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
@@ -149,7 +157,7 @@ async function createApp() {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes(mockDb as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -187,6 +195,16 @@ describe("issue update comment wakeups", () => {
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    mockDbSelectLimit.mockReset();
+    mockDbSelectOrderBy.mockReset();
+    mockDbSelectWhere.mockReset();
+    mockDbSelectFrom.mockReset();
+    mockDbSelect.mockReset();
+    mockDbSelectLimit.mockResolvedValue([]);
+    mockDbSelectOrderBy.mockResolvedValue([]);
+    mockDbSelectWhere.mockImplementation(() => ({ limit: mockDbSelectLimit, orderBy: mockDbSelectOrderBy }));
+    mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
+    mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockRoutineService.syncRunStatusForIssue.mockClear();
     mockIssueReferenceService.listIssueReferenceSummary.mockResolvedValue({ outbound: [], inbound: [] });
     mockIssueReferenceService.diffIssueReferenceSummary.mockReturnValue({
@@ -417,6 +435,7 @@ describe("issue update comment wakeups", () => {
       enumerable: false,
     });
     mockIssueService.addComment.mockResolvedValue(dedupedComment);
+    mockDbSelectLimit.mockResolvedValue([{ id: "existing-reopen-wakeup" }]);
 
     const res = await request(await createApp())
       .patch(`/api/issues/${existing.id}`)
@@ -426,18 +445,7 @@ describe("issue update comment wakeups", () => {
       });
 
     expect(res.status).toBe(200);
-    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      ASSIGNEE_AGENT_ID,
-      expect.objectContaining({
-        reason: "issue_reopened_via_comment",
-        idempotencyKey: `issue-comment-wakeup:${existing.id}:comment-deduped-reopen-mentioned:${ASSIGNEE_AGENT_ID}:issue_reopened_via_comment`,
-      }),
-    ));
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
-      ASSIGNEE_AGENT_ID,
-      expect.objectContaining({
-        reason: "issue_comment_mentioned",
-      }),
-    );
+    await vi.waitFor(() => expect(mockDbSelectLimit).toHaveBeenCalled());
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 });
