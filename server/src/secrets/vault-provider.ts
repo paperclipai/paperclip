@@ -487,7 +487,7 @@ export function createVaultProvider(
       const valueSha256 = createHash("sha256").update(input.value).digest("hex");
       return await withVaultTokenRetry({
         tokenManager,
-        sourceMode: (tokenManager as unknown as { source: VaultAuthSource })["source"]?.mode ?? "token",
+        sourceMode: tokenManager.sourceMode,
         operation: async () => {
           await tokenManager.acquire();
           const { version } = await gateway.putKv({
@@ -541,6 +541,10 @@ export class VaultTokenManager {
     this.source = input.source;
     this.gateway = input.gateway;
     this.now = input.now ?? (() => Date.now());
+  }
+
+  get sourceMode(): VaultAuthSource["mode"] {
+    return this.source.mode;
   }
 
   invalidate(): void {

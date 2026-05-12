@@ -718,3 +718,14 @@ describe("withVaultTokenRetry", () => {
     expect(calls).toBe(1);
   });
 });
+
+describe("VaultTokenManager.sourceMode", () => {
+  it("exposes the source mode for retry-helper callers", () => {
+    const tm = new VaultTokenManager({
+      source: { mode: "kubernetes", role: "r", jwt: "j", saTokenPath: "/sa" },
+      gateway: { loginKubernetes: vi.fn(), renewSelf: vi.fn() } as never,
+      now: () => 0,
+    });
+    expect(tm.sourceMode).toBe("kubernetes");
+  });
+});
