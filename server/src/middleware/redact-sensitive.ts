@@ -24,7 +24,6 @@ const SENSITIVE_KEYS = new Set<string>([
   "secret",
   "client_secret",
   "clientsecret",
-  "token",
   "access_token",
   "accesstoken",
   "refresh_token",
@@ -50,7 +49,7 @@ function isSensitiveKey(key: string): boolean {
 }
 
 export function redactSensitive(value: unknown, depth = 0): unknown {
-  if (depth > MAX_DEPTH) return "[depth-limit]";
+  if (depth > MAX_DEPTH) return undefined;
   if (value === null || typeof value !== "object") return value;
   if (Array.isArray(value)) {
     return value.map((entry) => redactSensitive(entry, depth + 1));

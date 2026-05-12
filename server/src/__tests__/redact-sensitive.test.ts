@@ -32,6 +32,13 @@ describe("redactSensitive", () => {
     }
   });
 
+  it("does not redact a bare `token` field — pagination cursors and CSRF tokens are not credentials", () => {
+    const out = redactSensitive({ token: "next-page-cursor", limit: 20 }) as Record<string, unknown>;
+
+    expect(out.token).toBe("next-page-cursor");
+    expect(out.limit).toBe(20);
+  });
+
   it("recurses into nested objects and arrays", () => {
     const out = redactSensitive({
       user: { email: "user@example.com", password: "secret-pass" },
