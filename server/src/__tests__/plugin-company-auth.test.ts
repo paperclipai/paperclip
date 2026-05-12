@@ -8,6 +8,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
+import { PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import { assertPluginAuthorizedForCompany } from "../services/plugin-company-auth.js";
 import type { Db } from "@paperclipai/db";
 
@@ -44,5 +45,8 @@ describe("assertPluginAuthorizedForCompany", () => {
     await expect(
       assertPluginAuthorizedForCompany(db, "plugin-1", "company-1"),
     ).rejects.toThrow(/not authorized/i);
+    await expect(
+      assertPluginAuthorizedForCompany(db, "plugin-1", "company-1"),
+    ).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.CAPABILITY_DENIED });
   });
 });

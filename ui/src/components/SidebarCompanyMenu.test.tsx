@@ -142,6 +142,14 @@ describe("SidebarCompanyMenu", () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
+    queryClient.setQueryData(["auth", "session"], {
+      session: { id: "session-1", userId: "user-1" },
+      user: { id: "user-1", name: "Jane Example", email: "jane@example.com", image: null },
+    });
+    queryClient.setQueryData(["access", "current-board-access"], { isInstanceAdmin: true });
+    queryClient.setQueryData(["instance", "plugin-secrets"], [
+      { id: "secret-1", name: "PLUGIN_TOKEN", createdByUserId: "plugin:gitea" },
+    ]);
 
     await act(async () => {
       root.render(
@@ -183,6 +191,9 @@ describe("SidebarCompanyMenu", () => {
     await flushReact();
 
     expect(mockAuthApi.signOut).toHaveBeenCalledTimes(1);
+    expect(queryClient.getQueryData(["access", "current-board-access"])).toBeUndefined();
+    expect(queryClient.getQueryData(["instance", "plugin-secrets"])).toBeUndefined();
+    expect(queryClient.getQueryData(["auth", "session"])).toBeNull();
 
     await act(async () => {
       root.unmount();

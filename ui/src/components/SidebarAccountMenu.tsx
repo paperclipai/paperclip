@@ -14,6 +14,7 @@ import type { DeploymentMode } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
+import { clearAuthenticatedCache } from "@/lib/auth-cache";
 import { useSidebar } from "../context/SidebarContext";
 import { useTheme } from "../context/ThemeContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -124,11 +125,7 @@ export function SidebarAccountMenu({
     mutationFn: () => authApi.signOut(),
     onSuccess: async () => {
       setOpen(false);
-      await queryClient.cancelQueries();
-      queryClient.removeQueries({
-        predicate: (query) => query.queryKey[0] !== queryKeys.auth.session[0],
-      });
-      queryClient.setQueryData(queryKeys.auth.session, null);
+      await clearAuthenticatedCache(queryClient);
     },
   });
 

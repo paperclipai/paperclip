@@ -1,6 +1,16 @@
 import { eq, and } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { pluginCompanySettings } from "@paperclipai/db";
+import { PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
+
+export class PluginCompanyAuthorizationError extends Error {
+  code = PLUGIN_RPC_ERROR_CODES.CAPABILITY_DENIED;
+
+  constructor(companyId: string) {
+    super(`Plugin is not authorized for company ${companyId}`);
+    this.name = "PluginCompanyAuthorizationError";
+  }
+}
 
 /**
  * Asserts that a plugin is authorized to operate within the given company.
@@ -29,8 +39,6 @@ export async function assertPluginAuthorizedForCompany(
     .then((rows) => rows[0] ?? null);
 
   if (row !== null && !row.enabled) {
-    throw new Error(
-      `Plugin is not authorized for company ${companyId}`,
-    );
+    throw new PluginCompanyAuthorizationError(companyId);
   }
 }
