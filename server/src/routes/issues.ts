@@ -2522,9 +2522,11 @@ export function issueRoutes(
       actor.actorType,
     );
     assertCanManageIssueMonitor(req, req.body.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+    const { dueAt: dueAtRaw, ...createBody } = req.body;
     const issue = await svc.create(companyId, {
-      ...req.body,
+      ...createBody,
       executionPolicy,
+      ...(dueAtRaw !== undefined ? { dueAt: dueAtRaw ? new Date(dueAtRaw) : null } : {}),
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
     });
@@ -2772,6 +2774,7 @@ export function issueRoutes(
       resume: resumeRequested,
       interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
+      dueAt: dueAtRaw,
       ...updateFields
     } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
@@ -2854,6 +2857,9 @@ export function issueRoutes(
 
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
+    }
+    if (dueAtRaw !== undefined) {
+      updateFields.dueAt = dueAtRaw ? new Date(dueAtRaw) : null;
     }
     if (
       commentBody &&
