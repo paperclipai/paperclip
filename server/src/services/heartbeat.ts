@@ -369,6 +369,19 @@ export async function resolveExecutionRunAdapterConfig(input: {
       ...parseObject(resolvedConfig.env),
       ...runtime.env,
     };
+    // HTTPS_PROXY (and friends) embed the per-session token in their
+    // userInfo segment so HTTP clients send `Proxy-Authorization: Basic`
+    // automatically. The token is a live proxy auth credential — add
+    // these keys to `secretKeys` so `onAdapterMeta` redacts them if an
+    // adapter ever echoes its launch env in invocation metadata.
+    for (const key of [
+      "HTTPS_PROXY",
+      "HTTP_PROXY",
+      "https_proxy",
+      "http_proxy",
+    ]) {
+      secretKeys.add(key);
+    }
   }
   const projectEnvResolution = input.projectEnv
     ? await input.secretsSvc.resolveEnvBindings(

@@ -70,6 +70,14 @@ export function createBuiltinBroker(
     },
   });
   let started = false;
+  let pruneTimer: ReturnType<typeof setInterval> | undefined;
+  // Period between sweeps of the in-memory session store. Without a
+  // scheduled prune, expired sessions (each holding an RSA-2048 CA
+  // keypair + per-host leaf cache) accumulate until their token is
+  // looked up again — which never happens for completed runs. 60s is
+  // well under typical session TTLs and well over the cost of one
+  // O(active sessions) sweep.
+  const PRUNE_INTERVAL_MS = 60_000;
 
   return {
     id: "builtin",
@@ -81,6 +89,19 @@ export function createBuiltinBroker(
         port: options.listenPort,
       });
       started = true;
+      pruneTimer = setInterval(() => {
+        try {
+          store.prune();
+        } catch (err) {
+          ctx.logger.warn("credential broker prune failed", {
+            event: "credential-broker-prune-failed",
+            err: { message: (err as Error).message },
+          });
+        }
+      }, PRUNE_INTERVAL_MS);
+      // Don't keep the event loop alive purely for pruning — if the
+      // server process is exiting, we want it to.
+      pruneTimer.unref?.();
       ctx.logger.info("credential broker listener started", {
         event: "credential-broker-started",
         mode: "embedded",
@@ -90,6 +111,10 @@ export function createBuiltinBroker(
 
     async stop(): Promise<void> {
       if (!started) return;
+      if (pruneTimer) {
+        clearInterval(pruneTimer);
+        pruneTimer = undefined;
+      }
       await proxy.close();
       started = false;
     },
