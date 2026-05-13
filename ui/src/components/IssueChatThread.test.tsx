@@ -7,12 +7,16 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "@paperclipai/shared";
 import {
+  ISSUE_CHAT_FOLD_STORAGE_PREFIX,
   IssueChatThread,
   VIRTUALIZED_THREAD_ROW_THRESHOLD,
   canStopIssueChatRun,
   findLatestCommentMessageIndex,
+  hasVisibleAssistantText,
+  readPersistedAssistantFoldedState,
   resolveAssistantMessageFoldedState,
   resolveIssueChatHumanAuthor,
+  writePersistedAssistantFoldedState,
 } from "./IssueChatThread";
 import { ToastProvider } from "../context/ToastContext";
 import { ToastViewport } from "./ToastViewport";
@@ -2611,6 +2615,8 @@ describe("IssueChatThread", () => {
       messageId: "message-1",
       currentFolded: false,
       isFoldable: true,
+      defaultFolded: true,
+      persistedFolded: null,
       previousMessageId: "message-1",
       previousIsFoldable: false,
     })).toBe(true);
@@ -2621,9 +2627,162 @@ describe("IssueChatThread", () => {
       messageId: "message-1",
       currentFolded: false,
       isFoldable: true,
+      defaultFolded: true,
+      persistedFolded: null,
       previousMessageId: "message-1",
       previousIsFoldable: true,
     })).toBe(false);
+  });
+
+  it("leaves a text-bearing transcript unfolded by default once the run completes", () => {
+    expect(resolveAssistantMessageFoldedState({
+      messageId: "message-1",
+      currentFolded: false,
+      isFoldable: true,
+      defaultFolded: false,
+      persistedFolded: null,
+      previousMessageId: "message-1",
+      previousIsFoldable: false,
+    })).toBe(false);
+  });
+
+  it("starts a brand-new text-bearing transcript unfolded", () => {
+    expect(resolveAssistantMessageFoldedState({
+      messageId: "message-1",
+      currentFolded: true,
+      isFoldable: true,
+      defaultFolded: false,
+      persistedFolded: null,
+      previousMessageId: null,
+      previousIsFoldable: false,
+    })).toBe(false);
+  });
+
+  it("starts a brand-new thinking-only transcript folded", () => {
+    expect(resolveAssistantMessageFoldedState({
+      messageId: "message-1",
+      currentFolded: false,
+      isFoldable: true,
+      defaultFolded: true,
+      persistedFolded: null,
+      previousMessageId: null,
+      previousIsFoldable: false,
+    })).toBe(true);
+  });
+
+  it("keeps the message unfolded while it is still running (not foldable yet)", () => {
+    expect(resolveAssistantMessageFoldedState({
+      messageId: "message-1",
+      currentFolded: true,
+      isFoldable: false,
+      defaultFolded: true,
+      persistedFolded: true,
+      previousMessageId: "message-1",
+      previousIsFoldable: false,
+    })).toBe(false);
+  });
+
+  it("prefers the persisted choice over the default when a transcript first renders", () => {
+    expect(resolveAssistantMessageFoldedState({
+      messageId: "message-1",
+      currentFolded: true,
+      isFoldable: true,
+      defaultFolded: true,
+      persistedFolded: false,
+      previousMessageId: null,
+      previousIsFoldable: false,
+    })).toBe(false);
+
+    expect(resolveAssistantMessageFoldedState({
+      messageId: "message-2",
+      currentFolded: false,
+      isFoldable: true,
+      defaultFolded: false,
+      persistedFolded: true,
+      previousMessageId: null,
+      previousIsFoldable: false,
+    })).toBe(true);
+  });
+
+  it("treats a transcript with visible text as text-bearing", () => {
+    expect(hasVisibleAssistantText({
+      id: "message-1",
+      role: "assistant",
+      content: [
+        { type: "reasoning", text: "thinking" },
+        { type: "text", text: "Here is the answer." },
+      ],
+      createdAt: new Date(0),
+      metadata: { custom: {}, steps: [], unstable_annotations: [], unstable_data: [] },
+      status: { type: "complete", reason: "stop" },
+    } as unknown as Parameters<typeof hasVisibleAssistantText>[0])).toBe(true);
+  });
+
+  it("treats a transcript with whitespace-only text as text-empty", () => {
+    expect(hasVisibleAssistantText({
+      id: "message-1",
+      role: "assistant",
+      content: [
+        { type: "text", text: "   \n  " },
+        { type: "tool-call", toolCallId: "t1", toolName: "x", args: {}, argsText: "" },
+      ],
+      createdAt: new Date(0),
+      metadata: { custom: {}, steps: [], unstable_annotations: [], unstable_data: [] },
+      status: { type: "complete", reason: "stop" },
+    } as unknown as Parameters<typeof hasVisibleAssistantText>[0])).toBe(false);
+  });
+
+  it("treats a thinking/tool-call-only transcript as text-empty", () => {
+    expect(hasVisibleAssistantText({
+      id: "message-1",
+      role: "assistant",
+      content: [
+        { type: "reasoning", text: "thinking" },
+        { type: "tool-call", toolCallId: "t1", toolName: "x", args: {}, argsText: "" },
+      ],
+      createdAt: new Date(0),
+      metadata: { custom: {}, steps: [], unstable_annotations: [], unstable_data: [] },
+      status: { type: "complete", reason: "stop" },
+    } as unknown as Parameters<typeof hasVisibleAssistantText>[0])).toBe(false);
+  });
+
+  describe("persisted fold storage", () => {
+    afterEach(() => {
+      try { window.localStorage.clear(); } catch { /* ignore */ }
+      vi.restoreAllMocks();
+    });
+
+    it("round-trips folded and unfolded values via localStorage", () => {
+      writePersistedAssistantFoldedState("msg-a", true);
+      writePersistedAssistantFoldedState("msg-b", false);
+      expect(window.localStorage.getItem(`${ISSUE_CHAT_FOLD_STORAGE_PREFIX}msg-a`)).toBe("folded");
+      expect(window.localStorage.getItem(`${ISSUE_CHAT_FOLD_STORAGE_PREFIX}msg-b`)).toBe("unfolded");
+      expect(readPersistedAssistantFoldedState("msg-a")).toBe(true);
+      expect(readPersistedAssistantFoldedState("msg-b")).toBe(false);
+    });
+
+    it("returns null for messages with no stored choice", () => {
+      expect(readPersistedAssistantFoldedState("msg-missing")).toBeNull();
+    });
+
+    it("returns null for an unexpected stored value", () => {
+      window.localStorage.setItem(`${ISSUE_CHAT_FOLD_STORAGE_PREFIX}msg-c`, "garbled");
+      expect(readPersistedAssistantFoldedState("msg-c")).toBeNull();
+    });
+
+    it("swallows localStorage write errors (quota / private mode)", () => {
+      const setItem = vi.spyOn(Storage.prototype, "setItem")
+        .mockImplementation(() => { throw new Error("QuotaExceededError"); });
+      expect(() => writePersistedAssistantFoldedState("msg-d", true)).not.toThrow();
+      expect(setItem).toHaveBeenCalled();
+    });
+
+    it("swallows localStorage read errors and returns null", () => {
+      const getItem = vi.spyOn(Storage.prototype, "getItem")
+        .mockImplementation(() => { throw new Error("SecurityError"); });
+      expect(readPersistedAssistantFoldedState("msg-e")).toBeNull();
+      expect(getItem).toHaveBeenCalled();
+    });
   });
 
   it("shows the stop-run action for active run-linked messages even without embedded run status", () => {

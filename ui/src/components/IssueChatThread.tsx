@@ -182,10 +182,42 @@ const IssueChatCtx = createContext<IssueChatMessageContext>({
   successfulRunHandoff: null,
 });
 
+export const ISSUE_CHAT_FOLD_STORAGE_PREFIX = "paperclip:issue-chat-fold:";
+
+export function hasVisibleAssistantText(message: ThreadMessage): boolean {
+  return message.content.some((part) => part.type === "text" && part.text.trim().length > 0);
+}
+
+export function readPersistedAssistantFoldedState(messageId: string): boolean | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(`${ISSUE_CHAT_FOLD_STORAGE_PREFIX}${messageId}`);
+    if (raw === "folded") return true;
+    if (raw === "unfolded") return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function writePersistedAssistantFoldedState(messageId: string, folded: boolean): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      `${ISSUE_CHAT_FOLD_STORAGE_PREFIX}${messageId}`,
+      folded ? "folded" : "unfolded",
+    );
+  } catch {
+    // localStorage may be unavailable (quota exceeded, private mode); ignore silently.
+  }
+}
+
 export function resolveAssistantMessageFoldedState(args: {
   messageId: string;
   currentFolded: boolean;
   isFoldable: boolean;
+  defaultFolded: boolean;
+  persistedFolded: boolean | null;
   previousMessageId: string | null;
   previousIsFoldable: boolean;
 }) {
@@ -193,13 +225,16 @@ export function resolveAssistantMessageFoldedState(args: {
     messageId,
     currentFolded,
     isFoldable,
+    defaultFolded,
+    persistedFolded,
     previousMessageId,
     previousIsFoldable,
   } = args;
 
-  if (messageId !== previousMessageId) return isFoldable;
   if (!isFoldable) return false;
-  if (!previousIsFoldable) return true;
+  const initial = persistedFolded ?? defaultFolded;
+  if (messageId !== previousMessageId) return initial;
+  if (!previousIsFoldable) return initial;
   return currentFolded;
 }
 
@@ -1461,7 +1496,12 @@ function IssueChatAssistantMessage({
   const chainOfThoughtLabel = typeof custom.chainOfThoughtLabel === "string" ? custom.chainOfThoughtLabel : null;
   const hasCoT = message.content.some((p) => p.type === "reasoning" || p.type === "tool-call");
   const isFoldable = !isRunning && !!chainOfThoughtLabel;
-  const [folded, setFolded] = useState(isFoldable);
+  const defaultFolded = !hasVisibleAssistantText(message);
+  const [folded, setFolded] = useState(() => {
+    if (!isFoldable) return false;
+    const persisted = readPersistedAssistantFoldedState(message.id);
+    return persisted ?? defaultFolded;
+  });
   const [prevFoldKey, setPrevFoldKey] = useState({ messageId: message.id, isFoldable });
   const [copied, setCopied] = useState(false);
   const copyText = getThreadMessageCopyText(message);
@@ -1474,6 +1514,8 @@ function IssueChatAssistantMessage({
       messageId: message.id,
       currentFolded: folded,
       isFoldable,
+      defaultFolded,
+      persistedFolded: readPersistedAssistantFoldedState(message.id),
       previousMessageId: prevFoldKey.messageId,
       previousIsFoldable: prevFoldKey.isFoldable,
     });
@@ -1482,6 +1524,14 @@ function IssueChatAssistantMessage({
       setFolded(nextFolded);
     }
   }
+
+  const toggleFolded = useCallback(() => {
+    setFolded((current) => {
+      const next = !current;
+      writePersistedAssistantFoldedState(message.id, next);
+      return next;
+    });
+  }, [message.id]);
 
   const handleVote = async (
     vote: FeedbackVoteValue,
@@ -1509,7 +1559,7 @@ function IssueChatAssistantMessage({
             <button
               type="button"
               className="group flex w-full items-center gap-2 py-0.5 text-left"
-              onClick={() => setFolded((v) => !v)}
+              onClick={toggleFolded}
             >
               <span className="text-sm font-medium text-foreground">{authorName}</span>
               <span className="text-xs text-muted-foreground/60">{chainOfThoughtLabel?.toLowerCase()}</span>
