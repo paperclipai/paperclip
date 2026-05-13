@@ -74,16 +74,29 @@ Only after all six checks pass, proceed to "Verification" below.
 
 Verify tasks live in `in_review` status (not `todo`) — Coordinator creates them there because verifying IS the in-review stage. The server auto-marks your task `done` when the run succeeds (you have no paperclip skill), so just finish and exit.
 
-1. Step 0 precondition gate already passed (you're in the task worktree on the right branch). If no task assigned and no CI failures, exit immediately.
-2. Run cargo against the task worktree — pipe each into a per-task log so reviewer/operator can read it:
-   ```sh
-   cargo check  2>&1 | tee /tmp/cargo-check-{task-id}.txt
-   cargo clippy 2>&1 | tee /tmp/cargo-clippy-{task-id}.txt
-   cargo test   2>&1 | tee /tmp/cargo-test-{task-id}.txt
-   ```
-   **Run cargo in the background.** A cold worktree build can run 20+ minutes — well past the Bash tool's 10-minute (`600000ms`) hard cap. Always invoke cargo with `run_in_background: true` and use the Monitor tool to stream output and wait for exit. Do NOT set `timeout: 600000` and hope it fits — if cargo hits the cap, the run is killed mid-build, your task is half-verified, and you've wasted the full 10 minutes. Background + Monitor has no cap and is the only correct pattern for this project's build times.
+### Cargo discipline (read every run)
 
-   If a sibling Architect holds cargo's build lock, you'll wait — that's the correct behavior. Cargo's lock prevents two Architects from corrupting `target/` simultaneously.
+These are hard rules. Past Architect runs have wasted 60+ minutes wrestling with cargo lock contention and broken shell redirects. Do not improvise.
+
+1. **One cargo invocation alive at a time *within your own run*.** Cargo serializes globally on `target/.cargo-lock`. A sibling Architect's cargo is fine — wait, you serialize at the OS level. But never start a second `cargo` command *yourself* before your previous one has exited. If you do, the second sits blocked on the lock, your first is still running, and you've doubled the wait for nothing.
+2. **Run via `run_in_background: true` + Monitor — never manual `&` or `nohup`.** Monitor waits with no time cap. Bash's foreground 10-minute hard cap will kill cold builds mid-compile.
+3. **Use the canonical command verbatim — do not invent variants.** Copy this line, substituting `{task-id}`:
+   ```sh
+   cargo check 2>&1 | tee /tmp/cargo-check-{task-id}.txt
+   cargo clippy 2>&1 | tee /tmp/cargo-clippy-{task-id}.txt
+   cargo test 2>&1 | tee /tmp/cargo-test-{task-id}.txt
+   ```
+   - `2>&1` redirects stderr to stdout. `|` pipes stdout to tee. `tee` writes to file *and* to stdout. You get full output in the file AND streamed back to Monitor.
+   - **Wrong**: `cargo clippy 2>&1 > /tmp/file` — that redirects stderr to the terminal's stdout, then sends only stdout to the file. Most clippy output is on stderr; you get an empty file.
+   - **Wrong**: `cargo clippy > /tmp/file` — drops stderr entirely. Same empty-file outcome.
+   - **Wrong**: `cargo clippy &> /tmp/file` — bash-only, captures both but doesn't stream to you. Use `tee`.
+4. **Never try to kill a stale cargo process.** Your bash environment is sandboxed; `kill`/`pkill` will be denied. If a previous invocation appears stuck, wait it out via Monitor — it will exit on its own (cargo's slow, not hung). If you genuinely think it's wedged, escalate to operator via task comment. Do not loop attempting `kill`.
+5. **One cargo command per Monitor wait.** Run `cargo check`, wait for it to finish, then run `cargo clippy`, wait, then `cargo test`. Don't background all three at once — they'll serialize on the lock anyway and you lose ordering visibility.
+
+### Procedure
+
+1. Step 0 precondition gate already passed (you're in the task worktree on the right branch). If no task assigned and no CI failures, exit immediately.
+2. Run cargo per §Cargo discipline above: `check`, then `clippy`, then `test` — one at a time, in background, via Monitor.
 3. Identify your task's changed files: `git diff --name-only main..HEAD`.
 4. Filter cargo output to errors/warnings whose file path appears in your changed-files list. These are yours to fix. Errors in files you did not touch belong to another concurrent task — leave them alone (your task branch is isolated, but worktree state may carry stale build artifacts from a sibling — your changed-files filter handles this).
 5. Fix all of your filtered errors and warnings. **Zero warnings tolerance applies to your changed files only.** Don't fix unrelated warnings — that's another task's responsibility.
