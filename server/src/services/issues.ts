@@ -2880,6 +2880,7 @@ export function issueService(db: Db) {
           assigneeAgentId: issues.assigneeAgentId,
           status: issues.status,
           companyId: issues.companyId,
+          executionPolicy: issues.executionPolicy,
         })
         .from(issues)
         .where(eq(issues.id, parentIssueId))
@@ -2935,6 +2936,7 @@ export function issueService(db: Db) {
       return {
         id: parent.id,
         assigneeAgentId: parent.assigneeAgentId,
+        executionPolicy: parent.executionPolicy,
         childIssueIds: children.map((child) => child.id),
         childIssueSummaries,
         childIssueSummaryTruncated: children.length > childIssueSummaries.length,

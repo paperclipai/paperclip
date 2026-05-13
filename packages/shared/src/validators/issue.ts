@@ -116,6 +116,7 @@ export const issueExecutionStageSchema = z.object({
 export const issueExecutionMonitorPolicySchema = z.object({
   nextCheckAt: z.string().datetime(),
   notes: z.string().max(500).optional().nullable().default(null),
+  standingChannel: z.boolean().optional().default(false),
   scheduledBy: z.enum(ISSUE_MONITOR_SCHEDULED_BY).optional().default("assignee"),
   kind: z.enum(ISSUE_EXECUTION_MONITOR_KINDS).optional().nullable().default(null),
   serviceName: z.string().trim().min(1).max(120).optional().nullable().default(null),

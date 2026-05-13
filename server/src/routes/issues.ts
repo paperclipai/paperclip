@@ -73,6 +73,7 @@ import {
   collectIssueWorkspaceCommandPaths,
 } from "./workspace-command-authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
+import { isStandingChannelIssue } from "../services/recovery/standing-channel.js";
 import {
   isInlineAttachmentContentType,
   normalizeIssueAttachmentMaxBytes,
@@ -3353,30 +3354,39 @@ export function issueRoutes(
       if (becameTerminal && issue.parentId) {
         const parent = await svc.getWakeableParentAfterChildCompletion(issue.parentId);
         if (parent) {
-          addWakeup(parent.assigneeAgentId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_children_completed",
-            payload: {
-              issueId: parent.id,
-              completedChildIssueId: issue.id,
-              childIssueIds: parent.childIssueIds,
-              childIssueSummaries: parent.childIssueSummaries,
-              childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
-            },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: parent.id,
-              taskId: parent.id,
-              wakeReason: "issue_children_completed",
-              source: "issue.children_completed",
-              completedChildIssueId: issue.id,
-              childIssueIds: parent.childIssueIds,
-              childIssueSummaries: parent.childIssueSummaries,
-              childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
-            },
-          });
+          const suppressParentWake =
+            issue.originKind === "stranded_issue_recovery" && isStandingChannelIssue(parent);
+          if (suppressParentWake) {
+            logger.info(
+              { issueId: issue.id, parentIssueId: parent.id, reason: "standing_channel" },
+              "issue wake suppressed (issue_children_completed)",
+            );
+          } else {
+            addWakeup(parent.assigneeAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_children_completed",
+              payload: {
+                issueId: parent.id,
+                completedChildIssueId: issue.id,
+                childIssueIds: parent.childIssueIds,
+                childIssueSummaries: parent.childIssueSummaries,
+                childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+              },
+              requestedByActorType: actor.actorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: {
+                issueId: parent.id,
+                taskId: parent.id,
+                wakeReason: "issue_children_completed",
+                source: "issue.children_completed",
+                completedChildIssueId: issue.id,
+                childIssueIds: parent.childIssueIds,
+                childIssueSummaries: parent.childIssueSummaries,
+                childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+              },
+            });
+          }
         }
       }
 
