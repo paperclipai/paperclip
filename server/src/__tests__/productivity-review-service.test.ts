@@ -360,6 +360,33 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(hold.held).toBe(false);
   });
 
+  it("suppresses repeat long-active productivity reviews after a done long-active review (past short snooze)", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    const service = productivityReviewService(db);
+    await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review).toBeTruthy();
+    await db
+      .update(issues)
+      .set({ status: "done", updatedAt: now })
+      .where(eq(issues.id, review!.id));
+
+    const later = new Date(now.getTime() + 8 * 60 * 60 * 1000);
+    const second = await service.reconcileProductivityReviews({
+      now: later,
+      companyId: seeded.companyId,
+    });
+    const reviews = await listProductivityReviews(seeded.companyId);
+
+    expect(second.snoozed).toBe(1);
+    expect(second.created).toBe(0);
+    expect(reviews).toHaveLength(1);
+  });
+
   it("creates a high-churn review even when every sampled run has a progress comment", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
