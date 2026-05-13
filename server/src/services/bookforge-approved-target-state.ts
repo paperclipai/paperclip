@@ -103,8 +103,12 @@ export function buildBookforgeApprovedTargetState(input: {
 
   if (dbTarget && dbTarget.status === "active") {
     if (conflicts.some((conflict) => conflict.dbValue)) {
-      warnings.add("db_json_target_conflict");
-      warnings.add("db_env_target_conflict");
+      if (conflicts.some((conflict) => conflict.jsonFileValue !== undefined)) {
+        warnings.add("db_json_target_conflict");
+      }
+      if (conflicts.some((conflict) => conflict.envValue !== undefined)) {
+        warnings.add("db_env_target_conflict");
+      }
       return {
         authority: "db",
         status: "active_with_stale_config_warning",
