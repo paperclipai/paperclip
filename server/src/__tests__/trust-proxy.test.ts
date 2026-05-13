@@ -41,11 +41,24 @@ describe("parseTrustProxyEnv", () => {
     expect(() => parseTrustProxyEnv("01")).toThrow(/invalid integer/);
   });
 
-  it("whitespace-padded integer throws", () => {
-    // The outer trim handles surrounding whitespace, but a value like
-    // "1 2" (digits + whitespace + digits) is clearly not a single int
-    // and not a subnet list either — must be rejected.
-    expect(() => parseTrustProxyEnv("1 2")).toThrow();
+  it("integer with internal whitespace throws", () => {
+    // A value like "1 2" (digits + whitespace + digits) is clearly not
+    // a single int and not a subnet list either — must be rejected.
+    // This is distinct from " 2 " (surrounding whitespace), which the
+    // outer `raw.trim()` accepts; see the next test for that contract.
+    // The parser happens to reach the subnet-token path for "1 2"
+    // (the inner-whitespace integer guard only fires when the whole
+    // string is `^\s*\d+\s*$`), so we match the unrecognized-token
+    // error rather than the "invalid integer" branch.
+    expect(() => parseTrustProxyEnv("1 2")).toThrow(/unrecognized token "1 2"/);
+  });
+
+  it("integer with surrounding whitespace is accepted (trimmed)", () => {
+    // The parser intentionally trims the *outer* value before matching,
+    // so " 2 " is equivalent to "2". Locking this in so the contract
+    // doesn't drift relative to the "internal whitespace throws" case.
+    expect(parseTrustProxyEnv(" 2 ")).toBe(2);
+    expect(appWithEnv(" 2 ").get("trust proxy")).toBe(2);
   });
 
   it("'loopback' yields a single-element array", () => {
