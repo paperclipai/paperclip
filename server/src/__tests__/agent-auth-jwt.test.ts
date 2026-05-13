@@ -8,6 +8,7 @@ describe("agent local JWT", () => {
   const ttlEnv = "PAPERCLIP_AGENT_JWT_TTL_SECONDS";
   const issuerEnv = "PAPERCLIP_AGENT_JWT_ISSUER";
   const audienceEnv = "PAPERCLIP_AGENT_JWT_AUDIENCE";
+  const disableLegacyFallbackEnv = "PAPERCLIP_AGENT_JWT_DISABLE_LEGACY_FALLBACK";
 
   const originalEnv = {
     secret: process.env[secretEnv],
@@ -15,6 +16,7 @@ describe("agent local JWT", () => {
     ttl: process.env[ttlEnv],
     issuer: process.env[issuerEnv],
     audience: process.env[audienceEnv],
+    disableLegacyFallback: process.env[disableLegacyFallbackEnv],
   };
 
   beforeEach(() => {
@@ -23,6 +25,7 @@ describe("agent local JWT", () => {
     process.env[ttlEnv] = "3600";
     delete process.env[issuerEnv];
     delete process.env[audienceEnv];
+    delete process.env[disableLegacyFallbackEnv];
     vi.useFakeTimers();
   });
 
@@ -38,6 +41,8 @@ describe("agent local JWT", () => {
     else process.env[issuerEnv] = originalEnv.issuer;
     if (originalEnv.audience === undefined) delete process.env[audienceEnv];
     else process.env[audienceEnv] = originalEnv.audience;
+    if (originalEnv.disableLegacyFallback === undefined) delete process.env[disableLegacyFallbackEnv];
+    else process.env[disableLegacyFallbackEnv] = originalEnv.disableLegacyFallback;
   });
 
   it("creates and verifies a token", () => {
@@ -161,5 +166,56 @@ describe("agent local JWT", () => {
     const claims = verifyLocalAgentJwt(token!);
     expect(claims).not.toBeNull();
     expect(claims!.exp - claims!.iat).toBe(60 * 60);
+  });
+
+  // Helper: hand-craft a token signed with the raw master secret (legacy path).
+  function craftLegacyMasterSecretToken(masterSecret: string, companyId: string) {
+    const now = Math.floor(Date.now() / 1000);
+    const header = { alg: "HS256", typ: "JWT" };
+    const claims = {
+      sub: "agent-legacy",
+      company_id: companyId,
+      adapter_type: "claude_local",
+      run_id: "run-legacy",
+      iat: now,
+      exp: now + 3600,
+      iss: "paperclip",
+      aud: "paperclip-api",
+    };
+    const headerB64 = Buffer.from(JSON.stringify(header), "utf8").toString("base64url");
+    const claimsB64 = Buffer.from(JSON.stringify(claims), "utf8").toString("base64url");
+    const signingInput = `${headerB64}.${claimsB64}`;
+    const legacySig = createHmac("sha256", masterSecret).update(signingInput).digest("base64url");
+    return `${signingInput}.${legacySig}`;
+  }
+
+  it("accepts master-secret-signed tokens when PAPERCLIP_AGENT_JWT_DISABLE_LEGACY_FALLBACK is unset", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    delete process.env[disableLegacyFallbackEnv];
+    const legacyToken = craftLegacyMasterSecretToken(process.env[secretEnv]!, "company-legacy");
+    const verified = verifyLocalAgentJwt(legacyToken);
+    expect(verified).not.toBeNull();
+    expect(verified!.company_id).toBe("company-legacy");
+  });
+
+  it("rejects master-secret-signed tokens when PAPERCLIP_AGENT_JWT_DISABLE_LEGACY_FALLBACK is enabled", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    process.env[disableLegacyFallbackEnv] = "true";
+    const legacyToken = craftLegacyMasterSecretToken(process.env[secretEnv]!, "company-legacy");
+    expect(verifyLocalAgentJwt(legacyToken)).toBeNull();
+  });
+
+  it("still verifies per-company-signed tokens when PAPERCLIP_AGENT_JWT_DISABLE_LEGACY_FALLBACK is enabled", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    process.env[disableLegacyFallbackEnv] = "true";
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    expect(token).not.toBeNull();
+    const verified = verifyLocalAgentJwt(token!);
+    expect(verified).toMatchObject({
+      sub: "agent-1",
+      company_id: "company-1",
+      adapter_type: "claude_local",
+      run_id: "run-1",
+    });
   });
 });
