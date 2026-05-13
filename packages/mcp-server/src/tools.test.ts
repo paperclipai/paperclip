@@ -271,7 +271,7 @@ describe("paperclip MCP tools", () => {
     expect(init.method).toBe("POST");
     expect(JSON.parse(String(init.body))).toEqual({
       kind: "request_confirmation",
-      continuationPolicy: "none",
+      continuationPolicy: "wake_assignee",
       idempotencyKey: "confirmation:PAP-1135:plan:33333333-3333-4333-8333-333333333333",
       title: "Plan approval",
       payload: {

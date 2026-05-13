@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createIssueThreadInteractionSchema } from "./validators/issue.js";
 
 describe("issue thread interaction schemas", () => {
-  it("parses request_confirmation payloads with default no-wake continuation", () => {
+  it("defaults request_confirmation continuation to wake_assignee", () => {
     const parsed = createIssueThreadInteractionSchema.parse({
       kind: "request_confirmation",
       payload: {
@@ -20,7 +20,7 @@ describe("issue thread interaction schemas", () => {
 
     expect(parsed).toMatchObject({
       kind: "request_confirmation",
-      continuationPolicy: "none",
+      continuationPolicy: "wake_assignee",
       payload: {
         prompt: "Apply this plan?",
         acceptLabel: "Apply",
@@ -32,6 +32,19 @@ describe("issue thread interaction schemas", () => {
         supersedeOnUserComment: true,
       },
     });
+  });
+
+  it("rejects request_confirmation with continuationPolicy=none (GST-36 prevention)", () => {
+    expect(() =>
+      createIssueThreadInteractionSchema.parse({
+        kind: "request_confirmation",
+        continuationPolicy: "none",
+        payload: {
+          version: 1,
+          prompt: "Apply this plan?",
+        },
+      }),
+    ).toThrow();
   });
 
   it("accepts issue document targets for request_confirmation interactions", () => {

@@ -599,7 +599,12 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
     sourceRunId: z.string().uuid().nullable().optional(),
     title: z.string().trim().max(240).nullable().optional(),
     summary: z.string().trim().max(1000).nullable().optional(),
-    continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("none"),
+    // request_confirmation gates progress on a response — it must wake the assignee.
+    // "none" leaves the issue stuck if the response never arrives (see GST-36).
+    continuationPolicy: z
+      .enum(["wake_assignee", "wake_assignee_on_accept"])
+      .optional()
+      .default("wake_assignee"),
     payload: requestConfirmationPayloadSchema,
   }),
 ]);
