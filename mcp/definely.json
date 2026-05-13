@@ -1,0 +1,19 @@
+{
+  "name": "definely",
+  "display_name": "Definely",
+  "description": "Word add-in for contract drafting (definitions, cross-references, clause libraries). Anthropic legal-partner-listed (May 2026). Integration is primarily Word-side; surface through MCP for clause-library queries.",
+  "transport": "http",
+  "endpoint_env": "DEFINELY_BASE_URL",
+  "auth": {
+    "method": "bearer",
+    "token_env": "DEFINELY_API_KEY"
+  },
+  "env_required": [
+    "DEFINELY_API_KEY",
+    "DEFINELY_BASE_URL"
+  ],
+  "enabled_in_profiles": ["small-firm"],
+  "privilege_ring_default": "confidential",
+  "actions_gated": [],
+  "notes": "Definely's MCP shape is documented but the official server is not yet published. v1 uses direct REST; the small-firm profile defaults to enabling it because Word-based drafting is the dominant workflow."
+}

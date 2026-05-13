@@ -1,0 +1,3 @@
+# Specialist scaffold for legal-builder-hub
+# Populate this directory with one Markdown file per specialist sub-agent (e.g., legal-builder-hub/foo-drafter.md).
+# Each specialist defines: name, description, model, tools, inputs, outputs, gates_triggered.

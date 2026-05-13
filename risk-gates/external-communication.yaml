@@ -1,0 +1,52 @@
+gate: external-communication
+display_name: "Outbound External Communication"
+description: "Any agent-originated communication to a recipient outside the firm/company — client, opposing counsel, regulator, court, vendor, customer, or member of the public."
+
+triggers:
+  - action: send_email_external
+  - action: send_letter_external
+  - action: post_public_response
+  - action: respond_to_regulator
+  - action: respond_to_opposing_counsel
+
+exceptions_resolved_from: "active_profile.risk_gates.external-communication.exceptions"
+
+evidence_required:
+  - recipient_identity
+  - matter_id
+  - subject_or_caption
+  - privilege_tag
+  - templates_used  # if any exception applies
+
+approval:
+  approver_resolved_from: "active_profile.risk_gates.external-communication.approver"
+  auto_block_resolved_from: "active_profile.risk_gates.external-communication.auto_block"
+  approval_card_template: |
+    EXTERNAL COMMUNICATION — APPROVAL REQUESTED
+
+    Matter:      {matter_id}
+    Recipient:   {recipient} ({recipient_role})
+    Channel:     {channel}
+    Subject:     {subject_or_caption}
+    Privilege:   {privilege_tag}
+    Template:    {template_id|custom}
+
+    Body preview
+    ------------
+    {body_preview_first_500_chars}
+
+    Risk flags
+    ----------
+    {risk_flags|none}
+
+    Action: APPROVE / EDIT / REJECT
+
+hard_blocks:
+  - "No communication may be sent to a privileged recipient list if privilege_tag is mismatched."
+  - "No communication may be sent without recipient_identity confirmed."
+
+exception_handling:
+  - "If template_id matches an entry in active_profile.risk_gates.external-communication.exceptions AND no risk flags are present, the gate auto-passes but the event is still audit-logged."
+
+audit_log:
+  - "Recipient, channel, body hash, approver, and template/custom flag logged."

@@ -1,0 +1,134 @@
+profile: in-house-dept
+display_name: "In-House Legal Department"
+description: |
+  Profile for an in-house legal department at a mid-size company (typically GC + 3-10 lawyers
+  covering commercial contracts, privacy, employment, IP, and litigation oversight). Optimized
+  for throughput, vendor-spend offset, and business-partner enablement.
+
+typical_users:
+  - role: gc
+    approver_aliases: [gc, general-counsel, chief-legal-officer]
+  - role: deputy-gc
+    approver_aliases: [deputy-gc, deputy-general-counsel, gc-or-deputy]
+  - role: commercial-counsel
+    approver_aliases: [commercial-counsel]
+  - role: privacy-counsel
+    approver_aliases: [privacy-counsel]
+  - role: litigation-counsel
+    approver_aliases: [litigation-counsel]
+  - role: paralegal
+    approver_aliases: [paralegal]
+  - role: contracts-manager
+    approver_aliases: [contracts-manager]
+
+practice_areas:
+  - commercial
+  - employment
+  - privacy
+  - ip
+  - regulatory
+  - ai-governance
+  - litigation  # oversight only — outside counsel handles substantive litigation work
+
+specialists_enabled:
+  commercial:
+    - vendor-intake-reviewer
+    - msa-redliner
+    - nda-drafter
+    - sow-drafter
+    - clause-library-curator
+    - contract-summarizer
+    - tabular-reviewer            # cross-cutting; vendor/DPA/license portfolio reviews
+  corporate:
+    - credit-agreement-summarizer # for company financings
+    - sha-summarizer              # for cap-table / governance changes
+    - cp-checklist-generator      # rare in-house but useful for financings
+  privacy:
+    - dpa-reviewer
+    - dsar-responder
+    - privacy-policy-drafter
+    - gdpr-compliance-checker
+    - ccpa-compliance-checker
+    - breach-response-coordinator
+    - vendor-privacy-review
+  employment:
+    - offer-letter-drafter
+    - separation-agreement-drafter
+    - handbook-policy-reviewer
+    - ic-vs-employee-classifier
+    - leave-policy-advisor
+    - workplace-investigation-assistant
+  ip:
+    - trademark-clearance
+    - copyright-dmca-responder
+    - ip-license-drafter
+    - invention-disclosure-reviewer
+    - trade-secret-assessor
+
+mcp_connectors_enabled:
+  # Live / wired by default
+  - ironclad
+  - google-drive
+  - gmail
+  - slack
+  - docusign
+  - jira
+  - github
+  - supabase
+  - outlook
+  # Add to this list as the dept subscribes:
+  - netdocuments     # if dept uses NetDocs as the legal DMS
+  - imanage          # if dept uses iManage instead
+  - box              # if dept stores matter docs in Box
+  - westlaw          # if research subscription is active
+  - lexis            # alternative
+  - datasite         # for company financings / M&A
+
+required_secrets:
+  - IRONCLAD_API_KEY
+  - GOOGLE_OAUTH_CLIENT
+  - SLACK_WEBHOOK_URL
+  - DOCUSIGN_API_KEY
+  - JIRA_API_TOKEN
+  - GITHUB_TOKEN
+  - SUPABASE_SERVICE_ROLE_KEY
+
+risk_gates:
+  filing:
+    approver: gc
+    auto_block: true
+    rationale: "Filings are rare in-house; when they occur, GC must approve."
+  signed-document:
+    approver: deputy-gc
+    auto_block: true
+    rationale: "Vendor and customer contracts require deputy-GC signoff before e-signature."
+  external-communication:
+    approver: gc-or-deputy
+    auto_block: true
+    rationale: "External counsel briefs, regulator responses, and customer legal communications require GC or deputy signoff."
+  budget-threshold:
+    threshold_usd: 2500
+    approver: gc
+    auto_block: true
+    rationale: "Vendor or outside-counsel spend above $2,500 requires GC approval."
+  privileged-disclosure:
+    approver: gc
+    auto_block: true
+    rationale: "Disclosure of privileged work product to non-counsel recipients requires GC approval."
+
+kpis:
+  - matters_resolved
+  - contracts_turnaround_p50_p95
+  - vendor_reviews_completed
+  - outside_counsel_spend_offset
+  - dsar_response_time_p95
+  - privacy_incident_mean_time_to_response
+  - business_partner_csat
+
+intake_required_fields:
+  - requesting_business_unit
+  - matter_description
+  - urgency
+  - counterparty
+  - estimated_contract_value_usd
+  - target_close_date

@@ -1,0 +1,3 @@
+# Specialist scaffold for ai-governance
+# Populate this directory with one Markdown file per specialist sub-agent (e.g., ai-governance/foo-drafter.md).
+# Each specialist defines: name, description, model, tools, inputs, outputs, gates_triggered.

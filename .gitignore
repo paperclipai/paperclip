@@ -46,6 +46,10 @@ diagnostics/
 /.idea/
 /.agents/
 
+# Odysseus continuity files (local-only; never commit)
+/.agent/
+.claude/history.md
+
 # Doc maintenance cursor
 .doc-review-cursor
 

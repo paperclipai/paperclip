@@ -1,0 +1,22 @@
+{
+  "name": "clio",
+  "display_name": "Clio",
+  "description": "Practice management + billing for small law firms. Matters, contacts, time entries, billing, document storage. Default small-firm matter system.",
+  "transport": "http",
+  "endpoint": "https://app.clio.com/api/v4",
+  "auth": {
+    "method": "oauth2",
+    "client_id_env": "CLIO_CLIENT_ID",
+    "client_secret_env": "CLIO_CLIENT_SECRET",
+    "refresh_token_env": "CLIO_REFRESH_TOKEN"
+  },
+  "env_required": [
+    "CLIO_CLIENT_ID",
+    "CLIO_CLIENT_SECRET",
+    "CLIO_REFRESH_TOKEN"
+  ],
+  "enabled_in_profiles": ["small-firm"],
+  "privilege_ring_default": "attorney-client",
+  "actions_gated": ["create_invoice", "send_invoice_external", "close_matter"],
+  "notes": "Clio is not in Anthropic's announced May 2026 connector set; we build the MCP shape ourselves for v1. Clio's REST API is well-documented; the wrapper is small."
+}

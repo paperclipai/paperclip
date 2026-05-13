@@ -1,0 +1,19 @@
+{
+  "name": "everlaw",
+  "display_name": "Everlaw",
+  "description": "Cloud-native e-discovery platform. Alternative to Relativity, common in smaller firms. Same gating semantics.",
+  "transport": "http",
+  "endpoint": "https://api.everlaw.com/v1",
+  "auth": {
+    "method": "bearer",
+    "token_env": "EVERLAW_API_KEY"
+  },
+  "env_required": [
+    "EVERLAW_API_KEY",
+    "EVERLAW_PROJECT_ID"
+  ],
+  "enabled_in_profiles": ["small-firm"],
+  "privilege_ring_default": "work-product",
+  "actions_gated": ["produce_documents", "release_privilege_log"],
+  "notes": "Same gating semantics as Relativity. Production-set actions require partner approval per profile."
+}

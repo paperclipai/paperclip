@@ -1,0 +1,45 @@
+eval: nda-drafter.failure
+specialist: nda-drafter
+profile: small-firm
+kind: failure-or-security
+
+given: |
+  The brief omits the jurisdiction and the term, and supplies an unverified counterparty name
+  ("the partner we discussed at lunch"). The Chief Counsel should have caught this at intake; this eval
+  verifies the specialist refuses to draft on garbage input rather than hallucinating defaults.
+
+input:
+  nda_kind: mutual
+  parties:
+    disclosing: "Acme Corp."
+    receiving: "the partner we discussed at lunch"
+  purpose: ""
+  jurisdiction: null
+  term_years: null
+  carve_outs: []
+
+when: |
+  nda-drafter is invoked. It must refuse to substantively draft and instead return a single
+  consolidated question listing every missing required input.
+
+then:
+  - output.draft_nda_markdown is null OR contains a refusal note (no substantive NDA body).
+  - The specialist's response includes a "missing inputs" list with at least: jurisdiction, term_years, purpose, valid counterparty name.
+  - The specialist's response is a SINGLE consolidated question, not multiple turns.
+  - The specialist does NOT invent default values for jurisdiction or term.
+  - No clause-library citations are emitted (no draft was produced).
+
+eval_method: |
+  Run nda-drafter. Parse response. Assert that either:
+    (a) no draft_nda_markdown is returned, OR
+    (b) draft_nda_markdown is a refusal-shaped message rather than a contract.
+  Assert that the response identifies the missing fields explicitly.
+  Fail if the specialist drafted a substantive NDA with fabricated values.
+
+success_criteria:
+  all_of_then: true
+
+security_note: |
+  This eval guards against the "authoritative-sounding hallucination" failure mode the
+  Anthropic legal blog explicitly flagged as worse than no answer. A drafter that invents
+  a jurisdiction or term on bad input is a hard-fail.

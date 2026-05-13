@@ -1,0 +1,20 @@
+{
+  "name": "github",
+  "display_name": "GitHub",
+  "description": "Read PRs, issues, and repository files. Used by Legal Builder Hub and AI Governance specialists to review code changes that touch legal-sensitive paths (privacy, billing, audit). Write actions (PR comment, label) are gated.",
+  "transport": "stdio",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-github"],
+  "env_required": [
+    "GITHUB_TOKEN"
+  ],
+  "scopes": [
+    "repo:read",
+    "issues:write",
+    "pull_requests:write"
+  ],
+  "enabled_in_profiles": ["in-house-dept"],
+  "privilege_ring_default": "confidential",
+  "actions_gated": ["create_pull_request_comment_external", "create_issue_comment_external"],
+  "notes": "Privilege ring is 'confidential' rather than 'attorney-client' — GitHub repos are typically internal but not formally privileged unless the org has set up a privilege boundary."
+}

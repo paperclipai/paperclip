@@ -1,0 +1,53 @@
+gate: privileged-disclosure
+display_name: "Privileged Disclosure"
+description: "Any action that would expose attorney-client privileged or work-product material to a recipient (human or agent) outside the privileged ring."
+
+triggers:
+  - action: share_artifact
+    artifact_privilege_tag: ["attorney-client", "work-product"]
+    recipient_privilege_ring: ["outside", "unknown"]
+  - action: include_in_external_communication
+    artifact_privilege_tag: ["attorney-client", "work-product"]
+  - action: dispatch_to_subagent
+    subagent_privilege_ring: ["outside", "unknown"]
+    matter_privilege_tag: ["attorney-client", "work-product"]
+
+evidence_required:
+  - artifact_id_or_hash
+  - artifact_privilege_tag
+  - recipient_identity
+  - recipient_privilege_ring
+  - disclosure_basis  # "common interest", "joint defense", "subject-matter waiver acknowledged", "regulator under privilege", "client-direction", etc.
+
+approval:
+  approver_resolved_from: "active_profile.risk_gates.privileged-disclosure.approver"
+  auto_block_resolved_from: "active_profile.risk_gates.privileged-disclosure.auto_block"
+  approval_card_template: |
+    PRIVILEGED DISCLOSURE — APPROVAL REQUESTED
+
+    Matter:         {matter_id}
+    Artifact:       {artifact_title} (privilege: {artifact_privilege_tag})
+    Recipient:      {recipient} ({recipient_role}, ring: {recipient_privilege_ring})
+    Basis:          {disclosure_basis}
+
+    What is being disclosed
+    -----------------------
+    {one_paragraph_what}
+
+    Why disclosure is appropriate
+    -----------------------------
+    {one_paragraph_why}
+
+    Waiver risk assessment
+    ----------------------
+    {waiver_risk_assessment}
+
+    Action: APPROVE / APPROVE WITH REDACTION / REJECT
+
+hard_blocks:
+  - "No privileged artifact may be shared to a sub-agent that is not tagged with a matching privilege ring."
+  - "No privileged artifact may be transmitted via a non-privileged channel (e.g., a public Slack channel)."
+  - "An auto-block is mandatory; this gate cannot be bypassed by a non-attorney."
+
+audit_log:
+  - "Artifact hash, recipient, basis, approver, and final redaction (if any) logged. Retained per matter retention policy."

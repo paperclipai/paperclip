@@ -1,0 +1,18 @@
+{
+  "name": "ironclad",
+  "display_name": "Ironclad CLM",
+  "description": "Contract lifecycle management integration. Read/write contract records, route through workflows, ingest counterparty papers. Default in-house-dept connector.",
+  "transport": "http",
+  "endpoint": "https://api.ironcladapp.com/public/api/v1",
+  "auth": {
+    "method": "bearer",
+    "token_env": "IRONCLAD_API_KEY"
+  },
+  "env_required": [
+    "IRONCLAD_API_KEY"
+  ],
+  "enabled_in_profiles": ["in-house-dept"],
+  "privilege_ring_default": "attorney-client",
+  "actions_gated": ["send_to_signature", "approve_workflow_step"],
+  "notes": "Ironclad MCP shape is documented but the official MCP server is not published as of 2026-05-12. Wire direct REST in v1; switch to the official MCP server when available."
+}

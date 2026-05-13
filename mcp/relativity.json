@@ -1,0 +1,22 @@
+{
+  "name": "relativity",
+  "display_name": "Relativity",
+  "description": "E-discovery and document review platform. Used by litigation specialists for document-review batches, privilege logs, and production set management. Heavy enterprise auth; usually configured per-matter.",
+  "transport": "http",
+  "endpoint_env": "RELATIVITY_BASE_URL",
+  "auth": {
+    "method": "oauth2",
+    "client_id_env": "RELATIVITY_CLIENT_ID",
+    "client_secret_env": "RELATIVITY_CLIENT_SECRET"
+  },
+  "env_required": [
+    "RELATIVITY_BASE_URL",
+    "RELATIVITY_CLIENT_ID",
+    "RELATIVITY_CLIENT_SECRET",
+    "RELATIVITY_WORKSPACE_ID"
+  ],
+  "enabled_in_profiles": ["small-firm"],
+  "privilege_ring_default": "work-product",
+  "actions_gated": ["produce_documents", "release_privilege_log"],
+  "notes": "Default privilege ring is 'work-product' because everything in Relativity is litigation-related. Production-set actions are heavily gated."
+}

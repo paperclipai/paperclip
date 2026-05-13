@@ -1,0 +1,74 @@
+version: "3.9"
+
+# Local-dev docker-compose for Odysseus.
+# Brings up the (forked-paperclip) Odysseus server, embedded Postgres, and UI.
+# Profile is selected via the ODYSSEUS_PROFILE env var (small-firm | in-house-dept).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: odysseus
+      POSTGRES_PASSWORD: odysseus_local_dev_only
+      POSTGRES_DB: odysseus
+    volumes:
+      - odysseus_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odysseus"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  server:
+    # Built from the forked paperclip repo at ../odysseus-fork during sprint 0.
+    # For now this references the upstream paperclip image; sprint 0 will replace.
+    build:
+      context: ../odysseus-fork
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://odysseus:odysseus_local_dev_only@postgres:5432/odysseus"
+      ODYSSEUS_PROFILE: "${ODYSSEUS_PROFILE:-small-firm}"
+      ODYSSEUS_PROFILES_DIR: "/odysseus/profiles"
+      ODYSSEUS_RISK_GATES_DIR: "/odysseus/risk-gates"
+      ODYSSEUS_AGENTS_DIR: "/odysseus/agents"
+      ODYSSEUS_SKILLS_DIR: "/odysseus/skills"
+      ODYSSEUS_MCP_DIR: "/odysseus/mcp"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+      # Profile-required secrets — see profiles/*.yaml::required_secrets
+      GOOGLE_OAUTH_CLIENT_ID: "${GOOGLE_OAUTH_CLIENT_ID:-}"
+      GOOGLE_OAUTH_CLIENT_SECRET: "${GOOGLE_OAUTH_CLIENT_SECRET:-}"
+      GOOGLE_OAUTH_REFRESH_TOKEN: "${GOOGLE_OAUTH_REFRESH_TOKEN:-}"
+      SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN:-}"
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL:-}"
+      DOCUSIGN_INTEGRATION_KEY: "${DOCUSIGN_INTEGRATION_KEY:-}"
+      IRONCLAD_API_KEY: "${IRONCLAD_API_KEY:-}"
+    volumes:
+      # Mount the Odysseus legal-layer artifacts into the server.
+      # Sprint 0 will move these into the forked repo so this mount goes away.
+      - ../agents:/odysseus/agents:ro
+      - ../skills:/odysseus/skills:ro
+      - ../profiles:/odysseus/profiles:ro
+      - ../risk-gates:/odysseus/risk-gates:ro
+      - ../mcp:/odysseus/mcp:ro
+      - ../plugins:/odysseus/plugins:ro
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  ui:
+    build:
+      context: ../odysseus-fork
+      dockerfile: ui/Dockerfile
+    depends_on:
+      - server
+    environment:
+      ODYSSEUS_API_URL: "http://server:8080"
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+volumes:
+  odysseus_pg:

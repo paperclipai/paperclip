@@ -1,0 +1,28 @@
+{
+  "name": "outlook",
+  "display_name": "Outlook (Microsoft 365)",
+  "description": "Read inbound matter requests from connected Outlook mailbox; draft outbound communications (always gated by external-communication risk gate). For in-house-dept profiles where Microsoft 365 is the dominant stack.",
+  "transport": "http",
+  "endpoint": "https://graph.microsoft.com/v1.0",
+  "auth": {
+    "method": "oauth2",
+    "tenant_id_env": "MSGRAPH_TENANT_ID",
+    "client_id_env": "MSGRAPH_CLIENT_ID",
+    "client_secret_env": "MSGRAPH_CLIENT_SECRET"
+  },
+  "env_required": [
+    "MSGRAPH_TENANT_ID",
+    "MSGRAPH_CLIENT_ID",
+    "MSGRAPH_CLIENT_SECRET",
+    "OUTLOOK_USER_PRINCIPAL_NAME"
+  ],
+  "scopes": [
+    "Mail.Read",
+    "Mail.Send",
+    "Mail.ReadWrite"
+  ],
+  "enabled_in_profiles": ["in-house-dept"],
+  "privilege_ring_default": "attorney-client",
+  "rate_limits": { "send_per_hour": 50 },
+  "notes": "send action is always intercepted by the external-communication risk gate."
+}

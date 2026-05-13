@@ -1,0 +1,42 @@
+eval: nda-drafter.happy
+specialist: nda-drafter
+profile: small-firm
+kind: happy
+
+given: |
+  A new matter has been intaken. Counterparty profile is "potential customer";
+  partner has approved the engagement; conflicts cleared; privilege tagged confidential.
+  The Chief Counsel routed the matter to the commercial-lead, who dispatched nda-drafter
+  with the following structured brief:
+
+input:
+  nda_kind: mutual
+  parties:
+    disclosing: "Acme Corp."
+    receiving: "Beta Vendor, Inc."
+  purpose: "Evaluation of a potential SaaS integration between Acme and Beta."
+  jurisdiction: "Delaware"
+  term_years: 3
+  carve_outs: []
+
+when: |
+  nda-drafter is invoked with the above input. It invokes the nda-playbook skill,
+  drafts the NDA, and returns the structured output.
+
+then:
+  - output.draft_nda_markdown contains all 13 required sections (Recitals through Counterparts).
+  - output.draft_nda_markdown contains "3 years" in the Term section.
+  - output.draft_nda_markdown contains "Delaware" in the Governing Law section.
+  - output.draft_nda_markdown does NOT contain a Residuals clause (small-firm profile preferred position).
+  - output.clause_library_version is non-empty and matches /^\d+\.\d+$/.
+  - output.playbook_deviations is empty array.
+  - output.risk_flags is empty array.
+  - Every clause in the draft is annotated with a clause-library citation in the form [CL-NDA-X.Y vZ.W].
+  - No risk gate fires (drafting alone triggers no gates).
+
+eval_method: |
+  Run nda-drafter against this input. Parse the structured output.
+  Assert each `then` bullet with a string-match or schema check. Fail if any assertion fails.
+
+success_criteria:
+  all_of_then: true

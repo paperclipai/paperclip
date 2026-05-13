@@ -1,0 +1,52 @@
+gate: signed-document
+display_name: "Send to E-Signature / Execute"
+description: "Any action that sends a document to an e-signature platform or otherwise authorizes execution by the firm/company or its client."
+
+triggers:
+  - action: send_to_docusign
+  - action: send_to_adobe_sign
+  - action: send_to_ironclad_signature
+  - action: mark_as_executed
+  - artifact_kind: contract
+    state_transition: "draft -> for_signature"
+  - artifact_kind: settlement_agreement
+    state_transition: "draft -> for_signature"
+
+evidence_required:
+  - counterparty_identity_verified
+  - final_redline_resolved
+  - business_terms_summary
+  - applicable_clause_library_version
+  - matter_id
+  - assigned_attorney
+
+approval:
+  approver_resolved_from: "active_profile.risk_gates.signed-document.approver"
+  auto_block_resolved_from: "active_profile.risk_gates.signed-document.auto_block"
+  approval_card_template: |
+    SIGNATURE APPROVAL REQUESTED
+
+    Matter:           {matter_id}
+    Document:         {document_title} (v{version})
+    Counterparty:     {counterparty}
+    Contract value:   {estimated_contract_value_usd}
+    Drafted by:       {originating_specialist}
+    Redline status:   {redline_status}
+    Open issues:      {open_issues|none}
+
+    Business summary
+    ----------------
+    {one_paragraph_business_summary}
+
+    Deviation from playbook
+    -----------------------
+    {clause_library_deviations|none}
+
+    Action: APPROVE / REQUEST CHANGES / REJECT
+
+hard_blocks:
+  - "No document may go to signature with unresolved open_issues."
+  - "No document may go to signature if counterparty_identity is unverified."
+
+audit_log:
+  - "Approval card, final document hash, and approver identity logged for every signature event."

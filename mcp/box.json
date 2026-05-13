@@ -1,0 +1,18 @@
+{
+  "name": "box",
+  "display_name": "Box",
+  "description": "Cloud storage commonly used for deal rooms and matter folders. Read/write documents and folders; share-link management always gated.",
+  "transport": "stdio",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-box"],
+  "env_required": [
+    "BOX_CLIENT_ID",
+    "BOX_CLIENT_SECRET",
+    "BOX_ENTERPRISE_ID",
+    "BOX_JWT_PRIVATE_KEY_PATH"
+  ],
+  "enabled_in_profiles": ["small-firm", "in-house-dept"],
+  "privilege_ring_default": "attorney-client",
+  "actions_gated": ["create_shared_link_external", "delete_folder"],
+  "notes": "Box MCP server name is a placeholder; if not yet published, the integration uses Box JWT auth + Content API directly."
+}

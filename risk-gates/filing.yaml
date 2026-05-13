@@ -1,0 +1,56 @@
+gate: filing
+display_name: "Court / Agency Filing"
+description: "Any submission to a court, administrative body, or regulator that creates a legal record on behalf of a client or the company."
+
+triggers:
+  - artifact_kind: court_filing
+  - artifact_kind: agency_submission
+  - action: submit_to_court
+  - action: submit_to_regulator
+  - keyword_in_deliverable:
+      - "to be filed"
+      - "for filing"
+      - "notice of"
+      - "motion"
+      - "complaint"
+      - "answer"
+
+evidence_required:
+  - signed_cover_page_or_caption
+  - assigned_attorney_of_record
+  - jurisdiction
+  - filing_deadline
+  - service_list_if_required
+  - citations_verified
+
+approval:
+  approver_resolved_from: "active_profile.risk_gates.filing.approver"
+  auto_block_resolved_from: "active_profile.risk_gates.filing.auto_block"
+  approval_card_template: |
+    FILING APPROVAL REQUESTED
+
+    Matter:        {matter_id} — {matter_description}
+    Jurisdiction:  {jurisdiction}
+    Filing:        {filing_kind} — {filing_caption}
+    Deadline:      {filing_deadline}
+    Drafted by:    {originating_specialist}
+    Reviewed by:   {reviewing_specialist|none}
+    Citations:     {citation_count} ({verified_count} verified)
+
+    Summary
+    -------
+    {one_paragraph_summary}
+
+    Risk flags
+    ----------
+    {risk_flags|none}
+
+    Action: APPROVE / EDIT / REJECT / RECUSE
+
+hard_blocks:
+  - "No filing may proceed without a named attorney_of_record."
+  - "No filing may proceed if citation_verified_count < citation_count."
+  - "No filing may proceed past filing_deadline."
+
+audit_log:
+  - "Every filing approval/rejection is logged with approver, timestamp, and final artifact hash."

@@ -1,0 +1,17 @@
+{
+  "name": "slack",
+  "display_name": "Slack (matter channel + approval surface)",
+  "description": "Used for in-team coordination on matters and for surfacing approval cards to humans. Outbound Slack messages are subject to the external-communication risk gate if the target channel is not internal.",
+  "transport": "stdio",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-slack"],
+  "env_required": [
+    "SLACK_BOT_TOKEN",
+    "SLACK_SIGNING_SECRET",
+    "SLACK_WEBHOOK_URL"
+  ],
+  "enabled_in_profiles": ["small-firm", "in-house-dept"],
+  "privilege_ring_default": "confidential",
+  "channel_classification_required": true,
+  "notes": "Privilege ring defaults to 'confidential' to prevent accidental privileged-content posts to public channels. Channel classification (internal | external | public) must be set in workspace config before any agent may post."
+}

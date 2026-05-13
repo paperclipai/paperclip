@@ -1,0 +1,20 @@
+{
+  "name": "docusign",
+  "display_name": "DocuSign",
+  "description": "Send executed contracts and signature-ready documents. ALL send actions are intercepted by the signed-document risk gate.",
+  "transport": "stdio",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-docusign"],
+  "env_required": [
+    "DOCUSIGN_INTEGRATION_KEY",
+    "DOCUSIGN_USER_ID",
+    "DOCUSIGN_ACCOUNT_ID",
+    "DOCUSIGN_PRIVATE_KEY_PATH",
+    "DOCUSIGN_BASE_PATH"
+  ],
+  "enabled_in_profiles": ["small-firm", "in-house-dept"],
+  "privilege_ring_default": "confidential",
+  "auth_method": "jwt",
+  "actions_gated": ["create_envelope", "send_envelope", "void_envelope"],
+  "notes": "MCP server is a placeholder name (DocuSign has not yet published an official MCP server as of 2026-05-12). If unavailable, falls back to direct REST integration; the gate behavior is identical."
+}

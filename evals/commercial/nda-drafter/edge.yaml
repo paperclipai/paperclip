@@ -1,0 +1,39 @@
+eval: nda-drafter.edge
+specialist: nda-drafter
+profile: in-house-dept
+kind: edge
+
+given: |
+  An in-house matter where the counterparty has demanded a narrow residuals clause
+  ("information retained in unaided memory of personnel who had authorized access").
+  The brief explicitly authorizes this fallback. Jurisdiction is California. Term is 2 years.
+
+input:
+  nda_kind: one-way-receiving  # we are receiving counterparty's confidential info
+  parties:
+    disclosing: "Counterparty LLC"
+    receiving: "Acme Inc."
+  purpose: "Diligence for proposed strategic partnership."
+  jurisdiction: "California"
+  term_years: 2
+  carve_outs: []
+  counterparty_demanded_overrides:
+    residuals: "narrow"
+
+when: |
+  nda-drafter is invoked with the above input. The in-house-dept profile's nda-playbook
+  permits narrow residuals as an acceptable fallback (small-firm refuses).
+
+then:
+  - output.draft_nda_markdown contains a Residuals clause limited to "unaided memory".
+  - output.playbook_deviations contains an entry where clause="Residuals", used_position="fallback".
+  - output.draft_nda_markdown contains "2 years" in the Term section.
+  - output.draft_nda_markdown contains a California-specific reference (Civ. Code §1542 or similar) if a release of confidentiality claims is contemplated; otherwise, no §1542 reference is required.
+  - output.risk_flags includes at least one entry noting the residuals deviation, because residuals on technical info is a known firm-position risk even when accepted.
+  - No risk gate fires from drafting.
+
+eval_method: |
+  Run nda-drafter against this input. Parse output. Assert each `then` bullet.
+
+success_criteria:
+  all_of_then: true

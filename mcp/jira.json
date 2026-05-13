@@ -1,0 +1,21 @@
+{
+  "name": "jira",
+  "display_name": "Jira",
+  "description": "Read engineering tickets so the Legal Builder Hub and AI Governance specialists can attach legal requirements to feature work. Write actions (comment, label) are gated.",
+  "transport": "http",
+  "endpoint_env": "JIRA_BASE_URL",
+  "auth": {
+    "method": "bearer",
+    "token_env": "JIRA_API_TOKEN",
+    "user_env": "JIRA_USER_EMAIL"
+  },
+  "env_required": [
+    "JIRA_BASE_URL",
+    "JIRA_API_TOKEN",
+    "JIRA_USER_EMAIL"
+  ],
+  "enabled_in_profiles": ["in-house-dept"],
+  "privilege_ring_default": "confidential",
+  "actions_gated": ["add_comment_external_visible", "transition_issue"],
+  "notes": "Privilege ring is 'confidential'. If Jira is used for legal-tracker tickets, set those projects' privilege ring to 'attorney-client' at workspace config."
+}

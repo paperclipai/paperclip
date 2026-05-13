@@ -1,0 +1,45 @@
+gate: budget-threshold
+display_name: "Budget Threshold"
+description: "Any agent-initiated spend (model cost, vendor cost, paid API call, scheduled outside-counsel engagement) that exceeds the per-profile USD threshold."
+
+triggers:
+  - cost_event: model_inference_cost
+  - cost_event: vendor_api_cost
+  - cost_event: outside_counsel_engagement
+  - cost_event: filing_fee
+  - cost_event: data_acquisition_cost
+
+evidence_required:
+  - matter_id
+  - cost_estimate_usd
+  - cost_basis  # "vendor quote", "model token estimate", "filing fee schedule", etc.
+  - alternative_options_considered
+
+approval:
+  approver_resolved_from: "active_profile.risk_gates.budget-threshold.approver"
+  threshold_usd_resolved_from: "active_profile.risk_gates.budget-threshold.threshold_usd"
+  auto_block_resolved_from: "active_profile.risk_gates.budget-threshold.auto_block"
+  approval_card_template: |
+    BUDGET APPROVAL REQUESTED
+
+    Matter:        {matter_id}
+    Cost type:     {cost_event}
+    Estimate:      ${cost_estimate_usd}  (threshold: ${threshold_usd})
+    Basis:         {cost_basis}
+    Requested by:  {requesting_agent}
+
+    Why it's needed
+    ---------------
+    {one_paragraph_justification}
+
+    Alternatives considered
+    -----------------------
+    {alternative_options_considered}
+
+    Action: APPROVE / APPROVE WITH CAP / REJECT
+
+hard_blocks:
+  - "No spend over 5x the threshold may be auto-approved even with override; it must go to the next escalation tier."
+
+audit_log:
+  - "Every approval/rejection logged with approver, final-approved amount, actual amount, and overage delta."

@@ -1,0 +1,20 @@
+{
+  "name": "google-drive",
+  "display_name": "Google Drive",
+  "description": "Read and write documents from a connected Google Drive account. Used by specialists for delivering drafts, retrieving counterparty templates, and storing matter artifacts.",
+  "transport": "stdio",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-gdrive"],
+  "env_required": [
+    "GOOGLE_OAUTH_CLIENT_ID",
+    "GOOGLE_OAUTH_CLIENT_SECRET",
+    "GOOGLE_OAUTH_REFRESH_TOKEN"
+  ],
+  "scopes": [
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive.readonly"
+  ],
+  "enabled_in_profiles": ["small-firm", "in-house-dept"],
+  "privilege_ring_default": "attorney-client",
+  "notes": "OAuth scope is per-file by default. Privilege ring is set conservatively so privileged artifacts cannot be silently written to a non-privileged folder."
+}

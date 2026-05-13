@@ -1,0 +1,25 @@
+{
+  "name": "gmail",
+  "display_name": "Gmail",
+  "description": "Read inbound matter requests from connected Gmail mailbox; draft outbound communications (always gated by external-communication risk gate).",
+  "transport": "stdio",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-gmail"],
+  "env_required": [
+    "GOOGLE_OAUTH_CLIENT_ID",
+    "GOOGLE_OAUTH_CLIENT_SECRET",
+    "GOOGLE_OAUTH_REFRESH_TOKEN",
+    "GMAIL_USER_EMAIL"
+  ],
+  "scopes": [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.compose",
+    "https://www.googleapis.com/auth/gmail.send"
+  ],
+  "enabled_in_profiles": ["small-firm", "in-house-dept"],
+  "privilege_ring_default": "attorney-client",
+  "rate_limits": {
+    "send_per_hour": 50
+  },
+  "notes": "send action is intercepted by the external-communication risk gate; the agent never sends directly."
+}

@@ -1,0 +1,123 @@
+profile: small-firm
+display_name: "Small Law Firm"
+description: |
+  Profile for a small US law firm (typically 5-25 lawyers, mixed transactional/litigation,
+  generalist with a handful of practice areas). Optimized for billable-hour leverage and
+  partner-controlled risk gates.
+
+typical_users:
+  - role: partner
+    approver_aliases: [partner, partner-of-record, matter-partner, billing-partner]
+  - role: associate
+    approver_aliases: [associate]
+  - role: paralegal
+    approver_aliases: [paralegal]
+  - role: office-manager
+    approver_aliases: [office-manager]
+
+practice_areas:
+  - commercial
+  - corporate
+  - employment
+  - ip
+  - litigation
+  - privacy
+
+specialists_enabled:
+  commercial:
+    - nda-drafter
+    - nda-redliner
+    - msa-drafter
+    - msa-redliner
+    - sow-drafter
+    - vendor-intake-reviewer
+    - clause-library-curator
+    - contract-summarizer
+    - tabular-reviewer            # cross-cutting; useful for NDA/MSA portfolio audits
+  corporate:
+    - cp-checklist-generator      # closings
+    - credit-agreement-summarizer # financing review
+    - sha-summarizer              # governance review
+  employment:
+    - offer-letter-drafter
+    - separation-agreement-drafter
+    - handbook-policy-reviewer
+  privacy:
+    - dpa-reviewer
+    - privacy-policy-drafter
+  ip:
+    - trademark-clearance
+    - copyright-dmca-responder
+    - ip-license-drafter
+
+mcp_connectors_enabled:
+  # Live / wired by default
+  - google-drive
+  - gmail
+  - slack
+  - docusign
+  - westlaw
+  - clio
+  # Add to this list as the firm subscribes:
+  - imanage          # if firm uses iManage DMS (vs. NetDocs / Google Drive)
+  - definely         # if firm uses Definely Word add-in
+  - lexis            # if firm prefers Lexis to Westlaw
+  - relativity       # if firm runs litigation matters in Relativity
+  - everlaw          # alternative to Relativity
+  - datasite         # if firm handles M&A / financings with VDR
+  - box              # if firm uses Box for client folders / deal rooms
+  - netdocuments     # if firm uses NetDocs instead of iManage
+
+required_secrets:
+  # The startup check requires these for enabled connectors only.
+  - GOOGLE_OAUTH_CLIENT_ID
+  - GOOGLE_OAUTH_CLIENT_SECRET
+  - GOOGLE_OAUTH_REFRESH_TOKEN
+  - SLACK_BOT_TOKEN
+  - SLACK_WEBHOOK_URL
+  - DOCUSIGN_INTEGRATION_KEY
+  - WESTLAW_API_KEY
+  - CLIO_CLIENT_ID
+  - CLIO_CLIENT_SECRET
+  - CLIO_REFRESH_TOKEN
+
+risk_gates:
+  filing:
+    approver: partner
+    auto_block: true
+    rationale: "All court filings require a named-partner signoff."
+  signed-document:
+    approver: partner-of-record
+    auto_block: true
+    rationale: "No agent may send a document to e-signature without partner approval."
+  external-communication:
+    approver: matter-partner
+    auto_block: true
+    exceptions:
+      - "client-update-from-template"
+    rationale: "Outbound client/opposing-counsel communications require partner sign-off, except templated status updates."
+  budget-threshold:
+    threshold_usd: 500
+    approver: billing-partner
+    auto_block: true
+    rationale: "Any agent action with model-cost or vendor-cost above $500 requires billing partner approval."
+  privileged-disclosure:
+    approver: matter-partner
+    auto_block: true
+    rationale: "Disclosure of any privilege-tagged artifact to a non-privileged recipient requires partner approval."
+
+kpis:
+  - matters_opened
+  - billable_hours_assisted
+  - turnaround_time_per_matter_type
+  - client_nps
+  - partner_approval_latency_p50
+  - draft_to_signed_cycle_time
+
+intake_required_fields:
+  - client_name
+  - matter_description
+  - urgency
+  - estimated_value_usd
+  - opposing_party_or_counterparty
+  - assigned_partner

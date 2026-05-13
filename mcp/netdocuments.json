@@ -1,0 +1,23 @@
+{
+  "name": "netdocuments",
+  "display_name": "NetDocuments",
+  "description": "Cloud DMS for legal. Read/write matter documents, profiles, version control. Alternative to iManage; commonly used in cloud-native firms and in-house departments.",
+  "transport": "http",
+  "endpoint": "https://api.vault.netvoyage.com/v2",
+  "auth": {
+    "method": "oauth2",
+    "client_id_env": "NETDOCS_CLIENT_ID",
+    "client_secret_env": "NETDOCS_CLIENT_SECRET",
+    "refresh_token_env": "NETDOCS_REFRESH_TOKEN"
+  },
+  "env_required": [
+    "NETDOCS_CLIENT_ID",
+    "NETDOCS_CLIENT_SECRET",
+    "NETDOCS_REFRESH_TOKEN",
+    "NETDOCS_REPOSITORY"
+  ],
+  "enabled_in_profiles": ["small-firm", "in-house-dept"],
+  "privilege_ring_default": "attorney-client",
+  "actions_gated": ["upload_document", "delete_document", "share_document_external"],
+  "notes": "NetDocuments MCP server is in Anthropic's announced legal connector set. Wire direct REST in v1; swap to official MCP server when available."
+}

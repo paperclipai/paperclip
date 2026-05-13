@@ -1,0 +1,22 @@
+{
+  "name": "datasite",
+  "display_name": "Datasite (VDR)",
+  "description": "Virtual data room. Used by M&A and financing specialists for due-diligence document review.",
+  "transport": "http",
+  "endpoint_env": "DATASITE_BASE_URL",
+  "auth": {
+    "method": "oauth2",
+    "client_id_env": "DATASITE_CLIENT_ID",
+    "client_secret_env": "DATASITE_CLIENT_SECRET"
+  },
+  "env_required": [
+    "DATASITE_BASE_URL",
+    "DATASITE_CLIENT_ID",
+    "DATASITE_CLIENT_SECRET",
+    "DATASITE_PROJECT_ID"
+  ],
+  "enabled_in_profiles": ["small-firm", "in-house-dept"],
+  "privilege_ring_default": "work-product",
+  "actions_gated": ["share_external", "export_documents"],
+  "notes": "Datasite MCP is announced (May 2026 partner set). v1 wires direct API; default privilege ring is 'work-product' because deal rooms are deal-confidential and often privilege-tagged."
+}

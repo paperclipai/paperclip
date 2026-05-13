@@ -1,0 +1,19 @@
+{
+  "name": "lexis",
+  "display_name": "LexisNexis",
+  "description": "Legal research database (alternative / complement to Westlaw). Case law, statutes, news, public records.",
+  "transport": "http",
+  "endpoint_env": "LEXIS_BASE_URL",
+  "auth": {
+    "method": "bearer",
+    "token_env": "LEXIS_API_KEY"
+  },
+  "env_required": [
+    "LEXIS_API_KEY",
+    "LEXIS_BASE_URL"
+  ],
+  "enabled_in_profiles": ["small-firm", "in-house-dept"],
+  "privilege_ring_default": "confidential",
+  "actions_gated": [],
+  "notes": "Read-only research connector. Citations re-verified at risk-gate stage when used in a filing."
+}

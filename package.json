@@ -1,5 +1,31 @@
 {
-  "name": "paperclip",
+  "name": "odysseus",
+  "version": "0.1.0",
+  "description": "An agentic legal organization, in a box. Chief Counsel + 12 Practice Leads + 30+ specialist sub-agents, with human approval at every risk gate. Two profiles: small-firm and in-house-dept. Hard fork of paperclip; license Apache 2.0.",
+  "homepage": "https://github.com/PossibLaw/odysseus",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PossibLaw/odysseus.git"
+  },
+  "bugs": {
+    "url": "https://github.com/PossibLaw/odysseus/issues"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "legal-tech",
+    "legaltech",
+    "ai-agents",
+    "multi-agent",
+    "law-firm",
+    "in-house-legal",
+    "agentic-ai",
+    "claude",
+    "mcp",
+    "contract-review",
+    "redlining",
+    "legal-ai",
+    "anthropic"
+  ],
   "private": true,
   "type": "module",
   "scripts": {

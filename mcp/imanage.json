@@ -1,0 +1,24 @@
+{
+  "name": "imanage",
+  "display_name": "iManage Work",
+  "description": "Document management system widely used in law firms. Read/write matter documents, version history, profile metadata. Default small-firm DMS connector.",
+  "transport": "http",
+  "endpoint_env": "IMANAGE_BASE_URL",
+  "auth": {
+    "method": "oauth2",
+    "client_id_env": "IMANAGE_CLIENT_ID",
+    "client_secret_env": "IMANAGE_CLIENT_SECRET",
+    "refresh_token_env": "IMANAGE_REFRESH_TOKEN"
+  },
+  "env_required": [
+    "IMANAGE_BASE_URL",
+    "IMANAGE_CLIENT_ID",
+    "IMANAGE_CLIENT_SECRET",
+    "IMANAGE_REFRESH_TOKEN",
+    "IMANAGE_LIBRARY"
+  ],
+  "enabled_in_profiles": ["small-firm", "in-house-dept"],
+  "privilege_ring_default": "attorney-client",
+  "actions_gated": ["upload_document", "delete_document", "share_document_external"],
+  "notes": "iManage MCP server is part of Anthropic's announced connector set (May 2026). Until the official server is published, this config documents the expected shape; the forked-paperclip server can wire the direct REST API in the meantime."
+}

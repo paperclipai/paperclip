@@ -1,0 +1,19 @@
+{
+  "name": "westlaw",
+  "display_name": "Thomson Reuters Westlaw / CoCounsel",
+  "description": "Legal research database for case law, statutes, regulations, secondary sources. CoCounsel is TR's AI co-counsel layer announced in Anthropic's May 2026 legal partner set.",
+  "transport": "http",
+  "endpoint_env": "WESTLAW_BASE_URL",
+  "auth": {
+    "method": "bearer",
+    "token_env": "WESTLAW_API_KEY"
+  },
+  "env_required": [
+    "WESTLAW_API_KEY",
+    "WESTLAW_BASE_URL"
+  ],
+  "enabled_in_profiles": ["small-firm", "in-house-dept"],
+  "privilege_ring_default": "confidential",
+  "actions_gated": [],
+  "notes": "Read-only research connector. Citations returned from Westlaw must be re-verified at the risk-gate stage when used in a filing."
+}

@@ -1,0 +1,16 @@
+{
+  "name": "supabase",
+  "display_name": "Supabase",
+  "description": "Postgres + auth + storage. Used by some Odysseus deployments as the matter/document/identity backend when the default embedded Postgres is replaced.",
+  "transport": "stdio",
+  "command": "npx",
+  "args": ["-y", "@supabase/mcp-server"],
+  "env_required": [
+    "SUPABASE_URL",
+    "SUPABASE_SERVICE_ROLE_KEY"
+  ],
+  "enabled_in_profiles": ["in-house-dept"],
+  "privilege_ring_default": "attorney-client",
+  "actions_gated": ["delete_row", "truncate_table"],
+  "notes": "When supabase is enabled as the data backend, the paperclip-inherited Postgres is bypassed in favor of Supabase-managed Postgres + RLS. Privilege isolation is enforced at the RLS-policy layer."
+}
