@@ -4,6 +4,7 @@ import type {
   AdapterRuntimeCommandSpec,
   ServerAdapterModule,
 } from "./types.js";
+import type { AdapterConfigSchema } from "@paperclipai/adapter-utils";
 import { getAdapterSessionManagement } from "@paperclipai/adapter-utils";
 import {
   execute as acpxExecute,
