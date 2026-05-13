@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Archive, ArchiveRestore, Building2, Plus, Trash2, Users, Building as BuildingIcon } from "lucide-react";
+import { Archive, ArchiveRestore, Building2, Check, ChevronsUpDown, Plus, Trash2, Users, Building as BuildingIcon } from "lucide-react";
 import { organizationsApi } from "../api/organizations";
 import { companiesApi } from "../api/companies";
 import { authApi } from "../api/auth";
@@ -10,6 +10,12 @@ import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Link } from "@/lib/router";
 
 export function Organizations() {
@@ -257,18 +263,37 @@ export function Organizations() {
       <main className="mx-auto w-full max-w-3xl space-y-6 px-6 py-10">
         <div className="flex items-center gap-3">
           {organizations.length > 0 ? (
-            <select
-              className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm outline-none"
-              value={selectedOrgId ?? ""}
-              onChange={(e) => selectOrg(e.target.value)}
-            >
-              {organizations.map((org) => (
-                <option key={org.id} value={org.id}>
-                  {org.name}
-                  {org.archivedAt ? " (archived)" : ""}
-                </option>
-              ))}
-            </select>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  className="flex-1 justify-between rounded-md border border-border bg-background px-3 py-2 text-sm font-normal"
+                >
+                  <span className="truncate">
+                    {pageSelectedOrg?.name ?? "Select organization"}
+                    {pageSelectedOrg?.archivedAt ? " (archived)" : ""}
+                  </span>
+                  <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-(--radix-dropdown-menu-trigger-width) min-w-[220px]">
+                {organizations.map((org) => (
+                  <DropdownMenuItem
+                    key={org.id}
+                    onSelect={() => selectOrg(org.id)}
+                    className="justify-between gap-2"
+                  >
+                    <span className="truncate">
+                      {org.name}
+                      {org.archivedAt ? " (archived)" : ""}
+                    </span>
+                    {org.id === selectedOrgId ? (
+                      <Check className="size-4 shrink-0 text-muted-foreground" />
+                    ) : null}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           ) : (
             <div className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm text-muted-foreground">
               {orgsLoading ? "Loading..." : "No organizations yet."}
