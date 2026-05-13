@@ -66,6 +66,7 @@ export function buildCursorLocalConfig(v: CreateConfigValues): Record<string, un
   if (mode) ac.mode = mode;
   ac.timeoutSec = 0;
   ac.graceSec = 15;
+  ac.maxTurnsPerRun = v.maxTurnsPerRun;
   const env = parseEnvBindings(v.envBindings);
   const legacy = parseEnvVars(v.envVars);
   for (const [key, value] of Object.entries(legacy)) {
