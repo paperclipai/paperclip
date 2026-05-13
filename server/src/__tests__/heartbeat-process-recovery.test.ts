@@ -1067,7 +1067,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const blockedIssue = await waitForValue(async () =>
       db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
         const issue = rows[0] ?? null;
-        return issue?.status === "blocked" ? issue : null;
+        return issue?.status === "blocked" && !issue.executionRunId && !issue.checkoutRunId ? issue : null;
       })
     );
     expect(blockedIssue?.status).toBe("blocked");
