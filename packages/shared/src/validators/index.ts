@@ -9,6 +9,10 @@ export {
   type InstanceExperimentalSettings,
   type PatchInstanceExperimentalSettings,
   type IssueGraphLivenessAutoRecoveryRequest,
+  instanceBackupSettingsSchema,
+  patchInstanceBackupSettingsSchema,
+  type InstanceBackupSettings,
+  type PatchInstanceBackupSettings,
 } from "./instance.js";
 
 export {

@@ -2,10 +2,17 @@ import type {
   InstanceExperimentalSettings,
   InstanceGeneralSettings,
   IssueGraphLivenessAutoRecoveryPreview,
+  InstanceBackupSettings,
   PatchInstanceGeneralSettings,
   PatchInstanceExperimentalSettings,
+  PatchInstanceBackupSettings,
 } from "@paperclipai/shared";
 import { api } from "./client";
+
+export type InstanceBackupSettingsResponse = InstanceBackupSettings & {
+  configFileExists: boolean;
+  requiresRestart: boolean;
+};
 
 export const instanceSettingsApi = {
   getGeneral: () =>
@@ -37,4 +44,8 @@ export const instanceSettingsApi = {
       "/instance/settings/experimental/issue-graph-liveness-auto-recovery/run",
       input,
     ),
+  getBackup: () =>
+    api.get<InstanceBackupSettingsResponse>("/instance/settings/backup"),
+  updateBackup: (patch: PatchInstanceBackupSettings) =>
+    api.patch<InstanceBackupSettingsResponse>("/instance/settings/backup", patch),
 };
