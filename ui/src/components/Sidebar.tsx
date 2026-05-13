@@ -51,7 +51,7 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="w-full h-full min-h-0 border-r border-border bg-background flex flex-col">
+    <aside className="w-full h-full min-h-0 border-r border-border/60 bg-background/90 backdrop-blur-2xl supports-[backdrop-filter]:bg-background/75 flex flex-col">
       {/* Top bar: Company name (bold) + Search — aligned with top sections (no visible border) */}
       <div className="flex items-center gap-1 px-3 h-12 shrink-0">
         <span className="min-w-0 flex-1 truncate text-sm font-bold text-foreground">
