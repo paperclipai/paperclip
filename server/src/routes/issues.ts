@@ -59,6 +59,7 @@ import {
   issueReferenceService,
   issueService,
   issueFinalDeliveryService,
+  listIssueValidationHistory,
   clampIssueListLimit,
   documentService,
   logActivity,
@@ -1797,9 +1798,21 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
     const docs = await documentsSvc.listIssueDocuments(issue.id, {
-      includeSystem: req.query.includeSystem === "true",
+      includeSystem: parseBooleanQuery(req.query.includeSystem),
     });
     res.json(docs);
+  });
+
+  router.get("/issues/:id/validation-history", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const history = await listIssueValidationHistory(db, issue.id);
+    res.json(history);
   });
 
   router.get("/issues/:id/documents/:key", async (req, res) => {

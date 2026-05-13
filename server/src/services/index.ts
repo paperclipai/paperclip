@@ -23,6 +23,11 @@ export {
 export { issueThreadInteractionService } from "./issue-thread-interactions.js";
 export { issueFinalDeliveryService } from "./final-delivery.js";
 export {
+  buildIssueValidationHistory,
+  listIssueValidationHistory,
+  type IssueExecutionDecisionValidationRow,
+} from "./issue-validation-history.js";
+export {
   createIssueFinalDeliveryDbStore,
   createIssueFinalDeliverySender,
   createIssueFinalDeliveryTransportFromEnv,

@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import type { FinalDeliveryInteraction, Issue, IssueDocument } from "@paperclipai/shared";
+import type { FinalDeliveryInteraction, Issue, IssueDocument, IssueValidationHistory } from "@paperclipai/shared";
 import { IssueMissionControlPanel } from "./IssueMissionControlPanel";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -166,6 +166,37 @@ function createFinalDelivery(overrides: Partial<FinalDeliveryInteraction> = {}):
   } as FinalDeliveryInteraction;
 }
 
+function createValidationHistory(overrides: Partial<IssueValidationHistory> = {}): IssueValidationHistory {
+  return {
+    issueId: "issue-1",
+    latest: {
+      id: "validation-entry-1",
+      issueId: "issue-1",
+      source: "validator_report",
+      label: "validator-report rev 2",
+      verdict: "REQUEST_CHANGES",
+      completionScore: 4,
+      report: null,
+      summary: "Validator found missing proof",
+      criteriaChecked: ["targeted tests", "typecheck"],
+      evidence: ["vitest failed before fix"],
+      blockingIssues: [`Fix leaked to${"ken=synthetic-placeholder"} reference`],
+      exactFixIfFailed: `Remove to${"ken=synthetic-placeholder"} from evidence`,
+      stageId: null,
+      stageType: null,
+      decisionOutcome: null,
+      revisionNumber: 2,
+      bodyPreview: null,
+      actorAgentId: "validator-agent",
+      actorUserId: null,
+      createdByRunId: null,
+      createdAt: new Date("2026-05-13T12:03:00.000Z"),
+    },
+    entries: [],
+    ...overrides,
+  };
+}
+
 describe("IssueMissionControlPanel", () => {
   let container: HTMLDivElement;
   let reactRoot: Root;
@@ -191,6 +222,7 @@ describe("IssueMissionControlPanel", () => {
             createDocument("worker-handoff"),
           ]}
           interactions={[createFinalDelivery()]}
+          validationHistory={createValidationHistory()}
         />,
       );
     });
@@ -202,6 +234,13 @@ describe("IssueMissionControlPanel", () => {
     expect(text).toContain("validation-contract: present");
     expect(text).toContain("orchestration-contract: missing");
     expect(text).toContain("validator-report: missing");
+    expect(text).toContain("Validation history");
+    expect(text).toContain("REQUEST_CHANGES · score 4/10");
+    expect(text).toContain("Validator found missing proof");
+    expect(text).toContain("targeted tests");
+    expect(text).toContain("vitest failed before fix");
+    expect(text).toContain("[REDACTED]");
+    expect(text).not.toContain("synthetic-placeholder");
     expect(text).toContain("Telegram · chat -100123 · thread 103");
     expect(text).toContain("delivered");
     expect(text).toContain("external 910");

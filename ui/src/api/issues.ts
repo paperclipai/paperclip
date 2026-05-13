@@ -14,6 +14,7 @@ import type {
   IssueLabel,
   IssueRetryNowResponse,
   IssueThreadInteraction,
+  IssueValidationHistory,
   IssueTreeControlPreview,
   IssueTreeHold,
   IssueWorkProduct,
@@ -262,6 +263,7 @@ export const issuesApi = {
     api.get<IssueDocument[]>(
       `/issues/${id}/documents${options?.includeSystem ? "?includeSystem=true" : ""}`,
     ),
+  listValidationHistory: (id: string) => api.get<IssueValidationHistory>(`/issues/${id}/validation-history`),
   getDocument: (id: string, key: string) => api.get<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
   upsertDocument: (id: string, key: string, data: UpsertIssueDocument) =>
     api.put<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`, data),

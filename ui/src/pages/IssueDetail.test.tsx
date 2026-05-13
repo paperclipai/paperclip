@@ -1,7 +1,15 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Agent, FinalDeliveryInteraction, Issue, IssueDocument, IssueTreeControlPreview, IssueTreeHold } from "@paperclipai/shared";
+import type {
+  Agent,
+  FinalDeliveryInteraction,
+  Issue,
+  IssueDocument,
+  IssueTreeControlPreview,
+  IssueTreeHold,
+  IssueValidationHistory,
+} from "@paperclipai/shared";
 import { act, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +22,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   listComments: vi.fn(),
   listInteractions: vi.fn(),
   listDocuments: vi.fn(),
+  listValidationHistory: vi.fn(),
   listAttachments: vi.fn(),
   listFeedbackVotes: vi.fn(),
   markRead: vi.fn(),
@@ -469,6 +478,38 @@ function createFinalDeliveryInteraction(overrides: Partial<FinalDeliveryInteract
   } as FinalDeliveryInteraction;
 }
 
+function createValidationHistory(overrides: Partial<IssueValidationHistory> = {}): IssueValidationHistory {
+  const latest = {
+    id: "validation-entry-1",
+    issueId: "issue-1",
+    source: "validator_report" as const,
+    label: "validator-report rev 2",
+    verdict: "REQUEST_CHANGES" as const,
+    completionScore: 4,
+    report: null,
+    summary: "Validator found missing regression evidence.",
+    criteriaChecked: ["Tests pass"],
+    evidence: ["Missing UI regression evidence"],
+    blockingIssues: ["Needs route coverage"],
+    exactFixIfFailed: "Add validation-history endpoint test.",
+    stageId: null,
+    stageType: null,
+    decisionOutcome: null,
+    revisionNumber: 2,
+    bodyPreview: "verdict: REQUEST_CHANGES",
+    actorAgentId: "validator-agent",
+    actorUserId: null,
+    createdByRunId: null,
+    createdAt: new Date("2026-04-21T00:03:00.000Z"),
+  };
+  return {
+    issueId: "issue-1",
+    latest,
+    entries: [latest],
+    ...overrides,
+  };
+}
+
 function createAgent(overrides: Partial<Agent> = {}): Agent {
   return {
     id: "agent-1",
@@ -861,6 +902,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.listComments.mockResolvedValue([]);
     mockIssuesApi.listInteractions.mockResolvedValue([]);
     mockIssuesApi.listDocuments.mockResolvedValue([]);
+    mockIssuesApi.listValidationHistory.mockResolvedValue({ issueId: "issue-1", latest: null, entries: [] });
     mockIssuesApi.listAttachments.mockResolvedValue([]);
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
     mockIssuesApi.markRead.mockResolvedValue({ id: "issue-1", lastReadAt: new Date().toISOString() });
@@ -967,6 +1009,7 @@ describe("IssueDetail", () => {
       createMissionControlDocument("worker-handoff"),
     ]);
     mockIssuesApi.listInteractions.mockResolvedValue([createFinalDeliveryInteraction()]);
+    mockIssuesApi.listValidationHistory.mockResolvedValue(createValidationHistory());
 
     await act(async () => {
       root.render(
@@ -981,11 +1024,17 @@ describe("IssueDetail", () => {
     await waitForAssertion(() => {
       const text = container.textContent ?? "";
       expect(mockIssuesApi.listDocuments).toHaveBeenCalledWith("PAP-1", { includeSystem: true });
+      expect(mockIssuesApi.listValidationHistory).toHaveBeenCalledWith("PAP-1");
       expect(text).toContain("Mission Control");
       expect(text).toContain("Gate: blocked");
       expect(text).toContain("validation-contract: present");
       expect(text).toContain("orchestration-contract: missing");
       expect(text).toContain("validator-report: missing");
+      expect(text).toContain("Validation history");
+      expect(text).toContain("REQUEST_CHANGES · score 4/10");
+      expect(text).toContain("Validator found missing regression evidence.");
+      expect(text).toContain("Evidence: Missing UI regression evidence");
+      expect(text).toContain("Blockers: Needs route coverage");
       expect(text).toContain("Telegram · chat -100123 · thread 103");
       expect(text).toContain("delivered");
       expect(text).toContain("external 910");

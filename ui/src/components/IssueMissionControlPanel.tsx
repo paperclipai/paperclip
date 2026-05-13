@@ -7,6 +7,7 @@ import {
   type IssueDocumentSummary,
   type IssueFinalDeliveryDestination,
   type IssueThreadInteraction,
+  type IssueValidationHistory,
   type MissionControlCompletionGateResult,
 } from "@paperclipai/shared";
 import { AlertTriangle, CheckCircle2, Clock3, Send, ShieldCheck } from "lucide-react";
@@ -32,6 +33,7 @@ export interface IssueMissionControlPanelProps {
   documentsLoading?: boolean;
   documentsError?: boolean;
   interactions?: IssueThreadInteraction[];
+  validationHistory?: IssueValidationHistory | null;
 }
 
 const COMPLETION_REASON_LABELS: Record<MissionControlCompletionGateResult["reason"], string> = {
@@ -94,6 +96,27 @@ function truncateText(text: string, max = 180): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
+function safeDisplayText(text: string | null | undefined, max = 180): string | null {
+  if (!text) return null;
+  const redacted = redactSecretLikeText(text);
+  return truncateText(redacted, max);
+}
+
+function validationStatusLabel(entry: IssueValidationHistory["latest"]): string {
+  if (!entry?.verdict) return "No verdict";
+  return entry.completionScore === null ? entry.verdict : `${entry.verdict} · score ${entry.completionScore}/10`;
+}
+
+function validationToneClass(verdict: NonNullable<IssueValidationHistory["latest"]>["verdict"]): string {
+  if (verdict === "PASS") {
+    return "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300";
+  }
+  if (verdict === "REQUEST_CHANGES" || verdict === "ESCALATE") {
+    return "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300";
+  }
+  return "border-border bg-muted text-muted-foreground";
+}
+
 function deliveryOutcomeLabel(interaction: FinalDeliveryInteraction): string {
   if (interaction.result?.outcome) return interaction.result.outcome;
   if (interaction.status === "pending") return "queued";
@@ -136,6 +159,7 @@ export function IssueMissionControlPanel({
   documentsLoading = false,
   documentsError = false,
   interactions = [],
+  validationHistory = null,
 }: IssueMissionControlPanelProps) {
   const finalDeliveryPolicy = issue.executionPolicy?.finalDelivery ?? null;
   const documentsForGate = documents && documents.length > 0 ? documents : issue.documentSummaries ?? [];
@@ -148,7 +172,15 @@ export function IssueMissionControlPanel({
     .filter(isFinalDeliveryInteraction)
     .sort((a, b) => dateMs(b.createdAt) - dateMs(a.createdAt));
   const latestDelivery = finalDeliveries[0] ?? null;
-  const shouldRender = Boolean(policy?.enabled || finalDeliveryPolicy?.enabled || finalDeliveries.length > 0);
+  const validationEntries = validationHistory?.entries.length
+    ? validationHistory.entries
+    : validationHistory?.latest
+      ? [validationHistory.latest]
+      : [];
+  const latestValidation = validationHistory?.latest ?? validationEntries[0] ?? null;
+  const shouldRender = Boolean(
+    policy?.enabled || finalDeliveryPolicy?.enabled || finalDeliveries.length > 0 || validationEntries.length > 0,
+  );
 
   if (!shouldRender) return null;
 
@@ -253,6 +285,50 @@ export function IssueMissionControlPanel({
           </div>
         </div>
       </div>
+
+      {latestValidation ? (
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Validation history</div>
+            <span className={cn("rounded-full border px-2 py-0.5 text-xs font-medium", validationToneClass(latestValidation.verdict))}>
+              {validationStatusLabel(latestValidation)}
+            </span>
+          </div>
+          <div className="space-y-2">
+            {validationEntries.slice(0, 3).map((entry) => {
+              const summary = safeDisplayText(entry.summary ?? entry.bodyPreview, 260);
+              const evidence = entry.evidence.map((item) => safeDisplayText(item, 180)).filter(Boolean).slice(0, 3);
+              const criteria = entry.criteriaChecked.map((item) => safeDisplayText(item, 120)).filter(Boolean).slice(0, 3);
+              const blockers = entry.blockingIssues.map((item) => safeDisplayText(item, 180)).filter(Boolean).slice(0, 3);
+              const exactFix = safeDisplayText(entry.exactFixIfFailed, 220);
+              return (
+                <div key={`${entry.source}-${entry.id}`} className="rounded-md border border-border/70 bg-background/70 px-3 py-2 text-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="font-medium text-foreground">{entry.label}</div>
+                    <span className={cn("rounded-full border px-2 py-0.5 text-xs font-medium", validationToneClass(entry.verdict))}>
+                      {validationStatusLabel(entry)}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {entry.source === "validator_report" ? "Validator report" : "Execution decision"} · {formatRelative(entry.createdAt)}
+                    {entry.revisionNumber ? ` · rev ${entry.revisionNumber}` : ""}
+                    {entry.decisionOutcome ? ` · ${entry.decisionOutcome}` : ""}
+                  </div>
+                  {summary ? <div className="mt-2 text-sm text-foreground">{summary}</div> : null}
+                  {criteria.length > 0 ? <div className="mt-1 text-xs text-muted-foreground">Criteria: {criteria.join(" · ")}</div> : null}
+                  {evidence.length > 0 ? <div className="mt-1 text-xs text-muted-foreground">Evidence: {evidence.join(" · ")}</div> : null}
+                  {blockers.length > 0 ? (
+                    <div className="mt-2 rounded border border-amber-300/50 bg-amber-50 px-2 py-1 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">
+                      Blockers: {blockers.join(" · ")}
+                    </div>
+                  ) : null}
+                  {exactFix ? <div className="mt-1 text-xs text-muted-foreground">Fix: {exactFix}</div> : null}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
 
       {finalDeliveries.length > 0 ? (
         <div className="space-y-2">

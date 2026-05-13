@@ -25,6 +25,7 @@ export type MissionControlSideEffectApprovalStatus =
   (typeof MISSION_CONTROL_SIDE_EFFECT_APPROVAL_STATUSES)[number];
 
 export const MISSION_CONTROL_ORCHESTRATION_CONTRACT_DOCUMENT_KEY = "orchestration-contract" as const;
+export const MISSION_CONTROL_VALIDATOR_REPORT_DOCUMENT_KEY = "validator-report" as const;
 
 export const MISSION_CONTROL_ORCHESTRATION_WORKSTREAM_STATUSES = [
   "planned",
@@ -41,7 +42,7 @@ export const MISSION_CONTROL_DEFAULT_REQUIRED_DOCUMENT_KEYS = [
   "validation-contract",
   MISSION_CONTROL_ORCHESTRATION_CONTRACT_DOCUMENT_KEY,
   "worker-handoff",
-  "validator-report",
+  MISSION_CONTROL_VALIDATOR_REPORT_DOCUMENT_KEY,
 ] as const;
 export type MissionControlDefaultRequiredDocumentKey =
   (typeof MISSION_CONTROL_DEFAULT_REQUIRED_DOCUMENT_KEYS)[number];
@@ -576,7 +577,7 @@ function parseMarkdownValidatorVerdict(body: string): MissionControlValidatorVer
   return null;
 }
 
-function parseValidatorReportFromBody(
+export function parseMissionControlValidatorReportFromBody(
   body: string | null | undefined,
   options?: { writtenByAgentId?: string | null },
 ): MissionControlValidatorReport | null {
@@ -936,9 +937,9 @@ export function evaluateMissionControlCompletionGate(input: {
     ? policy.requiredDocumentKeys
     : [...MISSION_CONTROL_DEFAULT_REQUIRED_DOCUMENT_KEYS];
   const missingDocumentKeys = requiredKeys.filter((key) => !docsByKey.has(key));
-  const validatorDocument = docsByKey.get("validator-report");
+  const validatorDocument = docsByKey.get(MISSION_CONTROL_VALIDATOR_REPORT_DOCUMENT_KEY);
   const validatorReportWriterAgentId = validatorDocument?.updatedByAgentId ?? validatorDocument?.createdByAgentId ?? null;
-  const validatorReport = parseValidatorReportFromBody(validatorDocument?.body, {
+  const validatorReport = parseMissionControlValidatorReportFromBody(validatorDocument?.body, {
     writtenByAgentId: validatorReportWriterAgentId,
   });
   const validatorVerdict = validatorReport?.verdict ?? null;

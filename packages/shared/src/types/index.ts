@@ -216,6 +216,8 @@ export type {
   IssueDocumentSummary,
   DocumentRevision,
   DocumentFormat,
+  IssueValidationHistory,
+  IssueValidationHistoryEntry,
   LegacyPlanDocument,
   IssueAncestor,
   IssueAncestorProject,

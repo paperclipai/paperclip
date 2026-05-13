@@ -153,6 +153,7 @@ import {
   type IssueDocument,
   type IssueWorkMode,
   type IssueThreadInteraction,
+  type IssueValidationHistory,
   type RequestConfirmationInteraction,
   type SuggestTasksInteraction,
   type IssueTreeControlMode,
@@ -1401,6 +1402,11 @@ export function IssueDetail() {
       || issue?.executionPolicy?.finalDelivery?.enabled
       || interactions.some((interaction) => interaction.kind === "final_delivery"),
   );
+  const shouldLoadValidationHistory = Boolean(
+    hasMissionControlPanelSignal
+      || issue?.executionPolicy?.stages?.length
+      || issue?.executionRunId,
+  );
   const {
     data: missionControlDocuments = [],
     isFetching: missionControlDocumentsLoading,
@@ -1410,6 +1416,12 @@ export function IssueDetail() {
     queryFn: () => issuesApi.listDocuments(issueId!, { includeSystem: true }),
     enabled: !!issueId && hasMissionControlPanelSignal,
     placeholderData: keepPreviousDataForSameQueryTail<IssueDocument[]>(issueId ?? "pending"),
+  });
+  const { data: validationHistory = null } = useQuery({
+    queryKey: queryKeys.issues.validationHistory(issueId!),
+    queryFn: () => issuesApi.listValidationHistory(issueId!),
+    enabled: !!issueId && shouldLoadValidationHistory,
+    placeholderData: keepPreviousDataForSameQueryTail<IssueValidationHistory>(issueId ?? "pending"),
   });
 
   const { data: attachments, isLoading: attachmentsLoading } = useQuery({
@@ -3677,6 +3689,7 @@ export function IssueDetail() {
         documentsLoading={missionControlDocumentsLoading}
         documentsError={missionControlDocumentsError}
         interactions={interactions}
+        validationHistory={validationHistory}
       />
 
       {showRichSubIssuesSection ? (

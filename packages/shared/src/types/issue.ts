@@ -26,7 +26,11 @@ import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
 import type { IssueWorkProduct } from "./work-product.js";
-import type { MissionControlIssuePolicy } from "../mission-control.js";
+import type {
+  MissionControlIssuePolicy,
+  MissionControlValidatorReport,
+  MissionControlValidatorVerdict,
+} from "../mission-control.js";
 
 export type { IssueWorkMode };
 
@@ -115,6 +119,36 @@ export interface DocumentRevision {
   createdByAgentId: string | null;
   createdByUserId: string | null;
   createdAt: Date;
+}
+
+export interface IssueValidationHistoryEntry {
+  id: string;
+  issueId: string;
+  source: "validator_report" | "execution_decision";
+  label: string;
+  verdict: MissionControlValidatorVerdict | null;
+  completionScore: number | null;
+  report: MissionControlValidatorReport | null;
+  summary: string | null;
+  criteriaChecked: string[];
+  evidence: string[];
+  blockingIssues: string[];
+  exactFixIfFailed: string | null;
+  stageId: string | null;
+  stageType: IssueExecutionStageType | null;
+  decisionOutcome: IssueExecutionDecisionOutcome | null;
+  revisionNumber: number | null;
+  bodyPreview: string | null;
+  actorAgentId: string | null;
+  actorUserId: string | null;
+  createdByRunId: string | null;
+  createdAt: Date;
+}
+
+export interface IssueValidationHistory {
+  issueId: string;
+  latest: IssueValidationHistoryEntry | null;
+  entries: IssueValidationHistoryEntry[];
 }
 
 export interface LegacyPlanDocument {
