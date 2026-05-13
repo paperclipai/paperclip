@@ -54,8 +54,9 @@ import {
   isClaudeMaxTurnsResult,
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
+  isClaudePoisonedPreviousMessageIdError,
 } from "./parse.js";
-import { prepareClaudeConfigSeed } from "./claude-config.js";
+import { prepareClaudeConfigSeed, resolveSharedClaudeConfigDir } from "./claude-config.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
@@ -943,17 +944,38 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   try {
     const initial = await runAttempt(sessionId ?? null);
-    if (
+    const sessionErrorKind =
       sessionId &&
       !initial.proc.timedOut &&
       (initial.proc.exitCode ?? 0) !== 0 &&
-      initial.parsed &&
-      isClaudeUnknownSessionError(initial.parsed)
-    ) {
+      initial.parsed
+        ? isClaudeUnknownSessionError(initial.parsed)
+          ? "unknown"
+          : isClaudePoisonedPreviousMessageIdError(initial.parsed)
+          ? "poisoned"
+          : null
+        : null;
+
+    if (sessionErrorKind !== null) {
+      const reason =
+        sessionErrorKind === "poisoned"
+          ? "returned a poisoned message-id"
+          : "is unavailable";
       await onLog(
         "stdout",
-        `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+        `[paperclip] Claude resume session "${sessionId}" ${reason}; retrying with a fresh session.\n`,
       );
+      if (sessionErrorKind === "poisoned" && !executionTargetIsRemote) {
+        try {
+          const claudeConfigDir = resolveSharedClaudeConfigDir(effectiveEnv);
+          const encodedCwd = effectiveExecutionCwd.replace(/[^a-zA-Z0-9-]/g, "-");
+          const poisonedJsonlPath = path.join(claudeConfigDir, "projects", encodedCwd, `${sessionId}.jsonl`);
+          await fs.unlink(poisonedJsonlPath);
+          await onLog("stdout", `[paperclip] Removed poisoned session file: ${poisonedJsonlPath}\n`);
+        } catch {
+          // best-effort; session is cleared server-side regardless
+        }
+      }
       const retry = await runAttempt(null);
       return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
     }
