@@ -16,6 +16,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
+import { agentDetailUi, nav } from "../lib/i18n";
 import { EmptyState } from "../components/EmptyState";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { MarkdownEditor } from "../components/MarkdownEditor";
@@ -797,8 +798,8 @@ export function CompanySkills() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Skills", href: "/skills" },
-      ...(routeSkillId ? [{ label: "Detail" }] : []),
+      { label: nav.skills, href: "/skills" },
+      ...(routeSkillId ? [{ label: agentDetailUi.details }] : []),
     ]);
   }, [routeSkillId, setBreadcrumbs]);
 
