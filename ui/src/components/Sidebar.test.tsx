@@ -173,4 +173,16 @@ describe("Sidebar", () => {
       root.unmount();
     });
   });
+
+  it("links the Company section to the Agent OS frontend productization page", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    const root = await renderSidebar();
+
+    const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Agent OS");
+    expect(link?.getAttribute("href")).toBe("/agent-os");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });
