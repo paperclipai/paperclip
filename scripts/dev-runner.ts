@@ -1,5 +1,6 @@
 #!/usr/bin/env -S node --import tsx
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -35,6 +36,8 @@ const autoRestartPollIntervalMs = 2500;
 const gracefulShutdownTimeoutMs = 10_000;
 const changedPathSampleLimit = 5;
 const devServerStatusFilePath = path.join(repoRoot, ".paperclip", "dev-server-status.json");
+const devServerStatusToken = mode === "dev" ? randomUUID() : null;
+const devServerStatusTokenHeader = "x-paperclip-dev-server-status-token";
 
 const watchedDirectories = [
   "cli",
@@ -133,10 +136,12 @@ const env: NodeJS.ProcessEnv = {
 
 if (mode === "dev") {
   env.PAPERCLIP_DEV_SERVER_STATUS_FILE = devServerStatusFilePath;
+  env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN = devServerStatusToken ?? "";
   env.PAPERCLIP_MIGRATION_AUTO_APPLY ??= "true";
 }
 
 if (mode === "watch") {
+  delete env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN;
   env.PAPERCLIP_MIGRATION_PROMPT ??= "never";
   env.PAPERCLIP_MIGRATION_AUTO_APPLY ??= "true";
 }
@@ -553,7 +558,9 @@ async function scanForBackendChanges() {
 }
 
 async function getDevHealthPayload() {
-  const response = await fetch(`http://127.0.0.1:${serverPort}/api/health`);
+  const response = await fetch(`http://127.0.0.1:${serverPort}/api/health`, {
+    headers: devServerStatusToken ? { [devServerStatusTokenHeader]: devServerStatusToken } : undefined,
+  });
   if (!response.ok) {
     throw new Error(`Health request failed (${response.status})`);
   }

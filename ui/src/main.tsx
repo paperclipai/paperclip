@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "@/lib/router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./App";
-import { CompanyProvider } from "./context/CompanyContext";
+import { CompanyProvider, useCompany } from "./context/CompanyContext";
 import { OrgProvider } from "./context/OrgContext";
 import { LiveUpdatesProvider } from "./context/LiveUpdatesProvider";
 import { BreadcrumbProvider } from "./context/BreadcrumbContext";
@@ -38,6 +38,11 @@ const queryClient = new QueryClient({
   },
 });
 
+function CompanyAwareBreadcrumbProvider({ children }: { children: React.ReactNode }) {
+  const { selectedCompany } = useCompany();
+  return <BreadcrumbProvider companyName={selectedCompany?.name ?? null}>{children}</BreadcrumbProvider>;
+}
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
@@ -49,7 +54,7 @@ createRoot(document.getElementById("root")!).render(
                 <ToastProvider>
                   <LiveUpdatesProvider>
                     <TooltipProvider>
-                      <BreadcrumbProvider>
+                      <CompanyAwareBreadcrumbProvider>
                         <SidebarProvider>
                           <PanelProvider>
                             <PluginLauncherProvider>
@@ -59,7 +64,7 @@ createRoot(document.getElementById("root")!).render(
                             </PluginLauncherProvider>
                           </PanelProvider>
                         </SidebarProvider>
-                      </BreadcrumbProvider>
+                      </CompanyAwareBreadcrumbProvider>
                     </TooltipProvider>
                   </LiveUpdatesProvider>
                 </ToastProvider>

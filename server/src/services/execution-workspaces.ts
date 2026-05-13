@@ -12,6 +12,7 @@ import type {
   ExecutionWorkspaceCloseGitReadiness,
   ExecutionWorkspaceCloseReadiness,
   ExecutionWorkspaceConfig,
+  WorkspaceRuntimeDesiredState,
   WorkspaceRuntimeService,
 } from "@paperclipai/shared";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
@@ -38,6 +39,20 @@ function readNullableString(value: unknown): string | null {
 function cloneRecord(value: unknown): Record<string, unknown> | null {
   if (!isRecord(value)) return null;
   return { ...value };
+}
+
+function readDesiredState(value: unknown): WorkspaceRuntimeDesiredState | null {
+  return value === "running" || value === "stopped" || value === "manual" ? value : null;
+}
+
+function readServiceStates(value: unknown): ExecutionWorkspaceConfig["serviceStates"] {
+  if (!isRecord(value)) return null;
+  const entries = Object.entries(value).filter(([, state]) =>
+    state === "running" || state === "stopped" || state === "manual"
+  );
+  return entries.length > 0
+    ? Object.fromEntries(entries) as ExecutionWorkspaceConfig["serviceStates"]
+    : null;
 }
 
 async function pathExists(value: string | null | undefined) {
@@ -188,16 +203,13 @@ export function readExecutionWorkspaceConfig(metadata: Record<string, unknown> |
   if (!raw) return null;
 
   const config: ExecutionWorkspaceConfig = {
+    environmentId: readNullableString(raw.environmentId),
     provisionCommand: readNullableString(raw.provisionCommand),
     teardownCommand: readNullableString(raw.teardownCommand),
     cleanupCommand: readNullableString(raw.cleanupCommand),
     workspaceRuntime: cloneRecord(raw.workspaceRuntime),
-    desiredState: raw.desiredState === "running" || raw.desiredState === "stopped" ? raw.desiredState : null,
-    serviceStates: isRecord(raw.serviceStates)
-      ? Object.fromEntries(
-          Object.entries(raw.serviceStates).filter(([, state]) => state === "running" || state === "stopped"),
-        ) as ExecutionWorkspaceConfig["serviceStates"]
-      : null,
+    desiredState: readDesiredState(raw.desiredState),
+    serviceStates: readServiceStates(raw.serviceStates),
   };
 
   const hasConfig = Object.values(config).some((value) => {
@@ -215,6 +227,7 @@ export function mergeExecutionWorkspaceConfig(
 ): Record<string, unknown> | null {
   const nextMetadata = isRecord(metadata) ? { ...metadata } : {};
   const current = readExecutionWorkspaceConfig(metadata) ?? {
+    environmentId: null,
     provisionCommand: null,
     teardownCommand: null,
     cleanupCommand: null,
@@ -229,24 +242,17 @@ export function mergeExecutionWorkspaceConfig(
   }
 
   const nextConfig: ExecutionWorkspaceConfig = {
+    environmentId: patch.environmentId !== undefined ? readNullableString(patch.environmentId) : current.environmentId,
     provisionCommand: patch.provisionCommand !== undefined ? readNullableString(patch.provisionCommand) : current.provisionCommand,
     teardownCommand: patch.teardownCommand !== undefined ? readNullableString(patch.teardownCommand) : current.teardownCommand,
     cleanupCommand: patch.cleanupCommand !== undefined ? readNullableString(patch.cleanupCommand) : current.cleanupCommand,
     workspaceRuntime: patch.workspaceRuntime !== undefined ? cloneRecord(patch.workspaceRuntime) : current.workspaceRuntime,
     desiredState:
       patch.desiredState !== undefined
-        ? patch.desiredState === "running" || patch.desiredState === "stopped"
-          ? patch.desiredState
-          : null
+        ? readDesiredState(patch.desiredState)
         : current.desiredState,
     serviceStates:
-      patch.serviceStates !== undefined && isRecord(patch.serviceStates)
-        ? Object.fromEntries(
-            Object.entries(patch.serviceStates).filter(([, state]) => state === "running" || state === "stopped"),
-          ) as ExecutionWorkspaceConfig["serviceStates"]
-        : patch.serviceStates !== undefined
-          ? null
-          : current.serviceStates,
+      patch.serviceStates !== undefined ? readServiceStates(patch.serviceStates) : current.serviceStates,
   };
 
   const hasConfig = Object.values(nextConfig).some((value) => {
@@ -257,6 +263,7 @@ export function mergeExecutionWorkspaceConfig(
 
   if (hasConfig) {
     nextMetadata.config = {
+      environmentId: nextConfig.environmentId,
       provisionCommand: nextConfig.provisionCommand,
       teardownCommand: nextConfig.teardownCommand,
       cleanupCommand: nextConfig.cleanupCommand,
@@ -735,6 +742,37 @@ export function executionWorkspaceService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
       return row ? toExecutionWorkspace(row) : null;
+    },
+
+    clearEnvironmentSelection: async (companyId: string, environmentId: string) => {
+      return db.transaction(async (tx) => {
+        const rows = await tx
+          .select({
+            id: executionWorkspaces.id,
+            metadata: executionWorkspaces.metadata,
+          })
+          .from(executionWorkspaces)
+          .where(eq(executionWorkspaces.companyId, companyId));
+
+        let cleared = 0;
+        const updatedAt = new Date();
+        for (const row of rows) {
+          const metadata = (row.metadata as Record<string, unknown> | null) ?? null;
+          const config = readExecutionWorkspaceConfig(metadata);
+          if (config?.environmentId !== environmentId) continue;
+
+          await tx
+            .update(executionWorkspaces)
+            .set({
+              metadata: mergeExecutionWorkspaceConfig(metadata, { environmentId: null }),
+              updatedAt,
+            })
+            .where(eq(executionWorkspaces.id, row.id));
+          cleared += 1;
+        }
+
+        return cleared;
+      });
     },
   };
 }

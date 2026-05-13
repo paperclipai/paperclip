@@ -9,6 +9,9 @@ import { CompanyAccess } from "./CompanyAccess";
 const listMembersMock = vi.hoisted(() => vi.fn());
 const listJoinRequestsMock = vi.hoisted(() => vi.fn());
 const updateMemberAccessMock = vi.hoisted(() => vi.fn());
+const archiveMemberMock = vi.hoisted(() => vi.fn());
+const listAgentsMock = vi.hoisted(() => vi.fn());
+const listIssuesMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/access", () => ({
   accessApi: {
@@ -18,8 +21,22 @@ vi.mock("@/api/access", () => ({
     updateMemberPermissions: vi.fn(),
     updateMemberAccess: (companyId: string, memberId: string, input: unknown) =>
       updateMemberAccessMock(companyId, memberId, input),
+    archiveMember: (companyId: string, memberId: string, input: unknown) =>
+      archiveMemberMock(companyId, memberId, input),
     approveJoinRequest: vi.fn(),
     rejectJoinRequest: vi.fn(),
+  },
+}));
+
+vi.mock("@/api/agents", () => ({
+  agentsApi: {
+    list: (companyId: string) => listAgentsMock(companyId),
+  },
+}));
+
+vi.mock("@/api/issues", () => ({
+  issuesApi: {
+    list: (companyId: string, filters: unknown) => listIssuesMock(companyId, filters),
   },
 }));
 
@@ -73,6 +90,23 @@ describe("CompanyAccess", () => {
           },
           grants: [],
         },
+        {
+          id: "member-2",
+          companyId: "company-1",
+          principalType: "user",
+          principalId: "user-2",
+          status: "active",
+          membershipRole: "operator",
+          createdAt: "2026-04-10T00:00:00.000Z",
+          updatedAt: "2026-04-10T00:00:00.000Z",
+          user: {
+            id: "user-2",
+            email: "board@paperclip.local",
+            name: "Board User",
+            image: null,
+          },
+          grants: [],
+        },
       ],
       access: {
         currentUserRole: "owner",
@@ -113,6 +147,23 @@ describe("CompanyAccess", () => {
       },
     ]);
     updateMemberAccessMock.mockResolvedValue({});
+    archiveMemberMock.mockResolvedValue({ reassignedIssueCount: 1 });
+    listAgentsMock.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "Codex Worker",
+        role: "engineer",
+        status: "active",
+      },
+    ]);
+    listIssuesMock.mockResolvedValue([
+      {
+        id: "issue-1",
+        identifier: "PAP-1",
+        title: "Assigned to removed user",
+        status: "todo",
+      },
+    ]);
   });
 
   afterEach(() => {
@@ -211,6 +262,121 @@ describe("CompanyAccess", () => {
       status: "active",
       grants: [],
     });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("removes a member with an issue reassignment target", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanyAccess />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const removeButtons = Array.from(container.querySelectorAll("button")).filter(
+      (button) => button.textContent?.includes("Remove"),
+    );
+    expect(removeButtons.length).toBeGreaterThan(0);
+
+    await act(async () => {
+      removeButtons[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("Remove member");
+    expect(document.body.textContent).toContain("Assigned to removed user");
+
+    const reassignmentSelect = document.body.querySelector("select");
+    expect(reassignmentSelect).toBeTruthy();
+    await act(async () => {
+      reassignmentSelect!.value = "user:user-2";
+      reassignmentSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    const confirmButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent === "Remove member",
+    );
+    expect(confirmButton).toBeTruthy();
+
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(archiveMemberMock).toHaveBeenCalledWith("company-1", "member-1", {
+      reassignment: { assigneeAgentId: null, assigneeUserId: "user-2" },
+    });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows protected member removal reasons from the API", async () => {
+    listMembersMock.mockResolvedValueOnce({
+      members: [
+        {
+          id: "member-admin",
+          companyId: "company-1",
+          principalType: "user",
+          principalId: "admin-user",
+          status: "active",
+          membershipRole: "admin",
+          createdAt: "2026-04-10T00:00:00.000Z",
+          updatedAt: "2026-04-10T00:00:00.000Z",
+          user: {
+            id: "admin-user",
+            email: "admin@paperclip.local",
+            name: "Admin User",
+            image: null,
+          },
+          grants: [],
+          removal: {
+            canArchive: false,
+            reason: "Company admins cannot be removed from company access.",
+          },
+        },
+      ],
+      access: {
+        currentUserRole: "owner",
+        canManageMembers: true,
+        canInviteUsers: true,
+        canApproveJoinRequests: false,
+      },
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanyAccess />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Company admins cannot be removed from company access.");
+    const removeButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Remove"),
+    );
+    expect(removeButton).toBeTruthy();
+    expect(removeButton).toHaveProperty("disabled", true);
 
     await act(async () => {
       root.unmount();

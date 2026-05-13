@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { APPROVAL_TYPES } from "../constants.js";
+import { multilineTextSchema } from "./text.js";
 
 export const createApprovalSchema = z.object({
   type: z.enum(APPROVAL_TYPES),
@@ -11,13 +12,13 @@ export const createApprovalSchema = z.object({
 export type CreateApproval = z.infer<typeof createApprovalSchema>;
 
 export const resolveApprovalSchema = z.object({
-  decisionNote: z.string().optional().nullable(),
+  decisionNote: multilineTextSchema.optional().nullable(),
 });
 
 export type ResolveApproval = z.infer<typeof resolveApprovalSchema>;
 
 export const requestApprovalRevisionSchema = z.object({
-  decisionNote: z.string().optional().nullable(),
+  decisionNote: multilineTextSchema.optional().nullable(),
 });
 
 export type RequestApprovalRevision = z.infer<typeof requestApprovalRevisionSchema>;
@@ -29,7 +30,7 @@ export const resubmitApprovalSchema = z.object({
 export type ResubmitApproval = z.infer<typeof resubmitApprovalSchema>;
 
 export const addApprovalCommentSchema = z.object({
-  body: z.string().min(1),
+  body: multilineTextSchema.pipe(z.string().min(1)),
 });
 
 export type AddApprovalComment = z.infer<typeof addApprovalCommentSchema>;

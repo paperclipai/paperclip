@@ -5,6 +5,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { inArray } from "drizzle-orm";
 import {
   companies,
   createDb,
@@ -30,6 +31,7 @@ describe("execution workspace config helpers", () => {
     expect(readExecutionWorkspaceConfig({
       source: "project_primary",
       config: {
+        environmentId: "32e0464c-2a0b-4ce9-886d-2cc99e6f3e7b",
         provisionCommand: "bash ./scripts/provision-worktree.sh",
         teardownCommand: "bash ./scripts/teardown-worktree.sh",
         cleanupCommand: "pkill -f vite || true",
@@ -38,6 +40,7 @@ describe("execution workspace config helpers", () => {
         },
       },
     })).toEqual({
+      environmentId: "32e0464c-2a0b-4ce9-886d-2cc99e6f3e7b",
       provisionCommand: "bash ./scripts/provision-worktree.sh",
       teardownCommand: "bash ./scripts/teardown-worktree.sh",
       cleanupCommand: "pkill -f vite || true",
@@ -55,11 +58,13 @@ describe("execution workspace config helpers", () => {
         source: "project_primary",
         createdByRuntime: false,
         config: {
+          environmentId: "32e0464c-2a0b-4ce9-886d-2cc99e6f3e7b",
           provisionCommand: "bash ./scripts/provision-worktree.sh",
           cleanupCommand: "pkill -f vite || true",
         },
       },
       {
+        environmentId: "6286d5a9-9ea7-42b9-98b3-18ee904c26d7",
         teardownCommand: "bash ./scripts/teardown-worktree.sh",
         workspaceRuntime: {
           services: [{ name: "web", command: "pnpm dev" }],
@@ -69,6 +74,7 @@ describe("execution workspace config helpers", () => {
       source: "project_primary",
       createdByRuntime: false,
       config: {
+        environmentId: "6286d5a9-9ea7-42b9-98b3-18ee904c26d7",
         provisionCommand: "bash ./scripts/provision-worktree.sh",
         teardownCommand: "bash ./scripts/teardown-worktree.sh",
         cleanupCommand: "pkill -f vite || true",
@@ -78,6 +84,22 @@ describe("execution workspace config helpers", () => {
           services: [{ name: "web", command: "pnpm dev" }],
         },
       },
+    });
+  });
+
+  it("clears a persisted environment selection when patching it to null", () => {
+    expect(mergeExecutionWorkspaceConfig(
+      {
+        source: "project_primary",
+        config: {
+          environmentId: "32e0464c-2a0b-4ce9-886d-2cc99e6f3e7b",
+        },
+      },
+      {
+        environmentId: null,
+      },
+    )).toEqual({
+      source: "project_primary",
     });
   });
 
@@ -221,6 +243,104 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       "This workspace is still linked to an open issue. Archiving it will detach this shared workspace session from those issues, but keep the underlying project workspace available.",
       "This shared workspace session points at project workspace infrastructure. Archiving it only removes the session record.",
     ]));
+  });
+
+  it("clears matching environment selections transactionally without touching other workspaces", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const matchingWorkspaceId = randomUUID();
+    const otherWorkspaceId = randomUUID();
+    const untouchedWorkspaceId = randomUUID();
+    const environmentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace cleanup",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+      },
+    });
+    await db.insert(executionWorkspaces).values([
+      {
+        id: matchingWorkspaceId,
+        companyId,
+        projectId,
+        mode: "isolated_workspace",
+        strategyType: "directory",
+        name: "Matching workspace",
+        status: "active",
+        providerType: "local_fs",
+        cwd: "/tmp/workspace-a",
+        metadata: {
+          source: "manual",
+          config: {
+            environmentId,
+            cleanupCommand: "echo clean",
+          },
+        },
+      },
+      {
+        id: otherWorkspaceId,
+        companyId,
+        projectId,
+        mode: "isolated_workspace",
+        strategyType: "directory",
+        name: "Different environment",
+        status: "active",
+        providerType: "local_fs",
+        cwd: "/tmp/workspace-b",
+        metadata: {
+          source: "manual",
+          config: {
+            environmentId: randomUUID(),
+          },
+        },
+      },
+      {
+        id: untouchedWorkspaceId,
+        companyId,
+        projectId,
+        mode: "isolated_workspace",
+        strategyType: "directory",
+        name: "No environment",
+        status: "active",
+        providerType: "local_fs",
+        cwd: "/tmp/workspace-c",
+        metadata: {
+          source: "manual",
+        },
+      },
+    ]);
+
+    const cleared = await svc.clearEnvironmentSelection(companyId, environmentId);
+
+    expect(cleared).toBe(1);
+
+    const rows = await db
+      .select({
+        id: executionWorkspaces.id,
+        metadata: executionWorkspaces.metadata,
+      })
+      .from(executionWorkspaces)
+      .where(inArray(executionWorkspaces.id, [matchingWorkspaceId, otherWorkspaceId, untouchedWorkspaceId]));
+
+    const byId = new Map(rows.map((row) => [row.id, row.metadata as Record<string, unknown> | null]));
+    expect(readExecutionWorkspaceConfig(byId.get(matchingWorkspaceId) ?? null)).toMatchObject({
+      environmentId: null,
+      cleanupCommand: "echo clean",
+    });
+    expect(readExecutionWorkspaceConfig(byId.get(otherWorkspaceId) ?? null)).toMatchObject({
+      environmentId: expect.any(String),
+    });
+    expect(readExecutionWorkspaceConfig(byId.get(untouchedWorkspaceId) ?? null)).toBeNull();
   });
 
   it("warns about dirty and unmerged git worktrees and reports cleanup actions", async () => {

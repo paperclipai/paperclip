@@ -10,25 +10,32 @@ import {
   Network,
   Boxes,
   Repeat,
+  GitBranch,
   Settings,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
+import { NavLink } from "@/lib/router";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarProjects } from "./SidebarProjects";
 import { SidebarAgents } from "./SidebarAgents";
-import { useDialog } from "../context/DialogContext";
+import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { heartbeatsApi } from "../api/heartbeats";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { useInboxBadge } from "../hooks/useInboxBadge";
 import { Button } from "@/components/ui/button";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
 export function Sidebar() {
-  const { openNewIssue } = useDialog();
+  const { openNewIssue } = useDialogActions();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const inboxBadge = useInboxBadge(selectedCompanyId);
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
@@ -36,10 +43,7 @@ export function Sidebar() {
     refetchInterval: 10_000,
   });
   const liveRunCount = liveRuns?.length ?? 0;
-
-  function openSearch() {
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));
-  }
+  const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
 
   const pluginContext = {
     companyId: selectedCompanyId,
@@ -47,20 +51,23 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
-      {/* Top: current company label + search (Paperclip logo in CompanyRail links to /home) */}
+    <aside className="w-full h-full min-h-0 border-r border-border bg-background flex flex-col">
+      {/* Top bar: Company name (bold) + Search — aligned with top sections (no visible border) */}
       <div className="flex items-center gap-1 px-3 h-12 shrink-0">
         <span className="min-w-0 flex-1 truncate text-sm font-bold text-foreground">
           {selectedCompany?.name ?? "Paperclip"}
         </span>
         <Button
+          asChild
           variant="ghost"
           size="icon-sm"
           className="text-muted-foreground shrink-0"
-          onClick={openSearch}
           aria-label="Search"
+          title="Search"
         >
-          <Search className="h-4 w-4" />
+          <NavLink to="/search">
+            <Search className="h-4 w-4" />
+          </NavLink>
         </Button>
       </div>
 
@@ -96,6 +103,9 @@ export function Sidebar() {
           <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+          {showWorkspacesLink ? (
+            <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
+          ) : null}
         </SidebarSection>
 
         <SidebarProjects />

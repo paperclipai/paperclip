@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
+import type { Issue } from "@paperclipai/shared";
 import type { RunForIssue } from "../api/activity";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
-import { removeLiveRunById, upsertInterruptedRun } from "./optimistic-issue-runs";
+import { clearIssueExecutionRun, removeLiveRunById, upsertInterruptedRun } from "./optimistic-issue-runs";
 
 function createLiveRun(overrides: Partial<LiveRunForIssue> = {}): LiveRunForIssue {
   return {
@@ -89,5 +90,34 @@ describe("removeLiveRunById", () => {
       createLiveRun({ id: "run-2" }),
     ], "run-1");
     expect(runs?.map((run) => run.id)).toEqual(["run-2"]);
+  });
+});
+
+describe("clearIssueExecutionRun", () => {
+  it("clears the cached execution run when the interrupted run matches the issue lock", () => {
+    const issue = {
+      id: "issue-1",
+      executionRunId: "run-1",
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date("2026-04-08T21:00:00.000Z"),
+      updatedAt: new Date("2026-04-08T21:00:00.000Z"),
+    } as Issue;
+
+    expect(clearIssueExecutionRun(issue, "run-1")).toMatchObject({
+      id: "issue-1",
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
+  });
+
+  it("leaves the cached issue alone when another run is interrupted", () => {
+    const issue = {
+      id: "issue-1",
+      executionRunId: "run-2",
+      executionAgentNameKey: "codexcoder",
+    } as Issue;
+
+    expect(clearIssueExecutionRun(issue, "run-1")).toBe(issue);
   });
 });

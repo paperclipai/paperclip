@@ -21,18 +21,48 @@ const mockSecretService = vi.hoisted(() => ({
   normalizeEnvBindingsForPersistence: vi.fn(),
 }));
 
+const mockEnvironmentService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
+
 const mockWorkspaceOperationService = vi.hoisted(() => ({}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockAssertCanManageProjectWorkspaceRuntimeServices = vi.hoisted(() => vi.fn());
 const mockAssertCanManageExecutionWorkspaceRuntimeServices = vi.hoisted(() => vi.fn());
 
-function registerModuleMocks() {
+vi.mock("../telemetry.js", () => ({
+  getTelemetryClient: mockGetTelemetryClient,
+}));
+
+vi.mock("../services/index.js", () => ({
+  environmentService: () => mockEnvironmentService,
+  executionWorkspaceService: () => mockExecutionWorkspaceService,
+  logActivity: mockLogActivity,
+  projectService: () => mockProjectService,
+  secretService: () => mockSecretService,
+  workspaceOperationService: () => mockWorkspaceOperationService,
+}));
+
+vi.mock("../services/workspace-runtime.js", () => ({
+  cleanupExecutionWorkspaceArtifacts: vi.fn(),
+  startRuntimeServicesForWorkspaceControl: vi.fn(),
+  stopRuntimeServicesForExecutionWorkspace: vi.fn(),
+  stopRuntimeServicesForProjectWorkspace: vi.fn(),
+}));
+
+vi.mock("../routes/workspace-runtime-service-authz.js", () => ({
+  assertCanManageProjectWorkspaceRuntimeServices: mockAssertCanManageProjectWorkspaceRuntimeServices,
+  assertCanManageExecutionWorkspaceRuntimeServices: mockAssertCanManageExecutionWorkspaceRuntimeServices,
+}));
+
+function registerWorkspaceRouteMocks() {
   vi.doMock("../telemetry.js", () => ({
     getTelemetryClient: mockGetTelemetryClient,
   }));
 
   vi.doMock("../services/index.js", () => ({
+    environmentService: () => mockEnvironmentService,
     executionWorkspaceService: () => mockExecutionWorkspaceService,
     logActivity: mockLogActivity,
     projectService: () => mockProjectService,
@@ -53,9 +83,17 @@ function registerModuleMocks() {
   }));
 }
 
+let appImportCounter = 0;
+
 async function createProjectApp(actor: Record<string, unknown>) {
-  const { projectRoutes } = await import("../routes/projects.js");
-  const { errorHandler } = await import("../middleware/index.js");
+  registerWorkspaceRouteMocks();
+  appImportCounter += 1;
+  const routeModulePath = `../routes/projects.js?workspace-runtime-routes-authz-${appImportCounter}`;
+  const middlewareModulePath = `../middleware/index.js?workspace-runtime-routes-authz-${appImportCounter}`;
+  const [{ projectRoutes }, { errorHandler }] = await Promise.all([
+    import(routeModulePath) as Promise<typeof import("../routes/projects.js")>,
+    import(middlewareModulePath) as Promise<typeof import("../middleware/index.js")>,
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -68,8 +106,14 @@ async function createProjectApp(actor: Record<string, unknown>) {
 }
 
 async function createExecutionWorkspaceApp(actor: Record<string, unknown>) {
-  const { executionWorkspaceRoutes } = await import("../routes/execution-workspaces.js");
-  const { errorHandler } = await import("../middleware/index.js");
+  registerWorkspaceRouteMocks();
+  appImportCounter += 1;
+  const routeModulePath = `../routes/execution-workspaces.js?workspace-runtime-routes-authz-${appImportCounter}`;
+  const middlewareModulePath = `../middleware/index.js?workspace-runtime-routes-authz-${appImportCounter}`;
+  const [{ executionWorkspaceRoutes }, { errorHandler }] = await Promise.all([
+    import(routeModulePath) as Promise<typeof import("../routes/execution-workspaces.js")>,
+    import(middlewareModulePath) as Promise<typeof import("../middleware/index.js")>,
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -141,15 +185,14 @@ function buildExecutionWorkspace(overrides: Record<string, unknown> = {}) {
   };
 }
 
-describe("workspace runtime service route authorization", () => {
+describe.sequential("workspace runtime service route authorization", () => {
   const projectId = "11111111-1111-4111-8111-111111111111";
   const workspaceId = "22222222-2222-4222-8222-222222222222";
   const executionWorkspaceId = "33333333-3333-4333-8333-333333333333";
 
   beforeEach(() => {
-    vi.resetModules();
-    registerModuleMocks();
     vi.clearAllMocks();
+    mockEnvironmentService.getById.mockResolvedValue(null);
     mockSecretService.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env);
     mockProjectService.resolveByReference.mockResolvedValue({ ambiguous: false, project: null });
     mockProjectService.create.mockResolvedValue(buildProject());
@@ -275,6 +318,55 @@ describe("workspace runtime service route authorization", () => {
     expect(res.body.error).toContain("Missing permission");
     expect(mockProjectService.getById).toHaveBeenCalledWith(projectId);
     expect(mockAssertCanManageProjectWorkspaceRuntimeServices).toHaveBeenCalled();
+  }, 15000);
+
+  it("blocks shared-project stop/restart requests from agents", async () => {
+    mockProjectService.getById.mockResolvedValue(buildProject({
+      id: projectId,
+      workspaces: [{
+        id: workspaceId,
+        companyId: "company-1",
+        projectId,
+        name: "Workspace",
+        sourceType: "local_path",
+        cwd: "/tmp/project",
+        repoUrl: null,
+        repoRef: null,
+        defaultRef: null,
+        visibility: "default",
+        setupCommand: null,
+        cleanupCommand: null,
+        remoteProvider: null,
+        remoteWorkspaceRef: null,
+        sharedWorkspaceKey: "shared-key",
+        metadata: null,
+        runtimeConfig: null,
+        isPrimary: false,
+        runtimeServices: [],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }],
+    }));
+    const app = await createProjectApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const responses = await Promise.all([
+      request(app).post(`/api/projects/${projectId}/workspaces/${workspaceId}/runtime-services/stop`).send({}),
+      request(app).post(`/api/projects/${projectId}/workspaces/${workspaceId}/runtime-services/restart`).send({}),
+    ]);
+
+    for (const res of responses) {
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("Missing permission");
+      expect(mockProjectService.getById).toHaveBeenCalledWith(projectId);
+      expect(mockAssertCanManageProjectWorkspaceRuntimeServices).not.toHaveBeenCalled();
+    }
+
   }, 15000);
 
   it("rejects agent callers that create project execution workspace commands", async () => {

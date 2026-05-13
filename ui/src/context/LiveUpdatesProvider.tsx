@@ -10,6 +10,7 @@ import { useCompany } from "./CompanyContext";
 import type { ToastInput } from "./ToastContext";
 import { useToastActions } from "./ToastContext";
 import { upsertIssueCommentInPages } from "../lib/optimistic-issue-comments";
+import { clearIssueExecutionRun, removeLiveRunById } from "../lib/optimistic-issue-runs";
 import { queryKeys } from "../lib/queryKeys";
 import { toCompanyRelativePath } from "../lib/company-routes";
 import { useLocation } from "../lib/router";
@@ -19,6 +20,7 @@ const TOAST_COOLDOWN_MAX = 3;
 const RECONNECT_SUPPRESS_MS = 2000;
 const SOCKET_CONNECTING = 0;
 const SOCKET_OPEN = 1;
+const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 
 type LiveUpdatesSocketLike = {
   readyState: number;
@@ -275,11 +277,31 @@ function invalidateVisibleIssueRunQueries(
     (!!agentId && !!context.assigneeAgentId && agentId === context.assigneeAgentId);
   if (!matchesVisibleIssue) return false;
 
-  queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(context.routeIssueRef) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(context.routeIssueRef) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(context.routeIssueRef) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(context.routeIssueRef) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(context.routeIssueRef) });
+  const status = readString(payload.status);
+  if (runId && status && TERMINAL_RUN_STATUSES.has(status)) {
+    for (const issueRef of context.issueRefs) {
+      queryClient.setQueryData(
+        queryKeys.issues.liveRuns(issueRef),
+        (current: LiveRunForIssue[] | undefined) => removeLiveRunById(current, runId),
+      );
+      queryClient.setQueryData(
+        queryKeys.issues.activeRun(issueRef),
+        (current: ActiveRunForIssue | null | undefined) => (current?.id === runId ? null : current),
+      );
+      queryClient.setQueryData(
+        queryKeys.issues.detail(issueRef),
+        (current: Issue | undefined) => clearIssueExecutionRun(current, runId),
+      );
+    }
+  }
+
+  for (const issueRef of context.issueRefs) {
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueRef) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueRef) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueRef) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueRef) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueRef) });
+  }
   return true;
 }
 
@@ -662,6 +684,9 @@ function invalidateActivityQueries(
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref), ...invalidationOptions });
         if (action === "issue.comment_added") {
           queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref), ...invalidationOptions });
+        }
+        if (action?.startsWith("issue.thread_interaction_")) {
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref), ...invalidationOptions });
         }
       }
     }

@@ -69,6 +69,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     lastActivityAt: new Date("2026-03-11T00:00:00.000Z"),
     isUnreadForMe: false,
     ...overrides,
+    workMode: overrides.workMode ?? "standard",
   };
 }
 
@@ -144,6 +145,10 @@ describe("FailedRunInboxRow", () => {
       logBytes: null,
       logSha256: null,
       logCompressed: false,
+      lastOutputAt: null,
+      lastOutputSeq: 0,
+      lastOutputStream: null,
+      lastOutputBytes: null,
       errorCode: null,
       externalRunId: null,
       processPid: null,
@@ -151,6 +156,11 @@ describe("FailedRunInboxRow", () => {
       processStartedAt: null,
       retryOfRunId: null,
       processLossRetryCount: 0,
+      livenessState: null,
+      livenessReason: null,
+      continuationAttempt: 0,
+      lastUsefulActionAt: null,
+      nextAction: null,
       stdoutExcerpt: null,
       stderrExcerpt: null,
       contextSnapshot: null,

@@ -9,12 +9,13 @@ export const executionWorkspaceStatusSchema = z.enum([
 ]);
 
 export const executionWorkspaceConfigSchema = z.object({
+  environmentId: z.string().uuid().optional().nullable(),
   provisionCommand: z.string().optional().nullable(),
   teardownCommand: z.string().optional().nullable(),
   cleanupCommand: z.string().optional().nullable(),
   workspaceRuntime: z.record(z.unknown()).optional().nullable(),
-  desiredState: z.enum(["running", "stopped"]).optional().nullable(),
-  serviceStates: z.record(z.enum(["running", "stopped"])).optional().nullable(),
+  desiredState: z.enum(["running", "stopped", "manual"]).optional().nullable(),
+  serviceStates: z.record(z.enum(["running", "stopped", "manual"])).optional().nullable(),
 }).strict();
 
 export const workspaceRuntimeControlTargetSchema = z.object({
