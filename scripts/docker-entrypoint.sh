@@ -1,3 +1,4 @@
+
 #!/bin/sh
 set -e
 
@@ -21,6 +22,11 @@ if [ "$(id -g node)" -ne "$PGID" ]; then
     usermod -g "$PGID" node
     changed=1
 fi
+
+# Ensure required directories exist and have correct ownership
+mkdir -p /paperclip/.gemini
+chown node:node /paperclip
+chown node:node /paperclip/.gemini
 
 if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
