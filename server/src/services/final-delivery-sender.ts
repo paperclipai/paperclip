@@ -402,11 +402,11 @@ function finalDeliveryClaimResultSql(claim: FinalDeliveryClaim) {
         ELSE 0
       END
     ) + 1,
-    'lastAttemptAt', ${claim.claimedAt.toISOString()},
+    'lastAttemptAt', ${claim.claimedAt.toISOString()}::text,
     'nextAttemptAt', null,
-    'claimToken', ${claim.claimToken},
-    'claimedAt', ${claim.claimedAt.toISOString()},
-    'claimExpiresAt', ${claim.claimExpiresAt.toISOString()}
+    'claimToken', ${claim.claimToken}::text,
+    'claimedAt', ${claim.claimedAt.toISOString()}::text,
+    'claimExpiresAt', ${claim.claimExpiresAt.toISOString()}::text
   )`;
 }
 
