@@ -563,7 +563,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(decision.createdByRunId).toBe(managerRunId);
   });
 
-  it("does not create a new evaluation issue when a recently-closed one exists within the rearm window", async () => {
+  it("reopens a cancelled evaluation issue rather than creating a duplicate on the next scan", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const { companyId, runId } = await seedRunningRun({
       now,
@@ -581,11 +581,12 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     const closedAt = new Date(now.getTime() + 5 * 60 * 1000);
     await db.update(issues).set({ status: "cancelled", cancelledAt: closedAt, updatedAt: closedAt }).where(eq(issues.id, evaluationIssueId!));
 
-    // Second scan within the rearm window should NOT create a new issue
-    const nowWithinRearm = new Date(now.getTime() + 10 * 60 * 1000);
-    const second = await heartbeat.scanSilentActiveRuns({ now: nowWithinRearm, companyId });
+    // Next scan reopens the same issue instead of creating a new one
+    const nowLater = new Date(now.getTime() + 10 * 60 * 1000);
+    const second = await heartbeat.scanSilentActiveRuns({ now: nowLater, companyId });
     expect(second.created).toBe(0);
-    expect(second.existing).toBe(1);
+    expect(second.reopened).toBe(1);
+    expect(second.evaluationIssueIds[0]).toBe(evaluationIssueId);
 
     const evaluations = await db
       .select()

@@ -388,6 +388,40 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
   ].join("\n");
 }
 
+export type StaleRunEvaluationDecision =
+  | { kind: "escalate"; evaluationIssueId: string }
+  | { kind: "existing"; evaluationIssueId: string }
+  | { kind: "reopen"; evaluationIssueId: string }
+  | { kind: "create" };
+
+/**
+ * Pure decision: given the current silence level and the state of any existing
+ * evaluation issue, what action should the watchdog take?
+ *
+ * Extracted for unit-testability — the stateful side-effects live in
+ * createOrUpdateStaleRunEvaluation.
+ */
+export function decideStaleRunEvaluationAction(input: {
+  level: "critical" | "suspicious";
+  openEvaluation: { id: string; priority: string } | null;
+  latestClosedEvaluation: { id: string } | null;
+}): StaleRunEvaluationDecision {
+  const { level, openEvaluation, latestClosedEvaluation } = input;
+
+  if (openEvaluation) {
+    if (level === "critical" && openEvaluation.priority !== "high") {
+      return { kind: "escalate", evaluationIssueId: openEvaluation.id };
+    }
+    return { kind: "existing", evaluationIssueId: openEvaluation.id };
+  }
+
+  if (latestClosedEvaluation) {
+    return { kind: "reopen", evaluationIssueId: latestClosedEvaluation.id };
+  }
+
+  return { kind: "create" };
+}
+
 export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup }) {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
@@ -719,33 +753,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           notInArray(issues.status, ["done", "cancelled"]),
         ),
       )
-      .limit(1);
-    return row ?? null;
-  }
-
-  async function findRecentlyClosedStaleRunEvaluation(companyId: string, runId: string, now = new Date()) {
-    const rearmCutoff = new Date(now.getTime() - ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS);
-    const [row] = await db
-      .select({
-        id: issues.id,
-        identifier: issues.identifier,
-        status: issues.status,
-        priority: issues.priority,
-        assigneeAgentId: issues.assigneeAgentId,
-        updatedAt: issues.updatedAt,
-      })
-      .from(issues)
-      .where(
-        and(
-          eq(issues.companyId, companyId),
-          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
-          eq(issues.originId, runId),
-          isNull(issues.hiddenAt),
-          inArray(issues.status, ["done", "cancelled"]),
-          gt(issues.updatedAt, rearmCutoff),
-        ),
-      )
-      .orderBy(desc(issues.updatedAt))
       .limit(1);
     return row ?? null;
   }
@@ -1118,13 +1125,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         });
       }
       return { kind: "existing" as const, evaluationIssueId: existing.id };
-    }
-
-    // If a recently-closed evaluation issue exists (within the rearm window), skip creating a new one.
-    // This prevents repeated issue spam when evaluation issues are closed/cancelled between scan cycles.
-    const recentlyClosed = await findRecentlyClosedStaleRunEvaluation(input.run.companyId, input.run.id, input.now);
-    if (recentlyClosed) {
-      return { kind: "existing" as const, evaluationIssueId: recentlyClosed.id };
     }
 
     const ownerAgentId = await resolveStaleRunOwnerAgentId({ run: input.run, runningAgent, sourceIssue });
