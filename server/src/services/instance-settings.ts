@@ -42,6 +42,13 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
       enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? false,
+      enableProviderRoutingFallback: parsed.data.enableProviderRoutingFallback ?? false,
+      providerRoutingStage: parsed.data.providerRoutingStage ?? 0,
+      providerRoutingFallbackModel: parsed.data.providerRoutingFallbackModel ?? "deepseek/deepseek-coder",
+      providerRoutingMaxFallbackSpendPerDayUsd: parsed.data.providerRoutingMaxFallbackSpendPerDayUsd ?? 5,
+      providerRoutingMaxFallbackRunsPerHour: parsed.data.providerRoutingMaxFallbackRunsPerHour ?? 20,
+      providerRoutingMaxFallbackRunsPerDay: parsed.data.providerRoutingMaxFallbackRunsPerDay ?? 100,
+      providerRoutingCircuitBreakerCooldownMinutes: parsed.data.providerRoutingCircuitBreakerCooldownMinutes ?? 60,
     };
   }
   return {
@@ -49,6 +56,13 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
     enableIsolatedWorkspaces: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
+    enableProviderRoutingFallback: false,
+    providerRoutingStage: 0,
+    providerRoutingFallbackModel: "deepseek/deepseek-coder",
+    providerRoutingMaxFallbackSpendPerDayUsd: 5,
+    providerRoutingMaxFallbackRunsPerHour: 20,
+    providerRoutingMaxFallbackRunsPerDay: 100,
+    providerRoutingCircuitBreakerCooldownMinutes: 60,
   };
 }
 

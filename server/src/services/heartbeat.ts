@@ -189,7 +189,7 @@ function readHeartbeatRunErrorFamily(
   const persistedFamily = readNonEmptyString(resultJson.errorFamily);
   if (persistedFamily) return persistedFamily;
 
-  if (run.errorCode === "codex_transient_upstream" || run.errorCode === "claude_transient_upstream") {
+  if (run.errorCode === "codex_transient_upstream" || run.errorCode === "claude_transient_upstream" || run.errorCode === "claude_quota_exhausted") {
     return "transient_upstream";
   }
   return null;

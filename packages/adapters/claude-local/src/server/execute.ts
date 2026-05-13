@@ -42,6 +42,7 @@ import {
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeMaxTurnsResult,
+  isClaudeQuotaExhaustedError,
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
 } from "./parse.js";
@@ -630,8 +631,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             errorMessage: fallbackErrorMessage,
           })
         : null;
+      const quotaExhausted = transientUpstream && isClaudeQuotaExhaustedError({
+        parsed: null,
+        stdout: proc.stdout,
+        stderr: proc.stderr,
+        errorMessage: fallbackErrorMessage,
+      });
       const errorCode = loginMeta.requiresLogin
         ? "claude_auth_required"
+        : quotaExhausted
+        ? "claude_quota_exhausted"
         : transientUpstream
         ? "claude_transient_upstream"
         : null;
@@ -711,8 +720,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           errorMessage,
         })
       : null;
+    const quotaExhausted = transientUpstream && isClaudeQuotaExhaustedError({
+      parsed,
+      stdout: proc.stdout,
+      stderr: proc.stderr,
+      errorMessage,
+    });
     const resolvedErrorCode = loginMeta.requiresLogin
       ? "claude_auth_required"
+      : quotaExhausted
+      ? "claude_quota_exhausted"
       : transientUpstream
       ? "claude_transient_upstream"
       : null;

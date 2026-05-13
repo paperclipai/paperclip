@@ -359,6 +359,20 @@ export function extractClaudeRetryNotBefore(
   return parseClaudeResetClockTime(match[1] ?? "", now, match[2]);
 }
 
+const CLAUDE_QUOTA_EXHAUSTED_RE =
+  /(?:out\s+of\s+extra\s+usage|extra\s+usage\b|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)/i;
+
+export function isClaudeQuotaExhaustedError(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const haystack = buildClaudeTransientHaystack(input);
+  if (!haystack) return false;
+  return CLAUDE_QUOTA_EXHAUSTED_RE.test(haystack);
+}
+
 export function isClaudeTransientUpstreamError(input: {
   parsed?: Record<string, unknown> | null;
   stdout?: string | null;

@@ -37,6 +37,13 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableIsolatedWorkspaces: z.boolean().default(false),
   autoRestartDevServerWhenIdle: z.boolean().default(false),
   enableIssueGraphLivenessAutoRecovery: z.boolean().default(false),
+  enableProviderRoutingFallback: z.boolean().default(false),
+  providerRoutingStage: z.number().min(0).max(3).default(0),
+  providerRoutingFallbackModel: z.string().default("deepseek/deepseek-coder"),
+  providerRoutingMaxFallbackSpendPerDayUsd: z.number().default(5),
+  providerRoutingMaxFallbackRunsPerHour: z.number().default(20),
+  providerRoutingMaxFallbackRunsPerDay: z.number().default(100),
+  providerRoutingCircuitBreakerCooldownMinutes: z.number().default(60),
 }).strict();
 
 export const patchInstanceExperimentalSettingsSchema = instanceExperimentalSettingsSchema.partial();

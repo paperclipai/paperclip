@@ -28,6 +28,13 @@ export interface InstanceExperimentalSettings {
   enableIsolatedWorkspaces: boolean;
   autoRestartDevServerWhenIdle: boolean;
   enableIssueGraphLivenessAutoRecovery: boolean;
+  enableProviderRoutingFallback: boolean;
+  providerRoutingStage: number;
+  providerRoutingFallbackModel: string;
+  providerRoutingMaxFallbackSpendPerDayUsd: number;
+  providerRoutingMaxFallbackRunsPerHour: number;
+  providerRoutingMaxFallbackRunsPerDay: number;
+  providerRoutingCircuitBreakerCooldownMinutes: number;
 }
 
 export interface InstanceSettings {
