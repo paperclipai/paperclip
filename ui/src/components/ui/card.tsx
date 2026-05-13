@@ -7,7 +7,15 @@ function Card({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="card"
       className={cn(
-        "bg-card text-card-foreground flex flex-col gap-6 border py-6 shadow-sm",
+        // Base layout
+        "bg-card text-card-foreground flex flex-col gap-6 border py-6",
+        // Liquid-glass: larger radius, layered soft shadow
+        "rounded-2xl",
+        "shadow-[0_4px_16px_rgb(0_0_0/0.22),0_1px_4px_rgb(0_0_0/0.12),0_0_0_1px_rgb(0_0_0/0.08)]",
+        // Inner-top highlight via inset box-shadow (white shimmer at card top edge)
+        "[box-shadow:0_4px_16px_rgb(0_0_0/0.22),0_1px_4px_rgb(0_0_0/0.12),inset_0_1px_0_0_rgb(255_255_255/0.08)]",
+        // Dark-mode lifts the inner highlight slightly
+        "dark:[box-shadow:0_4px_16px_rgb(0_0_0/0.32),0_1px_4px_rgb(0_0_0/0.18),inset_0_1px_0_0_rgb(255_255_255/0.08)]",
         className
       )}
       {...props}

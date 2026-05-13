@@ -38,13 +38,34 @@
   --color-sidebar-ring: var(--sidebar-ring);
   --radius-sm: 0.375rem;
   --radius-md: 0.5rem;
-  --radius-lg: 0px;
-  --radius-xl: 0px;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-2xl: 1.25rem;
+  --radius-3xl: 1.75rem;
+
+  /* Glass surface layered shadows — sm / md / lg depth */
+  --shadow-glass-sm: 0 1px 2px rgb(0 0 0 / 0.18), 0 0 0 1px rgb(0 0 0 / 0.06);
+  --shadow-glass-md: 0 4px 16px rgb(0 0 0 / 0.22), 0 1px 4px rgb(0 0 0 / 0.12), 0 0 0 1px rgb(0 0 0 / 0.08);
+  --shadow-glass-lg: 0 12px 40px rgb(0 0 0 / 0.30), 0 4px 12px rgb(0 0 0 / 0.16), 0 1px 3px rgb(0 0 0 / 0.10), 0 0 0 1px rgb(0 0 0 / 0.08);
+
+  /* Spring / elastic easing tokens */
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-spring-soft: cubic-bezier(0.37, 1.32, 0.58, 1);
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 :root {
   color-scheme: light;
   --radius: 0;
+
+  /* Glass surface backgrounds — light mode */
+  --glass-bg-subtle:  rgb(255 255 255 / 0.55);
+  --glass-bg-base:    rgb(255 255 255 / 0.72);
+  --glass-bg-raised:  rgb(255 255 255 / 0.88);
+  --glass-border:     rgb(0 0 0 / 0.07);
+  --glass-border-light: rgb(255 255 255 / 0.60);
+  --glass-inner-highlight: linear-gradient(180deg, rgb(255 255 255 / 0.12) 0%, rgb(255 255 255 / 0) 100%);
+
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -92,6 +113,14 @@
 }
 
 .dark {
+  /* Glass surface backgrounds — dark mode */
+  --glass-bg-subtle:  rgb(255 255 255 / 0.04);
+  --glass-bg-base:    rgb(255 255 255 / 0.07);
+  --glass-bg-raised:  rgb(255 255 255 / 0.10);
+  --glass-border:     rgb(255 255 255 / 0.10);
+  --glass-border-light: rgb(255 255 255 / 0.06);
+  --glass-inner-highlight: linear-gradient(180deg, rgb(255 255 255 / 0.08) 0%, rgb(255 255 255 / 0) 100%);
+
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);
