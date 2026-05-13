@@ -8,6 +8,7 @@ import type {
   IssueDocument,
   IssueTreeControlPreview,
   IssueTreeHold,
+  IssueTreeObservability,
   IssueValidationHistory,
 } from "@paperclipai/shared";
 import { act, type ButtonHTMLAttributes, type ReactNode } from "react";
@@ -23,6 +24,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   listInteractions: vi.fn(),
   listDocuments: vi.fn(),
   listValidationHistory: vi.fn(),
+  getTreeObservability: vi.fn(),
   listAttachments: vi.fn(),
   listFeedbackVotes: vi.fn(),
   markRead: vi.fn(),
@@ -510,6 +512,93 @@ function createValidationHistory(overrides: Partial<IssueValidationHistory> = {}
   };
 }
 
+function createTreeObservability(overrides: Partial<IssueTreeObservability> = {}): IssueTreeObservability {
+  return {
+    issueId: "issue-1",
+    generatedAt: new Date("2026-04-21T00:10:00.000Z"),
+    summary: {
+      issueId: "issue-1",
+      issueCount: 2,
+      activeIssueCount: 2,
+      doneIssueCount: 0,
+      cancelledIssueCount: 0,
+      blockedIssueCount: 1,
+      runCount: 2,
+      activeRunCount: 1,
+      failedRunCount: 1,
+      errorEventCount: 1,
+      costCents: 250,
+      inputTokens: 600,
+      cachedInputTokens: 100,
+      outputTokens: 200,
+      runtimeMs: 90_000,
+      lastActivityAt: new Date("2026-04-21T00:09:00.000Z"),
+    },
+    nodes: [
+      {
+        id: "issue-1",
+        identifier: "PAP-1",
+        title: "Issue detail smoke",
+        status: "in_progress",
+        parentId: null,
+        depth: 0,
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        runCount: 1,
+        activeRunCount: 0,
+        failedRunCount: 0,
+        errorEventCount: 0,
+        costCents: 50,
+        inputTokens: 100,
+        cachedInputTokens: 0,
+        outputTokens: 50,
+        runtimeMs: 30_000,
+        lastActivityAt: new Date("2026-04-21T00:05:00.000Z"),
+        latestRunStatus: "succeeded",
+        latestRunId: "run-root",
+      },
+      {
+        id: "issue-child",
+        identifier: "PAP-2",
+        title: "Child observability",
+        status: "blocked",
+        parentId: "issue-1",
+        depth: 1,
+        assigneeAgentId: "agent-1",
+        assigneeUserId: null,
+        runCount: 1,
+        activeRunCount: 1,
+        failedRunCount: 1,
+        errorEventCount: 1,
+        costCents: 200,
+        inputTokens: 500,
+        cachedInputTokens: 100,
+        outputTokens: 150,
+        runtimeMs: 60_000,
+        lastActivityAt: new Date("2026-04-21T00:09:00.000Z"),
+        latestRunStatus: "failed",
+        latestRunId: "run-failed",
+      },
+    ],
+    timeline: [
+      {
+        id: "error:issue-child:1",
+        kind: "error",
+        severity: "error",
+        issueId: "issue-child",
+        issueIdentifier: "PAP-2",
+        issueTitle: "Child observability",
+        runId: "run-failed",
+        timestamp: new Date("2026-04-21T00:09:00.000Z"),
+        label: "adapter_error",
+        message: "Adapter failed after retry",
+        costCents: null,
+      },
+    ],
+    ...overrides,
+  };
+}
+
 function createAgent(overrides: Partial<Agent> = {}): Agent {
   return {
     id: "agent-1",
@@ -903,6 +992,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.listInteractions.mockResolvedValue([]);
     mockIssuesApi.listDocuments.mockResolvedValue([]);
     mockIssuesApi.listValidationHistory.mockResolvedValue({ issueId: "issue-1", latest: null, entries: [] });
+    mockIssuesApi.getTreeObservability.mockResolvedValue(null);
     mockIssuesApi.listAttachments.mockResolvedValue([]);
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
     mockIssuesApi.markRead.mockResolvedValue({ id: "issue-1", lastReadAt: new Date().toISOString() });
@@ -1010,6 +1100,7 @@ describe("IssueDetail", () => {
     ]);
     mockIssuesApi.listInteractions.mockResolvedValue([createFinalDeliveryInteraction()]);
     mockIssuesApi.listValidationHistory.mockResolvedValue(createValidationHistory());
+    mockIssuesApi.getTreeObservability.mockResolvedValue(createTreeObservability());
 
     await act(async () => {
       root.render(
@@ -1025,6 +1116,7 @@ describe("IssueDetail", () => {
       const text = container.textContent ?? "";
       expect(mockIssuesApi.listDocuments).toHaveBeenCalledWith("PAP-1", { includeSystem: true });
       expect(mockIssuesApi.listValidationHistory).toHaveBeenCalledWith("PAP-1");
+      expect(mockIssuesApi.getTreeObservability).toHaveBeenCalledWith("PAP-1", { limit: 12 });
       expect(text).toContain("Mission Control");
       expect(text).toContain("Gate: blocked");
       expect(text).toContain("validation-contract: present");
@@ -1038,6 +1130,10 @@ describe("IssueDetail", () => {
       expect(text).toContain("Telegram · chat -100123 · thread 103");
       expect(text).toContain("delivered");
       expect(text).toContain("external 910");
+      expect(text).toContain("Tree observability");
+      expect(text).toContain("2 total · 2 active");
+      expect(text).toContain("PAP-2");
+      expect(text).toContain("adapter_error · PAP-2");
       expect(text).toContain("[REDACTED]");
       expect(text).not.toContain("synthetic-placeholder");
     });

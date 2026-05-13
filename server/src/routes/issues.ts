@@ -59,6 +59,7 @@ import {
   issueReferenceService,
   issueService,
   issueFinalDeliveryService,
+  buildIssueTreeObservability,
   listIssueValidationHistory,
   clampIssueListLimit,
   documentService,
@@ -1813,6 +1814,24 @@ export function issueRoutes(
     assertCompanyAccess(req, issue.companyId);
     const history = await listIssueValidationHistory(db, issue.id);
     res.json(history);
+  });
+
+  router.get("/issues/:id/tree-observability", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const rawLimit = Array.isArray(req.query.limit) ? req.query.limit[0] : req.query.limit;
+    const limit = rawLimit === undefined ? undefined : Number(rawLimit);
+    if (limit !== undefined && !Number.isFinite(limit)) {
+      res.status(400).json({ error: "Invalid limit" });
+      return;
+    }
+    const observability = await buildIssueTreeObservability(db, issue.companyId, issue.id, { limit });
+    res.json(observability);
   });
 
   router.get("/issues/:id/documents/:key", async (req, res) => {

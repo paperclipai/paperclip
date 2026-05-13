@@ -14,6 +14,7 @@ import type {
   IssueLabel,
   IssueRetryNowResponse,
   IssueThreadInteraction,
+  IssueTreeObservability,
   IssueValidationHistory,
   IssueTreeControlPreview,
   IssueTreeHold,
@@ -264,6 +265,12 @@ export const issuesApi = {
       `/issues/${id}/documents${options?.includeSystem ? "?includeSystem=true" : ""}`,
     ),
   listValidationHistory: (id: string) => api.get<IssueValidationHistory>(`/issues/${id}/validation-history`),
+  getTreeObservability: (id: string, options: { limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    const qs = params.toString();
+    return api.get<IssueTreeObservability>(`/issues/${id}/tree-observability${qs ? `?${qs}` : ""}`);
+  },
   getDocument: (id: string, key: string) => api.get<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
   upsertDocument: (id: string, key: string, data: UpsertIssueDocument) =>
     api.put<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`, data),

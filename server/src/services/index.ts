@@ -28,6 +28,10 @@ export {
   type IssueExecutionDecisionValidationRow,
 } from "./issue-validation-history.js";
 export {
+  buildIssueTreeObservability,
+  type IssueTreeObservabilityOptions,
+} from "./issue-tree-observability.js";
+export {
   createIssueFinalDeliveryDbStore,
   createIssueFinalDeliverySender,
   createIssueFinalDeliveryTransportFromEnv,

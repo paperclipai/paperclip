@@ -6,6 +6,7 @@ import { issueRoutes } from "../routes/issues.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  getByIdentifier: vi.fn(),
   getAncestors: vi.fn(),
   getRelationSummaries: vi.fn(),
   findMentionedProjectIds: vi.fn(),
@@ -82,6 +83,12 @@ const mockIssueReferenceService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
+const mockBuildIssueTreeObservability = vi.hoisted(() => vi.fn());
+
+const mockFinalDeliveryService = vi.hoisted(() => ({
+  queueForCompletedIssue: vi.fn(async () => null),
+}));
+
 const mockRoutineService = vi.hoisted(() => ({
   syncRunStatusForIssue: vi.fn(async () => undefined),
 }));
@@ -111,8 +118,10 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => mockHeartbeatService,
   instanceSettingsService: () => mockInstanceSettingsService,
   issueApprovalService: () => ({}),
+  issueFinalDeliveryService: () => mockFinalDeliveryService,
   issueReferenceService: () => mockIssueReferenceService,
   issueService: () => mockIssueService,
+  buildIssueTreeObservability: mockBuildIssueTreeObservability,
   logActivity: mockLogActivity,
   projectService: () => mockProjectService,
   routineService: () => mockRoutineService,
@@ -123,17 +132,17 @@ vi.mock("../services/execution-workspaces.js", () => ({
   executionWorkspaceService: () => mockExecutionWorkspaceService,
 }));
 
-function createApp() {
+function createApp(actor: Record<string, unknown> = {
+  type: "board",
+  userId: "local-board",
+  companyIds: ["company-1"],
+  source: "local_implicit",
+  isInstanceAdmin: false,
+}) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = actor;
     next();
   });
   app.use("/api", issueRoutes(mockDb as any, {} as any));
@@ -178,6 +187,7 @@ describe.sequential("issue goal context routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(legacyProjectLinkedIssue);
+    mockIssueService.getByIdentifier.mockResolvedValue(legacyProjectLinkedIssue);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.findMentionedProjectIds.mockResolvedValue([]);
@@ -240,6 +250,75 @@ describe.sequential("issue goal context routes", () => {
       id === projectGoal.id ? projectGoal : null,
     );
     mockGoalService.getDefaultCompanyGoal.mockResolvedValue(null);
+    mockFinalDeliveryService.queueForCompletedIssue.mockResolvedValue(null);
+    mockBuildIssueTreeObservability.mockResolvedValue({
+      issueId: legacyProjectLinkedIssue.id,
+      generatedAt: new Date("2026-05-13T18:00:00Z"),
+      summary: {
+        issueId: legacyProjectLinkedIssue.id,
+        issueCount: 1,
+        activeIssueCount: 1,
+        doneIssueCount: 0,
+        cancelledIssueCount: 0,
+        blockedIssueCount: 0,
+        runCount: 0,
+        activeRunCount: 0,
+        failedRunCount: 0,
+        errorEventCount: 0,
+        costCents: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        runtimeMs: 0,
+        lastActivityAt: new Date("2026-03-24T12:00:00Z"),
+      },
+      nodes: [],
+      timeline: [],
+    });
+  });
+
+  it("returns tree observability for a canonicalized issue route id", async () => {
+    const res = await request(createApp()).get("/api/issues/PAP-581/tree-observability?limit=7");
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PAP-581");
+    expect(mockIssueService.getById).toHaveBeenCalledWith(legacyProjectLinkedIssue.id);
+    expect(mockBuildIssueTreeObservability).toHaveBeenCalledWith(
+      mockDb,
+      "company-1",
+      legacyProjectLinkedIssue.id,
+      { limit: 7 },
+    );
+    expect(res.body.summary.issueCount).toBe(1);
+    expect(res.body.issueId).toBe(legacyProjectLinkedIssue.id);
+  });
+
+  it("rejects invalid tree observability limits before querying the builder", async () => {
+    const res = await request(createApp()).get("/api/issues/PAP-581/tree-observability?limit=abc");
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid limit");
+    expect(mockBuildIssueTreeObservability).not.toHaveBeenCalled();
+  });
+
+  it("enforces company access before returning tree observability", async () => {
+    mockIssueService.getById.mockResolvedValueOnce({
+      ...legacyProjectLinkedIssue,
+      companyId: "company-2",
+    });
+
+    const res = await request(
+      createApp({
+        type: "board",
+        userId: "board-user",
+        companyIds: ["company-1"],
+        source: "api_key",
+        isInstanceAdmin: false,
+      }),
+    ).get("/api/issues/PAP-581/tree-observability");
+
+    expect(res.status).toBe(403);
+    expect(mockBuildIssueTreeObservability).not.toHaveBeenCalled();
   });
 
   it("surfaces the project goal from GET /issues/:id when the issue has no direct goal", async () => {

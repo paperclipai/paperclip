@@ -74,6 +74,7 @@ import { IssueRelatedWorkPanel } from "../components/IssueRelatedWorkPanel";
 import { IssueMonitorActivityCard } from "../components/IssueMonitorActivityCard";
 import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
 import { IssueMissionControlPanel } from "../components/IssueMissionControlPanel";
+import { IssueTreeObservabilityPanel } from "../components/IssueTreeObservabilityPanel";
 import { IssueProperties } from "../components/IssueProperties";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
@@ -1422,6 +1423,19 @@ export function IssueDetail() {
     queryFn: () => issuesApi.listValidationHistory(issueId!),
     enabled: !!issueId && shouldLoadValidationHistory,
     placeholderData: keepPreviousDataForSameQueryTail<IssueValidationHistory>(issueId ?? "pending"),
+  });
+  const {
+    data: treeObservability = null,
+    isFetching: treeObservabilityLoading,
+    isError: treeObservabilityError,
+  } = useQuery({
+    queryKey: queryKeys.issues.treeObservability(issueId!),
+    queryFn: () => issuesApi.getTreeObservability(issueId!, { limit: 12 }),
+    enabled: !!issueId && !!issue,
+    retry: false,
+    placeholderData: keepPreviousDataForSameQueryTail<Awaited<ReturnType<typeof issuesApi.getTreeObservability>>>(
+      issueId ?? "pending",
+    ),
   });
 
   const { data: attachments, isLoading: attachmentsLoading } = useQuery({
@@ -3690,6 +3704,12 @@ export function IssueDetail() {
         documentsError={missionControlDocumentsError}
         interactions={interactions}
         validationHistory={validationHistory}
+      />
+
+      <IssueTreeObservabilityPanel
+        observability={treeObservability}
+        isLoading={treeObservabilityLoading}
+        isError={treeObservabilityError}
       />
 
       {showRichSubIssuesSection ? (

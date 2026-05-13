@@ -151,6 +151,73 @@ export interface IssueValidationHistory {
   entries: IssueValidationHistoryEntry[];
 }
 
+export type IssueTreeObservabilityTimelineKind = "run" | "cost" | "error" | "activity";
+export type IssueTreeObservabilitySeverity = "info" | "success" | "warning" | "error";
+
+export interface IssueTreeObservabilitySummary {
+  issueId: string;
+  issueCount: number;
+  activeIssueCount: number;
+  doneIssueCount: number;
+  cancelledIssueCount: number;
+  blockedIssueCount: number;
+  runCount: number;
+  activeRunCount: number;
+  failedRunCount: number;
+  errorEventCount: number;
+  costCents: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  runtimeMs: number;
+  lastActivityAt: Date | null;
+}
+
+export interface IssueTreeObservabilityNode {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+  parentId: string | null;
+  depth: number;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  runCount: number;
+  activeRunCount: number;
+  failedRunCount: number;
+  errorEventCount: number;
+  costCents: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  runtimeMs: number;
+  lastActivityAt: Date | null;
+  latestRunStatus: string | null;
+  latestRunId: string | null;
+}
+
+export interface IssueTreeObservabilityTimelineEntry {
+  id: string;
+  kind: IssueTreeObservabilityTimelineKind;
+  severity: IssueTreeObservabilitySeverity;
+  issueId: string;
+  issueIdentifier: string | null;
+  issueTitle: string;
+  runId: string | null;
+  timestamp: Date;
+  label: string;
+  message: string | null;
+  costCents: number | null;
+}
+
+export interface IssueTreeObservability {
+  issueId: string;
+  generatedAt: Date;
+  summary: IssueTreeObservabilitySummary;
+  nodes: IssueTreeObservabilityNode[];
+  timeline: IssueTreeObservabilityTimelineEntry[];
+}
+
 export interface LegacyPlanDocument {
   key: "plan";
   body: string;
