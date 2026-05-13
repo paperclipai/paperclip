@@ -8,6 +8,14 @@ import { createHash } from "node:crypto";
  * are UUIDs or other operator-supplied strings that may contain characters
  * requiring quoting, so we derive a deterministic short hex hash and prefix
  * it. Receivers map back to companyId via a Map kept in the transport.
+ *
+ * Hashing here is purely an identifier-fit for Postgres's 63-byte channel-name
+ * cap, NOT a security control. Tenant isolation comes from the WS upgrade
+ * gate in `realtime/live-events-ws.ts` (`authorizeUpgrade` rejects
+ * connections whose principal does not have membership in the requested
+ * company), so the transport trusts the in-process `subscribe(companyId)`
+ * call. SHA-256 truncated to 96 bits is collision-safe for any realistic
+ * tenant count.
  */
 export function pgChannelForCompany(companyId: string): string {
   if (companyId === "*") return "paperclip_live_evt_global";
@@ -15,7 +23,12 @@ export function pgChannelForCompany(companyId: string): string {
   return `paperclip_live_evt_${hash}`;
 }
 
-/** Redis channel name for a given company. Redis tolerates arbitrary strings. */
+/**
+ * Redis channel name for a given company. Redis tolerates arbitrary strings;
+ * this assumes companyId is a UUID. If company-creation ever permits glob
+ * characters (`*`, `?`, `[`) in companyId, this channel naming needs
+ * revisiting (those would interact with PSUBSCRIBE pattern matching).
+ */
 export function redisChannelForCompany(companyId: string): string {
   if (companyId === "*") return "paperclip:live-events:global";
   return `paperclip:live-events:${companyId}`;

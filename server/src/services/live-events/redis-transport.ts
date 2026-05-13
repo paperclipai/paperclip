@@ -4,7 +4,8 @@ import { logger } from "../../middleware/logger.js";
 import { redisChannelForCompany } from "./channel.js";
 import {
   buildEnvelope,
-  type LiveEventFetcher,
+  OVERSIZED_EVENT,
+  PG_NOTIFY_INLINE_LIMIT,
   type LiveEventsTransport,
   type TransportEnvelope,
   type TransportEventHandler,
@@ -36,7 +37,6 @@ export type RedisClientFactory = (url: string) => {
 
 export interface RedisTransportOptions {
   redisUrl: string;
-  fetcher?: LiveEventFetcher;
   /** Defaults to the real ioredis dynamic import. */
   clientFactory?: RedisClientFactory;
 }
@@ -72,13 +72,16 @@ function attachErrorLogger(client: RedisEventClient, role: "publisher" | "subscr
  * mirror the Postgres design so multi-tenant traffic stays isolated.
  *
  * The ctor returns a transport immediately; client init runs in the
- * background. Publishes issued before init completes are queued in
- * memory (bounded) so we don't drop events during the first few
- * milliseconds of server boot.
+ * background. Publishes issued before the publisher socket is open are
+ * dropped silently — live events are best-effort UI hints, not state
+ * signals, and the boot window where this is possible is in the low
+ * milliseconds. Subscribes, by contrast, are queued in
+ * `pendingRedisSubscribes` and flushed on connect so a WebSocket that
+ * attaches during boot still receives subsequent events once init
+ * completes.
  */
 export function createRedisLiveEventsTransport(opts: RedisTransportOptions): LiveEventsTransport {
   const originId = `${process.pid}-${randomUUID()}`;
-  const fetcher = opts.fetcher;
   const factory: RedisClientFactory | undefined = opts.clientFactory;
 
   let publisher: PublishClient | null = null;
@@ -112,24 +115,7 @@ export function createRedisLiveEventsTransport(opts: RedisTransportOptions): Liv
     const handlers = subscriptions.get(companyId);
     if (!handlers) return;
 
-    if (envelope.kind === "full") {
-      deliver(handlers, envelope.event);
-      return;
-    }
-    if (!fetcher) {
-      logger.warn(
-        { companyId, eventId: envelope.event.id },
-        "live-events redis transport: oversized envelope dropped (no fetcher configured)",
-      );
-      return;
-    }
-    fetcher(envelope.event.id)
-      .then((event) => {
-        if (event) deliver(handlers, event);
-      })
-      .catch((err) => {
-        logger.warn({ err, eventId: envelope.event.id }, "live-events redis transport: ref re-fetch failed");
-      });
+    deliver(handlers, envelope.event);
   }
 
   async function flushPendingSubscribes() {
@@ -201,10 +187,28 @@ export function createRedisLiveEventsTransport(opts: RedisTransportOptions): Liv
   }
 
   function publish(event: LiveEvent) {
+    const envelope = buildEnvelope(originId, event);
+    if (envelope === OVERSIZED_EVENT) {
+      // Symmetric noisy drop — see transport.ts OVERSIZED_EVENT docs.
+      logger.error(
+        {
+          companyId: event.companyId,
+          eventType: event.type,
+          eventId: event.id,
+          byteSize: Buffer.byteLength(
+            JSON.stringify({ kind: "full", origin: originId, event }),
+            "utf8",
+          ),
+          limit: PG_NOTIFY_INLINE_LIMIT,
+        },
+        "live-events redis transport: oversized event dropped symmetrically (exceeds NOTIFY inline limit)",
+      );
+      return;
+    }
     if (!publisher) return;
     const channel = redisChannelForCompany(event.companyId);
-    const envelope = JSON.stringify(buildEnvelope(originId, event));
-    publisher.publish(channel, envelope).catch((err) => {
+    const serialized = JSON.stringify(envelope);
+    publisher.publish(channel, serialized).catch((err) => {
       logger.warn({ err, channel }, "live-events redis transport: PUBLISH failed");
     });
   }

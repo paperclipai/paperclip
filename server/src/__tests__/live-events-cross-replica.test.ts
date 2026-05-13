@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { LiveEvent } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
@@ -13,7 +13,11 @@ import {
   subscribeCompanyLiveEvents,
   teardownLiveEventsTransport,
 } from "../services/live-events.js";
-import { buildEnvelope, PG_NOTIFY_INLINE_LIMIT } from "../services/live-events/transport.js";
+import {
+  buildEnvelope,
+  OVERSIZED_EVENT,
+  PG_NOTIFY_INLINE_LIMIT,
+} from "../services/live-events/transport.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -119,35 +123,71 @@ describeEmbeddedPostgres("live-events postgres LISTEN/NOTIFY transport", () => {
     await subscriberA.close();
   });
 
-  it("falls back to ref-envelope + re-fetch for events that exceed the NOTIFY inline limit", async () => {
-    // Build an event whose serialized envelope blows past PG_NOTIFY_INLINE_LIMIT.
-    const big = "x".repeat(PG_NOTIFY_INLINE_LIMIT + 1000);
+  it("drops oversized events symmetrically (no local emit, no cross-replica fan-out)", async () => {
+    // Multibyte fixture: each "🦊" is 4 UTF-8 bytes but only 2 UTF-16 code
+    // units. Picking a count that is comfortably under the limit when
+    // measured as JS string length but blows past it when measured as
+    // UTF-8 bytes — that's exactly the bug the byte-length check fixes.
+    // PG_NOTIFY_INLINE_LIMIT is 7500. A count of 2500 fox emoji yields
+    // ~10_000 UTF-8 bytes (definitely over), and the JSON envelope adds
+    // another ~120 bytes for framing. JS string length would be 5000 —
+    // well under 7500 — so the old `.length` check would have wrongly
+    // emitted this event over the wire.
+    const big = "🦊".repeat(2500);
     const oversized = makeEvent({ id: 999, payload: { big } });
-    const envelope = buildEnvelope("test-origin", oversized);
-    expect(envelope.kind).toBe("ref");
 
-    const fetcher = vi.fn(async (id: number) => {
-      expect(id).toBe(999);
-      return oversized;
-    });
+    // Sanity-check the fixture really does exercise the byte-vs-char
+    // distinction the check is guarding against.
+    const serialized = JSON.stringify({ kind: "full", origin: "x", event: oversized });
+    expect(serialized.length).toBeLessThan(PG_NOTIFY_INLINE_LIMIT);
+    expect(Buffer.byteLength(serialized, "utf8")).toBeGreaterThan(PG_NOTIFY_INLINE_LIMIT);
 
+    // Encoder must report the event as oversized.
+    expect(buildEnvelope("test-origin", oversized)).toBe(OVERSIZED_EVENT);
+
+    // End-to-end: publisher tries to publish, subscriber on another
+    // replica must NOT see anything. The originating replica's local
+    // emission is suppressed at the live-events service layer (verified
+    // by the integration test below); here we verify the transport
+    // itself does not put the bytes on the wire.
     const publisher = createPgLiveEventsTransport({ databaseUrl });
-    const subscriber = createPgLiveEventsTransport({ databaseUrl, fetcher });
+    const subscriber = createPgLiveEventsTransport({ databaseUrl });
     const received: LiveEvent[] = [];
     subscriber.subscribe("company-a", (e) => received.push(e));
     await new Promise((r) => setTimeout(r, 300));
 
     publisher.publish(oversized);
-
-    const got = await waitFor(() => (received.length > 0 ? received[0] : undefined));
-    expect(fetcher).toHaveBeenCalledWith(999);
-    expect(got.id).toBe(999);
-    // The receiver should observe the full event via the re-fetch, not
-    // the truncated ref envelope.
-    expect((got.payload as { big?: string }).big).toBe(big);
+    // Generous window for NOTIFY to (incorrectly) round-trip.
+    await new Promise((r) => setTimeout(r, 500));
+    expect(received).toEqual([]);
 
     await publisher.close();
     await subscriber.close();
+  });
+
+  it("suppresses local emission for oversized events when a transport is configured (no cross-replica divergence)", async () => {
+    await configureLiveEventsTransport({ mode: "postgres", databaseUrl });
+    const received: LiveEvent[] = [];
+    const unsubscribe = subscribeCompanyLiveEvents("company-a", (e) => received.push(e));
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Build a payload that crosses PG_NOTIFY_INLINE_LIMIT when measured
+    // as UTF-8 bytes. Each "é" is 2 bytes UTF-8 but 1 JS char.
+    const bigMultibyte = "é".repeat(PG_NOTIFY_INLINE_LIMIT);
+    publishLiveEvent({
+      companyId: "company-a",
+      type: "activity.logged",
+      payload: { big: bigMultibyte },
+    });
+
+    // The originating replica must NOT see the event locally either —
+    // otherwise the originating replica diverges from peers that drop
+    // it. Give the in-process emitter a tick to (incorrectly) fire.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(received).toEqual([]);
+
+    unsubscribe();
+    await teardownLiveEventsTransport();
   });
 
   it("integrates with publishLiveEvent / subscribeCompanyLiveEvents through configureLiveEventsTransport", async () => {

@@ -5,7 +5,8 @@ import { logger } from "../../middleware/logger.js";
 import { pgChannelForCompany } from "./channel.js";
 import {
   buildEnvelope,
-  type LiveEventFetcher,
+  OVERSIZED_EVENT,
+  PG_NOTIFY_INLINE_LIMIT,
   type LiveEventsTransport,
   type TransportEnvelope,
   type TransportEventHandler,
@@ -30,7 +31,6 @@ import {
  */
 export function createPgLiveEventsTransport(opts: {
   databaseUrl: string;
-  fetcher?: LiveEventFetcher;
 }): LiveEventsTransport {
   // Dedicated client. `max: 1` keeps the pool tiny — we only need a
   // single connection to issue NOTIFY queries; postgres-js spins up a
@@ -41,7 +41,6 @@ export function createPgLiveEventsTransport(opts: {
     connection: { application_name: "paperclip-live-events" },
   });
   const originId = `${process.pid}-${randomUUID()}`;
-  const fetcher = opts.fetcher;
 
   // companyId -> { unlisten, handlers }
   const subscriptions = new Map<
@@ -83,29 +82,7 @@ export function createPgLiveEventsTransport(opts: {
     const entry = subscriptions.get(companyId);
     if (!entry) return;
 
-    if (envelope.kind === "full") {
-      deliver(entry.handlers, envelope.event);
-      return;
-    }
-
-    // Ref envelope: payload exceeded the inline limit. Re-fetch out of
-    // band. If no fetcher is configured, we have no recourse — emit a
-    // warn so operators see oversized events are being dropped and can
-    // either wire a fetcher or shrink the offending event type.
-    if (!fetcher) {
-      logger.warn(
-        { companyId, eventId: envelope.event.id, type: envelope.event.type },
-        "live-events pg transport: oversized envelope dropped (no fetcher configured)",
-      );
-      return;
-    }
-    fetcher(envelope.event.id)
-      .then((event) => {
-        if (event) deliver(entry.handlers, event);
-      })
-      .catch((err) => {
-        logger.warn({ err, eventId: envelope.event.id }, "live-events pg transport: ref re-fetch failed");
-      });
+    deliver(entry.handlers, envelope.event);
   }
 
   function subscribe(companyId: string, handler: TransportEventHandler) {
@@ -173,8 +150,27 @@ export function createPgLiveEventsTransport(opts: {
   }
 
   function publish(event: LiveEvent) {
-    const channel = pgChannelForCompany(event.companyId);
     const envelope = buildEnvelope(originId, event);
+    if (envelope === OVERSIZED_EVENT) {
+      // Symmetric noisy drop — see transport.ts OVERSIZED_EVENT docs.
+      // Caller (live-events.ts) also suppresses local emission for the
+      // same event so behavior matches across replicas.
+      logger.error(
+        {
+          companyId: event.companyId,
+          eventType: event.type,
+          eventId: event.id,
+          byteSize: Buffer.byteLength(
+            JSON.stringify({ kind: "full", origin: originId, event }),
+            "utf8",
+          ),
+          limit: PG_NOTIFY_INLINE_LIMIT,
+        },
+        "live-events pg transport: oversized event dropped symmetrically (exceeds NOTIFY inline limit)",
+      );
+      return;
+    }
+    const channel = pgChannelForCompany(event.companyId);
     const serialized = JSON.stringify(envelope);
     // NOTIFY is fire-and-forget. We attach a catch so a transient
     // database blip doesn't surface as an unhandled rejection.
