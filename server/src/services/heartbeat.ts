@@ -8244,10 +8244,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
         const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
+        // Local-CLI agents post comments under user auth, so a self-comment from
+        // the run that is now ending would otherwise look like a real human
+        // comment and trigger a reopen on the very issue this run just closed.
+        // Suppress reopen when at least one referenced comment was authored by
+        // this same run.
+        let deferredCommentWakeIsSelfAuthored = false;
+        if (deferredCommentIds.length > 0) {
+          const sameRunSelfComment = await tx
+            .select({ id: issueComments.id })
+            .from(issueComments)
+            .where(
+              and(
+                eq(issueComments.companyId, issue.companyId),
+                eq(issueComments.issueId, issue.id),
+                eq(issueComments.createdByRunId, run.id),
+                inArray(issueComments.id, deferredCommentIds),
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          deferredCommentWakeIsSelfAuthored = sameRunSelfComment !== null;
+        }
         // Only human/comment-reopen interactions should revive completed issues;
         // system follow-ups such as retry or cleanup wakes must not reopen closed work.
         const shouldReopenDeferredCommentWake =
           deferredCommentIds.length > 0 &&
+          !deferredCommentWakeIsSelfAuthored &&
           (issue.status === "done" || issue.status === "cancelled") &&
           (
             deferred.requestedByActorType === "user" ||
