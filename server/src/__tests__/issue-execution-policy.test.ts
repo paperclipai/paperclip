@@ -1081,6 +1081,83 @@ describe("issue execution policy transitions", () => {
     });
   });
 
+  describe("returnAssignee como único participant no path approved (SIMAA-2206)", () => {
+    it("avança para o próximo stage quando returnAssignee é o único participant (cenário bloqueante)", () => {
+      // Verifier (qa) é participant do stage approval; Builder (coder) é returnAssignee e único participant do stage review.
+      // Antes do fix, exclude=returnAssignee fazia selectStageParticipant retornar null → 422.
+      const policy = makePolicy([
+        { type: "approval", participants: [{ type: "agent", agentId: qaAgentId }] },
+        { type: "review", participants: [{ type: "agent", agentId: coderAgentId }] },
+      ]);
+      const approvalStageId = policy.stages[0].id;
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: approvalStageId,
+            currentStageIndex: 0,
+            currentStageType: "approval",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "Contrato aprovado",
+      });
+
+      expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+      expect(result.patch.executionState).toMatchObject({
+        status: "pending",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: coderAgentId },
+        completedStageIds: [approvalStageId],
+      });
+    });
+
+    it("returnAssignee ainda é excluído ao submeter done (path inicial, não approved)", () => {
+      // Garante que o fix não afeta a exclusão do returnAssignee na transição inicial done→review,
+      // onde o exclude permanece para evitar auto-seleção do coder como próprio reviewer.
+      const policy = makePolicy([
+        {
+          type: "review",
+          participants: [
+            { type: "agent", agentId: coderAgentId },
+            { type: "agent", agentId: qaAgentId },
+          ],
+        },
+      ]);
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: null,
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Done",
+      });
+
+      // coderAgentId é returnAssignee e deve ser excluído; qaAgentId deve ser selecionado
+      expect(result.patch.assigneeAgentId).toBe(qaAgentId);
+    });
+  });
+
   describe("changes requested with no return assignee", () => {
     it("throws when requesting changes with no return assignee", () => {
       const policy = twoStagePolicy();
