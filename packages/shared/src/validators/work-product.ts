@@ -45,10 +45,10 @@ export const createIssueWorkProductSchema = z.object({
   summary: z.string().optional().nullable(),
   metadata: z.record(z.unknown()).optional().nullable(),
   createdByRunId: z.string().uuid().optional().nullable(),
-});
+}).strict();
 
 export type CreateIssueWorkProduct = z.infer<typeof createIssueWorkProductSchema>;
 
-export const updateIssueWorkProductSchema = createIssueWorkProductSchema.partial();
+export const updateIssueWorkProductSchema = createIssueWorkProductSchema.partial().strict();
 
 export type UpdateIssueWorkProduct = z.infer<typeof updateIssueWorkProductSchema>;

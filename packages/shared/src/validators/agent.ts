@@ -19,7 +19,7 @@ export const updateAgentInstructionsBundleSchema = z.object({
   rootPath: z.string().trim().min(1).nullable().optional(),
   entryFile: z.string().trim().min(1).optional(),
   clearLegacyPromptTemplate: z.boolean().optional().default(false),
-});
+}).strict();
 
 export type UpdateAgentInstructionsBundle = z.infer<typeof updateAgentInstructionsBundleSchema>;
 
@@ -27,7 +27,7 @@ export const upsertAgentInstructionsFileSchema = z.object({
   path: z.string().trim().min(1),
   content: z.string(),
   clearLegacyPromptTemplate: z.boolean().optional().default(false),
-});
+}).strict();
 
 export type UpsertAgentInstructionsFile = z.infer<typeof upsertAgentInstructionsFileSchema>;
 
@@ -49,7 +49,7 @@ export const createAgentInstructionsBundleSchema = z.object({
   files: z.record(z.string()).refine((files) => Object.keys(files).length > 0, {
     message: "instructionsBundle.files must contain at least one file",
   }),
-});
+}).strict();
 
 const agentModelProfileConfigSchema = z.object({
   enabled: z.boolean().optional(),
@@ -79,14 +79,14 @@ export const createAgentSchema = z.object({
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   permissions: agentPermissionsSchema.optional(),
   metadata: z.record(z.unknown()).optional().nullable(),
-});
+}).strict();
 
 export type CreateAgent = z.infer<typeof createAgentSchema>;
 
 export const createAgentHireSchema = createAgentSchema.extend({
   sourceIssueId: z.string().uuid().optional().nullable(),
   sourceIssueIds: z.array(z.string().uuid()).optional(),
-});
+}).strict();
 
 export type CreateAgentHire = z.infer<typeof createAgentHireSchema>;
 
@@ -98,27 +98,27 @@ export const updateAgentSchema = createAgentSchema
     replaceAdapterConfig: z.boolean().optional(),
     status: z.enum(AGENT_STATUSES).optional(),
     spentMonthlyCents: z.number().int().nonnegative().optional(),
-  });
+  }).strict();
 
 export type UpdateAgent = z.infer<typeof updateAgentSchema>;
 
 export const updateAgentInstructionsPathSchema = z.object({
   path: z.string().trim().min(1).nullable(),
   adapterConfigKey: z.string().trim().min(1).optional(),
-});
+}).strict();
 
 export type UpdateAgentInstructionsPath = z.infer<typeof updateAgentInstructionsPathSchema>;
 
 export const createAgentKeySchema = z.object({
   name: z.string().min(1).default("default"),
-});
+}).strict();
 
 export type CreateAgentKey = z.infer<typeof createAgentKeySchema>;
 
 export const agentMineInboxQuerySchema = z.object({
   userId: z.string().trim().min(1),
   status: z.string().trim().min(1).optional().default(INBOX_MINE_ISSUE_STATUS_FILTER),
-});
+}).strict();
 
 export type AgentMineInboxQuery = z.infer<typeof agentMineInboxQuerySchema>;
 
@@ -132,13 +132,13 @@ export const wakeAgentSchema = z.object({
     (value) => (value === null ? undefined : value),
     z.boolean().optional().default(false),
   ),
-});
+}).strict();
 
 export type WakeAgent = z.infer<typeof wakeAgentSchema>;
 
 export const resetAgentSessionSchema = z.object({
   taskKey: z.string().min(1).optional().nullable(),
-});
+}).strict();
 
 export type ResetAgentSession = z.infer<typeof resetAgentSessionSchema>;
 
@@ -151,13 +151,13 @@ export const testAdapterEnvironmentSchema = z.object({
    * inside that environment so the result reflects real agent execution.
    */
   environmentId: z.string().uuid().optional().nullable(),
-});
+}).strict();
 
 export type TestAdapterEnvironment = z.infer<typeof testAdapterEnvironmentSchema>;
 
 export const updateAgentPermissionsSchema = z.object({
   canCreateAgents: z.boolean(),
   canAssignTasks: z.boolean(),
-});
+}).strict();
 
 export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;

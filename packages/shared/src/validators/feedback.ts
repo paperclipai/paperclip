@@ -17,6 +17,6 @@ export const upsertIssueFeedbackVoteSchema = z.object({
   vote: feedbackVoteValueSchema,
   reason: z.string().trim().max(1000).optional(),
   allowSharing: z.boolean().optional(),
-});
+}).strict();
 
 export type UpsertIssueFeedbackVote = z.infer<typeof upsertIssueFeedbackVoteSchema>;

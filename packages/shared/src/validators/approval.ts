@@ -7,30 +7,30 @@ export const createApprovalSchema = z.object({
   requestedByAgentId: z.string().uuid().optional().nullable(),
   payload: z.record(z.unknown()),
   issueIds: z.array(z.string().uuid()).optional(),
-});
+}).strict();
 
 export type CreateApproval = z.infer<typeof createApprovalSchema>;
 
 export const resolveApprovalSchema = z.object({
   decisionNote: multilineTextSchema.optional().nullable(),
-});
+}).strict();
 
 export type ResolveApproval = z.infer<typeof resolveApprovalSchema>;
 
 export const requestApprovalRevisionSchema = z.object({
   decisionNote: multilineTextSchema.optional().nullable(),
-});
+}).strict();
 
 export type RequestApprovalRevision = z.infer<typeof requestApprovalRevisionSchema>;
 
 export const resubmitApprovalSchema = z.object({
   payload: z.record(z.unknown()).optional(),
-});
+}).strict();
 
 export type ResubmitApproval = z.infer<typeof resubmitApprovalSchema>;
 
 export const addApprovalCommentSchema = z.object({
   body: multilineTextSchema.pipe(z.string().min(1)),
-});
+}).strict();
 
 export type AddApprovalComment = z.infer<typeof addApprovalCommentSchema>;
