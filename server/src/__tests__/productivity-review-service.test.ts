@@ -497,6 +497,38 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(reviews).toHaveLength(1);
   });
 
+  it("extends snooze adaptively after each productive close (routine gate-watch pattern)", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    const service = productivityReviewService(db);
+
+    // First cycle: trigger → close productively → 7h later should still be snoozed (adaptive 24h)
+    await insertRuns({ companyId: seeded.companyId, agentId: seeded.coderId, issueId: seeded.issueId, count: 10, now });
+    await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const [review1] = await listProductivityReviews(seeded.companyId);
+    await db.update(issues).set({ status: "done", updatedAt: now }).where(eq(issues.id, review1!.id));
+
+    // 7h later: old 6h snooze would have expired, new 24h adaptive should still be active
+    const after7h = new Date(now.getTime() + 7 * 60 * 60 * 1000);
+    const result7h = await service.reconcileProductivityReviews({ now: after7h, companyId: seeded.companyId });
+    expect(result7h.snoozed).toBe(1);
+    const reviewsAfter7h = await listProductivityReviews(seeded.companyId);
+    expect(reviewsAfter7h).toHaveLength(1);
+
+    // 25h later: 24h snooze expired, a new review fires
+    const after25h = new Date(now.getTime() + 25 * 60 * 60 * 1000);
+    await service.reconcileProductivityReviews({ now: after25h, companyId: seeded.companyId });
+    const reviewsAfter25h = await listProductivityReviews(seeded.companyId);
+    expect(reviewsAfter25h.length).toBeGreaterThanOrEqual(2);
+    const [review2] = reviewsAfter25h.filter((r) => r.id !== review1!.id);
+    await db.update(issues).set({ status: "done", updatedAt: after25h }).where(eq(issues.id, review2!.id));
+
+    // After 2 closes, snooze is 72h. 30h later (within 72h) should still be snoozed.
+    const after55h = new Date(after25h.getTime() + 30 * 60 * 60 * 1000);
+    const result55h = await service.reconcileProductivityReviews({ now: after55h, companyId: seeded.companyId });
+    expect(result55h.snoozed).toBe(1);
+  });
+
   it("reports and logs soft-stop holds for open no-comment reviews", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
