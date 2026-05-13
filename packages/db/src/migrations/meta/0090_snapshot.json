@@ -13669,6 +13669,12 @@
           "name": "plugin_entities_external_idx",
           "columns": [
             {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
               "expression": "plugin_id",
               "isExpression": false,
               "asc": true,

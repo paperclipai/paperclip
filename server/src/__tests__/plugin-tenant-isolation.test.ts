@@ -173,4 +173,59 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
       [companyB, null].sort((a, b) => String(a).localeCompare(String(b))),
     );
   });
+
+  it("plugin_entities unique index is scoped per company — two tenants can share (pluginId, entityType, externalId)", async () => {
+    const pluginId = await seedPlugin();
+    const companyA = await seedCompany();
+    const companyB = await seedCompany();
+
+    // Company A claims external id "ext-1".
+    await db.insert(pluginEntities).values({
+      pluginId,
+      companyId: companyA,
+      entityType: "page",
+      scopeKind: "company",
+      scopeId: companyA,
+      externalId: "ext-1",
+    });
+
+    // Company B uses the SAME (pluginId, entityType, externalId) — must succeed
+    // under the per-company unique index (would have collided under the old index).
+    await db.insert(pluginEntities).values({
+      pluginId,
+      companyId: companyB,
+      entityType: "page",
+      scopeKind: "company",
+      scopeId: companyB,
+      externalId: "ext-1",
+    });
+
+    const rows = await db.select().from(pluginEntities);
+    expect(rows).toHaveLength(2);
+
+    // Re-inserting the same (companyId, pluginId, entityType, externalId) tuple
+    // for company A must violate the unique constraint. Drizzle wraps the
+    // underlying pg error as "Failed query: ..." — inspect the cause to confirm
+    // it's the unique violation on our index (pg error code 23505).
+    const err = await db
+      .insert(pluginEntities)
+      .values({
+        pluginId,
+        companyId: companyA,
+        entityType: "page",
+        scopeKind: "company",
+        scopeId: companyA,
+        externalId: "ext-1",
+      })
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect(err).toBeInstanceOf(Error);
+    // postgres error code 23505 = unique_violation, the constraint name is
+    // not always surfaced on .cause by the driver, but the code is sufficient
+    // to prove the unique index rejected the duplicate.
+    const cause = (err as { cause?: { code?: string } }).cause;
+    expect(cause?.code).toBe("23505");
+  });
 });
