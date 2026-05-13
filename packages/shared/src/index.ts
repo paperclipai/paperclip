@@ -695,6 +695,18 @@ export {
   type PluginStateScopeKey,
   type SetPluginState,
   type ListPluginState,
+  acquireIssueRunSchema,
+  heartbeatIssueRunSchema,
+  releaseIssueRunSchema,
+  recoverStaleIssueRunsSchema,
+  issueRunRecordSchema,
+  recoveredIssueRunSchema,
+  type AcquireIssueRunInput,
+  type HeartbeatIssueRunInput,
+  type ReleaseIssueRunInput,
+  type RecoverStaleIssueRunsInput,
+  type IssueRunRecord,
+  type RecoveredIssueRun,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";
