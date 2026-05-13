@@ -262,10 +262,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   async function findRecentResolvedProductivityReview(
     companyId: string,
     sourceIssueId: string,
-    thresholds: ProductivityReviewThresholds,
+    snoozeMs: number,
     now: Date,
   ) {
-    const cutoff = new Date(now.getTime() - thresholds.resolvedSnoozeMs);
+    const cutoff = new Date(now.getTime() - snoozeMs);
     return db
       .select({ id: issues.id, identifier: issues.identifier, status: issues.status, updatedAt: issues.updatedAt })
       .from(issues)
@@ -281,6 +281,33 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       .orderBy(desc(issues.updatedAt))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function countAllResolvedProductivityReviews(companyId: string, sourceIssueId: string) {
+    return db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
+          eq(issues.originId, sourceIssueId),
+          eq(issues.status, "done"),
+        ),
+      )
+      .then((rows) => Number(rows[0]?.count ?? 0));
+  }
+
+  // Adaptive snooze for long_active_duration: each productive closure extends the window
+  // exponentially (24h → 72h → 7d cap) so routine-driven gate watches don't spam reviews.
+  function adaptiveLongActiveSnoozeMs(resolvedCount: number, baseSnoozeMs: number): number {
+    if (resolvedCount <= 0) return baseSnoozeMs;
+    const SNOOZE_LADDER_MS = [
+      24 * 60 * 60 * 1000,  // 1st close: 24h
+      72 * 60 * 60 * 1000,  // 2nd close: 72h
+      7 * 24 * 60 * 60 * 1000, // 3rd+ close: 7d (cap)
+    ];
+    return SNOOZE_LADDER_MS[Math.min(resolvedCount - 1, SNOOZE_LADDER_MS.length - 1)];
   }
 
   async function countRecentProductivityReviews(
@@ -804,7 +831,9 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         result.skipped += 1;
         continue;
       }
-      if (await findRecentResolvedProductivityReview(candidate.companyId, candidate.id, thresholds, now)) {
+      const resolvedCount = await countAllResolvedProductivityReviews(candidate.companyId, candidate.id);
+      const effectiveSnoozeMs = adaptiveLongActiveSnoozeMs(resolvedCount, thresholds.resolvedSnoozeMs);
+      if (await findRecentResolvedProductivityReview(candidate.companyId, candidate.id, effectiveSnoozeMs, now)) {
         result.snoozed += 1;
         continue;
       }
