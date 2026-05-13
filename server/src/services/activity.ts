@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 
@@ -7,6 +7,8 @@ export interface ActivityFilters {
   agentId?: string;
   entityType?: string;
   entityId?: string;
+  /** Only return events created strictly after this timestamp. */
+  since?: Date;
 }
 
 export function activityService(db: Db) {
@@ -23,6 +25,9 @@ export function activityService(db: Db) {
       }
       if (filters.entityId) {
         conditions.push(eq(activityLog.entityId, filters.entityId));
+      }
+      if (filters.since) {
+        conditions.push(gt(activityLog.createdAt, filters.since));
       }
 
       return db

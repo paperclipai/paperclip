@@ -33,11 +33,22 @@ export function activityRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
 
+    let since: Date | undefined;
+    if (typeof req.query.since === "string" && req.query.since.length > 0) {
+      const parsed = new Date(req.query.since);
+      if (Number.isNaN(parsed.getTime())) {
+        res.status(400).json({ error: "Invalid `since` parameter — expected ISO 8601 timestamp" });
+        return;
+      }
+      since = parsed;
+    }
+
     const filters = {
       companyId,
       agentId: req.query.agentId as string | undefined,
       entityType: req.query.entityType as string | undefined,
       entityId: req.query.entityId as string | undefined,
+      since,
     };
     const result = await svc.list(filters);
     res.json(result);

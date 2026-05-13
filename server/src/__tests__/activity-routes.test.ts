@@ -67,4 +67,39 @@ describe("activity routes", () => {
     expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1");
     expect(res.body).toEqual([{ runId: "run-1" }]);
   });
+
+  it("forwards a valid ?since= ISO timestamp to the service as a Date", async () => {
+    mockActivityService.list.mockResolvedValue([]);
+
+    const res = await request(createApp())
+      .get("/api/companies/company-1/activity?since=2026-05-12T17:00:00Z");
+
+    expect(res.status).toBe(200);
+    expect(mockActivityService.list).toHaveBeenCalledTimes(1);
+    const filters = mockActivityService.list.mock.calls[0][0];
+    expect(filters.companyId).toBe("company-1");
+    expect(filters.since).toBeInstanceOf(Date);
+    expect(filters.since.toISOString()).toBe("2026-05-12T17:00:00.000Z");
+  });
+
+  it("returns 400 when ?since= is not a parseable timestamp", async () => {
+    const res = await request(createApp())
+      .get("/api/companies/company-1/activity?since=not-a-date");
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/since/i);
+    expect(mockActivityService.list).not.toHaveBeenCalled();
+  });
+
+  it("omits since from filters when ?since= is missing or empty", async () => {
+    mockActivityService.list.mockResolvedValue([]);
+
+    const r1 = await request(createApp()).get("/api/companies/company-1/activity");
+    expect(r1.status).toBe(200);
+    expect(mockActivityService.list.mock.calls[0][0].since).toBeUndefined();
+
+    const r2 = await request(createApp()).get("/api/companies/company-1/activity?since=");
+    expect(r2.status).toBe(200);
+    expect(mockActivityService.list.mock.calls[1][0].since).toBeUndefined();
+  });
 });
