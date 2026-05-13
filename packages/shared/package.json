@@ -45,6 +45,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@paperclipai/workspace-strategy": "workspace:*",
     "zod": "^3.24.2"
   },
   "devDependencies": {

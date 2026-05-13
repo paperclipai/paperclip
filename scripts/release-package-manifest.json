@@ -35,6 +35,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/adapters/kubernetes-execution",
+    "name": "@paperclipai/execution-target-kubernetes",
+    "publishFromCi": false
+  },
+  {
     "dir": "packages/adapters/opencode-local",
     "name": "@paperclipai/adapter-opencode-local",
     "publishFromCi": true
@@ -58,6 +63,11 @@
     "dir": "packages/db",
     "name": "@paperclipai/db",
     "publishFromCi": true
+  },
+  {
+    "dir": "packages/workspace-strategy",
+    "name": "@paperclipai/workspace-strategy",
+    "publishFromCi": false
   },
   {
     "dir": "packages/plugins/sdk",

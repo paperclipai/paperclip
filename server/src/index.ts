@@ -48,6 +48,13 @@ import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
 } from "./routes/instance-database-backups.js";
+import { createExecutionTargetRegistry } from "./adapters/execution-target-registry.js";
+import { registerKubernetesExecutionTargetDriver } from "./adapters/execution-targets/kubernetes.js";
+import { buildKubernetesRunContext } from "./adapters/execution-targets/kubernetes-run-context.js";
+import { clusterConnectionsService } from "./services/cluster-connections.js";
+import { getSecretProvider } from "./secrets/provider-registry.js";
+import { bootstrapTokensService } from "./services/bootstrap-tokens.js";
+import { setKubernetesExecutionDispatcher } from "@paperclipai/adapter-claude-local/server";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -593,6 +600,73 @@ export async function startServer(): Promise<StartedServer> {
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
+
+  // ---------------------------------------------------------------------------
+  // Execution-target registry
+  //
+  // The kubeconfigSecretRef stored in cluster_connections uses
+  // { provider, name } where `name` is the externalRef (for external providers
+  // such as AWS Secrets Manager / GCP Secret Manager / Vault). For those
+  // providers, `resolveVersion({ material: {}, externalRef: name })` is the
+  // correct call. For the `local_encrypted` provider the kubeconfig blob must
+  // be stored via an external provider — instance-level local-encrypted storage
+  // is not yet wired (M2 gap: design a cluster-scoped secret vault or let
+  // operators use an external provider for kubeconfig credentials).
+  // ---------------------------------------------------------------------------
+  const clusterConnections = clusterConnectionsService(db as any, {
+    resolveSecret: async (ref) => {
+      const provider = getSecretProvider(ref.provider as Parameters<typeof getSecretProvider>[0]);
+      // `ref.name` is the externalRef used by external secret providers
+      // (AWS SM / GCP SM / Vault). For `local_encrypted`, kubeconfig material
+      // must be stored via an external provider; calling this path with
+      // `local_encrypted` will throw from the provider itself.
+      // TODO(M2): design instance-scoped secret storage for local_encrypted
+      //           kubeconfig blobs so operators without external providers
+      //           can still register clusters.
+      return provider.resolveVersion({ material: {}, externalRef: ref.name });
+    },
+  });
+  const executionTargetRegistry = createExecutionTargetRegistry();
+  const bootstrapTokens = bootstrapTokensService(db as any);
+  const k8sDriver = registerKubernetesExecutionTargetDriver(executionTargetRegistry, {
+    resolveConnection: (id) => clusterConnections.resolve(id),
+    bootstrapTokenMinter: {
+      mint: async (req) => {
+        const minted = await bootstrapTokens.mint({
+          agentId: req.agentId,
+          companyId: req.companyId,
+          runId: req.runId,
+          jobUid: req.jobUid,
+          ttlSeconds: req.ttlSeconds ?? 600,
+        });
+        return { token: minted.token, expiresAt: minted.expiresAt };
+      },
+    },
+    // Per-run context resolver — looks up the company name to derive a
+    // namespace-safe slug, then fills in image/init image and other defaults.
+    // M2 Tasks 25–27 will replace the hard-coded image tags with real
+    // operator-controlled cluster policy lookups (image pinning per cluster
+    // connection); for now we point at the freshly built v1 multi-arch tags.
+    resolveRunContext: async ({ agent, target, connection }) => {
+      const [company] = await (db as any)
+        .select({ name: companies.name })
+        .from(companies)
+        .where(eq(companies.id, agent.companyId))
+        .limit(1);
+      if (!company) return null;
+      return buildKubernetesRunContext({
+        companyName: company.name as string,
+        target,
+        connection,
+      });
+    },
+  });
+
+  // Register the Kubernetes execution dispatcher with adapters that opt into
+  // routing kubernetes targets through the cluster driver. For M2, only
+  // claude_local is wired; codex/gemini/etc. land in M3.
+  setKubernetesExecutionDispatcher(({ ctx, target }) => k8sDriver.run({ ctx, target }));
+
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,

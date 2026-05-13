@@ -1,4 +1,9 @@
 export { execute, runClaudeLogin } from "./execute.js";
+export {
+  setKubernetesExecutionDispatcher,
+  getKubernetesExecutionDispatcher,
+  type KubernetesExecutionDispatcher,
+} from "./k8s-dispatcher.js";
 export { listClaudeSkills, syncClaudeSkills } from "./skills.js";
 export { listClaudeModels } from "./models.js";
 export { testEnvironment } from "./test.js";

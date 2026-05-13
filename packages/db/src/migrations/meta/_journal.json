@@ -596,6 +596,27 @@
       "when": 1778355326070,
       "tag": "0084_issue_recovery_actions",
       "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1778275765114,
+      "tag": "0085_cluster_connections",
+      "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1778319034954,
+      "tag": "0086_bootstrap_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1746748800000,
+      "tag": "0087_tenant_policy_m3a",
+      "breakpoints": true
     }
   ]
 }

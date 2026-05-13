@@ -1,0 +1,73 @@
+name: Agent runtime images
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "docker/agent-runtime/**"
+      - "tools/agent-shim/**"
+      - "tools/workspace-init/**"
+      - "packages/workspace-strategy/**"
+      - ".github/workflows/agent-runtime-images.yml"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Image version tag (e.g., v1.0.0 or dev-test)"
+        required: true
+        default: "dev"
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write   # cosign keyless OIDC
+
+env:
+  REGISTRY: ghcr.io/paperclipai
+  VERSION: ${{ github.event.inputs.version || format('git-{0}', github.sha) }}
+
+jobs:
+  build-and-sign:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU (multi-arch builds)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log into GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Build + push base + claude (multi-arch)
+        id: bake
+        run: |
+          docker buildx bake \
+            -f docker/agent-runtime/buildx-bake.hcl \
+            --set "*.platforms=linux/amd64,linux/arm64" \
+            --set "*.push=true" \
+            --metadata-file=bake-metadata.json
+          # Extract digests for cosign signing
+          BASE_DIGEST=$(jq -r '."base"."containerimage.digest"' bake-metadata.json)
+          CLAUDE_DIGEST=$(jq -r '."claude"."containerimage.digest"' bake-metadata.json)
+          echo "base_digest=$BASE_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "claude_digest=$CLAUDE_DIGEST" >> "$GITHUB_OUTPUT"
+        env:
+          VERSION: ${{ env.VERSION }}
+          REGISTRY: ${{ env.REGISTRY }}
+
+      - name: Cosign sign base
+        run: |
+          cosign sign --yes "${{ env.REGISTRY }}/agent-runtime-base@${{ steps.bake.outputs.base_digest }}"
+
+      - name: Cosign sign claude
+        run: |
+          cosign sign --yes "${{ env.REGISTRY }}/agent-runtime-claude@${{ steps.bake.outputs.claude_digest }}"

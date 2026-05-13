@@ -56,10 +56,29 @@ export interface AdapterSandboxExecutionTarget {
   runner?: CommandManagedRuntimeRunner;
 }
 
+export interface AdapterKubernetesExecutionTarget {
+  kind: "kubernetes";
+  clusterConnectionId: string;
+  /** Override the auto-derived `paperclip-{companySlug}` namespace name. Rare. */
+  namespaceOverride?: string | null;
+  /** Override the resolved agent runtime image. Gated by per-cluster policy. */
+  imageOverride?: string | null;
+  resources?: {
+    requests?: { cpu?: string; memory?: string };
+    limits?:   { cpu?: string; memory?: string };
+  } | null;
+  storage?: {
+    sizeGi?: number;
+    storageClass?: string;
+  } | null;
+  envOverrides?: Record<string, string> | null;
+}
+
 export type AdapterExecutionTarget =
   | AdapterLocalExecutionTarget
   | AdapterSshExecutionTarget
-  | AdapterSandboxExecutionTarget;
+  | AdapterSandboxExecutionTarget
+  | AdapterKubernetesExecutionTarget;
 
 export type AdapterRemoteExecutionSpec = SshRemoteExecutionSpec;
 
@@ -139,6 +158,7 @@ function isBridgeDebugEnabled(env: NodeJS.ProcessEnv): boolean {
 function isAdapterExecutionTargetInstance(value: unknown): value is AdapterExecutionTarget {
   const parsed = parseObject(value);
   if (parsed.kind === "local") return true;
+  if (parsed.kind === "kubernetes") return readStringMeta(parsed, "clusterConnectionId") !== null;
   if (parsed.kind !== "remote") return false;
   if (parsed.transport === "ssh") return parseSshRemoteExecutionSpec(parseObject(parsed.spec)) !== null;
   if (parsed.transport !== "sandbox") return false;
@@ -202,6 +222,11 @@ export function resolveAdapterExecutionTargetCwd(
   configuredCwd: string | null | undefined,
   localFallbackCwd: string,
 ): string {
+  if (target?.kind === "kubernetes") {
+    throw new Error(
+      "Kubernetes execution target runtime helpers are not implemented yet (M1 covers tenant provisioning only; agent execution lands in M2).",
+    );
+  }
   if (typeof configuredCwd === "string" && configuredCwd.trim().length > 0) {
     return configuredCwd;
   }
@@ -218,6 +243,9 @@ export function describeAdapterExecutionTarget(
   target: AdapterExecutionTarget | null | undefined,
 ): string {
   if (!target || target.kind === "local") return "local environment";
+  if (target.kind === "kubernetes") {
+    return `kubernetes(connection=${target.clusterConnectionId}${target.namespaceOverride ? `, namespace=${target.namespaceOverride}` : ""})`;
+  }
   if (target.transport === "ssh") {
     return `SSH environment ${target.spec.username}@${target.spec.host}:${target.spec.port}`;
   }
@@ -285,6 +313,11 @@ export async function ensureAdapterExecutionTargetCommandResolvable(
   env: NodeJS.ProcessEnv,
   options: { installCommand?: string | null; timeoutSec?: number | null } = {},
 ) {
+  if (target?.kind === "kubernetes") {
+    throw new Error(
+      "Kubernetes execution target runtime helpers are not implemented yet (M1 covers tenant provisioning only; agent execution lands in M2).",
+    );
+  }
   if (target?.kind === "remote" && target.transport === "sandbox") {
     await ensureSandboxCommandResolvable(
       command,
@@ -386,6 +419,11 @@ export async function resolveAdapterExecutionTargetCommandForLogs(
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): Promise<string> {
+  if (target?.kind === "kubernetes") {
+    throw new Error(
+      "Kubernetes execution target runtime helpers are not implemented yet (M1 covers tenant provisioning only; agent execution lands in M2).",
+    );
+  }
   if (target?.kind === "remote" && target.transport === "sandbox") {
     return `sandbox://${target.providerKey ?? "provider"}/${target.leaseId ?? "lease"}/${target.remoteCwd} :: ${command}`;
   }
@@ -401,6 +439,11 @@ export async function runAdapterExecutionTargetProcess(
   args: string[],
   options: AdapterExecutionTargetProcessOptions,
 ): Promise<RunProcessResult> {
+  if (target?.kind === "kubernetes") {
+    throw new Error(
+      "Kubernetes execution target runtime helpers are not implemented yet (M1 covers tenant provisioning only; agent execution lands in M2).",
+    );
+  }
   if (target?.kind === "remote" && target.transport === "sandbox") {
     const runner = requireSandboxRunner(target);
     const env = sanitizeRemoteExecutionEnv(options.env);
@@ -442,6 +485,11 @@ export async function runAdapterExecutionTargetShellCommand(
   command: string,
   options: AdapterExecutionTargetShellOptions,
 ): Promise<RunProcessResult> {
+  if (target?.kind === "kubernetes") {
+    throw new Error(
+      "Kubernetes execution target runtime helpers are not implemented yet (M1 covers tenant provisioning only; agent execution lands in M2).",
+    );
+  }
   const onLog = options.onLog ?? (async () => {});
   if (target?.kind === "remote") {
     const startedAt = new Date().toISOString();
@@ -813,6 +861,13 @@ export function adapterExecutionTargetSessionIdentity(
   target: AdapterExecutionTarget | null | undefined,
 ): Record<string, unknown> | null {
   if (!target || target.kind === "local") return null;
+  if (target.kind === "kubernetes") {
+    return {
+      kind: "kubernetes",
+      clusterConnectionId: target.clusterConnectionId,
+      namespaceOverride: target.namespaceOverride ?? null,
+    };
+  }
   if (target.transport === "ssh") return buildRemoteExecutionSessionIdentity(target.spec);
   return {
     transport: "sandbox",
@@ -829,6 +884,15 @@ export function adapterExecutionTargetSessionMatches(
 ): boolean {
   if (!target || target.kind === "local") {
     return Object.keys(parseObject(saved)).length === 0;
+  }
+  if (target.kind === "kubernetes") {
+    const current = adapterExecutionTargetSessionIdentity(target);
+    const parsedSaved = parseObject(saved);
+    return (
+      readStringMeta(parsedSaved, "kind") === current?.kind &&
+      readStringMeta(parsedSaved, "clusterConnectionId") === current?.clusterConnectionId &&
+      readStringMeta(parsedSaved, "namespaceOverride") === (current?.namespaceOverride ?? null)
+    );
   }
   if (target.transport === "ssh") return remoteExecutionSessionMatches(saved, target.spec);
   const current = adapterExecutionTargetSessionIdentity(target);
@@ -878,6 +942,26 @@ export function parseAdapterExecutionTarget(value: unknown): AdapterExecutionTar
       leaseId: readStringMeta(parsed, "leaseId"),
       remoteCwd,
       timeoutMs: typeof parsed.timeoutMs === "number" ? parsed.timeoutMs : null,
+    };
+  }
+
+  if (kind === "kubernetes") {
+    const clusterConnectionId = readStringMeta(parsed, "clusterConnectionId");
+    if (!clusterConnectionId) return null;
+    return {
+      kind: "kubernetes",
+      clusterConnectionId,
+      namespaceOverride: readStringMeta(parsed, "namespaceOverride"),
+      imageOverride: readStringMeta(parsed, "imageOverride"),
+      resources: parsed.resources && typeof parsed.resources === "object"
+        ? parsed.resources as AdapterKubernetesExecutionTarget["resources"]
+        : null,
+      storage: parsed.storage && typeof parsed.storage === "object"
+        ? parsed.storage as AdapterKubernetesExecutionTarget["storage"]
+        : null,
+      envOverrides: parsed.envOverrides && typeof parsed.envOverrides === "object"
+        ? parsed.envOverrides as AdapterKubernetesExecutionTarget["envOverrides"]
+        : null,
     };
   }
 
@@ -940,6 +1024,12 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       assetDirs: {},
       restoreWorkspace: async () => {},
     };
+  }
+
+  if (target.kind === "kubernetes") {
+    throw new Error(
+      "Kubernetes execution target runtime helpers are not implemented yet (M1 covers tenant provisioning only; agent execution lands in M2).",
+    );
   }
 
   if (target.transport === "ssh") {

@@ -66,7 +66,11 @@
       "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
     },
     "overrides": {
-      "rollup": ">=4.59.0"
+      "rollup": ">=4.59.0",
+      "form-data@<2.5.4": ">=2.5.4",
+      "form-data@<3.0.4": ">=3.0.4",
+      "form-data@<4.0.4": ">=4.0.4",
+      "jsonpath-plus": ">=10.3.0"
     }
   }
 }

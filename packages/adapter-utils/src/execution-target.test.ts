@@ -7,7 +7,25 @@ import {
   resolveAdapterExecutionTargetCwd,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
+  describeAdapterExecutionTarget,
+  ensureAdapterExecutionTargetCommandResolvable,
+  readAdapterExecutionTargetHomeDir,
+  adapterExecutionTargetSessionMatches,
+  adapterExecutionTargetSessionIdentity,
+  parseAdapterExecutionTarget,
+  resolveAdapterExecutionTargetCommandForLogs,
 } from "./execution-target.js";
+
+describe("describeAdapterExecutionTarget — kubernetes kind", () => {
+  it("returns a human-readable description for a kubernetes target", () => {
+    const desc = describeAdapterExecutionTarget({
+      kind: "kubernetes",
+      clusterConnectionId: "c-123",
+    });
+    expect(desc).toContain("kubernetes");
+    expect(desc).toContain("c-123");
+  });
+});
 
 describe("runAdapterExecutionTargetShellCommand", () => {
   afterEach(() => {
@@ -399,5 +417,136 @@ describe("resolveAdapterExecutionTargetCwd", () => {
     expect(resolveAdapterExecutionTargetCwd(null, "", "/Users/host/repo/server")).toBe(
       "/Users/host/repo/server",
     );
+  });
+});
+
+describe("kubernetes kind: runtime helpers explicitly throw M1-not-implemented", () => {
+  const target = { kind: "kubernetes" as const, clusterConnectionId: "c-1" };
+
+  it("resolveAdapterExecutionTargetCwd throws", () => {
+    expect(() => resolveAdapterExecutionTargetCwd(target, null, "/fallback")).toThrow(/not implemented/i);
+  });
+
+  it("ensureAdapterExecutionTargetCommandResolvable throws", async () => {
+    await expect(
+      ensureAdapterExecutionTargetCommandResolvable("node", target, "/cwd", process.env),
+    ).rejects.toThrow(/not implemented/i);
+  });
+
+  it("runAdapterExecutionTargetProcess throws", async () => {
+    await expect(
+      runAdapterExecutionTargetProcess("r-1", target, "node", [], {
+        cwd: "/",
+        env: {},
+        timeoutSec: 1,
+        graceSec: 1,
+        onLog: async () => {},
+      }),
+    ).rejects.toThrow(/not implemented/i);
+  });
+
+  it("runAdapterExecutionTargetShellCommand throws", async () => {
+    await expect(
+      runAdapterExecutionTargetShellCommand("r-1", target, "echo hi", { cwd: "/", env: {} }),
+    ).rejects.toThrow(/not implemented/i);
+  });
+
+  it("readAdapterExecutionTargetHomeDir throws", async () => {
+    await expect(
+      readAdapterExecutionTargetHomeDir("r-1", target, { cwd: "/", env: {} }),
+    ).rejects.toThrow(/not implemented/i);
+  });
+
+  it("resolveAdapterExecutionTargetCommandForLogs throws", async () => {
+    await expect(
+      resolveAdapterExecutionTargetCommandForLogs("node", target, "/cwd", process.env),
+    ).rejects.toThrow(/not implemented/i);
+  });
+});
+
+describe("adapterExecutionTargetSessionMatches — kubernetes namespaceOverride", () => {
+  it("returns false when saved namespaceOverride differs from current", () => {
+    const saved = adapterExecutionTargetSessionIdentity({
+      kind: "kubernetes",
+      clusterConnectionId: "c-123",
+      namespaceOverride: "ns-a",
+    });
+    expect(
+      adapterExecutionTargetSessionMatches(saved, {
+        kind: "kubernetes",
+        clusterConnectionId: "c-123",
+        namespaceOverride: "ns-b",
+      }),
+    ).toBe(false);
+  });
+
+  it("returns true when saved namespaceOverride matches current", () => {
+    const saved = adapterExecutionTargetSessionIdentity({
+      kind: "kubernetes",
+      clusterConnectionId: "c-123",
+      namespaceOverride: "ns-a",
+    });
+    expect(
+      adapterExecutionTargetSessionMatches(saved, {
+        kind: "kubernetes",
+        clusterConnectionId: "c-123",
+        namespaceOverride: "ns-a",
+      }),
+    ).toBe(true);
+  });
+
+  it("returns true when neither saved nor current has a namespaceOverride", () => {
+    const saved = adapterExecutionTargetSessionIdentity({
+      kind: "kubernetes",
+      clusterConnectionId: "c-123",
+    });
+    expect(
+      adapterExecutionTargetSessionMatches(saved, {
+        kind: "kubernetes",
+        clusterConnectionId: "c-123",
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("parseAdapterExecutionTarget — kubernetes round-trip", () => {
+  it("round-trips all five non-id fields without data loss", () => {
+    const input = {
+      kind: "kubernetes" as const,
+      clusterConnectionId: "c-456",
+      namespaceOverride: "my-ns",
+      imageOverride: "my-registry/agent:v2",
+      resources: {
+        requests: { cpu: "500m", memory: "512Mi" },
+        limits: { cpu: "1000m", memory: "1Gi" },
+      },
+      storage: { sizeGi: 10, storageClass: "fast-ssd" },
+      envOverrides: { MY_VAR: "hello", ANOTHER: "world" },
+    };
+
+    const result = parseAdapterExecutionTarget(input);
+
+    expect(result).not.toBeNull();
+    expect(result?.kind).toBe("kubernetes");
+    if (result?.kind !== "kubernetes") return;
+
+    expect(result.clusterConnectionId).toBe("c-456");
+    expect(result.namespaceOverride).toBe("my-ns");
+    expect(result.imageOverride).toBe("my-registry/agent:v2");
+    expect(result.resources).toEqual(input.resources);
+    expect(result.storage).toEqual(input.storage);
+    expect(result.envOverrides).toEqual(input.envOverrides);
+  });
+});
+
+describe("describeAdapterExecutionTarget — kubernetes namespaceOverride", () => {
+  it("includes both clusterConnectionId and namespaceOverride in description", () => {
+    const desc = describeAdapterExecutionTarget({
+      kind: "kubernetes",
+      clusterConnectionId: "c-123",
+      namespaceOverride: "my-ns",
+    });
+    expect(desc).toContain("c-123");
+    expect(desc).toContain("my-ns");
   });
 });
