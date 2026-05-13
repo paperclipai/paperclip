@@ -319,6 +319,82 @@ export {
 } from "./tool-permissions.js";
 
 export {
+  buildLearningPostmortem,
+  decideLearningPromotion,
+  redactLearningEvidence,
+  type LearningCandidate,
+  type LearningCandidateStatus,
+  type LearningCandidateTarget,
+  type LearningPostmortem,
+  type LearningPostmortemInput,
+  type LearningPostmortemOutcome,
+  type LearningPromotionDecision,
+  type LearningPromotionDecisionInput,
+} from "./learning-postmortem.js";
+
+export {
+  buildFinalDeliveryHistorySummary,
+  maskFinalDeliveryDestination,
+  planFinalDeliveryCancel,
+  planFinalDeliveryRetry,
+  type FinalDeliveryHistoryEntryInput,
+  type FinalDeliveryHistoryEntryStatus,
+  type FinalDeliveryHistoryOutcome,
+  type FinalDeliveryHistorySummary,
+  type FinalDeliveryHistorySummaryEntry,
+  type FinalDeliveryHistorySummaryInput,
+  type FinalDeliveryOperationPlan,
+  type FinalDeliveryOperationPlanInput,
+} from "./final-delivery-ops.js";
+
+export {
+  PRODUCTION_SAFE_REQUIRED_CHECKS,
+  TELEGRAM_SAFE_ARTIFACT_FORMATS,
+  buildProductionSafeRegressionPlan,
+  summarizeRegressionArtifactPolicy,
+  type ProductionSafeRegressionPlan,
+  type ProductionSafeRegressionPlanInput,
+  type ProductionSafeRequiredCheck,
+  type TelegramSafeArtifactFormat,
+} from "./production-safety.js";
+
+export {
+  buildMcpInstallPreview,
+  mcpCatalogEntrySchema,
+  mcpCatalogProviderSchema,
+  normalizeMcpCatalogEntry,
+  type McpCatalogEntry,
+  type McpCatalogEntryInput,
+  type McpCatalogProvider,
+  type McpInstallPreview,
+  type NormalizedMcpServerDefinition,
+} from "./mcp-marketplace.js";
+
+export {
+  buildOrgPackageInstallPreview,
+  paperclipOrgPackageManifestSchema,
+  type OrgPackageInstallPreview,
+  type OrgPackagePreviewContext,
+  type PackageApprovalGate,
+  type PaperclipOrgPackageManifest,
+} from "./org-package-library.js";
+
+export {
+  INITIAL_READY_AGENT_BLUEPRINTS,
+  buildAgentProvisioningPreview,
+  getReadyAgentBlueprint,
+  runAgentReadinessChecks,
+  type AgentBlueprint,
+  type AgentBlueprintBudget,
+  type AgentBlueprintPermissionPolicy,
+  type AgentProvisioningPreview,
+  type AgentProvisioningPreviewContext,
+  type AgentReadinessCheck,
+  type AgentReadinessCheckContext,
+  type AgentReadinessResult,
+} from "./ready-agent-pool.js";
+
+export {
   ALL_INTERFACES_BIND_HOST,
   LOOPBACK_BIND_HOST,
   inferBindModeFromHost,

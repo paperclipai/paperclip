@@ -2,6 +2,7 @@ import {
   MISSION_CONTROL_DEFAULT_REQUIRED_DOCUMENT_KEYS,
   PAPERCLIP_MCP_TOOL_POLICIES,
   evaluateMissionControlCompletionGate,
+  maskFinalDeliveryDestination,
   type FinalDeliveryInteraction,
   type Issue,
   type IssueDocument,
@@ -77,14 +78,7 @@ function formatRelative(value: Date | string | null | undefined): string {
 }
 
 function formatDestination(destination: IssueFinalDeliveryDestination): string {
-  if (destination.platform === "telegram") {
-    return ["Telegram", `chat ${destination.chatId}`, destination.threadId ? `thread ${destination.threadId}` : null]
-      .filter(Boolean)
-      .join(" · ");
-  }
-  return ["Slack", `channel ${destination.channelId}`, destination.threadTs ? `thread ${destination.threadTs}` : null]
-    .filter(Boolean)
-    .join(" · ");
+  return maskFinalDeliveryDestination(destination);
 }
 
 function redactSecretLikeText(input: string): string {
