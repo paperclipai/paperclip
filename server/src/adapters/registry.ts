@@ -438,6 +438,34 @@ const hermesLocalAdapter: ServerAdapterModule = {
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: hermesAgentConfigurationDoc,
   detectModel: () => detectModelFromHermes(),
+  getConfigSchema: (): AdapterConfigSchema => ({
+    fields: [
+      {
+        key: "model",
+        label: "Model",
+        type: "text",
+        hint: "Model ID to use (e.g. open-large, glm-latest, claude-sonnet-4-6).",
+      },
+      {
+        key: "baseURL",
+        label: "Base URL",
+        type: "text",
+        hint: "API base URL. Leave blank for default Anthropic endpoint.",
+      },
+      {
+        key: "instructionsFilePath",
+        label: "Instructions file path",
+        type: "text",
+        hint: "Absolute path to the AGENTS.md file this agent loads on every heartbeat.",
+      },
+      {
+        key: "timeoutSec",
+        label: "Timeout (seconds)",
+        type: "number",
+        default: 300,
+      },
+    ],
+  }),
 };
 
 const adaptersByType = new Map<string, ServerAdapterModule>();
