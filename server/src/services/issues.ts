@@ -212,6 +212,7 @@ export interface IssueFilters {
   touchedByUserId?: string;
   inboxArchivedByUserId?: string;
   unreadForUserId?: string;
+  awaitingDecisionForUserId?: string;
   projectId?: string;
   projectScopeRestrictedTo?: string[];
   workspaceId?: string;
@@ -2456,7 +2457,9 @@ export function issueService(db: Db) {
       const touchedByUserId = filters?.touchedByUserId?.trim() || undefined;
       const inboxArchivedByUserId = filters?.inboxArchivedByUserId?.trim() || undefined;
       const unreadForUserId = filters?.unreadForUserId?.trim() || undefined;
-      const contextUserId = unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId;
+      const awaitingDecisionForUserId = filters?.awaitingDecisionForUserId?.trim() || undefined;
+      const contextUserId =
+        unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId ?? awaitingDecisionForUserId;
       const includeBlockedBy = filters?.includeBlockedBy === true;
       const rawSearch = filters?.q?.trim() ?? "";
       const hasSearch = rawSearch.length > 0;
@@ -2516,6 +2519,17 @@ export function issueService(db: Db) {
       }
       if (unreadForUserId) {
         conditions.push(unreadForUserCondition(companyId, unreadForUserId));
+      }
+      if (awaitingDecisionForUserId) {
+        conditions.push(
+          and(
+            eq(issues.status, "blocked"),
+            or(
+              eq(issues.assigneeUserId, awaitingDecisionForUserId),
+              eq(issues.createdByUserId, awaitingDecisionForUserId),
+            )!,
+          )!,
+        );
       }
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
       if (filters?.projectScopeRestrictedTo) {

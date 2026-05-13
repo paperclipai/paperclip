@@ -1486,6 +1486,7 @@ export function issueRoutes(
     const touchedByUserFilterRaw = req.query.touchedByUserId as string | undefined;
     const inboxArchivedByUserFilterRaw = req.query.inboxArchivedByUserId as string | undefined;
     const unreadForUserFilterRaw = req.query.unreadForUserId as string | undefined;
+    const awaitingDecisionForUserFilterRaw = req.query.awaitingDecisionForUserId as string | undefined;
     const assigneeUserId =
       assigneeUserFilterRaw === "me" && req.actor.type === "board"
         ? req.actor.userId
@@ -1502,6 +1503,10 @@ export function issueRoutes(
       unreadForUserFilterRaw === "me" && req.actor.type === "board"
         ? req.actor.userId
         : unreadForUserFilterRaw;
+    const awaitingDecisionForUserId =
+      awaitingDecisionForUserFilterRaw === "me" && req.actor.type === "board"
+        ? req.actor.userId
+        : awaitingDecisionForUserFilterRaw;
     const rawLimit = req.query.limit as string | undefined;
     const parsedLimit = rawLimit !== undefined && /^\d+$/.test(rawLimit)
       ? Number.parseInt(rawLimit, 10)
@@ -1526,6 +1531,13 @@ export function issueRoutes(
     }
     if (unreadForUserFilterRaw === "me" && (!unreadForUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "unreadForUserId=me requires board authentication" });
+      return;
+    }
+    if (
+      awaitingDecisionForUserFilterRaw === "me" &&
+      (!awaitingDecisionForUserId || req.actor.type !== "board")
+    ) {
+      res.status(403).json({ error: "awaitingDecisionForUserId=me requires board authentication" });
       return;
     }
     if (rawLimit !== undefined && (parsedLimit === null || !Number.isInteger(parsedLimit) || parsedLimit <= 0)) {
@@ -1557,6 +1569,7 @@ export function issueRoutes(
       touchedByUserId,
       inboxArchivedByUserId,
       unreadForUserId,
+      awaitingDecisionForUserId,
       projectId: req.query.projectId as string | undefined,
       projectScopeRestrictedTo,
       workspaceId: req.query.workspaceId as string | undefined,

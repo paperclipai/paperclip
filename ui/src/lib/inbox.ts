@@ -25,7 +25,7 @@ export const INBOX_NESTING_KEY = "paperclip:inbox:nesting";
 export const INBOX_GROUP_BY_KEY = "paperclip:inbox:group-by";
 export const INBOX_FILTER_PREFERENCES_KEY_PREFIX = "paperclip:inbox:filters";
 export const INBOX_COLLAPSED_GROUPS_KEY_PREFIX = "paperclip:inbox:collapsed-groups";
-export type InboxTab = "mine" | "recent" | "unread" | "all";
+export type InboxTab = "decisions" | "mine" | "recent" | "unread" | "all";
 export type InboxCategoryFilter =
   | "everything"
   | "issues_i_touched"
@@ -630,7 +630,14 @@ export function resolveInboxNestingEnabled(preferenceEnabled: boolean, isMobile:
 export function loadLastInboxTab(): InboxTab {
   try {
     const raw = localStorage.getItem(INBOX_LAST_TAB_KEY);
-    if (raw === "all" || raw === "unread" || raw === "recent" || raw === "mine") return raw;
+    if (
+      raw === "decisions" ||
+      raw === "all" ||
+      raw === "unread" ||
+      raw === "recent" ||
+      raw === "mine"
+    )
+      return raw;
     if (raw === "new") return "mine";
     return "mine";
   } catch {
@@ -730,6 +737,9 @@ export function getApprovalsForTab(
     (a, b) => normalizeTimestamp(b.updatedAt) - normalizeTimestamp(a.updatedAt),
   );
 
+  if (tab === "decisions") {
+    return sortedApprovals.filter((approval) => ACTIONABLE_APPROVAL_STATUSES.has(approval.status));
+  }
   if (tab === "mine") {
     return sortedApprovals.filter((approval) => isApprovalVisibleInMine(approval, currentUserId));
   }

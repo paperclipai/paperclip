@@ -682,7 +682,11 @@ export function Inbox() {
 
   const pathSegment = location.pathname.split("/").pop() ?? "mine";
   const tab: InboxTab =
-    pathSegment === "mine" || pathSegment === "recent" || pathSegment === "all" || pathSegment === "unread"
+    pathSegment === "decisions" ||
+    pathSegment === "mine" ||
+    pathSegment === "recent" ||
+    pathSegment === "all" ||
+    pathSegment === "unread"
       ? pathSegment
       : "mine";
   const canArchiveFromTab = isMineInboxTab(tab);
@@ -819,6 +823,17 @@ export function Inbox() {
     enabled: !!selectedCompanyId,
   });
 
+  const { data: decisionsIssuesRaw = [] } = useQuery({
+    queryKey: ["issues", selectedCompanyId, "awaiting-decision", "me"],
+    queryFn: () =>
+      issuesApi.list(selectedCompanyId!, {
+        awaitingDecisionForUserId: "me",
+        includeRoutineExecutions: true,
+      }),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 15000,
+  });
+
   const { data: heartbeatRuns, isLoading: isRunsLoading } = useQuery({
     queryKey: [...queryKeys.heartbeats(selectedCompanyId!), "limit", INBOX_HEARTBEAT_RUN_LIMIT],
     queryFn: () => heartbeatsApi.list(selectedCompanyId!, undefined, INBOX_HEARTBEAT_RUN_LIMIT),
@@ -924,11 +939,12 @@ export function Inbox() {
   }, [agents, currentUserId, mineIssues, touchedIssues]);
   const issuesToRender = useMemo(
     () => {
+      if (tab === "decisions") return decisionsIssuesRaw;
       if (tab === "mine") return visibleMineIssues;
       if (tab === "unread") return unreadTouchedIssues;
       return visibleTouchedIssues;
     },
-    [tab, visibleMineIssues, visibleTouchedIssues, unreadTouchedIssues],
+    [tab, visibleMineIssues, visibleTouchedIssues, unreadTouchedIssues, decisionsIssuesRaw],
   );
 
   const agentById = useMemo(() => {
@@ -1046,11 +1062,13 @@ export function Inbox() {
     allCategoryFilter === "everything" || allCategoryFilter === "failed_runs";
   const showAlertsCategory = allCategoryFilter === "everything" || allCategoryFilter === "alerts";
   const failedRunsForTab = useMemo(() => {
+    if (tab === "decisions") return [];
     if (tab === "all" && !showFailedRunsCategory) return [];
     return failedRuns;
   }, [failedRuns, tab, showFailedRunsCategory]);
 
   const joinRequestsForTab = useMemo(() => {
+    if (tab === "decisions") return [];
     if (tab === "all" && !showJoinRequestsCategory) return [];
     if (tab === "mine") {
       return joinRequests.filter(
@@ -1940,6 +1958,13 @@ export function Inbox() {
           <PageTabBar
             items={[
               {
+                value: "decisions",
+                label:
+                  decisionsIssuesRaw.length > 0
+                    ? `Needs you (${decisionsIssuesRaw.length})`
+                    : "Needs you",
+              },
+              {
                 value: "mine",
                 label: "Mine",
               },
@@ -2143,6 +2168,8 @@ export function Inbox() {
           message={
             searchQuery.trim()
               ? "No inbox items match your search."
+              : tab === "decisions"
+              ? "Nothing waiting on you. You're all caught up."
               : tab === "mine"
               ? "Inbox zero."
               : tab === "unread"

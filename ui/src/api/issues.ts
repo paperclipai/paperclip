@@ -47,6 +47,7 @@ export const issuesApi = {
       touchedByUserId?: string;
       inboxArchivedByUserId?: string;
       unreadForUserId?: string;
+      awaitingDecisionForUserId?: string;
       labelId?: string;
       workspaceId?: string;
       executionWorkspaceId?: string;
@@ -71,6 +72,8 @@ export const issuesApi = {
     if (filters?.touchedByUserId) params.set("touchedByUserId", filters.touchedByUserId);
     if (filters?.inboxArchivedByUserId) params.set("inboxArchivedByUserId", filters.inboxArchivedByUserId);
     if (filters?.unreadForUserId) params.set("unreadForUserId", filters.unreadForUserId);
+    if (filters?.awaitingDecisionForUserId)
+      params.set("awaitingDecisionForUserId", filters.awaitingDecisionForUserId);
     if (filters?.labelId) params.set("labelId", filters.labelId);
     if (filters?.workspaceId) params.set("workspaceId", filters.workspaceId);
     if (filters?.executionWorkspaceId) params.set("executionWorkspaceId", filters.executionWorkspaceId);
