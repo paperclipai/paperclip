@@ -184,6 +184,23 @@ const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
+/**
+ * System tmp / config roots that must NEVER be treated as a host workspace
+ * cwd, even if a previous run's sessionParams points there. Some remote
+ * adapters historically persisted the *pod* cwd (e.g. "/tmp") into
+ * sessionParams; using that as the host workspace cwd on the next run
+ * causes catastrophic recursive tar-uploads. See resolveWorkspaceForRun.
+ */
+const SESSION_CWD_SYSTEM_ROOTS = new Set([
+  "/",
+  "/tmp",
+  "/var",
+  "/var/tmp",
+  "/usr",
+  "/etc",
+  "/private",
+  "/private/tmp",
+]);
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
@@ -3568,7 +3585,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const sessionCwd = readNonEmptyString(previousSessionParams?.cwd);
-    if (sessionCwd) {
+    // Reject session-resume cwds that point at system tmp roots. Some
+    // remote adapters previously persisted the *pod* cwd (e.g. "/tmp")
+    // into sessionParams; if we naively used it as the host workspace
+    // cwd we would walk and tar the entire host /tmp. SESSION_CWD_SYSTEM_ROOTS
+    // is module-scoped so we don't pay an allocation per heartbeat tick.
+    const sessionCwdLooksUnsafe = sessionCwd
+      ? SESSION_CWD_SYSTEM_ROOTS.has(sessionCwd.replace(/\/+$/, ""))
+      : false;
+    if (sessionCwd && !sessionCwdLooksUnsafe) {
       const sessionCwdExists = await fs
         .stat(sessionCwd)
         .then((stats) => stats.isDirectory())
@@ -3590,7 +3615,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
     await fs.mkdir(cwd, { recursive: true });
     const warnings: string[] = [];
-    if (sessionCwd) {
+    if (sessionCwd && sessionCwdLooksUnsafe) {
+      warnings.push(
+        `Saved session workspace "${sessionCwd}" points at a system temp root and was rejected as untrusted (likely persisted from a previous remote-target run). Using fallback workspace "${cwd}" for this run.`,
+      );
+    } else if (sessionCwd) {
       warnings.push(
         `Saved session workspace "${sessionCwd}" is not available. Using fallback workspace "${cwd}" for this run.`,
       );

@@ -79,6 +79,24 @@ export const DEFAULT_LOCAL_PLUGIN_DIR = path.join(
 
 const DEV_TSX_LOADER_PATH = path.resolve(__dirname, "../../../cli/node_modules/tsx/dist/loader.mjs");
 
+/**
+ * Model-provider API keys that sandbox-provider plugins (e.g.
+ * `@paperclipai/plugin-kubernetes`) are allowed to read from the
+ * server's process environment so they can inject them into per-run
+ * pod Secrets. All other host env vars remain stripped from plugin
+ * workers (see `PluginWorkerManager.spawnProcess`). The passthrough
+ * is gated on the plugin manifest declaring
+ * `environment.drivers.register` — non-sandbox plugins never receive
+ * these keys.
+ */
+const ADAPTER_ENV_PASSTHROUGH = [
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "GOOGLE_API_KEY",
+  "GEMINI_API_KEY",
+  "OPENROUTER_API_KEY",
+];
+
 // ---------------------------------------------------------------------------
 // Discovery result types
 // ---------------------------------------------------------------------------
@@ -1820,10 +1838,29 @@ export function pluginLoader(
         databaseNamespace,
         hostHandlers,
         autoRestart: true,
-        env: {
-          PAPERCLIP_DEPLOYMENT_MODE: instanceInfo.deploymentMode ?? "",
-          PAPERCLIP_DEPLOYMENT_EXPOSURE: instanceInfo.deploymentExposure ?? "",
-        },
+        env: (() => {
+          const baseEnv: Record<string, string> = {
+            PAPERCLIP_DEPLOYMENT_MODE: instanceInfo.deploymentMode ?? "",
+            PAPERCLIP_DEPLOYMENT_EXPOSURE: instanceInfo.deploymentExposure ?? "",
+          };
+          // Adapter env keys (model-provider API keys) are propagated from
+          // the server's environment so sandbox-provider plugins can inject
+          // them into per-run pod Secrets. Scoped to plugins that declare
+          // `environment.drivers.register` so non-sandbox plugins
+          // (notification, UI widget, etc.) don't receive them. All other
+          // host env vars remain stripped.
+          const isSandboxProvider = Array.isArray(manifest.capabilities)
+            && manifest.capabilities.includes("environment.drivers.register");
+          if (isSandboxProvider) {
+            for (const key of ADAPTER_ENV_PASSTHROUGH) {
+              const value = process.env[key];
+              if (value && value.trim().length > 0) {
+                baseEnv[key] = value;
+              }
+            }
+          }
+          return baseEnv;
+        })(),
       };
 
       // Repo-local plugin installs can resolve workspace TS sources at runtime
