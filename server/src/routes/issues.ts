@@ -2953,8 +2953,15 @@ export function issueRoutes(
       }
     }
 
-    // Write-time done gate (STAA-4122)
-    if (updateFields.status === "done" && existing.status !== "done") {
+    // Write-time done gate (STAA-4122). Agent-only — board/user closes are not
+    // subject to close-block doctrine. Also skipped for execution-policy decisions
+    // (approval/review stage outcomes are already governance-gated).
+    if (
+      updateFields.status === "done" &&
+      existing.status !== "done" &&
+      actor.actorType === "agent" &&
+      !transition.decision
+    ) {
       const gateRejection = await validateDoneGate({
         commentBody,
         issueId: existing.id,
