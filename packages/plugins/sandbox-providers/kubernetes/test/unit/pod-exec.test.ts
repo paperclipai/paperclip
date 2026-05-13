@@ -116,6 +116,7 @@ describe("execInPod", () => {
     let resolveWebsocket: ((ws: EventEmitter) => void) | undefined;
     let observedStdin = "";
     let observedStdinFinished = false;
+    const ws = Object.assign(new EventEmitter(), { close: vi.fn() });
 
     execMock.mockImplementation((_namespace, _pod, _container, _command, _stdout, _stderr, stdin) => {
       stdin?.on("data", (chunk: Buffer) => {
@@ -132,9 +133,10 @@ describe("execInPod", () => {
     const result = await execInPod({} as never, "ns", "pod-1", "agent", ["base64", "-d"], "abc", 5);
     expect(result.timedOut).toBe(true);
 
-    resolveWebsocket?.(new EventEmitter());
+    resolveWebsocket?.(ws);
     await Promise.resolve();
 
+    expect(ws.close).toHaveBeenCalled();
     expect(observedStdin).toBe("");
     expect(observedStdinFinished).toBe(false);
   });

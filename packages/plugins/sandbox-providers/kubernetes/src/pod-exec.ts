@@ -155,7 +155,15 @@ export async function execInPod(
       websocketPromise
         .then((webSocket) => {
           ws = webSocket as WebSocketLike;
-          if (!settled && stdinStream && stdinPayload) {
+          if (settled) {
+            try {
+              ws.close();
+            } catch {
+              // Ignore best-effort close failures.
+            }
+            return;
+          }
+          if (stdinStream && stdinPayload) {
             stdinStream.end(stdinPayload);
           }
           ws.on("close", (code: number, reason: Buffer) => {
