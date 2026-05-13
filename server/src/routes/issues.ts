@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
+import { and, eq, inArray, not, sql } from "drizzle-orm";
 import multer from "multer";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
-import { issueExecutionDecisions } from "@paperclipai/db";
+import { agents as agentsTable, issues as issuesTable, issueExecutionDecisions } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
@@ -3835,6 +3836,119 @@ export function issueRoutes(
     });
 
     res.json({ ok: true });
+  });
+
+  router.post("/companies/:companyId/issues/suggest-assignee", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    if (process.env.FEATURE_SUGGEST_ASSIGNEE === "false") {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
+
+    const { title = "", description = "", labels = [], limit = 5 } = req.body as {
+      title?: string;
+      description?: string;
+      labels?: string[];
+      limit?: number;
+    };
+
+    const now = new Date();
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+    const rows = await db
+      .select({
+        agentId: agentsTable.id,
+        agentName: agentsTable.name,
+        role: agentsTable.role,
+        activeIssueCount: sql<number>`COUNT(CASE WHEN ${issuesTable.status} IN ('in_progress', 'in_review') THEN 1 END)::int`,
+        intake7d: sql<number>`COUNT(CASE WHEN ${issuesTable.startedAt} >= ${sevenDaysAgo} THEN 1 END)::int`,
+        lastActiveAt: sql<string | null>`MAX(${issuesTable.executionLockedAt})`,
+      })
+      .from(agentsTable)
+      .leftJoin(
+        issuesTable,
+        and(
+          eq(issuesTable.assigneeAgentId, agentsTable.id),
+          eq(issuesTable.companyId, companyId),
+        ),
+      )
+      .where(
+        and(
+          eq(agentsTable.companyId, companyId),
+          not(inArray(agentsTable.status, ["terminated", "pending_approval"])),
+        ),
+      )
+      .groupBy(agentsTable.id, agentsTable.name, agentsTable.role);
+
+    const keywords = [title, description, ...(labels as string[])]
+      .join(" ")
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean);
+
+    const suggestions = rows
+      .map((row) => {
+        const activeIssueCount = Number(row.activeIssueCount);
+        const intake7d = Number(row.intake7d);
+        const lastActiveAt = row.lastActiveAt ? new Date(row.lastActiveAt).toISOString() : null;
+        const idleDays =
+          lastActiveAt !== null
+            ? Number(
+                ((now.getTime() - new Date(lastActiveAt).getTime()) / 86400000).toFixed(2),
+              )
+            : null;
+        const busynessScore = Number(Math.min(1, Math.max(0, activeIssueCount / 5)).toFixed(2));
+
+        const roleLower = (row.role ?? "").toLowerCase();
+        const nameLower = (row.agentName ?? "").toLowerCase();
+        let roleMatchScore = 0;
+        for (const kw of keywords) {
+          if (roleLower.includes(kw) || nameLower.includes(kw)) {
+            roleMatchScore = 1.0;
+            break;
+          }
+        }
+        if (roleMatchScore === 0) {
+          // partial: any keyword token appears as substring of any role token
+          const roleTokens = roleLower.split(/\W+/).filter(Boolean);
+          const nameTokens = nameLower.split(/\W+/).filter(Boolean);
+          const allTokens = [...roleTokens, ...nameTokens];
+          for (const kw of keywords) {
+            if (kw.length >= 3 && allTokens.some((t) => t.startsWith(kw) || kw.startsWith(t))) {
+              roleMatchScore = 0.5;
+              break;
+            }
+          }
+        }
+        const overallScore = Number(
+          (roleMatchScore * 0.6 + (1 - busynessScore) * 0.4).toFixed(4),
+        );
+        const reason =
+          roleMatchScore >= 1.0
+            ? `Role "${row.role}" matches issue keywords`
+            : roleMatchScore > 0
+              ? `Partial role match for "${row.role}"`
+              : `No role match — selected for availability (load: ${busynessScore})`;
+
+        return {
+          agentId: row.agentId,
+          name: row.agentName,
+          role: row.role,
+          activeIssueCount,
+          intake7d,
+          idleDays,
+          busynessScore,
+          roleMatchScore,
+          overallScore,
+          reason,
+        };
+      })
+      .sort((a, b) => b.overallScore - a.overallScore)
+      .slice(0, Math.max(1, Math.min(20, Number(limit) || 5)));
+
+    res.json({ suggestions, updatedAt: now.toISOString() });
   });
 
   return router;
