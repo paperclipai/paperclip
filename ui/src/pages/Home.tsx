@@ -46,15 +46,15 @@ export function HomePage() {
   const loading = orgsLoading || companiesLoading;
 
   return (
-    <div className="min-h-screen bg-muted/20">
-      <header className="border-b border-border bg-background">
+    <div className="min-h-screen" style={{ background: "linear-gradient(160deg, #fdf4ef 0%, #f0f4ff 50%, #f5f0ff 100%)" }}>
+      <header className="border-b border-border/40 bg-white/60 backdrop-blur-md sticky top-0 z-10">
         <div className="mx-auto flex w-full max-w-5xl items-center justify-between px-6 py-4">
-          <span className="text-base font-semibold">Paperclip</span>
+          <span className="text-base font-semibold tracking-tight">Paperclip</span>
           <div className="flex items-center gap-3">
             <span className="text-sm text-muted-foreground">{userName}</span>
             <Link
               to="/instance/settings/profile"
-              className="text-sm text-muted-foreground hover:text-foreground"
+              className="text-sm text-muted-foreground hover:text-foreground transition-colors"
             >
               Account
             </Link>
@@ -62,15 +62,25 @@ export function HomePage() {
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-5xl px-6 py-10">
-        <div className="mb-8 flex items-end justify-between gap-4">
-          <div className="min-w-0">
-            <h1 className="text-2xl font-semibold">Welcome back</h1>
-            <div className="mt-2 flex items-center gap-2">
-              <Building2 className="size-4 text-muted-foreground" />
+      <main className="mx-auto w-full max-w-5xl px-6 py-10 space-y-8">
+        {/* Hero card — peach-to-lavender gradient */}
+        <div
+          className="rounded-3xl px-8 py-10 shadow-md"
+          style={{ background: "linear-gradient(135deg, #fde8d8 0%, #fce4f0 55%, #e8e4fc 100%)" }}
+        >
+          <p className="text-xs font-semibold uppercase tracking-widest text-rose-400/80 mb-2">
+            {new Date().getHours() < 12 ? "Good morning" : new Date().getHours() < 18 ? "Good afternoon" : "Good evening"}
+          </p>
+          <h1 className="text-3xl font-bold tracking-tight text-foreground mb-6">
+            Welcome back, {userName.split(" ")[0]}
+          </h1>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2">
+              <Building2 className="size-4 text-muted-foreground/70" />
               {organizations.length > 0 ? (
                 <select
-                  className="rounded-md border border-border bg-background px-2 py-1 text-sm outline-none"
+                  className="rounded-xl border border-white/60 bg-white/70 backdrop-blur-sm px-3 py-1.5 text-sm outline-none shadow-sm"
                   value={selectedOrg?.id ?? ""}
                   onChange={(e) => setSelectedOrgId(e.target.value)}
                 >
@@ -85,28 +95,30 @@ export function HomePage() {
                 <span className="text-sm text-muted-foreground">No organization selected</span>
               )}
             </div>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <Button variant="outline" asChild>
-              <Link to="/organizations">
-                <Settings2 className="size-4" />
-                Manage
-              </Link>
-            </Button>
-            <Button
-              onClick={() => {
-                if (selectedOrg) setSelectedOrgId(selectedOrg.id);
-                openOnboarding();
-              }}
-            >
-              <Plus className="size-4" />
-              New company
-            </Button>
+            <div className="ml-auto flex items-center gap-2 shrink-0">
+              <Button variant="outline" size="sm" className="rounded-xl bg-white/60 backdrop-blur-sm border-white/70 shadow-sm" asChild>
+                <Link to="/organizations">
+                  <Settings2 className="size-4" />
+                  Manage
+                </Link>
+              </Button>
+              <Button
+                size="sm"
+                className="rounded-xl shadow-sm"
+                onClick={() => {
+                  if (selectedOrg) setSelectedOrgId(selectedOrg.id);
+                  openOnboarding();
+                }}
+              >
+                <Plus className="size-4" />
+                New company
+              </Button>
+            </div>
           </div>
         </div>
 
         {loading ? (
-          <div className="rounded-lg border border-border bg-background p-6 text-sm text-muted-foreground">
+          <div className="rounded-2xl border border-border/50 bg-white/60 backdrop-blur-sm shadow-sm p-8 text-sm text-muted-foreground">
             Loading...
           </div>
         ) : !selectedOrg ? (
@@ -128,8 +140,8 @@ export function HomePage() {
         )}
 
         {unassigned.length > 0 ? (
-          <section className="mt-10">
-            <h2 className="mb-3 text-sm font-semibold text-muted-foreground">
+          <section>
+            <h2 className="mb-4 text-xs font-semibold uppercase tracking-widest text-muted-foreground/70 px-1">
               Not attached to any organization
             </h2>
             <CompanyGrid companies={unassigned} onEnter={enterCompany} />
@@ -154,19 +166,19 @@ function CompanyGrid({
           <button
             type="button"
             onClick={() => onEnter(company)}
-            className="group flex w-full items-center gap-3 rounded-lg border border-border bg-background p-4 text-left transition-colors hover:border-foreground/30 hover:bg-accent/40"
+            className="group flex w-full items-center gap-4 rounded-2xl border border-border/50 bg-white/70 backdrop-blur-sm p-5 text-left shadow-sm transition-all hover:shadow-md hover:border-border/80 hover:bg-white/80 active:scale-[0.98]"
           >
             {company.brandColor ? (
               <span
-                className="size-8 shrink-0 rounded-md"
+                className="size-10 shrink-0 rounded-xl shadow-sm"
                 style={{ backgroundColor: company.brandColor }}
               />
             ) : (
-              <span className="size-8 shrink-0 rounded-md border border-border" />
+              <span className="size-10 shrink-0 rounded-xl border border-border/60 bg-muted/30" />
             )}
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm font-semibold">{company.name}</span>
-              <span className="block truncate text-xs text-muted-foreground">
+              <span className="block truncate text-xs text-muted-foreground mt-0.5">
                 {company.issuePrefix}
               </span>
             </span>
@@ -189,11 +201,11 @@ function EmptyState({
   onAction: () => void;
 }) {
   return (
-    <div className="rounded-lg border border-border bg-background p-10 text-center">
-      <Building2 className="mx-auto size-8 text-muted-foreground" />
-      <h2 className="mt-4 text-base font-semibold">{title}</h2>
-      <p className="mt-1 text-sm text-muted-foreground">{message}</p>
-      <Button className="mt-4" onClick={onAction}>
+    <div className="rounded-2xl border border-border/50 bg-white/60 backdrop-blur-sm shadow-sm p-12 text-center">
+      <Building2 className="mx-auto size-10 text-muted-foreground/50" />
+      <h2 className="mt-5 text-lg font-semibold">{title}</h2>
+      <p className="mt-2 text-sm text-muted-foreground max-w-xs mx-auto">{message}</p>
+      <Button className="mt-6 rounded-xl" onClick={onAction}>
         <Plus className="size-4" />
         {actionLabel}
       </Button>

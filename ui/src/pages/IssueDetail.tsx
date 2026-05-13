@@ -390,11 +390,11 @@ function IssueSectionSkeleton({
   rows?: number;
 }) {
   return (
-    <div className="space-y-3 rounded-lg border border-border p-3">
+    <div className="space-y-3 rounded-2xl border border-border/60 bg-background/70 backdrop-blur-sm shadow-sm px-5 py-4">
       <Skeleton className={cn("h-4", titleWidth)} />
       <div className="space-y-2">
         {Array.from({ length: rows }).map((_, index) => (
-          <Skeleton key={index} className="h-12 w-full rounded-md" />
+          <Skeleton key={index} className="h-12 w-full rounded-xl" />
         ))}
       </div>
     </div>
@@ -484,7 +484,7 @@ function IssueDetailLoadingState({
 
         {headerSeed ? (
           <>
-            <h2 className="text-xl font-bold leading-tight">{headerSeed.title}</h2>
+            <h2 className="text-2xl font-bold leading-snug tracking-tight">{headerSeed.title}</h2>
             <div className="space-y-2">
               <Skeleton className="h-4 w-full max-w-xl" />
               <Skeleton className="h-4 w-[72%]" />
@@ -3211,10 +3211,10 @@ export function IssueDetail() {
   );
 
   return (
-    <div className="max-w-3xl space-y-6">
+    <div className="max-w-3xl space-y-8 pb-10">
       {/* Parent chain breadcrumb */}
       {ancestors.length > 0 && (
-        <nav className="flex items-center gap-1 text-xs text-muted-foreground flex-wrap">
+        <nav className="flex items-center gap-1 text-xs text-muted-foreground/70 flex-wrap">
           {[...ancestors].reverse().map((ancestor, i) => (
             <span key={ancestor.id} className="flex items-center gap-1">
               {i > 0 && <ChevronRight className="h-3 w-3 shrink-0" />}
@@ -3321,7 +3321,8 @@ export function IssueDetail() {
         </div>
       )}
 
-      <div className="space-y-3">
+      {/* Hero header glass card */}
+      <div className="rounded-2xl bg-background/70 backdrop-blur-md shadow-sm ring-1 ring-border/50 px-6 py-6 space-y-4">
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <StatusIcon
             status={issue.status}
@@ -3617,14 +3618,14 @@ export function IssueDetail() {
           value={issue.title}
           onSave={(title) => updateIssue.mutateAsync({ title })}
           as="h2"
-          className="text-xl font-bold"
+          className="text-2xl font-bold leading-snug tracking-tight"
         />
 
         <InlineEditor
           value={issue.description ?? ""}
           onSave={(description) => updateIssue.mutateAsync({ description })}
           as="p"
-          className="text-[15px] leading-7 text-foreground"
+          className="text-[15px] leading-7 text-muted-foreground"
           placeholder="Add a description..."
           multiline
           foldable
@@ -3676,14 +3677,14 @@ export function IssueDetail() {
           entityType: "issue",
         }}
         className="space-y-3"
-        itemClassName="rounded-lg border border-border p-3"
+        itemClassName="rounded-2xl border border-border/60 bg-background/70 backdrop-blur-sm shadow-sm p-4"
         missingBehavior="placeholder"
       />
 
       {showRichSubIssuesSection ? (
-        <div className="space-y-3">
+        <div className="rounded-2xl border border-border/60 bg-background/70 backdrop-blur-sm shadow-sm px-5 py-4 space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <h3 className="text-sm font-medium text-muted-foreground">Sub-issues</h3>
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">Sub-issues</h3>
           </div>
           <IssuesList
             issues={childIssues}
@@ -3744,7 +3745,8 @@ export function IssueDetail() {
       ) : hasAttachments ? (
         <div
         className={cn(
-          "space-y-3 rounded-lg transition-colors",
+          "rounded-2xl border border-border/60 bg-background/70 backdrop-blur-sm shadow-sm px-5 py-4 space-y-3 transition-colors",
+          attachmentDragActive && "ring-2 ring-primary/40",
         )}
         onDragEnter={(evt) => {
           evt.preventDefault();
@@ -3761,7 +3763,7 @@ export function IssueDetail() {
         onDrop={(evt) => void handleAttachmentDrop(evt)}
       >
         <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-medium text-muted-foreground">Attachments</h3>
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">Attachments</h3>
           {attachmentUploadButton}
         </div>
 
@@ -3884,9 +3886,9 @@ export function IssueDetail() {
         onUpdate={(data) => updateIssue.mutate(data)}
       />
 
-      <Separator />
-
-      <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
+      <div className="rounded-2xl border border-border/60 bg-background/70 backdrop-blur-sm shadow-sm overflow-hidden">
+      <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-0">
+        <div className="border-b border-border/50 px-4 pt-3">
         <TabsList variant="line" className="w-full justify-start gap-1">
           <TabsTrigger value="chat" className="gap-1.5">
             <MessageSquare className="h-3.5 w-3.5" />
@@ -3906,7 +3908,9 @@ export function IssueDetail() {
             </TabsTrigger>
           ))}
         </TabsList>
+        </div>
 
+        <div className="p-4">
         <TabsContent value="chat">
           {detailTab === "chat" ? (
             <IssueDetailChatTab
@@ -4018,7 +4022,9 @@ export function IssueDetail() {
             />
           </TabsContent>
         )}
+        </div>
       </Tabs>
+      </div>
 
       <Dialog open={treeControlOpen} onOpenChange={setTreeControlOpen}>
         <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[560px]">

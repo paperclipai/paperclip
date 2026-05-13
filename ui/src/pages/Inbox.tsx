@@ -264,7 +264,7 @@ export function FailedRunInboxRow({
 
   return (
     <div className={cn(
-      "group border-b border-border px-2 py-2.5 last:border-b-0 sm:px-1 sm:pr-3 sm:py-2",
+      "group border-b border-border/50 px-3 py-4 last:border-b-0 sm:px-2 sm:pr-4 sm:py-4",
       className,
     )}>
       <div className="flex items-start gap-2 sm:items-center">
@@ -420,7 +420,7 @@ function ApprovalInboxRow({
 
   return (
     <div className={cn(
-      "group border-b border-border px-2 py-2.5 last:border-b-0 sm:px-1 sm:pr-3 sm:py-2",
+      "group border-b border-border/50 px-3 py-4 last:border-b-0 sm:px-2 sm:pr-4 sm:py-4",
       className,
     )}>
       <div className="flex items-start gap-2 sm:items-center">
@@ -556,7 +556,7 @@ function JoinRequestInboxRow({
 
   return (
     <div className={cn(
-      "group border-b border-border px-2 py-2.5 last:border-b-0 sm:px-1 sm:pr-3 sm:py-2",
+      "group border-b border-border/50 px-3 py-4 last:border-b-0 sm:px-2 sm:pr-4 sm:py-4",
       className,
     )}>
       <div className="flex items-start gap-2 sm:items-center">
@@ -1903,11 +1903,12 @@ export function Inbox() {
   const canMarkAllRead = unreadIssueIds.length > 0;
   const activeIssueFilterCount = countActiveIssueFilters(issueFilters, true);
   return (
-    <div className="space-y-6">
-      <div className="space-y-2">
+    <div className="space-y-4">
+      {/* Sticky frosted-glass search + tab bar */}
+      <div className="sticky top-0 z-10 -mx-4 px-4 py-3 sm:-mx-6 sm:px-6 bg-background/80 backdrop-blur-md border-b border-border/50 space-y-3">
         {/* Search — full-width row on mobile, inline on desktop */}
         <div className="relative sm:hidden">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/60" />
           <Input
             type="search"
             placeholder="Search inbox…"
@@ -1930,7 +1931,7 @@ export function Inbox() {
                 e.currentTarget.blur();
               }
             }}
-            className="h-8 w-full pl-8 text-xs"
+            className="h-9 w-full pl-9 text-sm rounded-xl bg-muted/50 border-border/50"
             data-page-search-target="true"
           />
         </div>
@@ -1954,7 +1955,7 @@ export function Inbox() {
 
         <div className="flex items-center gap-2">
           <div className="relative hidden sm:block">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/60" />
             <Input
               type="search"
               placeholder="Search inbox…"
@@ -1977,7 +1978,7 @@ export function Inbox() {
                   e.currentTarget.blur();
                 }
               }}
-              className="h-8 w-[220px] pl-8 text-xs"
+              className="h-9 w-[220px] pl-9 text-sm rounded-xl bg-muted/50 border-border/50"
               data-page-search-target="true"
             />
           </div>
@@ -2090,6 +2091,7 @@ export function Inbox() {
         </div>
         </div>
       </div>
+      {/* end sticky header */}
 
       {tab === "all" && (
         <div className="flex flex-wrap items-center gap-2">
@@ -2156,7 +2158,7 @@ export function Inbox() {
         <>
           {showSeparatorBefore("work_items") && <Separator />}
           <div>
-            <div ref={listRef} className="overflow-hidden rounded-xl">
+            <div ref={listRef} className="overflow-hidden rounded-2xl border border-border/50 bg-background/70 backdrop-blur-sm shadow-sm">
               {(() => {
                 const renderInboxIssue = ({
                   issue,
@@ -2287,13 +2289,13 @@ export function Inbox() {
                     elements.push(
                       <div
                         key={`${group.searchSection}-search-divider`}
-                        className="flex items-center gap-3 border-y border-border/70 bg-muted/30 px-4 py-2"
+                        className="flex items-center gap-3 border-y border-border/40 bg-muted/20 px-4 py-2"
                       >
-                        <div className="h-px flex-1 bg-border/80" />
-                        <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        <div className="h-px flex-1 bg-border/50" />
+                        <span className="shrink-0 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60">
                           {group.searchSection === "archived" ? "Archived" : "Other results"}
                         </span>
-                        <div className="h-px flex-1 bg-border/80" />
+                        <div className="h-px flex-1 bg-border/50" />
                       </div>,
                     );
                   }
@@ -2574,12 +2576,12 @@ export function Inbox() {
         <>
           {showSeparatorBefore("alerts") && <Separator />}
           <div>
-            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            <h3 className="mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground/70 px-1">
               Alerts
             </h3>
-            <div className="divide-y divide-border border border-border">
+            <div className="rounded-2xl border border-border/50 bg-background/70 backdrop-blur-sm shadow-sm divide-y divide-border/50 overflow-hidden">
               {showAggregateAgentError && (
-                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
+                <div className="group/alert relative flex items-center gap-3 px-5 py-4 transition-colors hover:bg-accent/40">
                   <Link
                     to="/agents"
                     className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
@@ -2601,7 +2603,7 @@ export function Inbox() {
                 </div>
               )}
               {showBudgetAlert && (
-                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
+                <div className="group/alert relative flex items-center gap-3 px-5 py-4 transition-colors hover:bg-accent/40">
                   <Link
                     to="/costs"
                     className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
