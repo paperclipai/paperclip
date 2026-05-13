@@ -336,3 +336,12 @@ export {
   type IssueRunRecord,
   type RecoveredIssueRun,
 } from "./issue-run.js";
+
+export {
+  requestMcDispatchFallbackSchema,
+  mcDispatchFallbackResponseSchema,
+  mcDispatchFallbackOutcomes,
+  type RequestMcDispatchFallback,
+  type McDispatchFallbackResponse,
+  type McDispatchFallbackOutcome,
+} from "./mc-dispatch-fallback.js";

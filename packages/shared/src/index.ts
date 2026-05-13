@@ -704,12 +704,18 @@ export {
   recoverStaleIssueRunsSchema,
   issueRunRecordSchema,
   recoveredIssueRunSchema,
+  requestMcDispatchFallbackSchema,
+  mcDispatchFallbackResponseSchema,
+  mcDispatchFallbackOutcomes,
   type AcquireIssueRunInput,
   type HeartbeatIssueRunInput,
   type ReleaseIssueRunInput,
   type RecoverStaleIssueRunsInput,
   type IssueRunRecord,
   type RecoveredIssueRun,
+  type RequestMcDispatchFallback,
+  type McDispatchFallbackResponse,
+  type McDispatchFallbackOutcome,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";
