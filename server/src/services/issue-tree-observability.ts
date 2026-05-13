@@ -23,6 +23,8 @@ export interface IssueTreeObservabilityOptions {
   now?: Date;
 }
 
+type DateLike = Date | string;
+
 type IssueTreeRow = {
   id: string;
   identifier: string | null;
@@ -32,17 +34,17 @@ type IssueTreeRow = {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   depth: number | string;
-  createdAt: Date;
-  updatedAt: Date;
+  createdAt: DateLike;
+  updatedAt: DateLike;
 };
 
 type RunLinkRow = {
   issueId: string;
   runId: string;
   status: string;
-  startedAt: Date | null;
-  finishedAt: Date | null;
-  createdAt: Date;
+  startedAt: DateLike | null;
+  finishedAt: DateLike | null;
+  createdAt: DateLike;
   error: string | null;
   errorCode: string | null;
 };
@@ -57,7 +59,7 @@ type CostRow = {
   inputTokens: number | string;
   cachedInputTokens: number | string;
   outputTokens: number | string;
-  occurredAt: Date;
+  occurredAt: DateLike;
 };
 
 type ActivityRow = {
@@ -66,7 +68,7 @@ type ActivityRow = {
   runId: string | null;
   action: string;
   details: unknown;
-  createdAt: Date;
+  createdAt: DateLike;
 };
 
 type ErrorEventRow = {
@@ -77,7 +79,7 @@ type ErrorEventRow = {
   level: string | null;
   stream: string | null;
   message: string | null;
-  createdAt: Date;
+  createdAt: DateLike;
 };
 
 function normalizeTimelineLimit(limit: number | undefined) {
@@ -90,10 +92,15 @@ function numberValue(value: number | string | null | undefined) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function dateMillis(value: Date | null | undefined) {
+function toDate(value: DateLike | null | undefined): Date | null {
   if (!value) return null;
-  const ms = value.getTime();
-  return Number.isFinite(ms) ? ms : null;
+  const date = value instanceof Date ? value : new Date(value);
+  const ms = date.getTime();
+  return Number.isFinite(ms) ? date : null;
+}
+
+function dateMillis(value: DateLike | null | undefined) {
+  return toDate(value)?.getTime() ?? null;
 }
 
 function runRuntimeMs(run: RunLinkRow, now: Date) {
@@ -104,15 +111,17 @@ function runRuntimeMs(run: RunLinkRow, now: Date) {
   return finishedMs - startedMs;
 }
 
-function timestampMs(value: Date | null | undefined) {
+function timestampMs(value: DateLike | null | undefined) {
   const ms = dateMillis(value);
   return ms === null ? Number.NEGATIVE_INFINITY : ms;
 }
 
-function latestDate(existing: Date | null, next: Date | null | undefined) {
-  if (!next) return existing;
-  if (!existing) return next;
-  return next.getTime() > existing.getTime() ? next : existing;
+function latestDate(existing: DateLike | null, next: DateLike | null | undefined) {
+  const existingDate = toDate(existing);
+  const nextDate = toDate(next);
+  if (!nextDate) return existingDate;
+  if (!existingDate) return nextDate;
+  return nextDate.getTime() > existingDate.getTime() ? nextDate : existingDate;
 }
 
 function sanitizeMessage(message: string | null | undefined) {
@@ -433,7 +442,8 @@ export async function buildIssueTreeObservability(
   const timeline: IssueTreeObservabilityTimelineEntry[] = [];
   for (const run of runRows) {
     const issue = issueById.get(run.issueId);
-    if (!issue) continue;
+    const timestamp = toDate(run.finishedAt ?? run.startedAt ?? run.createdAt);
+    if (!issue || !timestamp) continue;
     timeline.push({
       id: stableTimelineId("run", run.runId, run.issueId),
       kind: "run",
@@ -442,7 +452,7 @@ export async function buildIssueTreeObservability(
       issueIdentifier: issue.identifier,
       issueTitle: issue.title,
       runId: run.runId,
-      timestamp: run.finishedAt ?? run.startedAt ?? run.createdAt,
+      timestamp,
       label: runLabel(run.status),
       message: sanitizeMessage(run.error ?? run.errorCode ?? null),
       costCents: null,
@@ -451,7 +461,8 @@ export async function buildIssueTreeObservability(
 
   for (const cost of costRows) {
     const issue = issueById.get(cost.issueId);
-    if (!issue) continue;
+    const timestamp = toDate(cost.occurredAt);
+    if (!issue || !timestamp) continue;
     timeline.push({
       id: stableTimelineId("cost", cost.id, cost.issueId),
       kind: "cost",
@@ -460,7 +471,7 @@ export async function buildIssueTreeObservability(
       issueIdentifier: issue.identifier,
       issueTitle: issue.title,
       runId: cost.runId,
-      timestamp: cost.occurredAt,
+      timestamp,
       label: "Cost recorded",
       message: sanitizeMessage(`${cost.provider} ${cost.model}`),
       costCents: numberValue(cost.costCents),
@@ -469,7 +480,8 @@ export async function buildIssueTreeObservability(
 
   for (const event of errorRows) {
     const issue = issueById.get(event.issueId);
-    if (!issue || !runIssuePairs.has(`${event.runId}:${event.issueId}`)) continue;
+    const timestamp = toDate(event.createdAt);
+    if (!issue || !timestamp || !runIssuePairs.has(`${event.runId}:${event.issueId}`)) continue;
     timeline.push({
       id: stableTimelineId("error", event.id, event.issueId),
       kind: "error",
@@ -478,7 +490,7 @@ export async function buildIssueTreeObservability(
       issueIdentifier: issue.identifier,
       issueTitle: issue.title,
       runId: event.runId,
-      timestamp: event.createdAt,
+      timestamp,
       label: event.eventType,
       message: sanitizeMessage(event.message),
       costCents: null,
@@ -487,7 +499,8 @@ export async function buildIssueTreeObservability(
 
   for (const activity of activityRows) {
     const issue = issueById.get(activity.issueId);
-    if (!issue) continue;
+    const timestamp = toDate(activity.createdAt);
+    if (!issue || !timestamp) continue;
     timeline.push({
       id: stableTimelineId("activity", activity.id, activity.issueId),
       kind: "activity",
@@ -496,7 +509,7 @@ export async function buildIssueTreeObservability(
       issueIdentifier: issue.identifier,
       issueTitle: issue.title,
       runId: activity.runId,
-      timestamp: activity.createdAt,
+      timestamp,
       label: activity.action,
       message: sanitizeMessage(
         activity.details && typeof activity.details === "object"

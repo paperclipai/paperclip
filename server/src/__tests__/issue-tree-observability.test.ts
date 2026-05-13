@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -10,6 +10,7 @@ import {
   heartbeatRuns,
   issues,
 } from "@paperclipai/db";
+import type { Db } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -24,6 +25,111 @@ if (!embeddedPostgresSupport.supported) {
     `Skipping embedded Postgres issue tree observability tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
 }
+
+it("coerces timestamp strings returned by raw SQL rows", async () => {
+  const companyId = randomUUID();
+  const rootIssueId = randomUUID();
+  const runId = randomUUID();
+  const queryResults = [
+    {
+      rows: [
+        {
+          id: rootIssueId,
+          identifier: "LET-128",
+          title: "Tree observability smoke",
+          status: "in_progress",
+          parentId: null,
+          assigneeAgentId: null,
+          assigneeUserId: null,
+          depth: "0",
+          createdAt: "2026-05-01T00:00:00.000Z",
+          updatedAt: "2026-05-01T00:05:00.000Z",
+        },
+      ],
+    },
+    {
+      rows: [
+        {
+          issueId: rootIssueId,
+          runId,
+          status: "failed",
+          startedAt: "2026-05-01T00:10:00.000Z",
+          finishedAt: "2026-05-01T00:12:00.000Z",
+          createdAt: "2026-05-01T00:09:00.000Z",
+          error: "Adapter failed with safe placeholder",
+          errorCode: "adapter_failed",
+        },
+      ],
+    },
+    {
+      rows: [
+        {
+          id: randomUUID(),
+          issueId: rootIssueId,
+          runId,
+          provider: "openai",
+          model: "gpt-5",
+          costCents: "25",
+          inputTokens: "100",
+          cachedInputTokens: "10",
+          outputTokens: "50",
+          occurredAt: "2026-05-01T00:12:30.000Z",
+        },
+      ],
+    },
+    {
+      rows: [
+        {
+          id: randomUUID(),
+          issueId: rootIssueId,
+          runId,
+          action: "issue.updated",
+          details: { status: "failed" },
+          createdAt: "2026-05-01T00:12:45.000Z",
+        },
+      ],
+    },
+    {
+      rows: [
+        {
+          id: 1,
+          issueId: rootIssueId,
+          runId,
+          eventType: "adapter_error",
+          level: "error",
+          stream: "stderr",
+          message: "stderr excerpt",
+          createdAt: "2026-05-01T00:12:15.000Z",
+        },
+      ],
+    },
+  ];
+  const fakeDb = {
+    execute: vi.fn(async () => queryResults.shift() ?? { rows: [] }),
+  } as unknown as Db;
+
+  const result = await buildIssueTreeObservability(fakeDb, companyId, rootIssueId, {
+    now: new Date("2026-05-01T00:20:00.000Z"),
+  });
+
+  expect(fakeDb.execute).toHaveBeenCalledTimes(5);
+  expect(result.summary).toMatchObject({
+    issueCount: 1,
+    runCount: 1,
+    failedRunCount: 1,
+    errorEventCount: 1,
+    costCents: 25,
+    inputTokens: 100,
+    cachedInputTokens: 10,
+    outputTokens: 50,
+    runtimeMs: 120_000,
+  });
+  expect(result.summary.lastActivityAt).toEqual(new Date("2026-05-01T00:12:45.000Z"));
+  expect(result.nodes[0]?.lastActivityAt).toEqual(new Date("2026-05-01T00:12:45.000Z"));
+  expect(result.timeline).toHaveLength(4);
+  expect(result.timeline.every((entry) => entry.timestamp instanceof Date)).toBe(true);
+  expect(result.timeline.map((entry) => entry.kind)).toEqual(["activity", "cost", "error", "run"]);
+});
 
 describeEmbeddedPostgres("issue tree observability service", () => {
   let db!: ReturnType<typeof createDb>;
