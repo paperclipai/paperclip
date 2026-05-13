@@ -31,6 +31,7 @@ export interface InstanceExperimentalSettings {
   enableIsolatedWorkspaces: boolean;
   autoRestartDevServerWhenIdle: boolean;
   enableIssueGraphLivenessAutoRecovery: boolean;
+  enableStaleRunWatchdog: boolean;
   issueGraphLivenessAutoRecoveryLookbackHours: number;
 }
 
