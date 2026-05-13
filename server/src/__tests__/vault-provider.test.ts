@@ -414,6 +414,39 @@ describe("parseExternalRef", () => {
     expect(() => parseExternalRef("")).toThrow();
     expect(() => parseExternalRef("/")).toThrow();
   });
+
+  it("rejects path segments containing '?' (would inject URL query string)", () => {
+    expect(() => parseExternalRef("secret/teams?cap=create/key")).toThrow(
+      /path segments must match/,
+    );
+  });
+
+  it("rejects path segments containing '&' (would inject extra query params)", () => {
+    expect(() => parseExternalRef("secret/teams&cap=create/key")).toThrow(
+      /path segments must match/,
+    );
+  });
+
+  it("rejects path segments containing whitespace", () => {
+    expect(() => parseExternalRef("secret/teams platform/key")).toThrow(
+      /path segments must match/,
+    );
+  });
+
+  it("rejects path segments containing '%' (would smuggle URL-encoded bytes)", () => {
+    expect(() => parseExternalRef("secret/teams/key%2fadmin")).toThrow(
+      /path segments must match/,
+    );
+  });
+
+  it("accepts multi-segment refs whose every segment matches the safe character class", () => {
+    const r = parseExternalRef("secret/teams/platform/sub.team_v1/key-name");
+    expect(r).toEqual({
+      mount: "secret",
+      path: "teams/platform/sub.team_v1/key-name",
+      dataKey: "value",
+    });
+  });
 });
 
 describe("VaultTokenManager", () => {

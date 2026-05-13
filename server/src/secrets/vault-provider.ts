@@ -79,6 +79,13 @@ export function parseExternalRef(raw: string): ParsedExternalRef {
       `vault external ref path must not contain pure-dot segments (e.g. '.', '..'); got ${raw}`,
     );
   }
+  for (const segment of rest) {
+    if (!KV_MOUNT_PATTERN.test(segment)) {
+      throw unprocessable(
+        `vault external ref path segments must match [A-Za-z0-9._-]; got segment '${segment}' in ${raw}`,
+      );
+    }
+  }
   return { mount, path: rest.join("/"), dataKey };
 }
 
