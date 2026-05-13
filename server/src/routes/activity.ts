@@ -4,7 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { normalizeIssueIdentifier } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { activityService, normalizeActivityLimit } from "../services/activity.js";
-import { assertAuthenticated, assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertAuthenticated, assertBoard, assertCompanyAccess, hasCompanyAccess } from "./authz.js";
 import { accessService, heartbeatService, issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
 
@@ -103,7 +103,7 @@ export function activityRoutes(db: Db) {
   router.get("/issues/:id/activity", async (req, res) => {
     const rawId = req.params.id as string;
     const issue = await resolveIssueByRef(rawId);
-    if (!issue) {
+    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
@@ -116,7 +116,7 @@ export function activityRoutes(db: Db) {
   router.get("/issues/:id/runs", async (req, res) => {
     const rawId = req.params.id as string;
     const issue = await resolveIssueByRef(rawId);
-    if (!issue) {
+    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
@@ -130,8 +130,8 @@ export function activityRoutes(db: Db) {
     assertAuthenticated(req);
     const runId = req.params.runId as string;
     const run = await heartbeat.getRun(runId);
-    if (!run) {
-      res.json([]);
+    if (!run || !hasCompanyAccess(req, run.companyId)) {
+      res.status(404).json({ error: "Heartbeat run not found" });
       return;
     }
     assertCompanyAccess(req, run.companyId);

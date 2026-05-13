@@ -23,7 +23,7 @@ import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectExecutionWorkspaceCommandPaths,
@@ -81,7 +81,7 @@ export function executionWorkspaceRoutes(db: Db) {
   router.get("/execution-workspaces/:id", async (req, res) => {
     const id = req.params.id as string;
     const workspace = await svc.getById(id);
-    if (!workspace) {
+    if (!workspace || !hasCompanyAccess(req, workspace.companyId)) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }
@@ -93,7 +93,7 @@ export function executionWorkspaceRoutes(db: Db) {
   router.get("/execution-workspaces/:id/close-readiness", async (req, res) => {
     const id = req.params.id as string;
     const workspace = await svc.getById(id);
-    if (!workspace) {
+    if (!workspace || !hasCompanyAccess(req, workspace.companyId)) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }
@@ -110,7 +110,7 @@ export function executionWorkspaceRoutes(db: Db) {
   router.get("/execution-workspaces/:id/workspace-operations", async (req, res) => {
     const id = req.params.id as string;
     const workspace = await svc.getById(id);
-    if (!workspace) {
+    if (!workspace || !hasCompanyAccess(req, workspace.companyId)) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }
@@ -129,7 +129,7 @@ export function executionWorkspaceRoutes(db: Db) {
     }
 
     const existing = await svc.getById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }
@@ -470,7 +470,7 @@ export function executionWorkspaceRoutes(db: Db) {
   router.patch("/execution-workspaces/:id", validate(updateExecutionWorkspaceSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }

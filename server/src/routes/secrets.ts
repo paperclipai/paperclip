@@ -11,7 +11,7 @@ import {
   updateSecretSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertBoard, assertCompanyAccess, hasCompanyAccess } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 
@@ -379,15 +379,15 @@ export function secretRoutes(db: Db) {
     assertBoard(req);
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
     if (existing.status === "deleted") {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
+
 
     const rotated = await svc.rotate(
       id,
@@ -417,15 +417,15 @@ export function secretRoutes(db: Db) {
     assertBoard(req);
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
     if (existing.status === "deleted") {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
+
 
     const updated = await svc.update(id, {
       name: req.body.name,
@@ -485,11 +485,10 @@ export function secretRoutes(db: Db) {
     assertBoard(req);
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
 
     const removed = await svc.remove(id);
     if (!removed) {

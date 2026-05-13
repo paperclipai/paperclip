@@ -20,7 +20,7 @@ import {
   accessService,
   logActivity,
 } from "../services/index.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -368,12 +368,11 @@ export function costRoutes(
   router.patch("/agents/:agentId/budgets", validate(updateBudgetSchema), async (req, res) => {
     const agentId = req.params.agentId as string;
     const agent = await agents.getById(agentId);
-    if (!agent) {
+    if (!agent || !hasCompanyAccess(req, agent.companyId)) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
 
-    assertCompanyAccess(req, agent.companyId);
     assertBoard(req);
 
     const updated = await agents.update(agentId, { budgetMonthlyCents: req.body.budgetMonthlyCents });

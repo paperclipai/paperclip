@@ -144,6 +144,13 @@ vi.mock("../routes/authz.js", async () => {
     }
   }
 
+  function hasCompanyAccess(req: Express.Request, expectedCompanyId: string): boolean {
+    if (req.actor.type === "none") return false;
+    if (req.actor.type === "agent") return req.actor.companyId === expectedCompanyId;
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
+    return (req.actor.companyIds ?? []).includes(expectedCompanyId);
+  }
+
   function assertInstanceAdmin(req: Express.Request) {
     assertBoard(req);
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
@@ -174,6 +181,7 @@ vi.mock("../routes/authz.js", async () => {
     assertCompanyAccess,
     assertInstanceAdmin,
     getActorInfo,
+    hasCompanyAccess,
   };
 });
 
@@ -367,8 +375,8 @@ describe.sequential("agent cross-tenant route authorization", () => {
       const app = await createApp(crossTenantActor);
       const res = await deniedCase.request(app);
 
-      expect(res.status, `${deniedCase.label}: ${JSON.stringify(res.body)}`).toBe(403);
-      expect(res.body.error).toContain("User does not have access to this company");
+      expect(res.status, `${deniedCase.label}: ${JSON.stringify(res.body)}`).toBe(404);
+      expect(res.body.error).toBe("Agent not found");
       expect(mockAgentService.getById).toHaveBeenCalledWith(agentId);
       for (const mock of deniedCase.untouched) {
         expect(mock).not.toHaveBeenCalled();
