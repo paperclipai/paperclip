@@ -112,4 +112,108 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
       body: "# Handoff",
     }));
   });
+
+  async function createIssue() {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      identifier: "PAP-1700",
+      title: "Concurrent document writes",
+      description: "Validate race-path conflict handling",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    return { issueId };
+  }
+
+  it("translates concurrent update races on the same baseRevisionId to 409 with currentRevisionId", async () => {
+    const { issueId } = await createIssue();
+    const initial = await svc.upsertIssueDocument({
+      issueId,
+      key: "plan",
+      title: "Plan",
+      format: "markdown",
+      body: "# Plan v1",
+    });
+    const baseRevisionId = initial.document.latestRevisionId;
+    expect(baseRevisionId).not.toBeNull();
+
+    const settled = await Promise.allSettled([
+      svc.upsertIssueDocument({
+        issueId,
+        key: "plan",
+        title: "Plan",
+        format: "markdown",
+        body: "# Plan v2-A",
+        baseRevisionId,
+      }),
+      svc.upsertIssueDocument({
+        issueId,
+        key: "plan",
+        title: "Plan",
+        format: "markdown",
+        body: "# Plan v2-B",
+        baseRevisionId,
+      }),
+    ]);
+
+    const fulfilled = settled.filter((r): r is PromiseFulfilledResult<unknown> => r.status === "fulfilled");
+    const rejected = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+
+    const rejection = rejected[0].reason as { status?: number; details?: { currentRevisionId?: string | null } };
+    expect(rejection.status).toBe(409);
+    expect(rejection.details?.currentRevisionId).toBeDefined();
+    expect(rejection.details?.currentRevisionId).not.toBeNull();
+
+    const after = await svc.getIssueDocumentByKey(issueId, "plan");
+    expect(after?.latestRevisionNumber).toBe(2);
+    expect(rejection.details?.currentRevisionId).toBe(after?.latestRevisionId);
+  });
+
+  it("translates concurrent initial-create races on the same key to 409", async () => {
+    const { issueId } = await createIssue();
+
+    const settled = await Promise.allSettled([
+      svc.upsertIssueDocument({
+        issueId,
+        key: "plan",
+        title: "Plan",
+        format: "markdown",
+        body: "# Plan A",
+      }),
+      svc.upsertIssueDocument({
+        issueId,
+        key: "plan",
+        title: "Plan",
+        format: "markdown",
+        body: "# Plan B",
+      }),
+    ]);
+
+    const fulfilled = settled.filter((r): r is PromiseFulfilledResult<unknown> => r.status === "fulfilled");
+    const rejected = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+
+    const rejection = rejected[0].reason as { status?: number; details?: { currentRevisionId?: string | null } };
+    expect(rejection.status).toBe(409);
+    expect(rejection.details?.currentRevisionId).toBeDefined();
+    expect(rejection.details?.currentRevisionId).not.toBeNull();
+
+    const after = await svc.getIssueDocumentByKey(issueId, "plan");
+    expect(after?.latestRevisionNumber).toBe(1);
+  });
 });
