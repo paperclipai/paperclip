@@ -1691,6 +1691,74 @@ export function pluginRoutes(
   });
 
   /**
+   * POST /api/plugins/:pluginId/upgrade
+   *
+   * Upgrade an installed plugin to the latest version from npm.
+   *
+   * The upgrade flow:
+   * 1. Resolve the plugin by ID or key.
+   * 2. Deactivate the running plugin (stop worker, unregister events/jobs/tools).
+   * 3. Run `npm install <packageName>@latest` in the plugin directory.
+   * 4. Re-validate the manifest and update the database record.
+   * 5. Reactivate the plugin with the new version.
+   *
+   * Request body (optional):
+   * - version: Target version (defaults to latest if omitted)
+   *
+   * Response: `{ ok: true }`
+   * Errors:
+   * - 404 if plugin not found
+   * - 400 if upgrade fails (bad manifest, npm error, etc.)
+   */
+  router.post("/plugins/:pluginId/upgrade", async (req, res) => {
+    assertInstanceAdmin(req);
+    const { pluginId } = req.params;
+    const body = req.body as { version?: string } | undefined;
+    const version = body?.version;
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    try {
+      // Step 1: Deactivate the running plugin before upgrading
+      await lifecycle.disable(plugin.id, "Upgrading plugin...");
+
+      // Step 2: Run the upgrade through the loader (npm install @latest)
+      const upgradeResult = await loader.upgradePlugin(plugin.id, {
+        packageName: plugin.packageName,
+        version: version ?? undefined,
+      });
+
+      // Step 3: Re-enable the plugin with the new version
+      await lifecycle.enable(plugin.id);
+
+      const updated = await registry.getById(plugin.id);
+
+      await logPluginMutationActivity(req, "plugin.upgraded", plugin.id, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        previousVersion: plugin.version,
+        newVersion: updated?.version ?? upgradeResult.discovered.version,
+      });
+      publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "upgraded" } });
+
+      res.json({ ok: true });
+    } catch (err) {
+      // If upgrade fails, try to re-enable the plugin at its old version
+      try {
+        await lifecycle.enable(plugin.id);
+      } catch {
+        // Best-effort recovery — don't mask the original error
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(400).json({ error: message });
+    }
+  });
+
+  /**
    * GET /api/plugins/:pluginId/health
    *
    * Run health diagnostics on a plugin.
