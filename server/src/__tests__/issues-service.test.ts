@@ -1159,6 +1159,46 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(comments.map((comment) => comment.id)).toEqual([firstCommentId]);
   });
 
+  it("lists comments without crashing when a user-authored comment triggers the run-log derivation query", async () => {
+    // Regression for postgres-js rejecting Date params bound to a raw sql`` template.
+    // enrichCommentsWithDerivedAgentAttribution enters its query path only when at
+    // least one comment is user-authored (authorUserId set, authorAgentId/createdByRunId
+    // unset). Before the fix, the query 500s with `Buffer.byteLength` ERR_INVALID_ARG_TYPE
+    // because Date objects are interpolated as-is into the sql template.
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const userCommentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "User-authored comment issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(issueComments).values({
+      id: userCommentId,
+      companyId,
+      issueId,
+      body: "User comment",
+      authorUserId: "user-1",
+      createdAt: new Date("2026-05-11T18:55:00.000Z"),
+      updatedAt: new Date("2026-05-11T18:55:00.000Z"),
+    });
+
+    const comments = await svc.listComments(issueId, { limit: 50 });
+
+    expect(comments.map((comment) => comment.id)).toEqual([userCommentId]);
+  });
+
   it("includes blockedBy summaries on list rows in one batched pass", async () => {
     const companyId = randomUUID();
     const blockerId = randomUUID();
