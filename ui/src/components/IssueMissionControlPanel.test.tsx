@@ -241,7 +241,8 @@ describe("IssueMissionControlPanel", () => {
     expect(text).toContain("vitest failed before fix");
     expect(text).toContain("[REDACTED]");
     expect(text).not.toContain("synthetic-placeholder");
-    expect(text).toContain("Telegram · chat -100123 · thread 103");
+    expect(text).toContain("Telegram · chat …0123 · thread …103");
+    expect(text).not.toContain("chat -100123");
     expect(text).toContain("delivered");
     expect(text).toContain("external 910");
     expect(text).toContain("artifacts 1");
