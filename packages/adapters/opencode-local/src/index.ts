@@ -44,7 +44,7 @@ export const SANDBOX_INSTALL_COMMAND =
   'fi; ' +
   'fi';
 
-export const DEFAULT_OPENCODE_LOCAL_MODEL = "openai/gpt-5.2-codex";
+export const DEFAULT_OPENCODE_LOCAL_MODEL = "deepseek/deepseek-v4-pro";
 
 export function isValidOpenCodeModelId(value: unknown): value is string {
   if (typeof value !== "string") return false;
@@ -54,20 +54,24 @@ export function isValidOpenCodeModelId(value: unknown): value is string {
 }
 
 export const models: Array<{ id: string; label: string }> = [
-  { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: DEFAULT_OPENCODE_LOCAL_MODEL },
-  { id: "openai/gpt-5.4", label: "openai/gpt-5.4" },
-  { id: "openai/gpt-5.2", label: "openai/gpt-5.2" },
-  { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
-  { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
+  { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: "DeepSeek V4 Pro" },
+  { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash" },
+  { id: "deepseek/deepseek-chat", label: "DeepSeek Chat" },
+  { id: "deepseek/deepseek-reasoner", label: "DeepSeek Reasoner" },
+  { id: "opencode/deepseek-v4-flash-free", label: "OpenCode DeepSeek V4 Flash Free" },
+  { id: "opencode/big-pickle", label: "OpenCode Big Pickle" },
+  { id: "opencode/minimax-m2.5-free", label: "OpenCode MiniMax M2.5 Free" },
+  { id: "opencode/nemotron-3-super-free", label: "OpenCode Nemotron 3 Super Free" },
+  { id: "opencode/ring-2.6-1t-free", label: "OpenCode Ring 2.6 1T Free" },
 ];
 
 export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
     label: "Cheap",
-    description: "Use OpenCode's known Codex mini model as the budget lane.",
+    description: "Use OpenCode's free DeepSeek Flash model as the budget lane.",
     adapterConfig: {
-      model: "openai/gpt-5.1-codex-mini",
+      model: "opencode/deepseek-v4-flash-free",
       variant: "low",
     },
     source: "adapter_default",
