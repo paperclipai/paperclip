@@ -73,6 +73,7 @@ import { IssueReferenceActivitySummary } from "../components/IssueReferenceActiv
 import { IssueRelatedWorkPanel } from "../components/IssueRelatedWorkPanel";
 import { IssueMonitorActivityCard } from "../components/IssueMonitorActivityCard";
 import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
+import { IssueMissionControlPanel } from "../components/IssueMissionControlPanel";
 import { IssueProperties } from "../components/IssueProperties";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
@@ -149,6 +150,7 @@ import {
   type Issue,
   type IssueAttachment,
   type IssueComment,
+  type IssueDocument,
   type IssueWorkMode,
   type IssueThreadInteraction,
   type RequestConfirmationInteraction,
@@ -1393,6 +1395,21 @@ export function IssueDetail() {
     queryFn: () => issuesApi.listInteractions(issueId!),
     enabled: !!issueId,
     placeholderData: keepPreviousDataForSameQueryTail<IssueThreadInteraction[]>(issueId ?? "pending"),
+  });
+  const hasMissionControlPanelSignal = Boolean(
+    issue?.executionPolicy?.missionControl?.enabled
+      || issue?.executionPolicy?.finalDelivery?.enabled
+      || interactions.some((interaction) => interaction.kind === "final_delivery"),
+  );
+  const {
+    data: missionControlDocuments = [],
+    isFetching: missionControlDocumentsLoading,
+    isError: missionControlDocumentsError,
+  } = useQuery({
+    queryKey: queryKeys.issues.documentsWithSystem(issueId!),
+    queryFn: () => issuesApi.listDocuments(issueId!, { includeSystem: true }),
+    enabled: !!issueId && hasMissionControlPanelSignal,
+    placeholderData: keepPreviousDataForSameQueryTail<IssueDocument[]>(issueId ?? "pending"),
   });
 
   const { data: attachments, isLoading: attachmentsLoading } = useQuery({
@@ -3652,6 +3669,14 @@ export function IssueDetail() {
         className="space-y-3"
         itemClassName="rounded-lg border border-border p-3"
         missingBehavior="placeholder"
+      />
+
+      <IssueMissionControlPanel
+        issue={issue}
+        documents={missionControlDocuments.length > 0 ? missionControlDocuments : issue.documentSummaries}
+        documentsLoading={missionControlDocumentsLoading}
+        documentsError={missionControlDocumentsError}
+        interactions={interactions}
       />
 
       {showRichSubIssuesSection ? (

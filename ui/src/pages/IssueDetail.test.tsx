@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Agent, Issue, IssueTreeControlPreview, IssueTreeHold } from "@paperclipai/shared";
+import type { Agent, FinalDeliveryInteraction, Issue, IssueDocument, IssueTreeControlPreview, IssueTreeHold } from "@paperclipai/shared";
 import { act, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,6 +12,8 @@ const mockIssuesApi = vi.hoisted(() => ({
   getAutonomousLoopState: vi.fn(),
   list: vi.fn(),
   listComments: vi.fn(),
+  listInteractions: vi.fn(),
+  listDocuments: vi.fn(),
   listAttachments: vi.fn(),
   listFeedbackVotes: vi.fn(),
   markRead: vi.fn(),
@@ -391,6 +393,80 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     documentSummaries: [],
     ...overrides,
   } as Issue;
+}
+
+function createMissionControlDocument(key: string, overrides: Partial<IssueDocument> = {}): IssueDocument {
+  const now = new Date("2026-04-21T00:00:00.000Z");
+  return {
+    id: `doc-${key}`,
+    companyId: "company-1",
+    issueId: "issue-1",
+    key,
+    title: key,
+    format: "markdown",
+    latestRevisionId: `rev-${key}`,
+    latestRevisionNumber: 1,
+    createdByAgentId: "validator-agent",
+    createdByUserId: null,
+    updatedByAgentId: "validator-agent",
+    updatedByUserId: null,
+    createdAt: now,
+    updatedAt: now,
+    body: key === "validator-report" ? "verdict: PASS" : "ok",
+    ...overrides,
+  };
+}
+
+function createFinalDeliveryInteraction(overrides: Partial<FinalDeliveryInteraction> = {}): FinalDeliveryInteraction {
+  return {
+    id: "final-delivery-1",
+    companyId: "company-1",
+    issueId: "issue-1",
+    kind: "final_delivery",
+    idempotencyKey: "final:issue-1",
+    sourceCommentId: null,
+    sourceRunId: "run-1",
+    title: "Telegram final summary",
+    summary: "Delivered through native final_delivery worker.",
+    status: "accepted",
+    continuationPolicy: "none",
+    createdByAgentId: "lead-agent",
+    createdByUserId: null,
+    createdByRunId: "run-1",
+    actorAgentId: "lead-agent",
+    actorUserId: null,
+    createdAt: new Date("2026-04-21T00:01:00.000Z"),
+    updatedAt: new Date("2026-04-21T00:02:00.000Z"),
+    resolvedAt: new Date("2026-04-21T00:02:00.000Z"),
+    payload: {
+      version: 1,
+      destination: {
+        platform: "telegram",
+        chatId: "-100123",
+        threadId: "103",
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1",
+        title: "Issue detail smoke",
+      },
+      message: {
+        format: "markdown",
+        body: "done",
+      },
+      artifacts: [],
+      queuedAt: "2026-04-21T00:01:00.000Z",
+    },
+    result: {
+      version: 1,
+      outcome: "delivered",
+      deliveredAt: "2026-04-21T00:02:00.000Z",
+      externalMessageId: "910",
+      attemptCount: 1,
+      error: `to${"ken=synthetic-placeholder"} should be redacted`,
+    },
+    ...overrides,
+  } as FinalDeliveryInteraction;
 }
 
 function createAgent(overrides: Partial<Agent> = {}): Agent {
@@ -783,6 +859,8 @@ describe("IssueDetail", () => {
     mockIssuesApi.getAutonomousLoopState.mockResolvedValue({ enabled: false, status: "disabled" });
     mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.listComments.mockResolvedValue([]);
+    mockIssuesApi.listInteractions.mockResolvedValue([]);
+    mockIssuesApi.listDocuments.mockResolvedValue([]);
     mockIssuesApi.listAttachments.mockResolvedValue([]);
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
     mockIssuesApi.markRead.mockResolvedValue({ id: "issue-1", lastReadAt: new Date().toISOString() });
@@ -841,6 +919,79 @@ describe("IssueDetail", () => {
     expect(container.textContent).toContain("Issue detail smoke");
     expect(container.textContent).toContain("Chat thread");
     expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+
+  it("shows Mission Control docs and final delivery history on the issue page", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      assigneeAgentId: "worker-agent",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+        monitor: null,
+        missionControl: {
+          enabled: true,
+          riskClass: "high",
+          requiredDocumentKeys: ["validation-contract", "orchestration-contract", "worker-handoff", "validator-report"],
+          acceptedValidatorVerdicts: ["PASS"],
+          maxChildIssues: null,
+          maxIterations: null,
+          liveActionGate: "board",
+          destructiveActionGate: "board",
+          autonomousLoop: null,
+        },
+        finalDelivery: {
+          enabled: true,
+          destination: {
+            platform: "telegram",
+            chatId: "-100123",
+            threadId: "103",
+          },
+        },
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: null,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: null,
+        returnAssignee: null,
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: "approved",
+      },
+    }));
+    mockIssuesApi.listDocuments.mockResolvedValue([
+      createMissionControlDocument("validation-contract"),
+      createMissionControlDocument("worker-handoff"),
+    ]);
+    mockIssuesApi.listInteractions.mockResolvedValue([createFinalDeliveryInteraction()]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    await waitForAssertion(() => {
+      const text = container.textContent ?? "";
+      expect(mockIssuesApi.listDocuments).toHaveBeenCalledWith("PAP-1", { includeSystem: true });
+      expect(text).toContain("Mission Control");
+      expect(text).toContain("Gate: blocked");
+      expect(text).toContain("validation-contract: present");
+      expect(text).toContain("orchestration-contract: missing");
+      expect(text).toContain("validator-report: missing");
+      expect(text).toContain("Telegram · chat -100123 · thread 103");
+      expect(text).toContain("delivered");
+      expect(text).toContain("external 910");
+      expect(text).toContain("[REDACTED]");
+      expect(text).not.toContain("synthetic-placeholder");
+    });
   });
 
   it("passes blocker attention to the issue detail header status icon", async () => {
