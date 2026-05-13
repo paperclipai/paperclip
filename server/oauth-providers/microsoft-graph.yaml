@@ -27,3 +27,7 @@ refresh:
   supported: true
   rotatesRefreshToken: true
 shape: microsoft
+
+broker:
+  supported: false
+  deliveryModesSupported: [env]

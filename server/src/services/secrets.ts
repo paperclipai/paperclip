@@ -16,6 +16,9 @@ import {
 import { oauthConnections } from "@paperclipai/db/schema/oauth";
 import type { ProviderRegistry } from "../oauth/registry.js";
 import type { refreshConnection as refreshConnectionImpl, RefreshDeps } from "../oauth/refresh.js";
+import { applyCredentialBrokerResolver } from "../oauth/apply-credential-broker-resolver.js";
+import { logger as serverLogger } from "../middleware/logger.js";
+import type { CredentialDelivery } from "@paperclipai/shared";
 import type {
   AgentEnvConfig,
   CompanySecretBindingTarget,
@@ -62,7 +65,6 @@ const SENSITIVE_ENV_KEY_RE =
 const REDACTED_SENTINEL = "***REDACTED***";
 const COMING_SOON_SECRET_PROVIDERS: ReadonlySet<SecretProvider> = new Set([
   "gcp_secret_manager",
-  "vault",
 ]);
 
 function remoteProviderHttpError(error: unknown, context: {
@@ -2227,6 +2229,21 @@ export function secretService(db: Db, oauthDeps?: SecretServiceOAuthDeps) {
       secretKeys: Set<string>;
       manifest: RuntimeSecretManifestEntry[];
       oauthConnectionIds: string[];
+      /**
+       * Populated when the credential broker minted a session for this
+       * dispatch (PAPERCLIP_FEATURE_CREDENTIAL_BROKER=1, broker
+       * registered, provider broker-compatible). The caller MUST set
+       * HTTPS_PROXY = proxyUrl + materialize caCertPem at a known path
+       * + set the CA-trust env vars (SSL_CERT_FILE / NODE_EXTRA_CA_CERTS
+       * / REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE / GIT_SSL_CAINFO /
+       * DENO_CERT) on the spawned agent process. config.env carries
+       * placeholders for the oauth_token bindings, not bearers.
+       */
+      brokerSession?: {
+        proxyUrl: string;
+        caCertPem: string;
+        sessionToken: string;
+      };
     }> => {
       const resolved = { ...adapterConfig };
       const secretKeys = new Set<string>();
@@ -2249,6 +2266,30 @@ export function secretService(db: Db, oauthDeps?: SecretServiceOAuthDeps) {
           manifest,
           oauthConnectionIds: Array.from(oauthConnectionIds),
         };
+      }
+      // Credential-broker smart-resolver. With
+      // PAPERCLIP_FEATURE_CREDENTIAL_BROKER off (default) this is a
+      // no-op and the legacy oauth_token resolution path below runs
+      // unchanged. With the flag on AND a broker registered + provider
+      // YAML opted in, the resolver mints a per-run broker session;
+      // after the binding loop populates env we push the bearers to
+      // the broker and swap env values for placeholders so the agent
+      // process never sees plaintext.
+      // See docs/superpowers/specs/2026-05-12-credential-broker-design.md §6.
+      let brokerResolverResult: Awaited<ReturnType<typeof applyCredentialBrokerResolver>> | undefined;
+      if (oauthDeps) {
+        brokerResolverResult = await applyCredentialBrokerResolver(
+          { db, registry: oauthDeps.registry, logger: serverLogger },
+          {
+            companyId,
+            envRecord: record,
+            explicit: adapterConfig.credentialDelivery as
+              | CredentialDelivery
+              | undefined,
+            runId: context?.heartbeatRunId ?? null,
+            agentId: context?.consumerId ?? null,
+          },
+        );
       }
       const env: Record<string, string> = {};
       for (const [key, rawBinding] of Object.entries(record)) {
@@ -2405,11 +2446,51 @@ export function secretService(db: Db, oauthDeps?: SecretServiceOAuthDeps) {
         }
       }
       resolved.env = env;
+
+      // Credential-broker post-loop swap: when the smart resolver decided
+      // `paperclip-broker` AND a broker was registered, push each
+      // resolved bearer into the broker's session cache and swap the
+      // env value to the deterministic placeholder. The agent process
+      // then receives a placeholder string in its env; the proxy
+      // listener injects the real bearer at the TLS boundary.
+      const brokerSession = brokerResolverResult?.brokerSession;
+      const broker = brokerResolverResult?.broker;
+      if (brokerSession && broker) {
+        for (const [envVarName, placeholder] of Object.entries(
+          brokerSession.placeholders,
+        )) {
+          const realBearer = env[envVarName];
+          if (typeof realBearer !== "string") continue;
+          // Match the env var back to its oauth binding to know the connection id.
+          const binding = record[envVarName] as
+            | { type?: string; connectionId?: string }
+            | undefined;
+          if (!binding || binding.type !== "oauth_token" || !binding.connectionId) {
+            continue;
+          }
+          await broker.pushCredential({
+            companyId,
+            connectionId: binding.connectionId,
+            field: "access",
+            value: realBearer,
+          });
+          env[envVarName] = placeholder;
+        }
+        resolved.env = env;
+      }
+
       return {
         config: resolved,
         secretKeys,
         manifest,
         oauthConnectionIds: Array.from(oauthConnectionIds),
+        brokerSession: brokerSession
+          ? {
+              proxyUrl: brokerSession.proxyUrl,
+              caCertPem: brokerSession.caCertPem,
+              sessionToken: brokerSession.sessionToken,
+            }
+          : undefined,
       };
     },
   };

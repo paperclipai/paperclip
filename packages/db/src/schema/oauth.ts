@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { check, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { authUsers } from "./auth.js";
 import { companies } from "./companies.js";
 import { companySecrets } from "./company_secrets.js";
@@ -23,6 +23,18 @@ export const oauthConnections = pgTable(
     lastError: text("last_error"),
     lastErrorAt: timestamp("last_error_at", { withTimezone: true }),
     refreshAttemptCount: integer("refresh_attempt_count").notNull().default(0),
+    /**
+     * BYO credential-broker push targets for this connection. Populated when an
+     * operator registers an external broker (Agent Vault, custom, or our own
+     * standalone broker) to receive refreshed OAuth tokens — see
+     * `docs/superpowers/specs/2026-05-12-credential-broker-design.md` §5.3.
+     * `authTokenSecretId` references `company_secrets.id` so the shared
+     * secret rotates through the existing secret pipeline.
+     */
+    brokerTargets: jsonb("broker_targets")
+      .$type<Array<{ id: string; url: string; authTokenSecretId: string; addedAt: string }>>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
@@ -40,6 +52,10 @@ export const oauthConnections = pgTable(
     statusCheck: check(
       "oauth_connections_status_check",
       sql`${table.status} IN ('active','expired','revoked','error')`,
+    ),
+    brokerTargetsShape: check(
+      "oauth_connections_broker_targets_shape",
+      sql`jsonb_typeof(${table.brokerTargets}) = 'array'`,
     ),
   }),
 );

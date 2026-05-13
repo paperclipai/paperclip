@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { Router, type Request, type Response } from "express";
 import type { ProviderRegistry } from "../oauth/registry.js";
 import type { RegisteredProvider } from "../oauth/types.js";
@@ -433,6 +435,178 @@ export function oauthRoutes(deps: OAuthRouteDeps): Router {
 
     res.status(204).end();
   });
+
+  // ---------------------------------------------------------------------------
+  // BYO credential-broker push targets (M3.4)
+  //
+  // Operators that run their own credential broker (Infisical Agent Vault,
+  // mitmproxy addon, our standalone broker, anything else) register a push
+  // URL per connection. On every successful OAuth refresh, Paperclip POSTs
+  // the new access token to each registered URL with the configured shared
+  // secret as Bearer. See
+  // docs/superpowers/specs/2026-05-12-credential-broker-design.md §5.3.
+  // ---------------------------------------------------------------------------
+
+  r.get("/connections/:id/broker-targets", async (req, res) => {
+    if (!ensureMember(req, res)) return;
+    const companyId = (req.params as unknown as { companyId: string }).companyId;
+    const conn = await deps.db.query.oauthConnections.findFirst({
+      where: and(
+        eq(oauthConnections.id, req.params.id),
+        eq(oauthConnections.companyId, companyId),
+      ),
+    });
+    if (!conn) {
+      res.status(404).end();
+      return;
+    }
+    const targets = ((conn as { brokerTargets?: unknown[] }).brokerTargets ?? [])
+      .map((t) => {
+        const target = t as {
+          id: string;
+          url: string;
+          authTokenSecretId: string;
+          addedAt: string;
+        };
+        return { id: target.id, url: target.url, addedAt: target.addedAt };
+      });
+    res.json({ targets });
+  });
+
+  r.post("/connections/:id/broker-targets", async (req, res) => {
+    if (!ensureCompanyAdmin(req, res)) return;
+    const companyId = (req.params as unknown as { companyId: string }).companyId;
+    const body = req.body as { url?: unknown; authToken?: unknown } | null;
+    const url = typeof body?.url === "string" ? body.url : "";
+    const authToken = typeof body?.authToken === "string" ? body.authToken : "";
+    if (!url || !authToken) {
+      res.status(400).json({ errorCode: "missing_fields" });
+      return;
+    }
+    if (!deps.secretService.upsertSecretByName) {
+      res.status(503).json({ errorCode: "secret_service_unavailable" });
+      return;
+    }
+    const conn = await deps.db.query.oauthConnections.findFirst({
+      where: and(
+        eq(oauthConnections.id, req.params.id),
+        eq(oauthConnections.companyId, companyId),
+      ),
+    });
+    if (!conn) {
+      res.status(404).end();
+      return;
+    }
+    // Validate the URL up front *before* persisting the auth-token
+    // secret. Otherwise an http:// or otherwise-malformed URL would
+    // orphan a `company_secrets` row that no broker target references.
+    const { createBrokerTargetsService, validateBrokerTargetInput } =
+      await import("../services/broker-targets.js");
+    try {
+      validateBrokerTargetInput({ url, authTokenSecretId: randomUUID() });
+    } catch (err) {
+      res.status(400).json({
+        errorCode: "invalid_broker_target",
+        message: (err as Error).message,
+      });
+      return;
+    }
+    let secret;
+    try {
+      secret = await deps.secretService.upsertSecretByName(companyId, {
+        name: `broker-target:${req.params.id}:${Date.now()}`,
+        value: authToken,
+      });
+    } catch (err) {
+      oauthLogger.warn(
+        { err: { message: (err as Error).message } },
+        "broker target secret persistence failed",
+      );
+      res.status(500).json({ errorCode: "secret_persist_failed" });
+      return;
+    }
+    const svc = createBrokerTargetsService({ db: deps.db });
+    const cleanupOrphanedSecret = async () => {
+      if (!deps.secretService.remove) return;
+      await deps.secretService.remove(secret.id).catch((cleanupErr: unknown) => {
+        oauthLogger.warn(
+          {
+            secretId: secret.id,
+            err: { message: (cleanupErr as Error).message },
+          },
+          "broker target secret orphan cleanup failed",
+        );
+      });
+    };
+    try {
+      const target = await svc.add(req.params.id, {
+        url,
+        authTokenSecretId: secret.id,
+      });
+      res.status(201).json({
+        id: target.id,
+        url: target.url,
+        addedAt: target.addedAt,
+      });
+    } catch (err) {
+      await cleanupOrphanedSecret();
+      const message = (err as Error).message;
+      if (/too many/i.test(message)) {
+        res.status(409).json({ errorCode: "broker_target_cap_exceeded" });
+        return;
+      }
+      if (/invalid broker target/i.test(message)) {
+        res.status(400).json({ errorCode: "invalid_broker_target" });
+        return;
+      }
+      res.status(500).json({ errorCode: "broker_target_persist_failed" });
+    }
+  });
+
+  r.delete(
+    "/connections/:id/broker-targets/:targetId",
+    async (req, res) => {
+      if (!ensureCompanyAdmin(req, res)) return;
+      const companyId = (req.params as unknown as { companyId: string })
+        .companyId;
+      const conn = await deps.db.query.oauthConnections.findFirst({
+        where: and(
+          eq(oauthConnections.id, req.params.id),
+          eq(oauthConnections.companyId, companyId),
+        ),
+      });
+      if (!conn) {
+        res.status(404).end();
+        return;
+      }
+      const { createBrokerTargetsService } = await import(
+        "../services/broker-targets.js"
+      );
+      const svc = createBrokerTargetsService({ db: deps.db });
+      // Look up the target before removing so we can clean up the
+      // associated company_secrets row — otherwise every deleted
+      // broker target leaves an orphaned auth-token secret behind,
+      // mirroring the cleanup that the POST path does on add-failure.
+      const existing = (await svc.list(req.params.id)).find(
+        (t) => t.id === req.params.targetId,
+      );
+      await svc.remove(req.params.id, req.params.targetId);
+      if (existing?.authTokenSecretId && deps.secretService.remove) {
+        await deps.secretService
+          .remove(existing.authTokenSecretId)
+          .catch((err: unknown) => {
+            oauthLogger.warn(
+              {
+                secretId: existing.authTokenSecretId,
+                err: { message: (err as Error).message },
+              },
+              "broker target secret orphan cleanup failed on delete",
+            );
+          });
+      }
+      res.status(204).end();
+    },
+  );
 
   return r;
 }

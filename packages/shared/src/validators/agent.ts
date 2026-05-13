@@ -31,16 +31,37 @@ export const upsertAgentInstructionsFileSchema = z.object({
 
 export type UpsertAgentInstructionsFile = z.infer<typeof upsertAgentInstructionsFileSchema>;
 
-const adapterConfigSchema = z.record(z.unknown()).superRefine((value, ctx) => {
+export const credentialDeliverySchema = z.enum([
+  "env",
+  "paperclip-broker",
+  "byo-broker",
+]);
+
+export type CredentialDelivery = z.infer<typeof credentialDeliverySchema>;
+
+export const adapterConfigSchema = z.record(z.unknown()).superRefine((value, ctx) => {
   const envValue = value.env;
-  if (envValue === undefined) return;
-  const parsed = envConfigSchema.safeParse(envValue);
-  if (!parsed.success) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "adapterConfig.env must be a map of valid env bindings",
-      path: ["env"],
-    });
+  if (envValue !== undefined) {
+    const parsed = envConfigSchema.safeParse(envValue);
+    if (!parsed.success) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "adapterConfig.env must be a map of valid env bindings",
+        path: ["env"],
+      });
+    }
+  }
+  const credentialDelivery = value.credentialDelivery;
+  if (credentialDelivery !== undefined) {
+    const parsed = credentialDeliverySchema.safeParse(credentialDelivery);
+    if (!parsed.success) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "adapterConfig.credentialDelivery must be one of: env, paperclip-broker, byo-broker",
+        path: ["credentialDelivery"],
+      });
+    }
   }
 });
 

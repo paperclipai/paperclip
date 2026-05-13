@@ -25,3 +25,7 @@ accountIdField: sub
 accountLabelField: email
 refresh:
   supported: false
+
+broker:
+  supported: false
+  deliveryModesSupported: [env]
