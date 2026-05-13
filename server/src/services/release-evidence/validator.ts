@@ -48,6 +48,25 @@ export async function validateReleaseEvidenceForIssueClose(
   db: Db,
   input: ValidateReleaseEvidenceInput,
 ): Promise<ClosureGateOutcome & { codeTouching: boolean; codeTouchingReason: string }> {
+  const rawEvidence = input.patchReleaseEvidence ?? input.issue.releaseEvidence ?? null;
+
+  // Skip code-touching detection entirely when enforcement is off and no evidence
+  // was supplied. The closure gate has nothing to validate and nothing to record,
+  // so we exit cleanly without touching the labels/workspace-diff tables. When
+  // enforcement is on, fail-closed posture still holds: detection runs and a
+  // missing evidence on a code-touching issue is rejected below.
+  if (rawEvidence === null && !input.config.requireReleaseEvidence) {
+    return {
+      ok: true,
+      validated: { kind: "not_code", notCodeReason: "Release evidence enforcement is disabled by feature flag." },
+      githubApiCalled: false,
+      degraded: false,
+      detail: { enforcementDisabled: true, skipped: true },
+      codeTouching: false,
+      codeTouchingReason: "enforcement_disabled",
+    };
+  }
+
   const codeTouching = await detectCodeTouching(db, {
     issueId: input.issue.id,
     companyId: input.issue.companyId,
@@ -55,7 +74,6 @@ export async function validateReleaseEvidenceForIssueClose(
     executionWorkspaceId: input.issue.executionWorkspaceId,
     assigneeAgentId: input.issue.assigneeAgentId,
   });
-  const rawEvidence = input.patchReleaseEvidence ?? input.issue.releaseEvidence ?? null;
 
   if (!codeTouching.codeTouching && rawEvidence === null) {
     return {
@@ -141,7 +159,7 @@ export async function validateReleaseEvidenceForIssueClose(
 }
 
 export async function recordReleaseEvidenceAudit(
-  db: Db,
+  dbOrTx: Db | { insert: Db["insert"] },
   input: {
     issueId: string;
     actorAgentId: string | null;
@@ -150,7 +168,7 @@ export async function recordReleaseEvidenceAudit(
     outcome: ClosureGateOutcome;
   },
 ) {
-  await db.insert(releaseEvidenceAuditLog).values({
+  await dbOrTx.insert(releaseEvidenceAuditLog).values({
     issueId: input.issueId,
     agentId: input.actorAgentId,
     actorUserId: input.actorUserId,
@@ -342,12 +360,16 @@ async function validateShaReachable(
   ref: string,
   errorCode: "sha_not_reachable_from_ref" | "pr_sha_not_reachable" | "signoff_sha_not_reachable",
 ): Promise<ClosureGateOutcome> {
+  // GitHub Compare returns the status of head vs base for /compare/{base}...{head}.
+  // We use base=sha, head=ref. The SHA is reachable from the ref when the ref's tip
+  // contains the SHA — i.e. head (ref) is ahead of base (sha), or they are identical.
+  // GitHub returns "ahead" in that direction, NOT "behind".
   const compare = await githubGet<{ status?: string }>(
     config,
     `/repos/${repo.owner}/${repo.repo}/compare/${encodeURIComponent(sha)}...${encodeURIComponent(ref)}`,
   );
   if (!compare.ok) return githubUnavailableOrReject(compare, errorCode, "Could not compare SHA reachability on GitHub.");
-  if (compare.value.status !== "behind" && compare.value.status !== "identical") {
+  if (compare.value.status !== "ahead" && compare.value.status !== "identical") {
     return rejectWithGithub(errorCode, "SHA is not reachable from the supplied ref.", {
       sha,
       ref,

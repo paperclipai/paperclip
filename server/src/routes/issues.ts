@@ -3043,8 +3043,10 @@ export function issueRoutes(
 
     let issue;
     try {
-      if (transition.decision && decisionId) {
+      const needsTx = (transition.decision && decisionId) || acceptedReleaseEvidenceAudit;
+      if (needsTx) {
         const decision = transition.decision;
+        const auditPayload = acceptedReleaseEvidenceAudit;
         issue = await db.transaction(async (tx) => {
           const updated = await svc.update(
             id,
@@ -3057,18 +3059,33 @@ export function issueRoutes(
           );
           if (!updated) return null;
 
-          await tx.insert(issueExecutionDecisions).values({
-            id: decisionId,
-            companyId: updated.companyId,
-            issueId: updated.id,
-            stageId: decision.stageId,
-            stageType: decision.stageType,
-            actorAgentId: actor.agentId ?? null,
-            actorUserId: actor.actorType === "user" ? actor.actorId : null,
-            outcome: decision.outcome,
-            body: decision.body,
-            createdByRunId: actor.runId ?? null,
-          });
+          if (decision && decisionId) {
+            await tx.insert(issueExecutionDecisions).values({
+              id: decisionId,
+              companyId: updated.companyId,
+              issueId: updated.id,
+              stageId: decision.stageId,
+              stageType: decision.stageType,
+              actorAgentId: actor.agentId ?? null,
+              actorUserId: actor.actorType === "user" ? actor.actorId : null,
+              outcome: decision.outcome,
+              body: decision.body,
+              createdByRunId: actor.runId ?? null,
+            });
+          }
+
+          // Atomic with the issue update: if this audit insert throws the whole
+          // transaction rolls back, so an accepted closure can never persist a
+          // `done` issue without its immutable release-evidence audit row.
+          if (auditPayload) {
+            await recordReleaseEvidenceAudit(tx, {
+              issueId: updated.id,
+              actorAgentId: actor.agentId ?? null,
+              actorUserId: actor.actorType === "user" ? actor.actorId : null,
+              evidence: auditPayload.evidence,
+              outcome: auditPayload.outcome,
+            });
+          }
 
           return updated;
         });
@@ -3105,16 +3122,6 @@ export function issueRoutes(
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
-    }
-
-    if (acceptedReleaseEvidenceAudit) {
-      await recordReleaseEvidenceAudit(db, {
-        issueId: issue.id,
-        actorAgentId: actor.agentId ?? null,
-        actorUserId: actor.actorType === "user" ? actor.actorId : null,
-        evidence: acceptedReleaseEvidenceAudit.evidence,
-        outcome: acceptedReleaseEvidenceAudit.outcome,
-      });
     }
 
     let cancelledStatusRunId: string | null = null;

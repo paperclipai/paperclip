@@ -173,7 +173,9 @@ describe("releaseEvidence closure gate STRIDE regressions", () => {
         }), { status: 200 });
       }
       if (url.endsWith("/compare/1234567...master")) {
-        return new Response(JSON.stringify({ status: "behind" }), { status: 200 });
+        // GitHub returns "ahead" when the head (ref) is ahead of the base (sha),
+        // i.e. the SHA is reachable from the ref.
+        return new Response(JSON.stringify({ status: "ahead" }), { status: 200 });
       }
       return new Response("not found", { status: 404 });
     })) as any;
@@ -328,7 +330,7 @@ describe("releaseEvidence closure gate STRIDE regressions", () => {
         }), { status: 200 });
       }
       if (url.endsWith("/compare/1234567...master")) {
-        return new Response(JSON.stringify({ status: "behind" }), { status: 200 });
+        return new Response(JSON.stringify({ status: "ahead" }), { status: 200 });
       }
       return new Response("not found", { status: 404 });
     })) as any;
