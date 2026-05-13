@@ -103,6 +103,7 @@ export function executionWorkspaceRoutes(db: Db) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }
+    assertCompanyAccess(req, existing.companyId);
 
     await assertCanManageExecutionWorkspaceRuntimeServices(db, req, {
       companyId: existing.companyId,
@@ -441,6 +442,7 @@ export function executionWorkspaceRoutes(db: Db) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }
+    assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectExecutionWorkspaceCommandPaths({
