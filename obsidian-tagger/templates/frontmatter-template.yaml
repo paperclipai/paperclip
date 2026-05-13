@@ -1,0 +1,154 @@
+# =====================================================================
+# Obsidian Frontmatter-Template — WHITESTAG-Vault
+# =====================================================================
+# Basis: Analyse von 32.556 .md-Dateien im Vault (Stand 2026-04-25).
+# Dieses Template ist die Quelle der Wahrheit für das Tagger-Tool.
+# Felder können jederzeit ergänzt, entfernt oder umbenannt werden.
+#
+# Konventionen (für den ganzen Vault verbindlich):
+#   - Sprache:     Deutsch (snake_case-Felder, deutsche Werte)
+#   - Casing:      Feldnamen klein, tags Sentence-Case ("Buchhaltung")
+#   - Listen:      YAML-Block-Liste (- foo) statt Inline ([foo, bar])
+#   - Datumsfelder: ISO-Format YYYY-MM-DD
+#   - Strings mit Sonderzeichen: in "doppelte Anführungszeichen"
+# =====================================================================
+
+# ---------------------------------------------------------------------
+# 1) BASIS-FELDER — kommen in JEDE Datei (auch wenn LLM nichts findet)
+# ---------------------------------------------------------------------
+basis:
+  title:        # String, abgeleitet aus H1 oder Dateiname (ohne .md)
+  datum:        # YYYY-MM-DD — primäres inhaltliches Datum
+  erstellt:     # YYYY-MM-DD — wann Datei angelegt (mtime/ctime fallback)
+  aktualisiert: # YYYY-MM-DD — letzte Änderung
+  tags:         # Liste, MIN 2, MAX 6 Schlagwörter aus kontrollierter Taxonomie
+  typ:          # Note-Typ aus Enum unten (ersetzt Mix aus typ/type)
+  status:       # Enum: Entwurf | In Bearbeitung | Abgeschlossen | Archiviert
+  zusammenfassung: # 1-3 Sätze, vom LLM generiert
+  quelle:       # Optional: Originaldatei/-quelle (z.B. "OneNote", Pfad, URL)
+
+# ---------------------------------------------------------------------
+# 2) NOTE-TYPEN — typ-Feld bestimmt, welche Zusatzfelder gelten
+# ---------------------------------------------------------------------
+typen:
+  Notiz:        {} # nur Basis
+  Doku:         {} # nur Basis (technische Doku, Knowhow)
+  Meeting:
+    teilnehmer: # Liste von Personen
+    projekt:    # String oder leer
+  Rechnung:
+    rechnungsnummer:    # String, z.B. "#1960239"
+    rechnungsadressat:  # Wer gestellt hat
+    rechnungsempfaenger: # An wen gerichtet
+    betrag:             # String mit Währung, z.B. "12,00 EUR"
+  Email:
+    von:         # "Name <mail@host>"
+    an:          # Liste oder Komma-String
+    betreff:     # String
+    ordner:      # IMAP-Ordnerpfad
+    ordner_tag:  # imap/Posteingang/...
+    anhaenge:    # Liste von Dateinamen
+  Kontakt:
+    name:         # "Nachname, Vorname"
+    telefon:      # String
+    email:        # String
+    organisation: # String
+  Vertrag:
+    vertragspartner: #
+    laufzeit:        #
+    wert:            #
+  Angebot:
+    kunde:    #
+    projekt:  #
+    wert:     #
+  Pressemitteilung: {}
+  Tagesprotokoll:   {}
+
+# ---------------------------------------------------------------------
+# 3) TAG-TAXONOMIE — kontrolliertes Vokabular für `tags:`
+# ---------------------------------------------------------------------
+# LLM darf NUR Tags aus dieser Liste vergeben. Neue Tags landen in
+# `pending_tags.yaml` zur manuellen Aufnahme.
+#
+# Top-30 aus Vault-Analyse (gerundet, normalisiert):
+tag_taxonomie:
+  geschaeft:
+    - Buchhaltung
+    - Finanzen
+    - Rechnung
+    - Vertrieb
+    - Marketing
+    - Strategie
+    - Planung
+    - Vertrag
+    - Angebot
+    - CRM
+  technik:
+    - KI
+    - LLM
+    - Automatisierung
+    - Entwicklung
+    - Software
+    - Prompt-Engineering
+    - n8n
+  recht_compliance:
+    - DSGVO
+    - Recht
+  film_vr:
+    - VR
+    - Filmproduktion
+  kommunikation:
+    - Meeting
+    - Email
+    - Kommunikation
+    - Praesentation
+    - Termin
+  organisation:
+    - Kontakt
+    - Dokument
+
+# ---------------------------------------------------------------------
+# 4) AUSSCHLUSS-REGELN — Dateien, die das Tool NIE anfasst
+# ---------------------------------------------------------------------
+ignoriere:
+  pfade:
+    - .obsidian/
+    - .obsidian-tagger-backup/
+    - .trash/
+    - attachments/
+    - _templates/
+  pattern:
+    - "*.base"      # Obsidian Bases
+    - "_*.md"       # Status-/Systemdateien
+  min_zeichen: 50   # Dateien <50 Zeichen Inhalt überspringen
+
+# ---------------------------------------------------------------------
+# 5) LLM-VERHALTEN
+# ---------------------------------------------------------------------
+llm:
+  modell: "mistral-small-3.2-24b-instruct-2506"
+  # Begründung: bestes Verhältnis Qualität/Speed für strukturierte
+  # Extraktion auf Deutsch; folgt JSON-Schemas zuverlässig.
+  # Alternativen falls zu langsam:
+  #   - google/gemma-4-26b-a4b  (MoE, schneller)
+  #   - qwen3.6-35b             (etwas stärker, langsamer)
+  endpoint: "http://127.0.0.1:1234/v1/chat/completions"
+  temperatur: 0.2
+  max_input_chars: 8000   # Notiz wird ggf. gekürzt
+  json_schema_strict: true # Antwort muss schema-konform sein
+
+# ---------------------------------------------------------------------
+# 6) BETRIEBSMODI
+# ---------------------------------------------------------------------
+modi:
+  fehlend:    # Default: nur Dateien OHNE Frontmatter (`---` am Anfang fehlt)
+  unvollstaendig: # später: Frontmatter da, aber Pflichtfelder fehlen
+  vereinheitlichen: # später: typ/type-Mix, Casing-Normalisierung
+
+# ---------------------------------------------------------------------
+# 7) SICHERHEIT
+# ---------------------------------------------------------------------
+sicherheit:
+  dry_run_default: true   # Ohne --apply nur Vorschau in Konsole
+  backup_dir: ".obsidian-tagger-backup/"  # Vor jedem Schreibvorgang
+  max_dateien_pro_lauf: 100  # Sicherung gegen Runaway
