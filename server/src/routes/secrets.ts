@@ -10,7 +10,7 @@ import {
   updateSecretSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertBoard, assertCompanyAccess, hasCompanyAccess } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 
@@ -343,7 +343,7 @@ export function secretRoutes(db: Db) {
     assertBoard(req);
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
@@ -352,6 +352,7 @@ export function secretRoutes(db: Db) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
+
 
     const rotated = await svc.rotate(
       id,
@@ -381,7 +382,7 @@ export function secretRoutes(db: Db) {
     assertBoard(req);
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
@@ -390,6 +391,7 @@ export function secretRoutes(db: Db) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
+
 
     const updated = await svc.update(id, {
       name: req.body.name,
@@ -423,11 +425,10 @@ export function secretRoutes(db: Db) {
     assertBoard(req);
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
     const bindings = await svc.listBindingReferences(existing.companyId, existing.id);
     res.json({ secretId: existing.id, bindings });
   });
@@ -436,11 +437,10 @@ export function secretRoutes(db: Db) {
     assertBoard(req);
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
     const events = await svc.listAccessEvents(existing.companyId, existing.id);
     res.json(events);
   });
@@ -449,7 +449,7 @@ export function secretRoutes(db: Db) {
     assertBoard(req);
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
