@@ -228,4 +228,38 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     const cause = (err as { cause?: { code?: string } }).cause;
     expect(cause?.code).toBe("23505");
   });
+
+  it("plugin_entities unique index treats NULL companyId as equal (NULLS NOT DISTINCT) so instance-scope dedup holds", async () => {
+    const pluginId = await seedPlugin();
+
+    // First instance-scope entity (companyId = NULL) — succeeds.
+    await db.insert(pluginEntities).values({
+      pluginId,
+      companyId: null,
+      entityType: "cron",
+      scopeKind: "instance",
+      scopeId: null,
+      externalId: "global-cron-1",
+    });
+
+    // Second instance-scope row with the SAME (pluginId, entityType, externalId)
+    // must be rejected. Without `.nullsNotDistinct()`, postgres would treat the
+    // two NULL company_ids as distinct and silently allow the duplicate.
+    const err = await db
+      .insert(pluginEntities)
+      .values({
+        pluginId,
+        companyId: null,
+        entityType: "cron",
+        scopeKind: "instance",
+        scopeId: null,
+        externalId: "global-cron-1",
+      })
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect(err).toBeInstanceOf(Error);
+    expect((err as { cause?: { code?: string } }).cause?.code).toBe("23505");
+  });
 });
