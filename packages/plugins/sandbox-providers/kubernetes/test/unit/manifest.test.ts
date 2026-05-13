@@ -12,6 +12,10 @@ describe("manifest", () => {
 
   it("keeps namespace inputs within the Kubernetes DNS label length limit", () => {
     expect(configSchema.properties.namespacePrefix.maxLength).toBe(20);
+    expect(configSchema.properties.paperclipServerNamespace.maxLength).toBe(63);
+    expect(configSchema.properties.paperclipServerNamespace.pattern).toBe(
+      "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+    );
     expect(configSchema.properties.companySlug.maxLength).toBe(43);
   });
 

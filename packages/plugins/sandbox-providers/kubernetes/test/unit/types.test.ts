@@ -6,6 +6,7 @@ describe("kubernetesProviderConfigSchema", () => {
     const parsed = parseKubernetesProviderConfig({ inCluster: true });
     expect(parsed.inCluster).toBe(true);
     expect(parsed.namespacePrefix).toBe("paperclip-");
+    expect(parsed.paperclipServerNamespace).toBe("paperclip");
     expect(parsed.imageAllowList).toEqual([]);
     expect(parsed.egressMode).toBe("standard");
     expect(parsed.jobTtlSecondsAfterFinished).toBe(900);
@@ -38,6 +39,25 @@ describe("kubernetesProviderConfigSchema", () => {
     expect(() =>
       parseKubernetesProviderConfig({ inCluster: true, companySlug: "a".repeat(44) }),
     ).toThrow();
+  });
+
+  it("accepts a custom paperclip-server namespace", () => {
+    const parsed = parseKubernetesProviderConfig({
+      inCluster: true,
+      paperclipServerNamespace: "paperclip-prod",
+    });
+    expect(parsed.paperclipServerNamespace).toBe("paperclip-prod");
+  });
+
+  it("rejects invalid paperclip-server namespace values", () => {
+    for (const namespace of ["Paperclip", "paperclip_", "-paperclip", "paperclip-"]) {
+      expect(() =>
+        parseKubernetesProviderConfig({
+          inCluster: true,
+          paperclipServerNamespace: namespace,
+        }),
+      ).toThrow();
+    }
   });
 
   it("rejects whitespace-only kubeconfig", () => {

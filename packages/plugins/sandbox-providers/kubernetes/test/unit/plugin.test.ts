@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import plugin, { extractAdapterEnvFromProcess } from "../../src/plugin.js";
+import plugin, {
+  buildSandboxExecShellCommand,
+  extractAdapterEnvFromProcess,
+} from "../../src/plugin.js";
 
 describe("plugin", () => {
   it("exports the kubernetes driver", () => {
@@ -34,6 +37,7 @@ describe("plugin", () => {
       expect.objectContaining({
         namespacePrefix: "paperclip-",
         egressMode: "standard",
+        paperclipServerNamespace: "paperclip",
         jobTtlSecondsAfterFinished: 900,
         podActivityDeadlineSec: 3600,
         adapterType: "claude_local",
@@ -119,5 +123,42 @@ describe("plugin", () => {
         process.env.PAPERCLIP_TEST_MISSING_KEY = originalMissing;
       }
     }
+  });
+
+  it("preserves intentionally empty adapter env values", () => {
+    const warnMessages: string[] = [];
+    const originalValue = process.env.PAPERCLIP_TEST_EMPTY_KEY;
+    process.env.PAPERCLIP_TEST_EMPTY_KEY = "";
+    try {
+      const result = extractAdapterEnvFromProcess(
+        ["PAPERCLIP_TEST_EMPTY_KEY"],
+        (message) => warnMessages.push(message),
+      );
+      expect(result).toEqual({ PAPERCLIP_TEST_EMPTY_KEY: "" });
+      expect(warnMessages).toHaveLength(0);
+    } finally {
+      if (originalValue === undefined) {
+        delete process.env.PAPERCLIP_TEST_EMPTY_KEY;
+      } else {
+        process.env.PAPERCLIP_TEST_EMPTY_KEY = originalValue;
+      }
+    }
+  });
+
+  it("quotes args before passing them to /bin/sh -lc", () => {
+    expect(
+      buildSandboxExecShellCommand({
+        args: ["git", "commit", "-m", "feat: add feature", "it's ready"],
+      }),
+    ).toBe("'git' 'commit' '-m' 'feat: add feature' 'it'\\''s ready'");
+  });
+
+  it("uses command verbatim when command is provided", () => {
+    expect(
+      buildSandboxExecShellCommand({
+        command: "pnpm test -- --runInBand",
+        args: ["ignored"],
+      }),
+    ).toBe("pnpm test -- --runInBand");
   });
 });

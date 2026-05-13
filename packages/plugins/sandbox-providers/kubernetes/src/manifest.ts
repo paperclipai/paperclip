@@ -43,6 +43,13 @@ const manifest: PaperclipPluginManifestV1 = {
             maxLength: 20,
             description: "Prefix for the per-company tenant namespace (default: paperclip-).",
           },
+          paperclipServerNamespace: {
+            type: "string",
+            maxLength: 63,
+            pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+            description:
+              "Namespace where paperclip-server pods run. Used by generated egress policies so agent pods can call back to the server (default: paperclip).",
+          },
           companySlug: {
             type: "string",
             maxLength: 43,
