@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -48,6 +49,7 @@ const projectStatuses = [
 ];
 
 export function NewProjectDialog() {
+  const { t } = useTranslation("projects");
   const { newProjectOpen, closeNewProject } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
@@ -150,11 +152,11 @@ export function NewProjectDialog() {
     const repoUrl = workspaceRepoUrl.trim();
 
     if (localPath && !isAbsolutePath(localPath)) {
-      setWorkspaceError("Local folder must be a full absolute path.");
+      setWorkspaceError(t("properties.localFolderAbsolutePathError"));
       return;
     }
     if (repoUrl && !looksLikeRepoUrl(repoUrl)) {
-      setWorkspaceError("Repo must use a valid GitHub or GitHub Enterprise repo URL.");
+      setWorkspaceError(t("properties.repoUrlInvalidError"));
       return;
     }
 
@@ -224,7 +226,7 @@ export function NewProjectDialog() {
               </span>
             )}
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>New project</span>
+            <span>{t("newProjectDialog.newProject")}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -269,7 +271,7 @@ export function NewProjectDialog() {
             ref={descriptionEditorRef}
             value={description}
             onChange={setDescription}
-            placeholder="Add description..."
+            placeholder={t("newProjectDialog.descriptionPlaceholder")}
             bordered={false}
             mentions={mentionOptions}
             contentClassName={cn("text-sm text-muted-foreground", expanded ? "min-h-[220px]" : "min-h-[120px]")}
@@ -341,7 +343,13 @@ export function NewProjectDialog() {
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-40 p-1" align="start">
-              {projectStatuses.map((s) => (
+              {([
+                { value: "backlog", labelKey: "newProjectDialog.statuses.backlog" },
+                { value: "planned", labelKey: "newProjectDialog.statuses.planned" },
+                { value: "in_progress", labelKey: "newProjectDialog.statuses.inProgress" },
+                { value: "completed", labelKey: "newProjectDialog.statuses.completed" },
+                { value: "cancelled", labelKey: "newProjectDialog.statuses.cancelled" },
+              ] as const).map((s) => (
                 <button
                   key={s.value}
                   className={cn(
@@ -350,7 +358,7 @@ export function NewProjectDialog() {
                   )}
                   onClick={() => { setStatus(s.value); setStatusOpen(false); }}
                 >
-                  {s.label}
+                  {t(s.labelKey)}
                 </button>
               ))}
             </PopoverContent>
@@ -438,7 +446,7 @@ export function NewProjectDialog() {
             disabled={!name.trim() || createProject.isPending}
             onClick={handleSubmit}
           >
-            {createProject.isPending ? "Creating…" : "Create project"}
+            {createProject.isPending ? t("newProjectDialog.creating") : t("newProjectDialog.createProject")}
           </Button>
         </div>
       </DialogContent>

@@ -143,7 +143,7 @@ describe("Sidebar", () => {
     mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
     const root = await renderSidebar();
 
-    expect(container.textContent).not.toContain("Workspaces");
+    expect(container.textContent).not.toContain("sidebar.workspaces");
 
     await act(async () => {
       root.unmount();
@@ -154,7 +154,7 @@ describe("Sidebar", () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     const root = await renderSidebar();
 
-    const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Workspaces");
+    const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "sidebar.workspaces");
     expect(link?.getAttribute("href")).toBe("/workspaces");
 
     await act(async () => {

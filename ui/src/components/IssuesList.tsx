@@ -2,6 +2,9 @@ import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCal
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
 import { useDialogActions } from "../context/DialogContext";
+import { useTranslation } from "react-i18next";
+import { pickTextColorForPillBg } from "@/lib/color-contrast";
+import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { Link } from "@/lib/router";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
@@ -131,6 +134,7 @@ const defaultViewState: IssueViewState = {
   collapsedGroups: [],
   collapsedParents: [],
 };
+
 
 function getViewState(key: string): IssueViewState {
   try {
@@ -586,7 +590,13 @@ export function IssuesList({
   onSearchChange,
   onUpdateIssue,
 }: IssuesListProps) {
-  const rootRef = useRef<HTMLDivElement | null>(null);
+  const { t } = useTranslation("issues");
+  const quickFilterPresets = useMemo(() => [
+    { label: t("list.tabs.all"), statuses: [] as string[] },
+    { label: t("list.tabs.active"), statuses: ["todo", "in_progress", "in_review", "blocked"] },
+    { label: t("list.tabs.backlog"), statuses: ["backlog"] },
+    { label: t("list.tabs.done"), statuses: ["done", "cancelled"] },
+  ], [t]);
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
   const { data: session } = useQuery({
@@ -621,6 +631,7 @@ export function IssuesList({
   const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(() => loadIssueColumns(scopedKey));
   const renderedIssueIdsRef = useRef("");
   const initialServerFillRequestedRef = useRef(false);
+  const rootRef = useRef<HTMLDivElement>(null);
   const deferredIssueSearch = useDeferredValue(issueSearch);
   const normalizedIssueSearch = deferredIssueSearch.trim().toLowerCase();
 
@@ -1082,7 +1093,7 @@ export function IssuesList({
       key,
       label:
         key === "__unassigned"
-          ? "Unassigned"
+          ? t("list.unassigned")
           : key.startsWith("__user:")
             ? (formatAssigneeUserLabel(key.slice("__user:".length), currentUserId, companyUserLabelMap) ?? "User")
             : (agentName(key) ?? key.slice(0, 8)),

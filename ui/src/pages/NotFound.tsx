@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { Link, useLocation } from "@/lib/router";
 import { AlertTriangle, Compass } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -13,24 +14,25 @@ interface NotFoundPageProps {
 }
 
 export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPageProps) {
+  const { t } = useTranslation("notFound");
   const location = useLocation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { companies, selectedCompany } = useCompany();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Not Found" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("breadcrumb") }]);
+  }, [setBreadcrumbs, t]);
 
   const fallbackCompany = selectedCompany ?? companies[0] ?? null;
   const dashboardHref = fallbackCompany ? `/${fallbackCompany.issuePrefix}/dashboard` : "/";
   const currentPath = `${location.pathname}${location.search}${location.hash}`;
   const normalizedPrefix = requestedPrefix?.toUpperCase();
 
-  const title = scope === "invalid_company_prefix" ? "Company not found" : "Page not found";
+  const title = scope === "invalid_company_prefix" ? t("companyNotFound") : t("pageNotFound");
   const description =
     scope === "invalid_company_prefix"
-      ? `No company matches prefix "${normalizedPrefix ?? "unknown"}".`
-      : "This route does not exist.";
+      ? t("noCompanyMatchesPrefix", { prefix: normalizedPrefix ?? "unknown" })
+      : t("routeDoesNotExist");
 
   return (
     <div className="mx-auto max-w-2xl py-10">
@@ -53,11 +55,11 @@ export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPage
           <Button asChild>
             <Link to={dashboardHref}>
               <Compass className="mr-1.5 h-4 w-4" />
-              Open dashboard
+              {t("openDashboard")}
             </Link>
           </Button>
           <Button variant="outline" asChild>
-            <Link to="/">Go home</Link>
+            <Link to="/">{t("goHome")}</Link>
           </Button>
         </div>
       </div>

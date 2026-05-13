@@ -1,0 +1,105 @@
+src/adapters/acpx-local/index.ts(2,59): error TS2307: Cannot find module '@paperclipai/adapter-acpx-local/ui' or its corresponding type declarations.
+src/adapters/cursor-cloud/index.ts(6,8): error TS2307: Cannot find module '@paperclipai/adapter-cursor-cloud/ui' or its corresponding type declarations.
+src/adapters/hermes-local/index.ts(2,39): error TS2307: Cannot find module 'hermes-paperclip-adapter/ui' or its corresponding type declarations.
+src/adapters/hermes-local/index.ts(3,35): error TS2307: Cannot find module 'hermes-paperclip-adapter/ui' or its corresponding type declarations.
+src/components/CommentThread.tsx(1045,26): error TS2304: Cannot find name 'reopen'.
+src/components/CommentThread.tsx(1046,34): error TS2304: Cannot find name 'setReopen'.
+src/components/InstanceSidebar.tsx(28,68): error TS2345: Argument of type '["sidebar.profile"]' is not assignable to parameter of type '[key: string | string[], options: TOptionsBase & $Dictionary & { defaultValue: string; }] | [key: string | string[], defaultValue: string, options?: (TOptionsBase & $Dictionary) | undefined] | [key: ...]'.
+  Type '["sidebar.profile"]' is not assignable to type '[key: "sidebar.general" | "sidebar.company" | "sidebar.projects" | "sidebar.goals" | "sidebar.agents" | "sidebar.issues" | "sidebar.dashboard" | "sidebar.settings" | "sidebar.plugins" | ... 40 more ... | ("sidebar.general" | ... 47 more ... | TemplateStringsArray)[], options?: (TOptionsBase & $Dictionary) | undefined]'.
+    Type at position 0 in source is not compatible with type at position 0 in target.
+      Type '"sidebar.profile"' is not assignable to type '"sidebar.general" | "sidebar.company" | "sidebar.projects" | "sidebar.goals" | "sidebar.agents" | "sidebar.issues" | "sidebar.dashboard" | "sidebar.settings" | "sidebar.plugins" | ... 40 more ... | ("sidebar.general" | ... 47 more ... | TemplateStringsArray)[]'.
+src/components/InstanceSidebar.tsx(30,67): error TS2345: Argument of type '["sidebar.access"]' is not assignable to parameter of type '[key: string | string[], options: TOptionsBase & $Dictionary & { defaultValue: string; }] | [key: string | string[], defaultValue: string, options?: (TOptionsBase & $Dictionary) | undefined] | [key: ...]'.
+  Type '["sidebar.access"]' is not assignable to type '[key: "sidebar.general" | "sidebar.company" | "sidebar.projects" | "sidebar.goals" | "sidebar.agents" | "sidebar.issues" | "sidebar.dashboard" | "sidebar.settings" | "sidebar.plugins" | ... 40 more ... | ("sidebar.general" | ... 47 more ... | TemplateStringsArray)[], options?: (TOptionsBase & $Dictionary) | undefined]'.
+    Type at position 0 in source is not compatible with type at position 0 in target.
+      Type '"sidebar.access"' is not assignable to type '"sidebar.general" | "sidebar.company" | "sidebar.projects" | "sidebar.goals" | "sidebar.agents" | "sidebar.issues" | "sidebar.dashboard" | "sidebar.settings" | "sidebar.plugins" | ... 40 more ... | ("sidebar.general" | ... 47 more ... | TemplateStringsArray)[]'. Did you mean '"sidebar.costs"'?
+src/components/IssueChatThread.tsx(4,8): error TS2307: Cannot find module '@assistant-ui/react' or its corresponding type declarations.
+src/components/IssueChatThread.tsx(10,8): error TS2307: Cannot find module '@assistant-ui/react' or its corresponding type declarations.
+src/components/IssueChatThread.tsx(1155,14): error TS7006: Parameter 'part' implicitly has an 'any' type.
+src/components/IssueChatThread.tsx(1156,11): error TS7006: Parameter 'part' implicitly has an 'any' type.
+src/components/IssueChatThread.tsx(1170,18): error TS7006: Parameter 'part' implicitly has an 'any' type.
+src/components/IssueChatThread.tsx(1171,15): error TS7006: Parameter 'part' implicitly has an 'any' type.
+src/components/IssueChatThread.tsx(1171,21): error TS7006: Parameter 'index' implicitly has an 'any' type.
+src/components/IssueChatThread.tsx(1374,26): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/components/IssueChatThread.tsx(1375,23): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/components/IssueChatThread.tsx(1452,40): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/components/IssueChatThread.tsx(2229,14): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/components/IssueChatThread.tsx(2230,11): error TS7006: Parameter 'p' implicitly has an 'any' type.
+src/components/IssuesList.tsx(1159,55): error TS2304: Cannot find name 'rootRef'.
+src/components/IssuesList.tsx(1280,15): error TS2304: Cannot find name 'rootRef'.
+src/components/MarkdownEditor.tsx(1217,34): error TS2322: Type 'typeof MentionAwareLinkNode' is not assignable to type 'AdditionalLexicalNode'.
+  Type 'typeof MentionAwareLinkNode' is not assignable to type 'KlassConstructor<typeof LexicalNode>'.
+    Types of construct signatures are incompatible.
+      Type 'new (url?: string | undefined, attributes?: any, key?: string | undefined) => MentionAwareLinkNode' is not assignable to type 'new (...args: any[]) => LexicalNode'.
+        Type 'MentionAwareLinkNode' is missing the following properties from type 'LexicalNode': __type, __key, __parent, __prev, and 47 more.
+src/components/MarkdownEditor.tsx(1217,56): error TS2322: Type '{ readonly replace: any; readonly with: (node: LinkNode) => MentionAwareLinkNode; readonly withKlass: typeof MentionAwareLinkNode; }' is not assignable to type 'AdditionalLexicalNode'.
+  Type '{ readonly replace: any; readonly with: (node: LinkNode) => MentionAwareLinkNode; readonly withKlass: typeof MentionAwareLinkNode; }' is not assignable to type 'LexicalNodeReplacement'.
+    The types returned by 'with(...)' are incompatible between these types.
+      Type 'MentionAwareLinkNode' is missing the following properties from type 'LexicalNode': __type, __key, __parent, __prev, and 47 more.
+src/components/Sidebar.tsx(108,55): error TS2345: Argument of type '["sidebar.workspaces"]' is not assignable to parameter of type '[key: string | string[], options: TOptionsBase & $Dictionary & { defaultValue: string; }] | [key: string | string[], defaultValue: string, options?: (TOptionsBase & $Dictionary) | undefined] | [key: ...]'.
+  Type '["sidebar.workspaces"]' is not assignable to type '[key: "sidebar.general" | "sidebar.company" | "sidebar.projects" | "sidebar.goals" | "sidebar.agents" | "sidebar.issues" | "sidebar.dashboard" | "sidebar.settings" | "sidebar.plugins" | ... 40 more ... | ("sidebar.general" | ... 47 more ... | TemplateStringsArray)[], options?: (TOptionsBase & $Dictionary) | undefined]'.
+    Type at position 0 in source is not compatible with type at position 0 in target.
+      Type '"sidebar.workspaces"' is not assignable to type '"sidebar.general" | "sidebar.company" | "sidebar.projects" | "sidebar.goals" | "sidebar.agents" | "sidebar.issues" | "sidebar.dashboard" | "sidebar.settings" | "sidebar.plugins" | ... 40 more ... | ("sidebar.general" | ... 47 more ... | TemplateStringsArray)[]'. Did you mean '"sidebar.work"'?
+src/hooks/usePaperclipIssueRuntime.test.tsx(6,73): error TS2307: Cannot find module '@assistant-ui/react' or its corresponding type declarations.
+src/hooks/usePaperclipIssueRuntime.ts(7,8): error TS2307: Cannot find module '@assistant-ui/react' or its corresponding type declarations.
+src/hooks/usePaperclipIssueRuntime.ts(34,14): error TS7006: Parameter 'part' implicitly has an 'any' type.
+src/hooks/usePaperclipIssueRuntime.ts(35,11): error TS7006: Parameter 'part' implicitly has an 'any' type.
+src/hooks/usePaperclipIssueRuntime.ts(60,19): error TS7006: Parameter 'message' implicitly has an 'any' type.
+src/lib/issue-chat-messages.test.ts(764,16): error TS7006: Parameter 'part' implicitly has an 'any' type.
+src/lib/issue-chat-messages.test.ts(765,13): error TS7006: Parameter 'part' implicitly has an 'any' type.
+src/lib/issue-chat-messages.ts(9,8): error TS2307: Cannot find module '@assistant-ui/react' or its corresponding type declarations.
+src/lib/mention-aware-link-node.test.ts(2,33): error TS2307: Cannot find module '@lexical/link' or its corresponding type declarations.
+src/lib/mention-aware-link-node.test.ts(3,30): error TS2307: Cannot find module 'lexical' or its corresponding type declarations.
+src/lib/mention-aware-link-node.ts(5,8): error TS2307: Cannot find module '@lexical/link' or its corresponding type declarations.
+src/lib/mention-aware-link-node.ts(16,12): error TS2339: Property 'getURL' does not exist on type 'MentionAwareLinkNode'.
+src/lib/mention-aware-link-node.ts(18,19): error TS2339: Property 'getRel' does not exist on type 'MentionAwareLinkNode'.
+src/lib/mention-aware-link-node.ts(19,22): error TS2339: Property 'getTarget' does not exist on type 'MentionAwareLinkNode'.
+src/lib/mention-aware-link-node.ts(20,21): error TS2339: Property 'getTitle' does not exist on type 'MentionAwareLinkNode'.
+src/lib/mention-aware-link-node.ts(22,12): error TS2339: Property 'getKey' does not exist on type 'MentionAwareLinkNode'.
+src/lib/mention-deletion.test.ts(2,43): error TS2307: Cannot find module '@lexical/link' or its corresponding type declarations.
+src/lib/mention-deletion.test.ts(11,8): error TS2307: Cannot find module 'lexical' or its corresponding type declarations.
+src/lib/mention-deletion.ts(2,44): error TS2307: Cannot find module '@lexical/link' or its corresponding type declarations.
+src/lib/mention-deletion.ts(14,8): error TS2307: Cannot find module 'lexical' or its corresponding type declarations.
+src/lib/paste-normalization.ts(2,58): error TS2307: Cannot find module 'lexical' or its corresponding type declarations.
+src/pages/Inbox.tsx(263,24): error TS2554: Expected 2 arguments, but got 1.
+src/pages/Inbox.tsx(1101,21): error TS2554: Expected 2 arguments, but got 1.
+src/pages/NewAgent.tsx(152,11): error TS2304: Cannot find name 'adapterModelsError'.
+src/pages/NewAgent.tsx(154,11): error TS2304: Cannot find name 'adapterModelsError'.
+src/pages/NewAgent.tsx(155,15): error TS2304: Cannot find name 'adapterModelsError'.
+src/pages/NewAgent.tsx(160,11): error TS2304: Cannot find name 'adapterModelsLoading'.
+src/pages/NewAgent.tsx(160,35): error TS2304: Cannot find name 'adapterModelsFetching'.
+src/pages/NewAgent.tsx(164,26): error TS2304: Cannot find name 'adapterModels'.
+src/pages/NewAgent.tsx(165,29): error TS7006: Parameter 'entry' implicitly has an 'any' type.
+src/pages/PluginPage.tsx(28,26): error TS2451: Cannot redeclare block-scoped variable 'routeCompanyPrefix'.
+src/pages/PluginPage.tsx(28,46): error TS2451: Cannot redeclare block-scoped variable 'pluginId'.
+src/pages/PluginPage.tsx(28,56): error TS2451: Cannot redeclare block-scoped variable 'pluginRoutePath'.
+src/pages/PluginPage.tsx(34,26): error TS2451: Cannot redeclare block-scoped variable 'routeCompanyPrefix'.
+src/pages/PluginPage.tsx(34,46): error TS2451: Cannot redeclare block-scoped variable 'pluginId'.
+src/pages/PluginPage.tsx(34,56): error TS2451: Cannot redeclare block-scoped variable 'pluginRoutePath'.
+src/pages/PluginPage.tsx(34,76): error TS2304: Cannot find name 'params'.
+src/pages/PluginPage.tsx(35,28): error TS2304: Cannot find name 'params'.
+src/pages/PluginPage.tsx(126,16): error TS18047: 'pageSlot' is possibly 'null'.
+storybook/stories/acpx-local.stories.tsx(2,37): error TS2307: Cannot find module '@storybook/react-vite' or its corresponding type declarations.
+storybook/stories/acpx-local.stories.tsx(5,37): error TS2307: Cannot find module '@paperclipai/adapter-acpx-local/ui' or its corresponding type declarations.
+storybook/stories/agent-management.stories.tsx(2,37): error TS2307: Cannot find module '@storybook/react-vite' or its corresponding type declarations.
+storybook/stories/assigned-backlog-safeguards.stories.tsx(1,37): error TS2307: Cannot find module '@storybook/react-vite' or its corresponding type declarations.
+storybook/stories/budget-finance.stories.tsx(2,37): error TS2307: Cannot find module '@storybook/react-vite' or its corresponding type declarations.
+storybook/stories/chat-comments.stories.tsx(1,37): error TS2307: Cannot find module '@storybook/react-vite' or its corresponding type declarations.
+storybook/stories/control-plane-surfaces.stories.tsx(1,37): error TS2307: Cannot find module '@storybook/react-vite' or its corresponding type declarations.
+storybook/stories/data-viz-misc.stories.tsx(2,37): error TS2307: Cannot find module '@storybook/react-vite' or its corresponding type declarations.
+storybook/stories/dialogs-modals.stories.tsx(2,37): error TS2307: Cannot find module '@storybook/react-vite' or its corresponding type declarations.
+storybook/stories/forms-editors.stories.tsx(2,37): error TS2307: Cannot find module '@storybook/react-vite' or its corresponding type declarations.
+storybook/stories/foundations.stories.tsx(2,37): error TS2307: Cannot find module '@storybook/react-vite' or its corresponding type declarations.
+storybook/stories/issue-management.stories.tsx(2,37): error TS2307: Cannot find module '@storybook/react-vite' or its corresponding type declarations.
+storybook/stories/issue-thread-interactions.stories.tsx(2,37): error TS2307: Cannot find module '@storybook/react-vite' or its corresponding type declarations.
+storybook/stories/monitor-surfaces.stories.tsx(1,37): error TS2307: Cannot find module '@storybook/react-vite' or its corresponding type declarations.
+storybook/stories/navigation-layout.stories.tsx(2,37): error TS2307: Cannot find module '@storybook/react-vite' or its corresponding type declarations.
+storybook/stories/overview.stories.tsx(1,37): error TS2307: Cannot find module '@storybook/react-vite' or its corresponding type declarations.
+storybook/stories/projects-goals-workspaces.stories.tsx(2,37): error TS2307: Cannot find module '@storybook/react-vite' or its corresponding type declarations.
+storybook/stories/scheduled-retry.stories.tsx(1,37): error TS2307: Cannot find module '@storybook/react-vite' or its corresponding type declarations.
+storybook/stories/search.stories.tsx(1,37): error TS2307: Cannot find module '@storybook/react-vite' or its corresponding type declarations.
+storybook/stories/secrets.stories.tsx(2,37): error TS2307: Cannot find module '@storybook/react-vite' or its corresponding type declarations.
+storybook/stories/status-language.stories.tsx(2,37): error TS2307: Cannot find module '@storybook/react-vite' or its corresponding type declarations.
+storybook/stories/sub-issues-workflow.stories.tsx(1,37): error TS2307: Cannot find module '@storybook/react-vite' or its corresponding type declarations.
+storybook/stories/sub-issues-workflow.stories.tsx(269,6): error TS7006: Parameter 'StoryRender' implicitly has an 'any' type.
+storybook/stories/successful-run-handoff.stories.tsx(1,37): error TS2307: Cannot find module '@storybook/react-vite' or its corresponding type declarations.
+storybook/stories/ux-labs.stories.tsx(1,37): error TS2307: Cannot find module '@storybook/react-vite' or its corresponding type declarations.

@@ -1,0 +1,59 @@
+{
+  "title": "Costs",
+  "selectCompany": "Select a company to view costs.",
+  "tabs": {
+    "overview": "Overview",
+    "ledger": "Ledger",
+    "budgets": "Budgets",
+    "quotas": "Quotas",
+    "providers": "Providers",
+    "billers": "Billers",
+    "finance": "Finance"
+  },
+  "filter": {
+    "allProviders": "All providers",
+    "allBillers": "All billers"
+  },
+  "financeLedger": "Finance ledger",
+  "overview": {
+    "totalSpend": "Total Spend",
+    "budget": "Budget",
+    "unlimited": "Unlimited",
+    "utilization": "{{percent}}% utilization"
+  },
+  "budgetIncident": {
+    "hardStop": "{{scopeType}} hard stop",
+    "spendingReached": "Spending reached {{observed}} against a limit of {{limit}}.",
+    "projectPaused": "Project execution is paused. New work in this project will not start until you resolve the budget incident.",
+    "scopePaused": "This scope is paused. New heartbeats will not start until you resolve the budget incident.",
+    "newBudgetLabel": "New budget (USD)",
+    "applying": "Applying\u2026",
+    "raiseAndResume": "Raise budget & resume",
+    "budgetMustExceedSpend": "The new budget must exceed current observed spend.",
+    "keepPaused": "Keep paused"
+  },
+  "budgetPolicy": {
+    "observed": "Observed",
+    "budget": "Budget",
+    "noCapConfigured": "No cap configured",
+    "percentOfLimit": "{{percent}}% of limit",
+    "disabled": "Disabled",
+    "softAlertAt": "Soft alert at {{percent}}%",
+    "pauseSuffix": " \u00b7 {{reason}} pause",
+    "remaining": "Remaining",
+    "unlimited": "Unlimited",
+    "projectPaused": "Execution is paused for this project until the budget is raised or the incident is dismissed.",
+    "scopePaused": "Heartbeats are paused for this scope until the budget is raised or the incident is dismissed.",
+    "budgetUsd": "Budget (USD)",
+    "saving": "Saving\u2026",
+    "updateBudget": "Update budget",
+    "setBudget": "Set budget",
+    "invalidAmount": "Enter a valid non-negative dollar amount.",
+    "lifetimeBudget": "Lifetime budget",
+    "monthlyBudget": "Monthly UTC budget",
+    "paused": "Paused",
+    "warning": "Warning",
+    "hardStop": "Hard stop",
+    "healthy": "Healthy"
+  }
+}

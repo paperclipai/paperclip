@@ -1,0 +1,44 @@
+{
+  "title": "Goals",
+  "selectCompany": "Select a company to view goals.",
+  "empty": {
+    "noGoals": "No goals yet.",
+    "noSubGoals": "No sub-goals.",
+    "noLinkedProjects": "No linked projects."
+  },
+  "newGoal": "New Goal",
+  "addGoal": "Add Goal",
+  "subGoal": "Sub Goal",
+  "detail": {
+    "addDescription": "Add a description...",
+    "tabs": {
+      "subGoals": "Sub-Goals ({{count}})",
+      "projects": "Projects ({{count}})"
+    },
+    "noSubGoals": "No sub-goals.",
+    "noLinkedProjects": "No linked projects."
+  },
+  "newGoalDialog": {
+    "newGoal": "New goal",
+    "newSubGoal": "New sub-goal",
+    "descriptionPlaceholder": "Add description...",
+    "levelLabels": {
+      "company": "Company",
+      "team": "Team",
+      "agent": "Agent",
+      "task": "Task"
+    },
+    "creating": "Creating\u2026",
+    "createSubGoal": "Create sub-goal",
+    "createGoal": "Create goal"
+  },
+  "properties": {
+    "status": "Status",
+    "level": "Level",
+    "owner": "Owner",
+    "parentGoal": "Parent Goal",
+    "created": "Created",
+    "updated": "Updated",
+    "none": "None"
+  }
+}
