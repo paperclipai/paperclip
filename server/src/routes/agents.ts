@@ -1026,14 +1026,26 @@ export function agentRoutes(db: Db) {
   router.get("/companies/:companyId/agents", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const unsupportedQueryParams = Object.keys(req.query).sort();
+    const knownParams = new Set(["executor"]);
+    const unsupportedQueryParams = Object.keys(req.query)
+      .filter((k) => !knownParams.has(k))
+      .sort();
     if (unsupportedQueryParams.length > 0) {
       res.status(400).json({
         error: `Unsupported query parameter${unsupportedQueryParams.length === 1 ? "" : "s"}: ${unsupportedQueryParams.join(", ")}`,
       });
       return;
     }
-    const result = await svc.list(companyId);
+    const executorParam = req.query.executor;
+    let executorFilter: "hermes" | "mc-dispatch" | undefined;
+    if (typeof executorParam === "string" && executorParam.length > 0) {
+      if (executorParam !== "hermes" && executorParam !== "mc-dispatch") {
+        res.status(400).json({ error: `Unsupported executor value: ${executorParam}` });
+        return;
+      }
+      executorFilter = executorParam;
+    }
+    const result = await svc.list(companyId, { executor: executorFilter });
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
       res.json(result);
