@@ -4,20 +4,13 @@ import {
   issueGraphLivenessAutoRecoveryRequestSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceGeneralSettingsSchema,
-} from "@paperclipai/shared";
-import { forbidden } from "../errors.js";
-import { validate } from "../middleware/validate.js";
-import { heartbeatService, instanceSettingsService, logActivity } from "../services/index.js";
-import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
-  patchInstanceExperimentalSettingsSchema,
-  patchInstanceGeneralSettingsSchema,
   patchInstanceBackupSettingsSchema,
   type InstanceBackupSettings,
 } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
-import { instanceSettingsService, logActivity } from "../services/index.js";
-import { getActorInfo } from "./authz.js";
+import { heartbeatService, instanceSettingsService, logActivity } from "../services/index.js";
+import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
 import { readConfigFile, updateConfigFile } from "../config-store.js";
 import { loadConfig } from "../config.js";
 
