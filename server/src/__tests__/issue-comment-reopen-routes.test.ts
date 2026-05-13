@@ -72,6 +72,9 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
+const mockIssueFinalDeliveryService = vi.hoisted(() => ({
+  queueForCompletedIssue: vi.fn(async () => ({ status: "skipped", reason: "not_configured" })),
+}));
 const mockIssueTreeControlService = vi.hoisted(() => ({
   getActivePauseHoldGate: vi.fn(async () => null),
 }));
@@ -157,6 +160,7 @@ vi.mock("../services/index.js", () => ({
     syncIssue: async () => undefined,
   }),
   issueService: () => mockIssueService,
+  issueFinalDeliveryService: () => mockIssueFinalDeliveryService,
   issueThreadInteractionService: () => mockIssueThreadInteractionService,
   issueTreeControlService: () => mockIssueTreeControlService,
   logActivity: mockLogActivity,
@@ -587,7 +591,8 @@ describe.sequential("issue comment reopen routes", () => {
             startedAt: "2026-05-11T08:00:00.000Z",
             iteration: 1,
             maxIterations: 5,
-            maxRuntimeHours: 24,
+            maxRuntimeHours: 24 * 90,
+            maxDecisionAgeMinutes: null,
           },
         },
       },
