@@ -28,3 +28,7 @@ refresh:
   supported: true
   rotatesRefreshToken: true
 shape: slack
+
+broker:
+  supported: false
+  deliveryModesSupported: [env]

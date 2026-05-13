@@ -21,3 +21,7 @@ accountIdField: bot.owner.user.id
 accountLabelField: bot.owner.user.name
 refresh:
   supported: false
+
+broker:
+  supported: false
+  deliveryModesSupported: [env]

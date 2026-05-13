@@ -1,6 +1,8 @@
 import { sql } from "drizzle-orm";
 import { backoffSeconds } from "./backoff.js";
 import { refreshConnection, type RefreshSecretService } from "./refresh.js";
+import { buildCredentialBrokerCtx } from "./apply-credential-broker-resolver.js";
+import { resolveCredentialBroker } from "../plugins/credential-broker-registry.js";
 import { oauthLogger } from "./logger.js";
 import type { ProviderRegistry } from "./registry.js";
 
@@ -44,6 +46,19 @@ export interface RefreshWorkerDeps {
  * failure rolls back only that row's work, not the whole tick.
  */
 export async function runRefreshTick(deps: RefreshWorkerDeps): Promise<void> {
+  // Drained from the transaction so the BYO HTTP fan-out runs *after*
+  // COMMIT — keeping 10s-per-target fetches out of the window where we
+  // hold `pg_try_advisory_xact_lock` and a pooled connection. Worst-case
+  // hold time was 100 rows × 8 targets × 10 s = 8 000 s before this fix.
+  const pendingByoPushes: Array<{
+    row: {
+      id: string;
+      companyId: string;
+      brokerTargets?: unknown[] | null;
+    };
+    accessToken: string;
+  }> = [];
+
   await deps.db.transaction(async (tx: any) => {
     const lockResult = await tx.execute(
       sql`SELECT pg_try_advisory_xact_lock(${ADVISORY_LOCK_KEY}::bigint) as result`,
@@ -83,14 +98,63 @@ export async function runRefreshTick(deps: RefreshWorkerDeps): Promise<void> {
     });
 
     const refreshFn = deps.refreshFn ?? refreshConnection;
+    const broker = await resolveCredentialBroker(
+      buildCredentialBrokerCtx({
+        db: deps.db,
+        registry: deps.registry,
+        logger: oauthLogger,
+      }),
+    );
     for (const row of eligible) {
       try {
-        await refreshFn({
+        const result = await refreshFn({
           connectionId: row.id,
           db: tx,
           registry: deps.registry,
           secretService: deps.secretService,
         });
+        // After a successful rotation, push the new access token into
+        // the credential broker's bearer cache so any live sessions
+        // see the fresh value on their next outbound request.
+        // Failures here are non-fatal — the DB write is the source of
+        // truth; if the broker push fails, dispatched runs will pick up
+        // the new token on the next mintSession (or via the 401-driven
+        // retry path in M4).
+        if (result && result.outcome === "success") {
+          if (broker) {
+            try {
+              await broker.pushCredential({
+                companyId: (row as { companyId: string }).companyId,
+                connectionId: row.id,
+                field: "access",
+                value: result.accessToken,
+              });
+            } catch (pushErr) {
+              oauthLogger.warn(
+                {
+                  connectionId: row.id,
+                  err: { message: (pushErr as Error).message },
+                },
+                "credential-broker pushCredential failed after refresh",
+              );
+            }
+          }
+          // BYO push targets — defer the HTTP fan-out until after the
+          // transaction commits so external endpoints can't hold the
+          // advisory lock or starve the connection pool.
+          const targets = (row as { brokerTargets?: unknown[] | null })
+            .brokerTargets;
+          if (targets && targets.length > 0) {
+            pendingByoPushes.push({
+              row: {
+                id: row.id,
+                companyId: (row as { companyId: string }).companyId,
+                brokerTargets: targets,
+              },
+              accessToken: result.accessToken,
+            });
+          }
+        }
       } catch (err) {
         oauthLogger.error(
           {
@@ -103,6 +167,17 @@ export async function runRefreshTick(deps: RefreshWorkerDeps): Promise<void> {
     }
     // No explicit unlock — pg_try_advisory_xact_lock releases at COMMIT/ROLLBACK.
   });
+
+  // Post-commit BYO fan-out. The advisory lock has been released and the
+  // pooled connection returned, so a slow operator broker can't block the
+  // next tick. Pushes remain best-effort; the DB row is source of truth.
+  for (const pending of pendingByoPushes) {
+    await pushToByoBrokerTargets({
+      row: pending.row,
+      accessToken: pending.accessToken,
+      secretService: deps.secretService,
+    });
+  }
 }
 
 export function startRefreshWorker(
@@ -129,4 +204,75 @@ export function startRefreshWorker(
       clearTimeout(timeout);
     },
   };
+}
+
+interface ByoBrokerTarget {
+  id: string;
+  url: string;
+  authTokenSecretId: string;
+  addedAt: string;
+}
+
+/**
+ * Best-effort fan-out: POST the rotated access token to each registered
+ * BYO broker push target. Failures log without propagating — the DB
+ * row is the source of truth; operators whose brokers are temporarily
+ * unreachable pick up the new value via their next mintSession path
+ * or on demand from their own backoff loop.
+ */
+async function pushToByoBrokerTargets(input: {
+  row: { id: string; companyId: string; brokerTargets?: unknown[] | null };
+  accessToken: string;
+  secretService: RefreshSecretService;
+}): Promise<void> {
+  const targets =
+    (input.row.brokerTargets as ByoBrokerTarget[] | null | undefined) ?? [];
+  if (targets.length === 0) return;
+  for (const target of targets) {
+    try {
+      const authToken = await input.secretService.resolveSecretValue(
+        input.row.companyId,
+        target.authTokenSecretId,
+        "latest",
+      );
+      const ctrl = new AbortController();
+      const timeoutId = setTimeout(() => ctrl.abort(), 10_000);
+      try {
+        const response = await fetch(target.url, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${authToken}`,
+          },
+          body: JSON.stringify({
+            connectionId: input.row.id,
+            field: "access",
+            value: input.accessToken,
+          }),
+          signal: ctrl.signal,
+        });
+        if (!response.ok) {
+          oauthLogger.warn(
+            {
+              connectionId: input.row.id,
+              targetId: target.id,
+              status: response.status,
+            },
+            "BYO broker target rejected push",
+          );
+        }
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    } catch (err) {
+      oauthLogger.warn(
+        {
+          connectionId: input.row.id,
+          targetId: target.id,
+          err: { message: (err as Error).message },
+        },
+        "BYO broker target push failed",
+      );
+    }
+  }
 }

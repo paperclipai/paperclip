@@ -44,6 +44,12 @@ import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { ProviderRegistry } from "./oauth/registry.js";
 import { loadProviderConfigsFromDirectory } from "./oauth/yaml-loader.js";
 import { registerPluginContributions } from "./oauth/plugin-loader.js";
+// Side-effect: registers @paperclipai/credential-broker-builtin via the SDK's
+// registerCredentialBroker() so the smart resolver can mint sessions.
+// Import is at the top of the module so the broker is registered before any
+// dispatch path runs. See
+// docs/superpowers/specs/2026-05-12-credential-broker-design.md §3.
+import "@paperclipai/credential-broker-builtin/register";
 import { createSlidingWindowLimiter } from "./oauth/rate-limiter.js";
 import { KNOWN_SHAPES } from "./oauth/shapes/index.js";
 import { oauthLogger } from "./oauth/logger.js";
@@ -528,12 +534,10 @@ export async function createApp(
   void toolDispatcher.initialize().catch((err) => {
     logger.error({ err }, "Failed to initialize plugin tool dispatcher");
   });
-  const devWatcher = opts.uiMode === "vite-dev"
-    ? createPluginDevWatcher(
-      lifecycle,
-      async (pluginId) => (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
-    )
-    : null;
+  const devWatcher = createPluginDevWatcher(
+    lifecycle,
+    async (pluginId) => (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
+  );
   void loader.loadAll().then((result) => {
     if (!result) return;
     const oauthManifests = [];

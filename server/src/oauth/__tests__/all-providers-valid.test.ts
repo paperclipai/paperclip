@@ -39,4 +39,26 @@ describe("shipped provider yaml files", () => {
     const ids = configs.map((c) => c.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
+
+  it("every shipped provider declares the broker block with at least 'env' support", async () => {
+    const configs = await loadProviderConfigsFromDirectory(PROVIDERS_DIR);
+    for (const config of configs) {
+      expect(
+        config.broker,
+        `provider '${config.id}' missing broker block in YAML`,
+      ).toBeDefined();
+      expect(
+        config.broker?.deliveryModesSupported,
+        `provider '${config.id}' must list at least 'env' in deliveryModesSupported`,
+      ).toContain("env");
+    }
+  });
+
+  it("github is the first provider opted in to paperclip-broker (M2.8)", async () => {
+    const configs = await loadProviderConfigsFromDirectory(PROVIDERS_DIR);
+    const github = configs.find((c) => c.id === "github");
+    expect(github).toBeDefined();
+    expect(github?.broker?.supported).toBe(true);
+    expect(github?.broker?.deliveryModesSupported).toContain("paperclip-broker");
+  });
 });

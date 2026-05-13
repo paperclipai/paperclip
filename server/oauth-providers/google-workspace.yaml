@@ -27,3 +27,7 @@ accountLabelField: email
 refresh:
   supported: true
   rotatesRefreshToken: false
+
+broker:
+  supported: false
+  deliveryModesSupported: [env]

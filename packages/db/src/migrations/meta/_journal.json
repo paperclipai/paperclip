@@ -603,6 +603,13 @@
       "when": 1778889600000,
       "tag": "0085_oauth_connections",
       "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1779148800000,
+      "tag": "0086_broker_targets",
+      "breakpoints": true
     }
   ]
 }
