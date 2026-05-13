@@ -1131,6 +1131,78 @@ export function agentRoutes(
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
   });
 
+  router.get("/companies/:companyId/agents/utilization", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    if (process.env.FEATURE_DISPATCH_DASHBOARD === "false") {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
+
+    const now = new Date();
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+    const rows = await db
+      .select({
+        agentId: agentsTable.id,
+        agentName: agentsTable.name,
+        role: agentsTable.role,
+        activeIssueCount: sql<number>`COUNT(CASE WHEN ${issuesTable.status} IN ('in_progress', 'in_review') THEN 1 END)::int`,
+        intake7d: sql<number>`COUNT(CASE WHEN ${issuesTable.startedAt} >= ${sevenDaysAgo} THEN 1 END)::int`,
+        lastActiveAt: sql<string | null>`MAX(${issuesTable.executionLockedAt})`,
+      })
+      .from(agentsTable)
+      .leftJoin(
+        issuesTable,
+        and(
+          eq(issuesTable.assigneeAgentId, agentsTable.id),
+          eq(issuesTable.companyId, companyId),
+        ),
+      )
+      .where(
+        and(
+          eq(agentsTable.companyId, companyId),
+          not(inArray(agentsTable.status, ["terminated", "pending_approval"])),
+        ),
+      )
+      .groupBy(agentsTable.id, agentsTable.name, agentsTable.role)
+      .orderBy(
+        sql`COUNT(CASE WHEN ${issuesTable.status} IN ('in_progress', 'in_review') THEN 1 END) ASC`,
+      );
+
+    const agentItems = rows.map((row) => {
+      const activeIssueCount = Number(row.activeIssueCount);
+      const intake7d = Number(row.intake7d);
+      const lastActiveAt = row.lastActiveAt ? new Date(row.lastActiveAt).toISOString() : null;
+      const idleDays =
+        lastActiveAt !== null
+          ? Number(((now.getTime() - new Date(lastActiveAt).getTime()) / 86400000).toFixed(2))
+          : null;
+      const busynessScore = Number(Math.min(1, Math.max(0, activeIssueCount / 5)).toFixed(2));
+
+      let loadLabel: "Idle" | "Light" | "Moderate" | "Heavy";
+      if (busynessScore === 0) loadLabel = "Idle";
+      else if (busynessScore <= 0.4) loadLabel = "Light";
+      else if (busynessScore <= 0.7) loadLabel = "Moderate";
+      else loadLabel = "Heavy";
+
+      return {
+        agentId: row.agentId,
+        agentName: row.agentName,
+        role: row.role,
+        activeIssueCount,
+        intake7d,
+        lastActiveAt,
+        idleDays,
+        busynessScore,
+        loadLabel,
+      };
+    });
+
+    res.json({ agents: agentItems, updatedAt: now.toISOString() });
+  });
+
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
     assertInstanceAdmin(req);
 
