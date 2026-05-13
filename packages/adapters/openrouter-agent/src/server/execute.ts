@@ -1,12 +1,20 @@
 import OpenAI from "openai";
 import path from "node:path";
+import fs from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
   TranscriptEntry,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
-import { renderTemplate, asString, buildPaperclipEnv } from "@paperclipai/adapter-utils/server-utils";
+import {
+  renderTemplate,
+  asString,
+  buildPaperclipEnv,
+  readPaperclipRuntimeSkillEntries,
+  resolvePaperclipDesiredSkillNames,
+} from "@paperclipai/adapter-utils/server-utils";
 import {
   DEFAULT_OPENROUTER_LOCAL_BASE_URL,
   DEFAULT_OPENROUTER_LOCAL_MAX_ITERATIONS,
@@ -19,6 +27,7 @@ import {
 import {
   loadInstructionFragments,
   joinInstructionFragments,
+  type InstructionFragment,
 } from "./instructions.js";
 import {
   DEFAULT_TOOLS,
@@ -32,6 +41,8 @@ import {
 } from "./tools.js";
 import { PaperclipApi, PaperclipApiError } from "./paperclip-api.js";
 import { buildPaperclipTools } from "./paperclip-tools.js";
+
+const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 export interface ExecuteOptions {
   /** Override the OpenAI SDK constructor — used for tests. */
@@ -231,7 +242,20 @@ export async function execute(
     cwd,
     instructionsFilePath: instructionsFilePath || null,
   });
-  const systemPrompt = joinInstructionFragments(fragments);
+
+  const skillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const desiredSkillNames = new Set(resolvePaperclipDesiredSkillNames(config, skillEntries));
+  const skillFragments: InstructionFragment[] = [];
+  for (const entry of skillEntries.filter((e) => desiredSkillNames.has(e.key))) {
+    try {
+      const content = await fs.readFile(path.join(entry.source, "SKILL.md"), "utf-8");
+      if (content.trim()) skillFragments.push({ source: entry.source, contents: content });
+    } catch {
+      // SKILL.md unreadable — skip silently
+    }
+  }
+
+  const systemPrompt = joinInstructionFragments([...fragments, ...skillFragments]);
 
   const disabledTools = resolveDisabledTools(config.disabledTools);
 

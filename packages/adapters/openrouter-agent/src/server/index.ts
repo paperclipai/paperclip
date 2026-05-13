@@ -3,6 +3,7 @@ import { execute } from "./execute.js";
 import { testEnvironment } from "./test.js";
 import { listModels, refreshModels, detectModel } from "./models.js";
 import { getConfigSchema } from "./config-schema.js";
+import { listSkills, syncSkills } from "./skills.js";
 import {
   type,
   label,
@@ -67,5 +68,7 @@ export function createServerAdapter(): ServerAdapterModule {
     refreshModels,
     detectModel,
     getConfigSchema,
+    listSkills,
+    syncSkills,
   } as ServerAdapterModule & { label: string };
 }

@@ -388,6 +388,85 @@ describe("execute", () => {
     expect(systemMessage?.content).toContain("follow the rules");
   });
 
+  describe("company skills injection", () => {
+    function skillCtx(overrideConfig: Record<string, unknown>) {
+      return buildCtx({ config: { cwd: tmp, model: "openai/gpt-4o-mini", ...overrideConfig } });
+    }
+
+    async function makeSkill(name: string, content: string): Promise<string> {
+      const dir = path.join(tmp, name);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, "SKILL.md"), content);
+      return dir;
+    }
+
+    function systemContent(capturedRequests: CapturedRequest[]): string {
+      const msg = (capturedRequests[0].messages as Array<{ role: string; content: string }>)
+        .find((m) => m.role === "system");
+      return msg?.content ?? "";
+    }
+
+    it("injects desired skill SKILL.md into the system prompt", async () => {
+      const source = await makeSkill("my-skill", "## My Skill\nDo the thing.");
+      const { factory, state } = buildClient([{ content: "ok" }]);
+      await exec(
+        skillCtx({
+          paperclipRuntimeSkills: [{ key: "company/co-1/my-skill", runtimeName: "my-skill", source }],
+          paperclipSkillSync: { desiredSkills: ["company/co-1/my-skill"] },
+        }),
+        { openAiFactory: factory },
+      );
+      expect(systemContent(state.capturedRequests)).toContain("Do the thing.");
+    });
+
+    it("does not inject skills absent from desiredSkills", async () => {
+      const source = await makeSkill("secret-skill", "secret skill content");
+      const { factory, state } = buildClient([{ content: "ok" }]);
+      await exec(
+        skillCtx({
+          paperclipRuntimeSkills: [{ key: "company/co-1/secret-skill", runtimeName: "secret-skill", source }],
+          // no paperclipSkillSync — no desired skills selected
+        }),
+        { openAiFactory: factory },
+      );
+      expect(systemContent(state.capturedRequests)).not.toContain("secret skill content");
+    });
+
+    it("injects multiple desired skills as separate fragments", async () => {
+      const srcA = await makeSkill("skill-a", "content from skill A");
+      const srcB = await makeSkill("skill-b", "content from skill B");
+      const { factory, state } = buildClient([{ content: "ok" }]);
+      await exec(
+        skillCtx({
+          paperclipRuntimeSkills: [
+            { key: "company/co-1/skill-a", runtimeName: "skill-a", source: srcA },
+            { key: "company/co-1/skill-b", runtimeName: "skill-b", source: srcB },
+          ],
+          paperclipSkillSync: { desiredSkills: ["company/co-1/skill-a", "company/co-1/skill-b"] },
+        }),
+        { openAiFactory: factory },
+      );
+      const sys = systemContent(state.capturedRequests);
+      expect(sys).toContain("content from skill A");
+      expect(sys).toContain("content from skill B");
+    });
+
+    it("appends skill fragments after AGENTS.md", async () => {
+      await fs.writeFile(path.join(tmp, "AGENTS.md"), "agent instructions");
+      const source = await makeSkill("my-skill", "skill instructions");
+      const { factory, state } = buildClient([{ content: "ok" }]);
+      await exec(
+        skillCtx({
+          paperclipRuntimeSkills: [{ key: "company/co-1/my-skill", runtimeName: "my-skill", source }],
+          paperclipSkillSync: { desiredSkills: ["company/co-1/my-skill"] },
+        }),
+        { openAiFactory: factory },
+      );
+      const sys = systemContent(state.capturedRequests);
+      expect(sys.indexOf("agent instructions")).toBeLessThan(sys.indexOf("skill instructions"));
+    });
+  });
+
   describe("wall-clock timeout (timeoutSec)", () => {
     it("completes normally when no timeoutSec is configured", async () => {
       const { factory } = buildClient([
