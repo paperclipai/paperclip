@@ -1303,6 +1303,40 @@ describe("UndiciVaultGateway", () => {
     await expect(gateway.getKv({ mount: "secret", path: "x" })).rejects.toMatchObject({ code: "throttled" });
     await expect(gateway.getKv({ mount: "secret", path: "x" })).rejects.toMatchObject({ code: "provider_error" });
   });
+
+  it("renewSelf uses the supplied token and does not re-enter getToken (deadlock guard)", async () => {
+    // Greptile r4 P1: renewSelf used to omit `authenticated: false` and
+    // pass nothing to call(), which would await getToken(). When invoked
+    // from inside VaultTokenManager.acquireInner, getToken returned the
+    // inflight acquireInner promise and the renewal path deadlocked
+    // forever. The fix takes the token as an argument and forwards it
+    // verbatim, so getToken is never consulted on this path.
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    setGlobalDispatcher(agent);
+    const pool = agent.get("https://vault.example:8200");
+    pool
+      .intercept({
+        path: "/v1/auth/token/renew-self",
+        method: "POST",
+        headers: { "x-vault-token": "explicit-token" },
+      })
+      .reply(200, { auth: { lease_duration: 900, renewable: true } });
+
+    const getToken = vi.fn(async () => {
+      throw new Error("getToken must not be called from renewSelf");
+    });
+    const gateway = new UndiciVaultGateway({
+      address: "https://vault.example:8200",
+      namespace: null,
+      getToken,
+    });
+
+    const r = await gateway.renewSelf("explicit-token");
+    expect(r).toEqual({ leaseDurationSec: 900, renewable: true });
+    expect(getToken).not.toHaveBeenCalled();
+    agent.assertNoPendingInterceptors();
+  });
 });
 
 describe("Greptile round-1 regressions", () => {

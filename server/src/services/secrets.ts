@@ -65,7 +65,6 @@ const SENSITIVE_ENV_KEY_RE =
 const REDACTED_SENTINEL = "***REDACTED***";
 const COMING_SOON_SECRET_PROVIDERS: ReadonlySet<SecretProvider> = new Set([
   "gcp_secret_manager",
-  "vault",
 ]);
 
 function remoteProviderHttpError(error: unknown, context: {

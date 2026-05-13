@@ -117,7 +117,15 @@ export interface VaultHttpGateway {
     leaseDurationSec: number;
     renewable: boolean;
   }>;
-  renewSelf(): Promise<{ leaseDurationSec: number; renewable: boolean }>;
+  /**
+   * Renew the supplied token in-place. Takes the token as a parameter
+   * rather than reaching back through getToken() because this method is
+   * called from inside VaultTokenManager.acquireInner — going through
+   * getToken would re-enter acquire() and wait on the same inflight
+   * promise, deadlocking the renewal path on every kubernetes-mode
+   * vault operation past the renewal threshold.
+   */
+  renewSelf(token: string): Promise<{ leaseDurationSec: number; renewable: boolean }>;
   lookupSelf(): Promise<{ leaseDurationSec: number; renewable: boolean; policies: string[] }>;
   capabilitiesSelf(paths: string[]): Promise<Record<string, string[]>>;
   readMount(mount: string): Promise<{ type: string; options: Record<string, string> }>;
@@ -452,9 +460,17 @@ export class UndiciVaultGateway implements VaultHttpGateway {
     path: string;
     body?: unknown;
     authenticated?: boolean;
+    /**
+     * Explicit token override. When provided, getToken() is bypassed —
+     * required for renewSelf, which is called from inside the token
+     * manager's acquire path and would otherwise re-enter and deadlock.
+     */
+    token?: string;
   }): Promise<T> {
     const headers: Record<string, string> = { "content-type": "application/json" };
-    if (input.authenticated !== false) {
+    if (input.token !== undefined) {
+      headers["x-vault-token"] = input.token;
+    } else if (input.authenticated !== false) {
       headers["x-vault-token"] = await this.getToken();
     }
     if (this.namespace) headers["x-vault-namespace"] = this.namespace;
@@ -505,10 +521,15 @@ export class UndiciVaultGateway implements VaultHttpGateway {
       renewable: r.auth.renewable,
     };
   }
-  async renewSelf() {
+  async renewSelf(token: string) {
+    // Pass the token explicitly so call() does not invoke getToken(),
+    // which would re-enter VaultTokenManager.acquire() while
+    // acquireInner() is already in flight — a circular await that
+    // permanently hangs the kubernetes-mode renewal path.
     const r = await this.call<{ auth: { lease_duration: number; renewable: boolean } }>({
       method: "POST",
       path: "/v1/auth/token/renew-self",
+      token,
     });
     return { leaseDurationSec: r.auth.lease_duration, renewable: r.auth.renewable };
   }
@@ -978,7 +999,7 @@ export class VaultTokenManager {
       if (elapsed < renewThreshold) return this.cached.token;
       if (this.cached.renewable) {
         try {
-          const renewed = await this.gateway.renewSelf();
+          const renewed = await this.gateway.renewSelf(this.cached.token);
           this.cached = {
             token: this.cached.token,
             acquiredAt: now,
