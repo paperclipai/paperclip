@@ -17,6 +17,14 @@ import type { LiveEvent } from "@paperclipai/shared";
 export interface LiveEventsTransport {
   /** Stable per-process id; receivers drop messages with a matching origin. */
   readonly originId: string;
+  /**
+   * Max UTF-8 byte size for the serialized envelope this transport will
+   * carry. Used by both the transport itself (when deciding whether to
+   * publish) and live-events.ts (when deciding whether to suppress local
+   * emit for symmetric drop). Different transports have different wire
+   * caps — see PG_NOTIFY_INLINE_LIMIT vs REDIS_PUBSUB_INLINE_LIMIT.
+   */
+  readonly maxEnvelopeBytes: number;
   /** Best-effort fan-out. Errors are logged, not thrown — live events are best-effort. */
   publish(event: LiveEvent): void;
   /** Idempotent: multiple subscribes for the same companyId reuse the channel. */
@@ -50,8 +58,18 @@ export type TransportEnvelope = { kind: "full"; origin: string; event: LiveEvent
 export const PG_NOTIFY_INLINE_LIMIT = 7500;
 
 /**
+ * Redis pub/sub has no wire-level cap that approaches Postgres's NOTIFY
+ * limit — the default client-output-buffer-limit for pubsub subscribers
+ * is 32MB hard / 8MB soft. We still apply a sanity cap (1MB) so a runaway
+ * caller posting megabytes of payload gets a noisy drop instead of
+ * silently filling Redis client buffers, but we do not impose the
+ * Postgres-specific 7.5KB ceiling on operators who opt into Redis.
+ */
+export const REDIS_PUBSUB_INLINE_LIMIT = 1_000_000;
+
+/**
  * Sentinel returned by {@link buildEnvelope} when the serialized envelope
- * exceeds {@link PG_NOTIFY_INLINE_LIMIT}. Callers MUST treat this as
+ * exceeds the transport's max byte size. Callers MUST treat this as
  * "drop event symmetrically": skip cross-replica publish AND skip local
  * in-process emission, otherwise the originating replica sees the event
  * while every other replica does not — exactly the silent divergence
@@ -62,17 +80,18 @@ export type OversizedSentinel = typeof OVERSIZED_EVENT;
 
 /**
  * Encode a LiveEvent for cross-replica fan-out, or return
- * {@link OVERSIZED_EVENT} if the serialized envelope exceeds the inline
- * NOTIFY cap. Length is measured in UTF-8 bytes (not JS string `.length`,
- * which counts UTF-16 code units) because Postgres enforces the limit at
- * the wire-encoded byte level.
+ * {@link OVERSIZED_EVENT} if the serialized envelope exceeds `maxBytes`.
+ * Length is measured in UTF-8 bytes (not JS string `.length`, which
+ * counts UTF-16 code units) because Postgres enforces its NOTIFY limit
+ * at the wire-encoded byte level and Redis client buffers count bytes.
  */
 export function buildEnvelope(
   originId: string,
   event: LiveEvent,
+  maxBytes: number,
 ): TransportEnvelope | OversizedSentinel {
   const full: TransportEnvelope = { kind: "full", origin: originId, event };
   const serialized = JSON.stringify(full);
-  if (Buffer.byteLength(serialized, "utf8") <= PG_NOTIFY_INLINE_LIMIT) return full;
+  if (Buffer.byteLength(serialized, "utf8") <= maxBytes) return full;
   return OVERSIZED_EVENT;
 }

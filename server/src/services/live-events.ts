@@ -55,24 +55,30 @@ function makeTransportHandler(companyId: string): TransportEventHandler {
 }
 
 function attachTransportFor(companyId: string) {
-  if (!transport) return;
+  // Always bump the refcount, even when no transport is installed yet:
+  // subscriptions that attach during the boot window (before
+  // configureLiveEventsTransport resolves) are still real local
+  // subscribers, and rebindExistingSubscriptions iterates this map to
+  // wire them up to the transport once it comes online.
   const current = transportRefcounts.get(companyId) ?? 0;
   transportRefcounts.set(companyId, current + 1);
-  if (current > 0) return;
+  if (!transport) return;
+  if (transportHandlers.has(companyId)) return;
   const handler = makeTransportHandler(companyId);
   transportHandlers.set(companyId, handler);
   transport.subscribe(companyId, handler);
 }
 
 function detachTransportFor(companyId: string) {
-  if (!transport) return;
   const current = transportRefcounts.get(companyId) ?? 0;
   if (current <= 1) {
     transportRefcounts.delete(companyId);
-    const handler = transportHandlers.get(companyId);
-    if (handler) {
-      transport.unsubscribe(companyId, handler);
-      transportHandlers.delete(companyId);
+    if (transport) {
+      const handler = transportHandlers.get(companyId);
+      if (handler) {
+        transport.unsubscribe(companyId, handler);
+        transportHandlers.delete(companyId);
+      }
     }
   } else {
     transportRefcounts.set(companyId, current - 1);
@@ -151,18 +157,26 @@ function rebindExistingSubscriptions() {
   // If subscribers attached before the transport was installed (boot
   // race: a heartbeat tick fires before configureLiveEventsTransport
   // resolves), make sure the transport is now LISTENing for every
-  // companyId we already have local subscribers for.
+  // companyId we already have local subscribers for. Handlers are
+  // created lazily here because attachTransportFor cannot build them
+  // while the transport is null.
   if (!transport) return;
-  for (const companyId of new Set([...transportRefcounts.keys()])) {
-    const handler = transportHandlers.get(companyId);
-    if (handler) transport.subscribe(companyId, handler);
+  for (const companyId of transportRefcounts.keys()) {
+    if (transportHandlers.has(companyId)) continue;
+    const handler = makeTransportHandler(companyId);
+    transportHandlers.set(companyId, handler);
+    transport.subscribe(companyId, handler);
   }
 }
 
 export async function teardownLiveEventsTransport(): Promise<void> {
   const previous = transport;
   transport = null;
-  transportRefcounts.clear();
+  // Intentionally keep transportRefcounts — those track local subscriber
+  // state, which is independent of which transport (if any) is active.
+  // configureLiveEventsTransport relies on this to rebind handlers when
+  // a new transport is installed; clearing here would silently drop all
+  // cross-replica subscriptions for live connections on hot-reload.
   transportHandlers.clear();
   if (previous) {
     await previous.close().catch((err) => {
@@ -199,7 +213,7 @@ function toLiveEvent(input: {
  */
 function shouldSuppressLocalEmit(event: LiveEvent): boolean {
   if (!transport) return false;
-  return buildEnvelope(transport.originId, event) === OVERSIZED_EVENT;
+  return buildEnvelope(transport.originId, event, transport.maxEnvelopeBytes) === OVERSIZED_EVENT;
 }
 
 export function publishLiveEvent(input: {

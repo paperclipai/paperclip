@@ -143,7 +143,7 @@ describeEmbeddedPostgres("live-events postgres LISTEN/NOTIFY transport", () => {
     expect(Buffer.byteLength(serialized, "utf8")).toBeGreaterThan(PG_NOTIFY_INLINE_LIMIT);
 
     // Encoder must report the event as oversized.
-    expect(buildEnvelope("test-origin", oversized)).toBe(OVERSIZED_EVENT);
+    expect(buildEnvelope("test-origin", oversized, PG_NOTIFY_INLINE_LIMIT)).toBe(OVERSIZED_EVENT);
 
     // End-to-end: publisher tries to publish, subscriber on another
     // replica must NOT see anything. The originating replica's local
@@ -204,6 +204,35 @@ describeEmbeddedPostgres("live-events postgres LISTEN/NOTIFY transport", () => {
     expect(received).toHaveLength(1);
 
     unsubscribe();
+    await teardownLiveEventsTransport();
+  });
+
+  it("rebinds subscribers that attached before configureLiveEventsTransport (boot race)", async () => {
+    // Reproduces the boot race that greptile flagged: a WS handler
+    // subscribes during server startup while configureLiveEventsTransport
+    // is still resolving. Before the fix, attachTransportFor short-
+    // circuited on `!transport` and never recorded the subscriber, so
+    // rebindExistingSubscriptions later iterated an empty map and the
+    // subscriber missed cross-replica events for its lifetime.
+    const received: LiveEvent[] = [];
+    const unsubscribe = subscribeCompanyLiveEvents("company-a", (e) => received.push(e));
+
+    // Configure the transport AFTER the subscription is already in place.
+    await configureLiveEventsTransport({ mode: "postgres", databaseUrl });
+    // LISTEN is async; give postgres-js time to settle.
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Publish from an independent replica so the in-process path is not
+    // involved — delivery must come exclusively through LISTEN/NOTIFY.
+    const replicaA = createPgLiveEventsTransport({ databaseUrl });
+    replicaA.publish(makeEvent({ id: 9001, payload: { boot: "race" } }));
+
+    const got = await waitFor(() => received.find((e) => e.id === 9001));
+    expect(got.id).toBe(9001);
+    expect(got.payload).toEqual({ boot: "race" });
+
+    unsubscribe();
+    await replicaA.close();
     await teardownLiveEventsTransport();
   });
 });
@@ -331,6 +360,33 @@ describe("live-events redis transport (mocked)", () => {
 
     await publisher.close();
     await subscriberA.close();
+  });
+
+  it("does not apply the Postgres 7.5KB cap to Redis publishes", async () => {
+    // Greptile-flagged regression: buildEnvelope previously hard-coded
+    // PG_NOTIFY_INLINE_LIMIT for every transport, so any event between
+    // 7.5KB and Redis's actual buffer limit was silently dropped on the
+    // Redis path. A 50KB payload — well within Redis pub/sub buffer
+    // limits — must round-trip.
+    const factory = makeMockRedisFactory();
+    const publisher = createRedisLiveEventsTransport({ redisUrl: "redis://test", clientFactory: factory });
+    const subscriber = createRedisLiveEventsTransport({ redisUrl: "redis://test", clientFactory: factory });
+
+    const seen: LiveEvent[] = [];
+    subscriber.subscribe("company-a", (e) => seen.push(e));
+    await new Promise((r) => setTimeout(r, 20));
+
+    // ~50KB payload — > PG_NOTIFY_INLINE_LIMIT (7500) but well under
+    // REDIS_PUBSUB_INLINE_LIMIT (1_000_000).
+    const big = "x".repeat(50_000);
+    publisher.publish(makeEvent({ id: 601, payload: { big } }));
+
+    const got = await waitFor(() => seen.find((e) => e.id === 601), { timeoutMs: 1000 });
+    expect(got.id).toBe(601);
+    expect((got.payload as { big: string }).big).toHaveLength(50_000);
+
+    await publisher.close();
+    await subscriber.close();
   });
 });
 
