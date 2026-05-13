@@ -99,6 +99,7 @@ import {
 import { getTelemetryClient } from "../telemetry.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { recoveryService } from "../services/recovery/service.js";
+import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
@@ -3202,6 +3203,74 @@ export function agentRoutes(
         await getCurrentUserRedactionOptions(),
       ),
     );
+  });
+
+  const HEARTBEAT_RUN_PING_TERMINAL_STATUSES = new Set([
+    "succeeded",
+    "failed",
+    "cancelled",
+    "timed_out",
+    "abandoned",
+  ]);
+
+  router.post("/heartbeat-runs/:runId/ping", async (req, res) => {
+    // Auth: must be a JWT bearer; X-Paperclip-Run-Id header is intentionally ignored
+    // per spec — only claims.run_id is authoritative for this route.
+    const authHeader = req.header("authorization");
+    if (!authHeader?.toLowerCase().startsWith("bearer ")) {
+      res.status(403).json({ error: "Missing or invalid Authorization header" });
+      return;
+    }
+    const token = authHeader.slice("bearer ".length).trim();
+    const claims = verifyLocalAgentJwt(token);
+    if (!claims) {
+      res.status(403).json({ error: "Invalid or expired agent JWT" });
+      return;
+    }
+
+    const runId = req.params.runId as string;
+
+    // Validate: params.runId must equal claims.run_id (anti-spoof)
+    if (runId !== claims.run_id) {
+      res.status(403).json({ error: "run_id mismatch" });
+      return;
+    }
+
+    const run = await db
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+
+    if (!run) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+
+    // Validate agent_id and company_id from JWT match the row
+    if (run.agentId !== claims.sub || run.companyId !== claims.company_id) {
+      res.status(403).json({ error: "agent_id or company_id mismatch" });
+      return;
+    }
+
+    // Reject pings on terminal runs
+    if (HEARTBEAT_RUN_PING_TERMINAL_STATUSES.has(run.status)) {
+      res.status(409).json({ error: "run_terminal", status: run.status });
+      return;
+    }
+
+    const now = new Date();
+    await db
+      .update(heartbeatRuns)
+      .set({ lastPingAt: now, updatedAt: now })
+      .where(eq(heartbeatRuns.id, runId));
+
+    res.status(200).json({ pingedAt: now.toISOString() });
   });
 
   router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {
