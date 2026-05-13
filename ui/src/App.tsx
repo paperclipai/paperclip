@@ -56,6 +56,7 @@ import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
 import { JoinRequestQueue } from "./pages/JoinRequestQueue";
 import { NotFoundPage } from "./pages/NotFound";
+import { SecurityPage } from "./pages/Security";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
@@ -267,11 +268,15 @@ export function App() {
     <>
       <Routes>
         <Route path="auth" element={<AuthPage />} />
+        <Route path="login" element={<AuthPage />} />
+        <Route path="register" element={<AuthPage />} />
+        <Route path="forgot-password" element={<AuthPage />} />
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
 
-        {/* Public demo routes — no auth required, work on static Vercel deploys */}
+        {/* Public routes — no auth required */}
+        <Route path="security" element={<SecurityPage />} />
         <Route path="yard-proposals/demo" element={<YardProposalDemo />} />
         <Route path="yard-proposals/demo-backyard" element={<YardProposalDemoBackyard />} />
         <Route path=":prefix/yard-proposals/demo" element={<YardProposalDemo />} />

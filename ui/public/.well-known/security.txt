@@ -1,0 +1,5 @@
+Contact: mailto:security@3vo.ai
+Expires: 2027-05-13T00:00:00.000Z
+Acknowledgments: https://3vo.ai/security
+Policy: https://3vo.ai/security
+Preferred-Languages: en
