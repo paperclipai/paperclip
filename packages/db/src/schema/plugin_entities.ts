@@ -5,7 +5,7 @@ import {
   timestamp,
   jsonb,
   index,
-  uniqueIndex,
+  unique,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { plugins } from "./plugins.js";
@@ -49,11 +49,22 @@ export const pluginEntities = pgTable(
     companyIdx: index("plugin_entities_company_idx").on(table.companyId),
     typeIdx: index("plugin_entities_type_idx").on(table.entityType),
     scopeIdx: index("plugin_entities_scope_idx").on(table.scopeKind, table.scopeId),
-    externalIdx: uniqueIndex("plugin_entities_external_idx").on(
-      table.companyId,
-      table.pluginId,
-      table.entityType,
-      table.externalId,
-    ),
+    /**
+     * Per-tenant uniqueness on (companyId, pluginId, entityType, externalId).
+     * `.nullsNotDistinct()` is required because companyId is nullable for
+     * instance-scope entities (cron jobs, public webhooks): without it,
+     * postgres treats two NULL company_ids as distinct and a tuple like
+     * `(NULL, pluginId, entityType, externalId)` can be inserted multiple
+     * times, losing the dedup guarantee. Same pattern as plugin_state.ts.
+     * Requires PostgreSQL 15+.
+     */
+    externalIdx: unique("plugin_entities_external_idx")
+      .on(
+        table.companyId,
+        table.pluginId,
+        table.entityType,
+        table.externalId,
+      )
+      .nullsNotDistinct(),
   }),
 );

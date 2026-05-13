@@ -11,4 +11,4 @@ CREATE INDEX IF NOT EXISTS "plugin_job_runs_company_idx" ON "plugin_job_runs" US
 CREATE INDEX IF NOT EXISTS "plugin_logs_company_idx" ON "plugin_logs" USING btree ("company_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "plugin_webhook_deliveries_company_idx" ON "plugin_webhook_deliveries" USING btree ("company_id");--> statement-breakpoint
 DROP INDEX IF EXISTS "plugin_entities_external_idx";--> statement-breakpoint
-CREATE UNIQUE INDEX IF NOT EXISTS "plugin_entities_external_idx" ON "plugin_entities" USING btree ("company_id","plugin_id","entity_type","external_id");
+ALTER TABLE "plugin_entities" ADD CONSTRAINT "plugin_entities_external_idx" UNIQUE NULLS NOT DISTINCT("company_id","plugin_id","entity_type","external_id");
