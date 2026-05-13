@@ -81,6 +81,8 @@ export interface Config {
   storageS3Endpoint: string | undefined;
   storageS3Prefix: string;
   storageS3ForcePathStyle: boolean;
+  storageS3AccessKeyId: string | undefined;
+  storageS3SecretAccessKey: string | undefined;
   feedbackExportBackendUrl: string | undefined;
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
@@ -148,6 +150,10 @@ export function loadConfig(): Config {
     process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE !== undefined
       ? process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE === "true"
       : (fileStorage?.s3?.forcePathStyle ?? false);
+  const storageS3AccessKeyId =
+    process.env.PAPERCLIP_STORAGE_S3_ACCESS_KEY_ID ?? fileStorage?.s3?.accessKeyId ?? undefined;
+  const storageS3SecretAccessKey =
+    process.env.PAPERCLIP_STORAGE_S3_SECRET_ACCESS_KEY ?? fileStorage?.s3?.secretAccessKey ?? undefined;
   const feedbackExportBackendUrl =
     process.env.PAPERCLIP_FEEDBACK_EXPORT_BACKEND_URL?.trim() ||
     process.env.PAPERCLIP_TELEMETRY_BACKEND_URL?.trim() ||
@@ -327,6 +333,8 @@ export function loadConfig(): Config {
     storageS3Endpoint,
     storageS3Prefix,
     storageS3ForcePathStyle,
+    storageS3AccessKeyId,
+    storageS3SecretAccessKey,
     feedbackExportBackendUrl,
     feedbackExportBackendToken,
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",

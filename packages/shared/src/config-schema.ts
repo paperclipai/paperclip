@@ -72,6 +72,8 @@ export const storageS3ConfigSchema = z.object({
   endpoint: z.string().optional(),
   prefix: z.string().default(""),
   forcePathStyle: z.boolean().default(false),
+  accessKeyId: z.string().optional(),
+  secretAccessKey: z.string().optional(),
 });
 
 export const storageConfigSchema = z.object({

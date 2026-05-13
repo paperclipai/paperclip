@@ -14,5 +14,7 @@ export function createStorageProviderFromConfig(config: Config): StorageProvider
     endpoint: config.storageS3Endpoint,
     prefix: config.storageS3Prefix,
     forcePathStyle: config.storageS3ForcePathStyle,
+    accessKeyId: config.storageS3AccessKeyId,
+    secretAccessKey: config.storageS3SecretAccessKey,
   });
 }

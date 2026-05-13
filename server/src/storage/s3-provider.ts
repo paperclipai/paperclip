@@ -15,6 +15,8 @@ interface S3ProviderConfig {
   endpoint?: string;
   prefix?: string;
   forcePathStyle?: boolean;
+  accessKeyId?: string;
+  secretAccessKey?: string;
 }
 
 function normalizePrefix(prefix: string | undefined): string {
@@ -74,6 +76,14 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
     region,
     endpoint: config.endpoint,
     forcePathStyle: Boolean(config.forcePathStyle),
+    ...(config.accessKeyId && config.secretAccessKey
+      ? {
+          credentials: {
+            accessKeyId: config.accessKeyId,
+            secretAccessKey: config.secretAccessKey,
+          },
+        }
+      : {}),
   });
 
   return {
