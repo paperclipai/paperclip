@@ -1,16 +1,21 @@
 import { z } from "zod";
 import {
+  PAPERCLIP_MCP_TOOL_POLICIES,
   addIssueCommentSchema,
   askUserQuestionsPayloadSchema,
   checkoutIssueSchema,
+  classifyPaperclipApiRequestPolicy,
   createApprovalSchema,
   createIssueInputSchema,
+  formatToolPolicySummary,
+  getPaperclipMcpToolPolicy,
   issueThreadInteractionContinuationPolicySchema,
   requestConfirmationPayloadSchema,
   suggestTasksPayloadSchema,
   updateIssueSchema,
   upsertIssueDocumentSchema,
   linkIssueApprovalSchema,
+  type ToolPermissionPolicy,
 } from "@paperclipai/shared";
 import { PaperclipApiClient } from "./client.js";
 import { formatErrorResponse, formatTextResponse } from "./format.js";
@@ -18,10 +23,15 @@ import { formatErrorResponse, formatTextResponse } from "./format.js";
 export interface ToolDefinition {
   name: string;
   description: string;
+  policy: ToolPermissionPolicy;
   schema: z.AnyZodObject;
   execute: (input: Record<string, unknown>) => Promise<{
     content: Array<{ type: "text"; text: string }>;
   }>;
+}
+
+function describeToolWithPolicy(description: string, policy: ToolPermissionPolicy): string {
+  return `${description}\n\n${formatToolPolicySummary(policy)} ${policy.summary}`;
 }
 
 function makeTool<TSchema extends z.ZodRawShape>(
@@ -30,9 +40,11 @@ function makeTool<TSchema extends z.ZodRawShape>(
   schema: z.ZodObject<TSchema>,
   execute: (input: z.infer<typeof schema>) => Promise<unknown>,
 ): ToolDefinition {
+  const policy = getPaperclipMcpToolPolicy(name);
   return {
     name,
-    description,
+    description: describeToolWithPolicy(description, policy),
+    policy,
     schema,
     execute: async (input) => {
       try {
@@ -155,8 +167,13 @@ const createApprovalToolSchema = z.object({
   companyId: companyIdOptional,
 }).merge(createApprovalSchema);
 
+const apiRequestMethodSchema = z.preprocess(
+  (value) => typeof value === "string" ? value.trim().toUpperCase() : value,
+  z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
+);
+
 const apiRequestSchema = z.object({
-  method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
+  method: apiRequestMethodSchema,
   path: z.string().min(1),
   jsonBody: z.string().optional(),
 });
@@ -221,8 +238,36 @@ async function getIssueWorkspaceRuntime(client: PaperclipApiClient, issueId: str
   };
 }
 
+function assertSafeGenericApiPath(path: string): void {
+  if (!path.startsWith("/") || path.includes("..")) {
+    throw new Error("path must start with / and be relative to /api, and must not contain '..'");
+  }
+
+  const pathOnly = path.split(/[?#]/, 1)[0] ?? path;
+  if (/%(?:2f|5c)/i.test(pathOnly)) {
+    throw new Error("path must not contain encoded path separators");
+  }
+
+  let decodedPath: string;
+  try {
+    decodedPath = decodeURIComponent(pathOnly);
+  } catch {
+    throw new Error("path must contain valid percent-encoding");
+  }
+
+  if (decodedPath.includes("..")) {
+    throw new Error("path must not contain encoded traversal");
+  }
+}
+
 export function createToolDefinitions(client: PaperclipApiClient): ToolDefinition[] {
   return [
+    makeTool(
+      "paperclipListToolPolicies",
+      "List the MCP tool permission registry and risk gates",
+      z.object({}),
+      async () => Object.values(PAPERCLIP_MCP_TOOL_POLICIES),
+    ),
     makeTool(
       "paperclipMe",
       "Get the current authenticated Paperclip actor details",
@@ -597,8 +642,15 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "Make a JSON request to an existing Paperclip /api endpoint for unsupported operations",
       apiRequestSchema,
       async ({ method, path, jsonBody }) => {
-        if (!path.startsWith("/") || path.includes("..")) {
-          throw new Error("path must start with / and be relative to /api, and must not contain '..'");
+        assertSafeGenericApiPath(path);
+        const policy = classifyPaperclipApiRequestPolicy(method, path);
+        if (policy.requiresExplicitApproval) {
+          const preferredTool = policy.preferredToolName
+            ? ` Prefer named tool ${policy.preferredToolName}.`
+            : " Prefer a named MCP tool or add an explicit registry entry before enabling this path.";
+          throw new Error(
+            `Generic API request ${policy.method} ${policy.pathPattern} is classified as ${policy.category}/${policy.actionRiskLevel}/${policy.riskClass} and is blocked by the MCP tool permission registry; required gate: ${policy.requiredApprovalGate}. ${policy.summary}${preferredTool}`,
+          );
         }
         return client.requestJson(method, path, {
           body: parseOptionalJson(jsonBody),

@@ -245,6 +245,14 @@ describe("IssueMissionControlPanel", () => {
     expect(text).toContain("delivered");
     expect(text).toContain("external 910");
     expect(text).toContain("artifacts 1");
+    expect(text).toContain("MCP/tool permissions");
+    expect(text).toContain("Read-only allowed");
+    expect(text).toContain("Requires approval");
+    expect(text).toContain("Blocked generic API");
+    expect(text).toContain("paperclipApiRequest");
+    expect(text).toContain("blocked until board approval");
+    expect(text).toContain("paperclipControlIssueWorkspaceServices");
+    expect(text).toContain("requires board approval");
     expect(text).toContain("[REDACTED]");
     expect(text).not.toContain("synthetic-placeholder");
   });

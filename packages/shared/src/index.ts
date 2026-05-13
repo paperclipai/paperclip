@@ -308,6 +308,17 @@ export {
 } from "./mission-control.js";
 
 export {
+  PAPERCLIP_MCP_TOOL_POLICIES,
+  TOOL_PERMISSION_CATEGORIES,
+  classifyPaperclipApiRequestPolicy,
+  formatToolPolicySummary,
+  getPaperclipMcpToolPolicy,
+  type PaperclipApiRequestPolicy,
+  type ToolPermissionCategory,
+  type ToolPermissionPolicy,
+} from "./tool-permissions.js";
+
+export {
   ALL_INTERFACES_BIND_HOST,
   LOOPBACK_BIND_HOST,
   inferBindModeFromHost,

@@ -1,5 +1,6 @@
 import {
   MISSION_CONTROL_DEFAULT_REQUIRED_DOCUMENT_KEYS,
+  PAPERCLIP_MCP_TOOL_POLICIES,
   evaluateMissionControlCompletionGate,
   type FinalDeliveryInteraction,
   type Issue,
@@ -9,6 +10,7 @@ import {
   type IssueThreadInteraction,
   type IssueValidationHistory,
   type MissionControlCompletionGateResult,
+  type ToolPermissionPolicy,
 } from "@paperclipai/shared";
 import { AlertTriangle, CheckCircle2, Clock3, Send, ShieldCheck } from "lucide-react";
 import { cn, relativeTime } from "@/lib/utils";
@@ -153,6 +155,36 @@ function documentToneClass(present: boolean): string {
     : "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300";
 }
 
+const MCP_TOOL_POLICIES = Object.values(PAPERCLIP_MCP_TOOL_POLICIES).sort((a, b) => a.toolName.localeCompare(b.toolName));
+const MCP_READ_ONLY_ALLOWED_COUNT = MCP_TOOL_POLICIES.filter((policy) => policy.category === "read_only" && !policy.requiresExplicitApproval).length;
+const MCP_APPROVAL_REQUIRED_POLICIES = MCP_TOOL_POLICIES.filter((policy) => policy.requiresExplicitApproval);
+const MCP_HIGHLIGHTED_POLICIES = [
+  PAPERCLIP_MCP_TOOL_POLICIES.paperclipApiRequest,
+  PAPERCLIP_MCP_TOOL_POLICIES.paperclipControlIssueWorkspaceServices,
+  PAPERCLIP_MCP_TOOL_POLICIES.paperclipApprovalDecision,
+  PAPERCLIP_MCP_TOOL_POLICIES.paperclipRestoreIssueDocumentRevision,
+].filter(Boolean);
+
+function toolPolicyToneClass(policy: ToolPermissionPolicy): string {
+  if (policy.toolName === "paperclipApiRequest") {
+    return "border-destructive/40 bg-destructive/10 text-destructive";
+  }
+  if (policy.requiresExplicitApproval) {
+    return "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300";
+  }
+  if (policy.category === "read_only") {
+    return "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300";
+  }
+  return "border-border bg-muted text-muted-foreground";
+}
+
+function toolPolicyStatusLabel(policy: ToolPermissionPolicy): string {
+  if (policy.toolName === "paperclipApiRequest") return `blocked until ${policy.requiredApprovalGate} approval`;
+  if (policy.requiresExplicitApproval) return `requires ${policy.requiredApprovalGate} approval`;
+  if (policy.category === "read_only") return "allowed";
+  return "route guarded";
+}
+
 export function IssueMissionControlPanel({
   issue,
   documents,
@@ -250,6 +282,43 @@ export function IssueMissionControlPanel({
           </div>
         </div>
       ) : null}
+
+      <div className="space-y-2 rounded-md border border-border/70 bg-background/70 px-3 py-2 text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">MCP/tool permissions</div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              Read-only tools stay allowed; live/destructive/generic actions are surfaced before execution.
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            <span className="rounded-full border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300">
+              Read-only allowed {MCP_READ_ONLY_ALLOWED_COUNT}
+            </span>
+            <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">
+              Requires approval {MCP_APPROVAL_REQUIRED_POLICIES.length}
+            </span>
+            <span className="rounded-full border border-destructive/40 bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive">
+              Blocked generic API
+            </span>
+          </div>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {MCP_HIGHLIGHTED_POLICIES.map((policy) => (
+            <div key={policy.toolName} className="rounded border border-border/60 bg-card/60 px-2 py-1.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-mono text-xs text-foreground">{policy.toolName}</span>
+                <span className={cn("rounded-full border px-2 py-0.5 text-xs font-medium", toolPolicyToneClass(policy))}>
+                  {toolPolicyStatusLabel(policy)}
+                </span>
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                {policy.category} · {policy.actionRiskLevel} · {policy.riskClass}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="rounded-md border border-border/70 bg-background/70 px-3 py-2 text-sm">
