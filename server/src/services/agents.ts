@@ -40,6 +40,7 @@ const CONFIG_REVISION_FIELDS = [
   "runtimeConfig",
   "budgetMonthlyCents",
   "metadata",
+  "executor",
 ] as const;
 
 type ConfigRevisionField = (typeof CONFIG_REVISION_FIELDS)[number];
@@ -100,6 +101,7 @@ function buildConfigSnapshot(
     runtimeConfig,
     budgetMonthlyCents: row.budgetMonthlyCents,
     metadata,
+    executor: row.executor,
   };
 }
 

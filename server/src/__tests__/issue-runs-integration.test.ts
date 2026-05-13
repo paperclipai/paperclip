@@ -13,7 +13,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
-import { companies, createDb, issueRuns, issues } from "@paperclipai/db";
+import { agents, companies, createDb, issueRuns, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -42,6 +42,7 @@ describeEmbeddedPostgres("issue-runs integration", () => {
   afterEach(async () => {
     await db.delete(issueRuns);
     await db.delete(issues);
+    await db.delete(agents);
     await db.delete(companies);
   });
 
@@ -233,5 +234,107 @@ describeEmbeddedPostgres("issue-runs integration", () => {
       .from(issueRuns)
       .where(and(eq(issueRuns.issueId, issueId), eq(issueRuns.status, "running")));
     expect(running.length).toBe(1);
+  });
+
+  async function seedAgent(executor: "hermes" | "mc-dispatch", name = "agent-1") {
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name,
+      role: "engineer",
+      status: "running",
+      executor,
+      adapterType: "codex_local",
+    });
+    return agentId;
+  }
+
+  async function seedIssueWithAssignee(agentId: string): Promise<string> {
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "assigned issue",
+      status: "todo",
+      priority: "medium",
+      createdByUserId: "user-1",
+      assigneeAgentId: agentId,
+    });
+    return issueId;
+  }
+
+  it("Phase-4 4b-4: hermes runner cannot acquire mc-dispatch agent's issue", async () => {
+    await seedCompany();
+    const mcAgent = await seedAgent("mc-dispatch", "drain-bot");
+    const issueId = await seedIssueWithAssignee(mcAgent);
+    const svc = issueRunsService(db);
+
+    const result = await svc.acquire({
+      companyId,
+      issueId,
+      executor: "hermes",
+      lockedBy: "hermes-worker",
+    });
+
+    expect(result.acquired).toBe(false);
+    if (result.acquired) throw new Error("unreachable");
+    expect(result.reason).toBe("executor_mismatch");
+    if (result.reason === "executor_mismatch") {
+      expect(result.assignedExecutor).toBe("mc-dispatch");
+      expect(result.requestedExecutor).toBe("hermes");
+    }
+
+    const rows = await db.select().from(issueRuns).where(eq(issueRuns.issueId, issueId));
+    expect(rows.length).toBe(0);
+  });
+
+  it("Phase-4 4b-4: mc-dispatch fallback cannot acquire hermes agent's issue", async () => {
+    await seedCompany();
+    const hermesAgent = await seedAgent("hermes", "hermes-bot");
+    const issueId = await seedIssueWithAssignee(hermesAgent);
+    const svc = issueRunsService(db);
+
+    const result = await svc.acquire({
+      companyId,
+      issueId,
+      executor: "mc-dispatch",
+      lockedBy: "mc-fallback",
+    });
+
+    expect(result.acquired).toBe(false);
+    if (result.acquired) throw new Error("unreachable");
+    expect(result.reason).toBe("executor_mismatch");
+  });
+
+  it("Phase-4 4b-4: executor matches assignee allows acquire", async () => {
+    await seedCompany();
+    const hermesAgent = await seedAgent("hermes", "hermes-bot");
+    const issueId = await seedIssueWithAssignee(hermesAgent);
+    const svc = issueRunsService(db);
+
+    const result = await svc.acquire({
+      companyId,
+      issueId,
+      executor: "hermes",
+      lockedBy: "hermes-worker",
+    });
+
+    expect(result.acquired).toBe(true);
+  });
+
+  it("Phase-4 4b-4: issue without assignee allows either executor (free pool)", async () => {
+    await seedCompany();
+    const issueId = await seedIssue();
+    const svc = issueRunsService(db);
+
+    const result = await svc.acquire({
+      companyId,
+      issueId,
+      executor: "hermes",
+      lockedBy: "any-worker",
+    });
+
+    expect(result.acquired).toBe(true);
   });
 });

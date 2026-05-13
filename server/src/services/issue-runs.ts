@@ -1,6 +1,6 @@
 import { and, asc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issueRuns } from "@paperclipai/db";
+import { agents, issueRuns, issues } from "@paperclipai/db";
 import {
   ISSUE_RUNS_LOCK_TTL_SECONDS,
   ISSUE_RUNS_STALE_HEARTBEAT_GRACE_SECONDS,
@@ -44,7 +44,8 @@ export interface AcquireInput {
 
 export type AcquireResult =
   | { acquired: true; run: IssueRunRow }
-  | { acquired: false; reason: "issue_already_running"; existing: IssueRunRow | null };
+  | { acquired: false; reason: "issue_already_running"; existing: IssueRunRow | null }
+  | { acquired: false; reason: "executor_mismatch"; assignedExecutor: IssueRunExecutor; requestedExecutor: IssueRunExecutor };
 
 export interface HeartbeatInput {
   runId: string;
@@ -93,6 +94,31 @@ export type IssueRunRow = typeof issueRuns.$inferSelect;
 export function issueRunsService(db: Db): IssueRunsService {
   return {
     async acquire(input) {
+      const assigneeRows = await db
+        .select({
+          assigneeAgentId: issues.assigneeAgentId,
+        })
+        .from(issues)
+        .where(eq(issues.id, input.issueId))
+        .limit(1);
+
+      if (assigneeRows[0]?.assigneeAgentId) {
+        const agentRows = await db
+          .select({ executor: agents.executor })
+          .from(agents)
+          .where(eq(agents.id, assigneeRows[0].assigneeAgentId))
+          .limit(1);
+        const assignedExecutor = agentRows[0]?.executor;
+        if (assignedExecutor && assignedExecutor !== input.executor) {
+          return {
+            acquired: false,
+            reason: "executor_mismatch",
+            assignedExecutor: assignedExecutor as IssueRunExecutor,
+            requestedExecutor: input.executor,
+          };
+        }
+      }
+
       const ttl = input.ttlSeconds ?? ISSUE_RUNS_LOCK_TTL_SECONDS;
       const inserted = await db
         .insert(issueRuns)
