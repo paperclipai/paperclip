@@ -51,6 +51,7 @@ export function errorHandler(
     }
     res.status(err.status).json({
       error: err.message,
+      ...(err.code ? { code: err.code } : {}),
       ...(err.details ? { details: err.details } : {}),
     });
     return;

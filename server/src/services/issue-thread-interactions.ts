@@ -1152,7 +1152,7 @@ export function issueThreadInteractionService(db: Db) {
       return hydrateInteraction(updated);
     },
 
-    cancelQuestions: async (
+    cancelInteraction: async (
       issue: { id: string; companyId: string },
       interactionId: string,
       input: CancelIssueThreadInteraction,
@@ -1169,25 +1169,28 @@ export function issueThreadInteractionService(db: Db) {
       if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
         throw notFound("Interaction not found");
       }
-      if (current.kind !== "ask_user_questions") {
-        throw unprocessable("Only ask_user_questions interactions can be cancelled");
+      const reason = data.reason?.trim() || null;
+      const cancellationResult = buildCancellationResult(current.kind, reason);
+      if (!cancellationResult) {
+        throw unprocessable(
+          `Interactions of kind "${current.kind}" cannot be cancelled`,
+          undefined,
+          "not_applicable",
+        );
       }
       if (current.status !== "pending") {
-        throw conflict("Interaction has already been resolved");
+        throw conflict(
+          "Interaction has already been resolved",
+          undefined,
+          "already_resolved",
+        );
       }
 
-      const reason = data.reason?.trim() || null;
       const [updated] = await db
         .update(issueThreadInteractions)
         .set({
           status: "cancelled",
-          result: {
-            version: 1,
-            answers: [],
-            cancelled: true,
-            cancellationReason: reason,
-            summaryMarkdown: null,
-          },
+          result: cancellationResult,
           resolvedByAgentId: actor.agentId ?? null,
           resolvedByUserId: actor.userId ?? null,
           resolvedAt: new Date(),
@@ -1200,11 +1203,68 @@ export function issueThreadInteractionService(db: Db) {
         .returning();
 
       if (!updated) {
-        throw conflict("Interaction has already been resolved");
+        throw conflict(
+          "Interaction has already been resolved",
+          undefined,
+          "already_resolved",
+        );
       }
 
       await touchIssue(db, issue.id);
       return hydrateInteraction(updated);
     },
   };
+}
+
+function buildCancellationResult(
+  kind: string,
+  reason: string | null,
+): IssueThreadInteractionRow["result"] | null {
+  switch (kind) {
+    case "ask_user_questions":
+      return {
+        version: 1,
+        answers: [],
+        cancelled: true,
+        cancellationReason: reason,
+        summaryMarkdown: null,
+      };
+    case "request_confirmation":
+      return {
+        version: 1,
+        outcome: "cancelled",
+        reason,
+        commentId: null,
+        staleTarget: null,
+      };
+    case "suggest_tasks":
+      return {
+        version: 1,
+        createdTasks: [],
+        skippedClientKeys: [],
+        cancelled: true,
+        cancellationReason: reason,
+      };
+    default:
+      return null;
+  }
+}
+
+export function getCancellationReasonFromResult(
+  interaction: IssueThreadInteraction,
+): string | null {
+  switch (interaction.kind) {
+    case "ask_user_questions":
+      return interaction.result?.cancellationReason ?? null;
+    case "request_confirmation":
+      return interaction.result?.outcome === "cancelled"
+        ? (interaction.result.reason ?? null)
+        : null;
+    case "suggest_tasks":
+      return interaction.result?.cancelled
+        ? (interaction.result.cancellationReason ?? null)
+        : null;
+    default:
+      return null;
+  }
 }

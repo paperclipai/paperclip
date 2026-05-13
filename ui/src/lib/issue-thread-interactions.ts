@@ -68,6 +68,9 @@ export function buildIssueThreadInteractionSummary(
     if (interaction.status === "rejected") {
       return count === 1 ? "Rejected 1 task" : `Rejected ${count} tasks`;
     }
+    if (interaction.status === "cancelled") {
+      return count === 1 ? "Cancelled 1 task" : `Cancelled ${count} tasks`;
+    }
     return count === 1 ? "Suggested 1 task" : `Suggested ${count} tasks`;
   }
 
@@ -80,6 +83,7 @@ export function buildIssueThreadInteractionSummary(
       if (outcome === "stale_target") return "Confirmation expired after target changed";
       return "Confirmation expired";
     }
+    if (interaction.status === "cancelled") return "Cancelled confirmation";
     return "Requested confirmation";
   }
 

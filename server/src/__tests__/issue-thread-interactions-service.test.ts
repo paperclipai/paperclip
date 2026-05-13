@@ -493,7 +493,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       userId: "local-board",
     });
 
-    const cancelled = await interactionsSvc.cancelQuestions({
+    const cancelled = await interactionsSvc.cancelInteraction({
       id: issueId,
       companyId,
     }, created.id, {
@@ -519,6 +519,270 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     }, {
       userId: "local-board",
     })).rejects.toThrow("Interaction has already been resolved");
+  });
+
+  it("cancels pending request_confirmation interactions with outcome=cancelled (ETF-48)", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Cancel a confirmation",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Apply the proposed approach?",
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const cancelled = await interactionsSvc.cancelInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      reason: "Superseded by a fresh ask",
+    }, {
+      userId: "local-board",
+    });
+
+    expect(cancelled.kind).toBe("request_confirmation");
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.result).toEqual({
+      version: 1,
+      outcome: "cancelled",
+      reason: "Superseded by a fresh ask",
+      commentId: null,
+      staleTarget: null,
+    });
+
+    await expect(interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, {}, {
+      userId: "local-board",
+    })).rejects.toThrow("Interaction has already been resolved");
+  });
+
+  it("cancels pending suggest_tasks interactions and records cancellationReason (ETF-48)", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Cancel a suggestion",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "suggest_tasks",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        tasks: [{ clientKey: "draft-1", title: "Draft task" }],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const cancelled = await interactionsSvc.cancelInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      reason: "Direction changed",
+    }, {
+      userId: "local-board",
+    });
+
+    expect(cancelled.kind).toBe("suggest_tasks");
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.result).toEqual({
+      version: 1,
+      createdTasks: [],
+      skippedClientKeys: [],
+      cancelled: true,
+      cancellationReason: "Direction changed",
+    });
+
+    await expect(interactionsSvc.acceptSuggestedTasks({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {}, {
+      userId: "local-board",
+    })).rejects.toThrow("Interaction has already been resolved");
+  });
+
+  it("rejects cancellation of an already-resolved interaction with code already_resolved (ETF-48)", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Already resolved",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Apply?",
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, {}, {
+      userId: "local-board",
+    });
+
+    try {
+      await interactionsSvc.cancelInteraction({
+        id: issueId,
+        companyId,
+      }, created.id, {}, {
+        userId: "local-board",
+      });
+      throw new Error("expected cancelInteraction to reject already-resolved interaction");
+    } catch (err: any) {
+      expect(err.status).toBe(409);
+      expect(err.code).toBe("already_resolved");
+    }
+  });
+
+  it("rejects cancellation of a notify-shaped (unknown) interaction with code not_applicable (ETF-48)", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Notify kind cannot be cancelled",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    // Insert a row with an unrecognised kind to stand in for a future "notify"-style entry.
+    // The service must refuse to cancel it with code: "not_applicable".
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "notify" as any,
+      status: "pending" as any,
+      continuationPolicy: "none" as any,
+      payload: { version: 1 },
+      result: null,
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: null,
+      title: null,
+      summary: null,
+      createdByAgentId: null,
+      createdByUserId: "local-board",
+    });
+
+    try {
+      await interactionsSvc.cancelInteraction({
+        id: issueId,
+        companyId,
+      }, interactionId, {}, {
+        userId: "local-board",
+      });
+      throw new Error("expected cancelInteraction to reject non-cancellable kind");
+    } catch (err: any) {
+      expect(err.status).toBe(422);
+      expect(err.code).toBe("not_applicable");
+    }
   });
 
   it("reuses the existing interaction when the same idempotency key is submitted twice", async () => {

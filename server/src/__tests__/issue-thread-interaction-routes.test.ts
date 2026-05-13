@@ -17,7 +17,7 @@ const mockInteractionService = vi.hoisted(() => ({
   rejectInteraction: vi.fn(),
   rejectSuggestedTasks: vi.fn(),
   answerQuestions: vi.fn(),
-  cancelQuestions: vi.fn(),
+  cancelInteraction: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -88,6 +88,22 @@ function registerModuleMocks() {
     }),
     issueService: () => mockIssueService,
     issueThreadInteractionService: () => mockInteractionService,
+    getCancellationReasonFromResult: (interaction: any) => {
+      if (interaction?.kind === "ask_user_questions") {
+        return interaction.result?.cancellationReason ?? null;
+      }
+      if (interaction?.kind === "request_confirmation") {
+        return interaction.result?.outcome === "cancelled"
+          ? (interaction.result.reason ?? null)
+          : null;
+      }
+      if (interaction?.kind === "suggest_tasks") {
+        return interaction.result?.cancelled
+          ? (interaction.result.cancellationReason ?? null)
+          : null;
+      }
+      return null;
+    },
     logActivity: mockLogActivity,
     projectService: () => ({}),
     routineService: () => ({
@@ -250,7 +266,7 @@ describe.sequential("issue thread interaction routes", () => {
       updatedAt: "2026-04-20T12:06:00.000Z",
       resolvedAt: "2026-04-20T12:06:00.000Z",
     });
-    mockInteractionService.cancelQuestions.mockResolvedValue({
+    mockInteractionService.cancelInteraction.mockResolvedValue({
       id: "interaction-2",
       companyId: "company-1",
       issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -403,7 +419,7 @@ describe.sequential("issue thread interaction routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("cancelled");
-    expect(mockInteractionService.cancelQuestions).toHaveBeenCalledWith(
+    expect(mockInteractionService.cancelInteraction).toHaveBeenCalledWith(
       expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
       "interaction-2",
       {},
@@ -428,6 +444,160 @@ describe.sequential("issue thread interaction routes", () => {
         action: "issue.thread_interaction_cancelled",
       }),
     );
+  });
+
+  it("cancels pending request_confirmation interactions and threads the kind into the activity log (ETF-48)", async () => {
+    mockInteractionService.cancelInteraction.mockResolvedValueOnce({
+      id: "interaction-confirm",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "cancelled",
+      continuationPolicy: "none",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: null,
+      payload: { version: 1, prompt: "Apply?" },
+      result: {
+        version: 1,
+        outcome: "cancelled",
+        reason: "superseded",
+        commentId: null,
+        staleTarget: null,
+      },
+      createdAt: "2026-05-12T12:00:00.000Z",
+      updatedAt: "2026-05-12T12:05:00.000Z",
+      resolvedAt: "2026-05-12T12:05:00.000Z",
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-confirm/cancel")
+      .send({ reason: "superseded" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("cancelled");
+    expect(res.body.kind).toBe("request_confirmation");
+    expect(res.body.result.outcome).toBe("cancelled");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.thread_interaction_cancelled",
+        details: expect.objectContaining({
+          interactionKind: "request_confirmation",
+          cancellationReason: "superseded",
+        }),
+      }),
+    );
+  });
+
+  it("cancels pending suggest_tasks interactions and threads the kind into the activity log (ETF-48)", async () => {
+    mockInteractionService.cancelInteraction.mockResolvedValueOnce({
+      id: "interaction-tasks",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "suggest_tasks",
+      status: "cancelled",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: null,
+      payload: { version: 1, tasks: [{ clientKey: "draft-1", title: "T" }] },
+      result: {
+        version: 1,
+        createdTasks: [],
+        skippedClientKeys: [],
+        cancelled: true,
+        cancellationReason: "direction changed",
+      },
+      createdAt: "2026-05-12T12:00:00.000Z",
+      updatedAt: "2026-05-12T12:05:00.000Z",
+      resolvedAt: "2026-05-12T12:05:00.000Z",
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-tasks/cancel")
+      .send({ reason: "direction changed" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.kind).toBe("suggest_tasks");
+    expect(res.body.result.cancelled).toBe(true);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({
+          interactionKind: "suggest_tasks",
+          cancellationReason: "direction changed",
+        }),
+      }),
+    );
+  });
+
+  it("returns 422 with code not_applicable when the service refuses the kind (ETF-48)", async () => {
+    const { HttpError } = await import("../errors.js");
+    mockInteractionService.cancelInteraction.mockRejectedValueOnce(
+      new HttpError(
+        422,
+        'Interactions of kind "notify" cannot be cancelled',
+        undefined,
+        "not_applicable",
+      ),
+    );
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-notify/cancel")
+      .send({});
+
+    expect(res.status).toBe(422);
+    expect(res.body).toEqual(expect.objectContaining({
+      error: expect.stringContaining("notify"),
+      code: "not_applicable",
+    }));
+  });
+
+  it("returns 409 with code already_resolved when the interaction is no longer pending (ETF-48)", async () => {
+    const { HttpError } = await import("../errors.js");
+    mockInteractionService.cancelInteraction.mockRejectedValueOnce(
+      new HttpError(
+        409,
+        "Interaction has already been resolved",
+        undefined,
+        "already_resolved",
+      ),
+    );
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-done/cancel")
+      .send({});
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual(expect.objectContaining({
+      error: "Interaction has already been resolved",
+      code: "already_resolved",
+    }));
+  });
+
+  it("returns 403 with code blocked_by_authorization when actor is not board (ETF-48)", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: "00000000-0000-4000-8000-000000000001",
+      companyId: "company-1",
+      runId: "00000000-0000-4000-8000-000000000002",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/cancel")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual(expect.objectContaining({
+      error: "Board access required",
+      code: "blocked_by_authorization",
+    }));
+    expect(mockInteractionService.cancelInteraction).not.toHaveBeenCalled();
   });
 
   it("accepts request confirmations and wakes the current assignee when configured for accept-only wakeups", async () => {
