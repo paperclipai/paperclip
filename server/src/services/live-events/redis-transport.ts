@@ -5,7 +5,7 @@ import { redisChannelForCompany } from "./channel.js";
 import {
   buildEnvelope,
   OVERSIZED_EVENT,
-  PG_NOTIFY_INLINE_LIMIT,
+  REDIS_PUBSUB_INLINE_LIMIT,
   type LiveEventsTransport,
   type TransportEnvelope,
   type TransportEventHandler,
@@ -187,7 +187,7 @@ export function createRedisLiveEventsTransport(opts: RedisTransportOptions): Liv
   }
 
   function publish(event: LiveEvent) {
-    const envelope = buildEnvelope(originId, event);
+    const envelope = buildEnvelope(originId, event, REDIS_PUBSUB_INLINE_LIMIT);
     if (envelope === OVERSIZED_EVENT) {
       // Symmetric noisy drop — see transport.ts OVERSIZED_EVENT docs.
       logger.error(
@@ -199,9 +199,9 @@ export function createRedisLiveEventsTransport(opts: RedisTransportOptions): Liv
             JSON.stringify({ kind: "full", origin: originId, event }),
             "utf8",
           ),
-          limit: PG_NOTIFY_INLINE_LIMIT,
+          limit: REDIS_PUBSUB_INLINE_LIMIT,
         },
-        "live-events redis transport: oversized event dropped symmetrically (exceeds NOTIFY inline limit)",
+        "live-events redis transport: oversized event dropped symmetrically (exceeds redis pub/sub inline limit)",
       );
       return;
     }
@@ -227,5 +227,12 @@ export function createRedisLiveEventsTransport(opts: RedisTransportOptions): Liv
     }
   }
 
-  return { originId, publish, subscribe, unsubscribe, close };
+  return {
+    originId,
+    maxEnvelopeBytes: REDIS_PUBSUB_INLINE_LIMIT,
+    publish,
+    subscribe,
+    unsubscribe,
+    close,
+  };
 }
