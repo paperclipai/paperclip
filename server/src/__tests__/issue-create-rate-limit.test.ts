@@ -7,7 +7,15 @@
  * a fully-wired express app — the route wiring is validated by typecheck.
  */
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+
+void readFileSync;
+void fileURLToPath;
+void dirname;
+void resolve;
 import {
   createIssueCreateRateLimiter,
   DEFAULT_ISSUE_CREATE_RATE_LIMIT_CONFIG,
@@ -231,6 +239,52 @@ describe("ADR-008 scenario 5 — exempt role / exempt id bypasses the threshold"
     expect(isExempt({ id: "agent-other", role: "general" })).toBe(false);
   });
 });
+
+describe("Migration 0085 default — governanceAssigneeAgentId is the CTO agent id", () => {
+  /**
+   * Reads the actual SQL migration so the test fails if a future edit drops
+   * `governanceAssigneeAgentId` from the `jsonb_build_object` default. Per ADR-008
+   * §2.3.3 + CTO review comment 776ead4c: a missing key downgrades the first
+   * production breach to a `backlog`/unassigned alert and the CTO never wakes.
+   *
+   * We sanity-check the raw SQL contains the hard-coded CTO id and that the
+   * parser accepts the same shape — together this guards both the storage layer
+   * (key present in jsonb) and the runtime layer (parser preserves the value).
+   */
+  const MIGRATION_FILE = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../../../packages/db/src/migrations/0085_company_rate_limit_settings.sql",
+  );
+  const CTO_AGENT_ID = "2fe5c471-69e3-4593-b2d8-e58f229d9812";
+
+  it("migration SQL embeds governanceAssigneeAgentId as the CTO agent id", () => {
+    const sql = readFileSync(MIGRATION_FILE, "utf8");
+    expect(sql).toMatch(/'governanceAssigneeAgentId'\s*,\s*'2fe5c471-69e3-4593-b2d8-e58f229d9812'/);
+  });
+
+  it("parser preserves governanceAssigneeAgentId = CTO from the migration default jsonb", () => {
+    // Mirrors the jsonb that the SQL `jsonb_build_object` produces for legacy
+    // company rows. If migration content drifts, the SQL assertion above fails first.
+    const parsed = parseIssueCreateRateLimitConfig({
+      issueCreation: {
+        enabled: true,
+        windowMinutes: 10,
+        maxIssuesPerWindow: 30,
+        exemptAgentIds: [],
+        exemptAgentRoles: [],
+        governanceAssigneeAgentId: CTO_AGENT_ID,
+      },
+    });
+    expect(parsed.governanceAssigneeAgentId).toBe(CTO_AGENT_ID);
+    expect(parsed.enabled).toBe(true);
+    expect(parsed.windowMinutes).toBe(10);
+    expect(parsed.maxIssuesPerWindow).toBe(30);
+  });
+});
+
+// B2 behavioral test for `pauseAgentForRateLimitBreach` lives in
+// `issue-create-rate-limit-routes.test.ts` (uses PgDialect.sqlToQuery to assert
+// the exact SQL rendering). Kept as a single test to avoid duplicate coverage.
 
 describe("Guard auxiliary behaviors", () => {
   it("merges resolveOwnerUserIds output with configured notifyUserIds and dedupes", async () => {

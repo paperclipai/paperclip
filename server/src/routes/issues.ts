@@ -126,6 +126,37 @@ import { parseIssueExecutionWorkspaceSettings } from "../services/execution-work
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+
+/**
+ * Marks an agent as paused due to an issue-create rate-limit breach.
+ *
+ * ADR-008 §2.3.2 says "이미 paused면 no-op" — the `ne(status, "paused")` clause
+ * is the explicit guard that preserves the *first* pause cause (e.g. `budget`)
+ * for incident forensics. The `ne(status, "terminated")` clause prevents
+ * reviving a terminated agent. Exported so the routes test can unit-test the
+ * exact where-clause shape without an embedded Postgres.
+ */
+export async function pauseAgentForRateLimitBreach(
+  db: Db,
+  input: { agentId: string; reason: typeof RATE_LIMIT_PAUSE_REASON },
+): Promise<void> {
+  await db
+    .update(agentsTable)
+    .set({
+      status: "paused",
+      pauseReason: input.reason,
+      pausedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(agentsTable.id, input.agentId),
+        ne(agentsTable.status, "terminated"),
+        ne(agentsTable.status, "paused"),
+      ),
+    );
+}
+
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -855,17 +886,7 @@ export function issueRoutes(
   const issueCreateRateLimitGuard: IssueCreateRateLimitGuard =
     opts.issueCreateRateLimitGuard ??
     createIssueCreateRateLimitGuard({
-      pauseAgent: async ({ agentId, reason }) => {
-        await db
-          .update(agentsTable)
-          .set({
-            status: "paused",
-            pauseReason: reason,
-            pausedAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(and(eq(agentsTable.id, agentId), ne(agentsTable.status, "terminated")));
-      },
+      pauseAgent: (input) => pauseAgentForRateLimitBreach(db, input),
       createAlertIssue: async ({ companyId: alertCompanyId, title, body, governanceAssigneeAgentId }) => {
         const created = await svc.create(alertCompanyId, {
           title,

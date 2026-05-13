@@ -17,6 +17,9 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { and, eq, ne, type SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
+import { agents as agentsTable } from "@paperclipai/db";
 
 import {
   createIssueCreateRateLimiter,
@@ -28,6 +31,7 @@ import {
   RATE_LIMIT_PAUSE_REASON,
   type IssueCreateRateLimitGuard,
 } from "../services/issue-create-rate-limit-guard.js";
+import { pauseAgentForRateLimitBreach } from "../routes/issues.js";
 
 const COMPANY_ID = "company-1";
 const AGENT_ID = "11111111-1111-4111-8111-111111111111";
@@ -335,5 +339,75 @@ describe("POST /api/companies/:companyId/issues — rate-limit guard wiring (ADR
     state.rateLimitSettings = {};
     expect(parseIssueCreateRateLimitConfig(state.rateLimitSettings).enabled).toBe(true);
     expect(parseIssueCreateRateLimitConfig(state.rateLimitSettings).maxIssuesPerWindow).toBe(30);
+  });
+});
+
+describe("pauseAgentForRateLimitBreach — ADR-008 §2.3.2 'already paused → no-op'", () => {
+  /**
+   * Captures the WHERE clause produced by `pauseAgentForRateLimitBreach` and
+   * renders it via PgDialect so we can assert the exact SQL guard. If a future
+   * edit drops `ne(status, "paused")`, the rendered SQL diverges from the
+   * reference expression and this test fails. This is the regression CTO
+   * comment 776ead4c requested: "이미 paused 인 agent 가 breach 일으켜도
+   * pauseReason 이 그대로다".
+   */
+  function makeWhereCapturingDb() {
+    const captured: { where?: SQL; values?: Record<string, unknown> } = {};
+    const fakeDb = {
+      update: () => ({
+        set: (values: Record<string, unknown>) => {
+          captured.values = values;
+          return {
+            where: async (expr: SQL) => {
+              captured.where = expr;
+            },
+          };
+        },
+      }),
+    } as unknown as Parameters<typeof pauseAgentForRateLimitBreach>[0];
+    return { fakeDb, captured };
+  }
+
+  it("the WHERE clause includes ne(status, 'paused') so an already-paused agent's pauseReason is preserved", async () => {
+    const { fakeDb, captured } = makeWhereCapturingDb();
+
+    await pauseAgentForRateLimitBreach(fakeDb, {
+      agentId: AGENT_ID,
+      reason: RATE_LIMIT_PAUSE_REASON,
+    });
+
+    const dialect = new PgDialect();
+    const expected = dialect.sqlToQuery(
+      and(
+        eq(agentsTable.id, AGENT_ID),
+        ne(agentsTable.status, "terminated"),
+        ne(agentsTable.status, "paused"),
+      )!,
+    );
+    expect(captured.where).toBeDefined();
+    const actual = dialect.sqlToQuery(captured.where!);
+    expect(actual.sql).toBe(expected.sql);
+    expect(actual.params).toEqual(expected.params);
+    // Sanity check on the SET payload — surfaces accidental drops of pauseReason.
+    expect(captured.values).toMatchObject({
+      status: "paused",
+      pauseReason: RATE_LIMIT_PAUSE_REASON,
+    });
+  });
+
+  it("a sibling WHERE clause without the 'paused' guard renders different SQL — proves the assertion above is load-bearing", () => {
+    const dialect = new PgDialect();
+    const withGuard = dialect.sqlToQuery(
+      and(
+        eq(agentsTable.id, AGENT_ID),
+        ne(agentsTable.status, "terminated"),
+        ne(agentsTable.status, "paused"),
+      )!,
+    );
+    const withoutGuard = dialect.sqlToQuery(
+      and(eq(agentsTable.id, AGENT_ID), ne(agentsTable.status, "terminated"))!,
+    );
+    expect(withGuard.sql).not.toBe(withoutGuard.sql);
+    expect(withGuard.params).not.toEqual(withoutGuard.params);
   });
 });
