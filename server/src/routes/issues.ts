@@ -31,6 +31,7 @@ import {
   feedbackVoteValueSchema,
   upsertIssueFeedbackVoteSchema,
   linkIssueApprovalSchema,
+  createIssueRelationSchema,
   issueDocumentKeySchema,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   rejectIssueThreadInteractionSchema,
@@ -67,6 +68,7 @@ import {
   ISSUE_LIST_DEFAULT_LIMIT,
   ISSUE_LIST_MAX_LIMIT,
   issueReferenceService,
+  issueRelationService,
   issueService,
   clampIssueListLimit,
   documentService,
@@ -839,6 +841,7 @@ export function issueRoutes(
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
+  const issueRelationsSvc = issueRelationService(db);
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
@@ -2502,6 +2505,80 @@ export function issueRoutes(
       entityType: "issue",
       entityId: issue.id,
       details: { approvalId },
+    });
+
+    res.json({ ok: true });
+  });
+
+  router.get("/issues/:id/relations", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const relations = await issueRelationsSvc.listForIssue(id);
+    res.json(relations);
+  });
+
+  router.post("/issues/:id/relations", validate(createIssueRelationSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    const actor = getActorInfo(req);
+    const relation = await issueRelationsSvc.create(
+      id,
+      { relatedIssueId: req.body.relatedIssueId, type: req.body.type },
+      {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      },
+    );
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.relation_added",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { relatedIssueId: req.body.relatedIssueId, type: req.body.type },
+    });
+
+    res.status(201).json(relation);
+  });
+
+  router.delete("/issues/:id/relations/:relationId", async (req, res) => {
+    const id = req.params.id as string;
+    const relationId = req.params.relationId as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    const actor = getActorInfo(req);
+    const removed = await issueRelationsSvc.delete(id, relationId);
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.relation_removed",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { relatedIssueId: removed.relatedIssueId, type: removed.type },
     });
 
     res.json({ ok: true });
