@@ -102,6 +102,15 @@ import {
 import { listCodexModels, refreshCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
 import {
+  execute as kilocodeGatewayExecute,
+  testEnvironment as kilocodeGatewayTestEnvironment,
+} from "@paperclipai/adapter-kilocode-gateway/server";
+import {
+  agentConfigurationDoc as kilocodeGatewayAgentConfigurationDoc,
+  models as kilocodeGatewayModels,
+} from "@paperclipai/adapter-kilocode-gateway";
+import { listKilocodeModels, refreshKilocodeModels } from "./kilocode-models.js";
+import {
   execute as piExecute,
   listPiSkills,
   syncPiSkills,
@@ -360,6 +369,19 @@ const openclawGatewayAdapter: ServerAdapterModule = {
   agentConfigurationDoc: openclawGatewayAgentConfigurationDoc,
 };
 
+const kilocodeGatewayAdapter: ServerAdapterModule = {
+  type: "kilocode_gateway",
+  execute: kilocodeGatewayExecute,
+  testEnvironment: kilocodeGatewayTestEnvironment,
+  models: kilocodeGatewayModels,
+  listModels: listKilocodeModels,
+  refreshModels: refreshKilocodeModels,
+  supportsLocalAgentJwt: false,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: kilocodeGatewayAgentConfigurationDoc,
+};
+
 const openCodeLocalAdapter: ServerAdapterModule = {
   type: "opencode_local",
   execute: openCodeExecute,
@@ -487,6 +509,7 @@ function registerBuiltInAdapters() {
     cursorLocalAdapter,
     geminiLocalAdapter,
     openclawGatewayAdapter,
+    kilocodeGatewayAdapter,
     hermesLocalAdapter,
     processAdapter,
     httpAdapter,
