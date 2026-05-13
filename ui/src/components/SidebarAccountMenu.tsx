@@ -4,10 +4,8 @@ import {
   BookOpen,
   LogOut,
   type LucideIcon,
-  Moon,
   Settings,
   UserRound,
-  Sun,
   UserRoundPen,
 } from "lucide-react";
 import type { DeploymentMode } from "@paperclipai/shared";
@@ -15,10 +13,10 @@ import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
 import { useSidebar } from "../context/SidebarContext";
-import { useTheme } from "../context/ThemeContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { cn } from "../lib/utils";
+import { ThemeToggle } from "./ThemeToggle";
 
 const PROFILE_SETTINGS_PATH = "/instance/settings/profile";
 const DOCS_URL = "https://docs.paperclip.ing/";
@@ -111,7 +109,6 @@ export function SidebarAccountMenu({
   const [internalOpen, setInternalOpen] = useState(false);
   const queryClient = useQueryClient();
   const { isMobile, setSidebarOpen } = useSidebar();
-  const { theme, toggleTheme } = useTheme();
   const open = controlledOpen ?? internalOpen;
   const setOpen = onOpenChange ?? setInternalOpen;
   const { data: session } = useQuery({
@@ -215,15 +212,7 @@ export function SidebarAccountMenu({
                 external
                 onClick={() => setOpen(false)}
               />
-              <MenuAction
-                label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-                description="Toggle the app appearance."
-                icon={theme === "dark" ? Sun : Moon}
-                onClick={() => {
-                  toggleTheme();
-                  setOpen(false);
-                }}
-              />
+              <ThemeToggle variant="menu-action" onAfterToggle={() => setOpen(false)} />
               {deploymentMode === "authenticated" ? (
                 <button
                   type="button"
