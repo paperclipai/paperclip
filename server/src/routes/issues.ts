@@ -3847,12 +3847,14 @@ export function issueRoutes(
       return;
     }
 
-    const { title = "", description = "", labels = [], limit = 5 } = req.body as {
+    const { title = "", description = "", labels = [], parentId, limit = 3 } = req.body as {
       title?: string;
       description?: string;
       labels?: string[];
+      parentId?: string;
       limit?: number;
     };
+    void parentId; // accepted for forward compatibility; not used in v1 keyword matching
 
     const now = new Date();
     const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -3934,7 +3936,7 @@ export function issueRoutes(
 
         return {
           agentId: row.agentId,
-          name: row.agentName,
+          agentName: row.agentName,
           role: row.role,
           activeIssueCount,
           intake7d,
@@ -3946,7 +3948,7 @@ export function issueRoutes(
         };
       })
       .sort((a, b) => b.overallScore - a.overallScore)
-      .slice(0, Math.max(1, Math.min(20, Number(limit) || 5)));
+      .slice(0, Math.max(1, Math.min(20, Number(limit) || 3)));
 
     res.json({ suggestions, updatedAt: now.toISOString() });
   });
