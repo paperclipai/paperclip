@@ -8,3 +8,7 @@ export {
   type LegalRuntime,
   type LegalRuntimeOptions,
 } from "./legal-runtime.js";
+export {
+  evaluatePreActionGate,
+  type PreActionGateLogger,
+} from "./heartbeat-hook.js";

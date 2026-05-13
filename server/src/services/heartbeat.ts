@@ -92,6 +92,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { evaluatePreActionGate, type LegalRuntime } from "./legal/index.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
@@ -2308,6 +2309,14 @@ export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeSe
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
+  /**
+   * Optional Odysseus legal-layer runtime. When present, the heartbeat fires a
+   * pre-action gate evaluation before each adapter invocation (logging-only in
+   * this PR; persistence + enforcement land in sprint-1/persist-gate-events).
+   * Undefined for legacy paperclip-style deployments — heartbeat is a no-op
+   * w.r.t. the legal layer in that case.
+   */
+  legalLayer?: LegalRuntime;
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
@@ -2326,6 +2335,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const environmentRuntime = options.environmentRuntime ?? environmentRuntimeService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
+  const legalLayer = options.legalLayer;
   const envOrchestrator = environmentRunOrchestrator(db, {
     pluginWorkerManager: options.pluginWorkerManager,
     environmentRuntime,
@@ -7659,6 +7669,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           "local agent jwt secret missing or invalid; running without injected ODYSSEUS_API_KEY",
         );
       }
+      // Odysseus legal-layer pre-action hook (logging only — sprint-1/wire-create-app).
+      // Persistence + enforcement land in sprint-1/persist-gate-events.
+      evaluatePreActionGate(
+        legalLayer,
+        { action: "adapter.invoke", agentId: agent.id },
+        logger,
+        { runId: run.id },
+      );
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent,

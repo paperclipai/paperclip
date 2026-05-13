@@ -1,10 +1,10 @@
 /// <reference path="./types/express.d.ts" />
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
 import { and, eq } from "drizzle-orm";
 import {
@@ -26,6 +26,11 @@ import {
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import {
+  bootLegalRuntime,
+  defaultLegalLayerPaths,
+  type LegalRuntime,
+} from "./services/legal/index.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
@@ -593,6 +598,37 @@ export async function startServer(): Promise<StartedServer> {
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
+
+  // Boot the Odysseus legal-layer runtime when a profile is configured via env.
+  // Legacy paperclip-style deployments leave ODYSSEUS_PROFILE unset and skip
+  // this entirely. Boot failures are logged but never crash the server — the
+  // legal layer is additive, not load-bearing for the base agent execution path.
+  let legalLayer: LegalRuntime | undefined;
+  const profileKey = process.env.ODYSSEUS_PROFILE;
+  if (profileKey) {
+    const indexDir = dirname(fileURLToPath(import.meta.url));
+    const repoRoot = resolve(indexDir, "..", "..");
+    const paths = defaultLegalLayerPaths(repoRoot);
+    try {
+      legalLayer = await bootLegalRuntime({ ...paths, profileKey });
+      logger.info(
+        {
+          profile: legalLayer.profile.profile,
+          gateCount: Object.keys(legalLayer.gates).length,
+          riskGatesDir: paths.riskGatesDir,
+          profilesDir: paths.profilesDir,
+        },
+        "[legal-layer] booted",
+      );
+    } catch (err) {
+      logger.error(
+        { err, profileKey, ...paths },
+        "[legal-layer] boot failed; continuing without legal layer",
+      );
+      legalLayer = undefined;
+    }
+  }
+
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
@@ -617,6 +653,7 @@ export async function startServer(): Promise<StartedServer> {
     betterAuthHandler,
     resolveSession,
     pluginWorkerManager,
+    legalLayer,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 
@@ -670,7 +707,7 @@ export async function startServer(): Promise<StartedServer> {
     });
   
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    const heartbeat = heartbeatService(db as any, { pluginWorkerManager, legalLayer });
     const routines = routineService(db as any, { pluginWorkerManager });
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,

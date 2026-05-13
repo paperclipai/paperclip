@@ -58,6 +58,7 @@ import { createPluginHostServiceCleanup } from "./services/plugin-host-service-c
 import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createHostClientHandlers } from "@odysseus/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
+import type { LegalRuntime } from "./services/legal/index.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
 
 type UiMode = "none" | "static" | "vite-dev";
@@ -133,6 +134,13 @@ export async function createApp(
     pluginWorkerManager?: PluginWorkerManager;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
+    /**
+     * Optional Odysseus legal-layer runtime. Threaded through so future
+     * /api/legal/* routes can read profile config + write approval records.
+     * Unused by routes in this PR; populated only when ODYSSEUS_PROFILE is set
+     * at server startup. Legacy paperclip-style deployments leave it undefined.
+     */
+    legalLayer?: LegalRuntime;
   },
 ) {
   const app = express();
