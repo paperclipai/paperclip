@@ -164,6 +164,48 @@ describe("pruneOldBackups", () => {
     expect(result.kept + result.pruned).toBe(30);
   });
 
+  it("only counts successful unlinks in the returned pruned total", () => {
+    const dir = createTempDir("paperclip-prune-unlink-fail-");
+    const anchorMs = Date.UTC(2026, 4, 12, 12, 0, 0);
+    // 30 hourly entries means several files older than the 24h hourly window
+    // are scheduled for deletion after per-day coalescing in the daily tier.
+    generateHourlyFixture(dir, 30, anchorMs);
+
+    // Remove write permission on the directory so unlinkSync throws EACCES /
+    // EPERM for every scheduled deletion. The prune should still complete
+    // without crashing and the returned `pruned` count must reflect the zero
+    // actual deletions rather than the scheduled-intent count.
+    const originalMode = fs.statSync(dir).mode;
+    fs.chmodSync(dir, 0o555);
+    cleanups.push(() => {
+      try {
+        fs.chmodSync(dir, originalMode);
+      } catch {
+        // best-effort cleanup; the parent afterEach rmSync handles the rest
+      }
+    });
+
+    let result: { kept: number; pruned: number };
+    try {
+      result = pruneOldBackups(
+        dir,
+        { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1, hourlyHours: 24 },
+        "paperclip",
+        () => anchorMs,
+      );
+    } finally {
+      fs.chmodSync(dir, originalMode);
+    }
+
+    // Every file should still be on disk because unlinkSync failed for all of them.
+    const remaining = fs.readdirSync(dir).filter((name) => name.endsWith(".sql.gz"));
+    expect(remaining.length).toBe(30);
+    // Pruned must reflect actual deletions, not scheduled intent.
+    expect(result.pruned).toBe(0);
+    // kept reflects the retention plan (unchanged by unlink failures).
+    expect(result.kept).toBeGreaterThan(0);
+  });
+
   it("ignores files that do not match the filename prefix", () => {
     const dir = createTempDir("paperclip-prune-prefix-");
     const anchorMs = Date.UTC(2026, 4, 12, 12, 0, 0);

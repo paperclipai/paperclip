@@ -225,15 +225,18 @@ export function pruneOldBackups(
     toDelete.push(entry.fullPath);
   }
 
+  let prunedCount = 0;
   for (const filePath of toDelete) {
     try {
       unlinkSync(filePath);
+      prunedCount += 1;
     } catch {
-      // Best-effort prune; surface via keptCount/prunedCount delta to the caller log.
+      // Best-effort prune; failures are not counted so kept+pruned reflect
+      // ground truth rather than scheduled intent.
     }
   }
 
-  return { kept: keptCount, pruned: toDelete.length };
+  return { kept: keptCount, pruned: prunedCount };
 }
 
 function formatBackupSize(sizeBytes: number): string {

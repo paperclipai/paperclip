@@ -578,24 +578,10 @@ export async function startServer(): Promise<StartedServer> {
       // to triggering ENOSPC mid-stream, which previously surfaced as an unhandled
       // rejection that could terminate the server process. Scheduled backups
       // skip silently; manual runs surface a 409 so the operator sees the cause.
+      let freeBytes: number | null = null;
       try {
         const fsStats = await statfs(config.databaseBackupDir);
-        const freeBytes = Number(fsStats.bavail) * Number(fsStats.bsize);
-        if (Number.isFinite(freeBytes) && freeBytes < DATABASE_BACKUP_FREE_SPACE_THRESHOLD_BYTES) {
-          logger.error(
-            {
-              freeBytes,
-              thresholdBytes: DATABASE_BACKUP_FREE_SPACE_THRESHOLD_BYTES,
-              backupDir: config.databaseBackupDir,
-              trigger,
-            },
-            `${label} database backup skipped: free disk below safety threshold`,
-          );
-          if (trigger === "scheduled") {
-            return null;
-          }
-          throw conflict("Database backup skipped: free disk below safety threshold");
-        }
+        freeBytes = Number(fsStats.bavail) * Number(fsStats.bsize);
       } catch (statErr) {
         // statfs not supported or path missing — log and continue. The backup
         // itself still has its own error handling for filesystem failures.
@@ -603,6 +589,28 @@ export async function startServer(): Promise<StartedServer> {
           { err: statErr, backupDir: config.databaseBackupDir },
           "Could not stat backup filesystem; proceeding without free-space precheck",
         );
+      }
+      // Threshold compare lives outside the statfs try/catch so a manual-trigger
+      // conflict() throw is NOT swallowed by `catch (statErr)`; review found this
+      // silently defeated the 409 path on a full disk.
+      if (
+        freeBytes !== null &&
+        Number.isFinite(freeBytes) &&
+        freeBytes < DATABASE_BACKUP_FREE_SPACE_THRESHOLD_BYTES
+      ) {
+        logger.error(
+          {
+            freeBytes,
+            thresholdBytes: DATABASE_BACKUP_FREE_SPACE_THRESHOLD_BYTES,
+            backupDir: config.databaseBackupDir,
+            trigger,
+          },
+          `${label} database backup skipped: free disk below safety threshold`,
+        );
+        if (trigger === "scheduled") {
+          return null;
+        }
+        throw conflict("Database backup skipped: free disk below safety threshold");
       }
 
       const result = await runDatabaseBackup({
