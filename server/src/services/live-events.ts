@@ -3,10 +3,11 @@ import type { LiveEvent, LiveEventType } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { createPgLiveEventsTransport } from "./live-events/pg-transport.js";
 import { createRedisLiveEventsTransport } from "./live-events/redis-transport.js";
-import type {
-  LiveEventFetcher,
-  LiveEventsTransport,
-  TransportEventHandler,
+import {
+  buildEnvelope,
+  OVERSIZED_EVENT,
+  type LiveEventsTransport,
+  type TransportEventHandler,
 } from "./live-events/transport.js";
 
 type LiveEventPayload = Record<string, unknown>;
@@ -102,7 +103,6 @@ export interface ConfigureLiveEventsTransportOptions {
   mode: LiveEventsTransportMode;
   databaseUrl?: string;
   redisUrl?: string | null;
-  fetcher?: LiveEventFetcher;
 }
 
 /**
@@ -128,7 +128,7 @@ export async function configureLiveEventsTransport(opts: ConfigureLiveEventsTran
       );
       return null;
     }
-    transport = createPgLiveEventsTransport({ databaseUrl: opts.databaseUrl, fetcher: opts.fetcher });
+    transport = createPgLiveEventsTransport({ databaseUrl: opts.databaseUrl });
     logger.info("live-events: postgres LISTEN/NOTIFY transport active");
     rebindExistingSubscriptions();
     return transport;
@@ -141,7 +141,7 @@ export async function configureLiveEventsTransport(opts: ConfigureLiveEventsTran
     );
     return null;
   }
-  transport = createRedisLiveEventsTransport({ redisUrl: opts.redisUrl, fetcher: opts.fetcher });
+  transport = createRedisLiveEventsTransport({ redisUrl: opts.redisUrl });
   logger.info("live-events: redis pub/sub transport active");
   rebindExistingSubscriptions();
   return transport;
@@ -190,12 +190,28 @@ function toLiveEvent(input: {
 
 // ── Public API (back-compat: pre-existing call-sites are unchanged) ───
 
+/**
+ * If a cross-replica transport is installed and the event is too large
+ * to fit in a NOTIFY/PUBLISH payload, suppress local emission too so
+ * the originating replica does not diverge from peers that drop the
+ * event. Logging is handled by the transport's publish() so the
+ * operator sees one error per oversized event regardless of caller.
+ */
+function shouldSuppressLocalEmit(event: LiveEvent): boolean {
+  if (!transport) return false;
+  return buildEnvelope(transport.originId, event) === OVERSIZED_EVENT;
+}
+
 export function publishLiveEvent(input: {
   companyId: string;
   type: LiveEventType;
   payload?: LiveEventPayload;
 }) {
   const event = toLiveEvent(input);
+  if (shouldSuppressLocalEmit(event)) {
+    transport?.publish(event); // logs the noisy drop
+    return event;
+  }
   emitter.emit(input.companyId, event);
   transport?.publish(event);
   return event;
@@ -206,6 +222,10 @@ export function publishGlobalLiveEvent(input: {
   payload?: LiveEventPayload;
 }) {
   const event = toLiveEvent({ companyId: "*", type: input.type, payload: input.payload });
+  if (shouldSuppressLocalEmit(event)) {
+    transport?.publish(event); // logs the noisy drop
+    return event;
+  }
   emitter.emit("*", event);
   transport?.publish(event);
   return event;

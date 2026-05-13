@@ -30,22 +30,17 @@ export interface LiveEventsTransport {
 export type TransportEventHandler = (event: LiveEvent) => void;
 
 /**
- * Wire-format envelope carried by NOTIFY / Redis PUBLISH. Two variants:
- *  - `full`: the LiveEvent travels inline. Fast path.
- *  - `ref`: only an id+metadata. The receiver re-fetches the full event
- *    from the DB via the configured fetcher. Used when the inline JSON
- *    would exceed the Postgres NOTIFY 8000-byte cap.
+ * Wire-format envelope carried by NOTIFY / Redis PUBLISH. Only one variant:
+ * `full` — the LiveEvent travels inline.
+ *
+ * We do not split oversized events; doing so requires a DB-backed event
+ * store, which Paperclip's LiveEvent layer does not have. Live events
+ * are best-effort UI hints, not state-machine signals — oversized events
+ * are logged at error and dropped symmetrically across all replicas
+ * (including the originating replica) so cross-replica behavior never
+ * diverges silently.
  */
-export type TransportEnvelope =
-  | { kind: "full"; origin: string; event: LiveEvent }
-  | {
-      kind: "ref";
-      origin: string;
-      event: { id: number; companyId: string; type: string; createdAt: string };
-    };
-
-/** Re-fetcher used when an envelope arrives as a ref (oversize payload). */
-export type LiveEventFetcher = (id: number) => Promise<LiveEvent | null>;
+export type TransportEnvelope = { kind: "full"; origin: string; event: LiveEvent };
 
 /**
  * Postgres NOTIFY caps payloads at 8000 bytes (server-side default). We
@@ -54,18 +49,30 @@ export type LiveEventFetcher = (id: number) => Promise<LiveEvent | null>;
  */
 export const PG_NOTIFY_INLINE_LIMIT = 7500;
 
-export function buildEnvelope(originId: string, event: LiveEvent): TransportEnvelope {
+/**
+ * Sentinel returned by {@link buildEnvelope} when the serialized envelope
+ * exceeds {@link PG_NOTIFY_INLINE_LIMIT}. Callers MUST treat this as
+ * "drop event symmetrically": skip cross-replica publish AND skip local
+ * in-process emission, otherwise the originating replica sees the event
+ * while every other replica does not — exactly the silent divergence
+ * the noisy-drop policy is designed to prevent.
+ */
+export const OVERSIZED_EVENT: unique symbol = Symbol("live-events.oversized");
+export type OversizedSentinel = typeof OVERSIZED_EVENT;
+
+/**
+ * Encode a LiveEvent for cross-replica fan-out, or return
+ * {@link OVERSIZED_EVENT} if the serialized envelope exceeds the inline
+ * NOTIFY cap. Length is measured in UTF-8 bytes (not JS string `.length`,
+ * which counts UTF-16 code units) because Postgres enforces the limit at
+ * the wire-encoded byte level.
+ */
+export function buildEnvelope(
+  originId: string,
+  event: LiveEvent,
+): TransportEnvelope | OversizedSentinel {
   const full: TransportEnvelope = { kind: "full", origin: originId, event };
   const serialized = JSON.stringify(full);
-  if (serialized.length <= PG_NOTIFY_INLINE_LIMIT) return full;
-  return {
-    kind: "ref",
-    origin: originId,
-    event: {
-      id: event.id,
-      companyId: event.companyId,
-      type: event.type,
-      createdAt: event.createdAt,
-    },
-  };
+  if (Buffer.byteLength(serialized, "utf8") <= PG_NOTIFY_INLINE_LIMIT) return full;
+  return OVERSIZED_EVENT;
 }
