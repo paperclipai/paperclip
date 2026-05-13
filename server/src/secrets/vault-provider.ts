@@ -69,6 +69,16 @@ export function parseExternalRef(raw: string): ParsedExternalRef {
     );
   }
   const [mount, ...rest] = segments;
+  if (!KV_MOUNT_PATTERN.test(mount) || /^\.+$/.test(mount)) {
+    throw unprocessable(
+      `vault external ref mount must match [A-Za-z0-9._-] and not be pure dots; got '${mount}'`,
+    );
+  }
+  if (rest.some((s) => /^\.+$/.test(s))) {
+    throw unprocessable(
+      `vault external ref path must not contain pure-dot segments (e.g. '.', '..'); got ${raw}`,
+    );
+  }
   return { mount, path: rest.join("/"), dataKey };
 }
 
@@ -310,7 +320,7 @@ export function resolveVaultConfig(input: {
     vaultConfig.versionRetention !== undefined
       ? vaultConfig.versionRetention
       : input.env.PAPERCLIP_SECRETS_VAULT_VERSION_RETENTION !== undefined
-        ? Number(input.env.PAPERCLIP_SECRETS_VAULT_VERSION_RETENTION)
+        ? parseInt(input.env.PAPERCLIP_SECRETS_VAULT_VERSION_RETENTION, 10)
         : undefined;
   const versionRetention = validateVersionRetention(versionRetentionRaw, warnings);
 
@@ -581,32 +591,48 @@ export function createVaultProvider(
     return resolved.config;
   }
 
-  // Invariant: activeTokenSupplier is set by tokenManagerFor() before any gateway HTTP call.
-  // The UndiciVaultGateway captures it lazily so construction order is safe even though
-  // the gateway is built before the token manager exists.
-  let activeTokenSupplier: (() => Promise<string>) | null = null;
+  // One (gateway, tokenManager) pair per unique vault config, cached for the
+  // lifetime of the provider instance. Caching keeps `VaultTokenManager`'s
+  // proactive renewal logic effective (without this, every method call would
+  // construct a fresh token manager with an empty cache and re-run
+  // `auth/kubernetes/login`). The gateway's `getToken` closure captures the
+  // specific token manager for its vault, so concurrent operations against
+  // different vaults cannot cross-contaminate authentication.
+  interface VaultSession {
+    gateway: VaultHttpGateway;
+    tokenManager: VaultTokenManager;
+  }
+  const sessionCache = new Map<string, VaultSession>();
 
-  function tokenManagerFor(config: VaultProviderConfig, gateway: VaultHttpGateway): VaultTokenManager {
-    const source = detectVaultAuthSource({
-      config,
-      env: process.env,
-      readSaToken,
-    });
-    const tm = new VaultTokenManager({ source, gateway });
-    activeTokenSupplier = () => tm.acquire();
-    return tm;
+  function sessionCacheKey(config: VaultProviderConfig): string {
+    return [
+      config.address,
+      config.namespace ?? "",
+      config.kvMount,
+      config.kvPathPrefix,
+      config.auth.method,
+      config.auth.role ?? "",
+      config.auth.saTokenPath,
+    ].join("|");
   }
 
-  function resolveGateway(config: VaultProviderConfig): VaultHttpGateway {
-    if (options?.gateway) return options.gateway;
-    return new UndiciVaultGateway({
-      address: config.address,
-      namespace: config.namespace,
-      getToken: () => {
-        if (!activeTokenSupplier) throw unprocessable("vault token supplier not initialized");
-        return activeTokenSupplier();
-      },
-    });
+  function getOrCreateSession(config: VaultProviderConfig): VaultSession {
+    const key = sessionCacheKey(config);
+    const cached = sessionCache.get(key);
+    if (cached) return cached;
+    let tokenManager!: VaultTokenManager;
+    const gateway: VaultHttpGateway =
+      options?.gateway ??
+      new UndiciVaultGateway({
+        address: config.address,
+        namespace: config.namespace,
+        getToken: () => tokenManager.acquire(),
+      });
+    const source = detectVaultAuthSource({ config, env: process.env, readSaToken });
+    tokenManager = new VaultTokenManager({ source, gateway });
+    const session = { gateway, tokenManager };
+    sessionCache.set(key, session);
+    return session;
   }
 
   function deploymentId(): string {
@@ -638,8 +664,7 @@ export function createVaultProvider(
     },
     async createSecret(input) {
       const config = resolveConfig(input.providerConfig);
-      const gateway = resolveGateway(config);
-      const tokenManager = tokenManagerFor(config, gateway);
+      const { gateway, tokenManager } = getOrCreateSession(config);
       const ctx = input.context;
       if (!ctx) {
         throw unprocessable("vault createSecret requires SecretProviderWriteContext");
@@ -679,8 +704,7 @@ export function createVaultProvider(
     },
     async createVersion(input) {
       const config = resolveConfig(input.providerConfig);
-      const gateway = resolveGateway(config);
-      const tokenManager = tokenManagerFor(config, gateway);
+      const { gateway, tokenManager } = getOrCreateSession(config);
       const ctx = input.context;
       if (!ctx) throw unprocessable("vault createVersion requires SecretProviderWriteContext");
 
@@ -733,8 +757,7 @@ export function createVaultProvider(
     },
     async resolveVersion(input) {
       const config = resolveConfig(input.providerConfig);
-      const gateway = resolveGateway(config);
-      const tokenManager = tokenManagerFor(config, gateway);
+      const { gateway, tokenManager } = getOrCreateSession(config);
 
       if (!input.material || (input.material as { scheme?: string }).scheme !== VAULT_MATERIAL_SCHEME) {
         throw unprocessable("vault resolveVersion: material is not vault_kv_v2");
@@ -779,8 +802,7 @@ export function createVaultProvider(
       if (material.source !== "managed") return;
 
       const config = resolveConfig(input.providerConfig);
-      const gateway = resolveGateway(config);
-      const tokenManager = tokenManagerFor(config, gateway);
+      const { gateway, tokenManager } = getOrCreateSession(config);
 
       await withVaultTokenRetry({
         tokenManager,
@@ -805,7 +827,7 @@ export function createVaultProvider(
           warnings: [(error as Error).message],
         };
       }
-      const gateway = resolveGateway(config);
+      const { gateway, tokenManager } = getOrCreateSession(config);
       const details: Record<string, unknown> = {
         address: config.address,
         kvMount: config.kvMount,
@@ -831,7 +853,6 @@ export function createVaultProvider(
       }
 
       // 2) auth probe
-      const tokenManager = tokenManagerFor(config, gateway);
       try {
         if (tokenManager.sourceMode === "error") {
           throw new Error("no vault auth source detected");

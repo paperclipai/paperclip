@@ -1171,3 +1171,82 @@ describe("UndiciVaultGateway", () => {
     await expect(gateway.getKv({ mount: "secret", path: "x" })).rejects.toMatchObject({ code: "provider_error" });
   });
 });
+
+describe("Greptile round-1 regressions", () => {
+  it("caches the gateway+tokenManager pair across operations on the same config (kubernetes auth login is only called once)", async () => {
+    let loginCount = 0;
+    const base = fakeVaultGateway();
+    const tokenGateway: VaultHttpGateway = {
+      ...base.impl,
+      loginKubernetes: async () => {
+        loginCount += 1;
+        return { clientToken: `hvs.kube.${loginCount}`, leaseDurationSec: 3600, renewable: true };
+      },
+    };
+    // Use this test file's own path as the SA token mount — its content reads as a non-empty "JWT".
+    const provider = createVaultProvider({
+      config: {
+        address: "https://v",
+        namespace: null,
+        kvMount: "secret",
+        kvPathPrefix: "paperclip",
+        auth: { method: "kubernetes", role: "paperclip-server", saTokenPath: __filename },
+        versionRetention: 10,
+      },
+      gateway: tokenGateway,
+    });
+    const ctx = {
+      companyId: "co",
+      deploymentId: "d",
+      secretId: "s",
+      secretKey: "K",
+      secretName: "K",
+      version: 1,
+    } as const;
+    const v1 = await provider.createSecret({ value: "x", context: ctx });
+    await provider.createVersion({ value: "y", context: ctx, externalRef: v1.externalRef });
+    await provider.resolveVersion({
+      material: v1.material,
+      externalRef: v1.externalRef,
+      context: { companyId: ctx.companyId, secretId: ctx.secretId, secretKey: ctx.secretKey, version: 1 },
+    });
+    expect(loginCount).toBe(1);
+  });
+
+  it("parseExternalRef rejects '..' mount (path traversal)", () => {
+    expect(() => parseExternalRef("../admin/data/secret")).toThrow(/mount must match/i);
+  });
+
+  it("parseExternalRef rejects '.' or '..' path segments", () => {
+    expect(() => parseExternalRef("secret/teams/../admin")).toThrow(/must not contain/);
+    expect(() => parseExternalRef("secret/teams/./admin")).toThrow(/must not contain/);
+  });
+
+  it("parseExternalRef rejects mount with invalid characters", () => {
+    expect(() => parseExternalRef("sec ret/foo/bar")).toThrow(/mount must match/i);
+    expect(() => parseExternalRef("sec/ret/foo/bar")).not.toThrow();
+  });
+
+  it("PAPERCLIP_SECRETS_VAULT_VERSION_RETENTION is parsed as base-10 integer (no NaN from non-numeric)", () => {
+    const r = resolveVaultConfig({
+      env: {
+        PAPERCLIP_SECRETS_VAULT_ADDR: "https://v.example:8200",
+        PAPERCLIP_SECRETS_VAULT_VERSION_RETENTION: "abc",
+      },
+      providerConfig: null,
+    });
+    expect(r.config).toBeNull();
+    expect(r.warnings.join(" ")).toMatch(/versionRetention must be an integer/i);
+  });
+
+  it("PAPERCLIP_SECRETS_VAULT_VERSION_RETENTION accepts a leading-zero integer string", () => {
+    const r = resolveVaultConfig({
+      env: {
+        PAPERCLIP_SECRETS_VAULT_ADDR: "https://v.example:8200",
+        PAPERCLIP_SECRETS_VAULT_VERSION_RETENTION: "07",
+      },
+      providerConfig: null,
+    });
+    expect(r.config?.versionRetention).toBe(7);
+  });
+});
