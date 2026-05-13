@@ -28,6 +28,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
+import { createAgentHealthWatcher } from "./services/agent-health-watcher.js";
 import {
   feedbackService,
   heartbeatService,
@@ -672,6 +673,8 @@ export async function startServer(): Promise<StartedServer> {
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
+    const agentHealthWatcher = createAgentHealthWatcher(db as any);
+    const stopAgentHealthWatcher = agentHealthWatcher.start();
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
@@ -783,6 +786,14 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
     }, config.heartbeatSchedulerIntervalMs);
+
+    void agentHealthWatcher.tick().catch((err) => {
+      logger.warn({ err }, "startup agent health watcher tick failed");
+    });
+
+    process.on("exit", () => {
+      stopAgentHealthWatcher();
+    });
   }
   
   if (config.databaseBackupEnabled) {
