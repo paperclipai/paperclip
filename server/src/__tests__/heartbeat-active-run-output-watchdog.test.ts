@@ -338,6 +338,39 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(noisyResult).toMatchObject({ scanned: 0, created: 0 });
   });
 
+  it("skips stale-run evaluation work so watchdog reviews cannot recursively spawn review loops", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, coderId, issueId, issuePrefix } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    await db
+      .update(agents)
+      .set({ role: "ceo", name: "CEO" })
+      .where(eq(agents.id, coderId));
+    await db
+      .update(issues)
+      .set({
+        originKind: "stale_active_run_evaluation",
+        originId: randomUUID(),
+        originFingerprint: `stale_active_run_v2:${companyId}:seeded-run:${issueId}:suspicious:seq=0:at=none:stream=none`,
+        title: "Review silent active run for CEO",
+        identifier: `${issuePrefix}-99`,
+      })
+      .where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result).toMatchObject({ scanned: 1, created: 0, existing: 0, skipped: 1 });
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(1);
+    expect(evaluations[0]?.id).toBe(issueId);
+  });
+
   it("records watchdog decisions through recovery owner authorization", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const { companyId, managerId, runId } = await seedRunningRun({

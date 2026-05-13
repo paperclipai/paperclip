@@ -52,6 +52,7 @@ export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
+const MAX_PARENT_WALK_DEPTH = 25;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 
 type RecoveryWakeupOptions = {
@@ -767,6 +768,31 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return issue ?? null;
   }
 
+  async function isIssueDescendedFromOriginKind(input: {
+    companyId: string;
+    parentId: string | null;
+    originKind: string;
+  }) {
+    let parentId = input.parentId;
+    let depth = 0;
+    while (parentId && depth < MAX_PARENT_WALK_DEPTH) {
+      const parent = await db
+        .select({
+          id: issues.id,
+          parentId: issues.parentId,
+          originKind: issues.originKind,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, input.companyId), eq(issues.id, parentId)))
+        .then((rows) => rows[0] ?? null);
+      if (!parent) return false;
+      if (parent.originKind === input.originKind) return true;
+      parentId = parent.parentId;
+      depth += 1;
+    }
+    return false;
+  }
+
   async function resolveStaleRunOwnerAgentId(input: {
     run: typeof heartbeatRuns.$inferSelect;
     runningAgent: typeof agents.$inferSelect;
@@ -997,6 +1023,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const runningAgent = await getAgent(input.run.agentId);
     if (!runningAgent || runningAgent.companyId !== input.run.companyId) return { kind: "skipped" as const };
     const sourceIssue = await resolveStaleRunSourceIssue(input.run);
+    if (sourceIssue) {
+      const recursiveReviewPath =
+        sourceIssue.originKind === STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND ||
+        await isIssueDescendedFromOriginKind({
+          companyId: sourceIssue.companyId,
+          parentId: sourceIssue.parentId,
+          originKind: STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND,
+        });
+      if (recursiveReviewPath) return { kind: "skipped" as const };
+    }
     const prefix = await getCompanyIssuePrefix(input.run.companyId);
     const evidence = await collectStaleRunEvidence({
       run: input.run,
