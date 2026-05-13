@@ -56,6 +56,7 @@ import type {
 } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
+import { materializeBrokerSessionForRuntime } from "../oauth/credential-broker-runtime-env.js";
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
@@ -341,6 +342,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
     secretKeys,
     manifest,
     oauthConnectionIds,
+    brokerSession,
   } = await input.secretsSvc.resolveAdapterConfigForRuntime(
     input.companyId,
     input.executionRunConfig,
@@ -355,6 +357,32 @@ export async function resolveExecutionRunAdapterConfig(input: {
         }
       : undefined,
   );
+  // If the credential-broker smart resolver minted a session, materialize
+  // the per-session CA to a tmp file and merge the proxy/CA env vars into
+  // the resolved adapter config. The agent process inherits HTTPS_PROXY +
+  // the language-runtime CA-trust env vars and routes all outbound HTTPS
+  // through the broker — placeholder env values are replaced with real
+  // bearers at the TLS boundary, never in agent memory.
+  if (brokerSession) {
+    const runtime = materializeBrokerSessionForRuntime(brokerSession);
+    resolvedConfig.env = {
+      ...parseObject(resolvedConfig.env),
+      ...runtime.env,
+    };
+    // HTTPS_PROXY (and friends) embed the per-session token in their
+    // userInfo segment so HTTP clients send `Proxy-Authorization: Basic`
+    // automatically. The token is a live proxy auth credential — add
+    // these keys to `secretKeys` so `onAdapterMeta` redacts them if an
+    // adapter ever echoes its launch env in invocation metadata.
+    for (const key of [
+      "HTTPS_PROXY",
+      "HTTP_PROXY",
+      "https_proxy",
+      "http_proxy",
+    ]) {
+      secretKeys.add(key);
+    }
+  }
   const projectEnvResolution = input.projectEnv
     ? await input.secretsSvc.resolveEnvBindings(
         input.companyId,

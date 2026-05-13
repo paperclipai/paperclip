@@ -40,18 +40,25 @@ describe("shipped provider yaml files", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("every shipped provider declares broker.supported = false in M1", async () => {
+  it("every shipped provider declares the broker block with at least 'env' support", async () => {
     const configs = await loadProviderConfigsFromDirectory(PROVIDERS_DIR);
     for (const config of configs) {
-      // Schema makes broker optional; YAMLs in M1 declare it explicitly.
       expect(
-        config.broker?.supported,
-        `provider '${config.id}' has broker.supported = true in M1; should flip to true only during M3 rollout`,
-      ).toBe(false);
+        config.broker,
+        `provider '${config.id}' missing broker block in YAML`,
+      ).toBeDefined();
       expect(
         config.broker?.deliveryModesSupported,
         `provider '${config.id}' must list at least 'env' in deliveryModesSupported`,
       ).toContain("env");
     }
+  });
+
+  it("github is the first provider opted in to paperclip-broker (M2.8)", async () => {
+    const configs = await loadProviderConfigsFromDirectory(PROVIDERS_DIR);
+    const github = configs.find((c) => c.id === "github");
+    expect(github).toBeDefined();
+    expect(github?.broker?.supported).toBe(true);
+    expect(github?.broker?.deliveryModesSupported).toContain("paperclip-broker");
   });
 });

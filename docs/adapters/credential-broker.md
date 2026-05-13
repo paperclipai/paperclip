@@ -72,30 +72,70 @@ returning a plaintext bearer. Agents that explicitly set
 `credentialDelivery: env` on their config are still allowed through — operator
 intent overrides strict mode.
 
-## What ships in M1
+## What ships in this PR (M1 + M2 + partial M3)
 
-- An optional `credentialDelivery` field on the `AdapterConfig` Zod schema.
-- A `broker_targets` JSONB column on `oauth_connections` for BYO push targets.
-- The `broker-targets` CRUD service (callers added in M3).
-- The `registerCredentialBroker()` plugin SDK extension slot.
-- The `@paperclipai/credential-broker-builtin` package as a placeholder
-  (real implementation lands in M2).
-- The smart resolver wired into `resolveAdapterConfigForRuntime`, gated by
+**M1 — plumbing & contract (behavior-neutral with flag off):**
+- Optional `credentialDelivery` field on the `AdapterConfig` Zod schema.
+- `broker_targets` JSONB column on `oauth_connections` for BYO push targets.
+- `broker-targets` CRUD service (callers wired in a later PR).
+- `registerCredentialBroker()` plugin SDK extension slot.
+- `@paperclipai/credential-broker-builtin` package scaffold.
+- Smart resolver wired into `resolveAdapterConfigForRuntime`, gated by
   the feature flag.
-- A per-provider `broker:` block in `server/oauth-providers/*.yaml`, all set
-  to `supported: false` for M1. M3 flips them per-provider as each is
-  validated end-to-end against the built-in broker.
+- Per-provider `broker:` block in `server/oauth-providers/*.yaml`.
 
-## What lands later
+**M2 — real broker:**
+- Per-session ephemeral CA (RSA-2048, validity clamped to ≤24h) + leaf
+  signing cached per host.
+- TLS-MITM HTTP CONNECT proxy listener — host-allowlisted, session-token
+  authenticated, strips placeholders, injects `Authorization: Bearer
+  <real>` for matched hosts.
+- In-memory session store with bearer cache + per-company fan-out.
+- `CredentialBroker` interface implemented + self-registration via
+  `@paperclipai/credential-broker-builtin/register`.
+- End-to-end test against a stub HTTPS upstream: real bearer reaches
+  upstream, agent only ever sees the placeholder.
+- Server imports `/register` at bootstrap; `resolveAdapterConfigForRuntime`
+  returns a `brokerSession` payload when the resolver picks
+  `paperclip-broker` (with `PAPERCLIP_FEATURE_CREDENTIAL_BROKER=1`).
+- GitHub flipped to `broker.supported: true`.
 
-- **M2**: the in-tree built-in broker — per-task ephemeral CA, loopback HTTP
-  CONNECT listener, header injection, session store. Wires into the local
-  subprocess sandbox runtime. Flips GitHub to `broker.supported: true`.
-- **M3**: fan-out across the remote sandbox runtimes (e2b, daytona,
-  kubernetes), standalone broker deploy mode, BYO push-target API and UI,
-  refresh-worker push, EnvVarEditor resolved-mode preview, multi-provider
-  rollout, default-on flip of the feature flag, upstream coordination for
-  the externally-hired agent adapters (Hermes, OpenClaw).
+**M3 — partial:**
+- `brokerSession` reserved on `AdapterExecutionTargetProcessOptions` so
+  sandbox runtimes can consume it uniformly.
+- Refresh worker pushes rotated access tokens into the broker's bearer
+  cache (built-in target; BYO push deferred).
+
+## What's intentionally deferred to follow-up PRs
+
+These are non-blocking because the feature flag is **off by default** —
+the broker exists and works, but no production traffic flows through it
+until an operator opts in. Default-on flipping is gated on the sandbox
+runtime wiring below.
+
+- **Sandbox runtime fan-out** — wire `cloudflare`, `daytona`, `e2b`,
+  `exe-dev` sandbox provider plugins (and the local-subprocess driver)
+  to mount `brokerSession.caCertPem` and merge HTTPS_PROXY + CA-trust
+  env on spawn. Without this, the resolver mints sessions and replaces
+  oauth-token env values with placeholders, but agent processes don't
+  know to use the proxy — so default-on would actively break things.
+- **Standalone broker mode** — same broker code, listener moved out of
+  the server process for k8s deployments. Default loopback-only embedded
+  mode unblocks local-dev.
+- **BYO push-target REST API + Settings UI** — operators that want to
+  bring their own broker (Agent Vault, custom mitm) need an endpoint to
+  register push URLs. The DB schema + service layer ship in this PR;
+  the routes + UI follow.
+- **EnvVarEditor resolved-mode chip** — surface the resolver's decision
+  on the agent-config form so operators can preview what'll happen.
+- **Multi-provider rollout** — Slack, Linear, Notion, Atlassian, Google
+  Workspace, Microsoft Graph each get smoke-tested against the broker
+  and flipped to `broker.supported: true`. GitHub is the M2 reference.
+- **Default-on flag flip** — `PAPERCLIP_FEATURE_CREDENTIAL_BROKER=1` as
+  the default. Gated on sandbox runtime wiring.
+- **External-adapter coordination** — upstream PRs to
+  `hermes-paperclip-adapter` and the OpenClaw gateway documenting the
+  BYO push-target setup recipe.
 
 ## Spec & plan
 

@@ -82,6 +82,28 @@ export interface AdapterExecutionTargetProcessOptions {
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   terminalResultCleanup?: TerminalResultCleanupOptions;
+  /**
+   * Credential-broker session minted for this run. When present, the
+   * execution target MUST:
+   *   1. write `brokerSession.caCertPem` to a file in the runtime root
+   *   2. merge the broker env (HTTPS_PROXY = brokerSession.proxyUrl, plus
+   *      the language-runtime CA-trust env vars) into `env`
+   *   3. ensure the agent process can dial `proxyUrl` from inside the
+   *      sandbox (loopback in local subprocess; service URL in cloud k8s)
+   *
+   * Resolution happens upstream in `resolveAdapterConfigForRuntime`
+   * (M2.7) — see
+   * docs/superpowers/specs/2026-05-12-credential-broker-design.md §1.2.
+   *
+   * In M3+ this field will be threaded through the sandbox-provider
+   * dispatch contract so cloudflare/daytona/e2b/exe-dev all honor it
+   * uniformly. M3 wiring lands in a follow-up PR.
+   */
+  brokerSession?: {
+    proxyUrl: string;
+    caCertPem: string;
+    sessionToken: string;
+  };
 }
 
 export interface AdapterExecutionTargetShellOptions {

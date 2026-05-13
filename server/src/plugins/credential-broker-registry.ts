@@ -21,23 +21,39 @@ import {
 
 let cached: CredentialBroker | undefined;
 let resolved = false;
+// In-flight factory promise. Concurrent first dispatches must observe
+// the same Promise so they all await the same broker instance — without
+// this, two simultaneous calls could both pass the `resolved` guard,
+// call the factory twice, and silently leak the first instance (with
+// its CA state and session store) as the second overwrites `cached`.
+let pending: Promise<CredentialBroker | undefined> | undefined;
 
 export async function resolveCredentialBroker(
   ctx: RegisterCredentialBrokerCtx,
 ): Promise<CredentialBroker | undefined> {
   if (resolved) return cached;
-  const factory = __consumeRegisteredCredentialBrokerFactory();
-  if (!factory) {
+  if (pending) return pending;
+  pending = (async () => {
+    const factory = __consumeRegisteredCredentialBrokerFactory();
+    if (!factory) {
+      cached = undefined;
+      resolved = true;
+      return undefined;
+    }
+    cached = await factory(ctx);
     resolved = true;
-    return undefined;
+    return cached;
+  })();
+  try {
+    return await pending;
+  } finally {
+    pending = undefined;
   }
-  cached = await factory(ctx);
-  resolved = true;
-  return cached;
 }
 
 /** @internal — test helper; clears the cache so a fresh registration is honored. */
 export function __resetResolvedBrokerForTests(): void {
   cached = undefined;
   resolved = false;
+  pending = undefined;
 }

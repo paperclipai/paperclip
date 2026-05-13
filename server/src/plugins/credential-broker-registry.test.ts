@@ -89,4 +89,27 @@ describe("resolveCredentialBroker", () => {
     expect(b?.id).toBe("with-logger");
     expect(factory).toHaveBeenCalledWith(ctx);
   });
+
+  it("dedupes concurrent first dispatches; factory runs exactly once even under contention", async () => {
+    // Regression for the double-init race: without the in-flight
+    // `pending` promise, two concurrent first dispatches both see
+    // `resolved=false`, both call `factory()`, and the second's
+    // broker overwrites the first — leaking the first instance's
+    // state. With the fix, both calls await the same Promise and
+    // factory fires exactly once.
+    const factory = vi.fn(async () => {
+      await new Promise((r) => setTimeout(r, 5));
+      return stubBroker({ id: "single-init" });
+    });
+    registerCredentialBroker(factory);
+    const [a, b, c] = await Promise.all([
+      resolveCredentialBroker(ctx),
+      resolveCredentialBroker(ctx),
+      resolveCredentialBroker(ctx),
+    ]);
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(a).toBe(b);
+    expect(b).toBe(c);
+    expect(a?.id).toBe("single-init");
+  });
 });

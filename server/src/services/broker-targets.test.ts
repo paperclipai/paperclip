@@ -28,13 +28,13 @@ describe("validateBrokerTargetInput", () => {
     expect(result.authTokenSecretId).toBe("11111111-2222-3333-4444-555555555555");
   });
 
-  it("accepts http for local-dev brokers", () => {
+  it("rejects http (plaintext) — the refresh worker POSTs OAuth tokens to this URL", () => {
     expect(() =>
       validateBrokerTargetInput({
         url: "http://127.0.0.1:7878/push",
         authTokenSecretId: "11111111-2222-3333-4444-555555555555",
       }),
-    ).not.toThrow();
+    ).toThrow(/must use https/i);
   });
 
   it("rejects malformed URLs", () => {
@@ -46,13 +46,13 @@ describe("validateBrokerTargetInput", () => {
     ).toThrow(/invalid broker target/i);
   });
 
-  it("rejects non-http(s) schemes", () => {
+  it("rejects non-https schemes", () => {
     expect(() =>
       validateBrokerTargetInput({
         url: "ftp://broker.acme.test/push",
         authTokenSecretId: "11111111-2222-3333-4444-555555555555",
       }),
-    ).toThrow(/http or https/i);
+    ).toThrow(/must use https/i);
   });
 
   it("rejects non-uuid secret IDs", () => {

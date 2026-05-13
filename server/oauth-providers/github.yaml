@@ -22,5 +22,5 @@ refresh:
   supported: false
 
 broker:
-  supported: false
-  deliveryModesSupported: [env]
+  supported: true
+  deliveryModesSupported: [paperclip-broker, env]

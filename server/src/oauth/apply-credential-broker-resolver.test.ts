@@ -273,15 +273,44 @@ describe("applyCredentialBrokerResolver — broker registered (M2 preview)", () 
       mode: "paperclip-broker",
       reason: "broker_available_and_reachable",
     });
-    // Non-env decisions emit a debug log so the wiring is observable;
-    // no warn-log because nothing fell back.
+    // Non-env decisions don't fire the fallback warn-log.
     expect(logger.warn).not.toHaveBeenCalled();
-    expect(logger.debug).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "credential-broker-decision-not-yet-implemented",
-        decided_mode: "paperclip-broker",
-      }),
-      expect.any(String),
+    // M2 actually mints a session through the registered broker.
+    expect(result.brokerSession).toBeDefined();
+    expect(result.broker?.id).toBe("stub");
+  });
+
+  it("does not call mintSession when the resolver decides byo-broker (operator runs the broker)", async () => {
+    registerCredentialBroker(() => stubBroker(true));
+    const logger = fakeLogger();
+    const result = await applyCredentialBrokerResolver(
+      {
+        // BYO route — runtime is external; resolver looks for broker_targets
+        db: fakeDb([
+          {
+            id: CONNECTION_ID,
+            providerId: "github",
+            brokerTargets: [
+              {
+                id: "t1",
+                url: "https://op.example.test/push",
+                authTokenSecretId: "secret-uuid",
+                addedAt: "2026-05-12T00:00:00Z",
+              },
+            ],
+          },
+        ]),
+        registry: fakeRegistry(true),
+        logger: logger as never,
+      },
+      {
+        companyId: COMPANY_ID,
+        envRecord: { GH: oauthBinding },
+        executionTargetKind: "external",
+      },
     );
+    expect(result.decision?.mode).toBe("byo-broker");
+    // Paperclip doesn't mint a session for byo — the operator owns the broker.
+    expect(result.brokerSession).toBeUndefined();
   });
 });
