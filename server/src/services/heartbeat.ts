@@ -57,6 +57,7 @@ import {
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
+import { resolveRoutedShopifyConfig } from "./shopify-skill-router.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
@@ -2421,8 +2422,20 @@ export function heartbeatService(db: Db) {
       executionRunConfig,
     );
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
+    const { config: routedResolvedConfig, routing: routedShopifySkillKeys } = await resolveRoutedShopifyConfig({
+      db,
+      companyId: agent.companyId,
+      issueId,
+      agent: {
+        role: agent.role ?? null,
+        capabilities: agent.capabilities ?? null,
+      },
+      resolvedConfig,
+    });
+    const shopifyRouterLogLine =
+      `[paperclip] Shopify skill router: gated=${String(routedShopifySkillKeys.gated)}, matched=[${routedShopifySkillKeys.matchedRules.join(", ")}], keys=[${routedShopifySkillKeys.skillKeys.join(", ")}]\n`;
     const runtimeConfig = {
-      ...resolvedConfig,
+      ...routedResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
@@ -2788,6 +2801,7 @@ export function heartbeatService(db: Db) {
           },
         });
       };
+      await onLog("stdout", shopifyRouterLogLine);
       for (const warning of runtimeWorkspaceWarnings) {
         const logEntry = formatRuntimeWorkspaceWarningLog(warning);
         await onLog(logEntry.stream, logEntry.chunk);
