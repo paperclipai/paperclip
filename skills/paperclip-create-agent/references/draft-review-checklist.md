@@ -57,6 +57,7 @@ Use it for every path: exact template, adjacent template, or generic fallback.
 - [ ] `sourceIssueId` (or `sourceIssueIds`) is set when the hire was triggered by an issue
 - [ ] `desiredSkills` lists only skills that already exist in the company library, or will be installed first via the company-skills workflow
 - [ ] Adapter config matches this Paperclip instance (cwd, model, credentials) per `/llms/agent-configuration/<adapter>.txt`
+- [ ] For `claude_k8s` adapters: `tolerations` (non-empty array), `nodeSelector` (non-empty object), and `serviceAccountName` (non-empty string) are all set, copied from a healthy peer `claude_k8s` agent in the same company. Without these the Job cannot schedule and every assignment fails with `claude exited 128 (StartError)`.
 - [ ] Local managed-bundle adapters send custom instructions through top-level `instructionsBundle.files["AGENTS.md"]` and do not set `adapterConfig.promptTemplate` or `bootstrapPromptTemplate`
 - [ ] Placeholders like `{{companyName}}`, `{{managerTitle}}`, `{{issuePrefix}}`, and any URL stubs are replaced with real values
 
@@ -93,3 +94,4 @@ Use it for every path: exact template, adjacent template, or generic fallback.
 - **No confidential path for sensitive work.** Roles that may receive private advisories or incident details need a private workflow, not normal issue comments.
 - **Missing governance fields.** A hire without `sourceIssueId`, `icon`, or a resolvable reporting line is hard to audit later.
 - **Unreplaced placeholders.** `{{companyName}}`, `{{managerTitle}}`, and URL stubs in a submitted draft are the most common rejected-hire defect — grep the draft for `{{` before submitting.
+- **`claude_k8s` schedulability omission.** Submitting a `claude_k8s` hire without `tolerations`, `nodeSelector`, and `serviceAccountName` is now rejected at the API. Copy these from a healthy peer `claude_k8s` agent in the same company before submitting — see SKILL.md "Adapter-specific notes".

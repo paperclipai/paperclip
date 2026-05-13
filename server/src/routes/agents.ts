@@ -1043,10 +1043,41 @@ export function agentRoutes(
     return ensureGatewayDeviceKey(adapterType, next);
   }
 
+  function assertClaudeK8sSchedulability(adapterConfig: Record<string, unknown>) {
+    // claude_k8s pods only schedule on a paperclip-tainted node, run as the
+    // `paperclip` service account, and need a node selector to land on the
+    // workload pool. Without these, the Job is either unschedulable or comes up
+    // broken and the run fails with `claude exited 128 (StartError)` on every
+    // assignment. See BLO-2653 / BLO-2657 for the recovery cascade this caused.
+    // The exact values are operator-supplied (cluster-specific); we only
+    // assert the shape so the foot-gun cannot land an empty config.
+    const tolerations = adapterConfig.tolerations;
+    if (!Array.isArray(tolerations) || tolerations.length === 0) {
+      throw unprocessable(
+        "Invalid claude_k8s adapterConfig: tolerations must be a non-empty array (Job pods need to tolerate the paperclip-workload taint)",
+      );
+    }
+    const nodeSelector = asRecord(adapterConfig.nodeSelector);
+    if (!nodeSelector || Object.keys(nodeSelector).length === 0) {
+      throw unprocessable(
+        "Invalid claude_k8s adapterConfig: nodeSelector must be a non-empty object (Job pods need a selector to land on the paperclip workload pool)",
+      );
+    }
+    if (!asNonEmptyString(adapterConfig.serviceAccountName)) {
+      throw unprocessable(
+        "Invalid claude_k8s adapterConfig: serviceAccountName must be a non-empty string (Job pods bootstrap claude as this service account)",
+      );
+    }
+  }
+
   async function assertAdapterConfigConstraints(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
+    if (adapterType === "claude_k8s") {
+      assertClaudeK8sSchedulability(adapterConfig);
+      return;
+    }
     if (adapterType !== "opencode_local") return;
     try {
       requireOpenCodeModelId(adapterConfig.model);
@@ -2650,6 +2681,14 @@ export function agentRoutes(
         requestedAdapterType,
         requestedRuntimeConfig,
         baseAdapterConfig,
+      );
+    }
+    if (touchesAdapterConfiguration) {
+      const effectiveAdapterConfig = asRecord(patchData.adapterConfig) ?? {};
+      await assertAdapterConfigConstraints(
+        existing.companyId,
+        requestedAdapterType,
+        effectiveAdapterConfig,
       );
     }
     if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {

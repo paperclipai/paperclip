@@ -80,6 +80,7 @@ curl -sS "$PAPERCLIP_API_URL/llms/agent-icons.txt" \
 - `desiredSkills` from the company skill library when this role needs installed skills on day one
 - if any `desiredSkills` or adapter settings expand browser access, external-system reach, filesystem scope, or secret-handling capability, justify each one in the hire comment
 - adapter and runtime config aligned to this environment
+- for `claude_k8s`, copy the schedulability fields (`tolerations`, `nodeSelector`, `serviceAccountName`) from an existing peer `claude_k8s` agent in the same company — see "Adapter-specific notes" below. The control plane rejects `claude_k8s` configs missing any of these.
 - leave timer heartbeats off by default; only set `runtimeConfig.heartbeat.enabled=true` with an `intervalSec` when the role genuinely needs scheduled recurring work or the user explicitly asked for it
 - if the role may handle private advisories or sensitive disclosures, confirm a confidential workflow exists first (dedicated skill or documented manual process)
 - capabilities
@@ -153,6 +154,41 @@ curl -sS "$PAPERCLIP_API_URL/api/approvals/$PAPERCLIP_APPROVAL_ID/issues" \
 For each linked issue, either:
 - close it if the approval resolved the request, or
 - comment in markdown with links to the approval and next actions.
+
+## Adapter-specific notes
+
+### `claude_k8s` schedulability fields
+
+`claude_k8s` runs each agent assignment as a Kubernetes Job. The Job must schedule on a node that the cluster operator dedicated to Paperclip workloads, and bootstrap as the right service account, or the run dies with `claude exited 128 (StartError)` on every assignment — surfacing as a recovery cascade with no useful error.
+
+The control plane therefore **rejects** `POST /api/companies/:companyId/agents`, `POST /api/companies/:companyId/agent-hires`, and `PATCH /api/agents/:id` for `claude_k8s` when any of these is missing or empty:
+
+| Field | Shape | Why |
+|---|---|---|
+| `tolerations` | non-empty array | Tolerate the paperclip-workload taint so the Job can schedule |
+| `nodeSelector` | non-empty object | Pin the Job to the paperclip workload pool |
+| `serviceAccountName` | non-empty string | Bootstrap claude as the service account that has the right RBAC |
+
+The exact values are cluster-specific (different installs use different taint keys, labels, and service account names). Discover them by reading the most-recent peer `claude_k8s` config in the same company and copying its schedulability fields. Do NOT improvise — if you cannot find a peer, ask the operator before submitting.
+
+```sh
+# 1. List existing claude_k8s agents in the company
+curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-configurations" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  | jq '.[] | select(.adapterType == "claude_k8s") | {name, id, tolerations: .adapterConfig.tolerations, nodeSelector: .adapterConfig.nodeSelector, serviceAccountName: .adapterConfig.serviceAccountName}'
+
+# 2. Fetch the full adapterConfig for a healthy peer agent and copy the fields
+curl -sS "$PAPERCLIP_API_URL/api/agents/<peer-agent-id>/configuration" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  | jq '.adapterConfig | {tolerations, nodeSelector, serviceAccountName, graceSec, timeoutSec}'
+```
+
+Also recommended (not currently required by the server):
+
+- `paperclipSkillSync.desiredSkills` — list of skills to bake into the agent's pod on bootstrap; allowed empty for a degraded-mode hire but most roles need a non-empty list
+- `graceSec` (default `15`) and `timeoutSec` (default `0`, no timeout) — peer values are the right starting point
+
+`api-reference.md` has a full claude_k8s payload example.
 
 ## References
 
