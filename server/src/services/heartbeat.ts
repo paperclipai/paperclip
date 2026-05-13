@@ -2981,6 +2981,48 @@ export function heartbeatService(db: Db) {
                 }
               }
             }
+
+            // Chain-wake: if this no-paperclip-skill agent has more queued
+            // tasks, fire another assignment-wake immediately so the queue
+            // drains without waiting for a new external trigger. Without
+            // this, assignment-wakes fire only once per task at create/
+            // assign time; if one is missed (server restart, concurrent-run
+            // cap, transient failure) the task sits forever because
+            // Worker/Reviewer/Architect have no timer wake to fall back on.
+            const nextTask = await db
+              .select()
+              .from(issues)
+              .where(
+                and(
+                  eq(issues.companyId, agent.companyId),
+                  eq(issues.assigneeAgentId, agent.id),
+                  inArray(issues.status, ["in_progress", "in_review", "todo"]),
+                ),
+              )
+              .orderBy(
+                sql`CASE ${issues.status} WHEN 'in_progress' THEN 0 WHEN 'in_review' THEN 1 ELSE 2 END`,
+                asc(issues.createdAt),
+              )
+              .limit(1)
+              .then((rows) => rows[0] ?? null);
+            if (nextTask) {
+              logger.info(
+                { agentId: agent.id, nextTaskId: nextTask.id, nextTaskIdentifier: nextTask.identifier },
+                "chain-waking agent for next queued task",
+              );
+              await enqueueWakeup(agent.id, {
+                source: "automation",
+                triggerDetail: "callback",
+                reason: "queue_chain",
+                payload: { issueId: nextTask.id, mutation: "chain_wake" },
+                contextSnapshot: { issueId: nextTask.id, source: "queue.chain" },
+              }).catch((err: unknown) =>
+                logger.warn(
+                  { err, agentId: agent.id, nextTaskId: nextTask.id },
+                  "failed to chain-wake agent on queue continuation",
+                ),
+              );
+            }
           }
         }
       }
