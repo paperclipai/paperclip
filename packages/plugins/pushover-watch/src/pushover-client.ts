@@ -40,3 +40,43 @@ export async function sendPushover(
   ctx.logger.info("pushover_send_ok", { status: res.status, title: params.title });
   return { ok: true, status: res.status };
 }
+
+export type GlanceParams = {
+  userKey: string;
+  appToken: string;
+  title: string;
+  text?: string;
+  subtext?: string;
+};
+
+const GLANCE_FIELD_LIMIT = 100;
+
+export async function sendGlance(
+  ctx: PluginContext,
+  params: GlanceParams,
+): Promise<SendResult> {
+  const body = new URLSearchParams({
+    token: params.appToken,
+    user: params.userKey,
+    title: params.title.slice(0, GLANCE_FIELD_LIMIT),
+  });
+  if (params.text) body.set("text", params.text.slice(0, GLANCE_FIELD_LIMIT));
+  if (params.subtext) body.set("subtext", params.subtext.slice(0, GLANCE_FIELD_LIMIT));
+
+  const res = await ctx.http.fetch("https://api.pushover.net/1/glances.json", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+
+  if (!res.ok) {
+    const responseBody = await res.text().catch(() => "");
+    ctx.logger.warn("pushover_glance_failed", {
+      status: res.status,
+      body: responseBody.slice(0, 500),
+    });
+    return { ok: false, status: res.status };
+  }
+  ctx.logger.info("pushover_glance_ok", { status: res.status, title: params.title });
+  return { ok: true, status: res.status };
+}

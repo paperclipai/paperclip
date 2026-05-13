@@ -67,6 +67,22 @@ function makeCtx(
   } as any;
 }
 
+function messagesCall(ctx: any) {
+  const call = ctx.http.fetch.mock.calls.find(
+    (c: any[]) => c[0] === "https://api.pushover.net/1/messages.json",
+  );
+  if (!call) throw new Error("expected a messages.json call but none was made");
+  return new URLSearchParams(call[1].body as string);
+}
+
+function glanceCall(ctx: any) {
+  const call = ctx.http.fetch.mock.calls.find(
+    (c: any[]) => c[0] === "https://api.pushover.net/1/glances.json",
+  );
+  if (!call) throw new Error("expected a glances.json call but none was made");
+  return new URLSearchParams(call[1].body as string);
+}
+
 function issueUpdatedEvent(over: any = {}) {
   return {
     eventId: "evt-1",
@@ -90,19 +106,24 @@ describe("handleIssueUpdated", () => {
     const ctx = makeCtx(prev, { issue: { status: "done", assigneeAgentId: CEO } });
     await handleIssueUpdated(ctx, baseConfig(), issueUpdatedEvent() as any);
 
-    expect(ctx.http.fetch).toHaveBeenCalledTimes(1);
-    const body = new URLSearchParams(ctx.http.fetch.mock.calls[0][1].body);
+    expect(ctx.http.fetch).toHaveBeenCalledTimes(2);
+    const body = messagesCall(ctx);
     expect(body.get("title")).toMatch(/^\[WHI\] CEO erledigt:/);
     expect(body.get("url")).toBe("https://company.whitestag.ai/WHI/issues/WHI-42");
     expect(body.get("priority")).toBe("0");
+
+    const glance = glanceCall(ctx);
+    expect(glance.get("title")).toBe("[WHI] CEO erledigt");
+    expect(glance.get("text")).toBe("Cleanup");
+    expect(glance.get("subtext")).toBe("WHI-42");
   });
 
   it("fires T1 on first-event (prev=null) when CEO task arrives as done", async () => {
     const ctx = makeCtx(null, { issue: { status: "done", assigneeAgentId: CEO } });
     await handleIssueUpdated(ctx, baseConfig(), issueUpdatedEvent() as any);
 
-    expect(ctx.http.fetch).toHaveBeenCalledTimes(1);
-    const body = new URLSearchParams(ctx.http.fetch.mock.calls[0][1].body);
+    expect(ctx.http.fetch).toHaveBeenCalledTimes(2);
+    const body = messagesCall(ctx);
     expect(body.get("title")).toMatch(/^\[WHI\] CEO erledigt:/);
   });
 
@@ -112,8 +133,8 @@ describe("handleIssueUpdated", () => {
     });
     await handleIssueUpdated(ctx, baseConfig(), issueUpdatedEvent({ status: "in_review" }) as any);
 
-    expect(ctx.http.fetch).toHaveBeenCalledTimes(1);
-    const body = new URLSearchParams(ctx.http.fetch.mock.calls[0][1].body);
+    expect(ctx.http.fetch).toHaveBeenCalledTimes(2);
+    const body = messagesCall(ctx);
     expect(body.get("title")).toMatch(/^\[WHI\] Review-Handover:/);
   });
 
@@ -141,7 +162,7 @@ describe("handleIssueUpdated", () => {
       issue: { status: "in_review", assigneeAgentId: CEO, assigneeUserId: WALTER },
     });
     await handleIssueUpdated(ctx, baseConfig(), issueUpdatedEvent({ status: "in_review" }) as any);
-    const body = new URLSearchParams(ctx.http.fetch.mock.calls[0][1].body);
+    const body = messagesCall(ctx);
     expect(body.get("title")).toMatch(/^\[WHI\] Review-Handover:/);
   });
 
@@ -165,7 +186,7 @@ describe("handleIssueUpdated", () => {
       ],
     });
     await handleIssueUpdated(ctx, baseConfig(), issueUpdatedEvent({ status: "blocked" }) as any);
-    const body = new URLSearchParams(ctx.http.fetch.mock.calls[0][1].body);
+    const body = messagesCall(ctx);
     expect(body.get("title")).toMatch(/^\[WHI\] Blockiert, braucht dich:/);
     expect(body.get("priority")).toBe("1");
   });
@@ -215,8 +236,8 @@ describe("handleCommentCreated (T4)", () => {
     });
     await handleCommentCreated(ctx, baseConfig(), commentCreatedEvent("c-1") as any);
 
-    expect(ctx.http.fetch).toHaveBeenCalledTimes(1);
-    const body = new URLSearchParams(ctx.http.fetch.mock.calls[0][1].body);
+    expect(ctx.http.fetch).toHaveBeenCalledTimes(2);
+    const body = messagesCall(ctx);
     expect(body.get("title")).toMatch(/^\[WHI\] @-Mention/);
   });
 
@@ -284,8 +305,8 @@ describe("handleApprovalCreated (T5)", () => {
         title: "Approve monthly hosting spend",
       },
     } as any);
-    expect(ctx.http.fetch).toHaveBeenCalledTimes(1);
-    const body = new URLSearchParams(ctx.http.fetch.mock.calls[0][1].body);
+    expect(ctx.http.fetch).toHaveBeenCalledTimes(2);
+    const body = messagesCall(ctx);
     expect(body.get("priority")).toBe("1");
     expect(body.get("title")).toMatch(/^\[WHI\] Approval wartet:/);
     expect(body.get("url")).toBe("https://company.whitestag.ai/WHI/approvals/appr-1");

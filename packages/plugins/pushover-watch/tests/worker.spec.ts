@@ -107,15 +107,22 @@ describe("pushover-watch worker integration", () => {
       },
     );
 
-    // T1 should have triggered exactly one Pushover POST.
-    expect(fetchSpy).toHaveBeenCalledOnce();
-    const [url, init] = fetchSpy.mock.calls[0];
-    expect(url).toBe("https://api.pushover.net/1/messages.json");
-    expect(init?.method).toBe("POST");
+    // T1 should have triggered both a Pushover message POST and a Glance update.
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const messagesCall = fetchSpy.mock.calls.find(
+      (c) => c[0] === "https://api.pushover.net/1/messages.json",
+    );
+    const glanceCall = fetchSpy.mock.calls.find(
+      (c) => c[0] === "https://api.pushover.net/1/glances.json",
+    );
+    expect(messagesCall).toBeDefined();
+    expect(glanceCall).toBeDefined();
 
-    // Verify the notification title starts with the expected prefix.
-    const body = new URLSearchParams(init?.body as string);
-    expect(body.get("title")).toMatch(/^\[WHI\] CEO erledigt:/);
+    const messagesBody = new URLSearchParams(messagesCall![1]?.body as string);
+    expect(messagesBody.get("title")).toMatch(/^\[WHI\] CEO erledigt:/);
+
+    const glanceBody = new URLSearchParams(glanceCall![1]?.body as string);
+    expect(glanceBody.get("title")).toBe("[WHI] CEO erledigt");
   });
 
   it("does not send a notification during bootstrap", async () => {

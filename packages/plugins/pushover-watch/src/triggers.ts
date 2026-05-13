@@ -6,7 +6,13 @@ import type {
 } from "./config-schema.js";
 import { matchesT1, matchesT2, matchesT3 } from "./transitions.js";
 import { commentMentionsUser } from "./mentions.js";
-import { sendPushover, type SendParams } from "./pushover-client.js";
+import { sendPushover, sendGlance, type SendParams } from "./pushover-client.js";
+
+type GlancePayload = {
+  title: string;
+  text?: string;
+  subtext?: string;
+};
 
 type IssueUpdatedPayload = {
   id: string;
@@ -42,12 +48,20 @@ async function dispatch(
   ctx: PluginContext,
   config: PluginConfig,
   send: SendParams,
+  glance: GlancePayload,
 ): Promise<void> {
   if (config.dryRun) {
-    ctx.logger.info("pushover_watch_dry_run", { send });
+    ctx.logger.info("pushover_watch_dry_run", { send, glance });
     return;
   }
-  await sendPushover(ctx, send);
+  await Promise.all([
+    sendPushover(ctx, send),
+    sendGlance(ctx, {
+      userKey: send.userKey,
+      appToken: send.appToken,
+      ...glance,
+    }),
+  ]);
 }
 
 async function resolveCredentials(
@@ -104,33 +118,53 @@ export async function handleIssueUpdated(
   const url = issueUrl(config, company, issue.identifier);
   const title = issue.title ?? "";
 
+  const identifierLabel = issue.identifier ?? "";
+
   // T1: CEO/CHO done
   if (matchesT1(prev, next, company.topAgentIds)) {
     const { userKey, appToken } = await resolveCredentials(ctx, config);
-    await dispatch(ctx, config, {
-      userKey,
-      appToken,
-      title: `[${company.issuePrefix}] CEO erledigt: ${truncate(title, 80)}`,
-      message: title,
-      url,
-      urlTitle: "In Paperclip öffnen",
-      priority: 0,
-    });
+    await dispatch(
+      ctx,
+      config,
+      {
+        userKey,
+        appToken,
+        title: `[${company.issuePrefix}] CEO erledigt: ${truncate(title, 80)}`,
+        message: title,
+        url,
+        urlTitle: "In Paperclip öffnen",
+        priority: 0,
+      },
+      {
+        title: `[${company.issuePrefix}] CEO erledigt`,
+        text: title,
+        subtext: identifierLabel,
+      },
+    );
     return;
   }
 
   // T2: in_review handover to board user
   if (matchesT2(prev, next, config.boardUserId)) {
     const { userKey, appToken } = await resolveCredentials(ctx, config);
-    await dispatch(ctx, config, {
-      userKey,
-      appToken,
-      title: `[${company.issuePrefix}] Review-Handover: ${truncate(title, 80)}`,
-      message: title,
-      url,
-      urlTitle: "In Paperclip öffnen",
-      priority: 0,
-    });
+    await dispatch(
+      ctx,
+      config,
+      {
+        userKey,
+        appToken,
+        title: `[${company.issuePrefix}] Review-Handover: ${truncate(title, 80)}`,
+        message: title,
+        url,
+        urlTitle: "In Paperclip öffnen",
+        priority: 0,
+      },
+      {
+        title: `[${company.issuePrefix}] Review wartet`,
+        text: title,
+        subtext: identifierLabel,
+      },
+    );
     return;
   }
 
@@ -140,15 +174,24 @@ export async function handleIssueUpdated(
     const latest = comments[comments.length - 1];
     if (!latest || !commentMentionsUser(latest.body, config.boardUserId)) return;
     const { userKey, appToken } = await resolveCredentials(ctx, config);
-    await dispatch(ctx, config, {
-      userKey,
-      appToken,
-      title: `[${company.issuePrefix}] Blockiert, braucht dich: ${truncate(title, 80)}`,
-      message: truncate(latest.body, 200),
-      url,
-      urlTitle: "In Paperclip öffnen",
-      priority: 1,
-    });
+    await dispatch(
+      ctx,
+      config,
+      {
+        userKey,
+        appToken,
+        title: `[${company.issuePrefix}] Blockiert, braucht dich: ${truncate(title, 80)}`,
+        message: truncate(latest.body, 200),
+        url,
+        urlTitle: "In Paperclip öffnen",
+        priority: 1,
+      },
+      {
+        title: `[${company.issuePrefix}] Blockiert`,
+        text: title,
+        subtext: identifierLabel,
+      },
+    );
   }
 }
 
@@ -202,15 +245,24 @@ export async function handleCommentCreated(
     ? `Agent ${comment.authorAgentId.slice(0, 8)}`
     : "jemand";
 
-  await dispatch(ctx, config, {
-    userKey,
-    appToken,
-    title: `[${company.issuePrefix}] @-Mention von ${authorLabel}: ${truncate(issue.title ?? "", 60)}`,
-    message: truncate(comment.body, 200),
-    url,
-    urlTitle: "In Paperclip öffnen",
-    priority: 0,
-  });
+  await dispatch(
+    ctx,
+    config,
+    {
+      userKey,
+      appToken,
+      title: `[${company.issuePrefix}] @-Mention von ${authorLabel}: ${truncate(issue.title ?? "", 60)}`,
+      message: truncate(comment.body, 200),
+      url,
+      urlTitle: "In Paperclip öffnen",
+      priority: 0,
+    },
+    {
+      title: `[${company.issuePrefix}] @-Mention`,
+      text: issue.title ?? "",
+      subtext: issue.identifier ?? "",
+    },
+  );
 }
 
 type ApprovalCreatedPayload = {
@@ -234,13 +286,22 @@ export async function handleApprovalCreated(
   const approvalUrl = `${config.clickbackBaseUrl}/${company.issuePrefix}/approvals/${event.payload.id}`;
   const title = event.payload.title ?? "Approval-Request";
 
-  await dispatch(ctx, config, {
-    userKey,
-    appToken,
-    title: `[${company.issuePrefix}] Approval wartet: ${truncate(title, 80)}`,
-    message: title,
-    url: approvalUrl,
-    urlTitle: "In Paperclip öffnen",
-    priority: 1,
-  });
+  await dispatch(
+    ctx,
+    config,
+    {
+      userKey,
+      appToken,
+      title: `[${company.issuePrefix}] Approval wartet: ${truncate(title, 80)}`,
+      message: title,
+      url: approvalUrl,
+      urlTitle: "In Paperclip öffnen",
+      priority: 1,
+    },
+    {
+      title: `[${company.issuePrefix}] Approval wartet`,
+      text: title,
+      subtext: event.payload.id.slice(0, 8),
+    },
+  );
 }
