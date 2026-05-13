@@ -64,6 +64,9 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "ti
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
+// When the source issue completed/cancelled within this window of the run's last output,
+// the run is considered gracefully finished — no stale-run alert is generated.
+export const ACTIVE_RUN_DONE_SOURCE_GRACE_MS = 5 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
@@ -1030,6 +1033,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const runningAgent = await getAgent(input.run.agentId);
     if (!runningAgent || runningAgent.companyId !== input.run.companyId) return { kind: "skipped" as const };
     const sourceIssue = await resolveStaleRunSourceIssue(input.run);
+
+    // Suppress alert when the source issue already reached a terminal state close to
+    // the run's last output — the run completed its work and just didn't exit cleanly.
+    if (sourceIssue && (sourceIssue.status === "done" || sourceIssue.status === "cancelled")) {
+      const terminalAt = sourceIssue.completedAt ?? sourceIssue.cancelledAt;
+      const runLastActiveAt = input.run.lastOutputAt ?? input.run.processStartedAt ?? input.run.startedAt ?? input.run.createdAt;
+      if (terminalAt && runLastActiveAt) {
+        const skewMs = Math.abs(terminalAt.getTime() - runLastActiveAt.getTime());
+        if (skewMs <= ACTIVE_RUN_DONE_SOURCE_GRACE_MS) {
+          logger.info(
+            { runId: input.run.id, sourceIssueId: sourceIssue.id, issueStatus: sourceIssue.status, skewMs },
+            "skipping stale-run evaluation: source issue reached terminal state within grace window of last run output",
+          );
+          return { kind: "skipped" as const };
+        }
+      }
+    }
+
     const prefix = await getCompanyIssuePrefix(input.run.companyId);
     const evidence = await collectStaleRunEvidence({
       run: input.run,
