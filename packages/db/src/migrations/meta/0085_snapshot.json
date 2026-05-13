@@ -13614,6 +13614,21 @@
           "method": "btree",
           "with": {}
         },
+        "plugin_entities_company_idx": {
+          "name": "plugin_entities_company_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "plugin_entities_type_idx": {
           "name": "plugin_entities_type_idx",
           "columns": [
@@ -13814,6 +13829,21 @@
           "columns": [
             {
               "expression": "plugin_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "plugin_job_runs_company_idx": {
+          "name": "plugin_job_runs_company_idx",
+          "columns": [
+            {
+              "expression": "company_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -14086,6 +14116,21 @@
             },
             {
               "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "plugin_logs_company_idx": {
+          "name": "plugin_logs_company_idx",
+          "columns": [
+            {
+              "expression": "company_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -14687,6 +14732,21 @@
           "columns": [
             {
               "expression": "plugin_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "plugin_webhook_deliveries_company_idx": {
+          "name": "plugin_webhook_deliveries_company_idx",
+          "columns": [
+            {
+              "expression": "company_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

@@ -62,6 +62,7 @@ export const pluginWebhookDeliveries = pgTable(
   },
   (table) => ({
     pluginIdx: index("plugin_webhook_deliveries_plugin_idx").on(table.pluginId),
+    companyIdx: index("plugin_webhook_deliveries_company_idx").on(table.companyId),
     statusIdx: index("plugin_webhook_deliveries_status_idx").on(table.status),
     keyIdx: index("plugin_webhook_deliveries_key_idx").on(table.webhookKey),
   }),

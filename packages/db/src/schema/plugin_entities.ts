@@ -46,6 +46,7 @@ export const pluginEntities = pgTable(
   },
   (table) => ({
     pluginIdx: index("plugin_entities_plugin_idx").on(table.pluginId),
+    companyIdx: index("plugin_entities_company_idx").on(table.companyId),
     typeIdx: index("plugin_entities_type_idx").on(table.entityType),
     scopeIdx: index("plugin_entities_scope_idx").on(table.scopeKind, table.scopeId),
     externalIdx: uniqueIndex("plugin_entities_external_idx").on(
