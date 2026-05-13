@@ -3,6 +3,7 @@ import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, not, or, sql }
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  companies,
   companySecretBindings,
   companySecretVersions,
   companySecrets,
@@ -2238,11 +2239,15 @@ export function routineService(
         })
         .from(routineTriggers)
         .innerJoin(routines, eq(routineTriggers.routineId, routines.id))
+        .innerJoin(companies, eq(routines.companyId, companies.id))
         .where(
           and(
             eq(routineTriggers.kind, "schedule"),
             eq(routineTriggers.enabled, true),
             eq(routines.status, "active"),
+            // Skip schedules owned by archived companies — archived tenants
+            // must not fire new routine runs from the cron tick.
+            ne(companies.status, "archived"),
             isNotNull(routineTriggers.nextRunAt),
             lte(routineTriggers.nextRunAt, now),
           ),
