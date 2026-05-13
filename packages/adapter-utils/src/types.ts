@@ -489,6 +489,8 @@ export interface CreateConfigValues {
   envVars: string;
   envBindings: Record<string, unknown>;
   url: string;
+  /** Optional remote endpoint for adapters that can run against a remote process (e.g. hermes_local gateway). */
+  endpoint?: string;
   bootstrapPrompt: string;
   payloadTemplateJson?: string;
   workspaceStrategyType?: string;
