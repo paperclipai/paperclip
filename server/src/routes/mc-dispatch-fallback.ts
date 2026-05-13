@@ -51,5 +51,28 @@ export function mcDispatchFallbackRoutes(db: Db) {
     },
   );
 
+  router.get("/api/internal/fallback/mc-dispatch/eligible-issues", async (req, res) => {
+    assertBoard(req);
+    assertInstanceAdmin(req);
+    const companyId = req.query.companyId;
+    if (typeof companyId !== "string" || companyId.length === 0) {
+      res.status(400).json({ error: "companyId query param required" });
+      return;
+    }
+    assertCompanyAccess(req, companyId);
+    const limitRaw = req.query.limit;
+    let limit: number | undefined;
+    if (typeof limitRaw === "string" && limitRaw.length > 0) {
+      const parsed = Number.parseInt(limitRaw, 10);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        res.status(400).json({ error: "limit must be positive integer" });
+        return;
+      }
+      limit = parsed;
+    }
+    const issues = await svc.listEligibleIssues({ companyId, limit });
+    res.json({ companyId, issues });
+  });
+
   return router;
 }

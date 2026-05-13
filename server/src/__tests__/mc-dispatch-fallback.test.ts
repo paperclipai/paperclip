@@ -7,7 +7,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { companies, createDb, issueRuns, issues } from "@paperclipai/db";
+import { agents, companies, createDb, issueRuns, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -36,6 +36,7 @@ describeEmbeddedPostgres("mc-dispatch-fallback service (Phase-4 4c-3 wave 1)", (
   afterEach(async () => {
     await db.delete(issueRuns);
     await db.delete(issues);
+    await db.delete(agents);
     await db.delete(companies);
   });
 
@@ -244,5 +245,96 @@ describeEmbeddedPostgres("mc-dispatch-fallback service (Phase-4 4c-3 wave 1)", (
         dryRun: true,
       }),
     ).rejects.toMatchObject({ status: 404 });
+  });
+
+  async function seedAgent(executor: "hermes" | "mc-dispatch") {
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: `agent-${executor}`,
+      role: "engineer",
+      status: "running",
+      executor,
+      adapterType: "codex_local",
+    });
+    return agentId;
+  }
+
+  async function seedAssignedIssue(agentId: string, status = "todo"): Promise<string> {
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "assigned fixture",
+      status,
+      priority: "medium",
+      createdByUserId: "user-1",
+      assigneeAgentId: agentId,
+    });
+    return issueId;
+  }
+
+  it("listEligibleIssues: only hermes-assigned, not blocked, not locked", async () => {
+    await seedCompany();
+    const hermesAgent = await seedAgent("hermes");
+    const mcAgent = await seedAgent("mc-dispatch");
+
+    const eligible = await seedAssignedIssue(hermesAgent);
+    const blocked = await seedAssignedIssue(hermesAgent, "blocked");
+    const lockedIssue = await seedAssignedIssue(hermesAgent);
+    await db.insert(issueRuns).values({
+      runId: randomUUID(),
+      companyId,
+      issueId: lockedIssue,
+      executor: "hermes",
+      leaseOwner: "alive",
+      leasedAt: new Date(),
+      leaseExpiresAt: new Date(Date.now() + 600_000),
+      heartbeatAt: new Date(),
+      status: "running",
+    });
+    const mcOwned = await seedAssignedIssue(mcAgent);
+
+    const svc = mcDispatchFallbackService(db);
+    const result = await svc.listEligibleIssues({ companyId });
+
+    const ids = result.map((r) => r.issueId);
+    expect(ids).toContain(eligible);
+    expect(ids).not.toContain(blocked);
+    expect(ids).not.toContain(lockedIssue);
+    expect(ids).not.toContain(mcOwned);
+  });
+
+  it("listEligibleIssues: respects limit cap", async () => {
+    await seedCompany();
+    const hermesAgent = await seedAgent("hermes");
+    for (let i = 0; i < 5; i++) {
+      await seedAssignedIssue(hermesAgent);
+    }
+    const svc = mcDispatchFallbackService(db);
+    const result = await svc.listEligibleIssues({ companyId, limit: 2 });
+    expect(result.length).toBe(2);
+  });
+
+  it("listEligibleIssues: empty for unrelated company", async () => {
+    await seedCompany();
+    const hermesAgent = await seedAgent("hermes");
+    await seedAssignedIssue(hermesAgent);
+    const svc = mcDispatchFallbackService(db);
+    const result = await svc.listEligibleIssues({ companyId: randomUUID() });
+    expect(result.length).toBe(0);
+  });
+
+  it("listEligibleIssues: returns issueStatus + assigneeAgentId", async () => {
+    await seedCompany();
+    const hermesAgent = await seedAgent("hermes");
+    const issueId = await seedAssignedIssue(hermesAgent);
+    const svc = mcDispatchFallbackService(db);
+    const result = await svc.listEligibleIssues({ companyId });
+    const hit = result.find((r) => r.issueId === issueId);
+    expect(hit).toBeDefined();
+    expect(hit?.assigneeAgentId).toBe(hermesAgent);
+    expect(hit?.issueStatus).toBe("todo");
   });
 });

@@ -1,6 +1,6 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issueRuns, issues } from "@paperclipai/db";
+import { agents, issueRuns, issues } from "@paperclipai/db";
 import {
   ISSUE_RUNS_LOCK_TTL_SECONDS,
   type McDispatchFallbackOutcome,
@@ -27,6 +27,18 @@ import { notFound } from "../errors.js";
 export interface McDispatchFallbackService {
   evaluate(input: EvaluateInput): Promise<EvaluateResult>;
   recordDecision(input: RecordInput): Promise<RecordResult>;
+  listEligibleIssues(input: ListEligibleInput): Promise<EligibleIssue[]>;
+}
+
+export interface ListEligibleInput {
+  companyId: string;
+  limit?: number;
+}
+
+export interface EligibleIssue {
+  issueId: string;
+  assigneeAgentId: string;
+  issueStatus: string;
 }
 
 export interface EvaluateInput {
@@ -178,6 +190,42 @@ export function mcDispatchFallbackService(db: Db): McDispatchFallbackService {
         issueRunId: inserted[0].runId,
         warnings,
       };
+    },
+
+    async listEligibleIssues(input) {
+      const limit = Math.max(1, Math.min(input.limit ?? 25, 100));
+      const blockedStatuses = Array.from(BLOCKED_ISSUE_STATUSES);
+
+      const activeRuns = await db
+        .select({ issueId: issueRuns.issueId })
+        .from(issueRuns)
+        .where(and(eq(issueRuns.companyId, input.companyId), eq(issueRuns.status, "running")));
+      const lockedIssueIds = activeRuns.map((row) => row.issueId);
+
+      const conditions = [
+        eq(issues.companyId, input.companyId),
+        notInArray(issues.status, blockedStatuses),
+        eq(agents.executor, "hermes"),
+      ];
+      if (lockedIssueIds.length > 0) {
+        conditions.push(notInArray(issues.id, lockedIssueIds));
+      }
+
+      const rows = await db
+        .select({
+          issueId: issues.id,
+          assigneeAgentId: issues.assigneeAgentId,
+          issueStatus: issues.status,
+        })
+        .from(issues)
+        .innerJoin(agents, eq(issues.assigneeAgentId, agents.id))
+        .where(and(...conditions))
+        .limit(limit);
+
+      return rows
+        .filter((r): r is { issueId: string; assigneeAgentId: string; issueStatus: string } =>
+          r.assigneeAgentId !== null,
+        );
     },
   };
 }
