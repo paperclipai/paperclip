@@ -1,6 +1,7 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import type { Agent, Issue, IssueComment, LiveEvent } from "@paperclipai/shared";
+import { extractUserMentionIds } from "@paperclipai/shared";
 import type { RunForIssue } from "../api/activity";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import type { CompanyUserDirectoryResponse } from "../api/access";
@@ -9,6 +10,8 @@ import { authApi } from "../api/auth";
 import { useCompany } from "./CompanyContext";
 import type { ToastInput } from "./ToastContext";
 import { useToastActions } from "./ToastContext";
+import { useNotificationSounds } from "./NotificationSoundsContext";
+import type { NotificationCueType } from "../lib/notificationSounds";
 import { upsertIssueCommentInPages } from "../lib/optimistic-issue-comments";
 import { clearIssueExecutionRun, removeLiveRunById } from "../lib/optimistic-issue-runs";
 import { queryKeys } from "../lib/queryKeys";
@@ -18,6 +21,152 @@ import { useLocation } from "../lib/router";
 const TOAST_COOLDOWN_WINDOW_MS = 10_000;
 const TOAST_COOLDOWN_MAX = 3;
 const RECONNECT_SUPPRESS_MS = 2000;
+
+// Sound debounce: each cue type is limited to one per 3 seconds.
+const SOUND_DEBOUNCE_MS = 3_000;
+// Bulk guard: if >5 events arrive in 1 second, suppress sounds for 10 seconds.
+const SOUND_BULK_WINDOW_MS = 1_000;
+const SOUND_BULK_THRESHOLD = 5;
+const SOUND_BULK_SUPPRESS_MS = 10_000;
+
+interface SoundGate {
+  doneLastAt: number;
+  attentionLastAt: number;
+  recentEventTimes: number[];
+  suppressUntil: number;
+}
+
+function shouldSuppressSoundCue(gate: SoundGate, type: NotificationCueType): boolean {
+  const now = Date.now();
+  if (now < gate.suppressUntil) return true;
+  if (type === "done" && now - gate.doneLastAt < SOUND_DEBOUNCE_MS) return true;
+  if (type === "attention" && now - gate.attentionLastAt < SOUND_DEBOUNCE_MS) return true;
+  return false;
+}
+
+function recordSoundEvent(gate: SoundGate, type: NotificationCueType) {
+  const now = Date.now();
+
+  gate.recentEventTimes = gate.recentEventTimes.filter((t) => now - t < SOUND_BULK_WINDOW_MS);
+  gate.recentEventTimes.push(now);
+
+  if (gate.recentEventTimes.length > SOUND_BULK_THRESHOLD) {
+    gate.suppressUntil = now + SOUND_BULK_SUPPRESS_MS;
+    return;
+  }
+
+  if (type === "done") gate.doneLastAt = now;
+  else gate.attentionLastAt = now;
+}
+
+const ATTENTION_INTERACTION_KINDS = new Set([
+  "request_confirmation",
+  "ask_user_questions",
+  "suggest_tasks",
+]);
+
+function resolveSoundCue(
+  queryClient: QueryClient,
+  companyId: string,
+  event: LiveEvent,
+  currentActor: { userId: string | null; agentId: string | null },
+): NotificationCueType | null {
+  if (event.companyId !== companyId) return null;
+
+  const payload = event.payload ?? {};
+  if (event.type !== "activity.logged") return null;
+
+  const action = readString(payload.action);
+  const entityType = readString(payload.entityType);
+  const entityId = readString(payload.entityId);
+  const details = readRecord(payload.details);
+  const actorType = readString(payload.actorType);
+  const actorId = readString(payload.actorId);
+
+  const isSelfActivity =
+    (actorType === "user" && !!currentActor.userId && actorId === currentActor.userId) ||
+    (actorType === "agent" && !!currentActor.agentId && actorId === currentActor.agentId);
+
+  // done cue: issue moved to done and I'm the assignee
+  if (
+    entityType === "issue" &&
+    entityId &&
+    action === "issue.updated" &&
+    !isSelfActivity &&
+    readString(details?.status) === "done"
+  ) {
+    const issue =
+      queryClient.getQueryData<Issue>(queryKeys.issues.detail(entityId)) ??
+      queryClient
+        .getQueryData<Issue[]>(queryKeys.issues.list(companyId))
+        ?.find((i) => i.id === entityId || i.identifier === entityId) ??
+      null;
+    if (issue && currentActor.userId && issue.assigneeUserId === currentActor.userId) {
+      return "done";
+    }
+  }
+
+  // attention cue — thread interaction created (any request_confirmation / ask_user_questions / suggest_tasks)
+  if (
+    entityType === "issue" &&
+    action === "issue.thread_interaction_created" &&
+    !isSelfActivity
+  ) {
+    const kind = readString(details?.interactionKind);
+    if (kind && ATTENTION_INTERACTION_KINDS.has(kind)) {
+      return "attention";
+    }
+  }
+
+  // attention cue — issue moved to in_review and I'm the assignee
+  if (
+    entityType === "issue" &&
+    entityId &&
+    action === "issue.updated" &&
+    !isSelfActivity &&
+    readString(details?.status) === "in_review"
+  ) {
+    const issue =
+      queryClient.getQueryData<Issue>(queryKeys.issues.detail(entityId)) ??
+      queryClient
+        .getQueryData<Issue[]>(queryKeys.issues.list(companyId))
+        ?.find((i) => i.id === entityId || i.identifier === entityId) ??
+      null;
+    if (issue && currentActor.userId && issue.assigneeUserId === currentActor.userId) {
+      return "attention";
+    }
+  }
+
+  // attention cue — comment that @mentions me
+  if (
+    entityType === "issue" &&
+    action === "issue.comment_added" &&
+    !isSelfActivity &&
+    currentActor.userId
+  ) {
+    const bodySnippet = readString(details?.bodySnippet);
+    if (bodySnippet) {
+      const mentionedIds = extractUserMentionIds(bodySnippet);
+      if (mentionedIds.includes(currentActor.userId)) {
+        return "attention";
+      }
+    }
+  }
+
+  // attention cue — board approval created (always needs board action)
+  if (
+    entityType === "approval" &&
+    action === "approval.created" &&
+    !isSelfActivity
+  ) {
+    const approvalType = readString(details?.type);
+    if (approvalType === "request_board_approval") {
+      return "attention";
+    }
+  }
+
+  return null;
+}
 const SOCKET_CONNECTING = 0;
 const SOCKET_OPEN = 1;
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
@@ -907,8 +1056,19 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
+  const { triggerCue } = useNotificationSounds();
   const location = useLocation();
   const gateRef = useRef<ToastGate>({ cooldownHits: new Map(), suppressUntil: 0 });
+  const soundGateRef = useRef<SoundGate>({
+    doneLastAt: 0,
+    attentionLastAt: 0,
+    recentEventTimes: [],
+    suppressUntil: 0,
+  });
+  // After the WebSocket opens for the first time, delay sounds by one tick so
+  // we do not fire cues for state that was already true at page-load time.
+  const soundsBootstrappedRef = useRef(false);
+  const triggerCueRef = useRef(triggerCue);
   const pathnameRef = useRef(location.pathname);
   const { data: session, status: sessionStatus } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -934,6 +1094,10 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       agentId: null,
     };
   }, [currentUserId]);
+
+  useEffect(() => {
+    triggerCueRef.current = triggerCue;
+  }, [triggerCue]);
 
   useEffect(() => {
     if (!canConnectSocket || !liveCompanyId) return;
@@ -976,6 +1140,11 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
           gateRef.current.suppressUntil = Date.now() + RECONNECT_SUPPRESS_MS;
         }
         reconnectAttempt = 0;
+        // Mark sounds as bootstrapped after one tick so initial-state events
+        // that may arrive immediately after connect are skipped.
+        window.setTimeout(() => {
+          soundsBootstrappedRef.current = true;
+        }, 0);
       };
 
       nextSocket.onmessage = (message) => {
@@ -988,6 +1157,21 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
             userId: currentActorRef.current.userId,
             agentId: currentActorRef.current.agentId,
           });
+
+          // Sound notification logic (only after bootstrap, only when tab visible).
+          if (
+            soundsBootstrappedRef.current &&
+            document.visibilityState === "visible"
+          ) {
+            const cue = resolveSoundCue(queryClient, liveCompanyId, parsed, {
+              userId: currentActorRef.current.userId,
+              agentId: currentActorRef.current.agentId,
+            });
+            if (cue !== null && !shouldSuppressSoundCue(soundGateRef.current, cue)) {
+              recordSoundEvent(soundGateRef.current, cue);
+              triggerCueRef.current(cue);
+            }
+          }
         } catch {
           // Ignore non-JSON payloads.
         }
