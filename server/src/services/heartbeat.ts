@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -27,6 +27,7 @@ import {
   agentWakeupRequests,
   activityLog,
   approvals,
+  companies,
   companySkills as companySkillsTable,
   documentRevisions,
   issueDocuments,
@@ -966,6 +967,15 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  /**
+   * Pre-fetched owning company status, used by callers that already filtered
+   * archived companies in their source query (e.g. `tickTimers`). When
+   * provided, `enqueueWakeup` skips the per-call `SELECT status FROM
+   * companies` round-trip. Leave undefined when the caller cannot prove the
+   * company is non-archived (webhook handlers, recovery paths, etc.) so the
+   * defense-in-depth check still runs.
+   */
+  knownCompanyStatus?: string | null;
 }
 
 type UsageTotals = {
@@ -6572,10 +6582,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function resumeQueuedRuns() {
+    // Skip queued runs for agents in archived companies — archived tenants
+    // must not have their queued work resumed by the scheduler tick.
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
       .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.status, "queued"));
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .innerJoin(companies, eq(agents.companyId, companies.id))
+      .where(and(eq(heartbeatRuns.status, "queued"), ne(companies.status, "archived")));
 
     const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
     for (const agentId of agentIds) {
@@ -8560,6 +8574,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+    // Reject wakeups for agents whose owning company is archived — archived
+    // tenants must not have new wakeup requests created. Return null so the
+    // caller treats this as a soft skip rather than a hard error.
+    //
+    // Callers that have already proven the company is non-archived in their
+    // source query (e.g. `tickTimers` joins on `companies` and filters out
+    // archived rows) can pass `knownCompanyStatus` to skip the extra round-
+    // trip. All other callers (webhook handlers, recovery, continuation
+    // paths) leave it unset so the defense-in-depth query still runs.
+    if (opts.knownCompanyStatus === undefined || opts.knownCompanyStatus === null) {
+      const ownerCompany = await db
+        .select({ status: companies.status })
+        .from(companies)
+        .where(eq(companies.id, agent.companyId))
+        .then((rows) => rows[0]);
+      if (ownerCompany?.status === "archived") return null;
+    } else if (opts.knownCompanyStatus === "archived") {
+      return null;
+    }
     const explicitResumeSession = await resolveExplicitResumeSessionOverride(agent, payload, taskKey);
     if (explicitResumeSession) {
       enrichedContextSnapshot.resumeFromRunId = explicitResumeSession.resumeFromRunId;
@@ -9724,12 +9757,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     buildRunOutputSilence,
 
     tickTimers: async (now = new Date()) => {
-      const allAgents = await db.select().from(agents);
+      // Exclude agents belonging to archived companies — archived tenants
+      // must not produce new timer-driven wakeups. We also pull the company
+      // status from the join so `enqueueWakeup` can skip its own redundant
+      // `SELECT status FROM companies` round-trip per agent.
+      const allAgents = await db
+        .select({ agent: agents, companyStatus: companies.status })
+        .from(agents)
+        .innerJoin(companies, eq(agents.companyId, companies.id))
+        .where(ne(companies.status, "archived"))
+        .then((rows) => rows.map((r) => ({ agent: r.agent, companyStatus: r.companyStatus })));
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
 
-      for (const agent of allAgents) {
+      for (const { agent, companyStatus } of allAgents) {
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;
@@ -9745,6 +9787,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           reason: "heartbeat_timer",
           requestedByActorType: "system",
           requestedByActorId: "heartbeat_scheduler",
+          knownCompanyStatus: companyStatus,
           contextSnapshot: {
             source: "scheduler",
             reason: "interval_elapsed",

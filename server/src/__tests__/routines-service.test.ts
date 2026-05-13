@@ -1422,4 +1422,41 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.source).toBe("webhook");
     expect(run.status).toBe("issue_created");
   });
+
+  it("tickScheduledTriggers skips schedules owned by archived companies", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "schedule",
+        label: "daily",
+        cronExpression: "0 10 * * *",
+        timezone: "UTC",
+      },
+      {},
+    );
+
+    // Force the trigger to be due immediately by rewinding nextRunAt.
+    const due = new Date(Date.now() - 60_000);
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: due })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    // Archive the company.
+    await db
+      .update(companies)
+      .set({ status: "archived", pausedAt: new Date(), pauseReason: "test archive" })
+      .where(eq(companies.id, companyId));
+
+    const result = await svc.tickScheduledTriggers(new Date());
+    expect(result.triggered).toBe(0);
+
+    // The trigger's nextRunAt is unchanged — the tick did not claim it.
+    const [reread] = await db
+      .select({ nextRunAt: routineTriggers.nextRunAt })
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, trigger.id));
+    expect(reread?.nextRunAt?.getTime()).toBe(due.getTime());
+  });
 });
