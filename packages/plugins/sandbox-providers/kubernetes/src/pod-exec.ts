@@ -13,6 +13,7 @@
 import { Exec } from "@kubernetes/client-node";
 import { PassThrough } from "node:stream";
 import type { KubeConfig } from "@kubernetes/client-node";
+import { shellQuoteArg } from "./shell-utils.js";
 
 type WebSocketLike = {
   close(): void;
@@ -25,10 +26,6 @@ export interface ExecInPodResult {
   timedOut: boolean;
   stdout: string;
   stderr: string;
-}
-
-function shQuoteArg(arg: string): string {
-  return "'" + arg.replace(/'/g, "'\\''") + "'";
 }
 
 export async function execInPod(
@@ -50,7 +47,7 @@ export async function execInPod(
     : null;
   const stdinStream: PassThrough | null = stdinPayload ? new PassThrough() : null;
   const effectiveCommand = stdinPayload
-    ? ["/bin/sh", "-c", `head -c ${stdinPayload.length} | ${command.map(shQuoteArg).join(" ")}`]
+    ? ["/bin/sh", "-c", `head -c ${stdinPayload.length} | ${command.map(shellQuoteArg).join(" ")}`]
     : command;
 
   let stdoutData = "";

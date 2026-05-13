@@ -32,6 +32,7 @@ import {
   SandboxCrTimeoutError,
 } from "./sandbox-cr-orchestrator.js";
 import { execInPod } from "./pod-exec.js";
+import { shellQuoteArg } from "./shell-utils.js";
 import {
   deriveCompanySlug,
   deriveNamespaceName,
@@ -111,10 +112,6 @@ export function extractAdapterEnvFromProcess(
     );
   }
   return out;
-}
-
-function shellQuoteArg(arg: string): string {
-  return "'" + arg.replace(/'/g, "'\\''") + "'";
 }
 
 export function buildSandboxExecCommand(
