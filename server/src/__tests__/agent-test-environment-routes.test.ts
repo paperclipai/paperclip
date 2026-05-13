@@ -196,6 +196,15 @@ describe("agent test-environment route", () => {
       }),
       status: "failed",
     });
+    // Ad-hoc operator probes have no agent context — the route must pass
+    // agentId: null so plugin-backed providers don't accidentally scope the
+    // probe lease against some leftover agentId from the heartbeat path.
+    expect(mockEnvironmentRuntime.acquireRunLease).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: null,
+        heartbeatRunId: null,
+      }),
+    );
   });
 
   it("returns a diagnostic result instead of probing the host when the requested environment is missing", async () => {

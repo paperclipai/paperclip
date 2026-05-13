@@ -216,6 +216,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
 
     return {
       companyId,
+      agentId,
       environment: {
         id: environmentId,
         companyId,
@@ -1393,5 +1394,299 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(localRelease).toHaveBeenCalledTimes(1);
     expect(sshRelease).not.toHaveBeenCalled();
     expect(acquired.lease.metadata?.driver).toBe("local");
+  });
+
+  // -------------------------------------------------------------------------
+  // agentId is threaded through plugin RPC params (see protocol.ts —
+  // PluginEnvironmentAcquireLeaseParams.agentId and
+  // PluginEnvironmentResumeLeaseParams.agentId). Plugin-backed sandbox
+  // providers can use this to scope lease state (subdirs, PVCs, etc.) per
+  // agent without callbacks or DB lookups. The runtime must forward it when
+  // present and omit it when null/undefined so older plugin SDKs that don't
+  // declare the field aren't surprised.
+  // -------------------------------------------------------------------------
+
+  it("plugin-driver acquireLease: forwards agentId in the RPC payload when present", async () => {
+    const pluginId = randomUUID();
+    const workerManager = {
+      isRunning: vi.fn(() => true),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return { providerLeaseId: "plugin-lease-agent", metadata: { remoteCwd: "/workspace" } };
+        }
+        return undefined;
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    const { companyId, agentId, environment, runId } = await seedEnvironment({
+      driver: "plugin",
+      name: "Plugin agentId fwd",
+      config: {
+        pluginKey: "acme.environments",
+        driverKey: "fake-plugin",
+        driverConfig: { template: "base" },
+      },
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.environments",
+      packageName: "@acme/paperclip-environments",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.environments",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Acme",
+        description: "Test",
+        author: "Acme",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [{ driverKey: "fake-plugin", displayName: "Fake", configSchema: { type: "object" } }],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+
+    await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+
+    expect(workerManager.call).toHaveBeenCalledWith(
+      pluginId,
+      "environmentAcquireLease",
+      expect.objectContaining({ agentId }),
+    );
+  });
+
+  it("plugin-driver acquireLease: omits agentId from RPC payload when null", async () => {
+    const pluginId = randomUUID();
+    const workerManager = {
+      isRunning: vi.fn(() => true),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return { providerLeaseId: "plugin-lease-no-agent", metadata: { remoteCwd: "/workspace" } };
+        }
+        return undefined;
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "plugin",
+      name: "Plugin agentId null",
+      config: {
+        pluginKey: "acme.environments",
+        driverKey: "fake-plugin",
+        driverConfig: { template: "base" },
+      },
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.environments",
+      packageName: "@acme/paperclip-environments",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.environments",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Acme",
+        description: "Test",
+        author: "Acme",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [{ driverKey: "fake-plugin", displayName: "Fake", configSchema: { type: "object" } }],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+
+    await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+
+    const payload = (workerManager.call as ReturnType<typeof vi.fn>).mock.calls.find(
+      ([, method]) => method === "environmentAcquireLease",
+    )?.[2] as Record<string, unknown>;
+    expect(payload).toBeDefined();
+    expect(payload.agentId).toBeUndefined();
+    expect("agentId" in payload).toBe(false);
+  });
+
+  it("sandbox-provider acquireLease: forwards agentId when present", async () => {
+    const pluginId = randomUUID();
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return { providerLeaseId: "sandbox-agent-1", metadata: { reuseLease: false } };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    const { companyId, agentId, environment, runId } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Sandbox agentId fwd",
+      config: {
+        provider: "fake-plugin",
+        image: "fake:test",
+        timeoutMs: 30_000,
+        reuseLease: false,
+      },
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.sandbox",
+      packageName: "@acme/paperclip-sandbox",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.sandbox",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Acme Sandbox",
+        description: "Test",
+        author: "Acme",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [{
+          driverKey: "fake-plugin",
+          kind: "sandbox_provider",
+          displayName: "Fake",
+          configSchema: { type: "object" },
+        }],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+
+    await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+
+    expect(workerManager.call).toHaveBeenCalledWith(
+      pluginId,
+      "environmentAcquireLease",
+      expect.objectContaining({ agentId }),
+      expect.any(Number),
+    );
+  });
+
+  it("sandbox-provider resumeLease: forwards agentId when present", async () => {
+    const pluginId = randomUUID();
+    const calls: { method: string; params: Record<string, unknown> }[] = [];
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string, params: Record<string, unknown>) => {
+        calls.push({ method, params });
+        if (method === "environmentAcquireLease") {
+          return { providerLeaseId: "sandbox-resume-1", metadata: { reuseLease: true } };
+        }
+        if (method === "environmentResumeLease") {
+          return { providerLeaseId: "sandbox-resume-1", metadata: { reuseLease: true } };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    const { companyId, agentId, environment, runId } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Sandbox agentId resume",
+      config: {
+        provider: "fake-plugin",
+        image: "fake:test",
+        timeoutMs: 30_000,
+        reuseLease: true,
+      },
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.sandbox",
+      packageName: "@acme/paperclip-sandbox",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.sandbox",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Acme Sandbox",
+        description: "Test",
+        author: "Acme",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [{
+          driverKey: "fake-plugin",
+          kind: "sandbox_provider",
+          displayName: "Fake",
+          configSchema: { type: "object" },
+        }],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+
+    // First acquire seeds a reusable lease row in DB
+    await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+
+    // Second acquire on the same environment + reuseLease=true exercises the
+    // resume path (host's matcher finds the reusable lease, plugin's
+    // resumeLease is invoked).
+    const newRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: newRunId,
+      companyId,
+      agentId,
+      invocationSource: "manual",
+      status: "running",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as any);
+    await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: newRunId,
+      persistedExecutionWorkspace: null,
+    });
+
+    const resumeCall = calls.find((c) => c.method === "environmentResumeLease");
+    expect(resumeCall).toBeDefined();
+    expect(resumeCall?.params.agentId).toBe(agentId);
   });
 });
