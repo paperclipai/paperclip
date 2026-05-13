@@ -547,4 +547,24 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     });
     expect(decision.createdByRunId).toBe(managerRunId);
   });
+
+  it("skips evaluation when the source issue is already blocked", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, issueId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    // Mark source issue as blocked — simulates an agent correctly blocked-and-waiting
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result.created).toBe(0);
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
+  });
 });
