@@ -260,6 +260,105 @@ const issueRequestDepthInputSchema = z
   .nonnegative()
   .transform((value) => clampIssueRequestDepth(value));
 
+export const RELEASE_EVIDENCE_KINDS = [
+  "merge_commit",
+  "pr_merged",
+  "not_code",
+  "release_owner_signoff",
+] as const;
+
+export type ReleaseEvidenceKind = (typeof RELEASE_EVIDENCE_KINDS)[number];
+
+const releaseEvidenceShaSchema = z
+  .string()
+  .trim()
+  .regex(/^[0-9a-f]{7,40}$/i, "sha must be 7-40 hex chars")
+  .transform((value) => value.toLowerCase());
+
+const releaseEvidenceRepoSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(255)
+  .refine((value) => {
+    try {
+      const url = new URL(value);
+      if (url.host !== "github.com") return false;
+      const parts = url.pathname.replace(/^\/+|\/+$/g, "").split("/");
+      return parts.length === 2 && parts[0].length > 0 && parts[1].length > 0;
+    } catch {
+      return /^github\.com\/[^/\s]+\/[^/\s]+$/.test(value);
+    }
+  }, "repo must be a GitHub https URL such as https://github.com/owner/repo");
+
+const releaseEvidenceRefSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(255)
+  .regex(/^[A-Za-z0-9_\-./]+$/, "ref must be a valid git ref name");
+
+const releaseEvidencePrUrlSchema = z
+  .string()
+  .trim()
+  .url()
+  .refine((value) => /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+$/.test(value), {
+    message: "prUrl must be a GitHub pull-request URL",
+  });
+
+const releaseEvidenceNotCodeReasonSchema = z
+  .string()
+  .trim()
+  .max(2000);
+
+const releaseEvidenceMergeCommitSchema = z
+  .object({
+    kind: z.literal("merge_commit"),
+    repo: releaseEvidenceRepoSchema,
+    ref: releaseEvidenceRefSchema,
+    sha: releaseEvidenceShaSchema,
+  })
+  .strict();
+
+const releaseEvidencePrMergedSchema = z
+  .object({
+    kind: z.literal("pr_merged"),
+    repo: releaseEvidenceRepoSchema,
+    ref: releaseEvidenceRefSchema,
+    prUrl: releaseEvidencePrUrlSchema,
+  })
+  .strict();
+
+const releaseEvidenceNotCodeSchema = z
+  .object({
+    kind: z.literal("not_code"),
+    notCodeReason: releaseEvidenceNotCodeReasonSchema,
+  })
+  .strict();
+
+const releaseEvidenceReleaseOwnerSignoffSchema = z
+  .object({
+    kind: z.literal("release_owner_signoff"),
+    repo: releaseEvidenceRepoSchema,
+    ref: releaseEvidenceRefSchema,
+    signedOffByAgentId: z.string().uuid(),
+    signoffCommentId: z.string().uuid(),
+  })
+  .strict();
+
+export const releaseEvidenceSchema = z.discriminatedUnion("kind", [
+  releaseEvidenceMergeCommitSchema,
+  releaseEvidencePrMergedSchema,
+  releaseEvidenceNotCodeSchema,
+  releaseEvidenceReleaseOwnerSignoffSchema,
+]);
+
+export type ReleaseEvidence = z.infer<typeof releaseEvidenceSchema>;
+export type ReleaseEvidenceMergeCommit = z.infer<typeof releaseEvidenceMergeCommitSchema>;
+export type ReleaseEvidencePrMerged = z.infer<typeof releaseEvidencePrMergedSchema>;
+export type ReleaseEvidenceNotCode = z.infer<typeof releaseEvidenceNotCodeSchema>;
+export type ReleaseEvidenceReleaseOwnerSignoff = z.infer<typeof releaseEvidenceReleaseOwnerSignoffSchema>;
+
 type IssueCreateStatusDefaultInput = {
   status?: unknown;
   assigneeAgentId?: unknown;
@@ -361,6 +460,7 @@ export const updateIssueSchema = createIssueBaseSchema.partial().extend({
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
+  releaseEvidence: releaseEvidenceSchema.optional().nullable(),
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;

@@ -87,6 +87,9 @@ export interface Config {
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
+  requireReleaseEvidence: boolean;
+  releaseOwnerAgentId: string | undefined;
+  githubToken: string | undefined;
 }
 
 function detectTailnetBindHost(): string | undefined {
@@ -333,5 +336,8 @@ export function loadConfig(): Config {
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
+    requireReleaseEvidence: process.env.PAPERCLIP_REQUIRE_RELEASE_EVIDENCE === "true",
+    releaseOwnerAgentId: process.env.PAPERCLIP_RELEASE_OWNER_AGENT_ID?.trim() || undefined,
+    githubToken: process.env.PAPERCLIP_GITHUB_TOKEN?.trim() || undefined,
   };
 }

@@ -63,6 +63,13 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
 const mockIssueRecoveryActionService = vi.hoisted(() => ({
   getActiveForIssue: vi.fn(async () => null),
 }));
+const mockHeartbeatService = vi.hoisted(() => ({
+  wakeup: vi.fn(async () => undefined),
+  reportRunActivity: vi.fn(async () => undefined),
+  getRun: vi.fn(async () => null),
+  getActiveRunForAgent: vi.fn(async () => null),
+  cancelRun: vi.fn(async () => null),
+}));
 
 function registerRouteMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -109,13 +116,7 @@ function registerRouteMocks() {
       saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
     }),
     goalService: () => ({}),
-    heartbeatService: () => ({
-      wakeup: vi.fn(async () => undefined),
-      reportRunActivity: vi.fn(async () => undefined),
-      getRun: vi.fn(async () => null),
-      getActiveRunForAgent: vi.fn(async () => null),
-      cancelRun: vi.fn(async () => null),
-    }),
+    heartbeatService: () => mockHeartbeatService,
     instanceSettingsService: () => ({
       get: vi.fn(async () => ({
         id: "instance-settings-1",
@@ -265,6 +266,16 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.listWakeableBlockedDependents.mockReset();
     mockIssueRecoveryActionService.getActiveForIssue.mockReset();
     mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(null);
+    mockHeartbeatService.wakeup.mockReset();
+    mockHeartbeatService.wakeup.mockResolvedValue(undefined);
+    mockHeartbeatService.reportRunActivity.mockReset();
+    mockHeartbeatService.reportRunActivity.mockResolvedValue(undefined);
+    mockHeartbeatService.getRun.mockReset();
+    mockHeartbeatService.getRun.mockResolvedValue(null);
+    mockHeartbeatService.getActiveRunForAgent.mockReset();
+    mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(null);
+    mockHeartbeatService.cancelRun.mockReset();
+    mockHeartbeatService.cancelRun.mockResolvedValue(null);
     mockIssueService.remove.mockReset();
     mockIssueService.removeAttachment.mockReset();
     mockIssueService.update.mockReset();
@@ -457,6 +468,38 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("allows mentioned agents to add comment-only triage on dependency-blocked issues", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }));
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "66666666-6666-4666-8666-666666666666",
+      companyId,
+      agentId: peerAgentId,
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_comment_mentioned",
+        source: "comment.mention",
+        dependencyBlockedInteraction: true,
+      },
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Acknowledged the dependency-blocked mention; no status mutation." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Acknowledged the dependency-blocked mention; no status mutation.",
+      expect.objectContaining({
+        agentId: peerAgentId,
+        runId: "66666666-6666-4666-8666-666666666666",
+      }),
+      expect.objectContaining({ authorType: "agent" }),
+    );
   });
 
   it("allows same-company agent mutations on unassigned in-progress issues", async () => {

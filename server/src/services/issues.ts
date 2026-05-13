@@ -1581,6 +1581,9 @@ const issueListSelect = {
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
   hiddenAt: issues.hiddenAt,
+  releaseEvidence: issues.releaseEvidence,
+  releaseEvidenceValidatedAt: issues.releaseEvidenceValidatedAt,
+  releaseEvidenceValidationError: issues.releaseEvidenceValidationError,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
 };

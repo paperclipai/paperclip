@@ -9,6 +9,7 @@ import {
   executionWorkspaces,
   issueExecutionDecisions,
   issueRelations,
+  labels,
   issues as issueRows,
   projectWorkspaces,
 } from "@paperclipai/db";
@@ -46,7 +47,9 @@ import {
   type CompanySearchResponse,
   type ExecutionWorkspace,
   type IssueRelationIssueSummary,
+  type ReleaseEvidence,
   type SuccessfulRunHandoffState,
+  releaseEvidenceSchema,
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
@@ -109,6 +112,13 @@ import {
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { loadConfig } from "../config.js";
+import {
+  closureGateErrorResponse,
+  recordReleaseEvidenceAudit,
+  validateReleaseEvidenceForIssueClose,
+} from "../services/release-evidence/validator.js";
+import { NOT_CODE_GATE_LABEL } from "../services/release-evidence/types.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -881,6 +891,17 @@ export function issueRoutes(
     );
   }
 
+  async function assertRestrictedIssueLabels(companyId: string, labelIds: string[] | undefined, actorType: string) {
+    if (!labelIds || labelIds.length === 0 || actorType === "board") return;
+    const rows = await db
+      .select({ name: labels.name })
+      .from(labels)
+      .where(and(eq(labels.companyId, companyId), inArray(labels.id, labelIds)));
+    if (rows.some((row) => row.name === NOT_CODE_GATE_LABEL)) {
+      throw forbidden("Only board users may apply the not-code-gate label");
+    }
+  }
+
   async function assertAgentInReviewReviewPath(input: {
     existing: {
       id: string;
@@ -1139,6 +1160,29 @@ export function issueRoutes(
       });
     }
     return true;
+  }
+
+  async function isDependencyBlockedMentionCommentAllowed(
+    req: Request,
+    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+  ) {
+    if (req.actor.type !== "agent") return false;
+    if (issue.status !== "blocked") return false;
+    if (!req.actor.agentId || !req.actor.runId) return false;
+    if (!issue.assigneeAgentId || issue.assigneeAgentId === req.actor.agentId) return false;
+
+    const run = await heartbeat.getRun(req.actor.runId);
+    if (!run || run.companyId !== issue.companyId || run.agentId !== req.actor.agentId) return false;
+    const context = run.contextSnapshot;
+    if (!context || typeof context !== "object") return false;
+
+    const contextRecord = context as Record<string, unknown>;
+    return (
+      contextRecord.issueId === issue.id &&
+      contextRecord.wakeReason === "issue_comment_mentioned" &&
+      contextRecord.source === "comment.mention" &&
+      contextRecord.dependencyBlockedInteraction === true
+    );
   }
 
   function assertStructuredCommentFieldsAllowed(
@@ -1521,6 +1565,9 @@ export function issueRoutes(
   router.post("/companies/:companyId/labels", validate(createIssueLabelSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (req.body.name?.trim() === NOT_CODE_GATE_LABEL && req.actor.type !== "board") {
+      throw forbidden("Only board users may create the not-code-gate label");
+    }
     const label = await svc.createLabel(companyId, req.body);
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -2514,6 +2561,7 @@ export function issueRoutes(
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, companyId);
     }
+    await assertRestrictedIssueLabels(companyId, req.body.labelIds, req.actor.type);
     await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
 
     const actor = getActorInfo(req);
@@ -2752,6 +2800,7 @@ export function issueRoutes(
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    await assertRestrictedIssueLabels(existing.companyId, req.body.labelIds, req.actor.type);
 
     const actor = getActorInfo(req);
     const isClosed = isClosedIssueStatus(existing.status);
@@ -2931,6 +2980,46 @@ export function issueRoutes(
       actorType: req.actor.type,
     });
 
+    let acceptedReleaseEvidenceAudit: {
+      evidence: ReleaseEvidence;
+      outcome: Awaited<ReturnType<typeof validateReleaseEvidenceForIssueClose>>;
+    } | null = null;
+    if (updateFields.status === "done") {
+      const rawReleaseEvidence = updateFields.releaseEvidence ?? existing.releaseEvidence ?? null;
+      const closureGateOutcome = await validateReleaseEvidenceForIssueClose(db, {
+        issue: existing,
+        patchReleaseEvidence: updateFields.releaseEvidence,
+        actorAgentId: actor.agentId ?? null,
+        actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        config: loadConfig(),
+      });
+      const parsedReleaseEvidence = releaseEvidenceSchema.safeParse(rawReleaseEvidence);
+
+      if (!closureGateOutcome.ok) {
+        if (parsedReleaseEvidence.success) {
+          await recordReleaseEvidenceAudit(db, {
+            issueId: existing.id,
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+            evidence: parsedReleaseEvidence.data,
+            outcome: closureGateOutcome,
+          });
+        }
+        res.status(422).json(closureGateErrorResponse(closureGateOutcome));
+        return;
+      }
+
+      if (parsedReleaseEvidence.success) {
+        updateFields.releaseEvidence = parsedReleaseEvidence.data;
+        updateFields.releaseEvidenceValidatedAt = new Date();
+        updateFields.releaseEvidenceValidationError = closureGateOutcome.degraded ? "degraded" : null;
+        acceptedReleaseEvidenceAudit = {
+          evidence: parsedReleaseEvidence.data,
+          outcome: closureGateOutcome,
+        };
+      }
+    }
+
     const nextAssigneeAgentId =
       updateFields.assigneeAgentId === undefined ? existing.assigneeAgentId : (updateFields.assigneeAgentId as string | null);
     const nextAssigneeUserId =
@@ -3016,6 +3105,16 @@ export function issueRoutes(
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
+    }
+
+    if (acceptedReleaseEvidenceAudit) {
+      await recordReleaseEvidenceAudit(db, {
+        issueId: issue.id,
+        actorAgentId: actor.agentId ?? null,
+        actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        evidence: acceptedReleaseEvidenceAudit.evidence,
+        outcome: acceptedReleaseEvidenceAudit.outcome,
+      });
     }
 
     let cancelledStatusRunId: string | null = null;
@@ -4326,7 +4425,9 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    const dependencyBlockedMentionCommentAllowed =
+      await isDependencyBlockedMentionCommentAllowed(req, issue);
+    if (!dependencyBlockedMentionCommentAllowed && !(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
