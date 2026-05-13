@@ -10,6 +10,8 @@ const mockBuildWorkspaceRealizationRequest = vi.hoisted(() => vi.fn());
 const mockUpdateLeaseMetadata = vi.hoisted(() => vi.fn());
 const mockUpdateExecutionWorkspace = vi.hoisted(() => vi.fn());
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockEnvironmentsEnsureLocal = vi.hoisted(() => vi.fn());
+const mockEnvironmentsGetById = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/environment-execution-target.js", () => ({
   resolveEnvironmentExecutionTarget: mockResolveEnvironmentExecutionTarget,
@@ -26,8 +28,8 @@ vi.mock("../services/workspace-realization.js", () => ({
 
 vi.mock("../services/environments.js", () => ({
   environmentService: vi.fn(() => ({
-    ensureLocalEnvironment: vi.fn(),
-    getById: vi.fn(),
+    ensureLocalEnvironment: mockEnvironmentsEnsureLocal,
+    getById: mockEnvironmentsGetById,
     acquireLease: vi.fn(),
     releaseLease: vi.fn(),
     updateLeaseMetadata: mockUpdateLeaseMetadata,
@@ -546,5 +548,77 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     );
 
     expect(mockResolveEnvironmentExecutionTarget).not.toHaveBeenCalled();
+  });
+});
+
+describe("environmentRunOrchestrator — acquireForRun threads agentId", () => {
+  const mockDb = {} as any;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // selectedEnvironmentId !== defaultEnvironmentId in our inputs so the
+    // resolver goes through getById rather than ensureLocalEnvironment.
+    mockEnvironmentsGetById.mockResolvedValue(makeEnvironment("sandbox"));
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue({
+      kind: "local",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+    });
+    mockAdapterExecutionTargetToRemoteSpec.mockReturnValue(null);
+  });
+
+  function makeAcquireInput(overrides: { agentId?: string } = {}) {
+    return {
+      companyId: "company-1",
+      // distinct from defaultEnvironmentId so resolveEnvironment hits getById
+      selectedEnvironmentId: "env-1",
+      defaultEnvironmentId: "env-default",
+      adapterType: "claude_local",
+      issueId: null as string | null,
+      heartbeatRunId: "run-1",
+      agentId: overrides.agentId ?? "agent-uuid-abc",
+      persistedExecutionWorkspace: null,
+    };
+  }
+
+  it("passes agentId from acquireForRun's input through to runtime.acquireRunLease", async () => {
+    const runtime = makeMockRuntime({
+      acquireRunLease: vi.fn().mockResolvedValue({
+        lease: makeLease(),
+        leaseContext: { executionWorkspaceId: null, executionWorkspaceMode: null },
+      }),
+    });
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+
+    await orchestrator.acquireForRun(makeAcquireInput({ agentId: "agent-uuid-abc" }));
+
+    expect(runtime.acquireRunLease).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "agent-uuid-abc",
+        heartbeatRunId: "run-1",
+        companyId: "company-1",
+      }),
+    );
+  });
+
+  it("logs the lease-acquired activity with the same agentId it threads to the runtime", async () => {
+    const runtime = makeMockRuntime({
+      acquireRunLease: vi.fn().mockResolvedValue({
+        lease: makeLease(),
+        leaseContext: { executionWorkspaceId: null, executionWorkspaceMode: null },
+      }),
+    });
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+
+    await orchestrator.acquireForRun(makeAcquireInput({ agentId: "agent-uuid-xyz" }));
+
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      mockDb,
+      expect.objectContaining({
+        action: "environment.lease_acquired",
+        agentId: "agent-uuid-xyz",
+        actorId: "agent-uuid-xyz",
+      }),
+    );
   });
 });
