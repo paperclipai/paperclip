@@ -150,7 +150,7 @@ export function createPgLiveEventsTransport(opts: {
   }
 
   function publish(event: LiveEvent) {
-    const envelope = buildEnvelope(originId, event);
+    const envelope = buildEnvelope(originId, event, PG_NOTIFY_INLINE_LIMIT);
     if (envelope === OVERSIZED_EVENT) {
       // Symmetric noisy drop — see transport.ts OVERSIZED_EVENT docs.
       // Caller (live-events.ts) also suppresses local emission for the
@@ -190,5 +190,12 @@ export function createPgLiveEventsTransport(opts: {
     await sql.end({ timeout: 5 }).catch(() => {});
   }
 
-  return { originId, publish, subscribe, unsubscribe, close };
+  return {
+    originId,
+    maxEnvelopeBytes: PG_NOTIFY_INLINE_LIMIT,
+    publish,
+    subscribe,
+    unsubscribe,
+    close,
+  };
 }
