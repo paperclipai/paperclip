@@ -489,6 +489,7 @@ export interface CreateConfigValues {
   envVars: string;
   envBindings: Record<string, unknown>;
   url: string;
+  providerBaseUrl?: string;
   bootstrapPrompt: string;
   payloadTemplateJson?: string;
   workspaceStrategyType?: string;
