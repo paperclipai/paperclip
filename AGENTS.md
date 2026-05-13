@@ -59,6 +59,30 @@ rm -rf data/pglite
 pnpm dev
 ```
 
+## 4.1 Carmandale Fleet Deployment Context
+
+The Carmandale/Groove Jones fleet runs one production Paperclip server on `mini-ts`. Four companies are tenants in that server: Carman Industries (`CAR`), Chip Assistant (`CHIA`), Chip Research Lab (`CHI`), and Groove Jones (`GJ`).
+
+Important paths:
+
+- Production runtime checkout: `/Users/chipcarman/dev/paperclip-runtime`
+- Human/agent dev checkout on mini: `/Users/chipcarman/dev/paperclip`
+- Dale dev checkout on laptop: `/Users/dalecarman/dev/paperclip`
+- Operator repo with deploy wrapper: `/Users/chipcarman/dev/operator`
+- Canonical fleet workflow: `/Users/chipcarman/dev/operator/docs/paperclip-fleet-workflow.md`
+- Visual workflow map: `/Users/chipcarman/dev/operator/docs/paperclip-company-workflow-map.html`
+
+Production deployment rule:
+
+1. Make Paperclip changes in a dev checkout on a feature branch.
+2. Push and merge a PR into `carmandale/paperclip:master`.
+3. From operator, run `scripts/mini_paperclip_safe_sync.sh`.
+4. The wrapper updates `/Users/chipcarman/dev/paperclip-runtime`, installs, builds, restarts `com.groovejones.paperclip`, and checks health.
+
+Do not edit or commit inside `/Users/chipcarman/dev/paperclip-runtime`. It is a write-protected runtime mirror. Do not start extra Paperclip servers for CAR, CHIA, CHI, or GJ; the production model is one server, multi-tenant companies.
+
+When debugging from a mini-hosted driver repo, Paperclip should be visible at `http://127.0.0.1:3100/api/health`. The Tailscale dashboard URL for Dale is `http://100.87.196.118:3100`.
+
 ## 5. Core Engineering Rules
 
 1. Keep changes company-scoped.
