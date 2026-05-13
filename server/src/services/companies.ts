@@ -172,6 +172,15 @@ export function companyService(db: Db) {
       return enrichCompany(hydrated);
     },
 
+    getRateLimitSettings: async (id: string): Promise<Record<string, unknown> | null> => {
+      const row = await db
+        .select({ rateLimitSettings: companies.rateLimitSettings })
+        .from(companies)
+        .where(eq(companies.id, id))
+        .then((rows) => rows[0] ?? null);
+      return row?.rateLimitSettings ?? null;
+    },
+
     create: async (data: typeof companies.$inferInsert) => {
       const created = await createCompanyWithUniquePrefix(data);
       await environmentsSvc.ensureLocalEnvironment(created.id);

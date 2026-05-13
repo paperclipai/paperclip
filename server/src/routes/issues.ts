@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, desc, eq, inArray, notInArray } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, ne, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -100,6 +100,21 @@ import {
   createCompanySearchRateLimiter,
   type CompanySearchRateLimiter,
 } from "../services/company-search-rate-limit.js";
+import {
+  createIssueCreateRateLimiter,
+  parseIssueCreateRateLimitConfig,
+  type IssueCreateRateLimiter,
+} from "../services/issue-create-rate-limit.js";
+import {
+  createIssueCreateRateLimitGuard,
+  RATE_LIMIT_PAUSE_REASON,
+  type IssueCreateRateLimitGuard,
+  type IssueCreateRateLimitRecentIssue,
+} from "../services/issue-create-rate-limit-guard.js";
+import {
+  agents as agentsTable,
+  companyMemberships,
+} from "@paperclipai/db";
 import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
@@ -503,6 +518,7 @@ function summarizeIssueRelationForActivity(relation: {
 }
 
 const defaultCompanySearchRateLimiter = createCompanySearchRateLimiter();
+const defaultIssueCreateRateLimiter = createIssueCreateRateLimiter();
 
 function companySearchRateLimitActor(req: Request, companyId: string) {
   if (req.actor.type === "agent") {
@@ -816,6 +832,8 @@ export function issueRoutes(
     };
     searchService?: CompanySearchService;
     searchRateLimiter?: CompanySearchRateLimiter;
+    issueCreateRateLimiter?: IssueCreateRateLimiter;
+    issueCreateRateLimitGuard?: IssueCreateRateLimitGuard;
     pluginWorkerManager?: PluginWorkerManager;
   } = {},
 ) {
@@ -833,6 +851,121 @@ export function issueRoutes(
     return searchSvc;
   };
   const searchRateLimiter = opts.searchRateLimiter ?? defaultCompanySearchRateLimiter;
+  const issueCreateRateLimiter = opts.issueCreateRateLimiter ?? defaultIssueCreateRateLimiter;
+  const issueCreateRateLimitGuard: IssueCreateRateLimitGuard =
+    opts.issueCreateRateLimitGuard ??
+    createIssueCreateRateLimitGuard({
+      pauseAgent: async ({ agentId, reason }) => {
+        await db
+          .update(agentsTable)
+          .set({
+            status: "paused",
+            pauseReason: reason,
+            pausedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(and(eq(agentsTable.id, agentId), ne(agentsTable.status, "terminated")));
+      },
+      createAlertIssue: async ({ companyId: alertCompanyId, title, body, governanceAssigneeAgentId }) => {
+        const created = await svc.create(alertCompanyId, {
+          title,
+          description: body,
+          priority: "critical",
+          status: governanceAssigneeAgentId ? "todo" : "backlog",
+          assigneeAgentId: governanceAssigneeAgentId ?? null,
+          assigneeUserId: null,
+          originKind: "rate_limit_breach_alert",
+          originId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+        });
+        return { id: created.id, identifier: created.identifier ?? null };
+      },
+      resolveOwnerUserIds: async (resolveCompanyId) => {
+        const memberships = await access.listActiveUserMemberships(resolveCompanyId).catch(() => []);
+        return memberships
+          .filter((row) => row.membershipRole === "owner")
+          .map((row) => row.principalId);
+      },
+      loadRecentIssueIdentifiers: async ({ companyId: scopeCompanyId, agentId, limit, sinceMs }) => {
+        // `sinceMs` is a wall-clock timestamp (ms since epoch); see
+        // IssueCreateRateLimitGuardDeps.loadRecentIssueIdentifiers contract.
+        const since = new Date(sinceMs);
+        const rows = await db
+          .select({ id: issueRows.id, identifier: issueRows.identifier })
+          .from(issueRows)
+          .where(
+            and(
+              eq(issueRows.companyId, scopeCompanyId),
+              eq(issueRows.createdByAgentId, agentId),
+              gte(issueRows.createdAt, since),
+            ),
+          )
+          .orderBy(desc(issueRows.createdAt))
+          .limit(Math.max(1, limit));
+        return rows.map((row) => ({ id: row.id, identifier: row.identifier ?? null }));
+      },
+      appendAlertComment: async ({ issueId, body }) => {
+        await svc.addComment(issueId, body, { agentId: undefined, userId: undefined, runId: null }, {
+          authorType: "system",
+        });
+      },
+    });
+
+  async function enforceIssueCreateRateLimit(input: {
+    companyId: string;
+    agentId: string;
+  }) {
+    const settingsJson = await companiesSvc.getRateLimitSettings(input.companyId);
+    const config = parseIssueCreateRateLimitConfig(settingsJson);
+    if (!config.enabled) {
+      return { allowed: true } as const;
+    }
+
+    const actorAgent = await agentsSvc.getById(input.agentId);
+    if (!actorAgent || actorAgent.companyId !== input.companyId) {
+      return { allowed: true } as const;
+    }
+    if (config.exemptAgentIds.includes(actorAgent.id)) {
+      return { allowed: true } as const;
+    }
+    if (config.exemptAgentRoles.includes(actorAgent.role)) {
+      return { allowed: true } as const;
+    }
+
+    const result = issueCreateRateLimiter.consume(
+      { companyId: input.companyId, agentId: input.agentId },
+      config,
+    );
+    if (result.allowed) {
+      return { allowed: true } as const;
+    }
+
+    try {
+      await issueCreateRateLimitGuard.handleBreach({
+        companyId: input.companyId,
+        actor: {
+          agentId: actorAgent.id,
+          agentName: actorAgent.name,
+          agentRole: actorAgent.role,
+        },
+        config,
+        breach: result,
+      });
+    } catch (err) {
+      logger.error(
+        { err, agentId: actorAgent.id, companyId: input.companyId },
+        "issue-create rate-limit guard side-effect failed",
+      );
+    }
+
+    return {
+      allowed: false as const,
+      limit: result.limit,
+      windowMinutes: result.windowMinutes,
+      retryAfterSeconds: result.retryAfterSeconds,
+    };
+  }
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
   const projectsSvc = projectService(db);
@@ -2517,6 +2650,25 @@ export function issueRoutes(
     await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
 
     const actor = getActorInfo(req);
+
+    if (actor.actorType === "agent" && actor.agentId) {
+      const rateLimitOutcome = await enforceIssueCreateRateLimit({
+        companyId,
+        agentId: actor.agentId,
+      });
+      if (!rateLimitOutcome.allowed) {
+        res.setHeader("Retry-After", String(rateLimitOutcome.retryAfterSeconds));
+        res.status(429).json({
+          error: "issue_create_rate_limit_exceeded",
+          windowMinutes: rateLimitOutcome.windowMinutes,
+          maxIssuesPerWindow: rateLimitOutcome.limit,
+          agentId: actor.agentId,
+          retryAfterSeconds: rateLimitOutcome.retryAfterSeconds,
+        });
+        return;
+      }
+    }
+
     const executionPolicy = applyActorMonitorScheduledBy(
       normalizeIssueExecutionPolicy(req.body.executionPolicy),
       actor.actorType,
