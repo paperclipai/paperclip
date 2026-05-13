@@ -3,6 +3,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { redactSensitiveText } from "../redaction.js";
 
 export type RunLogStoreType = "local_file";
 
@@ -35,6 +36,63 @@ export interface RunLogStore {
   ): Promise<number>;
   finalize(handle: RunLogHandle): Promise<RunLogFinalizeSummary>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
+}
+
+const RUN_LOG_FILE_MODE = 0o600;
+const RUN_LOG_REDACTION_TOKEN = "<REDACTED>";
+const SENSITIVE_ENV_KEY_RE = /(?:_SECRET|_TOKEN|_KEY|_PASSWORD|_PRIVATE_KEY)$/;
+const EXPLICIT_SENSITIVE_ENV_KEYS = new Set([
+  "PAPERCLIP_AGENT_JWT_SECRET",
+  "PAPERCLIP_AGENT_JWT_PREVIOUS_SECRETS",
+]);
+const LONG_TOKEN_RE = /\b[A-Za-z0-9+/=_-]{32,}\b/g;
+const GENERIC_SENSITIVE_ENV_ASSIGNMENT_RE =
+  /(\b[A-Za-z0-9_]*(?:_SECRET|_TOKEN|_KEY|_PASSWORD|_PRIVATE_KEY)\s*=\s*)(["']?)[^\s"'`]+(\2)/g;
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function isSensitiveEnvKey(key: string) {
+  return EXPLICIT_SENSITIVE_ENV_KEYS.has(key) || SENSITIVE_ENV_KEY_RE.test(key);
+}
+
+function getSensitiveEnvEntries() {
+  return Object.entries(process.env).filter(
+    ([key, value]) => isSensitiveEnvKey(key) && typeof value === "string" && value.length > 0,
+  ) as Array<[string, string]>;
+}
+
+function redactEnvKeyContext(input: string, sensitiveKeys: readonly string[]) {
+  let output = input.replace(GENERIC_SENSITIVE_ENV_ASSIGNMENT_RE, `$1$2${RUN_LOG_REDACTION_TOKEN}$3`);
+
+  for (const key of sensitiveKeys) {
+    const escapedKey = escapeRegExp(key);
+    output = output.replace(
+      new RegExp("(" + escapedKey + "\\s*=\\s*)([\"']?)[^\\s\"'`]+(\\2)", "g"),
+      `$1$2${RUN_LOG_REDACTION_TOKEN}$3`,
+    );
+    output = output.replace(new RegExp(`(${escapedKey}\\s*:\\s*)\\S+`, "g"), `$1${RUN_LOG_REDACTION_TOKEN}`);
+  }
+
+  if (sensitiveKeys.some((key) => output.includes(key))) {
+    const keySet = new Set(sensitiveKeys);
+    output = output.replace(LONG_TOKEN_RE, (candidate) => (keySet.has(candidate) ? candidate : RUN_LOG_REDACTION_TOKEN));
+  }
+
+  return output;
+}
+
+function sanitizeRunLogText(input: string) {
+  let output = redactSensitiveText(input);
+  const sensitiveEntries = getSensitiveEnvEntries();
+  const sensitiveKeys = [...new Set([...sensitiveEntries.map(([key]) => key), ...EXPLICIT_SENSITIVE_ENV_KEYS])];
+
+  for (const [, value] of sensitiveEntries) {
+    output = output.split(value).join(RUN_LOG_REDACTION_TOKEN);
+  }
+
+  return redactEnvKeyContext(output, sensitiveKeys);
 }
 
 function safeSegments(...segments: string[]) {
@@ -101,7 +159,8 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
       await ensureDir(relDir);
 
       const absPath = resolveWithin(basePath, relPath);
-      await fs.writeFile(absPath, "", "utf8");
+      await fs.writeFile(absPath, "", { encoding: "utf8", mode: RUN_LOG_FILE_MODE });
+      await fs.chmod(absPath, RUN_LOG_FILE_MODE);
 
       return { store: "local_file", logRef: relPath };
     },
@@ -112,7 +171,7 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
       const line = JSON.stringify({
         ts: event.ts,
         stream: event.stream,
-        chunk: event.chunk,
+        chunk: sanitizeRunLogText(event.chunk),
       });
       const persisted = `${line}\n`;
       await fs.appendFile(absPath, persisted, "utf8");
