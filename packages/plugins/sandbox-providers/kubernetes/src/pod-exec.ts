@@ -151,7 +151,6 @@ export async function execInPod(
         .then((webSocket) => {
           ws = webSocket as WebSocketLike;
           if (stdinStream && stdinPayload) {
-            stdinStream.removeAllListeners("end");
             stdinStream.end(stdinPayload);
           }
           ws.on("close", (code: number, reason: Buffer) => {

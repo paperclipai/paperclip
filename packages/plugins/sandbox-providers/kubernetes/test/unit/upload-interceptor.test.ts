@@ -57,6 +57,24 @@ describe("FastUploadInterceptor", () => {
     expect(interceptor.pendingCount).toBe(0);
   });
 
+  it("fails fast instead of falling through after acknowledged chunks exceed the buffer cap", () => {
+    const interceptor = new FastUploadInterceptor(1);
+    const target = "/workspace/file.bin";
+
+    expect(
+      interceptor.decide(
+        `mkdir -p '/workspace' && rm -f '${target}.paperclip-upload.b64' && : > '${target}.paperclip-upload.b64'`,
+      ),
+    ).toMatchObject({ action: "ack" });
+
+    const decision = interceptor.decide(`printf '%s' 'AAAA' >> '${target}.paperclip-upload.b64'`);
+    expect(decision).toMatchObject({
+      action: "error",
+      message: expect.stringContaining("Fast upload buffer cap exceeded"),
+    });
+    expect(interceptor.pendingCount).toBe(0);
+  });
+
   it("clears buffered uploads on reset", () => {
     const interceptor = new FastUploadInterceptor();
     const target = "/workspace/file.bin";

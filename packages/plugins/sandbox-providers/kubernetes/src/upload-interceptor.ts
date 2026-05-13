@@ -31,6 +31,7 @@ export interface FastUploadFlush {
 export type FastUploadDecision =
   | { action: "ack"; reason: string }
   | { action: "flush"; flush: FastUploadFlush }
+  | { action: "error"; message: string }
   | { action: "passthrough"; reason: string };
 
 interface BufferedUpload {
@@ -41,6 +42,8 @@ interface BufferedUpload {
 
 export class FastUploadInterceptor {
   private readonly buffers = new Map<string, BufferedUpload>();
+
+  constructor(private readonly maxBufferBytes = MAX_BUFFER_BYTES) {}
 
   decide(command: string): FastUploadDecision {
     const initMatch = INIT_RE.exec(command);
@@ -69,9 +72,12 @@ export class FastUploadInterceptor {
         return { action: "passthrough", reason: "chunk without prior init" };
       }
 
-      if (upload.totalBase64Chars + base64Chunk.length > (MAX_BUFFER_BYTES * 4) / 3) {
+      if (upload.totalBase64Chars + base64Chunk.length > (this.maxBufferBytes * 4) / 3) {
         this.buffers.delete(tempPath);
-        return { action: "passthrough", reason: "buffer cap exceeded" };
+        return {
+          action: "error",
+          message: `Fast upload buffer cap exceeded for ${upload.targetPath}; retry the upload with a smaller payload.`,
+        };
       }
 
       upload.chunks.push(base64Chunk);

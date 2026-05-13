@@ -559,7 +559,7 @@ const plugin = definePlugin({
           const dir = slashIndex > 0 ? decision.flush.targetPath.slice(0, slashIndex) : ".";
           const script =
             `mkdir -p ${shellQuoteArg(dir)} && ` +
-            `head -c ${base64Body.length} | base64 -d > ${shellQuoteArg(decision.flush.targetPath)}`;
+            `base64 -d > ${shellQuoteArg(decision.flush.targetPath)}`;
           const flushResult = await execInPod(
             kc,
             namespace,
@@ -582,6 +582,22 @@ const plugin = definePlugin({
               podName,
               fastUpload: "flush",
               uploadedBytes: decision.flush.payload.length,
+            },
+          };
+        }
+        if (decision.action === "error") {
+          return {
+            exitCode: 1,
+            timedOut: false,
+            stdout: "",
+            stderr: decision.message,
+            metadata: {
+              provider: "kubernetes",
+              backend: "sandbox-cr",
+              namespace,
+              sandboxName: lease.providerLeaseId,
+              podName,
+              fastUpload: "error",
             },
           };
         }
