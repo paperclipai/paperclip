@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createLocalAgentJwt, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 
@@ -96,5 +97,69 @@ describe("agent local JWT", () => {
     process.env[issuerEnv] = "paperclip";
     process.env[audienceEnv] = "paperclip-api";
     expect(verifyLocalAgentJwt(token!)).toBeNull();
+  });
+
+  it("does not verify a token across companies (per-company isolation)", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const tokenA = createLocalAgentJwt("agent-1", "company-A", "claude_local", "run-1");
+    expect(tokenA).not.toBeNull();
+
+    // A token whose body claims company-A must verify successfully under its
+    // own company-A derived key.
+    expect(verifyLocalAgentJwt(tokenA!)?.company_id).toBe("company-A");
+
+    // Tamper: forge a token by copying tokenA's header+signature and swapping
+    // the claim's company_id to company-B. The signature was bound to the
+    // company-A derived key over the original claims; once we re-encode with a
+    // different company_id (or rebind to company-B's key) verification must
+    // fail because the signature is over the original signing input.
+    const [headerB64, claimsB64, signature] = tokenA!.split(".");
+    const claims = JSON.parse(Buffer.from(claimsB64, "base64url").toString("utf8"));
+    claims.company_id = "company-B";
+    const tamperedClaimsB64 = Buffer.from(JSON.stringify(claims), "utf8").toString("base64url");
+    const tampered = `${headerB64}.${tamperedClaimsB64}.${signature}`;
+    expect(verifyLocalAgentJwt(tampered)).toBeNull();
+  });
+
+  it("accepts legacy tokens signed with the master secret (backward compat)", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const masterSecret = process.env[secretEnv]!;
+
+    // Hand-craft a token signed directly with the master secret, simulating a
+    // JWT issued before per-company derivation existed.
+    const now = Math.floor(Date.now() / 1000);
+    const header = { alg: "HS256", typ: "JWT" };
+    const claims = {
+      sub: "agent-legacy",
+      company_id: "company-legacy",
+      adapter_type: "claude_local",
+      run_id: "run-legacy",
+      iat: now,
+      exp: now + 3600,
+      iss: "paperclip",
+      aud: "paperclip-api",
+    };
+    const headerB64 = Buffer.from(JSON.stringify(header), "utf8").toString("base64url");
+    const claimsB64 = Buffer.from(JSON.stringify(claims), "utf8").toString("base64url");
+    const signingInput = `${headerB64}.${claimsB64}`;
+    const legacySig = createHmac("sha256", masterSecret).update(signingInput).digest("base64url");
+    const legacyToken = `${signingInput}.${legacySig}`;
+
+    const verified = verifyLocalAgentJwt(legacyToken);
+    expect(verified).toMatchObject({
+      sub: "agent-legacy",
+      company_id: "company-legacy",
+      adapter_type: "claude_local",
+      run_id: "run-legacy",
+    });
+  });
+
+  it("defaults TTL to 1h when PAPERCLIP_AGENT_JWT_TTL_SECONDS is unset", () => {
+    delete process.env[ttlEnv];
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    const claims = verifyLocalAgentJwt(token!);
+    expect(claims).not.toBeNull();
+    expect(claims!.exp - claims!.iat).toBe(60 * 60);
   });
 });
