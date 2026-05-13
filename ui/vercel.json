@@ -1,6 +1,6 @@
 {
   "installCommand": "cd .. && pnpm install --frozen-lockfile",
-  "buildCommand": "cd .. && pnpm --filter @paperclipai/ui build",
+  "buildCommand": "pnpm run build",
   "outputDirectory": "dist",
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
