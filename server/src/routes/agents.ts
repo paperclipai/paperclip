@@ -151,6 +151,10 @@ export function agentRoutes(
     "instructionsFilePath",
     "agentsMdPath",
   ] as const;
+  // Adapter-config keys that pick which binary/model the agent executes against.
+  // Agent-authenticated callers must not be able to flip these via self-PATCH:
+  // the choice of adapter is a board-level decision (MONAA-1054).
+  const KNOWN_AGENT_FORBIDDEN_ADAPTER_CHOICE_KEYS = ["model", "command"] as const;
 
   const router = Router();
   const svc = agentService(db);
@@ -1011,6 +1015,39 @@ export function agentRoutes(
     );
   }
 
+  function collectForbiddenAdapterChoicePaths(
+    adapterConfig: Record<string, unknown> | null | undefined,
+    path: string,
+  ): string[] {
+    if (!adapterConfig) return [];
+    return KNOWN_AGENT_FORBIDDEN_ADAPTER_CHOICE_KEYS
+      .filter((key) => adapterConfig[key] !== undefined)
+      .map((key) => `${path}.${key}`);
+  }
+
+  function assertNoAgentAdapterChoicePatch(
+    req: Request,
+    patch: Record<string, unknown>,
+  ) {
+    if (req.actor.type !== "agent") return;
+
+    const offending: string[] = [];
+    if (Object.prototype.hasOwnProperty.call(patch, "adapterType")) {
+      offending.push("adapterType");
+    }
+    offending.push(
+      ...collectForbiddenAdapterChoicePaths(asRecord(patch.adapterConfig), "adapterConfig"),
+    );
+    for (const entry of listRuntimeModelProfileAdapterConfigs(patch.runtimeConfig)) {
+      offending.push(...collectForbiddenAdapterChoicePaths(entry.adapterConfig, entry.path));
+    }
+
+    if (offending.length === 0) return;
+    throw forbidden(
+      `Agent-authenticated callers cannot modify adapter choice (${offending.join(", ")})`,
+    );
+  }
+
   function summarizeAgentUpdateDetails(patch: Record<string, unknown>) {
     const changedTopLevelKeys = Object.keys(patch).sort();
     const details: Record<string, unknown> = { changedTopLevelKeys };
@@ -1663,6 +1700,11 @@ export function agentRoutes(
     if (!existing) {
       res.status(404).json({ error: "Agent not found" });
       return;
+    }
+    if (req.actor.type === "agent") {
+      throw forbidden(
+        "Agent-authenticated callers cannot rollback adapter configuration; rollback is a board-only operation (MONAA-1054)",
+      );
     }
     await assertCanUpdateAgent(req, existing);
 
@@ -2351,6 +2393,7 @@ export function agentRoutes(
       return;
     }
     await assertCanUpdateAgent(req, existing);
+    assertNoAgentAdapterChoicePatch(req, req.body as Record<string, unknown>);
 
     if (hasOwn(req.body as object, "permissions")) {
       res.status(422).json({ error: "Use /api/agents/:id/permissions for permission changes" });
