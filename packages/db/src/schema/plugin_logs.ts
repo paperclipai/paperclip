@@ -41,6 +41,7 @@ export const pluginLogs = pgTable(
       table.pluginId,
       table.createdAt,
     ),
+    companyIdx: index("plugin_logs_company_idx").on(table.companyId),
     levelIdx: index("plugin_logs_level_idx").on(table.level),
   }),
 );

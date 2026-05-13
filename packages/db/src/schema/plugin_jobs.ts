@@ -100,6 +100,7 @@ export const pluginJobRuns = pgTable(
   (table) => ({
     jobIdx: index("plugin_job_runs_job_idx").on(table.jobId),
     pluginIdx: index("plugin_job_runs_plugin_idx").on(table.pluginId),
+    companyIdx: index("plugin_job_runs_company_idx").on(table.companyId),
     statusIdx: index("plugin_job_runs_status_idx").on(table.status),
   }),
 );
