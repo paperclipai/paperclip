@@ -62,8 +62,25 @@ function readRememberedInstanceSettingsPath(): string {
   }
 }
 
+// Detect whether the viewport is narrower than the `lg` Tailwind breakpoint
+// (1024px). Used to show/hide the mobile bottom-nav and off-canvas sidebar
+// on both phones (<768px) and tablets (768px–1023px).
+function useIsNarrow() {
+  const [isNarrow, setIsNarrow] = useState(() => window.innerWidth < 1024);
+  useEffect(() => {
+    const mql = window.matchMedia("(max-width: 1023px)");
+    const onChange = (e: MediaQueryListEvent) => setIsNarrow(e.matches);
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, []);
+  return isNarrow;
+}
+
 export function Layout() {
   const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile } = useSidebar();
+  // isNarrow = true on phone AND tablet (<lg / 1024px).
+  // isMobile (from SidebarContext) = true only on phone (<md / 768px).
+  const isNarrow = useIsNarrow();
   const { openNewIssue, openOnboarding } = useDialogActions();
   const { togglePanelVisible } = usePanel();
   const {
@@ -239,17 +256,17 @@ export function Layout() {
   });
 
   useEffect(() => {
-    if (!isMobile) {
+    if (!isNarrow) {
       setMobileNavVisible(true);
       return;
     }
     lastMainScrollTop.current = 0;
     setMobileNavVisible(true);
-  }, [isMobile]);
+  }, [isNarrow]);
 
-  // Swipe gesture to open/close sidebar on mobile
+  // Swipe gesture to open/close sidebar on phone+tablet
   useEffect(() => {
-    if (!isMobile) return;
+    if (!isNarrow) return;
 
     const EDGE_ZONE = 30; // px from left edge to start open-swipe
     const MIN_DISTANCE = 50; // minimum horizontal swipe distance
@@ -290,7 +307,7 @@ export function Layout() {
       document.removeEventListener("touchstart", onTouchStart);
       document.removeEventListener("touchend", onTouchEnd);
     };
-  }, [isMobile, sidebarOpen, setSidebarOpen]);
+  }, [isNarrow, sidebarOpen, setSidebarOpen]);
 
   const updateMobileNavVisibility = useCallback((currentTop: number) => {
     const delta = currentTop - lastMainScrollTop.current;
@@ -307,7 +324,7 @@ export function Layout() {
   }, []);
 
   useEffect(() => {
-    if (!isMobile) {
+    if (!isNarrow) {
       setMobileNavVisible(true);
       lastMainScrollTop.current = 0;
       return;
@@ -323,17 +340,17 @@ export function Layout() {
     return () => {
       window.removeEventListener("scroll", onScroll);
     };
-  }, [isMobile, updateMobileNavVisibility]);
+  }, [isNarrow, updateMobileNavVisibility]);
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
-
-    document.body.style.overflow = isMobile ? "visible" : "hidden";
+    // Phone and tablet use window scroll; desktop uses in-element overflow.
+    document.body.style.overflow = isNarrow ? "visible" : "hidden";
 
     return () => {
       document.body.style.overflow = previousOverflow;
     };
-  }, [isMobile]);
+  }, [isNarrow]);
 
   useEffect(() => {
     if (!location.pathname.startsWith("/instance/settings/")) return;
@@ -373,113 +390,136 @@ export function Layout() {
   return (
     <GeneralSettingsProvider value={{ keyboardShortcutsEnabled }}>
       <div
-      className={cn(
-        "bg-background text-foreground pt-[env(safe-area-inset-top)]",
-        isMobile ? "min-h-dvh" : "flex h-dvh flex-col overflow-hidden",
-      )}
-      >
-      <a
-        href="#main-content"
-        className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[200] focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        Skip to Main Content
-      </a>
-      <WorktreeBanner />
-      <DevRestartBanner devServer={health?.devServer} />
-      <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-hidden")}>
-        {isMobile && sidebarOpen && (
-          <button
-            type="button"
-            className="fixed inset-0 z-40 bg-black/50"
-            onClick={() => setSidebarOpen(false)}
-            aria-label="Close sidebar"
-          />
+        className={cn(
+          "bg-background text-foreground pt-[env(safe-area-inset-top)]",
+          // Narrow (phone+tablet <lg): window-scroll layout, full height
+          // Desktop (≥lg): flex column with overflow-hidden for in-element scroll
+          isNarrow ? "min-h-dvh" : "flex h-dvh flex-col overflow-hidden",
         )}
-
-        {isMobile ? (
-          <div
-            className={cn(
-              "fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden pt-[env(safe-area-inset-top)] transition-transform duration-100 ease-out",
-              sidebarOpen ? "translate-x-0" : "-translate-x-full"
-            )}
-          >
-            <div className="flex flex-1 min-h-0 overflow-hidden">
-              <div className="w-60 shrink-0 overflow-hidden">
-                {isInstanceSettingsRoute ? (
-                  <InstanceSidebar />
-                ) : isCompanySettingsRoute ? (
-                  <CompanySettingsSidebar />
-                ) : (
-                  companySidebar
-                )}
-              </div>
-            </div>
-            <SidebarAccountMenu
-              deploymentMode={health?.deploymentMode}
-              instanceSettingsTarget={instanceSettingsTarget}
-              version={health?.version}
+      >
+        <a
+          href="#main-content"
+          className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[200] focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          Skip to Main Content
+        </a>
+        <WorktreeBanner />
+        <DevRestartBanner devServer={health?.devServer} />
+        <div className={cn("min-h-0 flex-1", isNarrow ? "w-full" : "flex overflow-hidden")}>
+          {/* ── Off-canvas overlay backdrop (phone + tablet) ── */}
+          {isNarrow && sidebarOpen && (
+            <button
+              type="button"
+              className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm"
+              onClick={() => setSidebarOpen(false)}
+              aria-label="Close sidebar"
             />
-          </div>
-        ) : (
-          <div className="flex h-full flex-col shrink-0">
-            <div className="flex flex-1 min-h-0">
-              <ResizableSidebarPane open={sidebarOpen} resizable className="h-full shrink-0">
-                {isInstanceSettingsRoute ? (
-                  <InstanceSidebar />
-                ) : isCompanySettingsRoute ? (
-                  <CompanySettingsSidebar />
-                ) : (
-                  companySidebar
-                )}
-              </ResizableSidebarPane>
-            </div>
-            <SidebarAccountMenu
-              deploymentMode={health?.deploymentMode}
-              instanceSettingsTarget={instanceSettingsTarget}
-              version={health?.version}
-            />
-          </div>
-        )}
+          )}
 
-        <div className={cn("flex min-w-0 flex-col", isMobile ? "w-full" : "h-full flex-1")}>
-          <div
-            className={cn(
-              isMobile && "sticky top-0 z-20 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85",
-            )}
-          >
-            <BreadcrumbBar />
-          </div>
-          <div className={cn(isMobile ? "block" : "flex flex-1 min-h-0")}>
-            <main
-              id="main-content"
-              ref={mainContentRef}
-              tabIndex={-1}
+          {/* ── Sidebar: off-canvas on narrow (<lg), static on desktop ── */}
+          {isNarrow ? (
+            // Off-canvas slide-in: glass-blur frosted panel from left edge
+            <div
               className={cn(
-                "flex-1 p-4 outline-none md:p-6",
-                isMobile ? "overflow-visible pb-[calc(5rem+env(safe-area-inset-bottom))]" : "overflow-auto",
+                "fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden",
+                // Safe-area top padding so content clears the notch
+                "pt-[env(safe-area-inset-top)]",
+                // Glass surface with rounded right edge
+                "glass-surface shadow-2xl",
+                // Wider on tablet, standard on phone
+                "w-72 sm:w-80",
+                // Slide-in transition
+                "transition-transform duration-200 ease-[cubic-bezier(0.32,0.72,0,1)]",
+                sidebarOpen ? "translate-x-0" : "-translate-x-full",
               )}
             >
-              {hasUnknownCompanyPrefix ? (
-                <NotFoundPage
-                  scope="invalid_company_prefix"
-                  requestedPrefix={companyPrefix ?? selectedCompany?.issuePrefix}
-                />
-              ) : (
-                <Outlet />
+              <div className="flex flex-1 min-h-0 overflow-hidden">
+                <div className="w-full overflow-hidden">
+                  {isInstanceSettingsRoute ? (
+                    <InstanceSidebar />
+                  ) : isCompanySettingsRoute ? (
+                    <CompanySettingsSidebar />
+                  ) : (
+                    companySidebar
+                  )}
+                </div>
+              </div>
+              <SidebarAccountMenu
+                deploymentMode={health?.deploymentMode}
+                instanceSettingsTarget={instanceSettingsTarget}
+                version={health?.version}
+              />
+            </div>
+          ) : (
+            // Desktop static sidebar
+            <div className="flex h-full flex-col shrink-0">
+              <div className="flex flex-1 min-h-0">
+                <ResizableSidebarPane open={sidebarOpen} resizable className="h-full shrink-0">
+                  {isInstanceSettingsRoute ? (
+                    <InstanceSidebar />
+                  ) : isCompanySettingsRoute ? (
+                    <CompanySettingsSidebar />
+                  ) : (
+                    companySidebar
+                  )}
+                </ResizableSidebarPane>
+              </div>
+              <SidebarAccountMenu
+                deploymentMode={health?.deploymentMode}
+                instanceSettingsTarget={instanceSettingsTarget}
+                version={health?.version}
+              />
+            </div>
+          )}
+
+          {/* ── Main content column ── */}
+          <div className={cn("flex min-w-0 flex-col", isNarrow ? "w-full" : "h-full flex-1")}>
+            {/* BreadcrumbBar: sticky + glass on narrow, plain on desktop */}
+            <div
+              className={cn(
+                isNarrow && "sticky top-0 z-20",
               )}
-            </main>
-            <PropertiesPanel />
+            >
+              <BreadcrumbBar />
+            </div>
+
+            <div className={cn(isNarrow ? "block" : "flex flex-1 min-h-0")}>
+              <main
+                id="main-content"
+                ref={mainContentRef}
+                tabIndex={-1}
+                className={cn(
+                  "flex-1 p-4 outline-none md:p-6",
+                  // Narrow: window-scroll, add bottom clearance for nav bar + safe area
+                  // Desktop: in-element scroll
+                  isNarrow ? "overflow-visible pb-safe-nav" : "overflow-auto",
+                )}
+              >
+                {hasUnknownCompanyPrefix ? (
+                  <NotFoundPage
+                    scope="invalid_company_prefix"
+                    requestedPrefix={companyPrefix ?? selectedCompany?.issuePrefix}
+                  />
+                ) : (
+                  <Outlet />
+                )}
+              </main>
+              {/* PropertiesPanel: bottom-sheet on <lg, side-pane on desktop */}
+              <PropertiesPanel />
+            </div>
           </div>
         </div>
-      </div>
-      {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
-      <CommandPalette />
-      <NewIssueDialog />
-      <NewProjectDialog />
-      <NewGoalDialog />
-      <NewAgentDialog />
-      <KeyboardShortcutsCheatsheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
-      <ToastViewport />
+
+        {/* MobileBottomNav: visible on phone+tablet (<lg), hidden on desktop via CSS */}
+        <MobileBottomNav visible={mobileNavVisible} />
+
+        <CommandPalette />
+        <NewIssueDialog />
+        <NewProjectDialog />
+        <NewGoalDialog />
+        <NewAgentDialog />
+        <KeyboardShortcutsCheatsheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+        <ToastViewport />
       </div>
     </GeneralSettingsProvider>
   );

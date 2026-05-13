@@ -1012,3 +1012,48 @@ span.paperclip-project-mention-chip {
 [class*="_toolbarNodeKindSelectContainer_"] {
   z-index: 81 !important;
 }
+
+/* ─── Safe-area-inset utilities (glass-mobile agent) ────────────────────────
+   Append-only section. Tokens agent owns everything above this line.
+   These are used by Layout, MobileBottomNav, BreadcrumbBar, PropertiesPanel.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* Bottom padding that accounts for both the mobile nav bar height (4rem / 64px)
+   and the device safe-area-inset-bottom (notch / home indicator). */
+.pb-safe-nav {
+  padding-bottom: calc(4rem + env(safe-area-inset-bottom));
+}
+
+/* Stand-alone safe-area bottom padding helpers */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+
+.pl-safe {
+  padding-left: env(safe-area-inset-left);
+}
+
+.pr-safe {
+  padding-right: env(safe-area-inset-right);
+}
+
+/* Glass-blur surface helpers used by sidebar bottom sheet and properties panel
+   bottom sheet on mobile. Tailwind's backdrop-blur-2xl is fine for the blur;
+   these just ensure the bg tokens work correctly with supports query. */
+@supports (backdrop-filter: blur(0)) {
+  .glass-surface {
+    background-color: color-mix(in oklab, var(--background) 80%, transparent);
+    backdrop-filter: blur(24px) saturate(1.6);
+    -webkit-backdrop-filter: blur(24px) saturate(1.6);
+  }
+}
+
+@supports not (backdrop-filter: blur(0)) {
+  .glass-surface {
+    background-color: var(--background);
+  }
+}

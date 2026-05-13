@@ -12,9 +12,10 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
-import { Fragment, useMemo } from "react";
+import { Fragment, useEffect, useRef, useState, useMemo } from "react";
 import { PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
+import { cn } from "../lib/utils";
 
 type GlobalToolbarContext = { companyId: string | null; companyPrefix: string | null };
 
@@ -30,10 +31,41 @@ function GlobalToolbarPlugins({ context }: { context: GlobalToolbarContext }) {
   );
 }
 
+/**
+ * Hook that tracks whether the user has scrolled down enough to collapse the
+ * breadcrumb bar on mobile. Uses a scroll listener on the window (since mobile
+ * layout uses window scroll). Collapses after 48px of downward scroll, reveals
+ * immediately on any upward scroll or when near the top.
+ */
+function useScrollCollapse() {
+  const [collapsed, setCollapsed] = useState(false);
+  const lastScrollY = useRef(0);
+
+  useEffect(() => {
+    const onScroll = () => {
+      const y = window.scrollY;
+      if (y <= 24) {
+        setCollapsed(false);
+      } else if (y - lastScrollY.current > 4) {
+        setCollapsed(true);
+      } else if (lastScrollY.current - y > 4) {
+        setCollapsed(false);
+      }
+      lastScrollY.current = y;
+    };
+
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  return collapsed;
+}
+
 export function BreadcrumbBar() {
   const { breadcrumbs, mobileToolbar } = useBreadcrumbs();
   const { toggleSidebar, isMobile } = useSidebar();
   const { selectedCompanyId, selectedCompany } = useCompany();
+  const scrollCollapsed = useScrollCollapse();
 
   const globalToolbarSlotContext = useMemo(
     () => ({
@@ -47,7 +79,16 @@ export function BreadcrumbBar() {
 
   if (isMobile && mobileToolbar) {
     return (
-      <div className="border-b border-border px-2 h-12 shrink-0 flex items-center">
+      <div
+        className={cn(
+          "border-b border-border/60 px-2 h-12 shrink-0 flex items-center",
+          // Glass-blur sticky bar
+          "glass-surface",
+          // Collapse on scroll: translate up and fade slightly
+          "transition-[transform,opacity] duration-200 ease-out",
+          scrollCollapsed ? "-translate-y-full opacity-0 pointer-events-none" : "translate-y-0 opacity-100",
+        )}
+      >
         {mobileToolbar}
       </div>
     );
@@ -55,7 +96,13 @@ export function BreadcrumbBar() {
 
   if (breadcrumbs.length === 0) {
     return (
-      <div className="border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center justify-end">
+      <div
+        className={cn(
+          "border-b border-border/60 px-4 md:px-6 h-12 shrink-0 flex items-center justify-end",
+          isMobile && "glass-surface transition-[transform,opacity] duration-200 ease-out",
+          isMobile && scrollCollapsed ? "-translate-y-full opacity-0 pointer-events-none" : "translate-y-0 opacity-100",
+        )}
+      >
         {globalToolbarSlots}
       </div>
     );
@@ -76,7 +123,13 @@ export function BreadcrumbBar() {
   // Single breadcrumb = page title (uppercase)
   if (breadcrumbs.length === 1) {
     return (
-      <div className="border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center">
+      <div
+        className={cn(
+          "border-b border-border/60 px-4 md:px-6 h-12 shrink-0 flex items-center",
+          isMobile && "glass-surface transition-[transform,opacity] duration-200 ease-out",
+          isMobile && scrollCollapsed ? "-translate-y-full opacity-0 pointer-events-none" : "translate-y-0 opacity-100",
+        )}
+      >
         {menuButton}
         <div className="min-w-0 overflow-hidden flex-1">
           <h1 className="text-sm font-semibold uppercase tracking-wider truncate">
@@ -90,7 +143,13 @@ export function BreadcrumbBar() {
 
   // Multiple breadcrumbs = breadcrumb trail
   return (
-    <div className="border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center">
+    <div
+      className={cn(
+        "border-b border-border/60 px-4 md:px-6 h-12 shrink-0 flex items-center",
+        isMobile && "glass-surface transition-[transform,opacity] duration-200 ease-out",
+        isMobile && scrollCollapsed ? "-translate-y-full opacity-0 pointer-events-none" : "translate-y-0 opacity-100",
+      )}
+    >
       {menuButton}
       <div className="min-w-0 overflow-hidden flex-1">
         <Breadcrumb className="min-w-0 overflow-hidden">
