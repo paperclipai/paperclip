@@ -723,6 +723,57 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  async function findRecentlyClosedStaleRunEvaluation(companyId: string, runId: string, now = new Date()) {
+    const rearmCutoff = new Date(now.getTime() - ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS);
+    const [row] = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        priority: issues.priority,
+        assigneeAgentId: issues.assigneeAgentId,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+          gt(issues.updatedAt, rearmCutoff),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(1);
+    return row ?? null;
+  }
+
+  async function findLatestStaleRunEvaluation(companyId: string, runId: string) {
+    const [row] = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        priority: issues.priority,
+        assigneeAgentId: issues.assigneeAgentId,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(1);
+    return row ?? null;
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -1069,6 +1120,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       return { kind: "existing" as const, evaluationIssueId: existing.id };
     }
 
+    // If a recently-closed evaluation issue exists (within the rearm window), skip creating a new one.
+    // This prevents repeated issue spam when evaluation issues are closed/cancelled between scan cycles.
+    const recentlyClosed = await findRecentlyClosedStaleRunEvaluation(input.run.companyId, input.run.id, input.now);
+    if (recentlyClosed) {
+      return { kind: "existing" as const, evaluationIssueId: recentlyClosed.id };
+    }
+
     const ownerAgentId = await resolveStaleRunOwnerAgentId({ run: input.run, runningAgent, sourceIssue });
     const description = buildStaleRunEvaluationDescription({
       run: input.run,
@@ -1079,6 +1137,75 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       level,
       now: input.now,
     });
+
+    // Reopen an existing closed evaluation instead of creating a duplicate.
+    // The unique constraint only covers active (non-done/cancelled) issues, so without this
+    // check a new issue would be created every cycle after the rearm window expires.
+    const latestClosed = await findLatestStaleRunEvaluation(input.run.companyId, input.run.id);
+    if (latestClosed && ["done", "cancelled"].includes(latestClosed.status)) {
+      await issuesSvc.update(latestClosed.id, {
+        status: "todo",
+        priority: level === "critical" ? "high" : "medium",
+        description,
+        assigneeAgentId: ownerAgentId ?? undefined,
+      });
+      await issuesSvc.addComment(latestClosed.id, [
+        "Stale-run watchdog re-armed: reopening evaluation after rearm window.",
+        "",
+        `- Run: \`${input.run.id}\``,
+        `- Silent for: ${formatDuration(evidence.silenceAgeMs)}`,
+        `- Last output at: ${input.run.lastOutputAt?.toISOString() ?? "none recorded"}`,
+      ].join("\n"), { runId: input.run.id });
+      await logActivity(db, {
+        companyId: input.run.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: ownerAgentId,
+        runId: input.run.id,
+        action: "heartbeat.output_stale_detected",
+        entityType: "issue",
+        entityId: latestClosed.id,
+        details: {
+          source: "recovery.scan_silent_active_runs",
+          level,
+          sourceIssueId: sourceIssue?.id ?? null,
+          silenceAgeMs: evidence.silenceAgeMs,
+          lastOutputAt: input.run.lastOutputAt?.toISOString() ?? null,
+          reopened: true,
+        },
+      });
+      if (level === "critical") {
+        await ensureSourceIssueBlockedByStaleEvaluation({
+          sourceIssue,
+          evaluationIssue: latestClosed,
+          run: input.run,
+        });
+      }
+      if (ownerAgentId) {
+        await deps.enqueueWakeup(ownerAgentId, {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "issue_assigned",
+          payload: withRecoveryModelProfileHint({
+            issueId: latestClosed.id,
+            staleRunId: input.run.id,
+            sourceIssueId: sourceIssue?.id ?? null,
+          }),
+          requestedByActorType: "system",
+          requestedByActorId: null,
+          contextSnapshot: withRecoveryModelProfileHint({
+            issueId: latestClosed.id,
+            taskId: latestClosed.id,
+            wakeReason: "issue_assigned",
+            source: STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND,
+            staleRunId: input.run.id,
+            sourceIssueId: sourceIssue?.id ?? null,
+          }),
+        });
+      }
+      return { kind: "reopened" as const, evaluationIssueId: latestClosed.id };
+    }
+
     let evaluation: Awaited<ReturnType<typeof issuesSvc.create>>;
     try {
       evaluation = await issuesSvc.create(input.run.companyId, {
@@ -1156,7 +1283,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function scanSilentActiveRuns(opts?: { now?: Date; companyId?: string }) {
     const experimental = await instanceSettings.getExperimental();
     if (!experimental.enableStaleRunWatchdog) {
-      return { scanned: 0, created: 0, existing: 0, escalated: 0, snoozed: 0, skipped: 0, evaluationIssueIds: [] as string[] };
+      return { scanned: 0, created: 0, reopened: 0, existing: 0, escalated: 0, snoozed: 0, skipped: 0, evaluationIssueIds: [] as string[] };
     }
     const now = opts?.now ?? new Date();
     const suspicionBefore = new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS);
@@ -1176,6 +1303,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const result = {
       scanned: candidates.length,
       created: 0,
+      reopened: 0,
       existing: 0,
       escalated: 0,
       snoozed: 0,
@@ -1190,6 +1318,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
       const outcome = await createOrUpdateStaleRunEvaluation({ run, now });
       if (outcome.kind === "created") result.created += 1;
+      else if (outcome.kind === "reopened") result.reopened += 1;
       else if (outcome.kind === "existing") result.existing += 1;
       else if (outcome.kind === "escalated") result.escalated += 1;
       else result.skipped += 1;

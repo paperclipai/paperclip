@@ -7,6 +7,7 @@ import {
   createDb,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
+  instanceSettings,
   issueRelations,
   issues,
 } from "@paperclipai/db";
@@ -76,6 +77,17 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-active-run-output-watchdog-");
     db = createDb(tempDb.connectionString);
+    const now = new Date();
+    await db.insert(instanceSettings).values({
+      singletonKey: "default",
+      general: {},
+      experimental: { enableStaleRunWatchdog: true },
+      createdAt: now,
+      updatedAt: now,
+    }).onConflictDoUpdate({
+      target: [instanceSettings.singletonKey],
+      set: { experimental: { enableStaleRunWatchdog: true }, updatedAt: now },
+    });
   }, 30_000);
 
   afterEach(async () => {
@@ -396,13 +408,16 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       now: new Date(rearmAt.getTime() + 60_000),
       companyId,
     });
-    expect(afterRearm.created).toBe(1);
-    expect(afterRearm.evaluationIssueIds[0]).not.toBe(evaluationIssueId);
+    expect(afterRearm.created).toBe(0);
+    expect(afterRearm.reopened).toBe(1);
+    // Reopen returns the same issue ID — no duplicate created
+    expect(afterRearm.evaluationIssueIds[0]).toBe(evaluationIssueId);
 
     const evaluations = await db
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(1);
     expect(evaluations.filter((issue) => !["done", "cancelled"].includes(issue.status))).toHaveLength(1);
   });
 
@@ -546,5 +561,101 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       createdByRunId: randomUUID(),
     });
     expect(decision.createdByRunId).toBe(managerRunId);
+  });
+
+  it("does not create a new evaluation issue when a recently-closed one exists within the rearm window", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    // First scan creates an issue
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first.created).toBe(1);
+    const evaluationIssueId = first.evaluationIssueIds[0];
+    expect(evaluationIssueId).toBeTruthy();
+
+    // Cancel the evaluation issue (simulate what happened in MEM-7497)
+    const closedAt = new Date(now.getTime() + 5 * 60 * 1000);
+    await db.update(issues).set({ status: "cancelled", cancelledAt: closedAt, updatedAt: closedAt }).where(eq(issues.id, evaluationIssueId!));
+
+    // Second scan within the rearm window should NOT create a new issue
+    const nowWithinRearm = new Date(now.getTime() + 10 * 60 * 1000);
+    const second = await heartbeat.scanSilentActiveRuns({ now: nowWithinRearm, companyId });
+    expect(second.created).toBe(0);
+    expect(second.existing).toBe(1);
+
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(1);
+  });
+
+  it("reopens an existing evaluation issue instead of creating a duplicate when outside the rearm window", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    // First scan creates an issue
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first.created).toBe(1);
+    const evaluationIssueId = first.evaluationIssueIds[0];
+
+    // Cancel the issue with a timestamp well outside the rearm window
+    const closedAt = new Date(now.getTime() - ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS - 5 * 60 * 1000);
+    await db.update(issues).set({ status: "cancelled", cancelledAt: closedAt, updatedAt: closedAt }).where(eq(issues.id, evaluationIssueId!));
+
+    // Scan after rearm window: should reopen the existing issue, not create a new one
+    const nowAfterRearm = new Date(now.getTime() + ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS + 5 * 60 * 1000);
+    const second = await heartbeat.scanSilentActiveRuns({ now: nowAfterRearm, companyId });
+    expect(second.created).toBe(0);
+    expect(second.reopened).toBe(1);
+    expect(second.evaluationIssueIds[0]).toBe(evaluationIssueId);
+
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    // No duplicate — only the original issue exists, now reopened
+    expect(evaluations).toHaveLength(1);
+    expect(evaluations[0]?.status).not.toMatch(/done|cancelled/);
+  });
+
+  it("never creates more than one evaluation issue across many closed cycles", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    // Run 5 full close-reopen cycles
+    for (let i = 0; i < 5; i++) {
+      const cycleNow = new Date(now.getTime() + i * (ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS + 60_000));
+      const scan = await heartbeat.scanSilentActiveRuns({ now: cycleNow, companyId });
+      if (i === 0) {
+        expect(scan.created).toBe(1);
+      } else {
+        expect(scan.created).toBe(0);
+        expect(scan.reopened).toBe(1);
+      }
+      const evalIssueId = scan.evaluationIssueIds[0];
+      expect(evalIssueId).toBeTruthy();
+      // Close the issue to simulate a decision, outside the rearm window
+      const closedAt = new Date(cycleNow.getTime() - ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS - 60_000);
+      await db.update(issues).set({ status: "done", updatedAt: closedAt }).where(eq(issues.id, evalIssueId!));
+    }
+
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(1);
   });
 });
