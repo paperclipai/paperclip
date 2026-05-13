@@ -3312,11 +3312,7 @@ export function issueRoutes(
     if (commentBody) {
       const commentReferenceSummaryBefore = updateReferenceSummaryAfter
         ?? await issueReferencesSvc.listIssueReferenceSummary(issue.id);
-      comment = await svc.addComment(id, commentBody, {
-        agentId: actor.agentId ?? undefined,
-        userId: actor.actorType === "user" ? actor.actorId : undefined,
-        runId: actor.runId,
-      });
+      }, { skipUpdatedAt: true }); // Issue already updated above, skip redundant UPDATE to avoid contention
       await issueReferencesSvc.syncComment(comment.id);
       const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(

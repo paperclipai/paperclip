@@ -4069,6 +4069,7 @@ export function issueService(db: Db) {
         presentation?: IssueCommentPresentation | null;
         metadata?: IssueCommentMetadata | null;
         createdAt?: Date | string | null;
+        skipUpdatedAt?: boolean;
       },
     ) => {
       const issue = await db
@@ -4107,10 +4108,13 @@ export function issueService(db: Db) {
         .returning();
 
       // Update issue's updatedAt so comment activity is reflected in recency sorting
-      await db
-        .update(issues)
-        .set({ updatedAt: new Date() })
-        .where(eq(issues.id, issueId));
+      // Skip if caller already updated the issue (e.g., PATCH with status+comment)
+      if (!options?.skipUpdatedAt) {
+        await db
+          .update(issues)
+          .set({ updatedAt: new Date() })
+          .where(eq(issues.id, issueId));
+      }
 
       return redactIssueComment(comment, currentUserRedactionOptions.enabled);
     },
