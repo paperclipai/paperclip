@@ -44,10 +44,12 @@ import { pluginStateStore } from "./plugin-state-store.js";
 import { pluginDatabaseService } from "./plugin-database.js";
 import { pluginManagedAgentService } from "./plugin-managed-agents.js";
 import { pluginManagedRoutineService } from "./plugin-managed-routines.js";
+import { pluginManagedSkillService } from "./plugin-managed-skills.js";
 import {
   assertConfiguredLocalFolder,
   assertWritableConfiguredLocalFolder,
   getStoredLocalFolders,
+  deletePluginLocalFolderFile,
   inspectPluginLocalFolder,
   listPluginLocalFolderEntries,
   preparePluginLocalFolder,
@@ -509,6 +511,11 @@ export function buildHostServices(
     manifest: options.manifest,
     pluginWorkerManager: options.pluginWorkerManager,
   });
+  const managedSkills = pluginManagedSkillService(db, {
+    pluginId,
+    pluginKey,
+    manifest: options.manifest,
+  });
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
@@ -882,10 +889,15 @@ export function buildHostServices(
         });
         const status = await inspectStoredLocalFolder(companyId, params.folderKey);
         assertWritableConfiguredLocalFolder(status);
-        if (status.access !== "readWrite" || !status.writable) {
-          throw new Error("Local folder is not configured for writes");
-        }
         await writePluginLocalFolderTextAtomic(status.realPath!, params.relativePath, params.contents);
+        return inspectStoredLocalFolder(companyId, params.folderKey);
+      },
+
+      async deleteFile(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        const status = await inspectStoredLocalFolder(companyId, params.folderKey);
+        assertWritableConfiguredLocalFolder(status);
+        await deletePluginLocalFolderFile(status.realPath!, params.relativePath, params.folderKey);
         return inspectStoredLocalFolder(companyId, params.folderKey);
       },
     },
@@ -1221,6 +1233,24 @@ export function buildHostServices(
           assigneeAgentId: params.assigneeAgentId,
           projectId: params.projectId,
         });
+      },
+    },
+
+    skills: {
+      async managedGet(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedSkills.get(params.skillKey, companyId);
+      },
+      async managedReconcile(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedSkills.reconcile(params.skillKey, companyId);
+      },
+      async managedReset(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedSkills.reset(params.skillKey, companyId);
       },
     },
 

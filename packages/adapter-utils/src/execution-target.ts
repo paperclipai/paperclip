@@ -27,7 +27,7 @@ import {
   type TerminalResultCleanupOptions,
 } from "./server-utils.js";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
-import { preferredShellForSandbox } from "./sandbox-shell.js";
+import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 
 export interface AdapterLocalExecutionTarget {
   kind: "local";
@@ -98,6 +98,8 @@ export interface AdapterExecutionTargetPaperclipBridgeHandle {
 }
 
 export { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
+
+export const DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC = 1_800;
 
 function parseObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -222,6 +224,26 @@ export function describeAdapterExecutionTarget(
   return `sandbox environment${target.providerKey ? ` (${target.providerKey})` : ""}`;
 }
 
+export function resolveAdapterExecutionTargetTimeoutSec(
+  target: AdapterExecutionTarget | null | undefined,
+  configuredTimeoutSec: number | null | undefined,
+): number {
+  const normalizedConfiguredTimeoutSec =
+    typeof configuredTimeoutSec === "number" && Number.isFinite(configuredTimeoutSec) && configuredTimeoutSec > 0
+      ? Math.floor(configuredTimeoutSec)
+      : 0;
+  if (normalizedConfiguredTimeoutSec > 0) return normalizedConfiguredTimeoutSec;
+  // Local and SSH adapters preserve the historical "0 means no adapter
+  // timeout" behavior. Sandbox-backed runs execute through provider RPCs
+  // that usually apply their own shorter command defaults, so request an
+  // explicit longer timeout for full adapter runs when the adapter leaves
+  // timeoutSec unset.
+  if (target?.kind === "remote" && target.transport === "sandbox") {
+    return DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC;
+  }
+  return 0;
+}
+
 function requireSandboxRunner(target: AdapterSandboxExecutionTarget): CommandManagedRuntimeRunner {
   if (target.runner) return target.runner;
   throw new Error(
@@ -261,10 +283,15 @@ export async function ensureAdapterExecutionTargetCommandResolvable(
   target: AdapterExecutionTarget | null | undefined,
   cwd: string,
   env: NodeJS.ProcessEnv,
-  options: { installCommand?: string | null } = {},
+  options: { installCommand?: string | null; timeoutSec?: number | null } = {},
 ) {
   if (target?.kind === "remote" && target.transport === "sandbox") {
-    await ensureSandboxCommandResolvable(command, target, options.installCommand?.trim() || null);
+    await ensureSandboxCommandResolvable(
+      command,
+      target,
+      options.installCommand?.trim() || null,
+      options.timeoutSec,
+    );
     return;
   }
   await ensureCommandResolvable(command, cwd, env, {
@@ -295,6 +322,7 @@ async function ensureSandboxCommandResolvable(
   command: string,
   target: AdapterSandboxExecutionTarget,
   installCommand: string | null,
+  timeoutSec?: number | null,
 ): Promise<void> {
   // Probe whether the binary is resolvable inside the sandbox. We previously
   // short-circuited this for sandbox targets, which let the caller report a
@@ -316,12 +344,16 @@ async function ensureSandboxCommandResolvable(
   let installFailureDetail: string | null = null;
   if (installCommand) {
     const runner = requireSandboxRunner(target);
+    const installTimeoutMs =
+      typeof timeoutSec === "number" && Number.isFinite(timeoutSec) && timeoutSec > 0
+        ? Math.floor(timeoutSec * 1000)
+        : target.timeoutMs ?? 300_000;
     try {
       const installResult = await runner.execute({
         command: "sh",
-        args: ["-lc", installCommand],
+        args: shellCommandArgs(installCommand),
         cwd: target.remoteCwd,
-        timeoutMs: target.timeoutMs ?? 300_000,
+        timeoutMs: installTimeoutMs,
       });
       if (installResult.timedOut) {
         installFailureDetail = `install command timed out: ${installCommand}`;
@@ -417,8 +449,8 @@ export async function runAdapterExecutionTargetShellCommand(
     if (target.transport === "ssh") {
       try {
         // Pass the raw command — `runSshCommand` owns profile sourcing and
-        // the outer `sh -lc` wrapper. Wrapping again here would nest a second
-        // `sh -lc` after the explicit `env KEY=VAL` overrides, re-sourcing
+        // the outer shell wrapper. Wrapping again here would nest a second
+        // shell after the explicit `env KEY=VAL` overrides, re-sourcing
         // login profiles AFTER the override and silently undoing any
         // identity var (NVM_DIR / PATH / etc.) that a profile re-exports.
         const result = await runSshCommand(target.spec, command, {
@@ -477,7 +509,7 @@ export async function runAdapterExecutionTargetShellCommand(
     const shellCommand = preferredSandboxShell(target);
     return await requireSandboxRunner(target).execute({
       command: shellCommand,
-      args: ["-lc", command],
+      args: shellCommandArgs(command),
       cwd: target.remoteCwd,
       env,
       timeoutMs: (options.timeoutSec ?? 15) * 1000,
@@ -890,6 +922,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   target: AdapterExecutionTarget | null | undefined;
   adapterKey: string;
   workspaceLocalDir: string;
+  timeoutSec?: number;
   workspaceRemoteDir?: string;
   workspaceExclude?: string[];
   preserveAbsentOnRestore?: string[];
@@ -934,7 +967,10 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       shellCommand: target.shellCommand,
       leaseId: target.leaseId,
       remoteCwd: target.remoteCwd,
-      timeoutMs: target.timeoutMs,
+      timeoutMs:
+        input.timeoutSec && input.timeoutSec > 0
+          ? input.timeoutSec * 1000
+          : target.timeoutMs,
     },
     adapterKey: input.adapterKey,
     workspaceLocalDir: input.workspaceLocalDir,
@@ -1017,6 +1053,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   target: AdapterExecutionTarget | null | undefined;
   runtimeRootDir: string | null | undefined;
   adapterKey: string;
+  timeoutSec?: number | null;
   hostApiToken: string | null | undefined;
   hostApiUrl?: string | null;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
@@ -1055,6 +1092,10 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     resolveDefaultPaperclipApiUrl();
   const shellCommand = adapterExecutionTargetShellCommand(target);
   const runner = adapterExecutionTargetCommandRunner(target);
+  const bridgeTimeoutMs =
+    typeof input.timeoutSec === "number" && Number.isFinite(input.timeoutSec) && input.timeoutSec > 0
+      ? Math.trunc(input.timeoutSec * 1000)
+      : adapterExecutionTargetTimeoutMs(target);
 
   await onLog(
     "stdout",
@@ -1068,7 +1109,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     const client = createCommandManagedSandboxCallbackBridgeQueueClient({
       runner,
       remoteCwd: target.remoteCwd,
-      timeoutMs: adapterExecutionTargetTimeoutMs(target),
+      timeoutMs: bridgeTimeoutMs,
       shellCommand,
     });
     // PAPERCLIP_BRIDGE_DEBUG opts into verbose stdout logs of every bridge
@@ -1123,7 +1164,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       queueDir,
       bridgeToken,
       bridgeAsset,
-      timeoutMs: adapterExecutionTargetTimeoutMs(target),
+      timeoutMs: bridgeTimeoutMs,
       maxBodyBytes,
       shellCommand,
     });
