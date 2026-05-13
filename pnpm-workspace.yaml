@@ -12,3 +12,6 @@ packages:
   - server
   - ui
   - cli
+  - tools/*
+  # tools/agent-shim is a Go binary with no package.json
+  - "!tools/agent-shim"

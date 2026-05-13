@@ -48,6 +48,14 @@ import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
 } from "./routes/instance-database-backups.js";
+import { createExecutionTargetRegistry } from "./adapters/execution-target-registry.js";
+import { registerKubernetesExecutionTargetDriver } from "./adapters/execution-targets/kubernetes.js";
+import { getAdapterDefaults } from "@paperclipai/execution-target-kubernetes";
+import { buildAdapterManagedWorkspaceRequestJson } from "./adapters/execution-targets/workspace-strategy-json.js";
+import { clusterConnectionsService } from "./services/cluster-connections.js";
+import { getSecretProvider } from "./secrets/provider-registry.js";
+import { bootstrapTokensService } from "./services/bootstrap-tokens.js";
+import { setKubernetesExecutionDispatcher } from "@paperclipai/adapter-claude-local/server";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -593,6 +601,108 @@ export async function startServer(): Promise<StartedServer> {
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
+
+  // ---------------------------------------------------------------------------
+  // Execution-target registry
+  //
+  // The kubeconfigSecretRef stored in cluster_connections uses
+  // { provider, name } where `name` is the externalRef (for external providers
+  // such as AWS Secrets Manager / GCP Secret Manager / Vault). For those
+  // providers, `resolveVersion({ material: {}, externalRef: name })` is the
+  // correct call. For the `local_encrypted` provider the kubeconfig blob must
+  // be stored via an external provider — instance-level local-encrypted storage
+  // is not yet wired (M2 gap: design a cluster-scoped secret vault or let
+  // operators use an external provider for kubeconfig credentials).
+  // ---------------------------------------------------------------------------
+  const clusterConnections = clusterConnectionsService(db as any, {
+    resolveSecret: async (ref) => {
+      const provider = getSecretProvider(ref.provider as Parameters<typeof getSecretProvider>[0]);
+      // `ref.name` is the externalRef used by external secret providers
+      // (AWS SM / GCP SM / Vault). For `local_encrypted`, kubeconfig material
+      // must be stored via an external provider; calling this path with
+      // `local_encrypted` will throw from the provider itself.
+      // TODO(M2): design instance-scoped secret storage for local_encrypted
+      //           kubeconfig blobs so operators without external providers
+      //           can still register clusters.
+      return provider.resolveVersion({ material: {}, externalRef: ref.name });
+    },
+  });
+  const executionTargetRegistry = createExecutionTargetRegistry();
+  const bootstrapTokens = bootstrapTokensService(db as any);
+  const k8sDriver = registerKubernetesExecutionTargetDriver(executionTargetRegistry, {
+    resolveConnection: (id) => clusterConnections.resolve(id),
+    bootstrapTokenMinter: {
+      mint: async (req) => {
+        const minted = await bootstrapTokens.mint({
+          agentId: req.agentId,
+          companyId: req.companyId,
+          runId: req.runId,
+          jobUid: req.jobUid,
+          ttlSeconds: req.ttlSeconds ?? 600,
+        });
+        return { token: minted.token, expiresAt: minted.expiresAt };
+      },
+    },
+    // Per-run context resolver — looks up the company name to derive a
+    // namespace-safe slug, then fills in image/init image and other defaults.
+    // The runtime image is sourced per-adapterType from the
+    // adapter-defaults registry (single source of truth for image+envKeys+
+    // allowFqdns); operators override per-run via target.imageOverride.
+    resolveRunContext: async ({ agent, target, connection, config }) => {
+      const [company] = await (db as any)
+        .select({ name: companies.name })
+        .from(companies)
+        .where(eq(companies.id, agent.companyId))
+        .limit(1);
+      if (!company) return null;
+      const companySlug = (company.name as string)
+        .toLowerCase()
+        .replace(/[^a-z0-9-]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 32) || "company";
+      const imageRegistry = connection.imageRegistry?.replace(/\/+$/, "") ?? "ghcr.io/paperclipai";
+      // Look up the per-adapter runtime image from the adapter-defaults
+      // registry. The registry's runtimeImage already includes the
+      // ghcr.io/paperclipai/ prefix; if a cluster connection pins a different
+      // imageRegistry, swap the host portion to honor it.
+      const adapterType = agent.adapterType ?? "unknown";
+      const defaults = getAdapterDefaults(adapterType);
+      const defaultsImageHost = defaults.runtimeImage.replace(/\/[^/]+$/, "");
+      const defaultsImageName = defaults.runtimeImage.slice(defaultsImageHost.length + 1);
+      const adapterImage = `${imageRegistry}/${defaultsImageName}:v1`;
+      // Source the per-run provider env from the runtime-resolved adapter
+      // config. Heartbeat already calls secretService.resolveAdapterConfigForRuntime
+      // upstream of adapter.execute, so by the time we land here `config.env`
+      // is a flat Record<string, string> with secret refs materialized to
+      // their plaintext values. The driver narrows this map to
+      // getAdapterDefaults(adapterType).envKeys before writing the per-Job
+      // Secret, so even if the agent's adapterConfig.env contains additional
+      // user-defined keys only the registry-declared provider creds reach the
+      // pod (BOOTSTRAP_TOKEN is added unconditionally inside the driver).
+      const adapterEnv: Record<string, string> = {};
+      const rawEnv = (config as { env?: unknown }).env;
+      if (rawEnv && typeof rawEnv === "object" && !Array.isArray(rawEnv)) {
+        for (const [key, value] of Object.entries(rawEnv as Record<string, unknown>)) {
+          if (typeof value === "string") adapterEnv[key] = value;
+        }
+      }
+      return {
+        companySlug,
+        image: target.imageOverride ?? adapterImage,
+        initImage: `${imageRegistry}/agent-runtime-base:v1`,
+        paperclipPublicUrl: connection.paperclipPublicUrl ?? process.env.PAPERCLIP_API_URL ?? "",
+        workspaceStrategyJson: buildAdapterManagedWorkspaceRequestJson(),
+        workspaceStrategyKey: "ephemeral",
+        adapterEnv,
+      };
+    },
+  });
+
+  // Register the Kubernetes execution dispatcher with adapters that opt into
+  // routing kubernetes targets through the cluster driver. For M2, only
+  // claude_local is wired; codex/gemini/etc. land in M3.
+  setKubernetesExecutionDispatcher(({ ctx, target }) => k8sDriver.run({ ctx, target }));
+
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
@@ -876,6 +986,21 @@ export async function startServer(): Promise<StartedServer> {
       if (telemetryClient) {
         telemetryClient.stop();
         await telemetryClient.flush();
+      }
+
+      // Drain the K8s callback router's Redis client. redis@4 keeps an
+      // internal reconnect timer that holds the event loop open, so a clean
+      // shutdown needs an explicit quit() before process.exit. The dispose
+      // hook is published on app.locals by createApp when
+      // PAPERCLIP_RUN_JWT_SECRET is set; absent for deployments without K8s
+      // execution.
+      const disposeK8s = (app.locals as Record<string, unknown> | undefined)?.["disposeK8sCallback"];
+      if (typeof disposeK8s === "function") {
+        try {
+          await (disposeK8s as () => Promise<void>)();
+        } catch (err) {
+          logger.error({ err }, "Failed to dispose K8s callback router cleanly");
+        }
       }
 
       if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {

@@ -1,0 +1,19 @@
+{
+  "name": "@paperclipai/workspace-init",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": { "paperclip-workspace-init": "./dist/index.js" },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@paperclipai/workspace-strategy": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

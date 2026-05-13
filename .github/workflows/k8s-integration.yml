@@ -1,0 +1,112 @@
+name: K8s Integration Tests
+
+on:
+  pull_request:
+    paths:
+      - "packages/adapters/kubernetes-execution/**"
+      - "server/src/services/cluster-connections*"
+      - "server/src/services/cluster-namespace-bindings*"
+      - "server/src/services/cluster-tenant-policies*"
+      - "server/src/adapters/execution-target*"
+      - "server/src/adapters/execution-targets/**"
+      - "server/src/__tests__/k8s-*"
+      - "server/vitest.integration.config.ts"
+      - ".github/workflows/k8s-integration.yml"
+  push:
+    branches: [master, main]
+    paths:
+      - "packages/adapters/kubernetes-execution/**"
+      - "server/src/services/cluster-connections*"
+      - "server/src/services/cluster-namespace-bindings*"
+      - "server/src/services/cluster-tenant-policies*"
+      - "server/src/adapters/execution-target*"
+      - "server/src/adapters/execution-targets/**"
+      - "server/src/__tests__/k8s-*"
+      - "server/vitest.integration.config.ts"
+
+jobs:
+  k8s-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: |
+          pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+          pnpm install --frozen-lockfile
+
+      - name: Install kind
+        run: |
+          curl -sLo /tmp/kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
+          chmod +x /tmp/kind
+          sudo mv /tmp/kind /usr/local/bin/kind
+          kind --version
+
+      - name: Install kubectl
+        # Pinned to match the kind v0.24.0 default node image (Kubernetes
+        # v1.31.x). Bump deliberately when updating kind so the client/server
+        # skew stays within the supported one-minor-version window.
+        env:
+          KUBECTL_VERSION: v1.31.0
+        run: |
+          curl -sLo /tmp/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          chmod +x /tmp/kubectl
+          sudo mv /tmp/kubectl /usr/local/bin/kubectl
+          kubectl version --client
+
+      - name: Build workspace dependencies
+        run: |
+          pnpm --filter @paperclipai/adapter-utils build
+          pnpm --filter @paperclipai/execution-target-kubernetes build
+
+      - name: Run k8s-execution integration tests
+        run: pnpm --filter @paperclipai/execution-target-kubernetes test:integration
+
+      - name: Run server k8s end-to-end smoke
+        # Vitest's include patterns in vitest.integration.config.ts are relative
+        # to the cwd, not the config file path. Run from server/ so they resolve.
+        working-directory: server
+        run: pnpm exec vitest run --config vitest.integration.config.ts k8s-cli-end-to-end
+
+      # M3a: opt-in real-claude-code test. Runs only on PRs from the same
+      # repo (forks don't get secret access). Empirical measurement test is
+      # NOT in CI — operator runs it on-demand.
+      - name: Run real-claude-code integration test (gated on Anthropic key)
+        if: ${{ secrets.ANTHROPIC_API_KEY != '' && github.event.pull_request.head.repo.fork == false }}
+        env:
+          K8S_INTEGRATION: "1"
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        working-directory: packages/adapters/kubernetes-execution
+        run: pnpm exec vitest run test/integration/claude-code-real.test.ts
+
+      - name: Collect kind cluster logs on failure
+        if: failure()
+        run: |
+          mkdir -p kind-logs
+          for c in $(kind get clusters 2>/dev/null || true); do
+            echo "=== Logs for cluster: $c ==="
+            kind export logs "./kind-logs/$c" --name "$c" || true
+          done
+
+      - name: Upload kind logs as artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kind-logs-${{ github.run_id }}
+          path: kind-logs/
+          if-no-files-found: ignore
+          retention-days: 7

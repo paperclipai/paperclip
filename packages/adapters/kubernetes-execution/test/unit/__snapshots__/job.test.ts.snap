@@ -1,0 +1,237 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`buildAgentJob > matches the golden snapshot 1`] = `
+{
+  "apiVersion": "batch/v1",
+  "kind": "Job",
+  "metadata": {
+    "labels": {
+      "paperclip.ai/agent-id": "a-uuid",
+      "paperclip.ai/company-id": "c-uuid",
+      "paperclip.ai/company-slug": "acme",
+      "paperclip.ai/managed-by": "paperclip",
+      "paperclip.ai/role": "agent-runtime",
+      "paperclip.ai/run-id": "r-1",
+    },
+    "name": "agent-a-acme-run-01HZZZ",
+    "namespace": "paperclip-acme",
+  },
+  "spec": {
+    "activeDeadlineSeconds": 1800,
+    "backoffLimit": 0,
+    "completions": 1,
+    "parallelism": 1,
+    "podFailurePolicy": {
+      "rules": [
+        {
+          "action": "FailJob",
+          "onPodConditions": [
+            {
+              "status": "False",
+              "type": "PodHasNetwork",
+            },
+          ],
+        },
+        {
+          "action": "FailJob",
+          "onExitCodes": {
+            "containerName": "agent",
+            "operator": "In",
+            "values": [
+              137,
+            ],
+          },
+        },
+      ],
+    },
+    "template": {
+      "metadata": {
+        "annotations": {
+          "paperclip.ai/job-spec-version": "v1",
+        },
+        "labels": {
+          "paperclip.ai/agent-id": "a-uuid",
+          "paperclip.ai/company-id": "c-uuid",
+          "paperclip.ai/company-slug": "acme",
+          "paperclip.ai/managed-by": "paperclip",
+          "paperclip.ai/role": "agent-runtime",
+          "paperclip.ai/run-id": "r-1",
+        },
+      },
+      "spec": {
+        "automountServiceAccountToken": false,
+        "containers": [
+          {
+            "args": [
+              "/usr/local/bin/paperclip-agent-shim",
+              "--adapter",
+              "claude_local",
+            ],
+            "command": [
+              "/usr/bin/tini",
+              "--",
+            ],
+            "env": [
+              {
+                "name": "PAPERCLIP_RUN_ID",
+                "value": "r-1",
+              },
+              {
+                "name": "PAPERCLIP_PUBLIC_URL",
+                "value": "https://paperclip.example.com",
+              },
+            ],
+            "envFrom": [
+              {
+                "secretRef": {
+                  "name": "agent-a-acme-run-01HZZZ-env",
+                },
+              },
+            ],
+            "image": "ghcr.io/paperclipai/agent-runtime-claude:v1",
+            "imagePullPolicy": "IfNotPresent",
+            "name": "agent",
+            "resources": {},
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL",
+                ],
+              },
+              "readOnlyRootFilesystem": true,
+            },
+            "volumeMounts": [
+              {
+                "mountPath": "/workspace",
+                "name": "workspace",
+              },
+              {
+                "mountPath": "/tmp",
+                "name": "tmp",
+              },
+              {
+                "mountPath": "/run/paperclip/env",
+                "name": "env",
+                "readOnly": true,
+              },
+              {
+                "mountPath": "/run/paperclip/runtime-command.json",
+                "name": "env",
+                "readOnly": true,
+                "subPath": "runtime-command.json",
+              },
+            ],
+            "workingDir": "/workspace",
+          },
+        ],
+        "enableServiceLinks": false,
+        "imagePullSecrets": [
+          {
+            "name": "paperclip-image-pull",
+          },
+        ],
+        "initContainers": [
+          {
+            "command": [
+              "/usr/local/bin/paperclip-workspace-init",
+            ],
+            "env": [
+              {
+                "name": "PAPERCLIP_WORKSPACE_REQUEST",
+                "value": "{"kind":"git-clone","url":"https://github.com/acme/repo.git","ref":"main"}",
+              },
+              {
+                "name": "PAPERCLIP_WORKSPACE_ROOT",
+                "value": "/workspace",
+              },
+              {
+                "name": "PAPERCLIP_RUN_ID",
+                "value": "r-1",
+              },
+              {
+                "name": "PAPERCLIP_PUBLIC_URL",
+                "value": "https://paperclip.example.com",
+              },
+              {
+                "name": "BOOTSTRAP_TOKEN",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "BOOTSTRAP_TOKEN",
+                    "name": "agent-a-acme-run-01HZZZ-env",
+                  },
+                },
+              },
+            ],
+            "image": "ghcr.io/paperclipai/agent-runtime-base:v1",
+            "name": "workspace-init",
+            "resources": {
+              "limits": {
+                "cpu": "2",
+                "memory": "1Gi",
+              },
+              "requests": {
+                "cpu": "200m",
+                "memory": "256Mi",
+              },
+            },
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL",
+                ],
+              },
+              "readOnlyRootFilesystem": true,
+            },
+            "volumeMounts": [
+              {
+                "mountPath": "/workspace",
+                "name": "workspace",
+              },
+              {
+                "mountPath": "/tmp",
+                "name": "tmp",
+              },
+            ],
+          },
+        ],
+        "restartPolicy": "Never",
+        "securityContext": {
+          "fsGroup": 1000,
+          "runAsGroup": 1000,
+          "runAsNonRoot": true,
+          "runAsUser": 1000,
+          "seccompProfile": {
+            "type": "RuntimeDefault",
+          },
+        },
+        "serviceAccountName": "paperclip-agent",
+        "terminationGracePeriodSeconds": 30,
+        "volumes": [
+          {
+            "name": "workspace",
+            "persistentVolumeClaim": {
+              "claimName": "agent-a-acme-workspace",
+            },
+          },
+          {
+            "emptyDir": {
+              "sizeLimit": "1Gi",
+            },
+            "name": "tmp",
+          },
+          {
+            "name": "env",
+            "secret": {
+              "defaultMode": 256,
+              "secretName": "agent-a-acme-run-01HZZZ-env",
+            },
+          },
+        ],
+      },
+    },
+    "ttlSecondsAfterFinished": 300,
+  },
+}
+`;

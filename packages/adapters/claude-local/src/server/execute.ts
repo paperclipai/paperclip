@@ -61,6 +61,7 @@ import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { getKubernetesExecutionDispatcher } from "./k8s-dispatcher.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -356,6 +357,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
   });
+  if (executionTarget?.kind === "kubernetes") {
+    // M2 — when the server registered a Kubernetes execution dispatcher at
+    // startup, route the run through the k8s driver. Falls back to the M1
+    // NOT_YET_SUPPORTED rejection when no dispatcher is wired (test
+    // environments, CLI-only flows that never call setKubernetesExecutionDispatcher).
+    const dispatcher = getKubernetesExecutionDispatcher();
+    if (dispatcher) {
+      return dispatcher({ ctx, target: executionTarget });
+    }
+    return {
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      errorCode: "execution_target_not_yet_supported",
+      errorMessage:
+        "Kubernetes execution target requires the server-side execution dispatcher to be registered. " +
+        "This typically means the adapter is being invoked outside the Paperclip server process.",
+    };
+  }
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
   const executionTargetIsSandbox = executionTarget?.kind === "remote" && executionTarget.transport === "sandbox";
 

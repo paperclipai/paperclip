@@ -271,6 +271,7 @@ const acpxLocalAdapter: ServerAdapterModule = {
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
+  getRuntimeCommandSpec: (config) => buildNpmRuntimeCommandSpec(config, "acpx", "acpx"),
   agentConfigurationDoc: acpxAgentConfigurationDoc,
   getConfigSchema: getAcpxConfigSchema,
 };

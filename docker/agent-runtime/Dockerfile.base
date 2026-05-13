@@ -1,0 +1,68 @@
+# syntax=docker/dockerfile:1.6
+ARG NODE_VERSION=22
+ARG TARGETARCH
+
+# ---------- Stage 1: build agent-shim ----------
+FROM golang:1.25-bookworm AS shim-build
+ARG TARGETARCH
+WORKDIR /src
+COPY tools/agent-shim/ ./
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH:-amd64} \
+    go build -ldflags='-s -w' -o /out/paperclip-agent-shim .
+
+# ---------- Stage 2: build workspace-init (Node) ----------
+FROM node:${NODE_VERSION}-bookworm-slim AS wsinit-build
+WORKDIR /src
+COPY pnpm-lock.yaml package.json pnpm-workspace.yaml tsconfig.base.json ./
+# Repo root pnpm config has patchedDependencies referencing ./patches/* — copy
+# the patch files so `pnpm install --frozen-lockfile` does not ENOENT on them
+# even though we install zero workspaces that consume embedded-postgres.
+COPY patches/ ./patches/
+COPY packages/workspace-strategy/ ./packages/workspace-strategy/
+COPY tools/workspace-init/ ./tools/workspace-init/
+RUN corepack enable && pnpm install --frozen-lockfile \
+    && pnpm --filter @paperclipai/workspace-strategy build \
+    && pnpm --filter @paperclipai/workspace-init build \
+    # Materialize publishConfig into the live package.json so that Node's
+    # production module resolution targets dist/ instead of src/*.ts. This
+    # mirrors what `pnpm publish` does, but for our local consumption inside
+    # the runtime image where TypeScript loaders are not present.
+    && node -e "const f='packages/workspace-strategy/package.json';const p=JSON.parse(require('fs').readFileSync(f,'utf8'));if(p.publishConfig&&p.publishConfig.exports){p.exports=p.publishConfig.exports;}require('fs').writeFileSync(f,JSON.stringify(p,null,2)+'\n');"
+
+# ---------- Stage 3: runtime base image ----------
+FROM ubuntu:22.04 AS base
+ARG NODE_VERSION
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl git tini gnupg \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 1000 paperclip \
+    && useradd -u 1000 -g 1000 -d /home/paperclip -m -s /bin/bash paperclip
+
+COPY --from=shim-build   /out/paperclip-agent-shim                          /usr/local/bin/paperclip-agent-shim
+
+# workspace-init resolves @paperclipai/workspace-strategy via a pnpm workspace
+# symlink (tools/workspace-init/node_modules/@paperclipai/workspace-strategy ->
+# ../../../../packages/workspace-strategy). Mirror the /src layout under
+# /opt/paperclip/app so Node's module resolution and that relative symlink
+# both keep working at runtime.
+COPY --from=wsinit-build /src/tools/workspace-init/package.json              /opt/paperclip/app/tools/workspace-init/package.json
+COPY --from=wsinit-build /src/tools/workspace-init/dist                      /opt/paperclip/app/tools/workspace-init/dist
+COPY --from=wsinit-build /src/tools/workspace-init/node_modules              /opt/paperclip/app/tools/workspace-init/node_modules
+COPY --from=wsinit-build /src/packages/workspace-strategy/package.json       /opt/paperclip/app/packages/workspace-strategy/package.json
+COPY --from=wsinit-build /src/packages/workspace-strategy/dist               /opt/paperclip/app/packages/workspace-strategy/dist
+COPY --from=wsinit-build /src/node_modules                                   /opt/paperclip/app/node_modules
+
+# Convenience launcher so the init container can just run `paperclip-workspace-init`
+RUN printf '#!/bin/sh\nexec node --enable-source-maps /opt/paperclip/app/tools/workspace-init/dist/index.js "$@"\n' \
+      > /usr/local/bin/paperclip-workspace-init \
+    && chmod +x /usr/local/bin/paperclip-workspace-init \
+    && mkdir -p /run/paperclip
+
+USER 1000:1000
+WORKDIR /workspace
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/usr/local/bin/paperclip-agent-shim"]

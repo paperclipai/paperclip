@@ -40,6 +40,7 @@ import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
+import { k8sCallbackRoutes } from "./routes/k8s-callback.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -285,6 +286,18 @@ export async function createApp(
     ),
   );
   api.use(adapterRoutes());
+  // K8s callback routes (agent-shim → server). Skipped if PAPERCLIP_RUN_JWT_SECRET
+  // is unset so existing deployments without k8s execution continue to boot.
+  //
+  // The router exposes a `dispose()` hook to quit its Redis client; we surface
+  // it on `app.locals.disposeK8sCallback` and the SIGINT/SIGTERM handler in
+  // index.ts awaits it before process.exit. redis@4 keeps an internal
+  // reconnect timer that otherwise prevents a clean event-loop drain.
+  if (process.env.PAPERCLIP_RUN_JWT_SECRET?.trim()) {
+    const k8sRouter = await k8sCallbackRoutes(db);
+    api.use(k8sRouter);
+    (app.locals as Record<string, unknown>)["disposeK8sCallback"] = k8sRouter.dispose;
+  }
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,

@@ -48,9 +48,31 @@ Paperclip should support explicit review and approval stages as first-class work
 
 Paperclip needs a clearer path from solo operator to real human teams. That means shared board access, safer collaboration, and a better model for several humans supervising the same autonomous company.
 
-### ⚪ Cloud / Sandbox agents (e.g. Cursor / e2b agents)
+### 🔄 Cloud / Sandbox agents (e.g. Cursor / e2b agents)
 
 We want agents to run in more remote and sandboxed environments while preserving the same Paperclip control-plane model. This makes the system safer, more flexible, and more useful outside a single trusted local machine.
+
+- ✅ **Multi-tenant Kubernetes execution target — Milestone 1 (headless tenant provisioning)** — landed 2026-05-09
+  - Spec: [docs/superpowers/specs/2026-05-08-paperclip-cloud-adapter-design.md](docs/superpowers/specs/2026-05-08-paperclip-cloud-adapter-design.md)
+  - Plan: [docs/superpowers/plans/2026-05-08-paperclip-cloud-adapter-m1-plan.md](docs/superpowers/plans/2026-05-08-paperclip-cloud-adapter-m1-plan.md)
+  - Operator quickstart: [docs/k8s-execution/quickstart.md](docs/k8s-execution/quickstart.md)
+- ✅ **Multi-tenant Kubernetes execution target — Milestone 2 (agent execution end-to-end)** — landed 2026-05-09
+  - Plan: [docs/superpowers/plans/2026-05-09-paperclip-cloud-adapter-m2-plan.md](docs/superpowers/plans/2026-05-09-paperclip-cloud-adapter-m2-plan.md)
+  - Operator walkthrough: [docs/k8s-execution/agent-execution-flow.md](docs/k8s-execution/agent-execution-flow.md)
+  - Troubleshooting: [docs/k8s-execution/troubleshooting.md](docs/k8s-execution/troubleshooting.md)
+  - Ships: workspace-strategy + workspace-init, paperclip-agent-shim, agent-runtime-base / agent-runtime-claude images (multi-arch + cosign), bootstrap-token + run-JWT exchange, per-Job ephemeral Secrets, PVC builder, Job lifecycle (logs + events + cancellation), claude_local routed through Kubernetes target.
+
+#### M3 — Production hardening + UI (next)
+
+- [ ] Web UI: cluster connection management, namespace bindings, tenant policy editing.
+- [ ] Web UI: live run dashboard with log tail and event timeline.
+- [ ] Real claude-code end-to-end (replaces M2's fake-agent integration test).
+- [ ] Real `issueGitCredentials` plumbing (GitHub App or per-tenant deploy token).
+- [ ] Empirical resource defaults from real claude_local runs (closes Risk #4).
+- [ ] Per-tenant Cilium policies fully wired.
+- [ ] Cross-replica rate-limit store (Redis or fronting proxy) — current limiter is per-replica.
+- [ ] Cross-cluster TokenReview (defer to V2, but track here).
+- [ ] Operator-controlled image allow-lists per cluster.
 
 ### ⚪ Artifacts & Work Products
 

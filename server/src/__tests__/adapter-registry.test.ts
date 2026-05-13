@@ -238,7 +238,13 @@ describe("server adapter registry", () => {
     const expectedCodexInstall = `if ! command -v 'codex' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@openai/codex")}; fi`;
     const expectedGeminiInstall = `if ! command -v 'gemini' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@google/gemini-cli")}; fi`;
     const expectedOpenCodeInstall = `if ! command -v 'opencode' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("opencode-ai")}; fi`;
+    const expectedAcpxInstall = `if ! command -v 'acpx' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("acpx")}; fi`;
 
+    expect(findActiveServerAdapter("acpx_local")?.getRuntimeCommandSpec?.({})).toEqual({
+      command: "acpx",
+      detectCommand: "acpx",
+      installCommand: expectedAcpxInstall,
+    });
     expect(findActiveServerAdapter("claude_local")?.getRuntimeCommandSpec?.({})).toEqual({
       command: "claude",
       detectCommand: "claude",
