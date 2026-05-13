@@ -7,6 +7,7 @@ import {
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { companies } from "./companies.js";
 import { plugins } from "./plugins.js";
 import type { PluginStateScopeKind } from "@paperclipai/shared";
 
@@ -31,6 +32,8 @@ export const pluginEntities = pgTable(
     pluginId: uuid("plugin_id")
       .notNull()
       .references(() => plugins.id, { onDelete: "cascade" }),
+    /** Company scope — NULL for instance-level entities. */
+    companyId: uuid("company_id").references(() => companies.id, { onDelete: "cascade" }),
     entityType: text("entity_type").notNull(),
     scopeKind: text("scope_kind").$type<PluginStateScopeKind>().notNull(),
     scopeId: text("scope_id"), // NULL for global scope (text to match plugin_state.scope_id)

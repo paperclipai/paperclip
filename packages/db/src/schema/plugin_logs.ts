@@ -6,6 +6,7 @@ import {
   jsonb,
   index,
 } from "drizzle-orm/pg-core";
+import { companies } from "./companies.js";
 import { plugins } from "./plugins.js";
 
 /**
@@ -28,6 +29,8 @@ export const pluginLogs = pgTable(
     pluginId: uuid("plugin_id")
       .notNull()
       .references(() => plugins.id, { onDelete: "cascade" }),
+    /** Company scope — NULL for instance-level logs. */
+    companyId: uuid("company_id").references(() => companies.id, { onDelete: "cascade" }),
     level: text("level").notNull().default("info"),
     message: text("message").notNull(),
     meta: jsonb("meta").$type<Record<string, unknown>>(),

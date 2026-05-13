@@ -7,6 +7,7 @@ import {
   jsonb,
   index,
 } from "drizzle-orm/pg-core";
+import { companies } from "./companies.js";
 import { plugins } from "./plugins.js";
 import type { PluginWebhookDeliveryStatus } from "@paperclipai/shared";
 
@@ -39,6 +40,8 @@ export const pluginWebhookDeliveries = pgTable(
     pluginId: uuid("plugin_id")
       .notNull()
       .references(() => plugins.id, { onDelete: "cascade" }),
+    /** Company scope — NULL for instance-level webhook deliveries. */
+    companyId: uuid("company_id").references(() => companies.id, { onDelete: "cascade" }),
     /** Identifier matching the key in the plugin manifest's `webhooks` array. */
     webhookKey: text("webhook_key").notNull(),
     /** Optional de-duplication ID provided by the external system. */
