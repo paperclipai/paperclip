@@ -42,5 +42,5 @@ primary_region = "sin"
   retries = 3
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "2gb"
+  size = "performance-1x"
+  memory = "4gb"
