@@ -748,3 +748,25 @@ export const PLUGIN_BRIDGE_ERROR_CODES = [
   "UNKNOWN",
 ] as const;
 export type PluginBridgeErrorCode = (typeof PLUGIN_BRIDGE_ERROR_CODES)[number];
+
+/**
+ * issue_runs lock-contract constants — Jarvis-OS Phase-4 (Marco-Decision 4D-3/4/6, signed 2026-05-13).
+ * See workspace docs/phase-4-4a-2-stale-lock-recovery-strategy-2026-05-13.md.
+ *
+ * Env overrides accepted only in test/smoke contexts: ISSUE_RUNS_LOCK_TTL_SECONDS, etc.
+ */
+export const ISSUE_RUNS_LOCK_TTL_SECONDS = 900;
+export const ISSUE_RUNS_HEARTBEAT_INTERVAL_SECONDS = 60;
+export const ISSUE_RUNS_STALE_LOCK_SECONDS = 900;
+export const ISSUE_RUNS_STALE_HEARTBEAT_GRACE_SECONDS = 120;
+export const ISSUE_RUNS_WATCHDOG_INTERVAL_SECONDS = 300;
+export const ISSUE_RUNS_WATCHDOG_SMOKE_INTERVAL_SECONDS = 30;
+
+export const ISSUE_RUNS_EXECUTORS = ["hermes", "mc-dispatch"] as const;
+export type IssueRunExecutor = (typeof ISSUE_RUNS_EXECUTORS)[number];
+
+export const ISSUE_RUNS_STATUSES = ["running", "completed", "failed", "failed_lease_expired"] as const;
+export type IssueRunStatus = (typeof ISSUE_RUNS_STATUSES)[number];
+
+export const ISSUE_RUNS_RECOVERY_TRIGGERS = ["boot", "watchdog", "manual"] as const;
+export type IssueRunRecoveryTrigger = (typeof ISSUE_RUNS_RECOVERY_TRIGGERS)[number];

@@ -321,3 +321,18 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./plugin.js";
+
+export {
+  acquireIssueRunSchema,
+  heartbeatIssueRunSchema,
+  releaseIssueRunSchema,
+  recoverStaleIssueRunsSchema,
+  issueRunRecordSchema,
+  recoveredIssueRunSchema,
+  type AcquireIssueRunInput,
+  type HeartbeatIssueRunInput,
+  type ReleaseIssueRunInput,
+  type RecoverStaleIssueRunsInput,
+  type IssueRunRecord,
+  type RecoveredIssueRun,
+} from "./issue-run.js";
