@@ -6,6 +6,7 @@ import { companiesApi } from "../api/companies";
 import { authApi } from "../api/auth";
 import { useToastActions } from "../context/ToastContext";
 import { useOrg } from "../context/OrgContext";
+import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -83,10 +84,7 @@ export function Organizations() {
     enabled: !!selectedOrgId,
   });
 
-  const allCompaniesQuery = useQuery({
-    queryKey: queryKeys.companies.all,
-    queryFn: () => companiesApi.list(),
-  });
+  const { companies: allCompanies } = useCompany();
 
   const addMemberMutation = useMutation({
     mutationFn: (email: string) =>
@@ -230,10 +228,10 @@ export function Organizations() {
 
   const attachableCompanies = useMemo(
     () =>
-      (allCompaniesQuery.data ?? []).filter(
+      allCompanies.filter(
         (company) => !company.organizationId && company.status !== "archived",
       ),
-    [allCompaniesQuery.data],
+    [allCompanies],
   );
 
   function handleCreate() {

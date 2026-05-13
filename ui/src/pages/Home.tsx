@@ -3,7 +3,6 @@ import { useQuery } from "@tanstack/react-query";
 import { Building2, Plus, Settings2 } from "lucide-react";
 import { Link, useNavigate } from "@/lib/router";
 import { authApi } from "@/api/auth";
-import { companiesApi } from "@/api/companies";
 import { Button } from "@/components/ui/button";
 import { useCompany } from "@/context/CompanyContext";
 import { useOrg } from "@/context/OrgContext";
@@ -15,16 +14,12 @@ export function HomePage() {
   const navigate = useNavigate();
   const { openOnboarding } = useDialog();
   const { organizations, selectedOrg, setSelectedOrgId, loading: orgsLoading } = useOrg();
-  const { setSelectedCompanyId } = useCompany();
+  const { companies, loading: companiesLoading, setSelectedCompanyId } = useCompany();
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
     retry: false,
-  });
-  const { data: companies = [], isLoading: companiesLoading } = useQuery({
-    queryKey: queryKeys.companies.all,
-    queryFn: () => companiesApi.list(),
   });
 
   const { orgCompanies, unassigned } = useMemo(() => {
