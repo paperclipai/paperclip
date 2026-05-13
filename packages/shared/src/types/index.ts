@@ -151,6 +151,7 @@ export type {
   IssueBlockerAttentionState,
   IssueProductivityReview,
   IssueProductivityReviewTrigger,
+  IssueRecoveryAction,
   SuccessfulRunHandoffState,
   SuccessfulRunHandoffStateKind,
   IssueScheduledRetry,
