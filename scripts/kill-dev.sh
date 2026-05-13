@@ -3,7 +3,7 @@
 # Kill all local Paperclip dev server processes (across all worktrees).
 #
 # Usage:
-#   scripts/kill-dev.sh        # kill all paperclip dev processes
+#   scripts/kill-dev.sh        # kill all odysseus dev processes
 #   scripts/kill-dev.sh --dry  # preview what would be killed
 #
 
@@ -87,7 +87,7 @@ while IFS= read -r line; do
   pid=$(echo "$line" | awk '{print $2}')
   node_pids+=("$pid")
   node_lines+=("$line")
-done < <(ps aux | grep -E '/paperclip(-[^/]+)?/' | grep node | grep -v grep || true)
+done < <(ps aux | grep -E '/odysseus(-[^/]+)?/' | grep node | grep -v grep || true)
 
 # --- Agent browser processes (headless Chrome from ~/.agent-browser) ---
 while IFS= read -r line; do
@@ -99,16 +99,16 @@ done < <(ps aux | grep -E 'agent-browser/browsers/chrome-.*/Google Chrome for Te
 
 candidate_pidfiles=()
 candidate_pidfiles+=(
-  "$HOME"/.paperclip/instances/*/db/postmaster.pid
-  "$REPO_ROOT"/.paperclip/instances/*/db/postmaster.pid
-  "$REPO_ROOT"/.paperclip/runtime-services/instances/*/db/postmaster.pid
+  "$HOME"/.odysseus/instances/*/db/postmaster.pid
+  "$REPO_ROOT"/.odysseus/instances/*/db/postmaster.pid
+  "$REPO_ROOT"/.odysseus/runtime-services/instances/*/db/postmaster.pid
 )
 
-for sibling_root in "$REPO_PARENT"/paperclip*; do
+for sibling_root in "$REPO_PARENT"/odysseus*; do
   [[ -d "$sibling_root" ]] || continue
   candidate_pidfiles+=(
-    "$sibling_root"/.paperclip/instances/*/db/postmaster.pid
-    "$sibling_root"/.paperclip/runtime-services/instances/*/db/postmaster.pid
+    "$sibling_root"/.odysseus/instances/*/db/postmaster.pid
+    "$sibling_root"/.odysseus/runtime-services/instances/*/db/postmaster.pid
   )
 done
 

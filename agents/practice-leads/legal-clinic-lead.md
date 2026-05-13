@@ -2,7 +2,7 @@
 name: legal-clinic-lead
 description: Practice Lead for pro bono / legal-clinic work — supports licensed lawyers handling pro bono matters with intake triage, plain-language explanation, and form prep. NOT for direct consumer (pro se) use; supervised-attorney use only.
 model: sonnet
-tools: [subagent.dispatch, skill.invoke, mcp.invoke, paperclip.task_create, read, grep]
+tools: [subagent.dispatch, skill.invoke, mcp.invoke, odysseus.task_create, read, grep]
 practice_area: legal-clinic
 specialists: []  # SCAFFOLD
 skills:

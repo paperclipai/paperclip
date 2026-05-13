@@ -553,7 +553,7 @@ export type PluginApiRouteDeclarationInput = z.infer<typeof pluginApiRouteDeclar
 // ---------------------------------------------------------------------------
 
 /**
- * Zod schema for {@link PaperclipPluginManifestV1} — the complete runtime
+ * Zod schema for {@link OdysseusPluginManifestV1} — the complete runtime
  * validator for plugin manifests read at install time.
  *
  * Field-level constraints (see PLUGIN_SPEC.md §10.1 for the normative rules):
@@ -568,7 +568,7 @@ export type PluginApiRouteDeclarationInput = z.infer<typeof pluginApiRouteDeclar
  * | `author`                 | string     | 1–200 chars                                  |
  * | `categories`             | enum[]     | at least one; values from PLUGIN_CATEGORIES  |
  * | `minimumHostVersion`     | string?    | semver lower bound if present, no leading `v`|
- * | `minimumPaperclipVersion`| string?    | legacy alias of `minimumHostVersion`         |
+ * | `minimumOdysseusVersion`| string?    | legacy alias of `minimumHostVersion`         |
  * | `capabilities`           | enum[]     | at least one; values from PLUGIN_CAPABILITIES|
  * | `entrypoints.worker`     | string     | min 1 char                                   |
  * | `entrypoints.ui`         | string?    | required when `ui.slots` is declared         |
@@ -586,7 +586,7 @@ export type PluginApiRouteDeclarationInput = z.infer<typeof pluginApiRouteDeclar
  * - duplicate `ui.slots[].id` values are rejected
  *
  * @see PLUGIN_SPEC.md §10.1 — Manifest shape
- * @see {@link PaperclipPluginManifestV1} — the inferred TypeScript type
+ * @see {@link OdysseusPluginManifestV1} — the inferred TypeScript type
  */
 export const pluginManifestV1Schema = z.object({
   id: z.string().min(1).regex(
@@ -606,9 +606,9 @@ export const pluginManifestV1Schema = z.object({
     /^\d+\.\d+\.\d+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/,
     "minimumHostVersion must follow semver (e.g. 1.0.0)",
   ).optional(),
-  minimumPaperclipVersion: z.string().regex(
+  minimumOdysseusVersion: z.string().regex(
     /^\d+\.\d+\.\d+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/,
-    "minimumPaperclipVersion must follow semver (e.g. 1.0.0)",
+    "minimumOdysseusVersion must follow semver (e.g. 1.0.0)",
   ).optional(),
   capabilities: z.array(z.enum(PLUGIN_CAPABILITIES)).min(1),
   entrypoints: z.object({
@@ -648,12 +648,12 @@ export const pluginManifestV1Schema = z.object({
 
   if (
     manifest.minimumHostVersion
-    && manifest.minimumPaperclipVersion
-    && manifest.minimumHostVersion !== manifest.minimumPaperclipVersion
+    && manifest.minimumOdysseusVersion
+    && manifest.minimumHostVersion !== manifest.minimumOdysseusVersion
   ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: "minimumHostVersion and minimumPaperclipVersion must match when both are declared",
+      message: "minimumHostVersion and minimumOdysseusVersion must match when both are declared",
       path: ["minimumHostVersion"],
     });
   }

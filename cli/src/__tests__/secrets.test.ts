@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Agent, CompanySecret } from "@paperclipai/shared";
-import type { PaperclipConfig } from "../config/schema.js";
+import type { Agent, CompanySecret } from "@odysseus/shared";
+import type { OdysseusConfig } from "../config/schema.js";
 import { secretsCheck } from "../checks/secrets-check.js";
 import {
   buildInlineMigrationSecretName,
@@ -48,7 +48,7 @@ function secret(partial: Partial<CompanySecret>): CompanySecret {
     name: "agent_agent-12_anthropic_api_key",
     provider: "local_encrypted",
     status: "active",
-    managedMode: "paperclip_managed",
+    managedMode: "odysseus_managed",
     externalRef: null,
     providerConfigId: null,
     providerMetadata: null,
@@ -65,7 +65,7 @@ function secret(partial: Partial<CompanySecret>): CompanySecret {
   };
 }
 
-function configWithSecretsProvider(provider: PaperclipConfig["secrets"]["provider"]): PaperclipConfig {
+function configWithSecretsProvider(provider: OdysseusConfig["secrets"]["provider"]): OdysseusConfig {
   return {
     $meta: {
       version: 1,
@@ -74,18 +74,18 @@ function configWithSecretsProvider(provider: PaperclipConfig["secrets"]["provide
     },
     database: {
       mode: "embedded-postgres",
-      embeddedPostgresDataDir: "/tmp/paperclip/db",
+      embeddedPostgresDataDir: "/tmp/odysseus/db",
       embeddedPostgresPort: 55432,
       backup: {
         enabled: true,
         intervalMinutes: 60,
         retentionDays: 30,
-        dir: "/tmp/paperclip/backups",
+        dir: "/tmp/odysseus/backups",
       },
     },
     logging: {
       mode: "file",
-      logDir: "/tmp/paperclip/logs",
+      logDir: "/tmp/odysseus/logs",
     },
     server: {
       deploymentMode: "local_trusted",
@@ -105,10 +105,10 @@ function configWithSecretsProvider(provider: PaperclipConfig["secrets"]["provide
     storage: {
       provider: "local_disk",
       localDisk: {
-        baseDir: "/tmp/paperclip/storage",
+        baseDir: "/tmp/odysseus/storage",
       },
       s3: {
-        bucket: "paperclip",
+        bucket: "odysseus",
         region: "us-east-1",
         prefix: "",
         forcePathStyle: false,
@@ -118,7 +118,7 @@ function configWithSecretsProvider(provider: PaperclipConfig["secrets"]["provide
       provider,
       strictMode: true,
       localEncrypted: {
-        keyFilePath: "/tmp/paperclip/secrets/master.key",
+        keyFilePath: "/tmp/odysseus/secrets/master.key",
       },
     },
   };
@@ -129,11 +129,11 @@ describe("secrets CLI helpers", () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
-    delete process.env.PAPERCLIP_SECRETS_AWS_REGION;
+    delete process.env.ODYSSEUS_SECRETS_AWS_REGION;
     delete process.env.AWS_REGION;
     delete process.env.AWS_DEFAULT_REGION;
-    delete process.env.PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID;
-    delete process.env.PAPERCLIP_SECRETS_AWS_KMS_KEY_ID;
+    delete process.env.ODYSSEUS_SECRETS_AWS_DEPLOYMENT_ID;
+    delete process.env.ODYSSEUS_SECRETS_AWS_KMS_KEY_ID;
   });
 
   afterEach(() => {
@@ -236,17 +236,17 @@ describe("secrets CLI helpers", () => {
     const result = secretsCheck(configWithSecretsProvider("aws_secrets_manager"));
 
     expect(result.status).toBe("fail");
-    expect(result.message).toContain("PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID");
+    expect(result.message).toContain("ODYSSEUS_SECRETS_AWS_DEPLOYMENT_ID");
     expect(result.repairHint).toContain("AWS SDK default credential chain");
     expect(result.repairHint).toContain("Do not store AWS root credentials");
   });
 
   it("passes AWS doctor checks when non-secret provider config is present", () => {
-    process.env.PAPERCLIP_SECRETS_AWS_REGION = "us-east-1";
-    process.env.PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID = "prod-us-1";
-    process.env.PAPERCLIP_SECRETS_AWS_KMS_KEY_ID =
+    process.env.ODYSSEUS_SECRETS_AWS_REGION = "us-east-1";
+    process.env.ODYSSEUS_SECRETS_AWS_DEPLOYMENT_ID = "prod-us-1";
+    process.env.ODYSSEUS_SECRETS_AWS_KMS_KEY_ID =
       "arn:aws:kms:us-east-1:123456789012:key/test";
-    process.env.AWS_PROFILE = "paperclip-prod";
+    process.env.AWS_PROFILE = "odysseus-prod";
 
     const result = secretsCheck(configWithSecretsProvider("aws_secrets_manager"));
 

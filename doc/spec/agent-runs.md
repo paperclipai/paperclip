@@ -527,7 +527,7 @@ Runtime log storage is deployment-configured (not per-agent by default).
   "runLogStore": {
     "type": "local_file | object_store | postgres",
     "basePath": "./data/run-logs",
-    "bucket": "paperclip-run-logs",
+    "bucket": "odysseus-run-logs",
     "prefix": "runs/",
     "compress": true,
     "maxInlineExcerptBytes": 32768
@@ -561,7 +561,7 @@ Rules:
 - `run.source`
 - `run.startedAt`
 - `heartbeat.reason`
-- `paperclip.skill` (shared Paperclip skill text block)
+- `odysseus.skill` (shared Paperclip skill text block)
 - `credentials.apiBaseUrl`
 - `credentials.apiKey` (optional, sensitive)
 
@@ -581,7 +581,7 @@ Rules:
 ## 10.5 Security notes for credentials
 
 1. Credentials in prompt are allowed for initial simplicity but discouraged.
-2. Preferred transport is env vars (`PAPERCLIP_*`) injected at runtime.
+2. Preferred transport is env vars (`ODYSSEUS_*`) injected at runtime.
 3. Prompt preview and logs must redact sensitive values.
 
 ## 11. Realtime Status Delivery

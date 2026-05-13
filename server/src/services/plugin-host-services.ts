@@ -1,4 +1,4 @@
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@odysseus/db";
 import {
   agentTaskSessions as agentTaskSessionsTable,
   agents as agentsTable,
@@ -7,7 +7,7 @@ import {
   heartbeatRuns,
   issues as issuesTable,
   pluginLogs,
-} from "@paperclipai/db";
+} from "@odysseus/db";
 import { eq, and, like, desc, inArray, sql } from "drizzle-orm";
 import type {
   HostServices,
@@ -20,9 +20,9 @@ import type {
   IssueComment,
   PluginIssueAssigneeSummary,
   PluginIssueOrchestrationSummary,
-} from "@paperclipai/plugin-sdk";
-import type { CreateIssueThreadInteraction, IssueDocumentSummary } from "@paperclipai/shared";
-import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
+} from "@odysseus/plugin-sdk";
+import type { CreateIssueThreadInteraction, IssueDocumentSummary } from "@odysseus/shared";
+import { pluginOperationIssueOriginKind } from "@odysseus/shared";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
@@ -460,7 +460,7 @@ if (_logFlushInterval.unref) _logFlushInterval.unref();
  * buildHostServices — creates a concrete implementation of the `HostServices`
  * interface for a specific plugin.
  *
- * This implementation delegates to the core Paperclip domain services,
+ * This implementation delegates to the core Odysseus domain services,
  * providing the bridge between the plugin worker's SDK and the host platform.
  *
  * @param db - Database connection instance.
@@ -478,7 +478,7 @@ export function buildHostServices(
   pluginKey: string,
   eventBus: PluginEventBus,
   notifyWorker?: (method: string, params: unknown) => void,
-  options: { pluginWorkerManager?: PluginWorkerManager; manifest?: import("@paperclipai/shared").PaperclipPluginManifestV1 } = {},
+  options: { pluginWorkerManager?: PluginWorkerManager; manifest?: import("@odysseus/shared").OdysseusPluginManifestV1 } = {},
 ): HostServices & { dispose(): void } {
   const registry = pluginRegistryService(db);
   const stateStore = pluginStateStore(db);
@@ -955,7 +955,7 @@ export function buildHostServices(
         await scopedBus.emit(params.name, params.companyId, params.payload);
       },
       async subscribe(params: { eventPattern: string; filter?: Record<string, unknown> | null }) {
-        const handler = async (event: import("@paperclipai/plugin-sdk").PluginEvent) => {
+        const handler = async (event: import("@odysseus/plugin-sdk").PluginEvent) => {
           if (notifyWorker) {
             notifyWorker("onEvent", { event });
           }

@@ -1,4 +1,4 @@
-# `@paperclipai/plugin-cloudflare-sandbox`
+# `@odysseus/plugin-cloudflare-sandbox`
 
 Published Cloudflare sandbox provider plugin for Paperclip.
 
@@ -9,7 +9,7 @@ This package lives in the Paperclip monorepo, but it is intentionally excluded f
 From a Paperclip instance, install:
 
 ```text
-@paperclipai/plugin-cloudflare-sandbox
+@odysseus/plugin-cloudflare-sandbox
 ```
 
 Configure Cloudflare from `Company Settings -> Environments`, not from the plugin's instance settings page.
@@ -33,7 +33,7 @@ Pasted auth tokens are stored by Paperclip as company secrets because the manife
 
 ## Bridge template
 
-The package includes an operator-facing Cloudflare Worker scaffold under [bridge-template](./bridge-template). That template uses `@cloudflare/sandbox`, a `Sandbox` Durable Object binding, and a small JSON HTTP surface under `/api/paperclip-sandbox/v1`.
+The package includes an operator-facing Cloudflare Worker scaffold under [bridge-template](./bridge-template). That template uses `@cloudflare/sandbox`, a `Sandbox` Durable Object binding, and a small JSON HTTP surface under `/api/odysseus-sandbox/v1`.
 
 ## Local development
 
@@ -45,4 +45,4 @@ pnpm test
 pnpm typecheck
 ```
 
-These commands assume the repo root has already been installed once so the local `@paperclipai/plugin-sdk` workspace package is available to the compiler during development.
+These commands assume the repo root has already been installed once so the local `@odysseus/plugin-sdk` workspace package is available to the compiler during development.

@@ -1,7 +1,7 @@
 version: "3.9"
 
 # Local-dev docker-compose for Odysseus.
-# Brings up the (forked-paperclip) Odysseus server, embedded Postgres, and UI.
+# Brings up the (forked-odysseus) Odysseus server, embedded Postgres, and UI.
 # Profile is selected via the ODYSSEUS_PROFILE env var (small-firm | in-house-dept).
 
 services:
@@ -20,8 +20,8 @@ services:
       retries: 20
 
   server:
-    # Built from the forked paperclip repo at ../odysseus-fork during sprint 0.
-    # For now this references the upstream paperclip image; sprint 0 will replace.
+    # Built from the forked odysseus repo at ../odysseus-fork during sprint 0.
+    # For now this references the upstream odysseus image; sprint 0 will replace.
     build:
       context: ../odysseus-fork
       dockerfile: Dockerfile

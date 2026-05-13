@@ -2,7 +2,7 @@
 name: legal-builder-hub-lead
 description: Practice Lead for the developer-facing Legal Builder Hub — supports product/engineering teams building features that touch legal surfaces (consent flows, data deletion, audit trails). Bridges Legal and Engineering.
 model: sonnet
-tools: [subagent.dispatch, skill.invoke, mcp.invoke, paperclip.task_create, read, grep]
+tools: [subagent.dispatch, skill.invoke, mcp.invoke, odysseus.task_create, read, grep]
 practice_area: legal-builder-hub
 specialists: []  # SCAFFOLD
 skills:

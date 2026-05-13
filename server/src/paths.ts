@@ -2,15 +2,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveDefaultConfigPath } from "./home-paths.js";
 
-const PAPERCLIP_CONFIG_BASENAME = "config.json";
-const PAPERCLIP_ENV_FILENAME = ".env";
+const ODYSSEUS_CONFIG_BASENAME = "config.json";
+const ODYSSEUS_ENV_FILENAME = ".env";
 
 function findConfigFileFromAncestors(startDir: string): string | null {
   const absoluteStartDir = path.resolve(startDir);
   let currentDir = absoluteStartDir;
 
   while (true) {
-    const candidate = path.resolve(currentDir, ".paperclip", PAPERCLIP_CONFIG_BASENAME);
+    const candidate = path.resolve(currentDir, ".odysseus", ODYSSEUS_CONFIG_BASENAME);
     if (fs.existsSync(candidate)) {
       return candidate;
     }
@@ -23,12 +23,12 @@ function findConfigFileFromAncestors(startDir: string): string | null {
   return null;
 }
 
-export function resolvePaperclipConfigPath(overridePath?: string): string {
+export function resolveOdysseusConfigPath(overridePath?: string): string {
   if (overridePath) return path.resolve(overridePath);
-  if (process.env.PAPERCLIP_CONFIG) return path.resolve(process.env.PAPERCLIP_CONFIG);
+  if (process.env.ODYSSEUS_CONFIG) return path.resolve(process.env.ODYSSEUS_CONFIG);
   return findConfigFileFromAncestors(process.cwd()) ?? resolveDefaultConfigPath();
 }
 
-export function resolvePaperclipEnvPath(overrideConfigPath?: string): string {
-  return path.resolve(path.dirname(resolvePaperclipConfigPath(overrideConfigPath)), PAPERCLIP_ENV_FILENAME);
+export function resolveOdysseusEnvPath(overrideConfigPath?: string): string {
+  return path.resolve(path.dirname(resolveOdysseusConfigPath(overrideConfigPath)), ODYSSEUS_ENV_FILENAME);
 }

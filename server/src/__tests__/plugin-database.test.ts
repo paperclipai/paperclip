@@ -12,8 +12,8 @@ import {
   pluginDatabaseNamespaces,
   pluginMigrations,
   plugins,
-} from "@paperclipai/db";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+} from "@odysseus/db";
+import type { OdysseusPluginManifestV1 } from "@odysseus/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -29,7 +29,7 @@ import { pluginLoader } from "../services/plugin-loader.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
-const multiMigrationPluginKey = "paperclip.dbfixture";
+const multiMigrationPluginKey = "odysseus.dbfixture";
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -90,12 +90,12 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
   let packageRoots: string[] = [];
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-plugin-db-");
+    tempDb = await startEmbeddedPostgresTestDatabase("odysseus-plugin-db-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
   afterEach(async () => {
-    for (const pluginKey of ["paperclip.dbtest", "paperclip.escape", "paperclip.refresh", multiMigrationPluginKey]) {
+    for (const pluginKey of ["odysseus.dbtest", "odysseus.escape", "odysseus.refresh", multiMigrationPluginKey]) {
       const namespace = derivePluginDatabaseNamespace(pluginKey);
       await db.execute(sql.raw(`DROP SCHEMA IF EXISTS "${namespace}" CASCADE`));
     }
@@ -113,8 +113,8 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
     await tempDb?.cleanup();
   });
 
-  async function createPluginPackage(manifest: PaperclipPluginManifestV1, migrationSql: string) {
-    const packageRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-plugin-package-"));
+  async function createPluginPackage(manifest: OdysseusPluginManifestV1, migrationSql: string) {
+    const packageRoot = await mkdtemp(path.join(os.tmpdir(), "odysseus-plugin-package-"));
     packageRoots.push(packageRoot);
     const migrationsDir = path.join(packageRoot, manifest.database!.migrationsDir);
     await mkdir(migrationsDir, { recursive: true });
@@ -123,7 +123,7 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
   }
 
   async function createInstallablePluginPackage(
-    pluginManifest: PaperclipPluginManifestV1,
+    pluginManifest: OdysseusPluginManifestV1,
     migrationSql: string,
   ) {
     const packageRoot = await createPluginPackage(pluginManifest, migrationSql);
@@ -133,7 +133,7 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
         name: pluginManifest.id,
         version: pluginManifest.version,
         type: "module",
-        paperclipPlugin: { manifest: "./manifest.js" },
+        odysseusPlugin: { manifest: "./manifest.js" },
       }),
       "utf8",
     );
@@ -147,7 +147,7 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
     return packageRoot;
   }
 
-  async function installPluginRecord(manifest: PaperclipPluginManifestV1) {
+  async function installPluginRecord(manifest: OdysseusPluginManifestV1) {
     const pluginId = randomUUID();
     await db.insert(plugins).values({
       id: pluginId,
@@ -163,14 +163,14 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
     return pluginId;
   }
 
-  function manifest(pluginKey = "paperclip.dbtest"): PaperclipPluginManifestV1 {
+  function manifest(pluginKey = "odysseus.dbtest"): OdysseusPluginManifestV1 {
     return {
       id: pluginKey,
       apiVersion: 1,
       version: "1.0.0",
       displayName: "DB Test",
       description: "Exercises restricted plugin database access.",
-      author: "Paperclip",
+      author: "Odysseus",
       categories: ["automation"],
       capabilities: [
         "database.namespace.migrate",
@@ -228,7 +228,7 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
     const issueId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "Odysseus",
       issuePrefix: "TST",
       requireBoardApprovalForNewAgents: false,
     });
@@ -280,7 +280,7 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
   });
 
   it("records a failed migration when SQL escapes the plugin namespace", async () => {
-    const pluginManifest = manifest("paperclip.escape");
+    const pluginManifest = manifest("odysseus.escape");
     const packageRoot = await createPluginPackage(
       pluginManifest,
       "CREATE TABLE public.plugin_escape (id uuid PRIMARY KEY);",
@@ -299,7 +299,7 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
   });
 
   it("rolls back plugin install when migration validation fails", async () => {
-    const pluginManifest = manifest("paperclip.escape");
+    const pluginManifest = manifest("odysseus.escape");
     const namespace = derivePluginDatabaseNamespace(pluginManifest.id);
     const packageRoot = await createInstallablePluginPackage(
       pluginManifest,
@@ -338,8 +338,8 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
   });
 
   it("refreshes persisted manifests from disk before activation", async () => {
-    const staleManifest = manifest("paperclip.refresh");
-    const refreshedManifest: PaperclipPluginManifestV1 = {
+    const staleManifest = manifest("odysseus.refresh");
+    const refreshedManifest: OdysseusPluginManifestV1 = {
       ...staleManifest,
       database: {
         ...staleManifest.database!,
@@ -408,8 +408,8 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
       expect.objectContaining({
         databaseNamespace: namespace,
         env: {
-          PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
-          PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+          ODYSSEUS_DEPLOYMENT_MODE: "authenticated",
+          ODYSSEUS_DEPLOYMENT_EXPOSURE: "public",
         },
         manifest: expect.objectContaining({
           database: expect.objectContaining({ coreReadTables: ["companies"] }),

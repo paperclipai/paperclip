@@ -2,7 +2,7 @@ import type {
   IssueCommentMetadata,
   IssueCommentMetadataRow,
   IssueCommentPresentation,
-} from "@paperclipai/shared";
+} from "@odysseus/shared";
 import type {
   SystemNoticeMetadataRow,
   SystemNoticeMetadataSection,

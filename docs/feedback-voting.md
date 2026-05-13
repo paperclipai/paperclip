@@ -26,20 +26,20 @@ When a vote is marked for sharing, Paperclip immediately tries to upload the tra
 ### Quick report (terminal)
 
 ```bash
-pnpm paperclipai feedback report
+pnpm odysseus feedback report
 ```
 
 Shows a color-coded summary: vote counts, per-trace details with reasons, and export statuses.
 
 ```bash
 # Installed CLI
-paperclipai feedback report
+odysseus feedback report
 
 # Point to a different server or company
-pnpm paperclipai feedback report --api-base http://127.0.0.1:3000 --company-id <company-id>
+pnpm odysseus feedback report --api-base http://127.0.0.1:3000 --company-id <company-id>
 
 # Include raw payload dumps in the report
-pnpm paperclipai feedback report --payloads
+pnpm odysseus feedback report --payloads
 ```
 
 ### API endpoints
@@ -89,7 +89,7 @@ The trace endpoints accept query parameters:
 ### Export to files + zip
 
 ```bash
-pnpm paperclipai feedback export
+pnpm odysseus feedback export
 ```
 
 Creates a timestamped directory with:
@@ -112,7 +112,7 @@ Exports are full by default. `traces/` keeps the Paperclip envelope, while `full
 
 ```bash
 # Custom server and output directory
-pnpm paperclipai feedback export --api-base http://127.0.0.1:3000 --company-id <company-id> --out ./my-export
+pnpm odysseus feedback export --api-base http://127.0.0.1:3000 --company-id <company-id> --out ./my-export
 ```
 
 ### Reading an exported trace
@@ -183,7 +183,7 @@ Votes you choose to share are sent to the Telemetry Backend immediately from the
 - App server responsibility: build the bundle, POST it to Telemetry Backend, update trace status
 - Telemetry Backend responsibility: authenticate the request, validate payload shape, compress/store the bundle, return the final object key
 - Retry behavior: failed uploads move to `failed` with an error message in `failureReason`, and the worker retries them on later ticks
-- Default endpoint: when no feedback export backend URL is configured, Paperclip falls back to `https://telemetry.paperclip.ing`
+- Default endpoint: when no feedback export backend URL is configured, Paperclip falls back to `https://telemetry.odysseus.ing`
 - Important nuance: the uploaded object is a snapshot of the full bundle at vote time. If you fetch a local bundle later and the underlying adapter session file has continued to grow, the local regenerated bundle may be larger than the already-uploaded snapshot for that same trace.
 
 Exported objects use a deterministic key pattern so they are easy to inspect:

@@ -1,19 +1,19 @@
 {
-  "name": "@paperclipai/mcp-server",
+  "name": "@odysseus/mcp-server",
   "version": "0.1.0",
   "license": "MIT",
-  "homepage": "https://github.com/paperclipai/paperclip",
+  "homepage": "https://github.com/PossibLaw/odysseus",
   "bugs": {
-    "url": "https://github.com/paperclipai/paperclip/issues"
+    "url": "https://github.com/PossibLaw/odysseus/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/paperclipai/paperclip",
+    "url": "https://github.com/PossibLaw/odysseus",
     "directory": "packages/mcp-server"
   },
   "type": "module",
   "bin": {
-    "paperclip-mcp-server": "./dist/stdio.js"
+    "odysseus-mcp-server": "./dist/stdio.js"
   },
   "exports": {
     ".": "./src/index.ts"
@@ -21,7 +21,7 @@
   "publishConfig": {
     "access": "public",
     "bin": {
-      "paperclip-mcp-server": "./dist/stdio.js"
+      "odysseus-mcp-server": "./dist/stdio.js"
     },
     "exports": {
       ".": {
@@ -44,7 +44,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@paperclipai/shared": "workspace:*",
+    "@odysseus/shared": "workspace:*",
     "zod": "^3.24.2"
   },
   "devDependencies": {

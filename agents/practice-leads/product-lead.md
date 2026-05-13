@@ -2,7 +2,7 @@
 name: product-lead
 description: Practice Lead for product-facing legal — consumer terms, EULAs, accessibility, marketing/advertising review, feature legal review. Mostly in-house-dept. v1 ships as a scaffold.
 model: sonnet
-tools: [subagent.dispatch, skill.invoke, mcp.invoke, paperclip.task_create, read, glob, grep]
+tools: [subagent.dispatch, skill.invoke, mcp.invoke, odysseus.task_create, read, glob, grep]
 practice_area: product
 specialists: []  # SCAFFOLD
 skills:

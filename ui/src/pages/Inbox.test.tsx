@@ -3,7 +3,7 @@
 import { act } from "react";
 import type { ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue } from "@odysseus/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyJoinRequest } from "../api/access";
 import {

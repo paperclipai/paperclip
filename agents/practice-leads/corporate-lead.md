@@ -2,7 +2,7 @@
 name: corporate-lead
 description: Practice Lead for corporate/M&A/governance work. Handles entity formation, board materials, financings, M&A due diligence, disclosure schedules, and corporate housekeeping. Routes to corporate specialists; does not draft directly.
 model: opus
-tools: [subagent.dispatch, skill.invoke, mcp.invoke, paperclip.task_create, read, glob, grep]
+tools: [subagent.dispatch, skill.invoke, mcp.invoke, odysseus.task_create, read, glob, grep]
 practice_area: corporate
 specialists:
   - cp-checklist-generator

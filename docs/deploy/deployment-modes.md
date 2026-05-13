@@ -17,7 +17,7 @@ The default mode. Optimized for single-operator local use.
 
 ```sh
 # Set during onboard
-pnpm paperclipai onboard
+pnpm odysseus onboard
 # Choose "local_trusted"
 ```
 
@@ -35,14 +35,14 @@ For private network access (Tailscale, VPN, LAN).
 - **Bind**: choose `loopback`, `lan`, `tailnet`, or `custom`
 
 ```sh
-pnpm paperclipai onboard
+pnpm odysseus onboard
 # Choose "authenticated" -> "private"
 ```
 
 Allow custom Tailscale hostnames:
 
 ```sh
-pnpm paperclipai allowed-hostname my-machine
+pnpm odysseus allowed-hostname my-machine
 ```
 
 ### `authenticated` + `public`
@@ -55,7 +55,7 @@ For internet-facing deployment.
 - **Bind**: usually `loopback` behind a reverse proxy; `lan/custom` is advanced
 
 ```sh
-pnpm paperclipai onboard
+pnpm odysseus onboard
 # Choose "authenticated" -> "public"
 ```
 
@@ -78,11 +78,11 @@ A signed-in user visits this URL to claim board ownership. This:
 Update the deployment mode:
 
 ```sh
-pnpm paperclipai configure --section server
+pnpm odysseus configure --section server
 ```
 
 Runtime override via environment variable:
 
 ```sh
-PAPERCLIP_DEPLOYMENT_MODE=authenticated PAPERCLIP_BIND=lan pnpm paperclipai run
+ODYSSEUS_DEPLOYMENT_MODE=authenticated ODYSSEUS_BIND=lan pnpm odysseus run
 ```

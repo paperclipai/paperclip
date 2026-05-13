@@ -4,7 +4,7 @@ import {
   trackRecentSelectionId,
 } from "./recent-selections";
 
-const STORAGE_KEY = "paperclip:recent-assignees";
+const STORAGE_KEY = "odysseus:recent-assignees";
 
 function agentSelectionId(agentId: string): string {
   return `agent:${agentId}`;

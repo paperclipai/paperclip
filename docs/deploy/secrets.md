@@ -49,19 +49,19 @@ can be human-readable; the binding key is what the agent process receives.
 
 Project env applies to every issue run in that project. When a project env key
 matches an agent env key, the project value wins before Paperclip injects its
-own `PAPERCLIP_*` runtime variables.
+own `ODYSSEUS_*` runtime variables.
 
 ## Default Provider: `local_encrypted`
 
 Secrets are encrypted with a local master key stored at:
 
 ```
-~/.paperclip/instances/default/secrets/master.key
+~/.odysseus/instances/default/secrets/master.key
 ```
 
 This key is auto-created during onboarding. The key never leaves your machine.
 Paperclip best-effort enforces `0600` permissions when it creates or loads the
-key file. `paperclipai doctor` and the provider health API warn when the file is
+key file. `odysseus doctor` and the provider health API warn when the file is
 readable by group or other users.
 
 Back up the key file together with database backups. A database backup without
@@ -75,42 +75,42 @@ metadata is not enough to restore named secret versions.
 Onboarding writes default secrets config:
 
 ```sh
-pnpm paperclipai onboard
+pnpm odysseus onboard
 ```
 
 Update secrets settings:
 
 ```sh
-pnpm paperclipai configure --section secrets
+pnpm odysseus configure --section secrets
 ```
 
 Validate secrets config:
 
 ```sh
-pnpm paperclipai doctor
-pnpm paperclipai secrets doctor --company-id <company-id>
+pnpm odysseus doctor
+pnpm odysseus secrets doctor --company-id <company-id>
 ```
 
 ### Environment Overrides
 
 | Variable | Description |
 |----------|-------------|
-| `PAPERCLIP_SECRETS_MASTER_KEY` | 32-byte key as base64, hex, or raw string |
-| `PAPERCLIP_SECRETS_MASTER_KEY_FILE` | Custom key file path |
-| `PAPERCLIP_SECRETS_STRICT_MODE` | Set to `true` to enforce secret refs |
+| `ODYSSEUS_SECRETS_MASTER_KEY` | 32-byte key as base64, hex, or raw string |
+| `ODYSSEUS_SECRETS_MASTER_KEY_FILE` | Custom key file path |
+| `ODYSSEUS_SECRETS_STRICT_MODE` | Set to `true` to enforce secret refs |
 
 ## Strict Mode
 
 When strict mode is enabled, sensitive env keys (matching `*_API_KEY`, `*_TOKEN`, `*_SECRET`) must use secret references instead of inline plain values.
 
 ```sh
-PAPERCLIP_SECRETS_STRICT_MODE=true
+ODYSSEUS_SECRETS_STRICT_MODE=true
 ```
 
 Recommended for any deployment beyond local trusted.
 
 Authenticated deployments default strict mode on unless explicitly overridden by
-configuration or `PAPERCLIP_SECRETS_STRICT_MODE=false`.
+configuration or `ODYSSEUS_SECRETS_STRICT_MODE=false`.
 
 ## External References
 
@@ -237,7 +237,7 @@ key file is backed up alongside the database.
 **AWS Secrets Manager vaults** read the per-vault `region`, `namespace`,
 `secretNamePrefix`, `kmsKeyId`, `ownerTag`, and `environmentTag` to route
 managed writes and external-reference reads. The vault config supplements (and
-can override) the deployment-level `PAPERCLIP_SECRETS_AWS_*` env. Bootstrap
+can override) the deployment-level `ODYSSEUS_SECRETS_AWS_*` env. Bootstrap
 credentials still come from the AWS SDK default credential chain — see
 `doc/SECRETS-AWS-PROVIDER.md` for the full IAM and KMS contract.
 
@@ -339,7 +339,7 @@ create or resolve AWS-backed company secrets, regardless of whether you use the
 deployment-level default or a per-company vault.
 
 For Paperclip Cloud, provision the server runtime IAM role/workload identity,
-KMS key, deployment prefix, and non-secret `PAPERCLIP_SECRETS_AWS_*` environment
+KMS key, deployment prefix, and non-secret `ODYSSEUS_SECRETS_AWS_*` environment
 configuration before enabling AWS-backed secrets in the board UI. For
 self-hosted and local runs, use the AWS SDK default credential chain: instance
 profile, ECS task role, EKS IRSA/OIDC web identity, AWS SSO/shared config via
@@ -355,8 +355,8 @@ store.
 If you have existing agents with inline API keys in their config, migrate them to encrypted secret refs:
 
 ```sh
-pnpm paperclipai secrets migrate-inline-env --company-id <company-id>
-pnpm paperclipai secrets migrate-inline-env --company-id <company-id> --apply
+pnpm odysseus secrets migrate-inline-env --company-id <company-id>
+pnpm odysseus secrets migrate-inline-env --company-id <company-id> --apply
 
 # low-level script for direct database maintenance
 pnpm secrets:migrate-inline-env         # dry run
@@ -373,7 +373,7 @@ Company exports include only environment declarations. They do not include
 secret IDs, provider references, encrypted material, or plaintext values.
 
 ```sh
-pnpm paperclipai secrets declarations --company-id <company-id> --kind secret
+pnpm odysseus secrets declarations --company-id <company-id> --kind secret
 ```
 
 Before importing a package into another instance, use those declarations to

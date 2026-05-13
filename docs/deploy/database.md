@@ -15,12 +15,12 @@ pnpm dev
 
 On first start, the server:
 
-1. Creates `~/.paperclip/instances/default/db/` for storage
-2. Ensures the `paperclip` database exists
+1. Creates `~/.odysseus/instances/default/db/` for storage
+2. Ensures the `odysseus` database exists
 3. Runs migrations automatically
 4. Starts serving requests
 
-Data persists across restarts. To reset: `rm -rf ~/.paperclip/instances/default/db`.
+Data persists across restarts. To reset: `rm -rf ~/.odysseus/instances/default/db`.
 
 The Docker quickstart also uses embedded PostgreSQL by default.
 
@@ -36,13 +36,13 @@ This starts PostgreSQL 17 on `localhost:5432`. Set the connection string:
 
 ```sh
 cp .env.example .env
-# DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip
+# DATABASE_URL=postgres://odysseus:odysseus@localhost:5432/odysseus
 ```
 
 Push the schema:
 
 ```sh
-DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip \
+DATABASE_URL=postgres://odysseus:odysseus@localhost:5432/odysseus \
   npx drizzle-kit push
 ```
 

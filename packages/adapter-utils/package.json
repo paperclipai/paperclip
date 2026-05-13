@@ -1,14 +1,14 @@
 {
-  "name": "@paperclipai/adapter-utils",
+  "name": "@odysseus/adapter-utils",
   "version": "0.3.1",
   "license": "MIT",
-  "homepage": "https://github.com/paperclipai/paperclip",
+  "homepage": "https://github.com/PossibLaw/odysseus",
   "bugs": {
-    "url": "https://github.com/paperclipai/paperclip/issues"
+    "url": "https://github.com/PossibLaw/odysseus/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/paperclipai/paperclip",
+    "url": "https://github.com/PossibLaw/odysseus",
     "directory": "packages/adapter-utils"
   },
   "type": "module",

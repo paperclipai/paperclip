@@ -18,8 +18,8 @@ import {
   issueRelations,
   issueTreeHolds,
   issues,
-} from "@paperclipai/db";
-import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
+} from "@odysseus/db";
+import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@odysseus/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -142,7 +142,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     mockAdapterExecute.mock.calls.filter(([context]) => context?.runId === runId).length;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-stale-queue-");
+    tempDb = await startEmbeddedPostgresTestDatabase("odysseus-heartbeat-stale-queue-");
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
     await ensureIssueRelationsTable(db);
@@ -187,7 +187,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     const agentId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "Odysseus",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });

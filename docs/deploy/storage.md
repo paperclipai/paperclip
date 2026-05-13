@@ -10,7 +10,7 @@ Paperclip stores uploaded files (issue attachments, images) using a configurable
 Files are stored at:
 
 ```
-~/.paperclip/instances/default/data/storage
+~/.odysseus/instances/default/data/storage
 ```
 
 No configuration required. Suitable for local development and single-machine deployments.
@@ -22,7 +22,7 @@ For production or multi-node deployments, use S3-compatible object storage (AWS 
 Configure via CLI:
 
 ```sh
-pnpm paperclipai configure --section storage
+pnpm odysseus configure --section storage
 ```
 
 ## Configuration
@@ -35,5 +35,5 @@ pnpm paperclipai configure --section storage
 Storage configuration is stored in the instance config file:
 
 ```
-~/.paperclip/instances/default/config.json
+~/.odysseus/instances/default/config.json
 ```

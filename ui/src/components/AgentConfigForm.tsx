@@ -6,8 +6,8 @@ import type {
   CompanySecret,
   EnvBinding,
   Environment,
-} from "@paperclipai/shared";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter } from "@paperclipai/shared";
+} from "@odysseus/shared";
+import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter } from "@odysseus/shared";
 import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
 import { environmentsApi } from "../api/environments";
@@ -17,10 +17,10 @@ import { assetsApi } from "../api/assets";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
-} from "@paperclipai/adapter-codex-local";
-import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
-import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
-import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
+} from "@odysseus/adapter-codex-local";
+import { DEFAULT_CURSOR_LOCAL_MODEL } from "@odysseus/adapter-cursor-local";
+import { DEFAULT_GEMINI_LOCAL_MODEL } from "@odysseus/adapter-gemini-local";
+import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@odysseus/adapter-opencode-local";
 import {
   Popover,
   PopoverContent,
@@ -61,10 +61,10 @@ import { filterAcpxModelsByAgent } from "../lib/acpx-model-filter";
 
 /* ---- Create mode values ---- */
 
-// Canonical type lives in @paperclipai/adapter-utils; re-exported here
+// Canonical type lives in @odysseus/adapter-utils; re-exported here
 // so existing imports from this file keep working.
-export type { CreateConfigValues } from "@paperclipai/adapter-utils";
-import type { CreateConfigValues } from "@paperclipai/adapter-utils";
+export type { CreateConfigValues } from "@odysseus/adapter-utils";
+import type { CreateConfigValues } from "@odysseus/adapter-utils";
 
 /* ---- Props ---- */
 

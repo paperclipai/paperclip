@@ -2,7 +2,7 @@ Use this exact checklist.
 
 1. Start Paperclip in auth mode.
 ```bash
-cd <paperclip-repo-root>
+cd <odysseus-repo-root>
 pnpm dev --bind lan
 ```
 Then verify:
@@ -43,7 +43,7 @@ Security/control note:
 - If you can run API checks with board auth:
 ```bash
 AGENT_ID="<newly-created-agent-id>"
-curl -sS -H "Cookie: $PAPERCLIP_COOKIE" "http://127.0.0.1:3100/api/agents/$AGENT_ID" | jq '{adapterType,adapterConfig:{url:.adapterConfig.url,tokenLen:(.adapterConfig.headers["x-openclaw-token"] // .adapterConfig.headers["x-openclaw-auth"] // "" | length),disableDeviceAuth:(.adapterConfig.disableDeviceAuth // false),hasDeviceKey:(.adapterConfig.devicePrivateKeyPem // "" | length > 0)}}'
+curl -sS -H "Cookie: $ODYSSEUS_COOKIE" "http://127.0.0.1:3100/api/agents/$AGENT_ID" | jq '{adapterType,adapterConfig:{url:.adapterConfig.url,tokenLen:(.adapterConfig.headers["x-openclaw-token"] // .adapterConfig.headers["x-openclaw-auth"] // "" | length),disableDeviceAuth:(.adapterConfig.disableDeviceAuth // false),hasDeviceKey:(.adapterConfig.devicePrivateKeyPem // "" | length > 0)}}'
 ```
 - Expected: `adapterType=openclaw_gateway`, `tokenLen >= 16`, `hasDeviceKey=true`, and `disableDeviceAuth=false`.
 
@@ -81,7 +81,7 @@ docker exec openclaw-docker-openclaw-gateway-1 sh -lc 'TOK="$(node -e \"const fs
 
 10. Watch logs during test (optional but helpful):
 ```bash
-docker compose -f /tmp/openclaw-docker/docker-compose.yml -f /tmp/openclaw-docker/.paperclip-openclaw.override.yml logs -f openclaw-gateway
+docker compose -f /tmp/openclaw-docker/docker-compose.yml -f /tmp/openclaw-docker/.odysseus-openclaw.override.yml logs -f openclaw-gateway
 ```
 
 11. Expected pass criteria.

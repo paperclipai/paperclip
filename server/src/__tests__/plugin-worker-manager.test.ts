@@ -1,11 +1,11 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import type { OdysseusPluginManifestV1 } from "@odysseus/shared";
 import {
   JsonRpcCallError,
   type HostToWorkerMethods,
-} from "@paperclipai/plugin-sdk";
+} from "@odysseus/plugin-sdk";
 import {
   appendStderrExcerpt,
   createPluginWorkerHandle,
@@ -16,13 +16,13 @@ const FIXTURES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "fi
 const DELAYED_WORKER_ENTRYPOINT = path.join(FIXTURES_DIR, "plugin-worker-delayed.cjs");
 const TERMINATED_WORKER_ENTRYPOINT = path.join(FIXTURES_DIR, "plugin-worker-terminated.cjs");
 
-const TEST_MANIFEST: PaperclipPluginManifestV1 = {
+const TEST_MANIFEST: OdysseusPluginManifestV1 = {
   id: "test.plugin",
   apiVersion: 1,
   version: "1.0.0",
   displayName: "Test plugin",
   description: "Test plugin",
-  author: "Paperclip",
+  author: "Odysseus",
   categories: ["automation"],
   capabilities: [],
   entrypoints: { worker: "dist/worker.js" },

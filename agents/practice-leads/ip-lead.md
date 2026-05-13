@@ -2,7 +2,7 @@
 name: ip-lead
 description: Practice Lead for IP — trademark clearance, copyright/DMCA, IP licensing, invention disclosures, trade secrets. Routes to IP specialists; does not draft directly.
 model: sonnet
-tools: [subagent.dispatch, skill.invoke, mcp.invoke, paperclip.task_create, read, glob, grep]
+tools: [subagent.dispatch, skill.invoke, mcp.invoke, odysseus.task_create, read, glob, grep]
 practice_area: ip
 specialists:
   - trademark-clearance

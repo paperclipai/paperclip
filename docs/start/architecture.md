@@ -38,7 +38,7 @@ Paperclip is a monorepo with four main layers.
 ## Repository Structure
 
 ```
-paperclip/
+odysseus/
 ├── ui/                          # React frontend
 │   ├── src/pages/              # Route pages
 │   ├── src/components/         # React components
@@ -60,7 +60,7 @@ paperclip/
 │       └── codex-local/         # OpenAI Codex adapter
 │
 ├── skills/                      # Agent skills
-│   └── paperclip/               # Core Paperclip skill (heartbeat protocol)
+│   └── odysseus/               # Core Paperclip skill (heartbeat protocol)
 │
 ├── cli/                         # CLI client
 │   └── src/                     # Setup and control-plane commands
@@ -85,7 +85,7 @@ Adapters are the bridge between Paperclip and agent runtimes. Each adapter is a 
 
 - **Server module** — `execute()` function that spawns/calls the agent, plus environment diagnostics
 - **UI module** — stdout parser for the run viewer, config form fields for agent creation
-- **CLI module** — terminal formatter for `paperclipai run --watch`
+- **CLI module** — terminal formatter for `odysseus run --watch`
 
 Built-in adapters: `claude_local`, `codex_local`, `process`, `http`. You can create custom adapters for any runtime.
 

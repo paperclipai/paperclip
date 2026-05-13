@@ -5,7 +5,7 @@ import type {
   InboxDismissal,
   Issue,
   JoinRequest,
-} from "@paperclipai/shared";
+} from "@odysseus/shared";
 import {
   applyIssueFilters,
   defaultIssueFilterState,
@@ -17,14 +17,14 @@ import { formatAssigneeUserLabel } from "./assignees";
 export const RECENT_ISSUES_LIMIT = 100;
 export const FAILED_RUN_STATUSES = new Set(["failed", "timed_out"]);
 export const ACTIONABLE_APPROVAL_STATUSES = new Set(["pending", "revision_requested"]);
-export const DISMISSED_KEY = "paperclip:inbox:dismissed";
-export const READ_ITEMS_KEY = "paperclip:inbox:read-items";
-export const INBOX_LAST_TAB_KEY = "paperclip:inbox:last-tab";
-export const INBOX_ISSUE_COLUMNS_KEY = "paperclip:inbox:issue-columns";
-export const INBOX_NESTING_KEY = "paperclip:inbox:nesting";
-export const INBOX_GROUP_BY_KEY = "paperclip:inbox:group-by";
-export const INBOX_FILTER_PREFERENCES_KEY_PREFIX = "paperclip:inbox:filters";
-export const INBOX_COLLAPSED_GROUPS_KEY_PREFIX = "paperclip:inbox:collapsed-groups";
+export const DISMISSED_KEY = "odysseus:inbox:dismissed";
+export const READ_ITEMS_KEY = "odysseus:inbox:read-items";
+export const INBOX_LAST_TAB_KEY = "odysseus:inbox:last-tab";
+export const INBOX_ISSUE_COLUMNS_KEY = "odysseus:inbox:issue-columns";
+export const INBOX_NESTING_KEY = "odysseus:inbox:nesting";
+export const INBOX_GROUP_BY_KEY = "odysseus:inbox:group-by";
+export const INBOX_FILTER_PREFERENCES_KEY_PREFIX = "odysseus:inbox:filters";
+export const INBOX_COLLAPSED_GROUPS_KEY_PREFIX = "odysseus:inbox:collapsed-groups";
 export type InboxTab = "mine" | "recent" | "unread" | "all";
 export type InboxCategoryFilter =
   | "everything"

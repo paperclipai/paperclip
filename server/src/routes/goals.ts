@@ -1,7 +1,7 @@
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { createGoalSchema, updateGoalSchema } from "@paperclipai/shared";
-import { trackGoalCreated } from "@paperclipai/shared/telemetry";
+import type { Db } from "@odysseus/db";
+import { createGoalSchema, updateGoalSchema } from "@odysseus/shared";
+import { trackGoalCreated } from "@odysseus/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { goalService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";

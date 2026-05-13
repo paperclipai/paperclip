@@ -1,7 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
 import { HttpError } from "../errors.js";
-import { trackErrorHandlerCrash } from "@paperclipai/shared/telemetry";
+import { trackErrorHandlerCrash } from "@odysseus/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 
 export interface ErrorContext {

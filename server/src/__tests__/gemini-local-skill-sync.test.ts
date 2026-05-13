@@ -5,14 +5,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   listGeminiSkills,
   syncGeminiSkills,
-} from "@paperclipai/adapter-gemini-local/server";
+} from "@odysseus/adapter-gemini-local/server";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
 describe("gemini local skill sync", () => {
-  const paperclipKey = "paperclipai/paperclip/paperclip";
+  const odysseusKey = "PossibLaw/odysseus/odysseus";
   const cleanupDirs = new Set<string>();
 
   afterEach(async () => {
@@ -20,8 +20,8 @@ describe("gemini local skill sync", () => {
     cleanupDirs.clear();
   });
 
-  it("reports configured Paperclip skills and installs them into the Gemini skills home", async () => {
-    const home = await makeTempDir("paperclip-gemini-skill-sync-");
+  it("reports configured Odysseus skills and installs them into the Gemini skills home", async () => {
+    const home = await makeTempDir("odysseus-gemini-skill-sync-");
     cleanupDirs.add(home);
 
     const ctx = {
@@ -32,25 +32,25 @@ describe("gemini local skill sync", () => {
         env: {
           HOME: home,
         },
-        paperclipSkillSync: {
-          desiredSkills: [paperclipKey],
+        odysseusSkillSync: {
+          desiredSkills: [odysseusKey],
         },
       },
     } as const;
 
     const before = await listGeminiSkills(ctx);
     expect(before.mode).toBe("persistent");
-    expect(before.desiredSkills).toContain(paperclipKey);
-    expect(before.entries.find((entry) => entry.key === paperclipKey)?.required).toBe(true);
-    expect(before.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("missing");
+    expect(before.desiredSkills).toContain(odysseusKey);
+    expect(before.entries.find((entry) => entry.key === odysseusKey)?.required).toBe(true);
+    expect(before.entries.find((entry) => entry.key === odysseusKey)?.state).toBe("missing");
 
-    const after = await syncGeminiSkills(ctx, [paperclipKey]);
-    expect(after.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("installed");
-    expect((await fs.lstat(path.join(home, ".gemini", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+    const after = await syncGeminiSkills(ctx, [odysseusKey]);
+    expect(after.entries.find((entry) => entry.key === odysseusKey)?.state).toBe("installed");
+    expect((await fs.lstat(path.join(home, ".gemini", "skills", "odysseus"))).isSymbolicLink()).toBe(true);
   });
 
-  it("keeps required bundled Paperclip skills installed even when the desired set is emptied", async () => {
-    const home = await makeTempDir("paperclip-gemini-skill-prune-");
+  it("keeps required bundled Odysseus skills installed even when the desired set is emptied", async () => {
+    const home = await makeTempDir("odysseus-gemini-skill-prune-");
     cleanupDirs.add(home);
 
     const configuredCtx = {
@@ -61,13 +61,13 @@ describe("gemini local skill sync", () => {
         env: {
           HOME: home,
         },
-        paperclipSkillSync: {
-          desiredSkills: [paperclipKey],
+        odysseusSkillSync: {
+          desiredSkills: [odysseusKey],
         },
       },
     } as const;
 
-    await syncGeminiSkills(configuredCtx, [paperclipKey]);
+    await syncGeminiSkills(configuredCtx, [odysseusKey]);
 
     const clearedCtx = {
       ...configuredCtx,
@@ -75,15 +75,15 @@ describe("gemini local skill sync", () => {
         env: {
           HOME: home,
         },
-        paperclipSkillSync: {
+        odysseusSkillSync: {
           desiredSkills: [],
         },
       },
     } as const;
 
     const after = await syncGeminiSkills(clearedCtx, []);
-    expect(after.desiredSkills).toContain(paperclipKey);
-    expect(after.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("installed");
-    expect((await fs.lstat(path.join(home, ".gemini", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+    expect(after.desiredSkills).toContain(odysseusKey);
+    expect(after.entries.find((entry) => entry.key === odysseusKey)?.state).toBe("installed");
+    expect((await fs.lstat(path.join(home, ".gemini", "skills", "odysseus"))).isSymbolicLink()).toBe(true);
   });
 });

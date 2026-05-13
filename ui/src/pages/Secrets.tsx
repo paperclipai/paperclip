@@ -35,7 +35,7 @@ import type {
   SecretProviderConfigStatus,
   SecretProviderDescriptor,
   SecretStatus,
-} from "@paperclipai/shared";
+} from "@odysseus/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
@@ -204,13 +204,13 @@ function normalizeSecretKeyForPreview(input: string) {
 
 
 function modeLabel(managedMode: SecretManagedMode) {
-  return managedMode === "paperclip_managed" ? "Paperclip-managed" : "Linked external";
+  return managedMode === "odysseus_managed" ? "Odysseus-managed" : "Linked external";
 }
 
 function modeDescription(managedMode: SecretManagedMode) {
-  return managedMode === "paperclip_managed"
-    ? "Paperclip owns create and rotation writes for this provider secret."
-    : "Paperclip resolves this provider reference but does not rotate the provider value.";
+  return managedMode === "odysseus_managed"
+    ? "Odysseus owns create and rotation writes for this provider secret."
+    : "Odysseus resolves this provider reference but does not rotate the provider value.";
 }
 
 function healthEntryForProvider(
@@ -227,7 +227,7 @@ export function getCreateProviderBlockReason(
 ) {
   if (!provider) return "Select a provider.";
   if (mode === "managed" && provider.supportsManagedValues === false) {
-    return `${provider.label} does not support Paperclip-managed secret values.`;
+    return `${provider.label} does not support Odysseus-managed secret values.`;
   }
   if (mode === "external" && provider.supportsExternalReferences === false) {
     return `${provider.label} does not support linked external references.`;
@@ -333,7 +333,7 @@ export function getAwsManagedPathPreview(input: {
 }) {
   if (input.provider?.id !== "aws_secrets_manager") return null;
   const healthEntry = healthEntryForProvider(input.health, "aws_secrets_manager");
-  const prefix = detailString(healthEntry?.details, "prefix") ?? "paperclip";
+  const prefix = detailString(healthEntry?.details, "prefix") ?? "odysseus";
   const deploymentId = detailString(healthEntry?.details, "deploymentId") ?? "{deploymentId}";
   const secretKey = normalizeSecretKeyForPreview(input.secretKeySource) || "{secretKey}";
   return `${prefix}/${deploymentId}/${input.companyId}/${secretKey}`;
@@ -516,7 +516,7 @@ export function Secrets() {
         name: createForm.name.trim(),
         provider: createForm.provider,
         providerConfigId: createForm.providerConfigId || null,
-        managedMode: createMode === "external" ? "external_reference" : "paperclip_managed",
+        managedMode: createMode === "external" ? "external_reference" : "odysseus_managed",
         description: createForm.description.trim() || null,
       };
       if (createForm.key.trim()) input.key = createForm.key.trim();
@@ -1090,7 +1090,7 @@ export function Secrets() {
           <DialogHeader>
             <DialogTitle>Create secret</DialogTitle>
             <DialogDescription>
-              Choose whether Paperclip should own future provider writes, or only resolve an existing
+              Choose whether Odysseus should own future provider writes, or only resolve an existing
               provider reference at runtime.
             </DialogDescription>
           </DialogHeader>
@@ -1204,8 +1204,8 @@ export function Secrets() {
             {createMode === "managed" ? (
               <>
                 <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2 text-[11px] text-emerald-700 dark:text-emerald-300">
-                  Paperclip-managed secrets are created in the selected provider and future rotations
-                  write a new provider version through Paperclip.
+                  Odysseus-managed secrets are created in the selected provider and future rotations
+                  write a new provider version through Odysseus.
                   {awsManagedPathPreview ? (
                     <div className="mt-1">
                       AWS managed path:{" "}
@@ -1242,7 +1242,7 @@ export function Secrets() {
                   className="font-mono text-xs"
                 />
                 <p className="text-[11px] text-muted-foreground mt-1">
-                  Existing provider secrets are resolve-only in Paperclip. Rotate the value in the provider,
+                  Existing provider secrets are resolve-only in Odysseus. Rotate the value in the provider,
                   then update this reference only if the path, ARN, or version changes.
                 </p>
               </div>
@@ -1405,7 +1405,7 @@ export function Secrets() {
             </DialogTitle>
             <DialogDescription>
               {selectedSecret?.managedMode === "external_reference"
-                ? "Creates a new Paperclip metadata version that points at an existing provider secret. Paperclip does not write a new provider value."
+                ? "Creates a new Odysseus metadata version that points at an existing provider secret. Odysseus does not write a new provider value."
                 : "Creates a new provider-backed version. Consumers pinned to latest pick up the new value on the next run."}
             </DialogDescription>
           </DialogHeader>
@@ -1448,7 +1448,7 @@ export function Secrets() {
                 className="font-mono text-xs"
               />
               <p className="mt-1 text-[11px] text-muted-foreground">
-                Rotate the actual value in the provider before changing this Paperclip reference.
+                Rotate the actual value in the provider before changing this Odysseus reference.
               </p>
             </div>
           ) : (
@@ -1526,7 +1526,7 @@ function SecretsHowToUse() {
           <span className="font-medium text-foreground">Secret</span>, and select the stored secret version.
         </p>
         <p>
-          Paperclip resolves the value server-side when the run starts and injects it as that env var. Project env
+          Odysseus resolves the value server-side when the run starts and injects it as that env var. Project env
           applies to every issue in the project and overrides agent env on matching keys.
         </p>
       </div>
@@ -1973,8 +1973,8 @@ function ProviderVaultFields({
       <div className="grid gap-3 sm:grid-cols-2">
         <TextField label="AWS region" value={form.region} onChange={(value) => setField("region", value)} placeholder="us-east-1" required />
         <TextField label="Namespace" value={form.namespace} onChange={(value) => setField("namespace", value)} placeholder="production" />
-        <TextField label="Secret name prefix" value={form.secretNamePrefix} onChange={(value) => setField("secretNamePrefix", value)} placeholder="paperclip" />
-        <TextField label="KMS key id" value={form.kmsKeyId} onChange={(value) => setField("kmsKeyId", value)} placeholder="alias/paperclip-secrets" />
+        <TextField label="Secret name prefix" value={form.secretNamePrefix} onChange={(value) => setField("secretNamePrefix", value)} placeholder="odysseus" />
+        <TextField label="KMS key id" value={form.kmsKeyId} onChange={(value) => setField("kmsKeyId", value)} placeholder="alias/odysseus-secrets" />
         <TextField label="Owner tag" value={form.ownerTag} onChange={(value) => setField("ownerTag", value)} placeholder="platform" />
         <TextField label="Environment tag" value={form.environmentTag} onChange={(value) => setField("environmentTag", value)} placeholder="prod" />
       </div>
@@ -1984,10 +1984,10 @@ function ProviderVaultFields({
   if (form.provider === "gcp_secret_manager") {
     return (
       <div className="grid gap-3 sm:grid-cols-2">
-        <TextField label="Project id" value={form.projectId} onChange={(value) => setField("projectId", value)} placeholder="paperclip-prod" />
+        <TextField label="Project id" value={form.projectId} onChange={(value) => setField("projectId", value)} placeholder="odysseus-prod" />
         <TextField label="Location" value={form.location} onChange={(value) => setField("location", value)} placeholder="global" />
         <TextField label="Namespace" value={form.namespace} onChange={(value) => setField("namespace", value)} placeholder="production" />
-        <TextField label="Secret name prefix" value={form.secretNamePrefix} onChange={(value) => setField("secretNamePrefix", value)} placeholder="paperclip" />
+        <TextField label="Secret name prefix" value={form.secretNamePrefix} onChange={(value) => setField("secretNamePrefix", value)} placeholder="odysseus" />
       </div>
     );
   }
@@ -1997,7 +1997,7 @@ function ProviderVaultFields({
       <TextField label="Address" value={form.address} onChange={(value) => setField("address", value)} placeholder="https://vault.example.com" />
       <TextField label="Namespace" value={form.namespace} onChange={(value) => setField("namespace", value)} placeholder="admin" />
       <TextField label="Mount path" value={form.mountPath} onChange={(value) => setField("mountPath", value)} placeholder="secret" />
-      <TextField label="Secret path prefix" value={form.secretPathPrefix} onChange={(value) => setField("secretPathPrefix", value)} placeholder="paperclip/prod" />
+      <TextField label="Secret path prefix" value={form.secretPathPrefix} onChange={(value) => setField("secretPathPrefix", value)} placeholder="odysseus/prod" />
     </div>
   );
 }
@@ -2058,7 +2058,7 @@ function SecretDetailsTab({
         </div>
       ) : null}
       <div className="col-span-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-700 dark:text-amber-300">
-        {modeDescription(secret.managedMode)} Paperclip never re-displays stored values.
+        {modeDescription(secret.managedMode)} Odysseus never re-displays stored values.
       </div>
     </dl>
   );

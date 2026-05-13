@@ -5,7 +5,7 @@ const mockProbePluginEnvironmentDriver = vi.hoisted(() => vi.fn());
 const mockProbePluginSandboxProviderDriver = vi.hoisted(() => vi.fn());
 const mockResolvePluginSandboxProviderDriverByKey = vi.hoisted(() => vi.fn());
 
-vi.mock("@paperclipai/adapter-utils/ssh", () => ({
+vi.mock("@odysseus/adapter-utils/ssh", () => ({
   ensureSshWorkspaceReady: mockEnsureSshWorkspaceReady,
 }));
 
@@ -48,7 +48,7 @@ describe("probeEnvironment", () => {
 
   it("runs an SSH probe and returns the verified remote cwd", async () => {
     mockEnsureSshWorkspaceReady.mockResolvedValue({
-      remoteCwd: "/srv/paperclip/workspace",
+      remoteCwd: "/srv/odysseus/workspace",
     });
 
     const result = await probeEnvironment({} as any, {
@@ -62,7 +62,7 @@ describe("probeEnvironment", () => {
         host: "ssh.example.test",
         port: 2222,
         username: "ssh-user",
-        remoteWorkspacePath: "/srv/paperclip/workspace",
+        remoteWorkspacePath: "/srv/odysseus/workspace",
         privateKey: null,
         privateKeySecretRef: null,
         knownHosts: null,
@@ -81,8 +81,8 @@ describe("probeEnvironment", () => {
         host: "ssh.example.test",
         port: 2222,
         username: "ssh-user",
-        remoteWorkspacePath: "/srv/paperclip/workspace",
-        remoteCwd: "/srv/paperclip/workspace",
+        remoteWorkspacePath: "/srv/odysseus/workspace",
+        remoteCwd: "/srv/odysseus/workspace",
       },
     });
     expect(mockEnsureSshWorkspaceReady).toHaveBeenCalledTimes(1);
@@ -225,7 +225,7 @@ describe("probeEnvironment", () => {
         host: "ssh.example.test",
         port: 22,
         username: "ssh-user",
-        remoteWorkspacePath: "/srv/paperclip/workspace",
+        remoteWorkspacePath: "/srv/odysseus/workspace",
         privateKey: null,
         privateKeySecretRef: null,
         knownHosts: null,

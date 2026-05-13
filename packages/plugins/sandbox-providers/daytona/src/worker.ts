@@ -1,4 +1,4 @@
-import { runWorker } from "@paperclipai/plugin-sdk";
+import { runWorker } from "@odysseus/plugin-sdk";
 import plugin from "./plugin.js";
 
 export default plugin;

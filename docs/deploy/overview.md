@@ -45,11 +45,11 @@ Paperclip supports three deployment configurations, from zero-friction local to 
 Set the mode during onboarding:
 
 ```sh
-pnpm paperclipai onboard
+pnpm odysseus onboard
 ```
 
 Or update it later:
 
 ```sh
-pnpm paperclipai configure --section server
+pnpm odysseus configure --section server
 ```

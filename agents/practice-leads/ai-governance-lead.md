@@ -2,7 +2,7 @@
 name: ai-governance-lead
 description: Practice Lead for AI governance — AI inventory, model risk assessments, AI-specific regulator monitoring (EU AI Act, state AI laws), vendor AI assessments, internal AI policy. Heavily in-house-dept-leaning. v1 ships as a scaffold.
 model: opus
-tools: [subagent.dispatch, skill.invoke, mcp.invoke, paperclip.task_create, read, glob, grep, web_search, web_fetch]
+tools: [subagent.dispatch, skill.invoke, mcp.invoke, odysseus.task_create, read, glob, grep, web_search, web_fetch]
 practice_area: ai-governance
 specialists: []  # SCAFFOLD
 skills:

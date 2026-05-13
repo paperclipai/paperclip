@@ -1,8 +1,8 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
-import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
+import type { AdapterExecutionContext } from "@odysseus/adapter-utils";
+import { resolveOdysseusInstanceRootForAdapter } from "@odysseus/adapter-utils/server-utils";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
@@ -24,16 +24,16 @@ export function resolveSharedCodexHomeDir(
 }
 
 function isWorktreeMode(env: NodeJS.ProcessEnv): boolean {
-  return TRUTHY_ENV_RE.test(env.PAPERCLIP_IN_WORKTREE ?? "");
+  return TRUTHY_ENV_RE.test(env.ODYSSEUS_IN_WORKTREE ?? "");
 }
 
 export function resolveManagedCodexHomeDir(
   env: NodeJS.ProcessEnv,
   companyId?: string,
 ): string {
-  const instanceRoot = resolvePaperclipInstanceRootForAdapter({
-    homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
-    instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
+  const instanceRoot = resolveOdysseusInstanceRootForAdapter({
+    homeDir: nonEmpty(env.ODYSSEUS_HOME) ?? undefined,
+    instanceId: nonEmpty(env.ODYSSEUS_INSTANCE_ID) ?? undefined,
     env,
   });
   return companyId
@@ -128,7 +128,7 @@ export async function prepareManagedCodexHome(
 
     await onLog(
       "stdout",
-      `[paperclip] Using ${isWorktreeMode(env) ? "worktree-isolated" : "Paperclip-managed"} Codex home "${targetHome}" (seeded from "${sourceHome}").\n`,
+      `[odysseus] Using ${isWorktreeMode(env) ? "worktree-isolated" : "Odysseus-managed"} Codex home "${targetHome}" (seeded from "${sourceHome}").\n`,
     );
   }
 
@@ -136,7 +136,7 @@ export async function prepareManagedCodexHome(
     await writeApiKeyAuthJson(targetHome, apiKey);
     await onLog(
       "stdout",
-      `[paperclip] Wrote API-key auth.json into Codex home "${targetHome}" from configured OPENAI_API_KEY.\n`,
+      `[odysseus] Wrote API-key auth.json into Codex home "${targetHome}" from configured OPENAI_API_KEY.\n`,
     );
   }
 

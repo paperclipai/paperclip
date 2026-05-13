@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@odysseus/db";
 import type {
   Environment,
   EnvironmentDriver,
@@ -12,7 +12,7 @@ import type {
   SecretProvider,
   SecretVersionSelector,
   SshEnvironmentConfig,
-} from "@paperclipai/shared";
+} from "@odysseus/shared";
 import { unprocessable } from "../errors.js";
 import { parseObject } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";

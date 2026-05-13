@@ -35,7 +35,7 @@ import type {
   PluginUiSlotDeclaration,
   PluginUiSlotEntityType,
   PluginUiSlotType,
-} from "@paperclipai/shared";
+} from "@odysseus/shared";
 import { pluginsApi, type PluginUiContribution } from "@/api/plugins";
 import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
@@ -216,11 +216,11 @@ function buildPluginUiUrl(contribution: PluginUiContribution): string {
 /**
  * Import a plugin's UI entry module with bare-specifier rewriting.
  *
- * Plugin bundles are built with `external: ["@paperclipai/plugin-sdk/ui", "react", "react-dom"]`,
+ * Plugin bundles are built with `external: ["@odysseus/plugin-sdk/ui", "react", "react-dom"]`,
  * so their ESM output contains bare specifier imports like:
  *
  * ```js
- * import { usePluginData } from "@paperclipai/plugin-sdk/ui";
+ * import { usePluginData } from "@odysseus/plugin-sdk/ui";
  * import React from "react";
  * ```
  *
@@ -228,7 +228,7 @@ function buildPluginUiUrl(contribution: PluginUiContribution): string {
  * fighting import map timing constraints, we:
  * 1. Fetch the module source text
  * 2. Rewrite bare specifier imports to use blob URLs that re-export from the
- *    host's global bridge registry (`globalThis.__paperclipPluginBridge__`)
+ *    host's global bridge registry (`globalThis.__odysseusPluginBridge__`)
  * 3. Import the rewritten module via a blob URL
  *
  * This approach is compatible with all modern browsers and avoids import map
@@ -251,7 +251,7 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
   switch (specifier) {
     case "react":
       source = `
-        const R = globalThis.__paperclipPluginBridge__?.react;
+        const R = globalThis.__odysseusPluginBridge__?.react;
         export default R;
         const { useState, useEffect, useCallback, useMemo, useRef, useContext,
           createContext, createElement, Fragment, Component, forwardRef,
@@ -265,7 +265,7 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
       break;
     case "react/jsx-runtime":
       source = `
-        const R = globalThis.__paperclipPluginBridge__?.react;
+        const R = globalThis.__odysseusPluginBridge__?.react;
         const withKey = ${applyJsxRuntimeKey.toString()};
         export const jsx = (type, props, key) => R.createElement(type, withKey(props, key));
         export const jsxs = (type, props, key) => R.createElement(type, withKey(props, key));
@@ -275,7 +275,7 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
     case "react-dom":
     case "react-dom/client":
       source = `
-        const RD = globalThis.__paperclipPluginBridge__?.reactDom;
+        const RD = globalThis.__odysseusPluginBridge__?.reactDom;
         export default RD;
         const { createRoot, hydrateRoot, createPortal, flushSync } = RD ?? {};
         export { createRoot, hydrateRoot, createPortal, flushSync };
@@ -283,10 +283,10 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
       break;
     case "sdk-ui":
       source = `
-        const SDK = globalThis.__paperclipPluginBridge__?.sdkUi ?? {};
+        const SDK = globalThis.__odysseusPluginBridge__?.sdkUi ?? {};
         function missing(name) {
-          return function MissingPaperclipSdkUiComponent() {
-            throw new Error('Paperclip plugin UI runtime is not initialized for "' + name + '". Ensure the host loaded the plugin bridge before rendering this UI module.');
+          return function MissingOdysseusSdkUiComponent() {
+            throw new Error('Odysseus plugin UI runtime is not initialized for "' + name + '". Ensure the host loaded the plugin bridge before rendering this UI module.');
           };
         }
         const { usePluginData, usePluginAction, useHostContext, useHostLocation, useHostNavigation, usePluginStream, usePluginToast } = SDK;
@@ -325,7 +325,7 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
  * - `import { ... } from "react";`
  * - `import React from "react";`
  * - `import * as React from "react";`
- * - `import { ... } from "@paperclipai/plugin-sdk/ui";`
+ * - `import { ... } from "@odysseus/plugin-sdk/ui";`
  *
  * Also handles re-exports:
  * - `export { ... } from "react";`
@@ -333,10 +333,10 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
 function rewriteBareSpecifiers(source: string): string {
   // Build a mapping of bare specifiers to blob URLs.
   const rewrites: Record<string, string> = {
-    '"@paperclipai/plugin-sdk/ui"': `"${getShimBlobUrl("sdk-ui")}"`,
-    "'@paperclipai/plugin-sdk/ui'": `'${getShimBlobUrl("sdk-ui")}'`,
-    '"@paperclipai/plugin-sdk/ui/hooks"': `"${getShimBlobUrl("sdk-ui")}"`,
-    "'@paperclipai/plugin-sdk/ui/hooks'": `'${getShimBlobUrl("sdk-ui")}'`,
+    '"@odysseus/plugin-sdk/ui"': `"${getShimBlobUrl("sdk-ui")}"`,
+    "'@odysseus/plugin-sdk/ui'": `'${getShimBlobUrl("sdk-ui")}'`,
+    '"@odysseus/plugin-sdk/ui/hooks"': `"${getShimBlobUrl("sdk-ui")}"`,
+    "'@odysseus/plugin-sdk/ui/hooks'": `'${getShimBlobUrl("sdk-ui")}'`,
     '"react/jsx-runtime"': `"${getShimBlobUrl("react/jsx-runtime")}"`,
     "'react/jsx-runtime'": `'${getShimBlobUrl("react/jsx-runtime")}'`,
     '"react-dom/client"': `"${getShimBlobUrl("react-dom/client")}"`,
@@ -368,7 +368,7 @@ function rewriteBareSpecifiers(source: string): string {
 async function importPluginModule(url: string): Promise<Record<string, unknown>> {
   // Check if the bridge registry is available. If not, fall back to direct
   // import (which will fail on bare specifiers but won't crash the loader).
-  if (!globalThis.__paperclipPluginBridge__) {
+  if (!globalThis.__odysseusPluginBridge__) {
     console.warn("[plugin-loader] Bridge registry not initialized, falling back to direct import");
     return import(/* @vite-ignore */ url);
   }
@@ -403,12 +403,12 @@ async function importPluginModule(url: string): Promise<Record<string, unknown>>
  * component registry.
  *
  * This replaces the previous approach where plugin bundles had to
- * self-register via `window.paperclipPlugins.registerReactComponent()`.
+ * self-register via `window.odysseusPlugins.registerReactComponent()`.
  * Now the host is responsible for importing the module and binding
  * exports to the correct `pluginKey:exportName` registry keys.
  *
  * Plugin modules are loaded with bare-specifier rewriting so that imports
- * of `@paperclipai/plugin-sdk/ui`, `react`, and `react-dom` resolve to the
+ * of `@odysseus/plugin-sdk/ui`, `react`, and `react-dom` resolve to the
  * host-provided implementations via the bridge registry.
  *
  * Web-component registrations still work: if the module has a named export

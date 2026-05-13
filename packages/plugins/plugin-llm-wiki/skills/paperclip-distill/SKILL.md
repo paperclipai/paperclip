@@ -1,5 +1,5 @@
 ---
-name: paperclip-distill
+name: odysseus-distill
 description: Use when an operation issue is a Paperclip cursor-window, distill, or backfill — `operationType: "distill"` or `"backfill"` and the body references a Paperclip source bundle for a project or root issue. Turn raw Paperclip activity into a wiki-insightful project page, decisions log, and history note. This skill exists specifically to replace the stiff, datestamp-heavy templated output that the deterministic distiller produces.
 ---
 
@@ -11,7 +11,7 @@ Distill Paperclip project, issue, comment, and document activity into durable wi
 
 - Cursor-window distillation: the routine fed you a bounded source bundle of recent Paperclip activity for one project or root issue.
 - Backfill: the user asked to seed the wiki with the historical activity of a project or root issue. Source window may be wide.
-- Manual `distill-paperclip-now` request from the UI.
+- Manual `distill-odysseus-now` request from the UI.
 
 If the operation issue is `operationType: "ingest"` (raw file) or `operationType: "query"`, this is the wrong skill — use `wiki-ingest` or `wiki-query`.
 
@@ -49,7 +49,7 @@ Do not treat Paperclip assets/attachments or issue work products as source text 
 
 The deterministic templating this skill replaces produced these failure modes — do not reproduce them:
 
-1. **Datestamp-as-section-header.** Lines like `## [2026-04-15] paperclip-distill | proposed` belong in `wiki/log.md`, not in the project page. The project page is durable knowledge; the log is the audit trail.
+1. **Datestamp-as-section-header.** Lines like `## [2026-04-15] odysseus-distill | proposed` belong in `wiki/log.md`, not in the project page. The project page is durable knowledge; the log is the audit trail.
 2. **Procedural status lists.** `Issue mix: 3 todo, 5 in_progress, 2 done` tells the reader nothing they could not read off Paperclip directly. State *what is happening and why it matters*, then cite the issues that constitute the evidence.
 3. **One-line-per-issue dumps.** A page that is mostly `- PAP-1234: title (in_progress, updated 2026-...)` is an issue list, not a wiki page. Group issues by what they are *about* (a decision, a risk, a workstream) and cite multiple issues per bullet when they share a story.
 4. **Mechanical "Current as of" timestamps everywhere.** One `current_as_of` in frontmatter is enough.
@@ -83,7 +83,7 @@ The deterministic templating this skill replaces produced these failure modes �
 8. **Refresh `wiki/index.md`** under the `## Projects` section — one line per durable project page with a one-sentence summary of the project's purpose, plus a link to the current `wiki/projects/<slug>/standup.md` when present.
 9. **Append `wiki/log.md`** entry — this is where the datestamp belongs:
    ```
-   ## [YYYY-MM-DD] paperclip-distill | <project name>
+   ## [YYYY-MM-DD] odysseus-distill | <project name>
    - standup: wiki/projects/<slug>/standup.md
    - page: wiki/projects/<slug>/index.md
    - source hash: `<hash>`
@@ -104,7 +104,7 @@ The deterministic templating this skill replaces produced these failure modes �
 
 If the bundle has no durable signal — no decisions, no risk, no completed work, only routine status churn — do **not** write a project page. Instead:
 
-- Append a `paperclip-distill | low-signal skip` log entry naming the cursor window.
+- Append a `odysseus-distill | low-signal skip` log entry naming the cursor window.
 - Close the operation issue with a one-line "no durable change in this window" comment.
 - Do not bump the source hash on a binding that has no proposed page.
 

@@ -436,7 +436,7 @@ The core Paperclip system must be extensible. Features like knowledge bases, ext
 - **Agent Adapter plugins** — new Adapter types can be registered via the plugin system
 - Plugin-registrable UI components (future)
 
-The plugin framework has shipped. Plugins can register new adapter types, hook into lifecycle events, and contribute UI components (e.g. global toolbar buttons). A plugin SDK and CLI commands (`paperclipai plugin`) are available for authoring and installing plugins.
+The plugin framework has shipped. Plugins can register new adapter types, hook into lifecycle events, and contribute UI components (e.g. global toolbar buttons). A plugin SDK and CLI commands (`odysseus plugin`) are available for authoring and installing plugins.
 
 ---
 

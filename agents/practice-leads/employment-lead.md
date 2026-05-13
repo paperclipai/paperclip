@@ -2,7 +2,7 @@
 name: employment-lead
 description: Practice Lead for employment work — offers, separations, handbooks, classifications, leave, workplace investigations. Routes to employment specialists; does not draft directly.
 model: sonnet
-tools: [subagent.dispatch, skill.invoke, mcp.invoke, paperclip.task_create, read, glob, grep]
+tools: [subagent.dispatch, skill.invoke, mcp.invoke, odysseus.task_create, read, glob, grep]
 practice_area: employment
 specialists:
   - offer-letter-drafter

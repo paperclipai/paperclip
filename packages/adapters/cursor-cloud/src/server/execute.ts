@@ -9,19 +9,19 @@ import {
   type SDKAgent,
   type SDKMessage,
 } from "@cursor/sdk";
-import type { AdapterExecutionContext, AdapterExecutionResult, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext, AdapterExecutionResult, AdapterInvocationMeta } from "@odysseus/adapter-utils";
 import {
-  DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  DEFAULT_ODYSSEUS_AGENT_PROMPT_TEMPLATE,
   asBoolean,
   asString,
-  buildPaperclipEnv,
+  buildOdysseusEnv,
   joinPromptSections,
   parseObject,
-  readPaperclipIssueWorkModeFromContext,
-  renderPaperclipWakePrompt,
+  readOdysseusIssueWorkModeFromContext,
+  renderOdysseusWakePrompt,
   renderTemplate,
-  stringifyPaperclipWakePayload,
-} from "@paperclipai/adapter-utils/server-utils";
+  stringifyOdysseusWakePayload,
+} from "@odysseus/adapter-utils/server-utils";
 
 type CursorCloudSession = {
   cursorAgentId: string;
@@ -104,8 +104,8 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
   const { runId, agent, context, authToken } = ctx;
   const env: Record<string, string> = {
     ...configEnv,
-    ...buildPaperclipEnv(agent),
-    PAPERCLIP_RUN_ID: runId,
+    ...buildOdysseusEnv(agent),
+    ODYSSEUS_RUN_ID: runId,
   };
 
   const wakeTaskId = trimNullable(context.taskId) ?? trimNullable(context.issueId);
@@ -116,30 +116,30 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
   const linkedIssueIds = Array.isArray(context.issueIds)
     ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
-  const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
-  const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
+  const wakePayloadJson = stringifyOdysseusWakePayload(context.odysseusWake);
+  const issueWorkMode = readOdysseusIssueWorkModeFromContext(context);
 
-  if (wakeTaskId) env.PAPERCLIP_TASK_ID = wakeTaskId;
-  if (wakeReason) env.PAPERCLIP_WAKE_REASON = wakeReason;
-  if (wakeCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
-  if (approvalId) env.PAPERCLIP_APPROVAL_ID = approvalId;
-  if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
-  if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
-  if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
-  if (issueWorkMode) env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
-  if (!trimNullable(env.PAPERCLIP_API_KEY) && authToken) {
-    env.PAPERCLIP_API_KEY = authToken;
+  if (wakeTaskId) env.ODYSSEUS_TASK_ID = wakeTaskId;
+  if (wakeReason) env.ODYSSEUS_WAKE_REASON = wakeReason;
+  if (wakeCommentId) env.ODYSSEUS_WAKE_COMMENT_ID = wakeCommentId;
+  if (approvalId) env.ODYSSEUS_APPROVAL_ID = approvalId;
+  if (approvalStatus) env.ODYSSEUS_APPROVAL_STATUS = approvalStatus;
+  if (linkedIssueIds.length > 0) env.ODYSSEUS_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
+  if (wakePayloadJson) env.ODYSSEUS_WAKE_PAYLOAD_JSON = wakePayloadJson;
+  if (issueWorkMode) env.ODYSSEUS_ISSUE_WORK_MODE = issueWorkMode;
+  if (!trimNullable(env.ODYSSEUS_API_KEY) && authToken) {
+    env.ODYSSEUS_API_KEY = authToken;
   }
 
-  const workspace = parseObject(context.paperclipWorkspace);
+  const workspace = parseObject(context.odysseusWorkspace);
   const workspaceMappings: Array<[string, unknown]> = [
-    ["PAPERCLIP_WORKSPACE_CWD", workspace.cwd],
-    ["PAPERCLIP_WORKSPACE_SOURCE", workspace.source],
-    ["PAPERCLIP_WORKSPACE_ID", workspace.workspaceId],
-    ["PAPERCLIP_WORKSPACE_REPO_URL", workspace.repoUrl],
-    ["PAPERCLIP_WORKSPACE_REPO_REF", workspace.repoRef],
-    ["PAPERCLIP_WORKSPACE_BRANCH", workspace.branch],
-    ["PAPERCLIP_WORKSPACE_WORKTREE_PATH", workspace.worktreePath],
+    ["ODYSSEUS_WORKSPACE_CWD", workspace.cwd],
+    ["ODYSSEUS_WORKSPACE_SOURCE", workspace.source],
+    ["ODYSSEUS_WORKSPACE_ID", workspace.workspaceId],
+    ["ODYSSEUS_WORKSPACE_REPO_URL", workspace.repoUrl],
+    ["ODYSSEUS_WORKSPACE_REPO_REF", workspace.repoRef],
+    ["ODYSSEUS_WORKSPACE_BRANCH", workspace.branch],
+    ["ODYSSEUS_WORKSPACE_WORKTREE_PATH", workspace.worktreePath],
     ["AGENT_HOME", workspace.agentHome],
   ];
   for (const [key, value] of workspaceMappings) {
@@ -176,7 +176,7 @@ async function buildInstructionsPrefix(
     const reason = err instanceof Error ? err.message : String(err);
     await onLog(
       "stderr",
-      `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+      `[odysseus] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
     );
     return {
       prefix: "",
@@ -188,14 +188,14 @@ async function buildInstructionsPrefix(
   }
 }
 
-function renderPaperclipEnvNote(env: Record<string, string>): string {
+function renderOdysseusEnvNote(env: Record<string, string>): string {
   const keys = Object.keys(env)
-    .filter((key) => key.startsWith("PAPERCLIP_"))
+    .filter((key) => key.startsWith("ODYSSEUS_"))
     .sort();
   if (keys.length === 0) return "";
   return [
-    "Paperclip runtime note:",
-    `The following PAPERCLIP_* environment variables are available in the cloud agent shell: ${keys.join(", ")}`,
+    "Odysseus runtime note:",
+    `The following ODYSSEUS_* environment variables are available in the cloud agent shell: ${keys.join(", ")}`,
     "Use them directly instead of assuming they are absent.",
   ].join("\n");
 }
@@ -335,7 +335,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
-  const workspace = parseObject(context.paperclipWorkspace);
+  const workspace = parseObject(context.odysseusWorkspace);
   const repoUrl =
     asString(config.repoUrl, "").trim() ||
     asString(workspace.repoUrl, "").trim();
@@ -377,7 +377,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     : null);
   const canReuseSession = sessionMatches(session, envType, envName, repos);
-  const promptTemplate = asString(config.promptTemplate, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
+  const promptTemplate = asString(config.promptTemplate, DEFAULT_ODYSSEUS_AGENT_PROMPT_TEMPLATE);
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
   const templateData = {
     agentId: agent.id,
@@ -389,7 +389,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     context,
   };
   const instructions = await buildInstructionsPrefix(config, onLog);
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: canReuseSession });
+  const wakePrompt = renderOdysseusWakePrompt(context.odysseusWake, { resumedSession: canReuseSession });
   const renderedBootstrapPrompt =
     !canReuseSession && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
@@ -398,20 +398,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     canReuseSession && wakePrompt.length > 0
       ? ""
       : renderTemplate(promptTemplate, templateData).trim();
-  const paperclipEnvNote = renderPaperclipEnvNote(remoteEnv);
+  const odysseusEnvNote = renderOdysseusEnvNote(remoteEnv);
   const prompt = joinPromptSections([
     instructions.prefix,
     renderedBootstrapPrompt,
     wakePrompt,
-    paperclipEnvNote,
+    odysseusEnvNote,
     renderedPrompt,
   ]);
-  const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const sessionHandoffNote = asString(context.odysseusSessionHandoffMarkdown, "").trim();
   const finalPrompt = joinPromptSections([prompt, sessionHandoffNote]);
 
   const agentOptions = buildAgentOptions({
     apiKey,
-    name: `Paperclip ${agent.name}`,
+    name: `Odysseus ${agent.name}`,
     model,
     envType,
     envName,

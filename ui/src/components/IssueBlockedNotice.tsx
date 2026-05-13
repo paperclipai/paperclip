@@ -3,7 +3,7 @@ import type {
   IssueRecoveryAction,
   IssueRelationIssueSummary,
   SuccessfulRunHandoffState,
-} from "@paperclipai/shared";
+} from "@odysseus/shared";
 import { AlertTriangle, Flag } from "lucide-react";
 import { Link } from "@/lib/router";
 import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";

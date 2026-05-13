@@ -33,9 +33,9 @@ Do this for every public package that Paperclip publishes.
 
 At minimum that includes:
 
-- `paperclipai`
-- `@paperclipai/server`
-- `@paperclipai/ui`
+- `odysseus`
+- `@odysseus/server`
+- `@odysseus/ui`
 - public packages under `packages/`
 
 ### 2.1. In npm, open each package settings page
@@ -44,7 +44,7 @@ For each package:
 
 1. open npm as an owner of the package
 2. go to the package settings / publishing access area
-3. add a trusted publisher for the GitHub repository `paperclipai/paperclip`
+3. add a trusted publisher for the GitHub repository `PossibLaw/odysseus`
 
 ### 2.2. Add one trusted publisher entry per package
 
@@ -56,7 +56,7 @@ Configure:
 
 Repository:
 
-- `paperclipai/paperclip`
+- `PossibLaw/odysseus`
 
 Environment name:
 
@@ -82,7 +82,7 @@ Repo policy:
 Bootstrap sequence for a new package:
 
 1. publish the package once from a trusted maintainer machine using normal npm auth
-2. open that package on npm and add the `paperclipai/paperclip` trusted publisher for `.github/workflows/release.yml`
+2. open that package on npm and add the `PossibLaw/odysseus` trusted publisher for `.github/workflows/release.yml`
 3. rerun or dry-run the release flow as needed to confirm CI publishing now works
 4. only then enable `"publishFromCi": true`
 
@@ -232,7 +232,7 @@ After setup:
 Install-path check:
 
 ```bash
-npx paperclipai@canary onboard
+npx odysseus@canary onboard
 ```
 
 ## 12. Verify the Stable Workflow

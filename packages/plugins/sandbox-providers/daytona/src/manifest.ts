@@ -1,16 +1,16 @@
-import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import type { OdysseusPluginManifestV1 } from "@odysseus/plugin-sdk";
 
-const PLUGIN_ID = "paperclip.daytona-sandbox-provider";
+const PLUGIN_ID = "odysseus.daytona-sandbox-provider";
 const PLUGIN_VERSION = "0.1.0";
 
-const manifest: PaperclipPluginManifestV1 = {
+const manifest: OdysseusPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
   version: PLUGIN_VERSION,
   displayName: "Daytona Sandbox Provider",
   description:
-    "First-party sandbox provider plugin that provisions Daytona sandboxes as Paperclip execution environments.",
-  author: "Paperclip",
+    "First-party sandbox provider plugin that provisions Daytona sandboxes as Odysseus execution environments.",
+  author: "Odysseus",
   categories: ["automation"],
   capabilities: ["environment.drivers.register"],
   entrypoints: {
@@ -30,7 +30,7 @@ const manifest: PaperclipPluginManifestV1 = {
             type: "string",
             format: "secret-ref",
             description:
-              "Environment-specific Daytona API key. Paste a key or an existing Paperclip secret reference; saved environments store pasted values as company secrets. Falls back to DAYTONA_API_KEY if omitted.",
+              "Environment-specific Daytona API key. Paste a key or an existing Odysseus secret reference; saved environments store pasted values as company secrets. Falls back to DAYTONA_API_KEY if omitted.",
           },
           apiUrl: {
             type: "string",

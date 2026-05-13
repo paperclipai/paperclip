@@ -83,7 +83,7 @@ describe("secret routes", () => {
   it("rejects managed secret creation when externalRef is supplied", async () => {
     const res = await request(createApp()).post("/api/companies/company-1/secrets").send({
       name: "OpenAI API Key",
-      managedMode: "paperclip_managed",
+      managedMode: "odysseus_managed",
       value: "secret-value",
       externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/other",
     });
@@ -356,7 +356,7 @@ describe("secret routes", () => {
             externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
             name: "OpenAI API key",
             key: "openai-api-key",
-            description: "Operator-entered Paperclip description",
+            description: "Operator-entered Odysseus description",
           },
         ],
       });
@@ -371,7 +371,7 @@ describe("secret routes", () => {
             externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
             name: "OpenAI API key",
             key: "openai-api-key",
-            description: "Operator-entered Paperclip description",
+            description: "Operator-entered Odysseus description",
           },
         ],
       },
@@ -427,7 +427,7 @@ describe("secret routes", () => {
       name: "OpenAI API Key__deleted__33333333-3333-4333-8333-333333333333",
       key: "openai-api-key__deleted__33333333-3333-4333-8333-333333333333",
       provider: "aws_secrets_manager",
-      managedMode: "paperclip_managed",
+      managedMode: "odysseus_managed",
       status: "deleted",
     };
     mockSecretService.getById.mockResolvedValue(secret);

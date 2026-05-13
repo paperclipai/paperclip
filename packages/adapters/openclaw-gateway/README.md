@@ -1,6 +1,6 @@
 # OpenClaw Gateway Adapter
 
-This document describes how `@paperclipai/adapter-openclaw-gateway` invokes OpenClaw over the Gateway protocol.
+This document describes how `@odysseus/adapter-openclaw-gateway` invokes OpenClaw over the Gateway protocol.
 
 ## Transport
 

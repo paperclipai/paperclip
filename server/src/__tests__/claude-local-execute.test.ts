@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
-import { execute } from "@paperclipai/adapter-claude-local/server";
+import { runChildProcess } from "@odysseus/adapter-utils/server-utils";
+import { execute } from "@odysseus/adapter-claude-local/server";
 
 async function writeFailingClaudeCommand(
   commandPath: string,
@@ -47,7 +47,7 @@ const addDirIndex = argv.indexOf("--add-dir");
 const addDir = addDirIndex >= 0 ? argv[addDirIndex + 1] : null;
 const instructionsIndex = argv.indexOf("--append-system-prompt-file");
 const instructionsFilePath = instructionsIndex >= 0 ? argv[instructionsIndex + 1] : null;
-const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const capturePath = process.env.ODYSSEUS_TEST_CAPTURE_PATH;
 const payload = {
   argv,
   prompt: fs.readFileSync(0, "utf8"),
@@ -59,9 +59,9 @@ const payload = {
   claudeConfigEntries: process.env.CLAUDE_CONFIG_DIR && fs.existsSync(process.env.CLAUDE_CONFIG_DIR)
     ? fs.readdirSync(process.env.CLAUDE_CONFIG_DIR).sort()
     : [],
-  paperclipApiUrl: process.env.PAPERCLIP_API_URL || null,
-  paperclipApiKey: process.env.PAPERCLIP_API_KEY || null,
-  paperclipApiBridgeMode: process.env.PAPERCLIP_API_BRIDGE_MODE || null,
+  odysseusApiUrl: process.env.ODYSSEUS_API_URL || null,
+  odysseusApiKey: process.env.ODYSSEUS_API_KEY || null,
+  odysseusApiBridgeMode: process.env.ODYSSEUS_API_BRIDGE_MODE || null,
 };
 if (capturePath) {
   fs.writeFileSync(capturePath, JSON.stringify(payload), "utf8");
@@ -83,9 +83,9 @@ type CapturePayload = {
   skillEntries: string[];
   claudeConfigDir: string | null;
   claudeConfigEntries?: string[];
-  paperclipApiUrl?: string | null;
-  paperclipApiKey?: string | null;
-  paperclipApiBridgeMode?: string | null;
+  odysseusApiUrl?: string | null;
+  odysseusApiKey?: string | null;
+  odysseusApiBridgeMode?: string | null;
   appendedSystemPromptFilePath?: string | null;
   appendedSystemPromptFileContents?: string | null;
 };
@@ -94,8 +94,8 @@ async function writeRetryThenSucceedClaudeCommand(commandPath: string): Promise<
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
 
-const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
-const statePath = process.env.PAPERCLIP_TEST_STATE_PATH;
+const capturePath = process.env.ODYSSEUS_TEST_CAPTURE_PATH;
+const statePath = process.env.ODYSSEUS_TEST_STATE_PATH;
 const promptFileFlagIndex = process.argv.indexOf("--append-system-prompt-file");
 const appendedSystemPromptFilePath = promptFileFlagIndex >= 0 ? process.argv[promptFileFlagIndex + 1] : null;
 const payload = {
@@ -194,14 +194,14 @@ function createLocalSandboxRunner() {
 
 describe("claude execute", () => {
   /**
-   * Regression tests for https://github.com/paperclipai/paperclip/issues/2848
+   * Regression tests for https://github.com/PossibLaw/odysseus/issues/2848
    *
    * --append-system-prompt-file should only be passed on fresh sessions.
    * On resumed sessions the instructions are already in the session cache;
    * re-injecting them wastes tokens and may be rejected by the CLI.
    */
   it("passes --append-system-prompt-file on a fresh session when instructionsFile is set", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-fresh-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "odysseus-claude-exec-fresh-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
     const instructionsFile = path.join(root, "instructions.md");
     await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
@@ -213,7 +213,7 @@ describe("claude execute", () => {
         config: {
           command: commandPath,
           cwd: workspace,
-          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          env: { ODYSSEUS_TEST_CAPTURE_PATH: capturePath },
           promptTemplate: "Do work.",
           instructionsFilePath: instructionsFile,
         },
@@ -231,7 +231,7 @@ describe("claude execute", () => {
   });
 
   it("omits --append-system-prompt-file on a resumed session even when instructionsFile is set", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-resume-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "odysseus-claude-exec-resume-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
     const instructionsFile = path.join(root, "instructions.md");
     await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
@@ -243,7 +243,7 @@ describe("claude execute", () => {
         config: {
           command: commandPath,
           cwd: workspace,
-          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          env: { ODYSSEUS_TEST_CAPTURE_PATH: capturePath },
           promptTemplate: "Do work.",
           instructionsFilePath: instructionsFile,
         },
@@ -268,7 +268,7 @@ describe("claude execute", () => {
    * was actually passed — i.e. on fresh sessions, not resumed ones.
    */
   it("commandNotes reports injection on a fresh session with instructionsFile", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-notes-fresh-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "odysseus-claude-exec-notes-fresh-"));
     const { workspace, commandPath, restore } = await setupExecuteEnv(root);
     const instructionsFile = path.join(root, "instructions.md");
     await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
@@ -298,7 +298,7 @@ describe("claude execute", () => {
   });
 
   it("commandNotes is empty on a resumed session even when instructionsFile is set", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-notes-resume-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "odysseus-claude-exec-notes-resume-"));
     const { workspace, commandPath, restore } = await setupExecuteEnv(root);
     const instructionsFile = path.join(root, "instructions.md");
     await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
@@ -328,7 +328,7 @@ describe("claude execute", () => {
   });
 
   it("rebuilds the combined instructions file when an unknown resumed session falls back to fresh", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-resume-fallback-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "odysseus-claude-exec-resume-fallback-"));
     const { workspace, commandPath, capturePath, statePath, restore } = await setupExecuteEnv(root, {
       commandWriter: writeRetryThenSucceedClaudeCommand,
     });
@@ -344,8 +344,8 @@ describe("claude execute", () => {
           command: commandPath,
           cwd: workspace,
           env: {
-            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
-            PAPERCLIP_TEST_STATE_PATH: statePath,
+            ODYSSEUS_TEST_CAPTURE_PATH: capturePath,
+            ODYSSEUS_TEST_STATE_PATH: statePath,
           },
           promptTemplate: "Do work.",
           instructionsFilePath: instructionsFile,
@@ -391,7 +391,7 @@ describe("claude execute", () => {
   });
 
   it("normalizes max-turn exhaustion into scheduler stop metadata", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-max-turns-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "odysseus-claude-exec-max-turns-"));
     const resultEvent = {
       type: "result",
       subtype: "error_max_turns",
@@ -431,7 +431,7 @@ describe("claude execute", () => {
   });
 
   it("does not normalize unstructured max-turn text into scheduler stop metadata", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-max-turn-text-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "odysseus-claude-exec-max-turn-text-"));
     const resultEvent = {
       type: "result",
       subtype: "error",
@@ -469,7 +469,7 @@ describe("claude execute", () => {
   });
 
   it("does not normalize fallback stdout/stderr max-turn text into scheduler stop metadata", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-max-turn-fallback-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "odysseus-claude-exec-max-turn-fallback-"));
     const { workspace, commandPath, restore } = await setupExecuteEnv(root, {
       commandWriter: (commandPath) =>
         writeTextFailingClaudeCommand(commandPath, {
@@ -504,7 +504,7 @@ describe("claude execute", () => {
   });
 
   it("logs HOME, CLAUDE_CONFIG_DIR, and the resolved executable path in invocation metadata", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-meta-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "odysseus-claude-execute-meta-"));
     const workspace = path.join(root, "workspace");
     const binDir = path.join(root, "bin");
     const commandPath = path.join(binDir, "claude");
@@ -544,9 +544,9 @@ describe("claude execute", () => {
           command: "claude",
           cwd: workspace,
           env: {
-            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            ODYSSEUS_TEST_CAPTURE_PATH: capturePath,
           },
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the odysseus heartbeat.",
         },
         context: {},
         authToken: "run-jwt-token",
@@ -562,7 +562,7 @@ describe("claude execute", () => {
       expect(loggedCommand).toBe(commandPath);
       expect(loggedEnv.HOME).toBe(root);
       expect(loggedEnv.CLAUDE_CONFIG_DIR).toBe(claudeConfigDir);
-      expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(commandPath);
+      expect(loggedEnv.ODYSSEUS_RESOLVED_COMMAND).toBe(commandPath);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
@@ -575,7 +575,7 @@ describe("claude execute", () => {
   });
 
   it("injects bridge env into sandbox-managed remote runs", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-sandbox-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "odysseus-claude-execute-sandbox-"));
     const localWorkspace = path.join(root, "workspace");
     const remoteWorkspace = path.join(root, "sandbox-$HOME");
     const binDir = path.join(root, "bin");
@@ -615,9 +615,9 @@ describe("claude execute", () => {
           command: commandPath,
           cwd: localWorkspace,
           env: {
-            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            ODYSSEUS_TEST_CAPTURE_PATH: capturePath,
           },
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the odysseus heartbeat.",
         },
         context: {},
         executionTarget: {
@@ -641,11 +641,11 @@ describe("claude execute", () => {
         "Task AskUserQuestion Bash(*) CronCreate CronDelete CronList Edit EnterPlanMode EnterWorktree ExitPlanMode ExitWorktree Glob Grep Monitor NotebookEdit PushNotification Read RemoteTrigger ScheduleWakeup Skill TaskOutput TaskStop TodoWrite ToolSearch WebFetch WebSearch Write",
       );
       expect(capture.argv).not.toContain("--dangerously-skip-permissions");
-      expect(capture.claudeConfigDir).toBe(path.join(remoteWorkspace, ".paperclip-runtime", "claude", "config"));
+      expect(capture.claudeConfigDir).toBe(path.join(remoteWorkspace, ".odysseus-runtime", "claude", "config"));
       expect(capture.claudeConfigEntries).toContain("settings.json");
-      expect(capture.paperclipApiUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
-      expect(capture.paperclipApiKey).not.toBe("run-jwt-token");
-      expect(capture.paperclipApiBridgeMode).toBe("queue_v1");
+      expect(capture.odysseusApiUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      expect(capture.odysseusApiKey).not.toBe("run-jwt-token");
+      expect(capture.odysseusApiBridgeMode).toBe("queue_v1");
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
@@ -655,24 +655,24 @@ describe("claude execute", () => {
     }
   }, 10_000);
 
-  it("reuses a stable Paperclip-managed Claude prompt bundle across equivalent runs", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-bundle-"));
+  it("reuses a stable Odysseus-managed Claude prompt bundle across equivalent runs", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "odysseus-claude-execute-bundle-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "claude");
     const capturePath1 = path.join(root, "capture-1.json");
     const capturePath2 = path.join(root, "capture-2.json");
     const instructionsPath = path.join(root, "AGENTS.md");
-    const paperclipHome = path.join(root, "paperclip-home");
+    const odysseusHome = path.join(root, "odysseus-home");
     await fs.mkdir(workspace, { recursive: true });
     await fs.writeFile(instructionsPath, "You are managed instructions.\n", "utf8");
     await writeFakeClaudeCommand(commandPath);
 
     const previousHome = process.env.HOME;
-    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
-    const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    const previousOdysseusHome = process.env.ODYSSEUS_HOME;
+    const previousOdysseusInstanceId = process.env.ODYSSEUS_INSTANCE_ID;
     process.env.HOME = root;
-    process.env.PAPERCLIP_HOME = paperclipHome;
-    delete process.env.PAPERCLIP_INSTANCE_ID;
+    process.env.ODYSSEUS_HOME = odysseusHome;
+    delete process.env.ODYSSEUS_INSTANCE_ID;
 
     try {
       const first = await execute({
@@ -695,9 +695,9 @@ describe("claude execute", () => {
           cwd: workspace,
           instructionsFilePath: instructionsPath,
           env: {
-            PAPERCLIP_TEST_CAPTURE_PATH: capturePath1,
+            ODYSSEUS_TEST_CAPTURE_PATH: capturePath1,
           },
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the odysseus heartbeat.",
         },
         context: {},
         authToken: "run-jwt-token",
@@ -732,16 +732,16 @@ describe("claude execute", () => {
           cwd: workspace,
           instructionsFilePath: instructionsPath,
           env: {
-            PAPERCLIP_TEST_CAPTURE_PATH: capturePath2,
+            ODYSSEUS_TEST_CAPTURE_PATH: capturePath2,
           },
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the odysseus heartbeat.",
         },
         context: {
           issueId: "issue-1",
           taskId: "issue-1",
           wakeReason: "issue_commented",
           wakeCommentId: "comment-2",
-          paperclipWake: {
+          odysseusWake: {
             reason: "issue_commented",
             issue: {
               id: "issue-1",
@@ -781,7 +781,7 @@ describe("claude execute", () => {
       const capture1 = JSON.parse(await fs.readFile(capturePath1, "utf8")) as CapturePayload;
       const capture2 = JSON.parse(await fs.readFile(capturePath2, "utf8")) as CapturePayload;
       const expectedRoot = path.join(
-        paperclipHome,
+        odysseusHome,
         "instances",
         "default",
         "companies",
@@ -797,41 +797,41 @@ describe("claude execute", () => {
       expect(capture1.instructionsFilePath?.startsWith(expectedRoot)).toBe(true);
       expect(capture1.instructionsContents).toContain("You are managed instructions.");
       expect(capture1.instructionsContents).toContain(`The above agent instructions were loaded from ${instructionsPath}.`);
-      expect(capture1.skillEntries).toContain("paperclip");
+      expect(capture1.skillEntries).toContain("odysseus");
       expect(capture2.argv).toContain("--resume");
       expect(capture2.argv).toContain("claude-session-1");
-      expect(capture2.prompt).toContain("## Paperclip Resume Delta");
-      expect(capture2.prompt).not.toContain("Follow the paperclip heartbeat.");
+      expect(capture2.prompt).toContain("## Odysseus Resume Delta");
+      expect(capture2.prompt).not.toContain("Follow the odysseus heartbeat.");
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
-      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
-      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
-      if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
-      else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
+      if (previousOdysseusHome === undefined) delete process.env.ODYSSEUS_HOME;
+      else process.env.ODYSSEUS_HOME = previousOdysseusHome;
+      if (previousOdysseusInstanceId === undefined) delete process.env.ODYSSEUS_INSTANCE_ID;
+      else process.env.ODYSSEUS_INSTANCE_ID = previousOdysseusInstanceId;
       await fs.rm(root, { recursive: true, force: true });
     }
   });
 
   it("starts a fresh Claude session when the stable prompt bundle changes", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-reset-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "odysseus-claude-execute-reset-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "claude");
     const capturePath1 = path.join(root, "capture-before.json");
     const capturePath2 = path.join(root, "capture-after.json");
     const instructionsPath = path.join(root, "AGENTS.md");
-    const paperclipHome = path.join(root, "paperclip-home");
+    const odysseusHome = path.join(root, "odysseus-home");
     const logs: string[] = [];
     await fs.mkdir(workspace, { recursive: true });
     await fs.writeFile(instructionsPath, "Version one instructions.\n", "utf8");
     await writeFakeClaudeCommand(commandPath);
 
     const previousHome = process.env.HOME;
-    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
-    const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    const previousOdysseusHome = process.env.ODYSSEUS_HOME;
+    const previousOdysseusInstanceId = process.env.ODYSSEUS_INSTANCE_ID;
     process.env.HOME = root;
-    process.env.PAPERCLIP_HOME = paperclipHome;
-    delete process.env.PAPERCLIP_INSTANCE_ID;
+    process.env.ODYSSEUS_HOME = odysseusHome;
+    delete process.env.ODYSSEUS_INSTANCE_ID;
 
     try {
       const first = await execute({
@@ -854,9 +854,9 @@ describe("claude execute", () => {
           cwd: workspace,
           instructionsFilePath: instructionsPath,
           env: {
-            PAPERCLIP_TEST_CAPTURE_PATH: capturePath1,
+            ODYSSEUS_TEST_CAPTURE_PATH: capturePath1,
           },
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the odysseus heartbeat.",
         },
         context: {},
         authToken: "run-jwt-token",
@@ -885,9 +885,9 @@ describe("claude execute", () => {
           cwd: workspace,
           instructionsFilePath: instructionsPath,
           env: {
-            PAPERCLIP_TEST_CAPTURE_PATH: capturePath2,
+            ODYSSEUS_TEST_CAPTURE_PATH: capturePath2,
           },
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the odysseus heartbeat.",
         },
         context: {},
         authToken: "run-jwt-token",
@@ -905,21 +905,21 @@ describe("claude execute", () => {
 
       expect(before.instructionsFilePath).not.toBe(after.instructionsFilePath);
       expect(after.argv).not.toContain("--resume");
-      expect(after.prompt).toContain("Follow the paperclip heartbeat.");
+      expect(after.prompt).toContain("Follow the odysseus heartbeat.");
       expect(logs.join("")).toContain("will not be resumed with");
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
-      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
-      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
-      if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
-      else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
+      if (previousOdysseusHome === undefined) delete process.env.ODYSSEUS_HOME;
+      else process.env.ODYSSEUS_HOME = previousOdysseusHome;
+      if (previousOdysseusInstanceId === undefined) delete process.env.ODYSSEUS_INSTANCE_ID;
+      else process.env.ODYSSEUS_INSTANCE_ID = previousOdysseusInstanceId;
       await fs.rm(root, { recursive: true, force: true });
     }
   }, 15_000);
 
   it("classifies Claude 'out of extra usage' failures as transient upstream errors", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-transient-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "odysseus-claude-execute-transient-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "claude");
     await fs.mkdir(workspace, { recursive: true });
@@ -958,7 +958,7 @@ describe("claude execute", () => {
         config: {
           command: commandPath,
           cwd: workspace,
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the odysseus heartbeat.",
         },
         context: {},
         authToken: "run-jwt-token",
@@ -984,7 +984,7 @@ describe("claude execute", () => {
   });
 
   it("classifies rate-limit / overloaded failures without reset metadata as transient", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-rate-limit-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "odysseus-claude-execute-rate-limit-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "claude");
     await fs.mkdir(workspace, { recursive: true });
@@ -1021,7 +1021,7 @@ describe("claude execute", () => {
         config: {
           command: commandPath,
           cwd: workspace,
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the odysseus heartbeat.",
         },
         context: {},
         authToken: "run-jwt-token",
@@ -1042,7 +1042,7 @@ describe("claude execute", () => {
   });
 
   it("does not reclassify deterministic Claude failures (auth, max turns) as transient", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-max-turns-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "odysseus-claude-execute-max-turns-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "claude");
     await fs.mkdir(workspace, { recursive: true });
@@ -1078,7 +1078,7 @@ describe("claude execute", () => {
         config: {
           command: commandPath,
           cwd: workspace,
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the odysseus heartbeat.",
         },
         context: {},
         authToken: "run-jwt-token",

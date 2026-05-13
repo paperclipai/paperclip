@@ -5,7 +5,7 @@ import {
   parseProjectMentionHref,
   parseSkillMentionHref,
   parseUserMentionHref,
-} from "@paperclipai/shared";
+} from "@odysseus/shared";
 import { getAgentIcon } from "./agent-icons";
 import { hexToRgb, pickTextColorForPillBg } from "./color-contrast";
 
@@ -93,13 +93,13 @@ export function mentionChipInlineStyle(mention: ParsedMentionChip): CSSPropertie
   if (mention.kind === "project" && mention.color) {
     const projectStyle = projectMentionColors(mention.color);
     Object.assign(style, projectStyle);
-    style["--paperclip-mention-project-color"] = mention.color;
+    style["--odysseus-mention-project-color"] = mention.color;
   }
 
   if (mention.kind === "agent") {
     const iconMask = buildAgentIconMask(mention.icon);
     if (iconMask) {
-      style["--paperclip-mention-icon-mask"] = iconMask;
+      style["--odysseus-mention-icon-mask"] = iconMask;
     }
   }
 
@@ -110,9 +110,9 @@ export function applyMentionChipDecoration(element: HTMLElement, mention: Parsed
   clearMentionChipDecoration(element);
   element.dataset.mentionKind = mention.kind;
   element.setAttribute("contenteditable", "false");
-  element.classList.add("paperclip-mention-chip", `paperclip-mention-chip--${mention.kind}`);
+  element.classList.add("odysseus-mention-chip", `odysseus-mention-chip--${mention.kind}`);
   if (mention.kind === "project") {
-    element.classList.add("paperclip-project-mention-chip");
+    element.classList.add("odysseus-project-mention-chip");
   }
 
   const style = mentionChipInlineStyle(mention);
@@ -131,20 +131,20 @@ export function applyMentionChipDecoration(element: HTMLElement, mention: Parsed
 export function clearMentionChipDecoration(element: HTMLElement) {
   delete element.dataset.mentionKind;
   element.classList.remove(
-    "paperclip-mention-chip",
-    "paperclip-mention-chip--agent",
-    "paperclip-mention-chip--issue",
-    "paperclip-mention-chip--project",
-    "paperclip-mention-chip--user",
-    "paperclip-mention-chip--skill",
-    "paperclip-project-mention-chip",
+    "odysseus-mention-chip",
+    "odysseus-mention-chip--agent",
+    "odysseus-mention-chip--issue",
+    "odysseus-mention-chip--project",
+    "odysseus-mention-chip--user",
+    "odysseus-mention-chip--skill",
+    "odysseus-project-mention-chip",
   );
   element.removeAttribute("contenteditable");
   element.style.removeProperty("border-color");
   element.style.removeProperty("background-color");
   element.style.removeProperty("color");
-  element.style.removeProperty("--paperclip-mention-project-color");
-  element.style.removeProperty("--paperclip-mention-icon-mask");
+  element.style.removeProperty("--odysseus-mention-project-color");
+  element.style.removeProperty("--odysseus-mention-icon-mask");
 }
 
 function projectMentionColors(color: string): Pick<CSSProperties, "borderColor" | "backgroundColor" | "color"> {

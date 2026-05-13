@@ -19,7 +19,7 @@ import {
   routineRuns,
   routines,
   routineTriggers,
-} from "@paperclipai/db";
+} from "@odysseus/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -31,7 +31,7 @@ import { routineService } from "../services/routines.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
-const originalSecretsProviderEnv = process.env.PAPERCLIP_SECRETS_PROVIDER;
+const originalSecretsProviderEnv = process.env.ODYSSEUS_SECRETS_PROVIDER;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -44,15 +44,15 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-service-");
+    tempDb = await startEmbeddedPostgresTestDatabase("odysseus-routines-service-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
   afterEach(async () => {
     if (originalSecretsProviderEnv === undefined) {
-      delete process.env.PAPERCLIP_SECRETS_PROVIDER;
+      delete process.env.ODYSSEUS_SECRETS_PROVIDER;
     } else {
-      process.env.PAPERCLIP_SECRETS_PROVIDER = originalSecretsProviderEnv;
+      process.env.ODYSSEUS_SECRETS_PROVIDER = originalSecretsProviderEnv;
     }
     await db.delete(activityLog);
     await db.delete(issueInboxArchives);
@@ -109,7 +109,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "Odysseus",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
     });
@@ -858,7 +858,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     const run = await svc.runRoutine(variableRoutine.id, {
       source: "manual",
-      variables: { repo: "paperclip" },
+      variables: { repo: "odysseus" },
     });
 
     const storedIssue = await db
@@ -872,11 +872,11 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .where(eq(routineRuns.id, run.id))
       .then((rows) => rows[0] ?? null);
 
-    expect(storedIssue?.title).toBe("repo triage for paperclip");
-    expect(storedIssue?.description).toBe("Review paperclip for high bugs");
+    expect(storedIssue?.title).toBe("repo triage for odysseus");
+    expect(storedIssue?.description).toBe("Review odysseus for high bugs");
     expect(storedRun?.triggerPayload).toEqual({
       variables: {
-        repo: "paperclip",
+        repo: "odysseus",
         priority: "high",
       },
     });
@@ -1280,7 +1280,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   });
 
   it("uses the configured provider for generated webhook trigger secrets", async () => {
-    process.env.PAPERCLIP_SECRETS_PROVIDER = "aws_secrets_manager";
+    process.env.ODYSSEUS_SECRETS_PROVIDER = "aws_secrets_manager";
     const originalGetSecretProvider = providerRegistry.getSecretProvider;
     const getSecretProviderSpy = vi.spyOn(providerRegistry, "getSecretProvider").mockImplementation((provider) => {
       if (provider !== "aws_secrets_manager") {

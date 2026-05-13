@@ -28,7 +28,7 @@ The `process` adapter executes arbitrary shell commands. Use it for simple scrip
 ## How It Works
 
 1. Paperclip spawns the configured command as a child process
-2. Standard Paperclip environment variables are injected (`PAPERCLIP_AGENT_ID`, `PAPERCLIP_API_KEY`, etc.)
+2. Standard Paperclip environment variables are injected (`ODYSSEUS_AGENT_ID`, `ODYSSEUS_API_KEY`, etc.)
 3. The process runs to completion
 4. Exit code determines success/failure
 

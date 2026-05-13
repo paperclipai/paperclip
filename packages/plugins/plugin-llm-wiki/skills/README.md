@@ -12,7 +12,7 @@ Each skill is an isolated SKILL.md describing one job — when to invoke it, the
 | [`wiki-ingest`](./wiki-ingest/SKILL.md) | A new file landed in `raw/` and the operation issue says "ingest" — turn the source into durable wiki pages. |
 | [`wiki-query`](./wiki-query/SKILL.md) | The user asked the wiki a question; answer with citations and offer to file durable synthesis back into `wiki/`. |
 | [`wiki-lint`](./wiki-lint/SKILL.md) | A lint or health-check operation — audit for contradictions, orphan pages, weak provenance, broken links, missing concept pages. |
-| [`paperclip-distill`](./paperclip-distill/SKILL.md) | Cursor-window, distill, or backfill operation on Paperclip activity — write a wiki-insightful project page, decisions log, and history note. |
+| [`odysseus-distill`](./odysseus-distill/SKILL.md) | Cursor-window, distill, or backfill operation on Paperclip activity — write a wiki-insightful project page, decisions log, and history note. |
 | [`index-refresh`](./index-refresh/SKILL.md) | Refresh `wiki/index.md` so each entry has a tight, scannable summary; flag drift between the index and recent log activity. |
 
 ## Layering

@@ -11,7 +11,7 @@ const {
   restoreWorkspaceFromSshExecution,
   runSshCommand,
   syncDirectoryToSsh,
-  startAdapterExecutionTargetPaperclipBridge,
+  startAdapterExecutionTargetOdysseusBridge,
 } = vi.hoisted(() => ({
   runChildProcess: vi.fn(async () => ({
     exitCode: 0,
@@ -45,19 +45,19 @@ const {
     exitCode: 0,
   })),
   syncDirectoryToSsh: vi.fn(async () => undefined),
-  startAdapterExecutionTargetPaperclipBridge: vi.fn(async () => ({
+  startAdapterExecutionTargetOdysseusBridge: vi.fn(async () => ({
     env: {
-      PAPERCLIP_API_URL: "http://127.0.0.1:4310",
-      PAPERCLIP_API_KEY: "bridge-token",
-      PAPERCLIP_API_BRIDGE_MODE: "queue_v1",
+      ODYSSEUS_API_URL: "http://127.0.0.1:4310",
+      ODYSSEUS_API_KEY: "bridge-token",
+      ODYSSEUS_API_BRIDGE_MODE: "queue_v1",
     },
     stop: async () => {},
   })),
 }));
 
-vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
-  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/server-utils")>(
-    "@paperclipai/adapter-utils/server-utils",
+vi.mock("@odysseus/adapter-utils/server-utils", async () => {
+  const actual = await vi.importActual<typeof import("@odysseus/adapter-utils/server-utils")>(
+    "@odysseus/adapter-utils/server-utils",
   );
   return {
     ...actual,
@@ -67,9 +67,9 @@ vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
   };
 });
 
-vi.mock("@paperclipai/adapter-utils/ssh", async () => {
-  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/ssh")>(
-    "@paperclipai/adapter-utils/ssh",
+vi.mock("@odysseus/adapter-utils/ssh", async () => {
+  const actual = await vi.importActual<typeof import("@odysseus/adapter-utils/ssh")>(
+    "@odysseus/adapter-utils/ssh",
   );
   return {
     ...actual,
@@ -80,13 +80,13 @@ vi.mock("@paperclipai/adapter-utils/ssh", async () => {
   };
 });
 
-vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
-  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>(
-    "@paperclipai/adapter-utils/execution-target",
+vi.mock("@odysseus/adapter-utils/execution-target", async () => {
+  const actual = await vi.importActual<typeof import("@odysseus/adapter-utils/execution-target")>(
+    "@odysseus/adapter-utils/execution-target",
   );
   return {
     ...actual,
-    startAdapterExecutionTargetPaperclipBridge,
+    startAdapterExecutionTargetOdysseusBridge,
   };
 });
 
@@ -105,11 +105,11 @@ describe("pi remote execution", () => {
   });
 
   it("prepares the workspace, syncs Pi skills, and restores workspace changes for remote SSH execution", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pi-remote-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "odysseus-pi-remote-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
     const alternateWorkspaceDir = path.join(rootDir, "workspace-other");
-    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-1/workspace";
+    const managedRemoteWorkspace = "/remote/workspace/.odysseus-runtime/runs/run-1/workspace";
     await mkdir(workspaceDir, { recursive: true });
     await mkdir(alternateWorkspaceDir, { recursive: true });
 
@@ -133,21 +133,21 @@ describe("pi remote execution", () => {
         model: "openai/gpt-5.4-mini",
       },
       context: {
-        paperclipWorkspace: {
+        odysseusWorkspace: {
           cwd: workspaceDir,
           source: "project_primary",
         },
-        paperclipWorkspaces: [
+        odysseusWorkspaces: [
           {
             workspaceId: "workspace-1",
             cwd: workspaceDir,
-            repoUrl: "https://github.com/paperclipai/paperclip.git",
+            repoUrl: "https://github.com/PossibLaw/odysseus.git",
             repoRef: "main",
           },
           {
             workspaceId: "workspace-2",
             cwd: alternateWorkspaceDir,
-            repoUrl: "https://github.com/paperclipai/paperclip.git",
+            repoUrl: "https://github.com/PossibLaw/odysseus.git",
             repoRef: "feature/other",
           },
         ],
@@ -177,16 +177,16 @@ describe("pi remote execution", () => {
         remoteCwd: managedRemoteWorkspace,
       },
     });
-    expect(String(result.sessionId)).toContain(`${managedRemoteWorkspace}/.paperclip-runtime/pi/sessions/`);
+    expect(String(result.sessionId)).toContain(`${managedRemoteWorkspace}/.odysseus-runtime/pi/sessions/`);
     expect(prepareWorkspaceForSshExecution).toHaveBeenCalledTimes(1);
     expect(syncDirectoryToSsh).toHaveBeenCalledTimes(1);
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
-      remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/pi/skills`,
+      remoteDir: `${managedRemoteWorkspace}/.odysseus-runtime/pi/skills`,
       followSymlinks: true,
     }));
     expect(runSshCommand).toHaveBeenCalledWith(
       expect.anything(),
-      expect.stringContaining(".paperclip-runtime/pi/sessions"),
+      expect.stringContaining(".odysseus-runtime/pi/sessions"),
       expect.anything(),
     );
     const call = runChildProcess.mock.calls[0] as unknown as
@@ -194,33 +194,33 @@ describe("pi remote execution", () => {
       | undefined;
     expect(call?.[2]).toContain("--session");
     expect(call?.[2]).toContain("--skill");
-    expect(call?.[2]).toContain(`${managedRemoteWorkspace}/.paperclip-runtime/pi/skills`);
-    expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
-    expect(JSON.parse(call?.[3].env.PAPERCLIP_WORKSPACES_JSON ?? "[]")).toEqual([
+    expect(call?.[2]).toContain(`${managedRemoteWorkspace}/.odysseus-runtime/pi/skills`);
+    expect(call?.[3].env.ODYSSEUS_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
+    expect(JSON.parse(call?.[3].env.ODYSSEUS_WORKSPACES_JSON ?? "[]")).toEqual([
       {
         workspaceId: "workspace-1",
         cwd: managedRemoteWorkspace,
-        repoUrl: "https://github.com/paperclipai/paperclip.git",
+        repoUrl: "https://github.com/PossibLaw/odysseus.git",
         repoRef: "main",
       },
       {
         workspaceId: "workspace-2",
-        repoUrl: "https://github.com/paperclipai/paperclip.git",
+        repoUrl: "https://github.com/PossibLaw/odysseus.git",
         repoRef: "feature/other",
       },
     ]);
-    expect(call?.[3].env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:4310");
-    expect(call?.[3].env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
+    expect(call?.[3].env.ODYSSEUS_API_URL).toBe("http://127.0.0.1:4310");
+    expect(call?.[3].env.ODYSSEUS_API_BRIDGE_MODE).toBe("queue_v1");
     expect(call?.[3].remoteExecution?.remoteCwd).toBe(managedRemoteWorkspace);
-    expect(startAdapterExecutionTargetPaperclipBridge).toHaveBeenCalledTimes(1);
+    expect(startAdapterExecutionTargetOdysseusBridge).toHaveBeenCalledTimes(1);
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
   });
 
   it("resumes saved Pi sessions for remote SSH execution only when the identity matches", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pi-remote-resume-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "odysseus-pi-remote-resume-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
-    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-ssh-resume/workspace";
+    const managedRemoteWorkspace = "/remote/workspace/.odysseus-runtime/runs/run-ssh-resume/workspace";
     await mkdir(workspaceDir, { recursive: true });
 
     runSshCommand.mockImplementation(async (...args: unknown[]) => {
@@ -249,9 +249,9 @@ describe("pi remote execution", () => {
         adapterConfig: {},
       },
       runtime: {
-        sessionId: `${managedRemoteWorkspace}/.paperclip-runtime/pi/sessions/session-123.jsonl`,
+        sessionId: `${managedRemoteWorkspace}/.odysseus-runtime/pi/sessions/session-123.jsonl`,
         sessionParams: {
-          sessionId: `${managedRemoteWorkspace}/.paperclip-runtime/pi/sessions/session-123.jsonl`,
+          sessionId: `${managedRemoteWorkspace}/.odysseus-runtime/pi/sessions/session-123.jsonl`,
           cwd: managedRemoteWorkspace,
           remoteExecution: {
             transport: "ssh",
@@ -269,7 +269,7 @@ describe("pi remote execution", () => {
         model: "openai/gpt-5.4-mini",
       },
       context: {
-        paperclipWorkspace: {
+        odysseusWorkspace: {
           cwd: workspaceDir,
           source: "project_primary",
         },
@@ -291,11 +291,11 @@ describe("pi remote execution", () => {
 
     const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
     expect(call?.[2]).toContain("--session");
-    expect(call?.[2]).toContain(`${managedRemoteWorkspace}/.paperclip-runtime/pi/sessions/session-123.jsonl`);
+    expect(call?.[2]).toContain(`${managedRemoteWorkspace}/.odysseus-runtime/pi/sessions/session-123.jsonl`);
   });
 
   it("starts a fresh remote Pi session when the saved session header cwd points at a different workspace", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pi-remote-stale-session-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "odysseus-pi-remote-stale-session-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
     await mkdir(workspaceDir, { recursive: true });
@@ -326,9 +326,9 @@ describe("pi remote execution", () => {
         adapterConfig: {},
       },
       runtime: {
-        sessionId: "/remote/workspace/.paperclip-runtime/pi/sessions/session-123.jsonl",
+        sessionId: "/remote/workspace/.odysseus-runtime/pi/sessions/session-123.jsonl",
         sessionParams: {
-          sessionId: "/remote/workspace/.paperclip-runtime/pi/sessions/session-123.jsonl",
+          sessionId: "/remote/workspace/.odysseus-runtime/pi/sessions/session-123.jsonl",
           cwd: "/remote/workspace",
           remoteExecution: {
             transport: "ssh",
@@ -346,7 +346,7 @@ describe("pi remote execution", () => {
         model: "openai/gpt-5.4-mini",
       },
       context: {
-        paperclipWorkspace: {
+        odysseusWorkspace: {
           cwd: workspaceDir,
           source: "project_primary",
         },
@@ -366,17 +366,17 @@ describe("pi remote execution", () => {
       onLog: async () => {},
     });
 
-    const managedRemoteWorkspaceFresh = "/remote/workspace/.paperclip-runtime/runs/run-ssh-stale-session/workspace";
+    const managedRemoteWorkspaceFresh = "/remote/workspace/.odysseus-runtime/runs/run-ssh-stale-session/workspace";
     const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
     const sessionIndex = call?.[2].indexOf("--session") ?? -1;
     expect(sessionIndex).toBeGreaterThanOrEqual(0);
     const usedSession = sessionIndex >= 0 ? call?.[2][sessionIndex + 1] : null;
-    expect(usedSession).toContain(`${managedRemoteWorkspaceFresh}/.paperclip-runtime/pi/sessions/`);
-    expect(usedSession).not.toBe("/remote/workspace/.paperclip-runtime/pi/sessions/session-123.jsonl");
+    expect(usedSession).toContain(`${managedRemoteWorkspaceFresh}/.odysseus-runtime/pi/sessions/`);
+    expect(usedSession).not.toBe("/remote/workspace/.odysseus-runtime/pi/sessions/session-123.jsonl");
   });
 
   it("starts a fresh remote Pi session when the saved session header is empty or unreadable", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pi-remote-empty-header-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "odysseus-pi-remote-empty-header-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
     await mkdir(workspaceDir, { recursive: true });
@@ -399,9 +399,9 @@ describe("pi remote execution", () => {
         adapterConfig: {},
       },
       runtime: {
-        sessionId: "/remote/workspace/.paperclip-runtime/pi/sessions/session-123.jsonl",
+        sessionId: "/remote/workspace/.odysseus-runtime/pi/sessions/session-123.jsonl",
         sessionParams: {
-          sessionId: "/remote/workspace/.paperclip-runtime/pi/sessions/session-123.jsonl",
+          sessionId: "/remote/workspace/.odysseus-runtime/pi/sessions/session-123.jsonl",
           cwd: "/remote/workspace",
           remoteExecution: {
             transport: "ssh",
@@ -416,7 +416,7 @@ describe("pi remote execution", () => {
       },
       config: { command: "pi", model: "openai/gpt-5.4-mini" },
       context: {
-        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
+        odysseusWorkspace: { cwd: workspaceDir, source: "project_primary" },
       },
       executionTransport: {
         remoteExecution: {
@@ -437,11 +437,11 @@ describe("pi remote execution", () => {
     const sessionIndex = call?.[2].indexOf("--session") ?? -1;
     expect(sessionIndex).toBeGreaterThanOrEqual(0);
     const usedSession = sessionIndex >= 0 ? call?.[2][sessionIndex + 1] : null;
-    expect(usedSession).not.toBe("/remote/workspace/.paperclip-runtime/pi/sessions/session-123.jsonl");
+    expect(usedSession).not.toBe("/remote/workspace/.odysseus-runtime/pi/sessions/session-123.jsonl");
   });
 
   it("starts a fresh remote Pi session when the remote head command fails", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pi-remote-head-failure-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "odysseus-pi-remote-head-failure-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
     await mkdir(workspaceDir, { recursive: true });
@@ -468,9 +468,9 @@ describe("pi remote execution", () => {
         adapterConfig: {},
       },
       runtime: {
-        sessionId: "/remote/workspace/.paperclip-runtime/pi/sessions/session-123.jsonl",
+        sessionId: "/remote/workspace/.odysseus-runtime/pi/sessions/session-123.jsonl",
         sessionParams: {
-          sessionId: "/remote/workspace/.paperclip-runtime/pi/sessions/session-123.jsonl",
+          sessionId: "/remote/workspace/.odysseus-runtime/pi/sessions/session-123.jsonl",
           cwd: "/remote/workspace",
           remoteExecution: {
             transport: "ssh",
@@ -485,7 +485,7 @@ describe("pi remote execution", () => {
       },
       config: { command: "pi", model: "openai/gpt-5.4-mini" },
       context: {
-        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
+        odysseusWorkspace: { cwd: workspaceDir, source: "project_primary" },
       },
       executionTransport: {
         remoteExecution: {
@@ -506,6 +506,6 @@ describe("pi remote execution", () => {
     const sessionIndex = call?.[2].indexOf("--session") ?? -1;
     expect(sessionIndex).toBeGreaterThanOrEqual(0);
     const usedSession = sessionIndex >= 0 ? call?.[2][sessionIndex + 1] : null;
-    expect(usedSession).not.toBe("/remote/workspace/.paperclip-runtime/pi/sessions/session-123.jsonl");
+    expect(usedSession).not.toBe("/remote/workspace/.odysseus-runtime/pi/sessions/session-123.jsonl");
   });
 });

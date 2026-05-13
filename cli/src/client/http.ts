@@ -50,7 +50,7 @@ interface ApiClientOptions {
   recoverAuth?: (input: RecoverAuthInput) => Promise<string | null>;
 }
 
-export class PaperclipApiClient {
+export class OdysseusApiClient {
   readonly apiBase: string;
   apiKey?: string;
   readonly runId?: string;
@@ -112,7 +112,7 @@ export class PaperclipApiClient {
     }
 
     if (this.runId) {
-      headers["x-paperclip-run-id"] = this.runId;
+      headers["x-odysseus-run-id"] = this.runId;
     }
 
     let response: Response;
@@ -205,7 +205,7 @@ function buildConnectionErrorMessage(input: {
 }): string {
   const healthUrl = buildHealthCheckUrl(input.url);
   const lines = [
-    "Could not reach the Paperclip API.",
+    "Could not reach the Odysseus API.",
     "",
     `Request: ${input.method} ${input.url}`,
   ];
@@ -214,12 +214,12 @@ function buildConnectionErrorMessage(input: {
   }
   lines.push(
     "",
-    "This usually means the Paperclip server is not running, the configured URL is wrong, or the request is being blocked before it reaches Paperclip.",
+    "This usually means the Odysseus server is not running, the configured URL is wrong, or the request is being blocked before it reaches Odysseus.",
     "",
     "Try:",
-    "- Start Paperclip with `pnpm dev` or `pnpm paperclipai run`.",
+    "- Start Odysseus with `pnpm dev` or `pnpm odysseus run`.",
     `- Verify the server is reachable with \`curl ${healthUrl}\`.`,
-    `- If Paperclip is running elsewhere, pass \`--api-base ${input.apiBase.replace(/\/+$/, "")}\` or set \`PAPERCLIP_API_URL\`.`,
+    `- If Odysseus is running elsewhere, pass \`--api-base ${input.apiBase.replace(/\/+$/, "")}\` or set \`ODYSSEUS_API_URL\`.`,
   );
   return lines.join("\n");
 }

@@ -15,7 +15,7 @@ import {
   issueRelations,
   issueTreeHolds,
   issues,
-} from "@paperclipai/db";
+} from "@odysseus/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -39,7 +39,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-scheduled-retry-routes-");
+    tempDb = await startEmbeddedPostgresTestDatabase("odysseus-issue-scheduled-retry-routes-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
@@ -110,7 +110,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "Odysseus",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
     });
@@ -262,7 +262,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     const issueId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "Odysseus",
       issuePrefix: "NONE",
       requireBoardApprovalForNewAgents: false,
     });

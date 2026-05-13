@@ -3,15 +3,15 @@ import type { IncomingHttpHeaders } from "node:http";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { toNodeHandler } from "better-auth/node";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@odysseus/db";
 import {
   authAccounts,
   authSessions,
   authUsers,
   authVerifications,
-} from "@paperclipai/db";
+} from "@odysseus/db";
 import type { Config } from "../config.js";
-import { resolvePaperclipInstanceId } from "../home-paths.js";
+import { resolveOdysseusInstanceId } from "../home-paths.js";
 
 export type BetterAuthSessionUser = {
   id: string;
@@ -29,12 +29,12 @@ type BetterAuthInstance = ReturnType<typeof betterAuth>;
 const AUTH_COOKIE_PREFIX_FALLBACK = "default";
 const AUTH_COOKIE_PREFIX_INVALID_SEGMENTS_RE = /[^a-zA-Z0-9_-]+/g;
 
-export function deriveAuthCookiePrefix(instanceId = resolvePaperclipInstanceId()): string {
+export function deriveAuthCookiePrefix(instanceId = resolveOdysseusInstanceId()): string {
   const scopedInstanceId = instanceId
     .trim()
     .replace(AUTH_COOKIE_PREFIX_INVALID_SEGMENTS_RE, "-")
     .replace(/^-+|-+$/g, "") || AUTH_COOKIE_PREFIX_FALLBACK;
-  return `paperclip-${scopedInstanceId}`;
+  return `odysseus-${scopedInstanceId}`;
 }
 
 export function buildBetterAuthAdvancedOptions(input: { disableSecureCookies: boolean }) {
@@ -92,14 +92,14 @@ export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: n
 
 export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins: string[]): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
-  const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET;
+  const secret = process.env.BETTER_AUTH_SECRET ?? process.env.ODYSSEUS_AGENT_JWT_SECRET;
   if (!secret) {
     throw new Error(
-      "BETTER_AUTH_SECRET (or PAPERCLIP_AGENT_JWT_SECRET) must be set. " +
-      "For local development, set BETTER_AUTH_SECRET=paperclip-dev-secret in your .env file.",
+      "BETTER_AUTH_SECRET (or ODYSSEUS_AGENT_JWT_SECRET) must be set. " +
+      "For local development, set BETTER_AUTH_SECRET=odysseus-dev-secret in your .env file.",
     );
   }
-  const publicUrl = process.env.PAPERCLIP_PUBLIC_URL ?? baseUrl;
+  const publicUrl = process.env.ODYSSEUS_PUBLIC_URL ?? baseUrl;
   const isHttpOnly = publicUrl ? publicUrl.startsWith("http://") : false;
 
   const authConfig = {

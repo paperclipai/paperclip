@@ -8,7 +8,7 @@ import type {
   RoutineRunSummary,
   RoutineTrigger,
   RoutineTriggerSecretMaterial,
-} from "@paperclipai/shared";
+} from "@odysseus/shared";
 import { activityApi } from "./activity";
 import { api } from "./client";
 

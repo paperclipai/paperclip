@@ -16,9 +16,9 @@ const autoRestartPollIntervalMs = 2500;
 const gracefulShutdownTimeoutMs = 10_000;
 const changedPathSampleLimit = 5;
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const devServerStatusFilePath = path.join(repoRoot, ".paperclip", "dev-server-status.json");
+const devServerStatusFilePath = path.join(repoRoot, ".odysseus", "dev-server-status.json");
 const devServerStatusToken = mode === "dev" ? randomUUID() : null;
-const devServerStatusTokenHeader = "x-paperclip-dev-server-status-token";
+const devServerStatusTokenHeader = "x-odysseus-dev-server-status-token";
 
 const watchedDirectories = [
   "cli",
@@ -51,7 +51,7 @@ const ignoredDirectoryNames = new Set([
 ]);
 
 const ignoredRelativePaths = new Set([
-  ".paperclip/dev-server-status.json",
+  ".odysseus/dev-server-status.json",
 ]);
 
 const tailscaleAuthFlagNames = new Set([
@@ -79,28 +79,28 @@ if (process.env.npm_config_authenticated_private === "true") {
 
 const env = {
   ...process.env,
-  PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
+  ODYSSEUS_UI_DEV_MIDDLEWARE: "true",
 };
 
 if (mode === "dev") {
-  env.PAPERCLIP_DEV_SERVER_STATUS_FILE = devServerStatusFilePath;
-  env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN = devServerStatusToken ?? "";
+  env.ODYSSEUS_DEV_SERVER_STATUS_FILE = devServerStatusFilePath;
+  env.ODYSSEUS_DEV_SERVER_STATUS_TOKEN = devServerStatusToken ?? "";
 }
 
 if (mode === "watch") {
-  delete env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN;
-  env.PAPERCLIP_MIGRATION_PROMPT ??= "never";
-  env.PAPERCLIP_MIGRATION_AUTO_APPLY ??= "true";
+  delete env.ODYSSEUS_DEV_SERVER_STATUS_TOKEN;
+  env.ODYSSEUS_MIGRATION_PROMPT ??= "never";
+  env.ODYSSEUS_MIGRATION_AUTO_APPLY ??= "true";
 }
 
 if (tailscaleAuth) {
-  env.PAPERCLIP_DEPLOYMENT_MODE = "authenticated";
-  env.PAPERCLIP_DEPLOYMENT_EXPOSURE = "private";
-  env.PAPERCLIP_AUTH_BASE_URL_MODE = "auto";
+  env.ODYSSEUS_DEPLOYMENT_MODE = "authenticated";
+  env.ODYSSEUS_DEPLOYMENT_EXPOSURE = "private";
+  env.ODYSSEUS_AUTH_BASE_URL_MODE = "auto";
   env.HOST = "0.0.0.0";
-  console.log("[paperclip] dev mode: authenticated/private (tailscale-friendly) on 0.0.0.0");
+  console.log("[odysseus] dev mode: authenticated/private (tailscale-friendly) on 0.0.0.0");
 } else {
-  console.log("[paperclip] dev mode: local_trusted (default)");
+  console.log("[odysseus] dev mode: local_trusted (default)");
 }
 
 const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
@@ -290,14 +290,14 @@ async function runPnpm(args, options = {}) {
 
 async function getMigrationStatusPayload() {
   const status = await runPnpm(
-    ["--filter", "@paperclipai/db", "exec", "tsx", "src/migration-status.ts", "--json"],
+    ["--filter", "@odysseus/db", "exec", "tsx", "src/migration-status.ts", "--json"],
     { env },
   );
   if (status.code !== 0) {
     process.stderr.write(
       status.stderr ||
         status.stdout ||
-        `[paperclip] Command failed with code ${status.code}: pnpm --filter @paperclipai/db exec tsx src/migration-status.ts --json\n`,
+        `[odysseus] Command failed with code ${status.code}: pnpm --filter @odysseus/db exec tsx src/migration-status.ts --json\n`,
     );
     process.exit(status.code);
   }
@@ -308,7 +308,7 @@ async function getMigrationStatusPayload() {
     process.stderr.write(
       status.stderr ||
         status.stdout ||
-        "[paperclip] migration-status returned invalid JSON payload\n",
+        "[odysseus] migration-status returned invalid JSON payload\n",
     );
     throw toError(error, "Unable to parse migration-status JSON output");
   }
@@ -326,7 +326,7 @@ async function refreshPendingMigrations() {
 
 async function maybePreflightMigrations(options = {}) {
   const interactive = options.interactive ?? mode === "watch";
-  const autoApply = options.autoApply ?? env.PAPERCLIP_MIGRATION_AUTO_APPLY === "true";
+  const autoApply = options.autoApply ?? env.ODYSSEUS_MIGRATION_AUTO_APPLY === "true";
   const exitOnDecline = options.exitOnDecline ?? mode === "watch";
 
   const payload = await refreshPendingMigrations();
@@ -359,7 +359,7 @@ async function maybePreflightMigrations(options = {}) {
   if (!shouldApply) {
     if (exitOnDecline) {
       process.stderr.write(
-        `[paperclip] Pending migrations detected (${formatPendingMigrationSummary(pendingMigrations)}). ` +
+        `[odysseus] Pending migrations detected (${formatPendingMigrationSummary(pendingMigrations)}). ` +
           "Refusing to start watch mode against a stale schema.\n",
       );
       process.exit(1);
@@ -387,9 +387,9 @@ async function maybePreflightMigrations(options = {}) {
 }
 
 async function buildPluginSdk() {
-  console.log("[paperclip] building plugin sdk...");
+  console.log("[odysseus] building plugin sdk...");
   const result = await runPnpm(
-    ["--filter", "@paperclipai/plugin-sdk", "build"],
+    ["--filter", "@odysseus/plugin-sdk", "build"],
     { stdio: "inherit" },
   );
   if (result.signal) {
@@ -397,7 +397,7 @@ async function buildPluginSdk() {
     return;
   }
   if (result.code !== 0) {
-    console.error("[paperclip] plugin sdk build failed");
+    console.error("[odysseus] plugin sdk build failed");
     process.exit(result.code);
   }
 }
@@ -469,7 +469,7 @@ async function startServerChild() {
   const serverScript = mode === "watch" ? "dev:watch" : "dev";
   child = spawn(
     pnpmBin,
-    ["--filter", "@paperclipai/server", serverScript, ...forwardedArgs],
+    ["--filter", "@odysseus/server", serverScript, ...forwardedArgs],
     { stdio: "inherit", env, shell: process.platform === "win32" },
   );
 

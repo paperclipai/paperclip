@@ -1,13 +1,13 @@
 import { useMemo, useState, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useQueryClient } from "@tanstack/react-query";
-import type { AdapterConfigSchema, CreateConfigValues } from "@paperclipai/adapter-utils";
-import { parseAcpxStdoutLine } from "@paperclipai/adapter-acpx-local/ui";
+import type { AdapterConfigSchema, CreateConfigValues } from "@odysseus/adapter-utils";
+import { parseAcpxStdoutLine } from "@odysseus/adapter-acpx-local/ui";
 import type {
   Agent,
   AgentSkillSnapshot,
   CompanySkillListItem,
-} from "@paperclipai/shared";
+} from "@odysseus/shared";
 import { SchemaConfigFields } from "@/adapters/schema-config-fields";
 import type { TranscriptEntry } from "@/adapters";
 import { RunTranscriptView } from "@/components/transcript/RunTranscriptView";
@@ -17,7 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { queryKeys } from "@/lib/queryKeys";
 
 type SchemaWindow = typeof window & {
-  __paperclipStorybookAdapterSchemas?: Record<string, unknown>;
+  __odysseusStorybookAdapterSchemas?: Record<string, unknown>;
 };
 
 // Mirrors packages/adapters/acpx-local/src/server/config-schema.ts. Inlined so the
@@ -52,19 +52,19 @@ const acpxLocalConfigSchema: AdapterConfigSchema = {
         { value: "deny", label: "Deny" },
         { value: "fail", label: "Fail" },
       ],
-      hint: "Fallback if the ACP agent asks for input outside an interactive session. Paperclip still auto-approves permissions by default.",
+      hint: "Fallback if the ACP agent asks for input outside an interactive session. Odysseus still auto-approves permissions by default.",
     },
     {
       key: "cwd",
       label: "Working directory",
       type: "text",
-      hint: "Absolute fallback directory. Paperclip execution workspaces can override this at runtime.",
+      hint: "Absolute fallback directory. Odysseus execution workspaces can override this at runtime.",
     },
     {
       key: "stateDir",
       label: "State directory",
       type: "text",
-      hint: "Optional ACPX session state directory. Defaults to Paperclip-managed company/agent scoped storage.",
+      hint: "Optional ACPX session state directory. Defaults to Odysseus-managed company/agent scoped storage.",
     },
     {
       key: "fastMode",
@@ -94,8 +94,8 @@ const acpxLocalConfigSchema: AdapterConfigSchema = {
 function installAcpxSchemaMock(): void {
   if (typeof window === "undefined") return;
   const win = window as SchemaWindow;
-  win.__paperclipStorybookAdapterSchemas = {
-    ...(win.__paperclipStorybookAdapterSchemas ?? {}),
+  win.__odysseusStorybookAdapterSchemas = {
+    ...(win.__odysseusStorybookAdapterSchemas ?? {}),
     acpx_local: acpxLocalConfigSchema,
   };
 }
@@ -426,15 +426,15 @@ const SKILLS_COMPANY_ID = "company-storybook";
 
 const acpxSkillsCompanyLibrary: CompanySkillListItem[] = [
   {
-    id: "skill-paperclip",
+    id: "skill-odysseus",
     companyId: SKILLS_COMPANY_ID,
-    key: "paperclip",
-    slug: "paperclip",
-    name: "Paperclip",
+    key: "odysseus",
+    slug: "odysseus",
+    name: "Odysseus",
     description:
-      "Coordination skill: heartbeats, checkout, comments, and routine API patterns for Paperclip agents.",
+      "Coordination skill: heartbeats, checkout, comments, and routine API patterns for Odysseus agents.",
     sourceType: "local_path",
-    sourceLocator: "skills/paperclip",
+    sourceLocator: "skills/odysseus",
     sourceRef: null,
     trustLevel: "scripts_executables",
     compatibility: "compatible",
@@ -443,10 +443,10 @@ const acpxSkillsCompanyLibrary: CompanySkillListItem[] = [
     updatedAt: new Date("2026-04-22T15:30:00.000Z"),
     attachedAgentCount: 4,
     editable: false,
-    editableReason: "Required by Paperclip",
-    sourceLabel: "Paperclip",
-    sourceBadge: "paperclip",
-    sourcePath: "skills/paperclip",
+    editableReason: "Required by Odysseus",
+    sourceLabel: "Odysseus",
+    sourceBadge: "odysseus",
+    sourcePath: "skills/odysseus",
   },
   {
     id: "skill-design-guide",
@@ -455,7 +455,7 @@ const acpxSkillsCompanyLibrary: CompanySkillListItem[] = [
     slug: "design-guide",
     name: "Design guide",
     description:
-      "Paperclip UI design system reference: tokens, typography, status colors, and reusable component patterns.",
+      "Odysseus UI design system reference: tokens, typography, status colors, and reusable component patterns.",
     sourceType: "local_path",
     sourceLocator: "skills/design-guide",
     sourceRef: null,
@@ -521,7 +521,7 @@ function buildAcpxAgent({
       agent: acpAgent,
       mode: "persistent",
       permissionMode: "approve-all",
-      paperclipSkillSync: {
+      odysseusSkillSync: {
         desiredSkills,
       },
     },
@@ -543,21 +543,21 @@ function buildAcpxClaudeSnapshot(): AgentSkillSnapshot {
     adapterType: "acpx_local",
     supported: true,
     mode: "ephemeral",
-    desiredSkills: ["paperclip", "design-guide"],
+    desiredSkills: ["odysseus", "design-guide"],
     warnings: [],
     entries: [
       {
-        key: "paperclip",
-        runtimeName: "paperclip",
+        key: "odysseus",
+        runtimeName: "odysseus",
         desired: true,
         managed: true,
         required: true,
-        requiredReason: "Paperclip coordination skill is mandatory for control-plane agents.",
+        requiredReason: "Odysseus coordination skill is mandatory for control-plane agents.",
         state: "configured",
         origin: "paperclip_required",
-        originLabel: "Required by Paperclip",
+        originLabel: "Required by Odysseus",
         readOnly: false,
-        sourcePath: "skills/paperclip",
+        sourcePath: "skills/odysseus",
         targetPath: null,
         detail: "Will be mounted into the next ACPX Claude session.",
       },
@@ -569,7 +569,7 @@ function buildAcpxClaudeSnapshot(): AgentSkillSnapshot {
         required: false,
         state: "configured",
         origin: "company_managed",
-        originLabel: "Managed by Paperclip",
+        originLabel: "Managed by Odysseus",
         readOnly: false,
         sourcePath: "skills/design-guide",
         targetPath: null,
@@ -583,7 +583,7 @@ function buildAcpxClaudeSnapshot(): AgentSkillSnapshot {
         required: false,
         state: "available",
         origin: "company_managed",
-        originLabel: "Managed by Paperclip",
+        originLabel: "Managed by Odysseus",
         readOnly: false,
         sourcePath: "skills/mobile-app-qa",
         targetPath: null,
@@ -598,21 +598,21 @@ function buildAcpxCodexSnapshot(): AgentSkillSnapshot {
     adapterType: "acpx_local",
     supported: true,
     mode: "ephemeral",
-    desiredSkills: ["paperclip"],
+    desiredSkills: ["odysseus"],
     warnings: [],
     entries: [
       {
-        key: "paperclip",
-        runtimeName: "paperclip",
+        key: "odysseus",
+        runtimeName: "odysseus",
         desired: true,
         managed: true,
         required: true,
-        requiredReason: "Paperclip coordination skill is mandatory for control-plane agents.",
+        requiredReason: "Odysseus coordination skill is mandatory for control-plane agents.",
         state: "configured",
         origin: "paperclip_required",
-        originLabel: "Required by Paperclip",
+        originLabel: "Required by Odysseus",
         readOnly: false,
-        sourcePath: "skills/paperclip",
+        sourcePath: "skills/odysseus",
         targetPath: null,
         detail: "Will be linked into the effective CODEX_HOME/skills/ directory for the next ACPX Codex session.",
       },
@@ -624,7 +624,7 @@ function buildAcpxCodexSnapshot(): AgentSkillSnapshot {
         required: false,
         state: "available",
         origin: "company_managed",
-        originLabel: "Managed by Paperclip",
+        originLabel: "Managed by Odysseus",
         readOnly: false,
         sourcePath: "skills/design-guide",
         targetPath: null,
@@ -638,7 +638,7 @@ function buildAcpxCodexSnapshot(): AgentSkillSnapshot {
         required: false,
         state: "available",
         origin: "company_managed",
-        originLabel: "Managed by Paperclip",
+        originLabel: "Managed by Odysseus",
         readOnly: false,
         sourcePath: "skills/mobile-app-qa",
         targetPath: null,
@@ -655,21 +655,21 @@ function buildAcpxCustomSnapshot(): AgentSkillSnapshot {
     mode: "unsupported",
     desiredSkills: ["design-guide"],
     warnings: [
-      "Custom ACP commands do not expose a Paperclip skill integration contract yet; selected skills are tracked only.",
+      "Custom ACP commands do not expose a Odysseus skill integration contract yet; selected skills are tracked only.",
     ],
     entries: [
       {
-        key: "paperclip",
-        runtimeName: "paperclip",
+        key: "odysseus",
+        runtimeName: "odysseus",
         desired: false,
         managed: true,
         required: true,
-        requiredReason: "Paperclip coordination skill is mandatory for control-plane agents.",
+        requiredReason: "Odysseus coordination skill is mandatory for control-plane agents.",
         state: "available",
         origin: "paperclip_required",
-        originLabel: "Required by Paperclip",
+        originLabel: "Required by Odysseus",
         readOnly: false,
-        sourcePath: "skills/paperclip",
+        sourcePath: "skills/odysseus",
         targetPath: null,
         detail: null,
       },
@@ -681,12 +681,12 @@ function buildAcpxCustomSnapshot(): AgentSkillSnapshot {
         required: false,
         state: "configured",
         origin: "company_managed",
-        originLabel: "Managed by Paperclip",
+        originLabel: "Managed by Odysseus",
         readOnly: false,
         sourcePath: "skills/design-guide",
         targetPath: null,
         detail:
-          "Desired state is stored in Paperclip only; custom ACP commands need an explicit skill integration contract before runtime sync is available.",
+          "Desired state is stored in Odysseus only; custom ACP commands need an explicit skill integration contract before runtime sync is available.",
       },
       {
         key: "mobile-app-qa",
@@ -696,7 +696,7 @@ function buildAcpxCustomSnapshot(): AgentSkillSnapshot {
         required: false,
         state: "available",
         origin: "company_managed",
-        originLabel: "Managed by Paperclip",
+        originLabel: "Managed by Odysseus",
         readOnly: false,
         sourcePath: "skills/mobile-app-qa",
         targetPath: null,
@@ -754,12 +754,12 @@ function AcpxClaudeSkillsStory() {
   const agent = buildAcpxAgent({
     agentId: "agent-acpx-claude",
     acpAgent: "claude",
-    desiredSkills: ["paperclip", "design-guide"],
+    desiredSkills: ["odysseus", "design-guide"],
   });
   return (
     <StoryFrame
       title="ACPX Claude — Skills tab"
-      subtitle="Runtime-synced state. Selected skills are mounted into the next ACPX Claude session via the Paperclip skills directory."
+      subtitle="Runtime-synced state. Selected skills are mounted into the next ACPX Claude session via the Odysseus skills directory."
     >
       <AcpxSkillsState agent={agent} snapshot={buildAcpxClaudeSnapshot()} library={acpxSkillsCompanyLibrary} />
     </StoryFrame>
@@ -770,7 +770,7 @@ function AcpxCodexSkillsStory() {
   const agent = buildAcpxAgent({
     agentId: "agent-acpx-codex",
     acpAgent: "codex",
-    desiredSkills: ["paperclip"],
+    desiredSkills: ["odysseus"],
   });
   return (
     <StoryFrame
@@ -791,7 +791,7 @@ function AcpxCustomSkillsStory() {
   return (
     <StoryFrame
       title="ACPX custom — Skills tab"
-      subtitle="Unsupported runtime sync. Desired skills are tracked in Paperclip only until a custom ACP command declares a skill integration contract."
+      subtitle="Unsupported runtime sync. Desired skills are tracked in Odysseus only until a custom ACP command declares a skill integration contract."
     >
       <AcpxSkillsState agent={agent} snapshot={buildAcpxCustomSnapshot()} library={acpxSkillsCompanyLibrary} />
     </StoryFrame>

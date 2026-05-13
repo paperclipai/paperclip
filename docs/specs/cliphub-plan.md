@@ -113,7 +113,7 @@ interface Listing {
   // Compatibility
   compatibleAdapters: string[];    // ['claude_local', 'codex_local', ...]
   requiredModels: string[];        // ['claude-opus-4-6', 'claude-sonnet-4-6']
-  paperclipVersionMin: string;     // Minimum Paperclip version
+  odysseusVersionMin: string;     // Minimum Paperclip version
 
   // Social proof
   installCount: number;
@@ -423,7 +423,7 @@ The install handler:
 1. Validates buyer owns the purchase
 2. Validates target company access
 3. For each agent in blueprint:
-   - `POST /api/companies/:id/agents` (if `paperclip-create-agent` supports it, or via approval flow)
+   - `POST /api/companies/:id/agents` (if `odysseus-create-agent` supports it, or via approval flow)
    - Sets adapter config, prompt template, instructions path
 4. Sets reporting chains
 5. Creates projects and workspaces

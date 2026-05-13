@@ -1,4 +1,4 @@
-import type { SidebarOrderPreference, UpsertSidebarOrderPreference } from "@paperclipai/shared";
+import type { SidebarOrderPreference, UpsertSidebarOrderPreference } from "@odysseus/shared";
 import { api } from "./client";
 
 export const sidebarPreferencesApi = {

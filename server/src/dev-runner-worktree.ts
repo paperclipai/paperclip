@@ -52,7 +52,7 @@ export function isLinkedGitWorktreeCheckout(rootDir: string): boolean {
 }
 
 export function resolveWorktreeEnvFilePath(rootDir: string): string {
-  return path.resolve(rootDir, ".paperclip", ".env");
+  return path.resolve(rootDir, ".odysseus", ".env");
 }
 
 export function bootstrapDevRunnerWorktreeEnv(

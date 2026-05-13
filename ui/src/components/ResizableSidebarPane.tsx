@@ -55,7 +55,7 @@ export function ResizableSidebarPane({
   children,
   open,
   resizable = false,
-  storageKey = "paperclip.sidebar.width",
+  storageKey = "odysseus.sidebar.width",
   className,
 }: ResizableSidebarPaneProps) {
   const [width, setWidth] = useState(() => readStoredSidebarWidth(storageKey));

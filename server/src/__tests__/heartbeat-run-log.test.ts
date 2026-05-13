@@ -18,7 +18,7 @@ describe("compactRunLogChunk", () => {
     const compacted = compactRunLogChunk(chunk, 16_384);
 
     expect(compacted.length).toBeLessThan(chunk.length);
-    expect(compacted).toContain("[paperclip truncated run log chunk:");
+    expect(compacted).toContain("[odysseus truncated run log chunk:");
     expect(compacted.endsWith("tail")).toBe(true);
   });
 });

@@ -1,6 +1,6 @@
 import { createHash, createHmac } from "node:crypto";
 import { S3Client } from "@aws-sdk/client-s3";
-import type { DeploymentMode } from "@paperclipai/shared";
+import type { DeploymentMode } from "@odysseus/shared";
 import { unprocessable } from "../errors.js";
 import type {
   PreparedSecretVersion,
@@ -16,18 +16,18 @@ import type {
 import { SecretProviderClientError } from "./types.js";
 
 const AWS_SECRETS_MANAGER_SCHEME = "aws_secrets_manager_v1";
-const DEFAULT_PREFIX = "paperclip";
-const DEFAULT_OWNER_TAG = "paperclip";
+const DEFAULT_PREFIX = "odysseus";
+const DEFAULT_OWNER_TAG = "odysseus";
 const DEFAULT_VERSION_STAGE = "AWSCURRENT";
-const PAPERCLIP_PENDING_VERSION_STAGE = "PAPERCLIP_PENDING";
+const ODYSSEUS_PENDING_VERSION_STAGE = "ODYSSEUS_PENDING";
 const DEFAULT_DELETE_RECOVERY_WINDOW_DAYS = 30;
 const AWS_SECRETS_MANAGER_REQUEST_TIMEOUT_MS = 30_000;
 const AWS_CREDENTIAL_CACHE_TTL_MS = 5 * 60_000;
 const AWS_CREDENTIAL_EXPIRATION_SKEW_MS = 60_000;
 const AWS_RUNTIME_CREDENTIAL_WARNING =
-  "AWS bootstrap credentials must be available to the Paperclip server runtime through the AWS SDK default credential provider chain: IAM role/workload identity, AWS_PROFILE/SSO/shared credentials, web identity, container/instance metadata, or short-lived shell credentials.";
+  "AWS bootstrap credentials must be available to the Odysseus server runtime through the AWS SDK default credential provider chain: IAM role/workload identity, AWS_PROFILE/SSO/shared credentials, web identity, container/instance metadata, or short-lived shell credentials.";
 const AWS_CREDENTIAL_CUSTODY_WARNING =
-  "Do not store AWS root credentials or long-lived IAM user access keys in Paperclip company_secrets; the AWS provider bootstrap belongs in deployment infrastructure, the process environment, an AWS profile, or the orchestrator secret store.";
+  "Do not store AWS root credentials or long-lived IAM user access keys in Odysseus company_secrets; the AWS provider bootstrap belongs in deployment infrastructure, the process environment, an AWS profile, or the orchestrator secret store.";
 
 interface AwsSecretsManagerMaterial extends StoredSecretVersionMaterial {
   scheme: typeof AWS_SECRETS_MANAGER_SCHEME;
@@ -288,18 +288,18 @@ function readProviderVaultConfig(input: SecretProviderVaultRuntimeConfig): AwsSe
   if (!region) {
     throw unprocessable("AWS Secrets Manager provider vault requires non-secret config: region");
   }
-  const recoveryWindowRaw = process.env.PAPERCLIP_SECRETS_AWS_DELETE_RECOVERY_DAYS?.trim();
+  const recoveryWindowRaw = process.env.ODYSSEUS_SECRETS_AWS_DELETE_RECOVERY_DAYS?.trim();
   const recoveryWindow = recoveryWindowRaw ? Number(recoveryWindowRaw) : DEFAULT_DELETE_RECOVERY_WINDOW_DAYS;
   if (!Number.isFinite(recoveryWindow) || recoveryWindow < 7 || recoveryWindow > 30) {
     throw unprocessable(
-      "PAPERCLIP_SECRETS_AWS_DELETE_RECOVERY_DAYS must be an integer between 7 and 30",
+      "ODYSSEUS_SECRETS_AWS_DELETE_RECOVERY_DAYS must be an integer between 7 and 30",
     );
   }
 
   return {
     region,
     endpoint:
-      process.env.PAPERCLIP_SECRETS_AWS_ENDPOINT?.trim() ||
+      process.env.ODYSSEUS_SECRETS_AWS_ENDPOINT?.trim() ||
       `https://secretsmanager.${region}.amazonaws.com`,
     deploymentId: sanitizePathSegment(
       asOptionalNonEmptyString(input.config.namespace) ?? input.id,
@@ -320,22 +320,22 @@ function readProviderVaultConfig(input: SecretProviderVaultRuntimeConfig): AwsSe
 
 function getAwsConfigReadiness() {
   const region = (
-    process.env.PAPERCLIP_SECRETS_AWS_REGION ??
+    process.env.ODYSSEUS_SECRETS_AWS_REGION ??
     process.env.AWS_REGION ??
     process.env.AWS_DEFAULT_REGION
   )?.trim();
-  const deploymentId = process.env.PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID?.trim();
-  const kmsKeyId = process.env.PAPERCLIP_SECRETS_AWS_KMS_KEY_ID?.trim();
+  const deploymentId = process.env.ODYSSEUS_SECRETS_AWS_DEPLOYMENT_ID?.trim();
+  const kmsKeyId = process.env.ODYSSEUS_SECRETS_AWS_KMS_KEY_ID?.trim();
   const missingConfig: string[] = [];
 
   if (!region) {
-    missingConfig.push("PAPERCLIP_SECRETS_AWS_REGION or AWS_REGION/AWS_DEFAULT_REGION");
+    missingConfig.push("ODYSSEUS_SECRETS_AWS_REGION or AWS_REGION/AWS_DEFAULT_REGION");
   }
   if (!deploymentId) {
-    missingConfig.push("PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID");
+    missingConfig.push("ODYSSEUS_SECRETS_AWS_DEPLOYMENT_ID");
   }
   if (!kmsKeyId) {
-    missingConfig.push("PAPERCLIP_SECRETS_AWS_KMS_KEY_ID");
+    missingConfig.push("ODYSSEUS_SECRETS_AWS_KMS_KEY_ID");
   }
 
   return {
@@ -371,11 +371,11 @@ function describeDetectedAwsCredentialSources() {
 function loadAwsSecretsManagerConfig(): AwsSecretsManagerConfig {
   const readiness = getAwsConfigReadiness();
   const region =
-    process.env.PAPERCLIP_SECRETS_AWS_REGION?.trim() ||
+    process.env.ODYSSEUS_SECRETS_AWS_REGION?.trim() ||
     process.env.AWS_REGION?.trim() ||
     process.env.AWS_DEFAULT_REGION?.trim();
-  const deploymentId = process.env.PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID?.trim();
-  const kmsKeyId = process.env.PAPERCLIP_SECRETS_AWS_KMS_KEY_ID?.trim();
+  const deploymentId = process.env.ODYSSEUS_SECRETS_AWS_DEPLOYMENT_ID?.trim();
+  const kmsKeyId = process.env.ODYSSEUS_SECRETS_AWS_KMS_KEY_ID?.trim();
 
   if (readiness.missingConfig.length > 0) {
     throw unprocessable(
@@ -384,42 +384,42 @@ function loadAwsSecretsManagerConfig(): AwsSecretsManagerConfig {
   }
   if (!region) {
     throw unprocessable(
-      "AWS Secrets Manager provider requires PAPERCLIP_SECRETS_AWS_REGION or AWS_REGION",
+      "AWS Secrets Manager provider requires ODYSSEUS_SECRETS_AWS_REGION or AWS_REGION",
     );
   }
   if (!deploymentId) {
     throw unprocessable(
-      "AWS Secrets Manager provider requires PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID",
+      "AWS Secrets Manager provider requires ODYSSEUS_SECRETS_AWS_DEPLOYMENT_ID",
     );
   }
   if (!kmsKeyId) {
     throw unprocessable(
-      "AWS Secrets Manager provider requires PAPERCLIP_SECRETS_AWS_KMS_KEY_ID",
+      "AWS Secrets Manager provider requires ODYSSEUS_SECRETS_AWS_KMS_KEY_ID",
     );
   }
 
-  const recoveryWindowRaw = process.env.PAPERCLIP_SECRETS_AWS_DELETE_RECOVERY_DAYS?.trim();
+  const recoveryWindowRaw = process.env.ODYSSEUS_SECRETS_AWS_DELETE_RECOVERY_DAYS?.trim();
   const recoveryWindow = recoveryWindowRaw ? Number(recoveryWindowRaw) : DEFAULT_DELETE_RECOVERY_WINDOW_DAYS;
   if (!Number.isFinite(recoveryWindow) || recoveryWindow < 7 || recoveryWindow > 30) {
     throw unprocessable(
-      "PAPERCLIP_SECRETS_AWS_DELETE_RECOVERY_DAYS must be an integer between 7 and 30",
+      "ODYSSEUS_SECRETS_AWS_DELETE_RECOVERY_DAYS must be an integer between 7 and 30",
     );
   }
 
   return {
     region,
     endpoint:
-      process.env.PAPERCLIP_SECRETS_AWS_ENDPOINT?.trim() ||
+      process.env.ODYSSEUS_SECRETS_AWS_ENDPOINT?.trim() ||
       `https://secretsmanager.${region}.amazonaws.com`,
     deploymentId,
-    prefix: sanitizePathSegment(process.env.PAPERCLIP_SECRETS_AWS_PREFIX?.trim() || DEFAULT_PREFIX),
+    prefix: sanitizePathSegment(process.env.ODYSSEUS_SECRETS_AWS_PREFIX?.trim() || DEFAULT_PREFIX),
     kmsKeyId,
     environmentTag:
-      process.env.PAPERCLIP_SECRETS_AWS_ENVIRONMENT?.trim() ||
+      process.env.ODYSSEUS_SECRETS_AWS_ENVIRONMENT?.trim() ||
       process.env.NODE_ENV?.trim() ||
       "unknown",
     providerOwnerTag:
-      process.env.PAPERCLIP_SECRETS_AWS_PROVIDER_OWNER?.trim() || DEFAULT_OWNER_TAG,
+      process.env.ODYSSEUS_SECRETS_AWS_PROVIDER_OWNER?.trim() || DEFAULT_OWNER_TAG,
     deleteRecoveryWindowDays: recoveryWindow,
   };
 }
@@ -499,7 +499,7 @@ function assertNotManagedNamespaceExternalRef(
 ) {
   if (!isManagedSecretNamespaceRef(config, externalRef)) return;
   throw unprocessable(
-    "AWS Paperclip-managed namespace secrets cannot be imported as external references",
+    "AWS Odysseus-managed namespace secrets cannot be imported as external references",
   );
 }
 
@@ -531,12 +531,12 @@ function buildManagedSecretTags(
 ): AwsSecretsManagerTag[] {
   if (!context) return [];
   return [
-    { Key: "paperclip:managed-by", Value: "paperclip" },
-    { Key: "paperclip:provider-owner", Value: config.providerOwnerTag },
-    { Key: "paperclip:deployment-id", Value: config.deploymentId },
-    { Key: "paperclip:company-id", Value: context.companyId },
-    { Key: "paperclip:secret-key", Value: context.secretKey },
-    { Key: "paperclip:environment", Value: config.environmentTag },
+    { Key: "odysseus:managed-by", Value: "odysseus" },
+    { Key: "odysseus:provider-owner", Value: config.providerOwnerTag },
+    { Key: "odysseus:deployment-id", Value: config.deploymentId },
+    { Key: "odysseus:company-id", Value: context.companyId },
+    { Key: "odysseus:secret-key", Value: context.secretKey },
+    { Key: "odysseus:environment", Value: config.environmentTag },
   ];
 }
 
@@ -791,7 +791,7 @@ export function createAwsSecretsManagerProvider(
     }
     const config = resolveConfig(input?.providerConfig);
     if (!config.prefix) {
-      warnings.push("PAPERCLIP_SECRETS_AWS_PREFIX should be set to a deployment-scoped prefix");
+      warnings.push("ODYSSEUS_SECRETS_AWS_PREFIX should be set to a deployment-scoped prefix");
     }
     return { ok: true, warnings };
   }
@@ -831,8 +831,8 @@ export function createAwsSecretsManagerProvider(
           detectedCredentialSources: readiness.credentialSources,
         },
         backupGuidance: [
-          "Back up Paperclip metadata separately from AWS-managed secrets.",
-          "Restoring access requires the Paperclip database plus the same AWS secret namespace and KMS permissions.",
+          "Back up Odysseus metadata separately from AWS-managed secrets.",
+          "Restoring access requires the Odysseus database plus the same AWS secret namespace and KMS permissions.",
         ],
       };
     } catch (error) {
@@ -863,16 +863,16 @@ export function createAwsSecretsManagerProvider(
           requiredProviderConfig: input?.providerConfig
             ? ["region"]
             : [
-                "PAPERCLIP_SECRETS_AWS_REGION or AWS_REGION/AWS_DEFAULT_REGION",
-                "PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID",
-                "PAPERCLIP_SECRETS_AWS_KMS_KEY_ID",
+                "ODYSSEUS_SECRETS_AWS_REGION or AWS_REGION/AWS_DEFAULT_REGION",
+                "ODYSSEUS_SECRETS_AWS_DEPLOYMENT_ID",
+                "ODYSSEUS_SECRETS_AWS_KMS_KEY_ID",
               ],
           optionalProviderConfig: [
-            "PAPERCLIP_SECRETS_AWS_PREFIX",
-            "PAPERCLIP_SECRETS_AWS_ENVIRONMENT",
-            "PAPERCLIP_SECRETS_AWS_PROVIDER_OWNER",
-            "PAPERCLIP_SECRETS_AWS_ENDPOINT",
-            "PAPERCLIP_SECRETS_AWS_DELETE_RECOVERY_DAYS",
+            "ODYSSEUS_SECRETS_AWS_PREFIX",
+            "ODYSSEUS_SECRETS_AWS_ENVIRONMENT",
+            "ODYSSEUS_SECRETS_AWS_PROVIDER_OWNER",
+            "ODYSSEUS_SECRETS_AWS_ENDPOINT",
+            "ODYSSEUS_SECRETS_AWS_DELETE_RECOVERY_DAYS",
           ],
           credentialSource: "AWS SDK default credential provider chain",
           detectedCredentialSources: readiness.credentialSources,
@@ -898,7 +898,7 @@ export function createAwsSecretsManagerProvider(
           Name: secretId,
           SecretString: input.value,
           ...(config.kmsKeyId ? { KmsKeyId: config.kmsKeyId } : {}),
-          Description: input.context ? `Paperclip secret ${input.context.secretName}` : undefined,
+          Description: input.context ? `Odysseus secret ${input.context.secretName}` : undefined,
           Tags: buildManagedSecretTags(config, input.context),
         };
         const created = await gateway.createSecret({
@@ -930,7 +930,7 @@ export function createAwsSecretsManagerProvider(
         const created = await gateway.putSecretValue({
           SecretId: secretId,
           SecretString: input.value,
-          VersionStages: [PAPERCLIP_PENDING_VERSION_STAGE],
+          VersionStages: [ODYSSEUS_PENDING_VERSION_STAGE],
         });
         const normalizedSecretId = created.ARN ?? created.Name ?? secretId;
         return {
@@ -1032,7 +1032,7 @@ export function createAwsSecretsManagerProvider(
           if (material.versionId && gateway.updateSecretVersionStage) {
             await gateway.updateSecretVersionStage({
               SecretId: secretId,
-              VersionStage: PAPERCLIP_PENDING_VERSION_STAGE,
+              VersionStage: ODYSSEUS_PENDING_VERSION_STAGE,
               RemoveFromVersionId: material.versionId,
             });
           }

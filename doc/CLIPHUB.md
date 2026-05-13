@@ -85,7 +85,7 @@ Two ways to use a template:
 
 **Install (fresh start):**
 ```
-paperclip install cliphub:<publisher>/<company-slug>
+odysseus install cliphub:<publisher>/<company-slug>
 ```
 Downloads the template and creates a new company in your local Paperclip instance. You add your own API keys, set budgets, customize agents, and hit go.
 
@@ -121,8 +121,8 @@ Anyone with a GitHub account can publish to ClipHub. Authentication is via GitHu
 From within Paperclip, export your company as a template, then publish:
 
 ```
-paperclip export --template my-company
-paperclip publish cliphub my-company
+odysseus export --template my-company
+odysseus publish cliphub my-company
 ```
 
 Or use the web UI to upload a template export directly.
@@ -152,7 +152,7 @@ Templates use semantic versioning. Each publish creates an immutable version. Us
 For power users who maintain multiple templates:
 
 ```
-paperclip cliphub sync
+odysseus cliphub sync
 ```
 
 Scans your local exported templates and publishes any that are new or updated. Useful for maintaining a portfolio of company templates from a single repo.
@@ -209,7 +209,7 @@ ClipHub is a **separate service** from Paperclip itself. Paperclip is self-hoste
 |---|---|
 | **ClipHub Web** | Browse, search, discover, comment, star — the website |
 | **ClipHub API** | Registry API for publishing, downloading, searching programmatically |
-| **Paperclip CLI** | `paperclipai install`, `paperclipai publish`, `paperclipai cliphub sync` — built into Paperclip |
+| **Paperclip CLI** | `odysseus install`, `odysseus publish`, `odysseus cliphub sync` — built into Paperclip |
 | **Paperclip UI** | "Browse ClipHub" panel in the Paperclip web UI for discovering templates without leaving the app |
 
 ### Tech Stack
@@ -260,7 +260,7 @@ Report
 1. Open ClipHub, browse by category or search "dev shop for building SaaS"
 2. Find a template that fits — "Lean SaaS Dev Shop (CEO + CTO + 3 Engineers)"
 3. Read the description, inspect the org chart, check the comments
-4. Run `paperclipai install cliphub:acme/lean-saas-shop`
+4. Run `odysseus install cliphub:acme/lean-saas-shop`
 5. Paperclip creates the company locally with all agents pre-configured
 6. Set your API keys, adjust budgets, add your initial tasks
 7. Hit go
@@ -268,8 +268,8 @@ Report
 ### "I built something great and want to share it"
 
 1. Build and iterate on a company in Paperclip until it works well
-2. Export: `paperclipai export --template my-agency`
-3. Publish: `paperclipai publish cliphub my-agency`
+2. Export: `odysseus export --template my-agency`
+3. Publish: `odysseus publish cliphub my-agency`
 4. Fill in description, category, tags on the web UI
 5. Template is live — others can find and install it
 
@@ -285,7 +285,7 @@ Report
 
 1. Search ClipHub for agent templates: "senior python engineer"
 2. Find a well-starred agent config
-3. Install just that agent: `paperclipai install cliphub:acme/senior-python-eng --agent`
+3. Install just that agent: `odysseus install cliphub:acme/senior-python-eng --agent`
 4. Assign it to a manager in your existing company
 5. Done
 
@@ -311,7 +311,7 @@ ClipHub is to Paperclip what a package registry is to a language runtime: option
 - [ ] Template browsing (list, filter by category)
 - [ ] Template detail page (description, org chart, agent list, install command)
 - [ ] Semantic search (vector embeddings)
-- [ ] `paperclipai install cliphub:<publisher>/<slug>` CLI command
+- [ ] `odysseus install cliphub:<publisher>/<slug>` CLI command
 - [ ] GitHub OAuth authentication
 - [ ] Stars
 - [ ] Download counts
@@ -326,7 +326,7 @@ ClipHub is to Paperclip what a package registry is to a language runtime: option
 - [ ] Verified publisher badges
 - [ ] Automated security scanning of adapter configs
 - [ ] "Browse ClipHub" panel in Paperclip web UI
-- [ ] `paperclipai cliphub sync` for bulk publishing
+- [ ] `odysseus cliphub sync` for bulk publishing
 - [ ] Publisher profiles and portfolios
 
 ### Not in Scope

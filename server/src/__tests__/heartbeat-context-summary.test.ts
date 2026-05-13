@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildPaperclipTaskMarkdown,
+  buildOdysseusTaskMarkdown,
   mergeCoalescedContextSnapshot,
   summarizeHeartbeatRunContextSnapshot,
   summarizeHeartbeatRunListResultJson,
 } from "../services/heartbeat.js";
 
-describe("buildPaperclipTaskMarkdown", () => {
+describe("buildOdysseusTaskMarkdown", () => {
   it("adds planning directives for assignment and comment task context", () => {
-    const assignment = buildPaperclipTaskMarkdown({
+    const assignment = buildOdysseusTaskMarkdown({
       issue: {
         id: "issue-1",
         identifier: "PAP-3404",
@@ -21,7 +21,7 @@ describe("buildPaperclipTaskMarkdown", () => {
     expect(assignment).toContain("- Work mode: \"planning\"");
     expect(assignment).toContain("Make the plan only. Do not write code or perform implementation work.");
 
-    const commentWake = buildPaperclipTaskMarkdown({
+    const commentWake = buildOdysseusTaskMarkdown({
       issue: {
         id: "issue-1",
         identifier: "PAP-3404",
@@ -37,7 +37,7 @@ describe("buildPaperclipTaskMarkdown", () => {
 
     expect(commentWake).toContain("Update the plan only. Do not write code or perform implementation work.");
 
-    const acceptedConfirmation = buildPaperclipTaskMarkdown({
+    const acceptedConfirmation = buildOdysseusTaskMarkdown({
       issue: {
         id: "issue-1",
         identifier: "PAP-3404",
@@ -56,7 +56,7 @@ describe("buildPaperclipTaskMarkdown", () => {
   });
 
   it("prefers ordinary comment planning guidance over stale accepted confirmation state", () => {
-    const commentWake = buildPaperclipTaskMarkdown({
+    const commentWake = buildOdysseusTaskMarkdown({
       issue: {
         id: "issue-1",
         identifier: "PAP-3404",
@@ -139,7 +139,7 @@ describe("summarizeHeartbeatRunContextSnapshot", () => {
       wakeReason: "retry_failed_run",
       wakeSource: "on_demand",
       wakeTriggerDetail: "manual",
-      paperclipWake: {
+      odysseusWake: {
         comments: [
           {
             body: "x".repeat(50_000),
@@ -166,7 +166,7 @@ describe("summarizeHeartbeatRunContextSnapshot", () => {
   it("returns null when no allowed fields are present", () => {
     expect(
       summarizeHeartbeatRunContextSnapshot({
-        paperclipWake: { comments: [{ body: "hello" }] },
+        odysseusWake: { comments: [{ body: "hello" }] },
       }),
     ).toBeNull();
   });

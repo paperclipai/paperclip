@@ -1,0 +1,50 @@
+{
+  "name": "@odysseus/create-odysseus-plugin",
+  "version": "0.1.0",
+  "license": "MIT",
+  "homepage": "https://github.com/PossibLaw/odysseus",
+  "bugs": {
+    "url": "https://github.com/PossibLaw/odysseus/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PossibLaw/odysseus",
+    "directory": "packages/plugins/create-odysseus-plugin"
+  },
+  "type": "module",
+  "bin": {
+    "create-odysseus-plugin": "./dist/index.js"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "bin": {
+      "create-odysseus-plugin": "./dist/index.js"
+    },
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    },
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@odysseus/plugin-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "typescript": "^5.7.3"
+  }
+}

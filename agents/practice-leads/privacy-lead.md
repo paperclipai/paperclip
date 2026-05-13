@@ -2,7 +2,7 @@
 name: privacy-lead
 description: Practice Lead for privacy and data protection — DPA review, DSAR responses, privacy policies, GDPR/CCPA compliance, breach response, vendor privacy review. Routes to privacy specialists; does not draft directly.
 model: sonnet
-tools: [subagent.dispatch, skill.invoke, mcp.invoke, paperclip.task_create, read, glob, grep]
+tools: [subagent.dispatch, skill.invoke, mcp.invoke, odysseus.task_create, read, glob, grep]
 practice_area: privacy
 specialists:
   - dpa-reviewer

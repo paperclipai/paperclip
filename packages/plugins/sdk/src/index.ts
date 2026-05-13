@@ -1,13 +1,13 @@
 /**
- * `@paperclipai/plugin-sdk` — Paperclip plugin worker-side SDK.
+ * `@odysseus/plugin-sdk` — Odysseus plugin worker-side SDK.
  *
  * This is the main entrypoint for plugin worker code.  For plugin UI bundles,
- * import from `@paperclipai/plugin-sdk/ui` instead.
+ * import from `@odysseus/plugin-sdk/ui` instead.
  *
  * @example
  * ```ts
  * // Plugin worker entrypoint (dist/worker.ts)
- * import { definePlugin, runWorker, z } from "@paperclipai/plugin-sdk";
+ * import { definePlugin, runWorker, z } from "@odysseus/plugin-sdk";
  *
  * const plugin = definePlugin({
  *   async setup(ctx) {
@@ -91,7 +91,7 @@ export {
 // Plugin definition and lifecycle types
 export type {
   PluginDefinition,
-  PaperclipPlugin,
+  OdysseusPlugin,
   PluginHealthDiagnostics,
   PluginConfigValidationResult,
   PluginWebhookInput,
@@ -254,11 +254,11 @@ export type {
   PluginDatabaseClient,
 } from "./types.js";
 
-// Manifest and constant types re-exported from @paperclipai/shared
+// Manifest and constant types re-exported from @odysseus/shared
 // Plugin authors import manifest types from here so they have a single
-// dependency (@paperclipai/plugin-sdk) for all plugin authoring needs.
+// dependency (@odysseus/plugin-sdk) for all plugin authoring needs.
 export type {
-  PaperclipPluginManifestV1,
+  OdysseusPluginManifestV1,
   PluginJobDeclaration,
   PluginWebhookDeclaration,
   PluginToolDeclaration,
@@ -330,7 +330,7 @@ export type {
  *
  * @example
  * ```ts
- * import { z } from "@paperclipai/plugin-sdk";
+ * import { z } from "@odysseus/plugin-sdk";
  *
  * const configSchema = z.object({
  *   apiKey: z.string().describe("Your API key"),
@@ -358,4 +358,4 @@ export {
   PLUGIN_WEBHOOK_DELIVERY_STATUSES,
   PLUGIN_EVENT_TYPES,
   PLUGIN_BRIDGE_ERROR_CODES,
-} from "@paperclipai/shared";
+} from "@odysseus/shared";

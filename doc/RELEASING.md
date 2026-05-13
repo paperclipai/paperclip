@@ -35,7 +35,7 @@ Important constraints:
 Every stable release has four separate surfaces:
 
 1. **Verification** — the exact git SHA passes typecheck, tests, and build
-2. **npm** — `paperclipai` and public workspace packages are published
+2. **npm** — `odysseus` and public workspace packages are published
 3. **GitHub** — the stable release gets a git tag and GitHub Release
 4. **Website / announcements** — the stable changelog is published externally and announced
 
@@ -70,16 +70,16 @@ It:
 Users install canaries with:
 
 ```bash
-npx paperclipai@canary onboard
+npx odysseus@canary onboard
 # or
-npx paperclipai@canary onboard --data-dir "$(mktemp -d /tmp/paperclip-canary.XXXXXX)"
+npx odysseus@canary onboard --data-dir "$(mktemp -d /tmp/odysseus-canary.XXXXXX)"
 ```
 
 ### Stable
 
 Use [`.github/workflows/release.yml`](../.github/workflows/release.yml) from the Actions tab with the manual `workflow_dispatch` inputs.
 
-[Run the action here](https://github.com/paperclipai/paperclip/actions/workflows/release.yml)
+[Run the action here](https://github.com/PossibLaw/odysseus/actions/workflows/release.yml)
 
 Inputs:
 
@@ -162,32 +162,32 @@ The repo intentionally does not run this through GitHub Actions because:
 For a canary:
 
 ```bash
-PAPERCLIPAI_VERSION=canary ./scripts/docker-onboard-smoke.sh
+ODYSSEUS_AI_VERSION=canary ./scripts/docker-onboard-smoke.sh
 ```
 
 For the current stable:
 
 ```bash
-PAPERCLIPAI_VERSION=latest ./scripts/docker-onboard-smoke.sh
+ODYSSEUS_AI_VERSION=latest ./scripts/docker-onboard-smoke.sh
 ```
 
 Useful isolated variants:
 
 ```bash
-HOST_PORT=3232 DATA_DIR=./data/release-smoke-canary PAPERCLIPAI_VERSION=canary ./scripts/docker-onboard-smoke.sh
-HOST_PORT=3233 DATA_DIR=./data/release-smoke-stable PAPERCLIPAI_VERSION=latest ./scripts/docker-onboard-smoke.sh
+HOST_PORT=3232 DATA_DIR=./data/release-smoke-canary ODYSSEUS_AI_VERSION=canary ./scripts/docker-onboard-smoke.sh
+HOST_PORT=3233 DATA_DIR=./data/release-smoke-stable ODYSSEUS_AI_VERSION=latest ./scripts/docker-onboard-smoke.sh
 ```
 
 Automated browser smoke is also available:
 
 ```bash
-gh workflow run release-smoke.yml -f paperclip_version=canary
-gh workflow run release-smoke.yml -f paperclip_version=latest
+gh workflow run release-smoke.yml -f odysseus_version=canary
+gh workflow run release-smoke.yml -f odysseus_version=latest
 ```
 
 Minimum checks:
 
-- `npx paperclipai@canary onboard` installs
+- `npx odysseus@canary onboard` installs
 - onboarding completes without crashes
 - authenticated login works with the smoke credentials
 - the browser lands in onboarding on a fresh instance

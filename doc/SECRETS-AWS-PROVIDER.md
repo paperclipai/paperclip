@@ -50,7 +50,7 @@ can create AWS-backed company secrets:
    and the configured KMS key.
 4. Configure the server runtime with the non-secret provider environment
    variables below.
-5. Run `paperclipai doctor` or the provider health endpoint from the deployed
+5. Run `odysseus doctor` or the provider health endpoint from the deployed
    runtime and confirm that the provider reports the expected region, prefix,
    deployment id, KMS setting, and AWS SDK credential source.
 
@@ -70,12 +70,12 @@ chain. Preferred sources are role-based:
 Local development can use:
 
 ```sh
-aws sso login --profile paperclip-dev
-AWS_PROFILE=paperclip-dev \
-PAPERCLIP_SECRETS_PROVIDER=aws_secrets_manager \
-PAPERCLIP_SECRETS_AWS_REGION=us-east-1 \
-PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID=dev-local \
-PAPERCLIP_SECRETS_AWS_KMS_KEY_ID=arn:aws:kms:us-east-1:123456789012:key/abcd-... \
+aws sso login --profile odysseus-dev
+AWS_PROFILE=odysseus-dev \
+ODYSSEUS_SECRETS_PROVIDER=aws_secrets_manager \
+ODYSSEUS_SECRETS_AWS_REGION=us-east-1 \
+ODYSSEUS_SECRETS_AWS_DEPLOYMENT_ID=dev-local \
+ODYSSEUS_SECRETS_AWS_KMS_KEY_ID=arn:aws:kms:us-east-1:123456789012:key/abcd-... \
 pnpm dev
 ```
 
@@ -89,36 +89,36 @@ should not be written to Paperclip config, committed to `.env` files, stored in
 Required environment variables:
 
 ```sh
-PAPERCLIP_SECRETS_PROVIDER=aws_secrets_manager
-PAPERCLIP_SECRETS_AWS_REGION=us-east-1
-PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID=prod-us-1
-PAPERCLIP_SECRETS_AWS_KMS_KEY_ID=arn:aws:kms:us-east-1:123456789012:key/abcd-...
+ODYSSEUS_SECRETS_PROVIDER=aws_secrets_manager
+ODYSSEUS_SECRETS_AWS_REGION=us-east-1
+ODYSSEUS_SECRETS_AWS_DEPLOYMENT_ID=prod-us-1
+ODYSSEUS_SECRETS_AWS_KMS_KEY_ID=arn:aws:kms:us-east-1:123456789012:key/abcd-...
 ```
 
 Optional environment variables:
 
 ```sh
-PAPERCLIP_SECRETS_AWS_PREFIX=paperclip
-PAPERCLIP_SECRETS_AWS_ENVIRONMENT=production
-PAPERCLIP_SECRETS_AWS_PROVIDER_OWNER=paperclip
-PAPERCLIP_SECRETS_AWS_ENDPOINT=
-PAPERCLIP_SECRETS_AWS_DELETE_RECOVERY_DAYS=30
+ODYSSEUS_SECRETS_AWS_PREFIX=odysseus
+ODYSSEUS_SECRETS_AWS_ENVIRONMENT=production
+ODYSSEUS_SECRETS_AWS_PROVIDER_OWNER=odysseus
+ODYSSEUS_SECRETS_AWS_ENDPOINT=
+ODYSSEUS_SECRETS_AWS_DELETE_RECOVERY_DAYS=30
 ```
 
 Naming convention for Paperclip-managed secrets:
 
 ```text
-paperclip/{deploymentId}/{companyId}/{secretKey}
+odysseus/{deploymentId}/{companyId}/{secretKey}
 ```
 
 Tag set for Paperclip-managed secrets:
 
-- `paperclip:managed-by=paperclip`
-- `paperclip:provider-owner=<owner tag>`
-- `paperclip:deployment-id=<deployment id>`
-- `paperclip:company-id=<company id>`
-- `paperclip:secret-key=<secret key>`
-- `paperclip:environment=<environment tag>`
+- `odysseus:managed-by=odysseus`
+- `odysseus:provider-owner=<owner tag>`
+- `odysseus:deployment-id=<deployment id>`
+- `odysseus:company-id=<company id>`
+- `odysseus:secret-key=<secret key>`
+- `odysseus:environment=<environment tag>`
 
 ## IAM And KMS Assumptions
 
@@ -134,7 +134,7 @@ Minimum IAM boundary:
 - Scope resources to the deployment prefix:
 
 ```text
-arn:aws:secretsmanager:<region>:<account-id>:secret:paperclip/<deployment-id>/*
+arn:aws:secretsmanager:<region>:<account-id>:secret:odysseus/<deployment-id>/*
 ```
 
 - Allow `kms:Encrypt`, `kms:Decrypt`, `kms:GenerateDataKey`, and `kms:DescribeKey` for the configured deployment CMK.
@@ -156,7 +156,7 @@ Example minimum policy shape:
         "secretsmanager:GetSecretValue",
         "secretsmanager:DeleteSecret"
       ],
-      "Resource": "arn:aws:secretsmanager:<region>:<account-id>:secret:paperclip/<deployment-id>/*"
+      "Resource": "arn:aws:secretsmanager:<region>:<account-id>:secret:odysseus/<deployment-id>/*"
     },
     {
       "Sid": "PaperclipDeploymentKms",
@@ -220,7 +220,7 @@ operator-approved external prefixes that Paperclip is allowed to consume:
 
 If selected external secrets use customer-managed KMS keys, also grant
 `kms:Decrypt` and `kms:DescribeKey` on those keys. Keep managed write/delete
-permissions scoped to `paperclip/<deployment-id>/*`; do not broaden them for
+permissions scoped to `odysseus/<deployment-id>/*`; do not broaden them for
 remote import.
 
 Safe scoping guidance:
@@ -234,7 +234,7 @@ Safe scoping guidance:
 
 Paperclip also blocks importing refs under its own managed namespace as
 external references. Use the Paperclip-managed flow for
-`paperclip/{deploymentId}/{companyId}/{secretKey}` resources.
+`odysseus/{deploymentId}/{companyId}/{secretKey}` resources.
 
 ## Existing AWS Secrets
 
@@ -245,14 +245,14 @@ Use the Paperclip-managed flow when Paperclip should create and rotate the value
 secret name is derived from deployment and company scope:
 
 ```text
-paperclip/{deploymentId}/{companyId}/{secretKey}
+odysseus/{deploymentId}/{companyId}/{secretKey}
 ```
 
 Use the external-reference flow when the secret already exists at an operator-owned path such
 as:
 
 ```text
-/paperclip-bench/anthropic_api_key
+/odysseus-bench/anthropic_api_key
 ```
 
 In that mode Paperclip stores only the path or ARN, resolves it at runtime, and records
@@ -296,7 +296,7 @@ Restore checklist:
 1. Restore Paperclip database metadata.
 2. Confirm the same AWS Secrets Manager namespace still exists.
 3. Confirm the Paperclip runtime role can call `GetSecretValue` on the restored prefix.
-4. Confirm the role still has decrypt access to the CMK referenced by `PAPERCLIP_SECRETS_AWS_KMS_KEY_ID`.
+4. Confirm the role still has decrypt access to the CMK referenced by `ODYSSEUS_SECRETS_AWS_KMS_KEY_ID`.
 5. Run the live smoke below or a targeted runtime secret resolution test.
 
 ## Provider Outage Runbook
@@ -356,13 +356,13 @@ This is safe to skip locally. Run it only against a dedicated AWS test namespace
 Prerequisites:
 
 - AWS credentials or workload identity with the deployment-scoped IAM permissions above.
-- `PAPERCLIP_SECRETS_PROVIDER=aws_secrets_manager`
-- The required `PAPERCLIP_SECRETS_AWS_*` environment variables set.
+- `ODYSSEUS_SECRETS_PROVIDER=aws_secrets_manager`
+- The required `ODYSSEUS_SECRETS_AWS_*` environment variables set.
 
 Suggested smoke:
 
 1. Create a test secret through the Paperclip board or API under a throwaway company.
-2. Confirm the resulting AWS secret name matches `paperclip/{deploymentId}/{companyId}/{secretKey}`.
+2. Confirm the resulting AWS secret name matches `odysseus/{deploymentId}/{companyId}/{secretKey}`.
 3. Rotate the secret once and confirm a new `providerVersionRef` appears in Paperclip metadata.
 4. Resolve the secret through a bound runtime path, not by adding a general-purpose reveal endpoint.
 5. Delete the throwaway secret and confirm AWS schedules deletion with the configured recovery window.

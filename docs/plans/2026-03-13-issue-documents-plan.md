@@ -374,7 +374,7 @@ Update the Paperclip agent workflow so planning no longer edits the issue descri
 
 Required changes:
 
-- update `skills/paperclip/SKILL.md`
+- update `skills/odysseus/SKILL.md`
 - replace the `<plan>` instructions with document creation/update instructions
 - document the new endpoints in `docs/api/issues.md`
 - update any internal planning docs that still teach inline `<plan>` blocks
@@ -480,7 +480,7 @@ Acceptance:
 
 Files:
 
-- `skills/paperclip/SKILL.md`
+- `skills/odysseus/SKILL.md`
 - `docs/api/issues.md`
 - `doc/SPEC-implementation.md`
 - relevant plan/docs that mention `<plan>`

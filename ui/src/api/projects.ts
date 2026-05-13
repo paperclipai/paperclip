@@ -3,7 +3,7 @@ import type {
   ProjectWorkspace,
   WorkspaceOperation,
   WorkspaceRuntimeControlTarget,
-} from "@paperclipai/shared";
+} from "@odysseus/shared";
 import { api } from "./client";
 import { sanitizeWorkspaceRuntimeControlTarget } from "./workspace-runtime-control";
 

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ExecutionWorkspace, Issue, Project, ProjectWorkspace, RoutineListItem } from "@paperclipai/shared";
+import type { ExecutionWorkspace, Issue, Project, ProjectWorkspace, RoutineListItem } from "@odysseus/shared";
 import { Copy, ExternalLink, Loader2, Play, Repeat } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardAction } from "@/components/ui/card";
@@ -77,7 +77,7 @@ function executionWorkspaceTabPath(workspaceId: string, tab: ExecutionWorkspaceT
 function LegacyWorkspaceTabRedirect({ workspaceId }: { workspaceId: string }) {
   useEffect(() => {
     try {
-      localStorage.removeItem(`paperclip:execution-workspace-tab:${workspaceId}`);
+      localStorage.removeItem(`odysseus:execution-workspace-tab:${workspaceId}`);
     } catch {}
   }, [workspaceId]);
 
@@ -335,7 +335,7 @@ function ExecutionWorkspaceIssuesList({
       projects={projectOptions}
       liveIssueIds={liveIssueIds}
       projectId={project?.id}
-      viewStateKey="paperclip:execution-workspace-issues-view"
+      viewStateKey="odysseus:execution-workspace-issues-view"
       baseCreateIssueDefaults={createIssueDefaults}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
@@ -446,7 +446,7 @@ function ExecutionWorkspaceRoutinesList({
       ]);
       pushToast({
         title: "Routine started",
-        body: "Paperclip created a run using this execution workspace.",
+        body: "Odysseus created a run using this execution workspace.",
         tone: "success",
       });
     },
@@ -456,7 +456,7 @@ function ExecutionWorkspaceRoutinesList({
     onError: (mutationError) => {
       pushToast({
         title: "Routine run failed",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not start the routine run.",
+        body: mutationError instanceof Error ? mutationError.message : "Odysseus could not start the routine run.",
         tone: "error",
       });
     },
@@ -859,7 +859,7 @@ export function ExecutionWorkspaceDetail() {
 
                 <div className="space-y-4">
                   <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Lifecycle commands</div>
-                  <Field label="Provision command" hint="Runs when Paperclip prepares this execution workspace">
+                  <Field label="Provision command" hint="Runs when Odysseus prepares this execution workspace">
                     <Textarea
                       className="min-h-20 font-mono"
                       value={form.provisionCommand}

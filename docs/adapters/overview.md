@@ -35,7 +35,7 @@ These adapters ship as standalone npm packages and are installed via the plugin 
 
 | Adapter | Package | Type Key | Description |
 |---------|---------|----------|-------------|
-| Droid Local | `@henkey/droid-paperclip-adapter` | `droid_local` | Runs Factory Droid locally |
+| Droid Local | `@henkey/droid-odysseus-adapter` | `droid_local` | Runs Factory Droid locally |
 
 ## External Adapters
 
@@ -44,7 +44,7 @@ You can build and distribute adapters as standalone packages — no changes to P
 ```sh
 # Install from npm via API
 curl -X POST http://localhost:3102/api/adapters \
-  -d '{"packageName": "my-paperclip-adapter"}'
+  -d '{"packageName": "my-odysseus-adapter"}'
 
 # Or link from a local directory
 curl -X POST http://localhost:3102/api/adapters \
@@ -67,7 +67,7 @@ my-adapter/
       test.ts           # Environment diagnostics
     ui-parser.ts        # Self-contained UI transcript parser (for external adapters)
     cli/
-      format-event.ts   # Terminal output for `paperclipai run --watch`
+      format-event.ts   # Terminal output for `odysseus run --watch`
 ```
 
 | Registry | What it does | Source |

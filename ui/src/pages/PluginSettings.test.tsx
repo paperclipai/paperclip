@@ -30,7 +30,7 @@ vi.mock("@/context/BreadcrumbContext", () => ({
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
-    selectedCompany: { id: "company-1", name: "Paperclip", issuePrefix: "PAP" },
+    selectedCompany: { id: "company-1", name: "Odysseus", issuePrefix: "PAP" },
     selectedCompanyId: "company-1",
   }),
 }));
@@ -63,16 +63,16 @@ async function flushReact() {
 function basePlugin(overrides: Record<string, unknown> = {}) {
   return {
     id: "plugin-1",
-    pluginKey: "paperclip.e2b-sandbox-provider",
-    packageName: "@paperclipai/plugin-e2b",
+    pluginKey: "odysseus.e2b-sandbox-provider",
+    packageName: "@odysseus/plugin-e2b",
     version: "0.1.0",
     status: "error",
     categories: ["automation"],
     manifestJson: {
       displayName: "E2B Sandbox Provider",
       version: "0.1.0",
-      description: "E2B environments for Paperclip.",
-      author: "Paperclip",
+      description: "E2B environments for Odysseus.",
+      author: "Odysseus",
       capabilities: ["environment.drivers.register"],
       environmentDrivers: [
         {
@@ -177,14 +177,14 @@ describe("PluginSettings", () => {
   it("renders unconfigured manifest local folders with required paths", async () => {
     const declaration = wikiFolderDeclaration();
     mockPluginsApi.get.mockResolvedValue(basePlugin({
-      pluginKey: "paperclipai.plugin-llm-wiki",
-      packageName: "@paperclipai/plugin-llm-wiki",
+      pluginKey: "odysseus.plugin-llm-wiki",
+      packageName: "@odysseus/plugin-llm-wiki",
       status: "ready",
       manifestJson: {
         displayName: "LLM Wiki",
         version: "0.1.0",
         description: "Local-file LLM Wiki plugin.",
-        author: "Paperclip",
+        author: "Odysseus",
         capabilities: ["local.folders"],
         localFolders: [declaration],
       },
@@ -217,7 +217,7 @@ describe("PluginSettings", () => {
         displayName: "LLM Wiki",
         version: "0.1.0",
         description: "Local-file LLM Wiki plugin.",
-        author: "Paperclip",
+        author: "Odysseus",
         capabilities: ["local.folders"],
         localFolders: [declaration],
       },
@@ -259,7 +259,7 @@ describe("PluginSettings", () => {
         displayName: "LLM Wiki",
         version: "0.1.0",
         description: "Local-file LLM Wiki plugin.",
-        author: "Paperclip",
+        author: "Odysseus",
         capabilities: ["local.folders"],
         localFolders: [declaration],
       },
@@ -298,7 +298,7 @@ describe("PluginSettings", () => {
         displayName: "LLM Wiki",
         version: "0.1.0",
         description: "Local-file LLM Wiki plugin.",
-        author: "Paperclip",
+        author: "Odysseus",
         capabilities: ["local.folders"],
         localFolders: [declaration],
       },

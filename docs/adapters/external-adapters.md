@@ -9,7 +9,7 @@ Paperclip supports external adapter plugins that can be installed from npm packa
 
 | | Built-in | External |
 |---|---|---|
-| Source location | Inside `paperclip-fork/packages/adapters/` | Separate npm package or local directory |
+| Source location | Inside `odysseus-fork/packages/adapters/` | Separate npm package or local directory |
 | Registration | Hardcoded in three registries | Loaded at startup via plugin system |
 | UI parser | Static import at build time | Dynamically loaded from API (see [UI Parser](/adapters/adapter-ui-parser)) |
 | Distribution | Ships with Paperclip | Published to npm or linked via `file:` |
@@ -37,11 +37,11 @@ my-adapter/
 
 ```json
 {
-  "name": "my-paperclip-adapter",
+  "name": "my-odysseus-adapter",
   "version": "1.0.0",
   "type": "module",
   "license": "MIT",
-  "paperclip": {
+  "odysseus": {
     "adapterUiParser": "1.0.0"
   },
   "exports": {
@@ -54,7 +54,7 @@ my-adapter/
     "build": "tsc"
   },
   "dependencies": {
-    "@paperclipai/adapter-utils": "^2026.325.0",
+    "@odysseus/adapter-utils": "^2026.325.0",
     "picocolors": "^1.1.0"
   },
   "devDependencies": {
@@ -70,7 +70,7 @@ Key fields:
 |-------|---------|
 | `exports["."]` | Entry point — must export `createServerAdapter` |
 | `exports["./ui-parser"]` | Self-contained UI parser module (optional but recommended) |
-| `paperclip.adapterUiParser` | Contract version for the UI parser (`"1.0.0"`) |
+| `odysseus.adapterUiParser` | Contract version for the UI parser (`"1.0.0"`) |
 | `files` | Limits what gets published — only `dist/` |
 
 ### tsconfig.json
@@ -118,7 +118,7 @@ export { createServerAdapter } from "./server/index.js";
 ### src/server/index.ts
 
 ```ts
-import type { ServerAdapterModule } from "@paperclipai/adapter-utils";
+import type { ServerAdapterModule } from "@odysseus/adapter-utils";
 import { type, models, agentConfigurationDoc } from "../index.js";
 import { execute } from "./execute.js";
 import { testEnvironment } from "./test.js";
@@ -142,13 +142,13 @@ The core execution function. Receives an `AdapterExecutionContext` and returns a
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
-} from "@paperclipai/adapter-utils";
+} from "@odysseus/adapter-utils";
 
 import {
   runChildProcess,
   buildPaperclipEnv,
   renderTemplate,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@odysseus/adapter-utils/server-utils";
 
 export async function execute(
   ctx: AdapterExecutionContext,
@@ -196,12 +196,12 @@ export async function execute(
 }
 ```
 
-#### Available Helpers from `@paperclipai/adapter-utils`
+#### Available Helpers from `@odysseus/adapter-utils`
 
 | Helper | Purpose |
 |--------|---------|
 | `runChildProcess(command, opts)` | Spawn a child process with timeout, grace period, and streaming callbacks |
-| `buildPaperclipEnv(agent)` | Inject `PAPERCLIP_*` environment variables |
+| `buildPaperclipEnv(agent)` | Inject `ODYSSEUS_*` environment variables |
 | `renderTemplate(template, data)` | `{{variable}}` substitution in prompt templates |
 | `asString(v)`, `asNumber(v)`, `asBoolean(v)` | Safe config value extraction |
 
@@ -213,7 +213,7 @@ Validates the adapter configuration before running. Returns structured diagnosti
 import type {
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
-} from "@paperclipai/adapter-utils";
+} from "@odysseus/adapter-utils";
 
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
@@ -261,13 +261,13 @@ Check levels:
 
 ```sh
 # Via the Paperclip UI
-# Settings → Adapters → Install from npm → "my-paperclip-adapter"
+# Settings → Adapters → Install from npm → "my-odysseus-adapter"
 
 # Or via API
 curl -X POST http://localhost:3102/api/adapters \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"packageName": "my-paperclip-adapter"}'
+  -d '{"packageName": "my-odysseus-adapter"}'
 ```
 
 ### From local directory
@@ -283,12 +283,12 @@ Local adapters are symlinked into Paperclip's adapter directory. Changes to the 
 
 ### Via adapter-plugins.json
 
-For development, you can also edit `~/.paperclip/adapter-plugins.json` directly:
+For development, you can also edit `~/.odysseus/adapter-plugins.json` directly:
 
 ```json
 [
   {
-    "packageName": "my-paperclip-adapter",
+    "packageName": "my-odysseus-adapter",
     "localPath": "/home/user/my-adapter",
     "type": "my_adapter",
     "installedAt": "2026-03-30T12:00:00.000Z"
@@ -301,7 +301,7 @@ For development, you can also edit `~/.paperclip/adapter-plugins.json` directly:
 If your agent runtime supports sessions (conversation continuity across heartbeats), implement a session codec:
 
 ```ts
-import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
+import type { AdapterSessionCodec } from "@odysseus/adapter-utils";
 
 export const sessionCodec: AdapterSessionCodec = {
   deserialize(raw) {

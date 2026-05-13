@@ -49,7 +49,7 @@ export type {
 } from "../constants.js";
 
 // ---------------------------------------------------------------------------
-// Manifest sub-types — nested declarations within PaperclipPluginManifestV1
+// Manifest sub-types — nested declarations within OdysseusPluginManifestV1
 // ---------------------------------------------------------------------------
 
 /**
@@ -127,7 +127,7 @@ export interface PluginEnvironmentDriverDeclaration {
 }
 
 /**
- * Declares a normal Paperclip agent that a plugin can provision and later
+ * Declares a normal Odysseus agent that a plugin can provision and later
  * resolve by stable key within each company.
  */
 export interface PluginManagedAgentDeclaration {
@@ -153,7 +153,7 @@ export interface PluginManagedAgentDeclaration {
   adapterPreference?: Array<AgentAdapterType | string>;
   /** Suggested adapter configuration. */
   adapterConfig?: Record<string, unknown>;
-  /** Suggested Paperclip runtime configuration. */
+  /** Suggested Odysseus runtime configuration. */
   runtimeConfig?: Record<string, unknown>;
   /** Suggested permissions object. Normalized by the host on create/reset. */
   permissions?: Record<string, unknown>;
@@ -192,7 +192,7 @@ export interface PluginLocalFolderDeclaration {
 }
 
 /**
- * Declares a normal Paperclip project that a plugin can provision and later
+ * Declares a normal Odysseus project that a plugin can provision and later
  * resolve by stable key within each company.
  */
 export interface PluginManagedProjectDeclaration {
@@ -423,7 +423,7 @@ export interface PluginLauncherDeclaration {
 }
 
 /**
- * Lower-bound semver requirement for the Paperclip host.
+ * Lower-bound semver requirement for the Odysseus host.
  *
  * The host should reject installation when its running version is lower than
  * the declared minimum.
@@ -487,7 +487,7 @@ export interface PluginApiRouteDeclaration {
  * The manifest shape every plugin package must export.
  * See PLUGIN_SPEC.md §10.1 for the normative definition.
  */
-export interface PaperclipPluginManifestV1 {
+export interface OdysseusPluginManifestV1 {
   /** Globally unique plugin identifier (e.g. `"acme.linear-sync"`). Must be lowercase alphanumeric with dots, hyphens, or underscores. */
   id: string;
   /** Plugin API version. Must be `1` for the current spec. */
@@ -511,7 +511,7 @@ export interface PaperclipPluginManifestV1 {
    * Legacy alias for `minimumHostVersion`.
    * Kept for backwards compatibility with existing manifests and docs.
    */
-  minimumPaperclipVersion?: PluginMinimumHostVersion;
+  minimumOdysseusVersion?: PluginMinimumHostVersion;
   /** Capabilities this plugin requires from the host. Enforced at runtime. */
   capabilities: PluginCapability[];
   /** Entrypoint paths relative to the package root. */
@@ -576,7 +576,7 @@ export interface PluginRecord {
   /** Plugin categories from the manifest. */
   categories: PluginCategory[];
   /** Full manifest snapshot persisted at install/upgrade time. */
-  manifestJson: PaperclipPluginManifestV1;
+  manifestJson: OdysseusPluginManifestV1;
   /** Current lifecycle status. */
   status: PluginStatus;
   /** Deterministic load order (null if not yet assigned). */

@@ -17,7 +17,7 @@ Set these shell variables for the rest of the guide:
 ```bash
 export AWS_REGION=us-east-1
 export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-export PAPERCLIP_DOMAIN=paperclip.example.com   # your domain
+export ODYSSEUS_DOMAIN=odysseus.example.com   # your domain
 export DB_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=' | head -c 32)
 export AUTH_SECRET=$(openssl rand -base64 32)
 ```
@@ -26,7 +26,7 @@ export AUTH_SECRET=$(openssl rand -base64 32)
 
 ```bash
 aws ecr create-repository \
-  --repository-name paperclip-server \
+  --repository-name odysseus-server \
   --image-scanning-configuration scanOnPush=true \
   --region $AWS_REGION
 ```
@@ -34,7 +34,7 @@ aws ecr create-repository \
 ## 2. Build and Push Docker Image
 
 ```bash
-cd /path/to/paperclip
+cd /path/to/odysseus
 
 # Authenticate Docker to ECR
 aws ecr get-login-password --region $AWS_REGION \
@@ -42,14 +42,14 @@ aws ecr get-login-password --region $AWS_REGION \
     $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
 
 # Build
-docker build -t paperclip-server .
+docker build -t odysseus-server .
 
 # Tag and push
-docker tag paperclip-server:latest \
-  $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/paperclip-server:latest
+docker tag odysseus-server:latest \
+  $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/odysseus-server:latest
 
 docker push \
-  $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/paperclip-server:latest
+  $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/odysseus-server:latest
 ```
 
 ## 3. Networking (VPC, Subnets, Security Groups)
@@ -76,7 +76,7 @@ Create security groups:
 ```bash
 # ALB security group — inbound HTTPS
 ALB_SG=$(aws ec2 create-security-group \
-  --group-name paperclip-alb \
+  --group-name odysseus-alb \
   --description "Paperclip ALB" \
   --vpc-id $VPC_ID \
   --query 'GroupId' --output text)
@@ -92,7 +92,7 @@ aws ec2 authorize-security-group-ingress \
 
 # ECS task security group — inbound from ALB only
 ECS_SG=$(aws ec2 create-security-group \
-  --group-name paperclip-ecs \
+  --group-name odysseus-ecs \
   --description "Paperclip ECS tasks" \
   --vpc-id $VPC_ID \
   --query 'GroupId' --output text)
@@ -104,7 +104,7 @@ aws ec2 authorize-security-group-ingress \
 
 # RDS security group — inbound from ECS only
 RDS_SG=$(aws ec2 create-security-group \
-  --group-name paperclip-rds \
+  --group-name odysseus-rds \
   --description "Paperclip RDS" \
   --vpc-id $VPC_ID \
   --query 'GroupId' --output text)
@@ -116,7 +116,7 @@ aws ec2 authorize-security-group-ingress \
 
 # EFS security group — inbound NFS from ECS only
 EFS_SG=$(aws ec2 create-security-group \
-  --group-name paperclip-efs \
+  --group-name odysseus-efs \
   --description "Paperclip EFS" \
   --vpc-id $VPC_ID \
   --query 'GroupId' --output text)
@@ -133,37 +133,37 @@ aws ec2 authorize-security-group-ingress \
 # Custom VPCs don't come with a default DB subnet group — create one
 # that spans our two subnets so RDS can place the instance.
 aws rds create-db-subnet-group \
-  --db-subnet-group-name paperclip-db-subnet \
+  --db-subnet-group-name odysseus-db-subnet \
   --db-subnet-group-description "Paperclip RDS subnets" \
   --subnet-ids $SUBNET_1 $SUBNET_2
 
 aws rds create-db-instance \
-  --db-instance-identifier paperclip-db \
+  --db-instance-identifier odysseus-db \
   --db-instance-class db.t4g.micro \
   --engine postgres \
   --engine-version 17 \
-  --master-username paperclip \
+  --master-username odysseus \
   --master-user-password "$DB_PASSWORD" \
   --allocated-storage 20 \
   --storage-type gp3 \
   --vpc-security-group-ids $RDS_SG \
-  --db-subnet-group-name paperclip-db-subnet \
+  --db-subnet-group-name odysseus-db-subnet \
   --no-publicly-accessible \
   --backup-retention-period 7 \
   --no-multi-az \
-  --db-name paperclip \
+  --db-name odysseus \
   --region $AWS_REGION
 
 # Wait for it to become available (takes 5-10 min)
 aws rds wait db-instance-available \
-  --db-instance-identifier paperclip-db
+  --db-instance-identifier odysseus-db
 
 # Get the endpoint
 RDS_ENDPOINT=$(aws rds describe-db-instances \
-  --db-instance-identifier paperclip-db \
+  --db-instance-identifier odysseus-db \
   --query 'DBInstances[0].Endpoint.Address' --output text)
 
-DATABASE_URL="postgresql://paperclip:${DB_PASSWORD}@${RDS_ENDPOINT}:5432/paperclip"
+DATABASE_URL="postgresql://odysseus:${DB_PASSWORD}@${RDS_ENDPOINT}:5432/odysseus"
 ```
 
 ## 5. Create EFS Filesystem
@@ -173,7 +173,7 @@ EFS_ID=$(aws efs create-file-system \
   --performance-mode generalPurpose \
   --throughput-mode bursting \
   --encrypted \
-  --tags Key=Name,Value=paperclip-data \
+  --tags Key=Name,Value=odysseus-data \
   --query 'FileSystemId' --output text)
 
 # Create mount targets in each subnet
@@ -192,23 +192,23 @@ aws efs describe-mount-targets --file-system-id $EFS_ID
 
 ```bash
 aws secretsmanager create-secret \
-  --name paperclip/database-url \
+  --name odysseus/database-url \
   --secret-string "$DATABASE_URL"
 
 aws secretsmanager create-secret \
-  --name paperclip/anthropic-api-key \
+  --name odysseus/anthropic-api-key \
   --secret-string "YOUR_ANTHROPIC_KEY"
 
 aws secretsmanager create-secret \
-  --name paperclip/better-auth-secret \
+  --name odysseus/better-auth-secret \
   --secret-string "$AUTH_SECRET"
 
 aws secretsmanager create-secret \
-  --name paperclip/openai-api-key \
+  --name odysseus/openai-api-key \
   --secret-string "YOUR_OPENAI_KEY"
 
 aws secretsmanager create-secret \
-  --name paperclip/github-token \
+  --name odysseus/github-token \
   --secret-string "YOUR_GITHUB_PAT"
 ```
 
@@ -219,7 +219,7 @@ Create the ECS task execution role (pulls images, reads secrets) and the task ro
 ```bash
 # Task execution role
 aws iam create-role \
-  --role-name paperclip-ecs-execution \
+  --role-name odysseus-ecs-execution \
   --assume-role-policy-document '{
     "Version": "2012-10-17",
     "Statement": [{
@@ -230,25 +230,25 @@ aws iam create-role \
   }'
 
 aws iam attach-role-policy \
-  --role-name paperclip-ecs-execution \
+  --role-name odysseus-ecs-execution \
   --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
 
 # Allow reading secrets
 aws iam put-role-policy \
-  --role-name paperclip-ecs-execution \
+  --role-name odysseus-ecs-execution \
   --policy-name SecretsAccess \
   --policy-document '{
     "Version": "2012-10-17",
     "Statement": [{
       "Effect": "Allow",
       "Action": ["secretsmanager:GetSecretValue"],
-      "Resource": "arn:aws:secretsmanager:'$AWS_REGION':'$AWS_ACCOUNT_ID':secret:paperclip/*"
+      "Resource": "arn:aws:secretsmanager:'$AWS_REGION':'$AWS_ACCOUNT_ID':secret:odysseus/*"
     }]
   }'
 
 # Task role (application — add permissions as needed)
 aws iam create-role \
-  --role-name paperclip-ecs-task \
+  --role-name odysseus-ecs-task \
   --assume-role-policy-document '{
     "Version": "2012-10-17",
     "Statement": [{
@@ -262,9 +262,9 @@ aws iam create-role \
 ## 8. ECS Cluster and Task Definition
 
 ```bash
-aws ecs create-cluster --cluster-name paperclip
+aws ecs create-cluster --cluster-name odysseus
 
-aws logs create-log-group --log-group-name /ecs/paperclip
+aws logs create-log-group --log-group-name /ecs/odysseus
 ```
 
 Register the task definition using the template at `docker/ecs-task-definition.json`. Before registering, replace the placeholder values:
@@ -273,11 +273,11 @@ Register the task definition using the template at `docker/ecs-task-definition.j
 sed -e "s|<ACCOUNT_ID>|$AWS_ACCOUNT_ID|g" \
     -e "s|<REGION>|$AWS_REGION|g" \
     -e "s|<EFS_ID>|$EFS_ID|g" \
-    -e "s|<DOMAIN>|$PAPERCLIP_DOMAIN|g" \
-    docker/ecs-task-definition.json > /tmp/paperclip-task-def.json
+    -e "s|<DOMAIN>|$ODYSSEUS_DOMAIN|g" \
+    docker/ecs-task-definition.json > /tmp/odysseus-task-def.json
 
 aws ecs register-task-definition \
-  --cli-input-json file:///tmp/paperclip-task-def.json
+  --cli-input-json file:///tmp/odysseus-task-def.json
 ```
 
 ## 9. ALB and TLS Certificate
@@ -286,7 +286,7 @@ Request a certificate (you must validate via DNS):
 
 ```bash
 CERT_ARN=$(aws acm request-certificate \
-  --domain-name $PAPERCLIP_DOMAIN \
+  --domain-name $ODYSSEUS_DOMAIN \
   --validation-method DNS \
   --query 'CertificateArn' --output text)
 
@@ -306,7 +306,7 @@ Create the ALB:
 
 ```bash
 ALB_ARN=$(aws elbv2 create-load-balancer \
-  --name paperclip-alb \
+  --name odysseus-alb \
   --subnets $SUBNET_1 $SUBNET_2 \
   --security-groups $ALB_SG \
   --scheme internet-facing \
@@ -319,7 +319,7 @@ ALB_DNS=$(aws elbv2 describe-load-balancers \
 
 # Target group
 TG_ARN=$(aws elbv2 create-target-group \
-  --name paperclip-tg \
+  --name odysseus-tg \
   --protocol HTTP \
   --port 3100 \
   --vpc-id $VPC_ID \
@@ -349,15 +349,15 @@ HTTP_LISTENER_ARN=$(aws elbv2 create-listener \
 ```
 
 Point your DNS to the ALB:
-- Create a CNAME or ALIAS record for `$PAPERCLIP_DOMAIN` -> `$ALB_DNS`
+- Create a CNAME or ALIAS record for `$ODYSSEUS_DOMAIN` -> `$ALB_DNS`
 
 ## 10. Create ECS Service
 
 ```bash
 aws ecs create-service \
-  --cluster paperclip \
-  --service-name paperclip-server \
-  --task-definition paperclip-server \
+  --cluster odysseus \
+  --service-name odysseus-server \
+  --task-definition odysseus-server \
   --desired-count 1 \
   --launch-type FARGATE \
   --deployment-configuration '{
@@ -374,7 +374,7 @@ aws ecs create-service \
   }' \
   --load-balancers '[{
     "targetGroupArn": "'$TG_ARN'",
-    "containerName": "paperclip-server",
+    "containerName": "odysseus-server",
     "containerPort": 3100
   }]'
 ```
@@ -386,21 +386,21 @@ aws ecs create-service \
 ```bash
 # Watch task come up
 aws ecs describe-services \
-  --cluster paperclip \
-  --services paperclip-server \
+  --cluster odysseus \
+  --services odysseus-server \
   --query 'services[0].{desired:desiredCount,running:runningCount,status:status}'
 
 # Check task health
-aws ecs list-tasks --cluster paperclip --service-name paperclip-server
-TASK_ARN=$(aws ecs list-tasks --cluster paperclip --service-name paperclip-server --query 'taskArns[0]' --output text)
-aws ecs describe-tasks --cluster paperclip --tasks $TASK_ARN \
+aws ecs list-tasks --cluster odysseus --service-name odysseus-server
+TASK_ARN=$(aws ecs list-tasks --cluster odysseus --service-name odysseus-server --query 'taskArns[0]' --output text)
+aws ecs describe-tasks --cluster odysseus --tasks $TASK_ARN \
   --query 'tasks[0].{status:lastStatus,health:healthStatus}'
 
 # Check logs
-aws logs tail /ecs/paperclip --since 10m --follow
+aws logs tail /ecs/odysseus --since 10m --follow
 
 # Hit the health endpoint
-curl -sf https://$PAPERCLIP_DOMAIN/api/health
+curl -sf https://$ODYSSEUS_DOMAIN/api/health
 ```
 
 **Healthy indicators:**
@@ -415,12 +415,12 @@ After the first user has signed up (which grants admin role), lock down the inst
 ```bash
 # Disable public sign-up (prevents unauthorized users from creating accounts)
 # Add to the task definition environment section, then redeploy:
-#   { "name": "PAPERCLIP_AUTH_DISABLE_SIGN_UP", "value": "true" }
+#   { "name": "ODYSSEUS_AUTH_DISABLE_SIGN_UP", "value": "true" }
 
 # Or update via Secrets Manager / task def override, then force new deployment
 aws ecs update-service \
-  --cluster paperclip \
-  --service paperclip-server \
+  --cluster odysseus \
+  --service odysseus-server \
   --force-new-deployment
 ```
 
@@ -432,22 +432,22 @@ Build, push, and force a new deployment:
 
 ```bash
 # Build and push new image
-docker build -t paperclip-server .
-docker tag paperclip-server:latest \
-  $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/paperclip-server:latest
+docker build -t odysseus-server .
+docker tag odysseus-server:latest \
+  $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/odysseus-server:latest
 docker push \
-  $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/paperclip-server:latest
+  $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/odysseus-server:latest
 
 # Roll out
 aws ecs update-service \
-  --cluster paperclip \
-  --service paperclip-server \
+  --cluster odysseus \
+  --service odysseus-server \
   --force-new-deployment
 
 # Watch the deployment
 aws ecs describe-services \
-  --cluster paperclip \
-  --services paperclip-server \
+  --cluster odysseus \
+  --services odysseus-server \
   --query 'services[0].deployments[*].{status:status,running:runningCount,desired:desiredCount,rollout:rolloutState}'
 ```
 
@@ -464,15 +464,15 @@ If the new deployment is unhealthy:
 
 # 1. Find the previous task definition revision
 aws ecs list-task-definitions \
-  --family-prefix paperclip-server \
+  --family-prefix odysseus-server \
   --sort DESC \
   --query 'taskDefinitionArns[0:3]'
 
 # 2. Update service to the previous revision
 aws ecs update-service \
-  --cluster paperclip \
-  --service paperclip-server \
-  --task-definition paperclip-server:<PREVIOUS_REVISION>
+  --cluster odysseus \
+  --service odysseus-server \
+  --task-definition odysseus-server:<PREVIOUS_REVISION>
 ```
 
 ## Scaling to Zero (Cost Savings)
@@ -482,22 +482,22 @@ Scale down when not in use:
 ```bash
 # Stop
 aws ecs update-service \
-  --cluster paperclip \
-  --service paperclip-server \
+  --cluster odysseus \
+  --service odysseus-server \
   --desired-count 0
 
 # Start
 aws ecs update-service \
-  --cluster paperclip \
-  --service paperclip-server \
+  --cluster odysseus \
+  --service odysseus-server \
   --desired-count 1
 ```
 
 RDS can also be stopped (auto-restarts after 7 days):
 
 ```bash
-aws rds stop-db-instance --db-instance-identifier paperclip-db
-aws rds start-db-instance --db-instance-identifier paperclip-db
+aws rds stop-db-instance --db-instance-identifier odysseus-db
+aws rds start-db-instance --db-instance-identifier odysseus-db
 ```
 
 ## Teardown
@@ -506,9 +506,9 @@ Remove all resources in reverse order:
 
 ```bash
 # 1. ECS service and cluster
-aws ecs update-service --cluster paperclip --service paperclip-server --desired-count 0
-aws ecs delete-service --cluster paperclip --service paperclip-server --force
-aws ecs delete-cluster --cluster paperclip
+aws ecs update-service --cluster odysseus --service odysseus-server --desired-count 0
+aws ecs delete-service --cluster odysseus --service odysseus-server --force
+aws ecs delete-cluster --cluster odysseus
 
 # 2. ALB and ACM cert
 aws elbv2 delete-listener --listener-arn $HTTP_LISTENER_ARN
@@ -519,10 +519,10 @@ aws acm delete-certificate --certificate-arn $CERT_ARN
 
 # 3. RDS (creates final snapshot)
 aws rds delete-db-instance \
-  --db-instance-identifier paperclip-db \
-  --final-db-snapshot-identifier paperclip-db-final
-aws rds wait db-instance-deleted --db-instance-identifier paperclip-db
-aws rds delete-db-subnet-group --db-subnet-group-name paperclip-db-subnet
+  --db-instance-identifier odysseus-db \
+  --final-db-snapshot-identifier odysseus-db-final
+aws rds wait db-instance-deleted --db-instance-identifier odysseus-db
+aws rds delete-db-subnet-group --db-subnet-group-name odysseus-db-subnet
 
 # 4. EFS (mount targets must be deleted first)
 for MT in $(aws efs describe-mount-targets --file-system-id $EFS_ID --query 'MountTargets[*].MountTargetId' --output text); do
@@ -540,7 +540,7 @@ aws efs delete-file-system --file-system-id $EFS_ID
 
 # 5. Secrets
 for s in database-url anthropic-api-key better-auth-secret openai-api-key github-token; do
-  aws secretsmanager delete-secret --secret-id paperclip/$s --force-delete-without-recovery
+  aws secretsmanager delete-secret --secret-id odysseus/$s --force-delete-without-recovery
 done
 
 # 6. Security groups (after all dependents are gone)
@@ -549,17 +549,17 @@ for sg in $EFS_SG $RDS_SG $ECS_SG $ALB_SG; do
 done
 
 # 7. ECR
-aws ecr delete-repository --repository-name paperclip-server --force
+aws ecr delete-repository --repository-name odysseus-server --force
 
 # 8. IAM roles
-aws iam delete-role-policy --role-name paperclip-ecs-execution --policy-name SecretsAccess
-aws iam detach-role-policy --role-name paperclip-ecs-execution \
+aws iam delete-role-policy --role-name odysseus-ecs-execution --policy-name SecretsAccess
+aws iam detach-role-policy --role-name odysseus-ecs-execution \
   --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
-aws iam delete-role --role-name paperclip-ecs-execution
-aws iam delete-role --role-name paperclip-ecs-task
+aws iam delete-role --role-name odysseus-ecs-execution
+aws iam delete-role --role-name odysseus-ecs-task
 
 # 9. Log group
-aws logs delete-log-group --log-group-name /ecs/paperclip
+aws logs delete-log-group --log-group-name /ecs/odysseus
 ```
 
 ## Cost Reference

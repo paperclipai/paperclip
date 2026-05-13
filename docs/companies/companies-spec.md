@@ -66,7 +66,7 @@ projects/<slug>/PROJECT.md
 projects/<slug>/tasks/<slug>/TASK.md
 tasks/<slug>/TASK.md
 skills/<slug>/SKILL.md
-.paperclip.yaml
+.odysseus.yaml
 
 HEARTBEAT.md
 SOUL.md
@@ -268,7 +268,7 @@ recurring: true
 ### Recurring Tasks
 
 - the base package only needs to say whether a task is recurring
-- vendors may attach the actual schedule / trigger / runtime fidelity in a vendor extension such as `.paperclip.yaml`
+- vendors may attach the actual schedule / trigger / runtime fidelity in a vendor extension such as `.odysseus.yaml`
 - this keeps `TASK.md` portable while still allowing richer runtime systems to round-trip their own automation details
 - legacy packages may still use `schedule.recurrence` during transition, but exporters should prefer `recurring: true`
 
@@ -294,7 +294,7 @@ Rules:
 
 - `SKILL.md` should follow the Agent Skills spec
 - Paperclip must not require extra top-level fields for skill validity
-- Paperclip-specific extensions must live under `metadata.paperclip` or `metadata.sources`
+- Paperclip-specific extensions must live under `metadata.odysseus` or `metadata.sources`
 - a skill directory may include `scripts/`, `references/`, and `assets/` exactly as the Agent Skills ecosystem expects
 - tools implementing this spec should treat `skills.sh` compatibility as a first-class goal rather than inventing a parallel skill format
 
@@ -310,7 +310,7 @@ allowed-tools:
   - Read
   - Grep
 metadata:
-  paperclip:
+  odysseus:
     tags:
       - engineering
       - review
@@ -421,7 +421,7 @@ Vendor-specific data should live outside the base package shape.
 For Paperclip, the preferred fidelity extension is:
 
 ```text
-.paperclip.yaml
+.odysseus.yaml
 ```
 
 Example uses:
@@ -444,7 +444,7 @@ Rules:
 Suggested Paperclip shape:
 
 ```yaml
-schema: paperclip/v1
+schema: odysseus/v1
 agents:
   claudecoder:
     adapter:
@@ -491,7 +491,7 @@ A compliant exporter should:
 - preserve task descriptions and recurring-task declarations when exporting tasks
 - omit empty/default fields
 - default to the vendor-neutral base package
-- Paperclip exporters should emit `.paperclip.yaml` as a sidecar by default
+- Paperclip exporters should emit `.odysseus.yaml` as a sidecar by default
 - preserve attribution and source references
 - prefer `referenced` over silent vendoring for third-party content
 - preserve `SKILL.md` as-is when exporting compatible skills
@@ -541,11 +541,11 @@ Paperclip can map this spec to its runtime model like this:
   - `SKILL.md` -> imported skill package
   - `sources[]` -> provenance and pinned upstream refs
 - Paperclip extension:
-  - `.paperclip.yaml` -> adapter config, runtime config, env input declarations, permissions, budgets, routine triggers, and other Paperclip-specific fidelity
+  - `.odysseus.yaml` -> adapter config, runtime config, env input declarations, permissions, budgets, routine triggers, and other Paperclip-specific fidelity
 
 Inline Paperclip-only metadata that must live inside a shared markdown file should use:
 
-- `metadata.paperclip`
+- `metadata.odysseus`
 
 That keeps the base format broader than Paperclip.
 
@@ -555,7 +555,7 @@ This specification itself remains vendor-neutral and intended for any agent-comp
 
 Paperclip should cut over to this markdown-first package model as the primary portability format.
 
-`paperclip.manifest.json` does not need to be preserved as a compatibility requirement for the future package system.
+`odysseus.manifest.json` does not need to be preserved as a compatibility requirement for the future package system.
 
 For Paperclip, this should be treated as a hard cutover in product direction rather than a long-lived dual-format strategy.
 
@@ -583,7 +583,7 @@ lean-dev-shop/
 Optional:
 
 ```text
-.paperclip.yaml
+.odysseus.yaml
 ```
 ```
 

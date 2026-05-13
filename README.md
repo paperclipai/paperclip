@@ -83,22 +83,22 @@ odysseus/
 ├── mcp/                    — 19 MCP connector configs
 ├── evals/                  — Specialist eval suite (Given/When/Then)
 ├── deploy/                 — docker-compose (local); helm + terraform (cloud)
-├── cli/  server/  ui/  packages/        — paperclip control plane (inherited)
+├── cli/  server/  ui/  packages/        — paperclip control plane (inherited from upstream)
 └── FORK.md                 — Fork link / upstream sync workflow
 ```
 
 ## Quickstart
 
-> v0.x — sprint 0 facade rebrand. The internal TypeScript code is still
-> branded `paperclip` and will rename incrementally in sprint 1+.
+> v0.1 — sprint 1 internal rename in progress. The TypeScript control plane
+> is being renamed from upstream `paperclip` to `odysseus` across this branch.
 
 ```bash
 # Local laptop
 git clone https://github.com/PossibLaw/odysseus
 cd odysseus
-git checkout master   # paperclip's default branch
+git checkout master   # odysseus's default branch (inherited from paperclip)
 pnpm install
-# Run the inherited paperclip stack while we incrementally swap in the legal layer:
+# Run the inherited control plane while we incrementally swap in the legal layer:
 pnpm dev
 ```
 
@@ -144,4 +144,4 @@ Some skill patterns are extracted with attribution from [willchen96/mike](https:
 - 3 evals (Given/When/Then)
 - License swap (MIT → Apache 2.0)
 
-**Next (sprint 1):** internal `paperclip` → `odysseus` rename in TS code; legal-domain server models; populate the remaining specialist roster; first end-to-end matter eval running against the inherited paperclip control plane.
+**Sprint 1 (in progress):** internal `paperclip` → `odysseus` rename in TS code; legal-domain server models (Matter, Client, ConflictRecord, PrivilegeFlag, Approval, RiskGate); Chief Counsel routing + risk-gate engine wiring. **Then:** populate the remaining specialist roster; first end-to-end matter eval running against the renamed control plane.

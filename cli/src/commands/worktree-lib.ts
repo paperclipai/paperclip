@@ -1,9 +1,9 @@
 import { randomInt } from "node:crypto";
 import path from "node:path";
-import type { PaperclipConfig } from "../config/schema.js";
+import type { OdysseusConfig } from "../config/schema.js";
 import { expandHomePrefix } from "../config/home.js";
 
-export const DEFAULT_WORKTREE_HOME = "~/.paperclip-worktrees";
+export const DEFAULT_WORKTREE_HOME = "~/.odysseus-worktrees";
 export const WORKTREE_SEED_MODES = ["minimal", "full"] as const;
 
 export type WorktreeSeedMode = (typeof WORKTREE_SEED_MODES)[number];
@@ -141,7 +141,7 @@ export function resolveWorktreeLocalPaths(opts: {
   const cwd = path.resolve(opts.cwd);
   const homeDir = path.resolve(expandHomePrefix(opts.homeDir ?? DEFAULT_WORKTREE_HOME));
   const instanceRoot = path.resolve(homeDir, "instances", opts.instanceId);
-  const repoConfigDir = path.resolve(cwd, ".paperclip");
+  const repoConfigDir = path.resolve(cwd, ".odysseus");
   return {
     cwd,
     repoConfigDir,
@@ -173,12 +173,12 @@ export function rewriteLocalUrlPort(rawUrl: string | undefined, port: number): s
 }
 
 export function buildWorktreeConfig(input: {
-  sourceConfig: PaperclipConfig | null;
+  sourceConfig: OdysseusConfig | null;
   paths: WorktreeLocalPaths;
   serverPort: number;
   databasePort: number;
   now?: Date;
-}): PaperclipConfig {
+}): OdysseusConfig {
   const { sourceConfig, paths, serverPort, databasePort } = input;
   const nowIso = (input.now ?? new Date()).toISOString();
 
@@ -231,7 +231,7 @@ export function buildWorktreeConfig(input: {
         baseDir: paths.storageDir,
       },
       s3: {
-        bucket: source?.storage.s3.bucket ?? "paperclip",
+        bucket: source?.storage.s3.bucket ?? "odysseus",
         region: source?.storage.s3.region ?? "us-east-1",
         endpoint: source?.storage.s3.endpoint,
         prefix: source?.storage.s3.prefix ?? "",
@@ -253,13 +253,13 @@ export function buildWorktreeEnvEntries(
   branding?: WorktreeUiBranding,
 ): Record<string, string> {
   return {
-    PAPERCLIP_HOME: paths.homeDir,
-    PAPERCLIP_INSTANCE_ID: paths.instanceId,
-    PAPERCLIP_CONFIG: paths.configPath,
-    PAPERCLIP_CONTEXT: paths.contextPath,
-    PAPERCLIP_IN_WORKTREE: "true",
-    ...(branding?.name ? { PAPERCLIP_WORKTREE_NAME: branding.name } : {}),
-    ...(branding?.color ? { PAPERCLIP_WORKTREE_COLOR: branding.color } : {}),
+    ODYSSEUS_HOME: paths.homeDir,
+    ODYSSEUS_INSTANCE_ID: paths.instanceId,
+    ODYSSEUS_CONFIG: paths.configPath,
+    ODYSSEUS_CONTEXT: paths.contextPath,
+    ODYSSEUS_IN_WORKTREE: "true",
+    ...(branding?.name ? { ODYSSEUS_WORKTREE_NAME: branding.name } : {}),
+    ...(branding?.color ? { ODYSSEUS_WORKTREE_COLOR: branding.color } : {}),
   };
 }
 

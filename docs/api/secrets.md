@@ -33,7 +33,7 @@ an external-reference secret:
   "name": "prod-stripe-key",
   "provider": "aws_secrets_manager",
   "managedMode": "external_reference",
-  "externalRef": "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod/stripe",
+  "externalRef": "arn:aws:secretsmanager:us-east-1:123456789012:secret:odysseus/prod/stripe",
   "providerVersionRef": "version-id-or-label"
 }
 ```
@@ -59,7 +59,7 @@ credentials must not be stored in Paperclip `company_secrets`.
 The equivalent CLI check is:
 
 ```sh
-pnpm paperclipai secrets doctor --company-id {companyId}
+pnpm odysseus secrets doctor --company-id {companyId}
 ```
 
 ## Provider Vaults
@@ -95,8 +95,8 @@ POST /api/companies/{companyId}/secret-provider-configs
   "isDefault": true,
   "config": {
     "region": "us-east-1",
-    "namespace": "paperclip",
-    "secretNamePrefix": "paperclip",
+    "namespace": "odysseus",
+    "secretNamePrefix": "odysseus",
     "kmsKeyId": "arn:aws:kms:us-east-1:123456789012:key/abcd-...",
     "environmentTag": "production"
   }
@@ -211,7 +211,7 @@ POST /api/companies/{companyId}/secrets
   "provider": "aws_secrets_manager",
   "providerConfigId": "<vault-uuid>",
   "managedMode": "external_reference",
-  "externalRef": "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod/stripe"
+  "externalRef": "arn:aws:secretsmanager:us-east-1:123456789012:secret:odysseus/prod/stripe"
 }
 ```
 
@@ -346,7 +346,7 @@ The import response is row-level:
       "key": "stripe-production-key",
       "status": "imported",
       "reason": null,
-      "secretId": "<paperclip-secret-id>",
+      "secretId": "<odysseus-secret-id>",
       "conflicts": []
     }
   ]
@@ -406,7 +406,7 @@ as declarations in the package manifest. Exports omit secret values, secret IDs,
 provider references, and encrypted provider material. Use:
 
 ```sh
-pnpm paperclipai secrets declarations --company-id {companyId}
+pnpm odysseus secrets declarations --company-id {companyId}
 ```
 
 to inspect the declarations that an export would emit before moving a package.

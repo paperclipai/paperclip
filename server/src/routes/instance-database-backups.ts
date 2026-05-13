@@ -1,5 +1,5 @@
 import { Router } from "express";
-import type { BackupRetentionPolicy, RunDatabaseBackupResult } from "@paperclipai/db";
+import type { BackupRetentionPolicy, RunDatabaseBackupResult } from "@odysseus/db";
 import { assertInstanceAdmin } from "./authz.js";
 
 export type InstanceDatabaseBackupTrigger = "manual" | "scheduled";

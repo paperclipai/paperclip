@@ -1,4 +1,4 @@
-# @paperclipai/plugin-kitchen-sink-example
+# @odysseus/plugin-kitchen-sink-example
 
 Kitchen Sink is the first-party reference plugin that demonstrates nearly the full currently implemented Paperclip plugin surface in one package.
 
@@ -20,8 +20,8 @@ This plugin is for local development, contributor onboarding, and runtime regres
 ## Install
 
 ```sh
-pnpm --filter @paperclipai/plugin-kitchen-sink-example build
-pnpm paperclipai plugin install ./packages/plugins/examples/plugin-kitchen-sink-example
+pnpm --filter @odysseus/plugin-kitchen-sink-example build
+pnpm odysseus plugin install ./packages/plugins/examples/plugin-kitchen-sink-example
 ```
 
 Or install it from the Paperclip plugin manager as a bundled example once this repo is built.

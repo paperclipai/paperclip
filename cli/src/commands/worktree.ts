@@ -45,13 +45,13 @@ import {
   runDatabaseRestore,
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,
-} from "@paperclipai/db";
+} from "@odysseus/db";
 import type { Command } from "commander";
-import { ensureAgentJwtSecret, loadPaperclipEnvFile, mergePaperclipEnvEntries, readPaperclipEnvEntries, resolvePaperclipEnvFile } from "../config/env.js";
+import { ensureAgentJwtSecret, loadOdysseusEnvFile, mergeOdysseusEnvEntries, readOdysseusEnvEntries, resolveOdysseusEnvFile } from "../config/env.js";
 import { expandHomePrefix } from "../config/home.js";
-import type { PaperclipConfig } from "../config/schema.js";
+import type { OdysseusConfig } from "../config/schema.js";
 import { readConfig, resolveConfigPath, writeConfig } from "../config/store.js";
-import { printPaperclipCliBanner } from "../utils/banner.js";
+import { printOdysseusCliBanner } from "../utils/banner.js";
 import { resolveRuntimeLikePath } from "../utils/path-resolver.js";
 import {
   buildWorktreeConfig,
@@ -204,7 +204,7 @@ function nonEmpty(value: string | null | undefined): string | null {
 }
 
 function isCurrentSourceConfigPath(sourceConfigPath: string): boolean {
-  const currentConfigPath = process.env.PAPERCLIP_CONFIG;
+  const currentConfigPath = process.env.ODYSSEUS_CONFIG;
   if (!currentConfigPath || currentConfigPath.trim().length === 0) {
     return false;
   }
@@ -223,7 +223,7 @@ function formatSeededWorktreeExecutionQuarantineSummary(
   ].join(", ");
 }
 
-const WORKTREE_NAME_PREFIX = "paperclip-";
+const WORKTREE_NAME_PREFIX = "odysseus-";
 
 function resolveWorktreeMakeName(name: string): string {
   const value = nonEmpty(name);
@@ -239,11 +239,11 @@ function resolveWorktreeMakeName(name: string): string {
 }
 
 function resolveWorktreeHome(explicit?: string): string {
-  return explicit ?? process.env.PAPERCLIP_WORKTREES_DIR ?? DEFAULT_WORKTREE_HOME;
+  return explicit ?? process.env.ODYSSEUS_WORKTREES_DIR ?? DEFAULT_WORKTREE_HOME;
 }
 
 function resolveWorktreeStartPoint(explicit?: string): string | undefined {
-  return explicit ?? nonEmpty(process.env.PAPERCLIP_WORKTREE_START_POINT) ?? undefined;
+  return explicit ?? nonEmpty(process.env.ODYSSEUS_WORKTREE_START_POINT) ?? undefined;
 }
 
 type ConfiguredStorage = {
@@ -322,7 +322,7 @@ function buildS3ObjectKey(prefix: string, objectKey: string): string {
 
 const dynamicImport = new Function("specifier", "return import(specifier);") as (specifier: string) => Promise<any>;
 
-function createConfiguredStorageFromPaperclipConfig(config: PaperclipConfig): ConfiguredStorage {
+function createConfiguredStorageFromOdysseusConfig(config: OdysseusConfig): ConfiguredStorage {
   if (config.storage.provider === "local_disk") {
     const baseDir = expandHomePrefix(config.storage.localDisk.baseDir);
     return {
@@ -391,7 +391,7 @@ function openConfiguredStorage(configPath: string): ConfiguredStorage {
   if (!config) {
     throw new Error(`Config not found at ${configPath}.`);
   }
-  return createConfiguredStorageFromPaperclipConfig(config);
+  return createConfiguredStorageFromOdysseusConfig(config);
 }
 
 async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
@@ -519,11 +519,11 @@ async function findAvailablePort(preferredPort: number, reserved = new Set<numbe
 
 function resolveRepoManagedWorktreesRoot(cwd: string): string | null {
   const normalized = path.resolve(cwd);
-  const marker = `${path.sep}.paperclip${path.sep}worktrees${path.sep}`;
+  const marker = `${path.sep}.odysseus${path.sep}worktrees${path.sep}`;
   const index = normalized.indexOf(marker);
   if (index === -1) return null;
   const repoRoot = normalized.slice(0, index);
-  return path.resolve(repoRoot, ".paperclip", "worktrees");
+  return path.resolve(repoRoot, ".odysseus", "worktrees");
 }
 
 function collectClaimedWorktreePorts(homeDir: string, currentInstanceId: string, cwd: string): {
@@ -549,7 +549,7 @@ function collectClaimedWorktreePorts(homeDir: string, currentInstanceId: string,
   if (repoManagedWorktreesRoot && existsSync(repoManagedWorktreesRoot)) {
     for (const entry of readdirSync(repoManagedWorktreesRoot, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
-      const configPath = path.resolve(repoManagedWorktreesRoot, entry.name, ".paperclip", "config.json");
+      const configPath = path.resolve(repoManagedWorktreesRoot, entry.name, ".odysseus", "config.json");
       if (existsSync(configPath)) {
         configPaths.add(configPath);
       }
@@ -806,7 +806,7 @@ export function resolveSourceConfigPath(opts: WorktreeInitOptions): string {
   if (!opts.fromDataDir && !opts.fromInstance) {
     return resolveConfigPath();
   }
-  const sourceHome = path.resolve(expandHomePrefix(opts.fromDataDir ?? "~/.paperclip"));
+  const sourceHome = path.resolve(expandHomePrefix(opts.fromDataDir ?? "~/.odysseus"));
   const sourceInstanceId = sanitizeWorktreeInstanceId(opts.fromInstance ?? "default");
   return path.resolve(sourceHome, "instances", sourceInstanceId, "config.json");
 }
@@ -868,13 +868,13 @@ export function resolveWorktreeReseedTargetPaths(input: {
   configPath: string;
   rootPath: string;
 }): WorktreeLocalPaths {
-  const envEntries = readPaperclipEnvEntries(resolvePaperclipEnvFile(input.configPath));
-  const homeDir = nonEmpty(envEntries.PAPERCLIP_HOME);
-  const instanceId = nonEmpty(envEntries.PAPERCLIP_INSTANCE_ID);
+  const envEntries = readOdysseusEnvEntries(resolveOdysseusEnvFile(input.configPath));
+  const homeDir = nonEmpty(envEntries.ODYSSEUS_HOME);
+  const instanceId = nonEmpty(envEntries.ODYSSEUS_INSTANCE_ID);
 
   if (!homeDir || !instanceId) {
     throw new Error(
-      `Target config ${input.configPath} does not look like a worktree-local Paperclip instance. Expected PAPERCLIP_HOME and PAPERCLIP_INSTANCE_ID in the adjacent .env.`,
+      `Target config ${input.configPath} does not look like a worktree-local Odysseus instance. Expected ODYSSEUS_HOME and ODYSSEUS_INSTANCE_ID in the adjacent .env.`,
     );
   }
 
@@ -895,7 +895,7 @@ function resolveExistingGitWorktree(selector: string, cwd: string): MergeSourceC
       worktree: directPath,
       branch: null,
       branchLabel: path.basename(directPath),
-      hasPaperclipConfig: existsSync(path.resolve(directPath, ".paperclip", "config.json")),
+      hasOdysseusConfig: existsSync(path.resolve(directPath, ".odysseus", "config.json")),
       isCurrent: directPath === path.resolve(cwd),
     };
   }
@@ -915,7 +915,7 @@ async function ensureRepairTargetWorktree(input: {
 }): Promise<ResolvedWorktreeRepairTarget | null> {
   const cwd = process.cwd();
   const currentRoot = path.resolve(cwd);
-  const currentConfigPath = path.resolve(currentRoot, ".paperclip", "config.json");
+  const currentConfigPath = path.resolve(currentRoot, ".odysseus", "config.json");
 
   if (!input.selector) {
     if (isPrimaryGitWorktree(cwd)) {
@@ -934,7 +934,7 @@ async function ensureRepairTargetWorktree(input: {
   if (existing) {
     return {
       rootPath: existing.worktree,
-      configPath: path.resolve(existing.worktree, ".paperclip", "config.json"),
+      configPath: path.resolve(existing.worktree, ".odysseus", "config.json"),
       label: existing.branchLabel,
       branchName: existing.branchLabel === "(detached)" ? null : existing.branchLabel,
       created: false,
@@ -945,7 +945,7 @@ async function ensureRepairTargetWorktree(input: {
   const branchName = validateGitBranchName(repoRoot, input.selector);
   const targetPath = path.resolve(
     repoRoot,
-    ".paperclip",
+    ".odysseus",
     "worktrees",
     resolveRepairWorktreeDirName(branchName),
   );
@@ -977,14 +977,14 @@ async function ensureRepairTargetWorktree(input: {
 
   return {
     rootPath: targetPath,
-    configPath: path.resolve(targetPath, ".paperclip", "config.json"),
+    configPath: path.resolve(targetPath, ".odysseus", "config.json"),
     label: branchName,
     branchName,
     created: true,
   };
 }
 
-function resolveSourceConnectionString(config: PaperclipConfig, envEntries: Record<string, string>, portOverride?: number): string {
+function resolveSourceConnectionString(config: OdysseusConfig, envEntries: Record<string, string>, portOverride?: number): string {
   if (config.database.mode === "postgres") {
     const connectionString = nonEmpty(envEntries.DATABASE_URL) ?? nonEmpty(config.database.connectionString);
     if (!connectionString) {
@@ -996,12 +996,12 @@ function resolveSourceConnectionString(config: PaperclipConfig, envEntries: Reco
   }
 
   const port = portOverride ?? config.database.embeddedPostgresPort;
-  return `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
+  return `postgres://odysseus:odysseus@127.0.0.1:${port}/odysseus`;
 }
 
 export function copySeededSecretsKey(input: {
   sourceConfigPath: string;
-  sourceConfig: PaperclipConfig;
+  sourceConfig: OdysseusConfig;
   sourceEnvEntries: Record<string, string>;
   targetKeyFilePath: string;
 }): void {
@@ -1013,8 +1013,8 @@ export function copySeededSecretsKey(input: {
 
   const allowProcessEnvFallback = isCurrentSourceConfigPath(input.sourceConfigPath);
   const sourceInlineMasterKey =
-    nonEmpty(input.sourceEnvEntries.PAPERCLIP_SECRETS_MASTER_KEY) ??
-    (allowProcessEnvFallback ? nonEmpty(process.env.PAPERCLIP_SECRETS_MASTER_KEY) : null);
+    nonEmpty(input.sourceEnvEntries.ODYSSEUS_SECRETS_MASTER_KEY) ??
+    (allowProcessEnvFallback ? nonEmpty(process.env.ODYSSEUS_SECRETS_MASTER_KEY) : null);
   if (sourceInlineMasterKey) {
     writeFileSync(input.targetKeyFilePath, sourceInlineMasterKey, {
       encoding: "utf8",
@@ -1029,8 +1029,8 @@ export function copySeededSecretsKey(input: {
   }
 
   const sourceKeyFileOverride =
-    nonEmpty(input.sourceEnvEntries.PAPERCLIP_SECRETS_MASTER_KEY_FILE) ??
-    (allowProcessEnvFallback ? nonEmpty(process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE) : null);
+    nonEmpty(input.sourceEnvEntries.ODYSSEUS_SECRETS_MASTER_KEY_FILE) ??
+    (allowProcessEnvFallback ? nonEmpty(process.env.ODYSSEUS_SECRETS_MASTER_KEY_FILE) : null);
   const sourceConfiguredKeyPath = sourceKeyFileOverride ?? input.sourceConfig.secrets.localEncrypted.keyFilePath;
   const sourceKeyFilePath = resolveRuntimeLikePath(sourceConfiguredKeyPath, input.sourceConfigPath);
 
@@ -1074,8 +1074,8 @@ async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): P
   const logBuffer = createEmbeddedPostgresLogBuffer();
   const instance = new EmbeddedPostgres({
     databaseDir: dataDir,
-    user: "paperclip",
-    password: "paperclip",
+    user: "odysseus",
+    password: "odysseus",
     port,
     persistent: true,
     initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
@@ -1273,16 +1273,16 @@ export async function quarantineSeededWorktreeExecutionState(
 
 async function seedWorktreeDatabase(input: {
   sourceConfigPath: string;
-  sourceConfig: PaperclipConfig;
-  targetConfig: PaperclipConfig;
+  sourceConfig: OdysseusConfig;
+  targetConfig: OdysseusConfig;
   targetPaths: WorktreeLocalPaths;
   instanceId: string;
   seedMode: WorktreeSeedMode;
   preserveLiveWork?: boolean;
 }): Promise<SeedWorktreeDatabaseResult> {
   const seedPlan = resolveWorktreeSeedPlan(input.seedMode);
-  const sourceEnvFile = resolvePaperclipEnvFile(input.sourceConfigPath);
-  const sourceEnvEntries = readPaperclipEnvEntries(sourceEnvFile);
+  const sourceEnvFile = resolveOdysseusEnvFile(input.sourceConfigPath);
+  const sourceEnvEntries = readOdysseusEnvEntries(sourceEnvFile);
   copySeededSecretsKey({
     sourceConfigPath: input.sourceConfigPath,
     sourceConfig: input.sourceConfig,
@@ -1298,8 +1298,8 @@ async function seedWorktreeDatabase(input: {
         input.sourceConfig.database.embeddedPostgresDataDir,
         input.sourceConfig.database.embeddedPostgresPort,
       );
-      const sourceAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${sourceHandle.port}/postgres`;
-      await ensurePostgresDatabase(sourceAdminConnectionString, "paperclip");
+      const sourceAdminConnectionString = `postgres://odysseus:odysseus@127.0.0.1:${sourceHandle.port}/postgres`;
+      await ensurePostgresDatabase(sourceAdminConnectionString, "odysseus");
     }
     const sourceConnectionString = resolveSourceConnectionString(
       input.sourceConfig,
@@ -1322,9 +1322,9 @@ async function seedWorktreeDatabase(input: {
       input.targetConfig.database.embeddedPostgresPort,
     );
 
-    const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${targetHandle.port}/postgres`;
-    await ensurePostgresDatabase(adminConnectionString, "paperclip");
-    const targetConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${targetHandle.port}/paperclip`;
+    const adminConnectionString = `postgres://odysseus:odysseus@127.0.0.1:${targetHandle.port}/postgres`;
+    await ensurePostgresDatabase(adminConnectionString, "odysseus");
+    const targetConnectionString = `postgres://odysseus:odysseus@127.0.0.1:${targetHandle.port}/odysseus`;
     await runDatabaseRestore({
       connectionString: targetConnectionString,
       backupFile: backup.backupFile,
@@ -1405,19 +1405,19 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
   });
 
   writeConfig(targetConfig, paths.configPath);
-  const sourceEnvEntries = readPaperclipEnvEntries(resolvePaperclipEnvFile(sourceConfigPath));
+  const sourceEnvEntries = readOdysseusEnvEntries(resolveOdysseusEnvFile(sourceConfigPath));
   const existingAgentJwtSecret =
-    nonEmpty(sourceEnvEntries.PAPERCLIP_AGENT_JWT_SECRET) ??
-    nonEmpty(process.env.PAPERCLIP_AGENT_JWT_SECRET);
-  mergePaperclipEnvEntries(
+    nonEmpty(sourceEnvEntries.ODYSSEUS_AGENT_JWT_SECRET) ??
+    nonEmpty(process.env.ODYSSEUS_AGENT_JWT_SECRET);
+  mergeOdysseusEnvEntries(
     {
       ...buildWorktreeEnvEntries(paths, branding),
-      ...(existingAgentJwtSecret ? { PAPERCLIP_AGENT_JWT_SECRET: existingAgentJwtSecret } : {}),
+      ...(existingAgentJwtSecret ? { ODYSSEUS_AGENT_JWT_SECRET: existingAgentJwtSecret } : {}),
     },
     paths.envPath,
   );
   ensureAgentJwtSecret(paths.configPath);
-  loadPaperclipEnvFile(paths.configPath);
+  loadOdysseusEnvFile(paths.configPath);
   const copiedGitHooks = copyGitHooksToWorktreeGitDir(cwd);
 
   let seedSummary: string | null = null;
@@ -1485,20 +1485,20 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
   }
   p.outro(
     pc.green(
-      `Worktree ready. Run Paperclip inside this repo and the CLI/server will use ${paths.instanceId} automatically.`,
+      `Worktree ready. Run Odysseus inside this repo and the CLI/server will use ${paths.instanceId} automatically.`,
     ),
   );
 }
 
 export async function worktreeInitCommand(opts: WorktreeInitOptions): Promise<void> {
-  printPaperclipCliBanner();
-  p.intro(pc.bgCyan(pc.black(" paperclipai worktree init ")));
+  printOdysseusCliBanner();
+  p.intro(pc.bgCyan(pc.black(" odysseus worktree init ")));
   await runWorktreeInit(opts);
 }
 
 export async function worktreeMakeCommand(nameArg: string, opts: WorktreeMakeOptions): Promise<void> {
-  printPaperclipCliBanner();
-  p.intro(pc.bgCyan(pc.black(" paperclipai worktree:make ")));
+  printOdysseusCliBanner();
+  p.intro(pc.bgCyan(pc.black(" odysseus worktree:make ")));
 
   const name = resolveWorktreeMakeName(nameArg);
   const startPoint = resolveWorktreeStartPoint(opts.startPoint);
@@ -1593,7 +1593,7 @@ type MergeSourceChoice = {
   worktree: string;
   branch: string | null;
   branchLabel: string;
-  hasPaperclipConfig: boolean;
+  hasOdysseusConfig: boolean;
   isCurrent: boolean;
 };
 
@@ -1664,7 +1664,7 @@ function toMergeSourceChoices(cwd: string): MergeSourceChoice[] {
       worktree: worktreePath,
       branch: entry.branch,
       branchLabel,
-      hasPaperclipConfig: existsSync(path.resolve(worktreePath, ".paperclip", "config.json")),
+      hasOdysseusConfig: existsSync(path.resolve(worktreePath, ".odysseus", "config.json")),
       isCurrent: worktreePath === currentCwd,
     };
   });
@@ -1710,8 +1710,8 @@ function worktreePathHasUncommittedChanges(worktreePath: string): boolean {
 }
 
 export async function worktreeCleanupCommand(nameArg: string, opts: WorktreeCleanupOptions): Promise<void> {
-  printPaperclipCliBanner();
-  p.intro(pc.bgCyan(pc.black(" paperclipai worktree:cleanup ")));
+  printOdysseusCliBanner();
+  p.intro(pc.bgCyan(pc.black(" odysseus worktree:cleanup ")));
 
   const name = resolveWorktreeMakeName(nameArg);
   const sourceCwd = process.cwd();
@@ -1847,13 +1847,13 @@ export async function worktreeCleanupCommand(nameArg: string, opts: WorktreeClea
 
 export async function worktreeEnvCommand(opts: WorktreeEnvOptions): Promise<void> {
   const configPath = resolveConfigPath(opts.config);
-  const envPath = resolvePaperclipEnvFile(configPath);
-  const envEntries = readPaperclipEnvEntries(envPath);
+  const envPath = resolveOdysseusEnvFile(configPath);
+  const envEntries = readOdysseusEnvEntries(envPath);
   const out = {
-    PAPERCLIP_CONFIG: configPath,
-    ...(envEntries.PAPERCLIP_HOME ? { PAPERCLIP_HOME: envEntries.PAPERCLIP_HOME } : {}),
-    ...(envEntries.PAPERCLIP_INSTANCE_ID ? { PAPERCLIP_INSTANCE_ID: envEntries.PAPERCLIP_INSTANCE_ID } : {}),
-    ...(envEntries.PAPERCLIP_CONTEXT ? { PAPERCLIP_CONTEXT: envEntries.PAPERCLIP_CONTEXT } : {}),
+    ODYSSEUS_CONFIG: configPath,
+    ...(envEntries.ODYSSEUS_HOME ? { ODYSSEUS_HOME: envEntries.ODYSSEUS_HOME } : {}),
+    ...(envEntries.ODYSSEUS_INSTANCE_ID ? { ODYSSEUS_INSTANCE_ID: envEntries.ODYSSEUS_INSTANCE_ID } : {}),
+    ...(envEntries.ODYSSEUS_CONTEXT ? { ODYSSEUS_CONTEXT: envEntries.ODYSSEUS_CONTEXT } : {}),
     ...envEntries,
   };
 
@@ -1902,8 +1902,8 @@ function resolveAttachmentLookupStorages(input: {
     resolveCurrentEndpoint().configPath,
     input.targetEndpoint.configPath,
     ...toMergeSourceChoices(process.cwd())
-      .filter((choice) => choice.hasPaperclipConfig)
-      .map((choice) => path.resolve(choice.worktree, ".paperclip", "config.json")),
+      .filter((choice) => choice.hasOdysseusConfig)
+      .map((choice) => path.resolve(choice.worktree, ".odysseus", "config.json")),
   ];
   const seen = new Set<string>();
   const storages: ConfiguredStorage[] = [];
@@ -1921,7 +1921,7 @@ async function openConfiguredDb(configPath: string): Promise<OpenDbHandle> {
   if (!config) {
     throw new Error(`Config not found at ${configPath}.`);
   }
-  const envEntries = readPaperclipEnvEntries(resolvePaperclipEnvFile(configPath));
+  const envEntries = readOdysseusEnvEntries(resolveOdysseusEnvFile(configPath));
   let embeddedHandle: EmbeddedPostgresHandle | null = null;
 
   try {
@@ -1939,7 +1939,7 @@ async function openConfiguredDb(configPath: string): Promise<OpenDbHandle> {
           ? ` Pending migrations: ${migrationState.pendingMigrations.join(", ")}.`
           : "";
       throw new Error(
-        `Database for ${configPath} is not up to date.${pending} Run \`pnpm db:migrate\` (or start Paperclip once) before using worktree merge history.`,
+        `Database for ${configPath} is not up to date.${pending} Run \`pnpm db:migrate\` (or start Odysseus once) before using worktree merge history.`,
       );
     }
     const db = createDb(connectionString) as ClosableDb;
@@ -2110,7 +2110,7 @@ function renderMergePlan(plan: Awaited<ReturnType<typeof collectMergePlan>>["pla
   return lines.join("\n");
 }
 
-function resolveRunningEmbeddedPostgresPid(config: PaperclipConfig): number | null {
+function resolveRunningEmbeddedPostgresPid(config: OdysseusConfig): number | null {
   if (config.database.mode !== "embedded-postgres") {
     return null;
   }
@@ -2462,7 +2462,7 @@ export async function worktreeListCommand(opts: WorktreeListOptions): Promise<vo
   for (const choice of choices) {
     const flags = [
       choice.isCurrent ? "current" : null,
-      choice.hasPaperclipConfig ? "paperclip" : "no-paperclip-config",
+      choice.hasOdysseusConfig ? "odysseus" : "no-odysseus-config",
     ].filter((value): value is string => value !== null);
     p.log.message(`${choice.branchLabel}  ${choice.worktree}  [${flags.join(", ")}]`);
   }
@@ -2474,7 +2474,7 @@ function resolveEndpointFromChoice(choice: MergeSourceChoice): ResolvedWorktreeE
   }
   return {
     rootPath: choice.worktree,
-    configPath: path.resolve(choice.worktree, ".paperclip", "config.json"),
+    configPath: path.resolve(choice.worktree, ".odysseus", "config.json"),
     label: choice.branchLabel,
     isCurrent: false,
   };
@@ -2501,9 +2501,9 @@ function resolveWorktreeEndpointFromSelector(
     if (allowCurrent && directPath === currentEndpoint.rootPath) {
       return currentEndpoint;
     }
-    const configPath = path.resolve(directPath, ".paperclip", "config.json");
+    const configPath = path.resolve(directPath, ".odysseus", "config.json");
     if (!existsSync(configPath)) {
-      throw new Error(`Resolved worktree path ${directPath} does not contain .paperclip/config.json.`);
+      throw new Error(`Resolved worktree path ${directPath} does not contain .odysseus/config.json.`);
     }
     return {
       rootPath: directPath,
@@ -2524,8 +2524,8 @@ function resolveWorktreeEndpointFromSelector(
       `Could not resolve worktree "${selector}". Use a path, a listed worktree directory name, branch name, or "current".`,
     );
   }
-  if (!matched.hasPaperclipConfig && !matched.isCurrent) {
-    throw new Error(`Resolved worktree "${selector}" does not look like a Paperclip worktree.`);
+  if (!matched.hasOdysseusConfig && !matched.isCurrent) {
+    throw new Error(`Resolved worktree "${selector}" does not look like a Odysseus worktree.`);
   }
   return resolveEndpointFromChoice(matched);
 }
@@ -2534,7 +2534,7 @@ async function promptForSourceEndpoint(excludeWorktreePath?: string): Promise<Re
   const excluded = excludeWorktreePath ? path.resolve(excludeWorktreePath) : null;
   const currentEndpoint = resolveCurrentEndpoint();
   const choices = toMergeSourceChoices(process.cwd())
-    .filter((choice) => choice.hasPaperclipConfig || choice.isCurrent)
+    .filter((choice) => choice.hasOdysseusConfig || choice.isCurrent)
     .filter((choice) => path.resolve(choice.worktree) !== excluded)
     .map((choice) => ({
       value: choice.isCurrent ? "__current__" : choice.worktree,
@@ -2542,7 +2542,7 @@ async function promptForSourceEndpoint(excludeWorktreePath?: string): Promise<Re
       hint: `${choice.worktree}${choice.isCurrent ? " (current)" : ""}`,
     }));
   if (choices.length === 0) {
-    throw new Error("No Paperclip worktrees were found. Run `paperclipai worktree:list` to inspect the repo worktrees.");
+    throw new Error("No Odysseus worktrees were found. Run `odysseus worktree:list` to inspect the repo worktrees.");
   }
   const selection = await p.select<string>({
     message: "Choose the source worktree to import from",
@@ -2969,7 +2969,7 @@ export async function worktreeMergeHistoryCommand(sourceArg: string | undefined,
       : await promptForSourceEndpoint(targetEndpoint.rootPath);
 
   if (path.resolve(sourceEndpoint.configPath) === path.resolve(targetEndpoint.configPath)) {
-    throw new Error("Source and target Paperclip configs are the same. Choose different --from/--to worktrees.");
+    throw new Error("Source and target Odysseus configs are the same. Choose different --from/--to worktrees.");
   }
 
   const scopes = parseWorktreeMergeScopes(opts.scope);
@@ -3070,7 +3070,7 @@ async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
   const source = resolveWorktreeReseedSource(opts);
 
   if (path.resolve(source.configPath) === path.resolve(targetEndpoint.configPath)) {
-    throw new Error("Source and target Paperclip configs are the same. Choose different --from/--to values.");
+    throw new Error("Source and target Odysseus configs are the same. Choose different --from/--to values.");
   }
   if (!existsSync(source.configPath)) {
     throw new Error(`Source config not found at ${source.configPath}.`);
@@ -3092,14 +3092,14 @@ async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
   const runningTargetPid = resolveRunningEmbeddedPostgresPid(targetConfig);
   if (runningTargetPid && !opts.allowLiveTarget) {
     throw new Error(
-      `Target worktree database appears to be running (pid ${runningTargetPid}). Stop Paperclip in ${targetEndpoint.rootPath} before reseeding, or re-run with --allow-live-target if you want to override this guard.`,
+      `Target worktree database appears to be running (pid ${runningTargetPid}). Stop Odysseus in ${targetEndpoint.rootPath} before reseeding, or re-run with --allow-live-target if you want to override this guard.`,
     );
   }
 
   const confirmed = opts.yes
     ? true
     : await p.confirm({
-      message: `Overwrite the isolated Paperclip DB for ${targetEndpoint.label} from ${source.label} using ${seedMode} seed mode?`,
+      message: `Overwrite the isolated Odysseus DB for ${targetEndpoint.label} from ${source.label} using ${seedMode} seed mode?`,
       initialValue: false,
     });
   if (p.isCancel(confirmed) || !confirmed) {
@@ -3148,14 +3148,14 @@ async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
 }
 
 export async function worktreeReseedCommand(opts: WorktreeReseedOptions): Promise<void> {
-  printPaperclipCliBanner();
-  p.intro(pc.bgCyan(pc.black(" paperclipai worktree reseed ")));
+  printOdysseusCliBanner();
+  p.intro(pc.bgCyan(pc.black(" odysseus worktree reseed ")));
   await runWorktreeReseed(opts);
 }
 
 export async function worktreeRepairCommand(opts: WorktreeRepairOptions): Promise<void> {
-  printPaperclipCliBanner();
-  p.intro(pc.bgCyan(pc.black(" paperclipai worktree repair ")));
+  printOdysseusCliBanner();
+  p.intro(pc.bgCyan(pc.black(" odysseus worktree repair ")));
 
   const seedMode = opts.seedMode ?? "minimal";
   if (!isWorktreeSeedMode(seedMode)) {
@@ -3178,13 +3178,13 @@ export async function worktreeRepairCommand(opts: WorktreeRepairOptions): Promis
     throw new Error(`Source config not found at ${source.configPath}.`);
   }
   if (path.resolve(source.configPath) === path.resolve(target.configPath)) {
-    throw new Error("Source and target Paperclip configs are the same. Use --from-config/--from-instance to point repair at a different source.");
+    throw new Error("Source and target Odysseus configs are the same. Use --from-config/--from-instance to point repair at a different source.");
   }
 
   const targetConfig = existsSync(target.configPath) ? readConfig(target.configPath) : null;
-  const targetEnvEntries = readPaperclipEnvEntries(resolvePaperclipEnvFile(target.configPath));
+  const targetEnvEntries = readOdysseusEnvEntries(resolveOdysseusEnvFile(target.configPath));
   const targetHasWorktreeEnv = Boolean(
-    nonEmpty(targetEnvEntries.PAPERCLIP_HOME) && nonEmpty(targetEnvEntries.PAPERCLIP_INSTANCE_ID),
+    nonEmpty(targetEnvEntries.ODYSSEUS_HOME) && nonEmpty(targetEnvEntries.ODYSSEUS_INSTANCE_ID),
   );
 
   if (targetConfig && targetHasWorktreeEnv && opts.noSeed) {
@@ -3214,7 +3214,7 @@ export async function worktreeRepairCommand(opts: WorktreeRepairOptions): Promis
   const runningTargetPid = readRunningPostmasterPid(path.resolve(repairPaths.embeddedPostgresDataDir, "postmaster.pid"));
   if (runningTargetPid && !opts.allowLiveTarget) {
     throw new Error(
-      `Target worktree database appears to be running (pid ${runningTargetPid}). Stop Paperclip in ${target.rootPath} before repairing, or re-run with --allow-live-target if you want to override this guard.`,
+      `Target worktree database appears to be running (pid ${runningTargetPid}). Stop Odysseus in ${target.rootPath} before repairing, or re-run with --allow-live-target if you want to override this guard.`,
     );
   }
   if (runningTargetPid && opts.allowLiveTarget) {
@@ -3240,17 +3240,17 @@ export async function worktreeRepairCommand(opts: WorktreeRepairOptions): Promis
 }
 
 export function registerWorktreeCommands(program: Command): void {
-  const worktree = program.command("worktree").description("Worktree-local Paperclip instance helpers");
+  const worktree = program.command("worktree").description("Worktree-local Odysseus instance helpers");
 
   program
     .command("worktree:make")
-    .description("Create ~/NAME as a git worktree, then initialize an isolated Paperclip instance inside it")
-    .argument("<name>", "Worktree name — auto-prefixed with paperclip- if needed (created at ~/paperclip-NAME)")
-    .option("--start-point <ref>", "Remote ref to base the new branch on (env: PAPERCLIP_WORKTREE_START_POINT)")
+    .description("Create ~/NAME as a git worktree, then initialize an isolated Odysseus instance inside it")
+    .argument("<name>", "Worktree name — auto-prefixed with odysseus- if needed (created at ~/odysseus-NAME)")
+    .option("--start-point <ref>", "Remote ref to base the new branch on (env: ODYSSEUS_WORKTREE_START_POINT)")
     .option("--instance <id>", "Explicit isolated instance id")
-    .option("--home <path>", `Home root for worktree instances (env: PAPERCLIP_WORKTREES_DIR, default: ${DEFAULT_WORKTREE_HOME})`)
+    .option("--home <path>", `Home root for worktree instances (env: ODYSSEUS_WORKTREES_DIR, default: ${DEFAULT_WORKTREE_HOME})`)
     .option("--from-config <path>", "Source config.json to seed from")
-    .option("--from-data-dir <path>", "Source PAPERCLIP_HOME used when deriving the source config")
+    .option("--from-data-dir <path>", "Source ODYSSEUS_HOME used when deriving the source config")
     .option("--from-instance <id>", "Source instance id when deriving the source config", "default")
     .option("--server-port <port>", "Preferred server port", (value) => Number(value))
     .option("--db-port <port>", "Preferred embedded Postgres port", (value) => Number(value))
@@ -3265,9 +3265,9 @@ export function registerWorktreeCommands(program: Command): void {
     .description("Create repo-local config/env and an isolated instance for this worktree")
     .option("--name <name>", "Display name used to derive the instance id")
     .option("--instance <id>", "Explicit isolated instance id")
-    .option("--home <path>", `Home root for worktree instances (env: PAPERCLIP_WORKTREES_DIR, default: ${DEFAULT_WORKTREE_HOME})`)
+    .option("--home <path>", `Home root for worktree instances (env: ODYSSEUS_WORKTREES_DIR, default: ${DEFAULT_WORKTREE_HOME})`)
     .option("--from-config <path>", "Source config.json to seed from")
-    .option("--from-data-dir <path>", "Source PAPERCLIP_HOME used when deriving the source config")
+    .option("--from-data-dir <path>", "Source ODYSSEUS_HOME used when deriving the source config")
     .option("--from-instance <id>", "Source instance id when deriving the source config", "default")
     .option("--server-port <port>", "Preferred server port", (value) => Number(value))
     .option("--db-port <port>", "Preferred embedded Postgres port", (value) => Number(value))
@@ -3279,14 +3279,14 @@ export function registerWorktreeCommands(program: Command): void {
 
   worktree
     .command("env")
-    .description("Print shell exports for the current worktree-local Paperclip instance")
+    .description("Print shell exports for the current worktree-local Odysseus instance")
     .option("-c, --config <path>", "Path to config file")
     .option("--json", "Print JSON instead of shell exports")
     .action(worktreeEnvCommand);
 
   program
     .command("worktree:list")
-    .description("List git worktrees visible from this repo and whether they look like Paperclip worktrees")
+    .description("List git worktrees visible from this repo and whether they look like Odysseus worktrees")
     .option("--json", "Print JSON instead of text output")
     .action(worktreeListCommand);
 
@@ -3305,11 +3305,11 @@ export function registerWorktreeCommands(program: Command): void {
 
   worktree
     .command("reseed")
-    .description("Re-seed an existing worktree-local instance from another Paperclip instance or worktree")
+    .description("Re-seed an existing worktree-local instance from another Odysseus instance or worktree")
     .option("--from <worktree>", "Source worktree path, directory name, branch name, or current")
     .option("--to <worktree>", "Target worktree path, directory name, branch name, or current (defaults to current)")
     .option("--from-config <path>", "Source config.json to seed from")
-    .option("--from-data-dir <path>", "Source PAPERCLIP_HOME used when deriving the source config")
+    .option("--from-data-dir <path>", "Source ODYSSEUS_HOME used when deriving the source config")
     .option("--from-instance <id>", "Source instance id when deriving the source config")
     .option("--seed-mode <mode>", "Seed profile: minimal or full (default: full)", "full")
     .option("--preserve-live-work", "Do not quarantine copied agent timers or assigned open issues in the seeded worktree", false)
@@ -3319,11 +3319,11 @@ export function registerWorktreeCommands(program: Command): void {
 
   worktree
     .command("repair")
-    .description("Create or repair a linked worktree-local Paperclip instance without touching the primary checkout")
-    .option("--branch <name>", "Existing branch/worktree selector to repair, or a branch name to create under .paperclip/worktrees")
-    .option("--home <path>", `Home root for worktree instances (env: PAPERCLIP_WORKTREES_DIR, default: ${DEFAULT_WORKTREE_HOME})`)
+    .description("Create or repair a linked worktree-local Odysseus instance without touching the primary checkout")
+    .option("--branch <name>", "Existing branch/worktree selector to repair, or a branch name to create under .odysseus/worktrees")
+    .option("--home <path>", `Home root for worktree instances (env: ODYSSEUS_WORKTREES_DIR, default: ${DEFAULT_WORKTREE_HOME})`)
     .option("--from-config <path>", "Source config.json to seed from")
-    .option("--from-data-dir <path>", "Source PAPERCLIP_HOME used when deriving the source config")
+    .option("--from-data-dir <path>", "Source ODYSSEUS_HOME used when deriving the source config")
     .option("--from-instance <id>", "Source instance id when deriving the source config (default: default)")
     .option("--seed-mode <mode>", "Seed profile: minimal or full (default: minimal)", "minimal")
     .option("--preserve-live-work", "Do not quarantine copied agent timers or assigned open issues in the seeded worktree", false)
@@ -3334,9 +3334,9 @@ export function registerWorktreeCommands(program: Command): void {
   program
     .command("worktree:cleanup")
     .description("Safely remove a worktree, its branch, and its isolated instance data")
-    .argument("<name>", "Worktree name — auto-prefixed with paperclip- if needed")
+    .argument("<name>", "Worktree name — auto-prefixed with odysseus- if needed")
     .option("--instance <id>", "Explicit instance id (if different from the worktree name)")
-    .option("--home <path>", `Home root for worktree instances (env: PAPERCLIP_WORKTREES_DIR, default: ${DEFAULT_WORKTREE_HOME})`)
+    .option("--home <path>", `Home root for worktree instances (env: ODYSSEUS_WORKTREES_DIR, default: ${DEFAULT_WORKTREE_HOME})`)
     .option("--force", "Bypass safety checks (uncommitted changes, unique commits)", false)
     .action(worktreeCleanupCommand);
 }

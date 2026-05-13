@@ -1,5 +1,5 @@
 import { Router, type Request } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@odysseus/db";
 import {
   createRoutineSchema,
   createRoutineTriggerSchema,
@@ -7,8 +7,8 @@ import {
   runRoutineSchema,
   updateRoutineSchema,
   updateRoutineTriggerSchema,
-} from "@paperclipai/shared";
-import { trackRoutineCreated } from "@paperclipai/shared/telemetry";
+} from "@odysseus/shared";
+import { trackRoutineCreated } from "@odysseus/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { accessService, logActivity, routineService } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -440,9 +440,9 @@ export function routineRoutes(
   router.post("/routine-triggers/public/:publicId/fire", async (req, res) => {
     const result = await svc.firePublicTrigger(req.params.publicId as string, {
       authorizationHeader: req.header("authorization"),
-      signatureHeader: req.header("x-paperclip-signature"),
+      signatureHeader: req.header("x-odysseus-signature"),
       hubSignatureHeader: req.header("x-hub-signature-256"),
-      timestampHeader: req.header("x-paperclip-timestamp"),
+      timestampHeader: req.header("x-odysseus-timestamp"),
       idempotencyKey: req.header("idempotency-key"),
       rawBody: (req as { rawBody?: Buffer }).rawBody ?? null,
       payload: typeof req.body === "object" && req.body !== null ? req.body as Record<string, unknown> : null,

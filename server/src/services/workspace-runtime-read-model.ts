@@ -1,5 +1,5 @@
-import type { Db } from "@paperclipai/db";
-import { workspaceRuntimeServices } from "@paperclipai/db";
+import type { Db } from "@odysseus/db";
+import { workspaceRuntimeServices } from "@odysseus/db";
 import { and, desc, eq, inArray } from "drizzle-orm";
 
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;

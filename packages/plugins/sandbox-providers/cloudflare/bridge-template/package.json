@@ -1,5 +1,5 @@
 {
-  "name": "paperclip-cloudflare-sandbox-bridge-template",
+  "name": "odysseus-cloudflare-sandbox-bridge-template",
   "private": true,
   "type": "module",
   "scripts": {

@@ -7,7 +7,7 @@ import { createAcpxLocalExecutor } from "./execute.js";
 const tempRoots: string[] = [];
 
 async function makeTempRoot() {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-skills-"));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "odysseus-acpx-skills-"));
   tempRoots.push(root);
   return root;
 }
@@ -110,8 +110,8 @@ describe("acpx_local runtime skill isolation", () => {
     const { meta } = await runExecutor({
       agent: "claude",
       stateDir,
-      paperclipRuntimeSkills: [skill],
-      paperclipSkillSync: { desiredSkills: [skill.key] },
+      odysseusRuntimeSkills: [skill],
+      odysseusSkillSync: { desiredSkills: [skill.key] },
     });
 
     const mountedRoot = await onlyChildDir(path.join(stateDir, "runtime-skills", "claude"));
@@ -139,18 +139,18 @@ describe("acpx_local runtime skill isolation", () => {
       agent: "codex",
       stateDir: path.join(root, "state"),
       env: { CODEX_HOME: codexHome },
-      paperclipRuntimeSkills: [keep, remove],
+      odysseusRuntimeSkills: [keep, remove],
     };
 
     await runExecutor({
       ...baseConfig,
-      paperclipSkillSync: { desiredSkills: [keep.key, remove.key] },
+      odysseusSkillSync: { desiredSkills: [keep.key, remove.key] },
     });
     expect(await pathExists(path.join(codexHome, "skills", remove.runtimeName, "SKILL.md"))).toBe(true);
 
     await runExecutor({
       ...baseConfig,
-      paperclipSkillSync: { desiredSkills: [keep.key] },
+      odysseusSkillSync: { desiredSkills: [keep.key] },
     });
 
     expect(await pathExists(path.join(codexHome, "skills", keep.runtimeName, "SKILL.md"))).toBe(true);
@@ -172,8 +172,8 @@ describe("acpx_local runtime skill isolation", () => {
       agent: "codex",
       stateDir: path.join(root, "state"),
       env: { CODEX_HOME: codexHome },
-      paperclipRuntimeSkills: [legacy],
-      paperclipSkillSync: { desiredSkills: [] },
+      odysseusRuntimeSkills: [legacy],
+      odysseusSkillSync: { desiredSkills: [] },
     });
 
     expect(await pathExists(path.join(skillsHome, legacy.runtimeName))).toBe(false);
@@ -182,12 +182,12 @@ describe("acpx_local runtime skill isolation", () => {
   it.skipIf(process.platform === "win32")("replaces stale managed Codex auth files with source symlinks", async () => {
     const root = await makeTempRoot();
     const sourceCodexHome = path.join(root, "source-codex-home");
-    const paperclipHome = path.join(root, "paperclip-home");
-    const paperclipInstanceId = "test-instance";
+    const odysseusHome = path.join(root, "odysseus-home");
+    const odysseusInstanceId = "test-instance";
     const managedCodexHome = path.join(
-      paperclipHome,
+      odysseusHome,
       "instances",
-      paperclipInstanceId,
+      odysseusInstanceId,
       "companies",
       "company-1",
       "codex-home",
@@ -200,25 +200,25 @@ describe("acpx_local runtime skill isolation", () => {
     await fs.writeFile(managedAuth, "{\"stale\":true}", "utf8");
 
     const previousCodexHome = process.env.CODEX_HOME;
-    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
-    const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    const previousOdysseusHome = process.env.ODYSSEUS_HOME;
+    const previousOdysseusInstanceId = process.env.ODYSSEUS_INSTANCE_ID;
     try {
       process.env.CODEX_HOME = sourceCodexHome;
-      process.env.PAPERCLIP_HOME = paperclipHome;
-      process.env.PAPERCLIP_INSTANCE_ID = paperclipInstanceId;
+      process.env.ODYSSEUS_HOME = odysseusHome;
+      process.env.ODYSSEUS_INSTANCE_ID = odysseusInstanceId;
       await runExecutor({
         agent: "codex",
         stateDir: path.join(root, "state"),
-        paperclipRuntimeSkills: [],
-        paperclipSkillSync: { desiredSkills: [] },
+        odysseusRuntimeSkills: [],
+        odysseusSkillSync: { desiredSkills: [] },
       });
     } finally {
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
-      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
-      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
-      if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
-      else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
+      if (previousOdysseusHome === undefined) delete process.env.ODYSSEUS_HOME;
+      else process.env.ODYSSEUS_HOME = previousOdysseusHome;
+      if (previousOdysseusInstanceId === undefined) delete process.env.ODYSSEUS_INSTANCE_ID;
+      else process.env.ODYSSEUS_INSTANCE_ID = previousOdysseusInstanceId;
     }
 
     const authStat = await fs.lstat(managedAuth);
@@ -237,12 +237,12 @@ describe("acpx_local runtime skill isolation", () => {
     await runExecutor({
       ...baseConfig,
       agent: "custom-a",
-      env: { PAPERCLIP_API_KEY: "old-key" },
+      env: { ODYSSEUS_API_KEY: "old-key" },
     });
     await runExecutor({
       ...baseConfig,
       agent: "custom-b",
-      env: { PAPERCLIP_API_KEY: "new-key" },
+      env: { ODYSSEUS_API_KEY: "new-key" },
     });
 
     const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
@@ -257,10 +257,10 @@ describe("acpx_local runtime skill isolation", () => {
     expect((await fs.stat(envPath)).mode & 0o777).toBe(0o600);
     expect((await fs.stat(wrapperPath)).mode & 0o777).toBe(0o700);
     expect(wrapper).toContain("node ./fake-acp.js");
-    expect(wrapper).not.toContain("PAPERCLIP_API_KEY");
+    expect(wrapper).not.toContain("ODYSSEUS_API_KEY");
     expect(wrapper).not.toContain("new-key");
     expect(wrapper).not.toContain("old-key");
-    expect(env).toContain("PAPERCLIP_API_KEY='new-key'");
+    expect(env).toContain("ODYSSEUS_API_KEY='new-key'");
     expect(env).not.toContain("old-key");
   });
 
@@ -277,12 +277,12 @@ describe("acpx_local runtime skill isolation", () => {
       },
       {
         context: {
-          paperclipWorkspace: {
+          odysseusWorkspace: {
             cwd: workspaceDir,
             source: "project_primary",
             strategy: "git_worktree",
             workspaceId: "workspace-1",
-            repoUrl: "https://github.com/paperclipai/paperclip.git",
+            repoUrl: "https://github.com/PossibLaw/odysseus.git",
             repoRef: "main",
             branchName: "feature/remote-acpx",
             worktreePath: workspaceDir,
@@ -311,8 +311,8 @@ describe("acpx_local runtime skill isolation", () => {
     );
     const env = await fs.readFile(envPath, "utf8");
 
-    expect(env).toContain("PAPERCLIP_WORKSPACE_CWD='/remote/workspace'");
-    expect(env).not.toContain("PAPERCLIP_WORKSPACE_WORKTREE_PATH=");
+    expect(env).toContain("ODYSSEUS_WORKSPACE_CWD='/remote/workspace'");
+    expect(env).not.toContain("ODYSSEUS_WORKSPACE_WORKTREE_PATH=");
   });
 
   it("cleans aged credential wrapper scripts across ACPX agent changes", async () => {
@@ -327,7 +327,7 @@ describe("acpx_local runtime skill isolation", () => {
     await runExecutor({
       ...baseConfig,
       agent: "custom-a",
-      env: { PAPERCLIP_API_KEY: "old-key" },
+      env: { ODYSSEUS_API_KEY: "old-key" },
     });
     const oldDate = new Date(Date.now() - 16 * 60 * 1000);
     await Promise.all(
@@ -339,7 +339,7 @@ describe("acpx_local runtime skill isolation", () => {
     await runExecutor({
       ...baseConfig,
       agent: "custom-b",
-      env: { PAPERCLIP_API_KEY: "new-key" },
+      env: { ODYSSEUS_API_KEY: "new-key" },
     });
 
     const wrappers = await fs.readdir(wrappersDir);
@@ -360,11 +360,11 @@ describe("acpx_local runtime skill isolation", () => {
 
     await runExecutor({
       ...baseConfig,
-      env: { PAPERCLIP_API_KEY: "first-key" },
+      env: { ODYSSEUS_API_KEY: "first-key" },
     });
     await runExecutor({
       ...baseConfig,
-      env: { PAPERCLIP_API_KEY: "second-key" },
+      env: { ODYSSEUS_API_KEY: "second-key" },
     });
 
     const envFileNames = (await fs.readdir(path.join(stateDir, "wrappers"))).filter((name) => name.endsWith(".env"));
@@ -372,11 +372,11 @@ describe("acpx_local runtime skill isolation", () => {
     const envFiles = await Promise.all(
       envFileNames.map(async (name) => fs.readFile(path.join(stateDir, "wrappers", name), "utf8")),
     );
-    expect(envFiles.filter((contents) => contents.includes("PAPERCLIP_API_KEY='first-key'"))).toHaveLength(1);
-    expect(envFiles.filter((contents) => contents.includes("PAPERCLIP_API_KEY='second-key'"))).toHaveLength(1);
+    expect(envFiles.filter((contents) => contents.includes("ODYSSEUS_API_KEY='first-key'"))).toHaveLength(1);
+    expect(envFiles.filter((contents) => contents.includes("ODYSSEUS_API_KEY='second-key'"))).toHaveLength(1);
   });
 
-  it("passes Paperclip env through the ACP agent wrapper instead of process.env", async () => {
+  it("passes Odysseus env through the ACP agent wrapper instead of process.env", async () => {
     let observedApiKeyDuringStream: string | undefined;
     const execute = createAcpxLocalExecutor({
       createRuntime: () => ({
@@ -388,7 +388,7 @@ describe("acpx_local runtime skill isolation", () => {
         startTurn: () => ({
           events: (async function* () {
             await Promise.resolve();
-            observedApiKeyDuringStream = process.env.PAPERCLIP_API_KEY;
+            observedApiKeyDuringStream = process.env.ODYSSEUS_API_KEY;
             yield { type: "done", stopReason: "end_turn" };
           })(),
           result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
@@ -398,9 +398,9 @@ describe("acpx_local runtime skill isolation", () => {
       }) as never,
     });
 
-    const previousApiKey = process.env.PAPERCLIP_API_KEY;
+    const previousApiKey = process.env.ODYSSEUS_API_KEY;
     try {
-      delete process.env.PAPERCLIP_API_KEY;
+      delete process.env.ODYSSEUS_API_KEY;
       const result = await execute({
         runId: "run-1",
         agent: {
@@ -418,8 +418,8 @@ describe("acpx_local runtime skill isolation", () => {
       expect(result.exitCode).toBe(0);
       expect(observedApiKeyDuringStream).toBeUndefined();
     } finally {
-      if (previousApiKey === undefined) delete process.env.PAPERCLIP_API_KEY;
-      else process.env.PAPERCLIP_API_KEY = previousApiKey;
+      if (previousApiKey === undefined) delete process.env.ODYSSEUS_API_KEY;
+      else process.env.ODYSSEUS_API_KEY = previousApiKey;
     }
   });
 });

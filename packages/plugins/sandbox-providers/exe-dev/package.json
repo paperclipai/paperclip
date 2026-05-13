@@ -1,15 +1,15 @@
 {
-  "name": "@paperclipai/plugin-exe-dev",
+  "name": "@odysseus/plugin-exe-dev",
   "version": "0.1.0",
   "description": "exe.dev sandbox provider plugin for Paperclip environments",
   "license": "MIT",
-  "homepage": "https://github.com/paperclipai/paperclip",
+  "homepage": "https://github.com/PossibLaw/odysseus",
   "bugs": {
-    "url": "https://github.com/paperclipai/paperclip/issues"
+    "url": "https://github.com/PossibLaw/odysseus/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/paperclipai/paperclip",
+    "url": "https://github.com/PossibLaw/odysseus",
     "directory": "packages/plugins/sandbox-providers/exe-dev"
   },
   "type": "module",
@@ -30,22 +30,22 @@
   "files": [
     "dist"
   ],
-  "paperclipPlugin": {
+  "odysseusPlugin": {
     "manifest": "./dist/manifest.js",
     "worker": "./dist/worker.js"
   },
   "keywords": [
-    "paperclip",
+    "odysseus",
     "plugin",
     "sandbox",
     "exe.dev"
   ],
   "scripts": {
     "postinstall": "node ../../../../scripts/link-plugin-dev-sdk.mjs",
-    "prebuild": "pnpm -C ../../../.. --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "prebuild": "pnpm -C ../../../.. --filter @odysseus/plugin-sdk ensure-build-deps",
     "build": "rm -rf dist && tsc",
     "clean": "rm -rf dist",
-    "typecheck": "pnpm -C ../../../.. --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit",
+    "typecheck": "pnpm -C ../../../.. --filter @odysseus/plugin-sdk ensure-build-deps && tsc --noEmit",
     "test": "vitest run --config vitest.config.ts",
     "prepack": "rm -f package.dev.json && cp package.json package.dev.json && node ../../../../scripts/generate-plugin-package-json.mjs",
     "postpack": "if [ -f package.dev.json ]; then mv package.dev.json package.json; fi"

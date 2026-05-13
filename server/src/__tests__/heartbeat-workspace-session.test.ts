@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { agents } from "@paperclipai/db";
-import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
+import type { agents } from "@odysseus/db";
+import { sessionCodec as codexSessionCodec } from "@odysseus/adapter-codex-local/server";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
   applyPersistedExecutionWorkspaceConfig,
@@ -229,7 +229,7 @@ describe("buildRealizedExecutionWorkspaceFromPersisted", () => {
         name: "PAP-880-thumbs-capture-for-evals-feature",
         status: "active",
         cwd: "/tmp/reused-worktree",
-        repoUrl: "https://example.com/paperclip.git",
+        repoUrl: "https://example.com/odysseus.git",
         baseRef: "main",
         branchName: "PAP-880-thumbs-capture-for-evals-feature",
         providerType: "git_worktree",
@@ -394,7 +394,7 @@ describe("comment wake batching", () => {
         wakeReason: "issue_commented",
         wakeCommentId: "comment-1",
         wakeCommentIds: ["comment-1"],
-        paperclipWake: {
+        odysseusWake: {
           latestCommentId: "comment-1",
         },
       },
@@ -408,7 +408,7 @@ describe("comment wake batching", () => {
     expect(extractWakeCommentIds(merged)).toEqual(["comment-1", "comment-2"]);
     expect(merged.commentId).toBe("comment-2");
     expect(merged.wakeCommentId).toBe("comment-2");
-    expect(merged.paperclipWake).toBeUndefined();
+    expect(merged.odysseusWake).toBeUndefined();
   });
 });
 
@@ -467,7 +467,7 @@ describe("formatRuntimeWorkspaceWarningLog", () => {
   it("emits informational workspace warnings on stdout", () => {
     expect(formatRuntimeWorkspaceWarningLog("Using fallback workspace")).toEqual({
       stream: "stdout",
-      chunk: "[paperclip] Using fallback workspace\n",
+      chunk: "[odysseus] Using fallback workspace\n",
     });
   });
 });
@@ -509,7 +509,7 @@ describe("prioritizeProjectWorkspaceCandidatesForRun", () => {
 });
 
 describe("parseSessionCompactionPolicy", () => {
-  it("disables Paperclip-managed rotation by default for codex and claude local", () => {
+  it("disables Odysseus-managed rotation by default for codex and claude local", () => {
     expect(parseSessionCompactionPolicy(buildAgent("codex_local"))).toEqual({
       enabled: true,
       maxSessionRuns: 0,

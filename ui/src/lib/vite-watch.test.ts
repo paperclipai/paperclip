@@ -17,13 +17,13 @@ describe("shouldIgnoreUiDevWatchPath", () => {
 
 describe("createUiDevWatchOptions", () => {
   it("preserves the WSL /mnt polling fallback", () => {
-    expect(createUiDevWatchOptions("/mnt/c/paperclip")).toMatchObject({
+    expect(createUiDevWatchOptions("/mnt/c/odysseus")).toMatchObject({
       usePolling: true,
       interval: 1000,
     });
   });
 
   it("always includes the ignored-path predicate", () => {
-    expect(createUiDevWatchOptions("/Users/dotta/paperclip")).toHaveProperty("ignored");
+    expect(createUiDevWatchOptions("/Users/dotta/odysseus")).toHaveProperty("ignored");
   });
 });

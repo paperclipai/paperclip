@@ -12,5 +12,5 @@
   "enabled_in_profiles": ["in-house-dept"],
   "privilege_ring_default": "attorney-client",
   "actions_gated": ["delete_row", "truncate_table"],
-  "notes": "When supabase is enabled as the data backend, the paperclip-inherited Postgres is bypassed in favor of Supabase-managed Postgres + RLS. Privilege isolation is enforced at the RLS-policy layer."
+  "notes": "When supabase is enabled as the data backend, the odysseus-inherited Postgres is bypassed in favor of Supabase-managed Postgres + RLS. Privilege isolation is enforced at the RLS-policy layer."
 }

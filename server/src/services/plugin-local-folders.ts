@@ -8,7 +8,7 @@ import type {
   PluginLocalFolderListing,
   PluginLocalFolderProblem,
   PluginLocalFolderStatus,
-} from "@paperclipai/plugin-sdk";
+} from "@odysseus/plugin-sdk";
 import { badRequest, forbidden, notFound } from "../errors.js";
 
 export interface StoredPluginLocalFolderConfig {
@@ -204,7 +204,7 @@ export async function inspectPluginLocalFolder(input: {
       if (access === "readWrite") {
         try {
           await fs.access(realPath, fsConstants.W_OK);
-          const probePath = path.join(realPath, `.paperclip-local-folder-probe-${process.pid}-${Date.now()}`);
+          const probePath = path.join(realPath, `.odysseus-local-folder-probe-${process.pid}-${Date.now()}`);
           await fs.writeFile(probePath, "");
           await fs.rm(probePath, { force: true });
           writable = true;
@@ -491,7 +491,7 @@ export async function writePluginLocalFolderTextAtomic(
   await assertPathInsideRoot(rootRealPath, path.dirname(resolved.absolutePath));
   const tempPath = path.join(
     path.dirname(resolved.absolutePath),
-    `.paperclip-${path.basename(resolved.absolutePath)}-${process.pid}-${randomUUID()}.tmp`,
+    `.odysseus-${path.basename(resolved.absolutePath)}-${process.pid}-${randomUUID()}.tmp`,
   );
   let tempCreated = false;
   try {
@@ -588,7 +588,7 @@ export async function deletePluginLocalFolderFile(
 }
 
 export function defaultLocalFolderBasePath(pluginKey: string, companyId: string) {
-  return path.join(os.homedir(), ".paperclip", "plugin-data", companyId, pluginKey);
+  return path.join(os.homedir(), ".odysseus", "plugin-data", companyId, pluginKey);
 }
 
 export function assertConfiguredLocalFolder(status: PluginLocalFolderStatus) {

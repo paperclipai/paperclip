@@ -1,12 +1,12 @@
 FROM ubuntu:24.04
 
 ARG NODE_MAJOR=20
-ARG PAPERCLIPAI_VERSION=latest
+ARG ODYSSEUS_AI_VERSION=latest
 ARG HOST_UID=10001
 
 ENV DEBIAN_FRONTEND=noninteractive \
-  PAPERCLIP_HOME=/paperclip \
-  PAPERCLIP_OPEN_ON_LISTEN=false \
+  ODYSSEUS_HOME=/paperclip \
+  ODYSSEUS_OPEN_ON_LISTEN=false \
   HOST=0.0.0.0 \
   PORT=3100 \
   HOME=/home/paperclip \
@@ -14,7 +14,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
   LC_ALL=en_US.UTF-8 \
   NPM_CONFIG_UPDATE_NOTIFIER=false \
   NODE_MAJOR=${NODE_MAJOR} \
-  PAPERCLIPAI_VERSION=${PAPERCLIPAI_VERSION}
+  ODYSSEUS_AI_VERSION=${ODYSSEUS_AI_VERSION}
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl gnupg locales \
@@ -37,4 +37,4 @@ WORKDIR /home/paperclip/workspace
 EXPOSE 3100
 USER paperclip
 
-CMD ["bash", "-lc", "set -euo pipefail; mkdir -p \"$PAPERCLIP_HOME\"; npx --yes \"paperclipai@${PAPERCLIPAI_VERSION}\" onboard --yes --data-dir \"$PAPERCLIP_HOME\""]
+CMD ["bash", "-lc", "set -euo pipefail; mkdir -p \"$ODYSSEUS_HOME\"; npx --yes \"paperclipai@${ODYSSEUS_AI_VERSION}\" onboard --yes --data-dir \"$ODYSSEUS_HOME\""]

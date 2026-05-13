@@ -130,7 +130,7 @@ describe("agent test-environment route", () => {
     mockEnvironmentRuntime.acquireRunLease.mockResolvedValue({
       lease: {
         id: "lease-1",
-        metadata: { remoteCwd: "/home/user/paperclip-workspace" },
+        metadata: { remoteCwd: "/home/user/odysseus-workspace" },
       },
       leaseContext: {
         executionWorkspaceId: null,
@@ -138,7 +138,7 @@ describe("agent test-environment route", () => {
       },
     });
     mockEnvironmentRuntime.realizeWorkspace.mockResolvedValue({
-      cwd: "/home/user/paperclip-workspace",
+      cwd: "/home/user/odysseus-workspace",
     });
     mockResolveEnvironmentExecutionTarget.mockResolvedValue(null);
     testEnvironmentSpy.mockResolvedValue({
@@ -229,7 +229,7 @@ describe("agent test-environment route", () => {
     mockResolveEnvironmentExecutionTarget.mockResolvedValueOnce({
       kind: "remote",
       transport: "sandbox",
-      remoteCwd: "/home/user/paperclip-workspace",
+      remoteCwd: "/home/user/odysseus-workspace",
       providerKey: "fake-plugin",
       runner: { execute: vi.fn() },
     });

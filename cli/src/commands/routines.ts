@@ -10,9 +10,9 @@ import {
   ensurePostgresDatabase,
   formatEmbeddedPostgresError,
   routines,
-} from "@paperclipai/db";
+} from "@odysseus/db";
 import { eq, inArray } from "drizzle-orm";
-import { loadPaperclipEnvFile } from "../config/env.js";
+import { loadOdysseusEnvFile } from "../config/env.js";
 import { readConfig, resolveConfigPath } from "../config/store.js";
 
 type RoutinesDisableAllOptions = {
@@ -131,8 +131,8 @@ async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): P
   const logBuffer = createEmbeddedPostgresLogBuffer();
   const instance = new EmbeddedPostgres({
     databaseDir: dataDir,
-    user: "paperclip",
-    password: "paperclip",
+    user: "odysseus",
+    password: "odysseus",
     port,
     persistent: true,
     initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
@@ -193,9 +193,9 @@ async function openConfiguredDb(configPath: string): Promise<{
         config.database.embeddedPostgresDataDir,
         config.database.embeddedPostgresPort,
       );
-      const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${embeddedHandle.port}/postgres`;
-      await ensurePostgresDatabase(adminConnectionString, "paperclip");
-      const connectionString = `postgres://paperclip:paperclip@127.0.0.1:${embeddedHandle.port}/paperclip`;
+      const adminConnectionString = `postgres://odysseus:odysseus@127.0.0.1:${embeddedHandle.port}/postgres`;
+      await ensurePostgresDatabase(adminConnectionString, "odysseus");
+      const connectionString = `postgres://odysseus:odysseus@127.0.0.1:${embeddedHandle.port}/odysseus`;
       await applyPendingMigrations(connectionString);
       const db = createDb(connectionString) as ClosableDb;
       return {
@@ -234,13 +234,13 @@ export async function disableAllRoutinesInConfig(
   options: Pick<RoutinesDisableAllOptions, "config" | "companyId">,
 ): Promise<DisableAllRoutinesResult> {
   const configPath = resolveConfigPath(options.config);
-  loadPaperclipEnvFile(configPath);
+  loadOdysseusEnvFile(configPath);
   const companyId =
     nonEmpty(options.companyId)
-    ?? nonEmpty(process.env.PAPERCLIP_COMPANY_ID)
+    ?? nonEmpty(process.env.ODYSSEUS_COMPANY_ID)
     ?? null;
   if (!companyId) {
-    throw new Error("Company ID is required. Pass --company-id or set PAPERCLIP_COMPANY_ID.");
+    throw new Error("Company ID is required. Pass --company-id or set ODYSSEUS_COMPANY_ID.");
   }
 
   const config = readConfig(configPath);
@@ -256,9 +256,9 @@ export async function disableAllRoutinesInConfig(
         config.database.embeddedPostgresDataDir,
         config.database.embeddedPostgresPort,
       );
-      const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${embeddedHandle.port}/postgres`;
-      await ensurePostgresDatabase(adminConnectionString, "paperclip");
-      const connectionString = `postgres://paperclip:paperclip@127.0.0.1:${embeddedHandle.port}/paperclip`;
+      const adminConnectionString = `postgres://odysseus:odysseus@127.0.0.1:${embeddedHandle.port}/postgres`;
+      await ensurePostgresDatabase(adminConnectionString, "odysseus");
+      const connectionString = `postgres://odysseus:odysseus@127.0.0.1:${embeddedHandle.port}/odysseus`;
       await applyPendingMigrations(connectionString);
       db = createDb(connectionString) as ClosableDb;
     } else {
@@ -337,7 +337,7 @@ export function registerRoutineCommands(program: Command): void {
     .command("disable-all")
     .description("Pause all non-archived routines in the configured local instance for one company")
     .option("-c, --config <path>", "Path to config file")
-    .option("-d, --data-dir <path>", "Paperclip data directory root (isolates state from ~/.paperclip)")
+    .option("-d, --data-dir <path>", "Odysseus data directory root (isolates state from ~/.odysseus)")
     .option("-C, --company-id <id>", "Company ID")
     .option("--json", "Output raw JSON")
     .action(async (opts: RoutinesDisableAllOptions) => {

@@ -32,12 +32,12 @@ describe("plugin managed routine validators", () => {
 
 describe("plugin managed skill validators", () => {
   const baseManifest = {
-    id: "paperclip.test-managed-skills",
+    id: "odysseus.test-managed-skills",
     apiVersion: 1,
     version: "0.1.0",
     displayName: "Managed Skills",
     description: "Managed skills test plugin.",
-    author: "Paperclip",
+    author: "Odysseus",
     categories: ["automation"],
     entrypoints: { worker: "./dist/worker.js" },
   } as const;

@@ -1,4 +1,4 @@
-import type { DocumentRevision, IssueDocument } from "@paperclipai/shared";
+import type { DocumentRevision, IssueDocument } from "@odysseus/shared";
 
 type DocumentRevisionState = {
   currentRevision: DocumentRevision;

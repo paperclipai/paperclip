@@ -6,7 +6,7 @@ import type {
   RoutineRevision,
   RoutineRevisionSnapshotTriggerV1,
   RoutineVariable,
-} from "@paperclipai/shared";
+} from "@odysseus/shared";
 import {
   routinesApi,
   type RestoreRoutineRevisionResponse,
@@ -141,7 +141,7 @@ export function RoutineHistoryTab({
     onError: (error) => {
       pushToast({
         title: "Failed to restore revision",
-        body: error instanceof Error ? error.message : "Paperclip could not restore the revision.",
+        body: error instanceof Error ? error.message : "Odysseus could not restore the revision.",
         tone: "error",
       });
     },
@@ -635,7 +635,7 @@ function RevisionPreview({
         )}
         <p className="text-xs text-muted-foreground">
           Webhook secrets are not stored in revisions. If a restored webhook trigger needs re-creation,
-          Paperclip mints fresh secret material at restore time.
+          Odysseus mints fresh secret material at restore time.
         </p>
       </div>
 
@@ -705,7 +705,7 @@ function RestoreConfirmDialog({
           {recreatedWebhookLabels.map((label) => (
             <li key={label} className="flex items-start gap-2 text-amber-200">
               <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-400" />
-              The webhook trigger {label} will be recreated with a new URL and secret. Paperclip will
+              The webhook trigger {label} will be recreated with a new URL and secret. Odysseus will
               show the secret once after restore — copy it before closing.
             </li>
           ))}

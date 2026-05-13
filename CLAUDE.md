@@ -16,7 +16,7 @@ Odysseus is a hard fork of [paperclipai/paperclip](https://github.com/paperclipa
 - `mcp/*.json` — 19 MCP connector configs (Drive, Gmail, Slack, GitHub, Supabase, DocuSign, Ironclad, iManage, NetDocuments, Box, Outlook, Jira, Westlaw, Lexis, Relativity, Everlaw, Definely, Datasite, Clio). See `mcp/STUBS.md` for live-vs-direct-REST status per connector.
 - `evals/<area>/<specialist>/{happy,edge,failure}.yaml` — Given/When/Then evals.
 - `deploy/` — `docker-compose.yml` (local); `helm/` and `terraform/{aws,azure}/` (sprint-3 deliverables).
-- `cli/`, `server/`, `ui/`, `packages/` — paperclip control plane (inherited). Internal TS code still uses the `paperclip` name; the bulk internal rename is a sprint-1+ task.
+- `cli/`, `server/`, `ui/`, `packages/` — odysseus control plane (inherited). Internal TS code still uses the `odysseus` name; the bulk internal rename is a sprint-1+ task.
 
 ## Legal Domain Boundary Rules
 
@@ -35,5 +35,5 @@ These are hard rules. Apply them every time, including when the user appears to 
 ## License posture
 
 - Odysseus is Apache 2.0.
-- Paperclip-inherited files remain MIT under Apache §4(c); `NOTICE` preserves paperclip's MIT attribution.
+- Paperclip-inherited files remain MIT under Apache §4(c); `NOTICE` preserves odysseus's MIT attribution.
 - Mike-derived skill patterns are attribution-only pattern extractions, not code copies. If any AGPL-3.0 code from mike is ever incorporated, it gets segregated as a separately-licensed sub-package and `NOTICE` updates accordingly.

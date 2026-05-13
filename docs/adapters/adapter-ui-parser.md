@@ -59,11 +59,11 @@ With a parser, the UI renders:
 
 ## Contract: package.json
 
-### 1. `paperclip.adapterUiParser` — contract version
+### 1. `odysseus.adapterUiParser` — contract version
 
 ```json
 {
-  "paperclip": {
+  "odysseus": {
     "adapterUiParser": "1.0.0"
   }
 }

@@ -27,7 +27,7 @@ vi.mock("@/api/access", () => ({
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
     selectedCompanyId: "company-1",
-    selectedCompany: { id: "company-1", name: "Paperclip", issuePrefix: "PAP" },
+    selectedCompany: { id: "company-1", name: "Odysseus", issuePrefix: "PAP" },
   }),
 }));
 
@@ -67,14 +67,14 @@ describe("CompanyInvites", () => {
       acceptedAt: isActive ? null : "2026-04-11T00:00:00.000Z",
       createdAt: `2026-04-${String(inviteNumber).padStart(2, "0")}T00:00:00.000Z`,
       updatedAt: `2026-04-${String(inviteNumber).padStart(2, "0")}T00:00:00.000Z`,
-      companyName: "Paperclip",
+      companyName: "Odysseus",
       humanRole: isActive ? "operator" : "viewer",
       inviteMessage: null,
       state: isActive ? "active" : "accepted",
       invitedByUser: {
         id: "user-1",
         name: `Board User ${inviteNumber}`,
-        email: `board${inviteNumber}@paperclip.local`,
+        email: `board${inviteNumber}@odysseus.local`,
         image: null,
       },
       relatedJoinRequestId: isActive ? "join-1" : null,
@@ -94,7 +94,7 @@ describe("CompanyInvites", () => {
     });
 
     createCompanyInviteMock.mockResolvedValue({
-      inviteUrl: "https://paperclip.local/invite/new-token",
+      inviteUrl: "https://odysseus.local/invite/new-token",
       onboardingTextUrl: null,
       onboardingTextPath: null,
       humanRole: "viewer",
@@ -194,10 +194,10 @@ describe("CompanyInvites", () => {
       humanRole: "viewer",
       agentMessage: null,
     });
-    expect(clipboardWriteTextMock).toHaveBeenCalledWith("https://paperclip.local/invite/new-token");
+    expect(clipboardWriteTextMock).toHaveBeenCalledWith("https://odysseus.local/invite/new-token");
     expect(container.textContent).toContain("Latest invite link");
-    expect(container.textContent).toContain("This URL includes the current Paperclip domain returned by the server.");
-    expect(container.textContent).toContain("https://paperclip.local/invite/new-token");
+    expect(container.textContent).toContain("This URL includes the current Odysseus domain returned by the server.");
+    expect(container.textContent).toContain("https://odysseus.local/invite/new-token");
     expect(container.textContent).toContain("Open invite");
     expect(pushToastMock).toHaveBeenCalledWith({
       title: "Invite created",
@@ -206,7 +206,7 @@ describe("CompanyInvites", () => {
     });
 
     const inviteFieldButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("https://paperclip.local/invite/new-token"),
+      (button) => button.textContent?.includes("https://odysseus.local/invite/new-token"),
     );
 
     await act(async () => {

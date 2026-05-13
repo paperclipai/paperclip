@@ -1,8 +1,8 @@
 # Cloudflare Sandbox Bridge Template
 
-This Worker is the operator-facing bridge used by `@paperclipai/plugin-cloudflare-sandbox`.
+This Worker is the operator-facing bridge used by `@odysseus/plugin-cloudflare-sandbox`.
 
-It exposes a small authenticated JSON API under `/api/paperclip-sandbox/v1` and translates Paperclip lease and command requests into Cloudflare Sandbox SDK calls.
+It exposes a small authenticated JSON API under `/api/odysseus-sandbox/v1` and translates Paperclip lease and command requests into Cloudflare Sandbox SDK calls.
 
 ## What it does
 

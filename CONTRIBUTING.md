@@ -84,7 +84,7 @@ Your PR description must follow the [PR template](.github/PULL_REQUEST_TEMPLATE.
 > - There are many types of adapters for each LLM model provider
 > - But LLM's have a context limit and not all agents can automatically compact their context
 > - So we need to have an adapter-specific configuration for which adapters can and cannot automatically compact their context
-> - This pull request adds per-adapter configuration of compaction, either auto or paperclip managed
+> - This pull request adds per-adapter configuration of compaction, either auto or odysseus managed
 > - That way we can get optimal performance from any adapter/provider in Paperclip
 
 ### Thinking Path Example 2:

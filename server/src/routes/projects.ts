@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@odysseus/db";
 import {
   createProjectSchema,
   createProjectWorkspaceSchema,
@@ -9,9 +9,9 @@ import {
   updateProjectSchema,
   updateProjectWorkspaceSchema,
   workspaceRuntimeControlTargetSchema,
-} from "@paperclipai/shared";
-import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
-import { trackProjectCreated } from "@paperclipai/shared/telemetry";
+} from "@odysseus/shared";
+import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@odysseus/shared";
+import { trackProjectCreated } from "@odysseus/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { projectService, logActivity, workspaceOperationService } from "../services/index.js";
 import { conflict, forbidden } from "../errors.js";
@@ -43,7 +43,7 @@ export function projectRoutes(db: Db) {
   const svc = projectService(db);
   const secretsSvc = secretService(db);
   const workspaceOperations = workspaceOperationService(db);
-  const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+  const strictSecretsMode = process.env.ODYSSEUS_SECRETS_STRICT_MODE === "true";
   const environmentsSvc = environmentService(db);
 
   async function assertProjectEnvironmentSelection(companyId: string, environmentId: string | null | undefined) {
@@ -377,7 +377,7 @@ export function projectRoutes(db: Db) {
 
     const workspaceCwd = workspace.cwd;
     if (!workspaceCwd) {
-      res.status(422).json({ error: "Project workspace needs a local path before Paperclip can run workspace commands" });
+      res.status(422).json({ error: "Project workspace needs a local path before Odysseus can run workspace commands" });
       return;
     }
 

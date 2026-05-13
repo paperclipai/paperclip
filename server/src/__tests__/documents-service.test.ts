@@ -7,8 +7,8 @@ import {
   documents,
   issueDocuments,
   issues,
-} from "@paperclipai/db";
-import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
+} from "@odysseus/db";
+import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@odysseus/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -30,7 +30,7 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-documents-service-");
+    tempDb = await startEmbeddedPostgresTestDatabase("odysseus-documents-service-");
     db = createDb(tempDb.connectionString);
     svc = documentService(db);
   }, 20_000);
@@ -53,7 +53,7 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "Odysseus",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });

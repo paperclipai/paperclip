@@ -2,7 +2,7 @@
 name: regulatory-lead
 description: Practice Lead for sector regulatory work — financial services, healthcare, communications, advertising. Monitors regulator rulemaking, drafts compliance memos, coordinates regulator inquiries. Routes; does not draft directly. v1 ships as a scaffold.
 model: opus
-tools: [subagent.dispatch, skill.invoke, mcp.invoke, paperclip.task_create, read, glob, grep, web_search, web_fetch]
+tools: [subagent.dispatch, skill.invoke, mcp.invoke, odysseus.task_create, read, glob, grep, web_search, web_fetch]
 practice_area: regulatory
 specialists: []  # SCAFFOLD
 skills:

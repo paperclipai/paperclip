@@ -50,7 +50,7 @@ The adapter creates a temporary directory with symlinks to Paperclip skills and 
 For manual local CLI usage outside heartbeat runs (for example running as `claudecoder` directly), use:
 
 ```sh
-pnpm paperclipai agent local-cli claudecoder --company-id <company-id>
+pnpm odysseus agent local-cli claudecoder --company-id <company-id>
 ```
 
 This installs Paperclip skills in `~/.claude/skills`, creates an agent API key, and prints shell exports to run as that agent.

@@ -1,13 +1,13 @@
-import type { CLIAdapterModule } from "@paperclipai/adapter-utils";
-import { printAcpxStreamEvent } from "@paperclipai/adapter-acpx-local/cli";
-import { printClaudeStreamEvent } from "@paperclipai/adapter-claude-local/cli";
-import { printCodexStreamEvent } from "@paperclipai/adapter-codex-local/cli";
-import { printCursorStreamEvent } from "@paperclipai/adapter-cursor-local/cli";
-import { printCursorCloudEvent } from "@paperclipai/adapter-cursor-cloud/cli";
-import { printGeminiStreamEvent } from "@paperclipai/adapter-gemini-local/cli";
-import { printOpenCodeStreamEvent } from "@paperclipai/adapter-opencode-local/cli";
-import { printPiStreamEvent } from "@paperclipai/adapter-pi-local/cli";
-import { printOpenClawGatewayStreamEvent } from "@paperclipai/adapter-openclaw-gateway/cli";
+import type { CLIAdapterModule } from "@odysseus/adapter-utils";
+import { printAcpxStreamEvent } from "@odysseus/adapter-acpx-local/cli";
+import { printClaudeStreamEvent } from "@odysseus/adapter-claude-local/cli";
+import { printCodexStreamEvent } from "@odysseus/adapter-codex-local/cli";
+import { printCursorStreamEvent } from "@odysseus/adapter-cursor-local/cli";
+import { printCursorCloudEvent } from "@odysseus/adapter-cursor-cloud/cli";
+import { printGeminiStreamEvent } from "@odysseus/adapter-gemini-local/cli";
+import { printOpenCodeStreamEvent } from "@odysseus/adapter-opencode-local/cli";
+import { printPiStreamEvent } from "@odysseus/adapter-pi-local/cli";
+import { printOpenClawGatewayStreamEvent } from "@odysseus/adapter-openclaw-gateway/cli";
 import { processCLIAdapter } from "./process/index.js";
 import { httpCLIAdapter } from "./http/index.js";
 

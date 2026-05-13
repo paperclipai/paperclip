@@ -15,28 +15,28 @@ afterEach(async () => {
 
 describe("resolveInlineSourceFromPath", () => {
   it("imports portable files from a zip archive instead of scanning the parent directory", async () => {
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-company-import-zip-"));
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "odysseus-company-import-zip-"));
     tempDirs.push(tempDir);
 
-    const archivePath = path.join(tempDir, "paperclip-demo.zip");
+    const archivePath = path.join(tempDir, "odysseus-demo.zip");
     const archive = createStoredZipArchive(
       {
         "COMPANY.md": "# Company\n",
-        ".paperclip.yaml": "schema: paperclip/v1\n",
+        ".odysseus.yaml": "schema: odysseus/v1\n",
         "agents/ceo/AGENT.md": "# CEO\n",
         "notes/todo.txt": "ignore me\n",
       },
-      "paperclip-demo",
+      "odysseus-demo",
     );
     await writeFile(archivePath, archive);
 
     const resolved = await resolveInlineSourceFromPath(archivePath);
 
     expect(resolved).toEqual({
-      rootPath: "paperclip-demo",
+      rootPath: "odysseus-demo",
       files: {
         "COMPANY.md": "# Company\n",
-        ".paperclip.yaml": "schema: paperclip/v1\n",
+        ".odysseus.yaml": "schema: odysseus/v1\n",
         "agents/ceo/AGENT.md": "# CEO\n",
       },
     });

@@ -42,7 +42,7 @@ function normalizeTimestamp(value: unknown): string | null {
 export function readPersistedDevServerStatus(
   env: NodeJS.ProcessEnv = process.env,
 ): PersistedDevServerStatus | null {
-  const filePath = env.PAPERCLIP_DEV_SERVER_STATUS_FILE?.trim();
+  const filePath = env.ODYSSEUS_DEV_SERVER_STATUS_FILE?.trim();
   if (!filePath || !existsSync(filePath)) return null;
 
   try {

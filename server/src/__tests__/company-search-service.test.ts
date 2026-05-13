@@ -10,8 +10,8 @@ import {
   issueDocuments,
   issues,
   projects,
-} from "@paperclipai/db";
-import { companySearchQuerySchema, COMPANY_SEARCH_MAX_QUERY_LENGTH } from "@paperclipai/shared";
+} from "@odysseus/db";
+import { companySearchQuerySchema, COMPANY_SEARCH_MAX_QUERY_LENGTH } from "@odysseus/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -61,7 +61,7 @@ describeEmbeddedPostgres("companySearchService", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-search-");
+    tempDb = await startEmbeddedPostgresTestDatabase("odysseus-company-search-");
     db = createDb(tempDb.connectionString);
     svc = companySearchService(db);
     await db.execute(sql.raw("CREATE EXTENSION IF NOT EXISTS pg_trgm"));
@@ -81,7 +81,7 @@ describeEmbeddedPostgres("companySearchService", () => {
     await tempDb?.cleanup();
   });
 
-  async function createCompany(name = "Paperclip") {
+  async function createCompany(name = "Odysseus") {
     const companyId = randomUUID();
     await db.insert(companies).values({
       id: companyId,

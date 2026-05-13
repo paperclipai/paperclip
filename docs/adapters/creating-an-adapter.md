@@ -13,7 +13,7 @@ If you're using Claude Code, the `.agents/skills/create-agent-adapter` skill can
 
 | | Built-in | External Plugin |
 |---|---|---|
-| Source | Inside `paperclip-fork` | Separate npm package |
+| Source | Inside `odysseus-fork` | Separate npm package |
 | Distribution | Ships with Paperclip | Independent npm publish |
 | UI parser | Static import | Dynamic load from API |
 | Registration | Edit 3 registries | Auto-loaded at startup |
@@ -74,7 +74,7 @@ export { createServerAdapter } from "./server/index.js";
 
 Key responsibilities:
 
-1. Read config using safe helpers (`asString`, `asNumber`, etc.) from `@paperclipai/adapter-utils/server-utils`
+1. Read config using safe helpers (`asString`, `asNumber`, etc.) from `@odysseus/adapter-utils/server-utils`
 2. Build environment with `buildPaperclipEnv(agent)` plus context vars
 3. Resolve session state from `runtime.sessionParams`
 4. Render prompt with `renderTemplate(template, data)`
@@ -86,11 +86,11 @@ Key responsibilities:
 
 | Helper | Source | Purpose |
 |--------|--------|---------|
-| `runChildProcess(cmd, opts)` | `@paperclipai/adapter-utils/server-utils` | Spawn with timeout, grace, streaming |
-| `buildPaperclipEnv(agent)` | `@paperclipai/adapter-utils/server-utils` | Inject `PAPERCLIP_*` env vars |
-| `renderTemplate(tpl, data)` | `@paperclipai/adapter-utils/server-utils` | `{{variable}}` substitution |
-| `asString(v)` | `@paperclipai/adapter-utils` | Safe config value extraction |
-| `asNumber(v)` | `@paperclipai/adapter-utils` | Safe number extraction |
+| `runChildProcess(cmd, opts)` | `@odysseus/adapter-utils/server-utils` | Spawn with timeout, grace, streaming |
+| `buildPaperclipEnv(agent)` | `@odysseus/adapter-utils/server-utils` | Inject `ODYSSEUS_*` env vars |
+| `renderTemplate(tpl, data)` | `@odysseus/adapter-utils/server-utils` | `{{variable}}` substitution |
+| `asString(v)` | `@odysseus/adapter-utils` | Safe config value extraction |
+| `asNumber(v)` | `@odysseus/adapter-utils` | Safe number extraction |
 
 ### AdapterExecutionContext
 
@@ -165,7 +165,7 @@ For external adapters, use a self-contained `ui-parser.ts` instead. See the [UI 
 
 ## Step 5: CLI Module
 
-`format-event.ts` — pretty-prints stdout for `paperclipai run --watch` using `picocolors`.
+`format-event.ts` — pretty-prints stdout for `odysseus run --watch` using `picocolors`.
 
 ```ts
 export function formatStdoutEvent(line: string, debug: boolean): void {

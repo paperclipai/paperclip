@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNull, ne, or } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents, issues } from "@paperclipai/db";
+import type { Db } from "@odysseus/db";
+import { agents, issues } from "@odysseus/db";
 import type { Request } from "express";
 import { forbidden } from "../errors.js";
 import { assertCompanyAccess } from "./authz.js";

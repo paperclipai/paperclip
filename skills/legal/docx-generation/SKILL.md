@@ -70,4 +70,4 @@ table_count: <n>
 
 ## Reference implementation
 
-Lifted from [willchen96/mike](https://github.com/willchen96/mike) — the `generate_docx` tool in `backend/src/lib/chatTools.ts` supports headings, tables, and landscape orientation. This skill specifies the contract; the forked-paperclip server implements it.
+Lifted from [willchen96/mike](https://github.com/willchen96/mike) — the `generate_docx` tool in `backend/src/lib/chatTools.ts` supports headings, tables, and landscape orientation. This skill specifies the contract; the forked-odysseus server implements it.

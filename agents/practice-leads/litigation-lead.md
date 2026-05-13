@@ -2,7 +2,7 @@
 name: litigation-lead
 description: Practice Lead for litigation. In small-firm profile, supports active matters (demand letters, discovery review, depo summaries, brief drafting support). In in-house profile, supports oversight of outside counsel and discovery review. Routes; does not draft pleadings directly.
 model: opus
-tools: [subagent.dispatch, skill.invoke, mcp.invoke, paperclip.task_create, read, glob, grep]
+tools: [subagent.dispatch, skill.invoke, mcp.invoke, odysseus.task_create, read, glob, grep]
 practice_area: litigation
 specialists: []  # SCAFFOLD — populated post-v1
 skills:

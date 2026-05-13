@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
-import type { IssueWorkMode } from "@paperclipai/shared";
+import type { IssueWorkMode } from "@odysseus/shared";
 
 interface NewIssueDefaults {
   status?: string;

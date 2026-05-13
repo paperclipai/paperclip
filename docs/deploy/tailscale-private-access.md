@@ -13,9 +13,9 @@ pnpm dev --bind tailnet
 
 Recommended behavior:
 
-- `PAPERCLIP_DEPLOYMENT_MODE=authenticated`
-- `PAPERCLIP_DEPLOYMENT_EXPOSURE=private`
-- `PAPERCLIP_BIND=tailnet`
+- `ODYSSEUS_DEPLOYMENT_MODE=authenticated`
+- `ODYSSEUS_DEPLOYMENT_EXPOSURE=private`
+- `ODYSSEUS_BIND=tailnet`
 
 If you want the old broad private-network behavior instead, use:
 
@@ -58,7 +58,7 @@ http://my-macbook.tailnet.ts.net:3100
 If you access Paperclip with a custom private hostname, add it to the allowlist:
 
 ```sh
-pnpm paperclipai allowed-hostname my-macbook.tailnet.ts.net
+pnpm odysseus allowed-hostname my-macbook.tailnet.ts.net
 ```
 
 ## 5. Verify the server is reachable
@@ -77,6 +77,6 @@ Expected result:
 
 ## Troubleshooting
 
-- Login or redirect errors on a private hostname: add it with `paperclipai allowed-hostname`.
+- Login or redirect errors on a private hostname: add it with `odysseus allowed-hostname`.
 - App only works on `localhost`: make sure you started with `--bind lan` or `--bind tailnet` instead of plain `pnpm dev`.
 - Can connect locally but not remotely: verify both devices are on the same Tailscale network and port `3100` is reachable.

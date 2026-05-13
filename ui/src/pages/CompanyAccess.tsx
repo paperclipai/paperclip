@@ -5,7 +5,7 @@ import {
   PERMISSION_KEYS,
   type Agent,
   type PermissionKey,
-} from "@paperclipai/shared";
+} from "@odysseus/shared";
 import { ShieldCheck, Trash2, Users } from "lucide-react";
 import { accessApi, type CompanyMember } from "@/api/access";
 import { agentsApi } from "@/api/agents";

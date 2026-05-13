@@ -5,7 +5,7 @@ import type {
   IssueRecoveryActionKind,
   IssueRecoveryActionOutcome,
   IssueRecoveryActionStatus,
-} from "@paperclipai/shared";
+} from "@odysseus/shared";
 import { Eye, OctagonAlert, RefreshCw, Sparkles, TriangleAlert } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
@@ -52,11 +52,11 @@ const KIND_LABEL: Record<IssueRecoveryActionKind, string> = {
 const KIND_HEADLINE: Record<IssueRecoveryActionKind, string> = {
   missing_disposition: "This issue's run finished, but no next step was chosen.",
   stranded_assigned_issue:
-    "Paperclip retried this issue's last run and it still has no live execution path.",
+    "Odysseus retried this issue's last run and it still has no live execution path.",
   active_run_watchdog:
     "The active run has been silent. Recovery is observing without interrupting it.",
   issue_graph_liveness:
-    "Paperclip detected this issue lost a live action path. A recovery owner needs to act.",
+    "Odysseus detected this issue lost a live action path. A recovery owner needs to act.",
 };
 
 const STATE_TONE: Record<RecoveryCardCardState, {

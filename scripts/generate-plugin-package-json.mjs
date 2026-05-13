@@ -19,7 +19,7 @@ const sdkPackageJson = JSON.parse(readFileSync(sdkPackageJsonPath, "utf8"));
 const publishConfig = packageJson.publishConfig ?? {};
 const dependencies = {
   ...(packageJson.dependencies ?? {}),
-  "@paperclipai/plugin-sdk": sdkPackageJson.version,
+  "@odysseus/plugin-sdk": sdkPackageJson.version,
 };
 
 const publishPackageJson = {
@@ -36,7 +36,7 @@ const publishPackageJson = {
   types: publishConfig.types,
   publishConfig,
   files: packageJson.files,
-  paperclipPlugin: packageJson.paperclipPlugin,
+  odysseusPlugin: packageJson.odysseusPlugin,
   keywords: packageJson.keywords,
   dependencies,
 };

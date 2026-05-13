@@ -1,7 +1,7 @@
 ---
 name: risk-gate-protocol
 description: Use before every action that could trigger a risk gate (filing, signature, external comm, budget, privileged disclosure). Reads the active profile + gate definitions, decides which gates fire, packages an approval card, and either passes, suspends for human approval, or hard-blocks. Never bypass.
-tools: [read, paperclip.approval_request]
+tools: [read, odysseus.approval_request]
 inputs:
   - matter_record: object
   - intended_action: object
@@ -25,7 +25,7 @@ You are invoked by the Chief Counsel and by every Practice Lead before any actio
    b. Confirm no `hard_blocks` apply. If any do, return BLOCKED with the rule that hit.
    c. Build the approval card from the gate's `approval_card_template`, fill every placeholder, mark unknowns explicitly as "UNCONFIRMED".
    d. Resolve the approver from `active_profile.risk_gates.<gate>.approver`.
-   e. Submit via `paperclip.approval_request`.
+   e. Submit via `odysseus.approval_request`.
 4. Aggregate gate_results. Overall status:
    - All passed → pass.
    - Any blocked → blocked (do NOT proceed).

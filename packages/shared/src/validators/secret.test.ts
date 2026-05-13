@@ -13,7 +13,7 @@ describe("secret validators", () => {
     expect(() =>
       createSecretSchema.parse({
         name: "OpenAI API Key",
-        managedMode: "paperclip_managed",
+        managedMode: "odysseus_managed",
         value: "secret-value",
         externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/other",
       }),
@@ -46,7 +46,7 @@ describe("secret validators", () => {
         config: {
           region: "us-east-1",
           namespace: "production",
-          secretNamePrefix: "paperclip",
+          secretNamePrefix: "odysseus",
         },
       }),
     ).not.toThrow();
@@ -124,7 +124,7 @@ describe("secret validators", () => {
             externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
             name: "OpenAI API key",
             key: "OPENAI_API_KEY",
-            description: "  Operator-entered Paperclip description  ",
+            description: "  Operator-entered Odysseus description  ",
             providerMetadata: { name: "prod/openai" },
           },
         ],
@@ -134,7 +134,7 @@ describe("secret validators", () => {
       secrets: [
         expect.objectContaining({
           key: "OPENAI_API_KEY",
-          description: "Operator-entered Paperclip description",
+          description: "Operator-entered Odysseus description",
         }),
       ],
     });

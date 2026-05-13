@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Agent, Issue, IssueTreeControlPreview, IssueTreeHold } from "@paperclipai/shared";
+import type { Agent, Issue, IssueTreeControlPreview, IssueTreeHold } from "@odysseus/shared";
 import { act, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -119,9 +119,9 @@ vi.mock("@/lib/router", () => ({
 
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
-    companies: [{ id: "company-1", name: "Paperclip", issuePrefix: "PAP", status: "active" }],
+    companies: [{ id: "company-1", name: "Odysseus", issuePrefix: "PAP", status: "active" }],
     selectedCompanyId: "company-1",
-    selectedCompany: { id: "company-1", name: "Paperclip", issuePrefix: "PAP", status: "active" },
+    selectedCompany: { id: "company-1", name: "Odysseus", issuePrefix: "PAP", status: "active" },
     selectionSource: "manual",
     loading: false,
     error: null,
@@ -1165,7 +1165,7 @@ describe("IssueDetail", () => {
         uploadedAt: new Date("2026-04-21T00:02:00.000Z"),
       },
     ]);
-    localStorage.setItem("paperclip:issue-comment-draft:issue-1", "Draft follow-up message");
+    localStorage.setItem("odysseus:issue-comment-draft:issue-1", "Draft follow-up message");
     mockIssuesApi.update.mockResolvedValue(createIssue({ workMode: "planning" }));
 
     await act(async () => {
@@ -1188,9 +1188,9 @@ describe("IssueDetail", () => {
     await flushReact();
 
     expect(mockIssuesApi.update).toHaveBeenCalledWith(issue.identifier, { workMode: "planning" });
-    expect(localStorage.getItem("paperclip:issue-comment-draft:issue-1")).toBe("Draft follow-up message");
+    expect(localStorage.getItem("odysseus:issue-comment-draft:issue-1")).toBe("Draft follow-up message");
     expect(container.textContent).toContain("planning-notes.txt");
-    localStorage.removeItem("paperclip:issue-comment-draft:issue-1");
+    localStorage.removeItem("odysseus:issue-comment-draft:issue-1");
   });
 
   it("renders Paused by board distinctly and defaults leaf resume to wake the assignee", async () => {

@@ -5,14 +5,14 @@ import net from "node:net";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import type { AdapterRuntimeServiceReport } from "@paperclipai/adapter-utils";
-import type { Db } from "@paperclipai/db";
-import { executionWorkspaces, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import type { AdapterRuntimeServiceReport } from "@odysseus/adapter-utils";
+import type { Db } from "@odysseus/db";
+import { executionWorkspaces, projectWorkspaces, workspaceRuntimeServices } from "@odysseus/db";
 import {
   listWorkspaceServiceCommandDefinitions,
   type WorkspaceRuntimeDesiredState,
   type WorkspaceRuntimeServiceStateMap,
-} from "@paperclipai/shared";
+} from "@odysseus/shared";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
@@ -184,7 +184,7 @@ function isLinkedGitWorktreeCheckout(rootDir: string) {
 
 function discoverWorkspacePackagePaths(rootDir: string): Map<string, string> {
   const packagePaths = new Map<string, string>();
-  const ignoredDirNames = new Set([".git", ".paperclip", "dist", "node_modules"]);
+  const ignoredDirNames = new Set([".git", ".odysseus", "dist", "node_modules"]);
 
   function visit(dirPath: string) {
     if (!existsSync(dirPath)) return;
@@ -286,7 +286,7 @@ export async function ensureServerWorkspaceLinksCurrent(
 export function sanitizeRuntimeServiceBaseEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   for (const key of Object.keys(env)) {
-    if (key.startsWith("PAPERCLIP_")) {
+    if (key.startsWith("ODYSSEUS_")) {
       delete env[key];
     }
   }
@@ -399,7 +399,7 @@ function sanitizeBranchName(value: string): string {
     .replace(/[^A-Za-z0-9._/-]+/g, "-")
     .replace(/-+/g, "-")
     .replace(/^[-/.]+|[-/.]+$/g, "")
-    .slice(0, 120) || "paperclip-work";
+    .slice(0, 120) || "odysseus-work";
 }
 
 function isAbsolutePath(value: string) {
@@ -695,25 +695,25 @@ function buildWorkspaceCommandEnv(input: {
   created: boolean;
 }) {
   const env: NodeJS.ProcessEnv = { ...process.env };
-  env.PAPERCLIP_WORKSPACE_CWD = input.worktreePath;
-  env.PAPERCLIP_WORKSPACE_PATH = input.worktreePath;
-  env.PAPERCLIP_WORKSPACE_WORKTREE_PATH = input.worktreePath;
-  env.PAPERCLIP_WORKSPACE_BRANCH = input.branchName;
-  env.PAPERCLIP_WORKSPACE_BASE_CWD = input.base.baseCwd;
-  env.PAPERCLIP_WORKSPACE_REPO_ROOT = input.repoRoot;
-  env.PAPERCLIP_WORKSPACE_SOURCE = input.base.source;
-  env.PAPERCLIP_WORKSPACE_REPO_REF = input.base.repoRef ?? "";
-  env.PAPERCLIP_WORKSPACE_REPO_URL = input.base.repoUrl ?? "";
-  env.PAPERCLIP_WORKSPACE_CREATED = input.created ? "true" : "false";
-  env.PAPERCLIP_PROJECT_ID = input.base.projectId ?? "";
-  env.PAPERCLIP_PROJECT_WORKSPACE_ID = input.base.workspaceId ?? "";
-  env.PAPERCLIP_AGENT_ID = input.agent.id ?? "";
-  env.PAPERCLIP_AGENT_NAME = input.agent.name;
-  env.PAPERCLIP_COMPANY_ID = input.agent.companyId;
-  env.PAPERCLIP_ISSUE_ID = input.issue?.id ?? "";
-  env.PAPERCLIP_ISSUE_IDENTIFIER = input.issue?.identifier ?? "";
-  env.PAPERCLIP_ISSUE_TITLE = input.issue?.title ?? "";
-  env.PAPERCLIP_ISSUE_WORK_MODE = input.issue?.workMode ?? "";
+  env.ODYSSEUS_WORKSPACE_CWD = input.worktreePath;
+  env.ODYSSEUS_WORKSPACE_PATH = input.worktreePath;
+  env.ODYSSEUS_WORKSPACE_WORKTREE_PATH = input.worktreePath;
+  env.ODYSSEUS_WORKSPACE_BRANCH = input.branchName;
+  env.ODYSSEUS_WORKSPACE_BASE_CWD = input.base.baseCwd;
+  env.ODYSSEUS_WORKSPACE_REPO_ROOT = input.repoRoot;
+  env.ODYSSEUS_WORKSPACE_SOURCE = input.base.source;
+  env.ODYSSEUS_WORKSPACE_REPO_REF = input.base.repoRef ?? "";
+  env.ODYSSEUS_WORKSPACE_REPO_URL = input.base.repoUrl ?? "";
+  env.ODYSSEUS_WORKSPACE_CREATED = input.created ? "true" : "false";
+  env.ODYSSEUS_PROJECT_ID = input.base.projectId ?? "";
+  env.ODYSSEUS_PROJECT_WORKSPACE_ID = input.base.workspaceId ?? "";
+  env.ODYSSEUS_AGENT_ID = input.agent.id ?? "";
+  env.ODYSSEUS_AGENT_NAME = input.agent.name;
+  env.ODYSSEUS_COMPANY_ID = input.agent.companyId;
+  env.ODYSSEUS_ISSUE_ID = input.issue?.id ?? "";
+  env.ODYSSEUS_ISSUE_IDENTIFIER = input.issue?.identifier ?? "";
+  env.ODYSSEUS_ISSUE_TITLE = input.issue?.title ?? "";
+  env.ODYSSEUS_ISSUE_WORK_MODE = input.issue?.workMode ?? "";
   return env;
 }
 
@@ -950,18 +950,18 @@ function buildExecutionWorkspaceCleanupEnv(input: {
   projectWorkspaceCwd?: string | null;
 }) {
   const env: NodeJS.ProcessEnv = sanitizeRuntimeServiceBaseEnv(process.env);
-  env.PAPERCLIP_WORKSPACE_CWD = input.workspace.cwd ?? "";
-  env.PAPERCLIP_WORKSPACE_PATH = input.workspace.cwd ?? "";
-  env.PAPERCLIP_WORKSPACE_WORKTREE_PATH =
+  env.ODYSSEUS_WORKSPACE_CWD = input.workspace.cwd ?? "";
+  env.ODYSSEUS_WORKSPACE_PATH = input.workspace.cwd ?? "";
+  env.ODYSSEUS_WORKSPACE_WORKTREE_PATH =
     input.workspace.providerRef ?? input.workspace.cwd ?? "";
-  env.PAPERCLIP_WORKSPACE_BRANCH = input.workspace.branchName ?? "";
-  env.PAPERCLIP_WORKSPACE_BASE_CWD = input.projectWorkspaceCwd ?? "";
-  env.PAPERCLIP_WORKSPACE_REPO_ROOT = input.projectWorkspaceCwd ?? "";
-  env.PAPERCLIP_WORKSPACE_REPO_URL = input.workspace.repoUrl ?? "";
-  env.PAPERCLIP_WORKSPACE_REPO_REF = input.workspace.baseRef ?? "";
-  env.PAPERCLIP_PROJECT_ID = input.workspace.projectId ?? "";
-  env.PAPERCLIP_PROJECT_WORKSPACE_ID = input.workspace.projectWorkspaceId ?? "";
-  env.PAPERCLIP_ISSUE_ID = input.workspace.sourceIssueId ?? "";
+  env.ODYSSEUS_WORKSPACE_BRANCH = input.workspace.branchName ?? "";
+  env.ODYSSEUS_WORKSPACE_BASE_CWD = input.projectWorkspaceCwd ?? "";
+  env.ODYSSEUS_WORKSPACE_REPO_ROOT = input.projectWorkspaceCwd ?? "";
+  env.ODYSSEUS_WORKSPACE_REPO_URL = input.workspace.repoUrl ?? "";
+  env.ODYSSEUS_WORKSPACE_REPO_REF = input.workspace.baseRef ?? "";
+  env.ODYSSEUS_PROJECT_ID = input.workspace.projectId ?? "";
+  env.ODYSSEUS_PROJECT_WORKSPACE_ID = input.workspace.projectWorkspaceId ?? "";
+  env.ODYSSEUS_ISSUE_ID = input.workspace.sourceIssueId ?? "";
   return env;
 }
 
@@ -1018,7 +1018,7 @@ export async function realizeExecutionWorkspace(input: {
   const configuredParentDir = asString(rawStrategy.worktreeParentDir, "");
   const worktreeParentDir = configuredParentDir
     ? resolveConfiguredPath(configuredParentDir, repoRoot)
-    : path.join(repoRoot, ".paperclip", "worktrees");
+    : path.join(repoRoot, ".odysseus", "worktrees");
   const worktreePath = path.join(worktreeParentDir, branchName);
   const configuredBaseRef = typeof rawStrategy.baseRef === "string" && rawStrategy.baseRef.length > 0
     ? rawStrategy.baseRef
@@ -2779,7 +2779,7 @@ export async function restartDesiredRuntimeServicesOnStartup(db: Db) {
     try {
       const refs = await startRuntimeServicesForWorkspaceControl({
         db,
-        actor: { id: null, name: "Paperclip", companyId: row.companyId },
+        actor: { id: null, name: "Odysseus", companyId: row.companyId },
         issue: null,
         workspace: {
           baseCwd: row.cwd,
@@ -2827,7 +2827,7 @@ export async function restartDesiredRuntimeServicesOnStartup(db: Db) {
     try {
       const refs = await startRuntimeServicesForWorkspaceControl({
         db,
-        actor: { id: null, name: "Paperclip", companyId: row.companyId },
+        actor: { id: null, name: "Odysseus", companyId: row.companyId },
         issue: row.sourceIssueId
           ? {
               id: row.sourceIssueId,

@@ -8,7 +8,7 @@ import {
   updateIssueSchema,
   type Issue,
   type IssueComment,
-} from "@paperclipai/shared";
+} from "@odysseus/shared";
 import {
   addCommonClientOptions,
   formatInlineRecord,

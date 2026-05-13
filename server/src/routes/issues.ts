@@ -3,7 +3,7 @@ import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
 import { and, desc, eq, inArray, notInArray } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@odysseus/db";
 import {
   activityLog,
   executionWorkspaces,
@@ -11,7 +11,7 @@ import {
   issueRelations,
   issues as issueRows,
   projectWorkspaces,
-} from "@paperclipai/db";
+} from "@odysseus/db";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
@@ -47,8 +47,8 @@ import {
   type ExecutionWorkspace,
   type IssueRelationIssueSummary,
   type SuccessfulRunHandoffState,
-} from "@paperclipai/shared";
-import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
+} from "@odysseus/shared";
+import { trackAgentTaskCompleted } from "@odysseus/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";

@@ -8,7 +8,7 @@ import type {
   Routine,
   RoutineRevision,
   RoutineRevisionSnapshotV1,
-} from "@paperclipai/shared";
+} from "@odysseus/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoutineHistoryTab } from "./RoutineHistoryTab";
 

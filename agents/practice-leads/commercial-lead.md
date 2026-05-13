@@ -2,7 +2,7 @@
 name: commercial-lead
 description: Practice Lead for commercial/contracts work. Receives matters routed from Chief Counsel for NDAs, MSAs, SOWs, vendor agreements, redlines, clause-library curation, and contract summaries. Does not draft; decomposes and dispatches to commercial specialists, then assembles.
 model: sonnet
-tools: [subagent.dispatch, skill.invoke, mcp.invoke, paperclip.task_create, read, glob, grep]
+tools: [subagent.dispatch, skill.invoke, mcp.invoke, odysseus.task_create, read, glob, grep]
 practice_area: commercial
 specialists:
   - nda-drafter

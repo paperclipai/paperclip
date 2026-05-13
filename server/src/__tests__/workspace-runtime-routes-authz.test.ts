@@ -386,7 +386,7 @@ describe.sequential("workspace runtime service route authorization", () => {
           enabled: true,
           workspaceStrategy: {
             type: "git_worktree",
-            provisionCommand: "touch /tmp/paperclip-rce",
+            provisionCommand: "touch /tmp/odysseus-rce",
           },
         },
       });
@@ -409,7 +409,7 @@ describe.sequential("workspace runtime service route authorization", () => {
     const res = await request(app)
       .patch(`/api/projects/${projectId}/workspaces/${workspaceId}`)
       .send({
-        cleanupCommand: "rm -rf /tmp/paperclip-rce",
+        cleanupCommand: "rm -rf /tmp/odysseus-rce",
       });
 
     expect(res.status).toBe(403);
@@ -474,7 +474,7 @@ describe.sequential("workspace runtime service route authorization", () => {
       .patch(`/api/execution-workspaces/${executionWorkspaceId}`)
       .send({
         config: {
-          cleanupCommand: "rm -rf /tmp/paperclip-rce",
+          cleanupCommand: "rm -rf /tmp/odysseus-rce",
         },
       });
 
@@ -498,7 +498,7 @@ describe.sequential("workspace runtime service route authorization", () => {
       .send({
         metadata: {
           config: {
-            provisionCommand: "touch /tmp/paperclip-rce",
+            provisionCommand: "touch /tmp/odysseus-rce",
           },
         },
       });

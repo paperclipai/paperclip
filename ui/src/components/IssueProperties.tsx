@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
-import type { Issue, IssueLabel, Project, WorkspaceRuntimeService } from "@paperclipai/shared";
+import type { Issue, IssueLabel, Project, WorkspaceRuntimeService } from "@odysseus/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterModel } from "../api/agents";
 import { accessApi } from "../api/access";
@@ -262,7 +262,7 @@ function RemovableIssueReferencePill({
       <span
         data-mention-kind="issue"
         className={cn(
-          "paperclip-mention-chip paperclip-mention-chip--issue group",
+          "odysseus-mention-chip odysseus-mention-chip--issue group",
           "inline-flex items-center gap-1 rounded-full border border-border py-0.5 pl-1 pr-2 text-xs",
         )}
         title={issue.title}

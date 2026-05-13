@@ -1,11 +1,11 @@
-import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import type { OdysseusPluginManifestV1 } from "@odysseus/plugin-sdk";
 
-const manifest: PaperclipPluginManifestV1 = {
-  id: "paperclipai.plugin-authoring-smoke-example",
+const manifest: OdysseusPluginManifestV1 = {
+  id: "odysseus.plugin-authoring-smoke-example",
   apiVersion: 1,
   version: "0.1.0",
   displayName: "Plugin Authoring Smoke Example",
-  description: "A Paperclip plugin",
+  description: "A Odysseus plugin",
   author: "Plugin Author",
   categories: ["connector"],
   capabilities: [

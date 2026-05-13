@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, not, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@odysseus/db";
 import {
   agents,
   companySecretBindings,
@@ -19,7 +19,7 @@ import {
   routineRuns,
   routines,
   routineTriggers,
-} from "@paperclipai/db";
+} from "@odysseus/db";
 import type {
   CreateRoutine,
   CreateRoutineTrigger,
@@ -36,7 +36,7 @@ import type {
   RunRoutine,
   UpdateRoutine,
   UpdateRoutineTrigger,
-} from "@paperclipai/shared";
+} from "@odysseus/shared";
 import {
   WORKSPACE_BRANCH_ROUTINE_VARIABLE,
   getBuiltinRoutineVariableValues,
@@ -45,8 +45,8 @@ import {
   pluginOperationIssueOriginKind,
   stringifyRoutineVariableValue,
   syncRoutineVariablesWithTemplate,
-} from "@paperclipai/shared";
-import { trackRoutineRun } from "@paperclipai/shared/telemetry";
+} from "@odysseus/shared";
+import { trackRoutineRun } from "@odysseus/shared/telemetry";
 import { conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
@@ -308,7 +308,7 @@ function resolveRoutineVariableValues(
 
   for (const variable of variables) {
     // Workspace-derived automatic values are authoritative for variables that
-    // Paperclip manages from execution context, so callers cannot override them.
+    // Odysseus manages from execution context, so callers cannot override them.
     const candidate = automaticVariables[variable.name] !== undefined
       ? automaticVariables[variable.name]
       : provided[variable.name] !== undefined
@@ -984,7 +984,7 @@ export function routineService(
           name: input.name,
           provider: input.provider,
           status: "active",
-          managedMode: "paperclip_managed",
+          managedMode: "odysseus_managed",
           externalRef: prepared.externalRef,
           providerMetadata: null,
           latestVersion: 1,
@@ -1692,7 +1692,7 @@ export function routineService(
         const created = await createWebhookSecret(routine.companyId, routine.id, actor);
         secretId = created.secret.id;
         secretMaterial = {
-          webhookUrl: `${process.env.PAPERCLIP_API_URL}/api/routine-triggers/public/${publicId}/fire`,
+          webhookUrl: `${process.env.ODYSSEUS_API_URL}/api/routine-triggers/public/${publicId}/fire`,
           webhookSecret: created.secretValue,
         };
       }
@@ -1863,7 +1863,7 @@ export function routineService(
       return {
         trigger: trigger as RoutineTrigger,
         secretMaterial: {
-          webhookUrl: `${process.env.PAPERCLIP_API_URL}/api/routine-triggers/public/${existing.publicId}/fire`,
+          webhookUrl: `${process.env.ODYSSEUS_API_URL}/api/routine-triggers/public/${existing.publicId}/fire`,
           webhookSecret: secretValue,
         },
         revision,
@@ -1943,7 +1943,7 @@ export function routineService(
             secretId: created.secret.id,
             secretMaterial: {
               triggerId: trigger.id,
-              webhookUrl: `${process.env.PAPERCLIP_API_URL}/api/routine-triggers/public/${publicId}/fire`,
+              webhookUrl: `${process.env.ODYSSEUS_API_URL}/api/routine-triggers/public/${publicId}/fire`,
               webhookSecret: created.secretValue,
             },
           });
@@ -2094,7 +2094,7 @@ export function routineService(
         const secretValue = await resolveTriggerSecret(trigger, routine.companyId);
         const rawBody = input.rawBody ?? Buffer.from(JSON.stringify(input.payload ?? {}));
         // Accept X-Hub-Signature-256 (GitHub/Sentry) or fall back to the
-        // generic X-Paperclip-Signature header so operators can use github_hmac
+        // generic X-Odysseus-Signature header so operators can use github_hmac
         // mode with either header convention.
         const providedSignature = (input.hubSignatureHeader ?? input.signatureHeader)?.trim() ?? "";
         if (!providedSignature) throw unauthorized();

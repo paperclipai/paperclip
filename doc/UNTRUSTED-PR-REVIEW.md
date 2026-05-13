@@ -55,8 +55,8 @@ OPENAI_API_KEY=... ANTHROPIC_API_KEY=... docker compose -f docker/docker-compose
 Inside the container:
 
 ```sh
-review-checkout-pr paperclipai/paperclip 432
-cd /work/checkouts/paperclipai-paperclip/pr-432
+review-checkout-pr PossibLaw/odysseus 432
+cd /work/checkouts/odysseus-odysseus/pr-432
 ```
 
 What this does:
@@ -110,7 +110,7 @@ Notes:
 
 - `pnpm install` can run untrusted lifecycle scripts from the PR. That is why this happens inside the isolated container instead of on your host.
 - If you only want static inspection, do not run install/dev commands.
-- Paperclip's embedded PostgreSQL and local storage stay inside the container home volume via `PAPERCLIP_HOME=/home/reviewer/.paperclip-review`.
+- Paperclip's embedded PostgreSQL and local storage stay inside the container home volume via `ODYSSEUS_HOME=/home/reviewer/.odysseus-review`.
 
 ## Reset state
 

@@ -16,7 +16,7 @@
   "topbarLinks": [
     {
       "name": "GitHub",
-      "url": "https://github.com/paperclip-ai/paperclip"
+      "url": "https://github.com/odysseus-ai/odysseus"
     }
   ],
   "navigation": {
@@ -27,7 +27,7 @@
           {
             "group": "Introduction",
             "pages": [
-              "start/what-is-paperclip",
+              "start/what-is-odysseus",
               "start/quickstart",
               "start/core-concepts",
               "start/architecture"
@@ -144,6 +144,6 @@
     ]
   },
   "footerSocials": {
-    "github": "https://github.com/paperclip-ai/paperclip"
+    "github": "https://github.com/odysseus-ai/odysseus"
   }
 }

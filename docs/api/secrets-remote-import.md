@@ -117,7 +117,7 @@ copied into this field.
       "key": "stripe-production-key",
       "status": "imported",
       "reason": null,
-      "secretId": "<paperclip-secret-id>",
+      "secretId": "<odysseus-secret-id>",
       "conflicts": []
     }
   ]

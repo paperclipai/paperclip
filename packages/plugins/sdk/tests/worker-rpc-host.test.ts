@@ -17,7 +17,7 @@ describe("isWorkerEntrypoint", () => {
   });
 
   function createTempRoot(): string {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-sdk-worker-"));
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "odysseus-sdk-worker-"));
     tempRoots.push(tempRoot);
     return tempRoot;
   }

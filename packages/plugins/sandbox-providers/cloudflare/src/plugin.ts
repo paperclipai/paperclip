@@ -1,4 +1,4 @@
-import { definePlugin } from "@paperclipai/plugin-sdk";
+import { definePlugin } from "@odysseus/plugin-sdk";
 import type {
   PluginLogger,
   PluginEnvironmentAcquireLeaseParams,
@@ -14,14 +14,14 @@ import type {
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
-} from "@paperclipai/plugin-sdk";
+} from "@odysseus/plugin-sdk";
 import { CloudflareBridgeError, createCloudflareBridgeClient } from "./bridge-client.js";
 import {
   parseCloudflareDriverConfig,
   validateCloudflareDriverConfig,
 } from "./config.js";
 
-const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
+const SANDBOX_EXEC_CHANNEL_ENV = "ODYSSEUS_SANDBOX_EXEC_CHANNEL";
 const SANDBOX_EXEC_CHANNEL_BRIDGE = "bridge";
 const CLOUDFLARE_EXEC_STDOUT_PREFIX = "[cloudflare exec stdout]";
 const CLOUDFLARE_EXEC_STDERR_PREFIX = "[cloudflare exec stderr]";
@@ -91,7 +91,7 @@ function resolveExecuteSession(
     } as const;
   }
 
-  const baseSessionId = config.sessionId.trim().length > 0 ? config.sessionId : "paperclip";
+  const baseSessionId = config.sessionId.trim().length > 0 ? config.sessionId : "odysseus";
   return {
     sessionStrategy: "named" as const,
     sessionId: `${baseSessionId}-bridge`,

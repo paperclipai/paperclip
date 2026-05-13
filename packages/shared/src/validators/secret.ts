@@ -39,7 +39,7 @@ export const createSecretSchema = z.object({
   providerMetadata: z.record(z.unknown()).optional().nullable(),
   providerVersionRef: z.string().optional().nullable(),
 }).superRefine((value, ctx) => {
-  if ((value.managedMode ?? "paperclip_managed") === "external_reference") {
+  if ((value.managedMode ?? "odysseus_managed") === "external_reference") {
     if (!value.externalRef?.trim()) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

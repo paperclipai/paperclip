@@ -1,11 +1,11 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { ReactNode } from "react";
-import type { IssueRecoveryAction, IssueRelationIssueSummary } from "@paperclipai/shared";
+import type { IssueRecoveryAction, IssueRelationIssueSummary } from "@odysseus/shared";
 import { Eye, ExternalLink, OctagonAlert, RefreshCw, TriangleAlert } from "lucide-react";
 import { IssueRecoveryActionCard } from "@/components/IssueRecoveryActionCard";
 import { IssueRow } from "@/components/IssueRow";
 import { IssueBlockedNotice } from "@/components/IssueBlockedNotice";
-import { storybookAgentMap, storybookAgents, createIssue } from "../fixtures/paperclipData";
+import { storybookAgentMap, storybookAgents, createIssue } from "../fixtures/odysseusData";
 
 const claudeAgent = storybookAgents.find((agent) => agent.name.toLowerCase().startsWith("claude")) ?? storybookAgents[0]!;
 const codexAgent = storybookAgents.find((agent) => agent.name.toLowerCase().startsWith("codex")) ?? storybookAgents[0]!;
@@ -327,7 +327,7 @@ function InboxRowPanel() {
 }
 
 const meta = {
-  title: "Paperclip/Source Issue Recovery",
+  title: "Odysseus/Source Issue Recovery",
   component: AllStatesPanel,
   parameters: { layout: "fullscreen" },
 } satisfies Meta<typeof AllStatesPanel>;

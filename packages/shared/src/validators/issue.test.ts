@@ -121,7 +121,7 @@ describe("issue validators", () => {
 
   it("accepts structured issue comment presentation and metadata", () => {
     const parsed = addIssueCommentSchema.parse({
-      body: "Paperclip needs a disposition before this issue can continue.",
+      body: "Odysseus needs a disposition before this issue can continue.",
       authorType: "system",
       presentation: {
         kind: "system_notice",

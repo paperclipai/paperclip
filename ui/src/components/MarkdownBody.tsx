@@ -55,7 +55,7 @@ function MarkdownIssueLink({
     <Link
       to={`/issues/${identifier}`}
       data-mention-kind="issue"
-      className="paperclip-markdown-issue-ref"
+      className="odysseus-markdown-issue-ref"
       title={title}
       aria-label={issueLabel}
     >
@@ -200,8 +200,8 @@ function createWikiLinkNode(href: string, wikiLink: ParsedWikiLink): MarkdownAst
     title: null,
     data: {
       hProperties: {
-        "data-paperclip-wiki-link": "true",
-        "data-paperclip-wiki-target": wikiLink.target,
+        "data-odysseus-wiki-link": "true",
+        "data-odysseus-wiki-target": wikiLink.target,
       },
     },
     children: [{ type: "text", value: wikiLink.label }],
@@ -404,7 +404,7 @@ function CodeBlock({
   const label = failed ? "Copy failed" : copied ? "Copied!" : "Copy";
 
   return (
-    <div className="paperclip-markdown-codeblock">
+    <div className="odysseus-markdown-codeblock">
       <pre
         {...preProps}
         ref={preRef}
@@ -417,7 +417,7 @@ function CodeBlock({
         onClick={handleCopy}
         aria-label="Copy code"
         title={label}
-        className="paperclip-markdown-codeblock-copy"
+        className="odysseus-markdown-codeblock-copy"
         data-copied={copied || undefined}
         data-failed={failed || undefined}
       >
@@ -426,7 +426,7 @@ function CodeBlock({
         ) : (
           <Copy aria-hidden="true" className="h-3.5 w-3.5" />
         )}
-        <span className="paperclip-markdown-codeblock-copy-label">{label}</span>
+        <span className="odysseus-markdown-codeblock-copy-label">{label}</span>
       </button>
     </div>
   );
@@ -451,7 +451,7 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
           fontFamily: "inherit",
           suppressErrorRendering: true,
         });
-        const rendered = await mermaid.render(`paperclip-mermaid-${renderId}`, source);
+        const rendered = await mermaid.render(`odysseus-mermaid-${renderId}`, source);
         if (!active) return;
         setSvg(rendered.svg);
       })
@@ -470,15 +470,15 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
   }, [darkMode, renderId, source]);
 
   return (
-    <div className="paperclip-mermaid">
+    <div className="odysseus-mermaid">
       {svg ? (
         <div dangerouslySetInnerHTML={{ __html: svg }} />
       ) : (
         <>
-          <p className={cn("paperclip-mermaid-status", error && "paperclip-mermaid-status-error")}>
+          <p className={cn("odysseus-mermaid-status", error && "odysseus-mermaid-status-error")}>
             {error ? `Unable to render Mermaid diagram: ${error}` : "Rendering Mermaid diagram..."}
           </p>
-          <pre className="paperclip-mermaid-source">
+          <pre className="odysseus-mermaid-source">
             <code className="language-mermaid">{source}</code>
           </pre>
         </>
@@ -527,7 +527,7 @@ export function MarkdownBody({
       </blockquote>
     ),
     table: ({ node: _node, style: tableStyle, children: tableChildren, ...tableProps }) => (
-      <div className="paperclip-markdown-table-scroll" role="region" aria-label="Scrollable table" tabIndex={0}>
+      <div className="odysseus-markdown-table-scroll" role="region" aria-label="Scrollable table" tabIndex={0}>
         <table {...tableProps} style={tableStyle as React.CSSProperties | undefined}>
           {tableChildren}
         </table>
@@ -557,7 +557,7 @@ export function MarkdownBody({
     ),
     a: ({ node: _node, href, style: linkStyle, children: linkChildren, ...anchorProps }) => {
       const dataProps = anchorProps as Record<string, unknown>;
-      const isWikiLink = dataProps["data-paperclip-wiki-link"] === "true";
+      const isWikiLink = dataProps["data-odysseus-wiki-link"] === "true";
       if (isWikiLink && href && !/^[a-z][a-z\d+.-]*:/i.test(href) && !href.startsWith("//")) {
         return (
           <Link
@@ -595,9 +595,9 @@ export function MarkdownBody({
           <a
             href={targetHref}
             className={cn(
-              "paperclip-mention-chip",
-              `paperclip-mention-chip--${parsed.kind}`,
-              parsed.kind === "project" && "paperclip-project-mention-chip",
+              "odysseus-mention-chip",
+              `odysseus-mention-chip--${parsed.kind}`,
+              parsed.kind === "project" && "odysseus-project-mention-chip",
             )}
             data-mention-kind={parsed.kind}
             style={{ ...mergeWrapStyle(linkStyle as React.CSSProperties | undefined), ...mentionChipInlineStyle(parsed) }}
@@ -646,7 +646,7 @@ export function MarkdownBody({
   return (
     <div
       className={cn(
-        "paperclip-markdown prose prose-sm min-w-0 max-w-full break-words overflow-hidden",
+        "odysseus-markdown prose prose-sm min-w-0 max-w-full break-words overflow-hidden",
         theme === "dark" && "prose-invert",
         className,
       )}

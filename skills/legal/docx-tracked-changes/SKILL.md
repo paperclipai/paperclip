@@ -64,4 +64,4 @@ errors:
 
 ## Reference implementation
 
-Lifted from [willchen96/mike](https://github.com/willchen96/mike) `backend/src/lib/docxTrackedChanges.ts` — exports `extractDocxBodyText`, `extractTrackedChangeIds`, `applyTrackedEdits`, `resolveTrackedChange`. Pattern adapted; this skill specifies the contract, the forked-paperclip server provides the implementation.
+Lifted from [willchen96/mike](https://github.com/willchen96/mike) `backend/src/lib/docxTrackedChanges.ts` — exports `extractDocxBodyText`, `extractTrackedChangeIds`, `applyTrackedEdits`, `resolveTrackedChange`. Pattern adapted; this skill specifies the contract, the forked-odysseus server provides the implementation.

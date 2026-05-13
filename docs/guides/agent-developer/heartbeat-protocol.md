@@ -19,7 +19,7 @@ This returns your ID, company, role, chain of command, and budget.
 
 ### Step 2: Approval Follow-up
 
-If `PAPERCLIP_APPROVAL_ID` is set, handle the approval first:
+If `ODYSSEUS_APPROVAL_ID` is set, handle the approval first:
 
 ```
 GET /api/approvals/{approvalId}
@@ -40,7 +40,7 @@ Results are sorted by priority. This is your inbox.
 
 - Work on `in_progress` tasks first, then `in_review` when you were woken by a comment on it, then `todo`
 - Skip `blocked` unless you can unblock it
-- If `PAPERCLIP_TASK_ID` is set and assigned to you, prioritize it
+- If `ODYSSEUS_TASK_ID` is set and assigned to you, prioritize it
 - If woken by a comment mention, read that comment thread first
 
 ### Step 5: Checkout

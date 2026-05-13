@@ -12,12 +12,12 @@ pnpm dev
 
 That's it. On first start the server:
 
-1. Creates a `~/.paperclip/instances/default/db/` directory for storage
-2. Ensures the `paperclip` database exists
+1. Creates a `~/.odysseus/instances/default/db/` directory for storage
+2. Ensures the `odysseus` database exists
 3. Runs migrations automatically for empty databases
 4. Starts serving requests
 
-Data persists across restarts in `~/.paperclip/instances/default/db/`. To reset local dev data, delete that directory.
+Data persists across restarts in `~/.odysseus/instances/default/db/`. To reset local dev data, delete that directory.
 
 If you need to apply pending migrations manually, run:
 
@@ -41,7 +41,7 @@ Future issue, comment, and document writes sync references automatically without
 
 This mode is ideal for local development and one-command installs.
 
-Docker note: the Docker quickstart image also uses embedded PostgreSQL by default. Persist `/paperclip` to keep DB state across container restarts (see `doc/DOCKER.md`).
+Docker note: the Docker quickstart image also uses embedded PostgreSQL by default. Persist `/odysseus` to keep DB state across container restarts (see `doc/DOCKER.md`).
 
 ## 2. Local PostgreSQL (Docker)
 
@@ -56,13 +56,13 @@ This starts PostgreSQL 17 on `localhost:5432`. Then set the connection string:
 ```sh
 cp .env.example .env
 # .env already contains:
-# DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip
+# DATABASE_URL=postgres://odysseus:odysseus@localhost:5432/odysseus
 ```
 
 Run migrations:
 
 ```sh
-DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip \
+DATABASE_URL=postgres://odysseus:odysseus@localhost:5432/odysseus \
   pnpm db:migrate
 ```
 
@@ -137,7 +137,7 @@ The database mode is controlled by `DATABASE_URL`:
 
 | `DATABASE_URL` | Mode |
 |---|---|
-| Not set | Embedded PostgreSQL (`~/.paperclip/instances/default/db/`) |
+| Not set | Embedded PostgreSQL (`~/.odysseus/instances/default/db/`) |
 | `postgres://...localhost...` | Local Docker PostgreSQL |
 | `postgres://...supabase.com...` | Hosted Supabase |
 
@@ -152,7 +152,7 @@ The plugin runtime tracks plugin-owned database namespaces and migrations in `pl
 Paperclip supports automatic and manual logical database backups. These dumps include
 non-system database schemas such as `public`, the Drizzle migration journal, and
 plugin-owned database schemas. See `doc/DEVELOPING.md` for the current
-`paperclipai db:backup` / `pnpm db:backup` commands and backup retention
+`odysseus db:backup` / `pnpm db:backup` commands and backup retention
 configuration.
 
 Database backups do not include non-database instance files such as local-disk
@@ -169,32 +169,32 @@ Paperclip stores secret metadata and versions in:
 For local/default installs, the active provider is `local_encrypted`:
 
 - Secret material is encrypted at rest with a local master key.
-- Default key file: `~/.paperclip/instances/default/secrets/master.key` (auto-created if missing).
-- CLI config location: `~/.paperclip/instances/default/config.json` under `secrets.localEncrypted.keyFilePath`.
+- Default key file: `~/.odysseus/instances/default/secrets/master.key` (auto-created if missing).
+- CLI config location: `~/.odysseus/instances/default/config.json` under `secrets.localEncrypted.keyFilePath`.
 - Backup/restore requires both the database metadata and the local master key file; either artifact alone is insufficient.
 - The server best-effort enforces `0600` key file permissions and provider health reports permission warnings.
 
 Optional overrides:
 
-- `PAPERCLIP_SECRETS_MASTER_KEY` (32-byte key as base64, hex, or raw 32-char string)
-- `PAPERCLIP_SECRETS_MASTER_KEY_FILE` (custom key file path)
+- `ODYSSEUS_SECRETS_MASTER_KEY` (32-byte key as base64, hex, or raw 32-char string)
+- `ODYSSEUS_SECRETS_MASTER_KEY_FILE` (custom key file path)
 
 Strict mode to block new inline sensitive env values:
 
 ```sh
-PAPERCLIP_SECRETS_STRICT_MODE=true
+ODYSSEUS_SECRETS_STRICT_MODE=true
 ```
 
 You can set strict mode and provider defaults via:
 
 ```sh
-pnpm paperclipai configure --section secrets
+pnpm odysseus configure --section secrets
 ```
 
 Inline secret migration command:
 
 ```sh
-pnpm paperclipai secrets migrate-inline-env --company-id <company-id> --apply
+pnpm odysseus secrets migrate-inline-env --company-id <company-id> --apply
 
 # direct database maintenance fallback
 pnpm secrets:migrate-inline-env --apply

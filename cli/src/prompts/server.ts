@@ -1,11 +1,11 @@
 import * as p from "@clack/prompts";
-import { isLoopbackHost, type BindMode } from "@paperclipai/shared";
+import { isLoopbackHost, type BindMode } from "@odysseus/shared";
 import type { AuthConfig, ServerConfig } from "../config/schema.js";
 import { parseHostnameCsv } from "../config/hostnames.js";
 import { buildCustomServerConfig, buildPresetServerConfig, inferConfiguredBind } from "../config/server-bind.js";
 
 const TAILNET_BIND_WARNING =
-  "No Tailscale address was detected during setup. The saved config will stay on loopback until Tailscale is available or PAPERCLIP_TAILNET_BIND_HOST is set.";
+  "No Tailscale address was detected during setup. The saved config will stay on loopback until Tailscale is available or ODYSSEUS_TAILNET_BIND_HOST is set.";
 
 function cancelled(): never {
   p.cancel("Setup cancelled.");
@@ -190,7 +190,7 @@ export async function promptServer(opts?: {
     const urlInput = await p.text({
       message: "Public base URL",
       defaultValue: currentAuth?.publicBaseUrl ?? "",
-      placeholder: "https://paperclip.example.com",
+      placeholder: "https://odysseus.example.com",
       validate: (val) => {
         const candidate = val.trim();
         if (!candidate) return "Public base URL is required for public exposure";

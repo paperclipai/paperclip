@@ -17,7 +17,7 @@ import {
   pluginManagedResources,
   plugins,
   projects,
-} from "@paperclipai/db";
+} from "@odysseus/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -54,7 +54,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
   const tempRoots: string[] = [];
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-plugin-orchestration-");
+    tempDb = await startEmbeddedPostgresTestDatabase("odysseus-plugin-orchestration-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
@@ -83,7 +83,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     const agentId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "Odysseus",
       issuePrefix: issuePrefix(companyId),
       requireBoardApprovalForNewAgents: false,
     });
@@ -102,7 +102,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
   }
 
   async function makeLocalRoot() {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-plugin-host-folder-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "odysseus-plugin-host-folder-"));
     tempRoots.push(root);
     return root;
   }
@@ -128,7 +128,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       identifier: `${issuePrefix(companyId)}-blocker`,
     });
 
-    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const services = buildHostServices(db, "plugin-record-id", "odysseus.missions", createEventBusStub());
     const issue = await services.issues.create({
       companyId,
       title: "Plugin child issue",
@@ -142,7 +142,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     });
 
     const [stored] = await db.select().from(issues).where(eq(issues.id, issue.id));
-    expect(stored?.originKind).toBe("plugin:paperclip.missions");
+    expect(stored?.originKind).toBe("plugin:odysseus.missions");
     expect(stored?.originId).toBe("mission-alpha");
     expect(stored?.billingCode).toBe("mission:alpha");
     expect(stored?.assigneeAgentId).toBe(agentId);
@@ -168,7 +168,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
           agentId,
           details: expect.objectContaining({
             sourcePluginId: "plugin-record-id",
-            sourcePluginKey: "paperclip.missions",
+            sourcePluginKey: "odysseus.missions",
             initiatingActorType: "agent",
             initiatingActorId: agentId,
             initiatingRunId: originRunId,
@@ -180,15 +180,15 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
 
   it("enforces plugin origin namespaces", async () => {
     const { companyId } = await seedCompanyAndAgent();
-    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const services = buildHostServices(db, "plugin-record-id", "odysseus.missions", createEventBusStub());
 
     const featureIssue = await services.issues.create({
       companyId,
       title: "Feature issue",
-      originKind: "plugin:paperclip.missions:feature",
+      originKind: "plugin:odysseus.missions:feature",
       originId: "mission-alpha:feature-1",
     });
-    expect(featureIssue.originKind).toBe("plugin:paperclip.missions:feature");
+    expect(featureIssue.originKind).toBe("plugin:odysseus.missions:feature");
 
     await expect(
       services.issues.create({
@@ -196,7 +196,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
         title: "Spoofed issue",
         originKind: "plugin:other.plugin:feature",
       }),
-    ).rejects.toThrow("Plugin may only use originKind values under plugin:paperclip.missions");
+    ).rejects.toThrow("Plugin may only use originKind values under plugin:odysseus.missions");
 
     await expect(
       services.issues.update({
@@ -204,12 +204,12 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
         companyId,
         patch: { originKind: "plugin:other.plugin:feature" },
       }),
-    ).rejects.toThrow("Plugin may only use originKind values under plugin:paperclip.missions");
+    ).rejects.toThrow("Plugin may only use originKind values under plugin:odysseus.missions");
   });
 
   it("creates plugin operation issues with the generic operation origin", async () => {
     const { companyId } = await seedCompanyAndAgent();
-    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const services = buildHostServices(db, "plugin-record-id", "odysseus.missions", createEventBusStub());
 
     const issue = await services.issues.create({
       companyId,
@@ -218,7 +218,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       originId: "mission-alpha:operation-1",
     });
 
-    expect(issue.originKind).toBe("plugin:paperclip.missions:operation");
+    expect(issue.originKind).toBe("plugin:odysseus.missions:operation");
     expect(issue.originId).toBe("mission-alpha:operation-1");
   });
 
@@ -227,16 +227,16 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     const pluginId = randomUUID();
     await db.insert(plugins).values({
       id: pluginId,
-      pluginKey: "paperclipai.plugin-llm-wiki",
-      packageName: "@paperclipai/plugin-llm-wiki",
+      pluginKey: "odysseus.plugin-llm-wiki",
+      packageName: "@odysseus/plugin-llm-wiki",
       version: "0.1.0",
       manifestJson: {
-        id: "paperclipai.plugin-llm-wiki",
+        id: "odysseus.plugin-llm-wiki",
         apiVersion: 1,
         version: "0.1.0",
         displayName: "LLM Wiki",
         description: "Local-file LLM Wiki plugin",
-        author: "Paperclip",
+        author: "Odysseus",
         categories: ["automation"],
         capabilities: ["local.folders"],
         entrypoints: { worker: "./dist/worker.js" },
@@ -245,7 +245,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
             folderKey: "wiki-root",
             displayName: "Wiki root",
             access: "readWrite",
-            requiredDirectories: ["raw", "wiki", "wiki/concepts", ".paperclip"],
+            requiredDirectories: ["raw", "wiki", "wiki/concepts", ".odysseus"],
             requiredFiles: ["WIKI.md", "AGENTS.md"],
           },
         ],
@@ -256,17 +256,17 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     const services = buildHostServices(
       db,
       pluginId,
-      "paperclipai.plugin-llm-wiki",
+      "odysseus.plugin-llm-wiki",
       createEventBusStub(),
       undefined,
       {
         manifest: {
-          id: "paperclipai.plugin-llm-wiki",
+          id: "odysseus.plugin-llm-wiki",
           apiVersion: 1,
           version: "0.1.0",
           displayName: "LLM Wiki",
           description: "Local-file LLM Wiki plugin",
-          author: "Paperclip",
+          author: "Odysseus",
           categories: ["automation"],
           capabilities: ["local.folders"],
           entrypoints: { worker: "./dist/worker.js" },
@@ -275,7 +275,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
               folderKey: "wiki-root",
               displayName: "Wiki root",
               access: "readWrite",
-              requiredDirectories: ["raw", "wiki", "wiki/concepts", ".paperclip"],
+              requiredDirectories: ["raw", "wiki", "wiki/concepts", ".odysseus"],
               requiredFiles: ["WIKI.md", "AGENTS.md"],
             },
           ],
@@ -288,7 +288,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       folderKey: "wiki-root",
       path: root,
       access: "readWrite",
-      requiredDirectories: ["raw", "wiki", "wiki/concepts", ".paperclip"],
+      requiredDirectories: ["raw", "wiki", "wiki/concepts", ".odysseus"],
       requiredFiles: ["WIKI.md", "AGENTS.md"],
     });
     expect(configured.healthy).toBe(false);
@@ -324,16 +324,16 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     const pluginId = randomUUID();
     await db.insert(plugins).values({
       id: pluginId,
-      pluginKey: "paperclip.local-folders",
-      packageName: "@paperclip/plugin-local-folders",
+      pluginKey: "odysseus.local-folders",
+      packageName: "@odysseus/plugin-local-folders",
       version: "0.1.0",
       manifestJson: {
-        id: "paperclip.local-folders",
+        id: "odysseus.local-folders",
         apiVersion: 1,
         version: "0.1.0",
         displayName: "Local Folders",
         description: "Local folder fixture",
-        author: "Paperclip",
+        author: "Odysseus",
         categories: ["automation"],
         capabilities: ["local.folders"],
         entrypoints: { worker: "./dist/worker.js" },
@@ -350,17 +350,17 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     const services = buildHostServices(
       db,
       pluginId,
-      "paperclip.local-folders",
+      "odysseus.local-folders",
       createEventBusStub(),
       undefined,
       {
         manifest: {
-          id: "paperclip.local-folders",
+          id: "odysseus.local-folders",
           apiVersion: 1,
           version: "0.1.0",
           displayName: "Local Folders",
           description: "Local folder fixture",
-          author: "Paperclip",
+          author: "Odysseus",
           categories: ["automation"],
           capabilities: ["local.folders"],
           entrypoints: { worker: "./dist/worker.js" },
@@ -397,19 +397,19 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     const pluginId = randomUUID();
     await db.insert(plugins).values({
       id: pluginId,
-      pluginKey: "paperclip.missions",
-      packageName: "@paperclip/plugin-missions",
+      pluginKey: "odysseus.missions",
+      packageName: "@odysseus/plugin-missions",
       version: "0.1.0",
       apiVersion: 1,
       categories: ["automation"],
       status: "ready",
       manifestJson: {
-        id: "paperclip.missions",
+        id: "odysseus.missions",
         apiVersion: 1,
         version: "0.1.0",
         displayName: "Missions",
         description: "Mission orchestration",
-        author: "Paperclip",
+        author: "Odysseus",
         categories: ["automation"],
         capabilities: ["projects.managed"],
         entrypoints: { worker: "./dist/worker.js" },
@@ -424,7 +424,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       },
     });
 
-    const services = buildHostServices(db, pluginId, "paperclip.missions", createEventBusStub());
+    const services = buildHostServices(db, pluginId, "odysseus.missions", createEventBusStub());
     const missing = await services.projects.getManaged({ companyId, projectKey: "operations" });
     expect(missing.status).toBe("missing");
     expect(missing.projectId).toBeNull();
@@ -446,7 +446,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     expect(created.projectId).toEqual(expect.any(String));
     expect(created.project?.managedByPlugin).toMatchObject({
       pluginId,
-      pluginKey: "paperclip.missions",
+      pluginKey: "odysseus.missions",
       pluginDisplayName: "Missions",
       resourceKind: "project",
       resourceKey: "operations",
@@ -460,12 +460,12 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       .update(plugins)
       .set({
         manifestJson: {
-          id: "paperclip.missions",
+          id: "odysseus.missions",
           apiVersion: 1,
           version: "0.2.0",
           displayName: "Missions",
           description: "Mission orchestration",
-          author: "Paperclip",
+          author: "Odysseus",
           categories: ["automation"],
           capabilities: ["projects.managed"],
           entrypoints: { worker: "./dist/worker.js" },
@@ -517,7 +517,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       executionRunId: runId,
     });
 
-    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const services = buildHostServices(db, "plugin-record-id", "odysseus.missions", createEventBusStub());
     await expect(
       services.issues.assertCheckoutOwner({
         issueId,
@@ -561,7 +561,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       type: "blocks",
     });
 
-    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const services = buildHostServices(db, "plugin-record-id", "odysseus.missions", createEventBusStub());
     await expect(
       services.issues.requestWakeup({
         issueId: blockedIssueId,
@@ -658,7 +658,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       },
     ]);
 
-    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const services = buildHostServices(db, "plugin-record-id", "odysseus.missions", createEventBusStub());
     const summary = await services.issues.getOrchestrationSummary({
       companyId,
       issueId: rootIssueId,

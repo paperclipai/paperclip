@@ -21,10 +21,10 @@
  */
 import type {
   PluginCapability,
-  PaperclipPluginManifestV1,
+  OdysseusPluginManifestV1,
   PluginUiSlotType,
   PluginLauncherPlacementZone,
-} from "@paperclipai/shared";
+} from "@odysseus/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 
@@ -212,7 +212,7 @@ export interface PluginCapabilityValidator {
    * Check whether a plugin has a specific capability.
    */
   hasCapability(
-    manifest: PaperclipPluginManifestV1,
+    manifest: OdysseusPluginManifestV1,
     capability: PluginCapability,
   ): boolean;
 
@@ -220,7 +220,7 @@ export interface PluginCapabilityValidator {
    * Check whether a plugin has all of the specified capabilities.
    */
   hasAllCapabilities(
-    manifest: PaperclipPluginManifestV1,
+    manifest: OdysseusPluginManifestV1,
     capabilities: PluginCapability[],
   ): CapabilityCheckResult;
 
@@ -228,7 +228,7 @@ export interface PluginCapabilityValidator {
    * Check whether a plugin has at least one of the specified capabilities.
    */
   hasAnyCapability(
-    manifest: PaperclipPluginManifestV1,
+    manifest: OdysseusPluginManifestV1,
     capabilities: PluginCapability[],
   ): boolean;
 
@@ -239,7 +239,7 @@ export interface PluginCapabilityValidator {
    * Unknown operations are rejected by default.
    */
   checkOperation(
-    manifest: PaperclipPluginManifestV1,
+    manifest: OdysseusPluginManifestV1,
     operation: string,
   ): CapabilityCheckResult;
 
@@ -248,7 +248,7 @@ export interface PluginCapabilityValidator {
    * Throws a 403 HttpError if the capability check fails.
    */
   assertOperation(
-    manifest: PaperclipPluginManifestV1,
+    manifest: OdysseusPluginManifestV1,
     operation: string,
   ): void;
 
@@ -257,7 +257,7 @@ export interface PluginCapabilityValidator {
    * Throws a 403 HttpError if the capability is missing.
    */
   assertCapability(
-    manifest: PaperclipPluginManifestV1,
+    manifest: OdysseusPluginManifestV1,
     capability: PluginCapability,
   ): void;
 
@@ -265,7 +265,7 @@ export interface PluginCapabilityValidator {
    * Check whether a plugin can register the given UI slot type.
    */
   checkUiSlot(
-    manifest: PaperclipPluginManifestV1,
+    manifest: OdysseusPluginManifestV1,
     slotType: PluginUiSlotType,
   ): CapabilityCheckResult;
 
@@ -277,7 +277,7 @@ export interface PluginCapabilityValidator {
    * This is useful for install-time validation to give comprehensive feedback.
    */
   validateManifestCapabilities(
-    manifest: PaperclipPluginManifestV1,
+    manifest: OdysseusPluginManifestV1,
   ): CapabilityCheckResult;
 
   /**
@@ -325,12 +325,12 @@ export function pluginCapabilityValidator(): PluginCapabilityValidator {
   // Internal helpers
   // -----------------------------------------------------------------------
 
-  function capabilitySet(manifest: PaperclipPluginManifestV1): Set<PluginCapability> {
+  function capabilitySet(manifest: OdysseusPluginManifestV1): Set<PluginCapability> {
     return new Set(manifest.capabilities);
   }
 
   function buildForbiddenMessage(
-    manifest: PaperclipPluginManifestV1,
+    manifest: OdysseusPluginManifestV1,
     operation: string,
     missing: PluginCapability[],
   ): string {
@@ -442,7 +442,7 @@ export function pluginCapabilityValidator(): PluginCapabilityValidator {
 
       // Check feature declarations → required capabilities
       for (const [feature, requiredCap] of Object.entries(FEATURE_CAPABILITIES)) {
-        const featureValue = manifest[feature as keyof PaperclipPluginManifestV1];
+        const featureValue = manifest[feature as keyof OdysseusPluginManifestV1];
         if (Array.isArray(featureValue) && featureValue.length > 0) {
           if (!declared.has(requiredCap)) {
             allMissing.push(requiredCap);

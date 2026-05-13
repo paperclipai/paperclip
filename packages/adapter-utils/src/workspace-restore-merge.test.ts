@@ -17,7 +17,7 @@ describe("workspace restore merge", () => {
   });
 
   it("preserves sibling files when sequential stale-baseline restores create the same nested directory tree", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-merge-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "odysseus-restore-merge-"));
     cleanupDirs.push(rootDir);
 
     const targetDir = path.join(rootDir, "target");

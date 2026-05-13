@@ -12,12 +12,12 @@ import type {
   HeartbeatRun,
   Approval,
   AgentConfigRevision,
-} from "@paperclipai/shared";
+} from "@odysseus/shared";
 import type {
   AdapterModelProfileDefinition,
   AdapterModelProfileKey,
-} from "@paperclipai/adapter-utils";
-import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
+} from "@odysseus/adapter-utils";
+import { isUuidLike, normalizeAgentUrlKey } from "@odysseus/shared";
 import { ApiError, api } from "./client";
 
 export interface AgentKey {
@@ -229,5 +229,5 @@ export const agentsApi = {
 export interface AvailableSkill {
   name: string;
   description: string;
-  isPaperclipManaged: boolean;
+  isOdysseusManaged: boolean;
 }

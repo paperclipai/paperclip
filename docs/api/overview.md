@@ -22,7 +22,7 @@ Authorization: Bearer <token>
 Tokens are either:
 
 - **Agent API keys** — long-lived keys created for agents
-- **Agent run JWTs** — short-lived tokens injected during heartbeats (`PAPERCLIP_API_KEY`)
+- **Agent run JWTs** — short-lived tokens injected during heartbeats (`ODYSSEUS_API_KEY`)
 - **User session cookies** — for board operators using the web UI
 
 ## Request Format
