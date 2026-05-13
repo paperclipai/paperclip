@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { CompanySecret, EnvBinding, SecretVersionSelector } from "@paperclipai/shared";
 import { AlertCircle, X } from "lucide-react";
 import { cn } from "../lib/utils";
+import { envVarEditorUi, formatBadgeStatus } from "../lib/i18n";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
@@ -16,6 +17,11 @@ type Row = {
 
 function emptyRow(): Row {
   return { key: "", source: "plain", plainValue: "", secretId: "", version: "latest" };
+}
+
+function formatEnvBindingIssueReason(reason: string): string {
+  if (reason === "missing") return envVarEditorUi.bindingReasonMissing;
+  return formatBadgeStatus(reason);
 }
 
 function toRows(rec: Record<string, EnvBinding> | null | undefined): Row[] {
@@ -157,7 +163,7 @@ export function EnvVarEditor({
     if (!key || plain.length === 0) return;
 
     const suggested = defaultSecretName(key) || "secret";
-    const name = window.prompt("Secret name", suggested)?.trim();
+    const name = window.prompt(envVarEditorUi.secretNamePrompt, suggested)?.trim();
     if (!name) return;
 
     try {
@@ -165,7 +171,7 @@ export function EnvVarEditor({
       const created = await onCreateSecret(name, plain);
       updateRow(index, { source: "secret", secretId: created.id });
     } catch (error) {
-      setSealError(error instanceof Error ? error.message : "Failed to create secret");
+      setSealError(error instanceof Error ? error.message : envVarEditorUi.createSecretFailed);
     }
   }
 
@@ -181,7 +187,7 @@ export function EnvVarEditor({
           <div key={index} className="flex items-center gap-1.5">
             <input
               className={cn(inputClass, "flex-[2]")}
-              placeholder="KEY"
+              placeholder={envVarEditorUi.placeholderVarName}
               value={row.key}
               onChange={(event) => updateRow(index, { key: event.target.value })}
             />
@@ -195,8 +201,8 @@ export function EnvVarEditor({
                 })
               }
             >
-              <option value="plain">Plain</option>
-              <option value="secret">Secret</option>
+              <option value="plain">{envVarEditorUi.sourcePlain}</option>
+              <option value="secret">{envVarEditorUi.sourceSecret}</option>
             </select>
             {row.source === "secret" ? (
               <>
@@ -205,14 +211,14 @@ export function EnvVarEditor({
                   value={row.secretId}
                   onChange={(event) => updateRow(index, { secretId: event.target.value })}
                 >
-                  <option value="">Select secret...</option>
+                  <option value="">{envVarEditorUi.selectSecretPlaceholder}</option>
                   {row.secretId && !secrets.some((s) => s.id === row.secretId) ? (
-                    <option value={row.secretId}>Missing ({row.secretId.slice(0, 8)}…)</option>
+                    <option value={row.secretId}>{envVarEditorUi.missingSecretOption(row.secretId.slice(0, 8))}</option>
                   ) : null}
                   {secrets.map((secret) => (
                     <option key={secret.id} value={secret.id}>
                       {secret.name}
-                      {secret.status !== "active" ? ` (${secret.status})` : ""}
+                      {secret.status !== "active" ? `（${formatBadgeStatus(secret.status)}）` : ""}
                     </option>
                   ))}
                 </select>
@@ -224,9 +230,9 @@ export function EnvVarEditor({
                     updateRow(index, { version: raw === "latest" ? "latest" : Number.parseInt(raw, 10) });
                   }}
                   disabled={!row.secretId}
-                  aria-label="Version"
+                  aria-label={envVarEditorUi.versionSelectAria}
                 >
-                  <option value="latest">latest</option>
+                  <option value="latest">{envVarEditorUi.versionLatest}</option>
                   {(() => {
                     const selected = secrets.find((s) => s.id === row.secretId);
                     if (!selected) return null;
@@ -246,16 +252,16 @@ export function EnvVarEditor({
                   className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
                   onClick={() => sealRow(index)}
                   disabled={!row.key.trim() || !row.plainValue}
-                  title="Create secret from current plain value"
+                  title={envVarEditorUi.newSecretButtonTitle}
                 >
-                  New
+                  {envVarEditorUi.newSecretButton}
                 </button>
               </>
             ) : (
               <>
                 <input
                   className={cn(inputClass, "flex-[3]")}
-                  placeholder="value"
+                  placeholder={envVarEditorUi.placeholderVarValue}
                   value={row.plainValue}
                   onChange={(event) => updateRow(index, { plainValue: event.target.value })}
                 />
@@ -264,9 +270,9 @@ export function EnvVarEditor({
                   className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
                   onClick={() => sealRow(index)}
                   disabled={!row.key.trim() || !row.plainValue}
-                  title="Store value as secret and replace with reference"
+                  title={envVarEditorUi.sealButtonTitle}
                 >
-                  Seal
+                  {envVarEditorUi.sealButton}
                 </button>
               </>
             )}
@@ -301,22 +307,21 @@ export function EnvVarEditor({
           <p className="text-[11px] text-amber-700 dark:text-amber-400 inline-flex items-start gap-1">
             <AlertCircle className="h-3 w-3 mt-0.5 shrink-0" />
             <span>
-              {issues.length} secret binding{issues.length === 1 ? "" : "s"} need attention:{" "}
+              {envVarEditorUi.bindingIssueIntro(issues.length)}{" "}
               {issues.map((issue, idx) => (
                 <span key={idx} className="font-mono">
                   {issue.key}
-                  <span className="text-muted-foreground"> ({issue.reason})</span>
+                  <span className="text-muted-foreground"> ({formatEnvBindingIssueReason(issue.reason)})</span>
                   {idx < issues.length - 1 ? ", " : ""}
                 </span>
               ))}
-              . Runs will fail until you remap or re-enable.
+              {envVarEditorUi.runsBlockedUntilRemapped}
             </span>
           </p>
         );
       })()}
       <p className="text-[11px] text-muted-foreground/60">
-        Set KEY to the env var name the process expects, for example GH_TOKEN. Choose Secret to resolve a stored
-        value at run start. PAPERCLIP_* variables are injected automatically.
+        {envVarEditorUi.footerHint}
       </p>
     </div>
   );

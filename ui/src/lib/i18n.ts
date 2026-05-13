@@ -826,6 +826,9 @@ export const agentDetailUi = {
   pendingApproval: "此智能体待董事会审批，暂不可调用。",
   approveAgent: "批准智能体",
   recentIssues: "最近事务",
+  latestRunHeading: "最近运行",
+  liveRunHeading: "进行中运行",
+  latestRunViewDetails: "查看详情 →",
   noRecentIssues: "暂无相关事务",
   costs: "用量与费用",
   inputTokens: "输入 token",
@@ -931,6 +934,9 @@ export const agentDetailUi = {
   keyRevoked: "已撤销于",
   revokeKey: "撤销",
   runHeartbeat: "运行心跳",
+  runNowButtonLabel: "立即运行",
+  pauseAgentButton: "暂停",
+  resumeAgentButton: "恢复",
   actionFailedFallback: "操作失败",
   resetSessionFailedFallback: "无法重置会话",
   updatePermissionsFailedFallback: "无法更新权限",
@@ -978,11 +984,266 @@ export const agentDetailUi = {
   viewCompanySkillsLibrary: "查看公司技能库",
   failedLoadRunLog: "无法加载运行日志",
   failedLoadMoreRunLog: "无法加载更多运行日志",
+  instructionsAdvancedCollapsible: "高级选项",
+  instructionsModeLabel: "模式",
+  instructionsModeTooltip:
+    "托管：由 Paperclip 存储并提供指令包。外部：你在磁盘上自行指定存放指令包的目录路径。",
+  instructionsModeManaged: "托管",
+  instructionsModeExternal: "外部",
+  instructionsRootPathLabel: "根路径",
+  instructionsRootPathTooltip:
+    "指令包在磁盘上的绝对目录。托管模式下由 Paperclip 自动设置。",
+  instructionsRootPathManagedEmpty: "（托管）",
+  instructionsEntryFileLabel: "入口文件",
+  instructionsEntryFileTooltip:
+    "智能体加载指令时最先读取的文件。默认为 AGENTS.md。",
   bundlePathPlaceholder: "/absolute/path/to/agent/prompts",
   newInstructionFilePlaceholder: "TOOLS.md",
   instructionsHeadingPlaceholder: "# 智能体指令",
   fileContentsPlaceholder: "文件内容",
   copyAsMarkdownTitle: "复制为 Markdown",
+} as const;
+
+/** Field (?) tooltip copy for AgentConfigForm / primitives — keys must stay in sync with `help` usages. */
+export const agentConfigHelp: Record<string, string> = {
+  name: "智能体列表与界面中显示的展示名称。",
+  title: "在组织图中展示的职位头衔。",
+  role: "组织角色，用于权限边界与编排。",
+  reportsTo: "组织层级里，该智能体的上级智能体。",
+  capabilities:
+    "说明该智能体能承担的工作范围；会在组织图中展示，并参与任务分发相关逻辑。",
+  adapterType:
+    "运行载体：本地 CLI（Claude / Codex / OpenCode 等）、OpenClaw 网关、派生子进程或通用 HTTP Webhook。",
+  cwd:
+    "已弃用的遗留「工作目录」兜底项。存量智能体可能仍带此项；新建配置请优先使用项目工作区。",
+  promptTemplate:
+    "每次心跳都会附带发送的动态提示。宜保持短小、偏任务语境，不要用其承载大块静态说明书。可使用 {{ agent.id }}、{{ agent.name }}、{{ agent.role }} 等模板变量。",
+  model: "覆盖适配器默认选用的模型标识。",
+  thinkingEffort: "控制模型的推理开销档位；取值范围因适配器/模型而异。",
+  chrome: "通过传入 --chrome 启用 Claude 的浏览器（Chrome）集成。",
+  dangerouslySkipPermissions: "在无人在场前提下自动放行适配器权限提示（若适配器支持）。",
+  dangerouslyBypassSandbox: "以无沙箱方式运行 Codex；需要访问本地文件系统或网络时通常会开启。",
+  search: "在 Codex 运行过程中启用网页搜索能力。",
+  fastMode:
+    "开启 Codex 快速模式：消耗令牌或计费更快；适用于 GPT‑5.4 及手写 Codex 模型 ID。",
+  workspaceStrategy:
+    "Paperclip 如何落实到具体执行目录。通常为 project_primary；也可使用 git_worktree 为单笔事务检出独立分支。",
+  workspaceBaseRef: "创建工作区（含 worktree）分支时的基准引用；留空则用解析得到的仓库引用或 HEAD。",
+  workspaceBranchTemplate:
+    "派生分支命名模板；支持 {{issue.identifier}}、{{issue.title}}、{{agent.name}}、{{project.id}}、{{workspace.repoRef}}、{{slug}} 等变量。",
+  worktreeParentDir: "衍生 worktree 的父目录；可为绝对路径、带 ~/ 的主目录简写或相对仓库根的路径。",
+  runtimeServicesJson:
+    "可选：随工作区一起启动的长期驻留服务（示例：本地后端、常驻 worker）JSON 声明。",
+  maxTurnsPerRun: "单次心跳运行允许的智能体回路（常见为工具往返）上限轮数。",
+  command: "要启动的主命令（示例：node、python）。",
+  localCommand:
+    "显式指定要调用的 CLI 可执行文件路径（例如 /usr/local/bin/claude、coder、本地 OpenCode CLI）。",
+  args: "主命令的参数列表，逗号分隔。",
+  extraArgs: "附加在命令行末尾的适配器专有参数，逗号分隔。",
+  envVars: "注入适配器进程的环境变量；可使用明文或通过密钥引用占位。",
+  bootstrapPrompt:
+    "仅在会话首次拉起时附带发送；适合一次性环境说明；不应在每轮心跳重复。",
+  payloadTemplateJson:
+    "可选：在 Paperclip 拼装标准负载之前，与对方 Webhook/API 载荷合并的一段 JSON。",
+  webhookUrl: "收到唤醒事件时向对方 POST 的有效 URL。",
+  heartbeatInterval:
+    "按固定周期间隔为该智能体派发心跳运行；常用于后台巡检类的定时任务。",
+  intervalSec: "两次心跳运行之间的最短间隔秒数。",
+  timeoutSec: "单个运行可被允许的最长时间（秒）；0 表示不按时间强制终止。",
+  graceSec: "发送中断信号后等待进程自行退出的宽限秒数，超时再强制结束。",
+  wakeOnDemand: "允许工作流在需要时按需唤醒智能体（任务分配、界面操作、调用 API、自动化流水线等）。",
+  cooldownSec: "两次心跳派发之间的最短冷却间隔秒数。",
+  maxConcurrentRuns: "该智能体在任意时刻可同时存在的运行个数上限。",
+  maxTurnContinuationEnabled:
+    "当运行因内置「最多轮数」策略正常停下时，按规则自动接续若干次新运行直至任务收敛或用尽次数。",
+  maxTurnContinuationMaxAttempts: "接续策略允许的最大接续次数（与单次 max turns 配额不同维度）。",
+  maxTurnContinuationDelaySec: "每次接续运行派发前的休眠秒数。",
+  budgetMonthlyCents:
+    "以「分」为单位的自然月开销上限（按 UTC）；0 或留空语义为不设上限（仍受公司总控）。",
+};
+
+export const agentConfigUi = {
+  configRevisionsTitle: "配置修订",
+  configRestoreButton: "恢复到此版本",
+  configRevisionChangedPrefix: "变更项：",
+  configRevisionNoTrackedChanges: "无已跟踪的配置键变更",
+
+  sectionIdentity: "身份",
+  sectionExecution: "执行环境",
+  sectionAdapter: "适配器",
+  sectionPermissionsAndConfig: "权限与适配器选项",
+  sectionRunPolicy: "运行策略",
+  advancedRunPolicy: "高级运行策略",
+
+  configUnsavedChanges: "尚未保存的修改",
+
+  fieldName: "名称",
+  placeholderAgentName: "智能体名称",
+  fieldTitle: "职位",
+  placeholderTitleExample: "例如：工程副总",
+  fieldReportsTo: "汇报上级",
+  fieldCapabilities: "能力说明",
+  placeholderCapabilities: "概括该智能体的职责边界与擅长领域…",
+  fieldPromptTemplate: "心跳提示词片段",
+  placeholderPromptRoleFraming:
+    "例如：你是 {{ agent.name }}，岗位是 {{ agent.role }}，当前需配合团队完成……",
+  bannerPromptHeartbeatCost:
+    "该片段会在每次心跳重复附带。请写得短而有针对性，以降低 token 成本和缓存抖动。",
+
+  hintDefaultExecutionTarget:
+    "设置在智能体级别默认选用的执行载体；可被项目级或单笔事务的设置覆盖。",
+  fieldDefaultEnvironment: "默认环境",
+  optionCompanyDefaultLocal: "与公司默认保持一致（本地）",
+
+  fieldAdapterType: "适配器类型",
+  testEnvironmentShort: "测试",
+  testingEnvironmentEllipsis: "测试中…",
+
+  envTestFailedGeneric: "环境探测未通过",
+
+  fieldWorkingDirDeprecated: "工作目录（已弃用）",
+  placeholderProjectPathUnix: "/path/to/project",
+
+  fieldCommandLine: "启动命令",
+
+  bannerBootstrapDeprecation:
+    "启动提示阶段的内容属于旧链路，后续版本将下线。请将稳定说明迁至「指令文件」或长期提示片段。",
+
+  fieldBootstrapLegacy: "启动提示词（遗留）",
+  placeholderBootstrapPrompt: "首次会话可选的环境说明 Markdown",
+
+  fieldExtraArgsComma: "追加 CLI 参数（逗号分隔）",
+  placeholderExtraArgsExample: "例如 --verbose, --temperature=0.2",
+
+  fieldEnvironmentVariables: "环境变量编辑器",
+
+  fieldTimeoutSeconds: "单轮超时（秒）",
+  fieldGraceInterruptSeconds: "中断后的宽限期（秒）",
+
+  toggleHeartbeatInterval: "按固定间隔派发心跳",
+  runHeartbeatEveryPrefix: "每隔",
+  unitSecondsShort: "秒",
+
+  toggleWakeOnDemand: "允许系统按需唤醒",
+
+  fieldCooldownSeconds: "心跳最小间隔（秒）",
+  fieldMaxConcurrentRuns: "最大并行运行数",
+
+  toggleContinuationAfterCap: "在触达轮数上限后自动接续",
+  fieldContinuationAttempts: "接续派发次数上限",
+  fieldContinuationDelaySeconds: "接续前等待（秒）",
+
+  labelPrimaryModelRow: "主模型",
+  fieldModelDropdown: "模型",
+
+  bannerCodexMinimalWithSearch:
+    "已开启联网检索时，`minimal` 推理档位可能被 Codex 套件拒绝。",
+
+
+  detectModelAction: "从当前配置探测模型",
+  redetectModelAction: "重新探测模型",
+  modelSearchPlaceholderTypedCreate: "搜索模型标识…（末尾可直接回车手写）",
+  modelSearchPlaceholder: "搜索可用模型…",
+  modelBadgeCurrent: "当前",
+  modelBadgeDetected: "已探测",
+  modelBadgeViaConfig: "配置携带",
+  modelUseManualChoice: "使用手写模型",
+
+  placeholderModelPickDefault: "默认（随适配器）",
+  placeholderModelPickRequired: "请选择模型（必填）",
+  placeholderModelPickOptional: "选择模型",
+
+  modelDetectRunning: "正在探测本地模型标识…",
+
+  refreshingModelsEllipsis: "刷新列表中…",
+  refreshModelCatalog: "刷新模型目录",
+
+  modelListNoMatches: "没有匹配的候选项",
+  emptyDetectNeedsManualVendor:
+    "暂时还没有解析到模型指纹，请直接在下方手写 provider/model。",
+
+
+  adapterExperimentalPill: "实验性",
+
+  adapterComingSoon: "即将上线",
+
+  envTestStatusPass: "通过",
+  envTestStatusWarn: "有告警",
+  envTestStatusFail: "失败",
+  envTestHintLabel: "建议：",
+
+  cheapProfileTitle: "经济档模型",
+  cheapProfileSubtitle:
+    "当运行显式切换到「cheap」资费策略时使用；主会话模型不会被替换。",
+
+
+  hintAdapterDefaultLine: (m: string) => `适配器建议默认：${m}`,
+  hintNoCheapDefaultPrompt: "当前适配器未声明便宜档默认，需要你手工指定。",
+
+
+  noteCheapImplicitFallbackPrefix: "未手写便宜档时将退回到适配器兜底：",
+
+  warningCheapUnset:
+    "未选择专用便宜模型且适配器亦无默认；此类运行会先落在主模型上并附加说明标记。",
+
+  openCodeNeedsLocalDiscovery: (environmentName: string) =>
+    `实时 OpenCode 模型探测仅在「driver = local」的环境可用。当前会话使用「${environmentName}」环境下的静态列表以及手动条目。`,
+
+  thinkingEffortAuto: "自动（跟随适配器）",
+  thinkingEffortMinimal: "极低",
+  thinkingEffortLow: "低",
+  thinkingEffortMedium: "标准",
+  thinkingEffortHigh: "偏高",
+  thinkingEffortXHigh: "超高",
+  thinkingEffortMax: "最大",
+  cursorModePlan: "规划优先",
+  cursorModeAsk: "问答优先",
+
+  fieldThinkingEffort: "推理 / 档位",
+  fallbackFailedRefreshModels: "刷新模型目录失败",
+
+  fallbackFailedLoadModelsFallback: "无法加载适配器的模型候选列表。",
+
+
+  reportsPickerChoosePlaceholder: "选择上级智能体…",
+  reportsPickerCeoLocked: "仅 CEO — 暂无上级",
+
+  unknownManagerStaleId: "未知上级引用（陈旧 ID）",
+  reportingLineTerminatedSuffix: "（实例已归档）",
+
+  reportsToNobody: "不指定上级",
+
+  reportsCurrentTerminated: (managerName: string) => `当前记录：${managerName}（已归档）`,
+  reportsStaleExplanation: "原上级已不在团队中，请选择新的管理者或清空。",
+  reportingVerbWithName: (managerName: string, terminatedPhrase: string) =>
+    `向 ${managerName} 汇报${terminatedPhrase}`,
+} as const;
+
+/** 智能体配置 — 环境变量表格（明文 / 公司密钥引用） */
+export const envVarEditorUi = {
+  sourcePlain: "明文",
+  sourceSecret: "密钥",
+  selectSecretPlaceholder: "选择密钥…",
+  missingSecretOption: (idPrefix: string) => `缺失（${idPrefix}…）`,
+  versionLatest: "最新",
+  versionSelectAria: "密钥版本",
+  placeholderVarName: "变量名",
+  placeholderVarValue: "变量值",
+
+  sealButton: "封存",
+  sealButtonTitle: "将当前明文写入公司密钥库，并改为引用该密钥",
+  newSecretButton: "新建",
+  newSecretButtonTitle: "用当前明文创建一条新密钥并引用",
+
+  secretNamePrompt: "密钥名称",
+  createSecretFailed: "创建密钥失败",
+
+  bindingIssueIntro: (n: number) => (n === 1 ? "有 1 处密钥绑定需要处理：" : `有 ${n} 处密钥绑定需要处理：`),
+  bindingReasonMissing: "找不到对应密钥",
+  runsBlockedUntilRemapped: "在重新选择密钥或恢复其状态之前，相关运行可能失败。",
+
+  footerHint:
+    "「变量名」填写进程期望的环境变量名（例如 GH_TOKEN）。选择「密钥」可在运行前解析为公司密钥库中的值。以 PAPERCLIP_ 开头的变量仍由系统自动注入。",
 } as const;
 
 export const issueBreadcrumb = {
