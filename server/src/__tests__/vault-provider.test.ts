@@ -524,6 +524,106 @@ describe("VaultTokenManager", () => {
     await tm.acquire();
     expect(gw.loginKubernetes).toHaveBeenCalledTimes(2);
   });
+
+  it("re-reads the SA JWT from disk on each login (kubernetes SA token rotation)", async () => {
+    // Greptile r3 P1: VaultTokenManager used to capture the SA JWT once at
+    // session creation. After the projected SA token rotates on disk and
+    // the cached vault token becomes non-renewable, the fallback re-login
+    // path would re-send the stale JWT and get a 403 forever.
+    const gw = fakeGateway();
+    // First login renewable=false so the renewal path is skipped on second
+    // acquire and we go straight back through loginKubernetes.
+    gw.loginKubernetes
+      .mockResolvedValueOnce({ clientToken: "hvs.kube.1", leaseDurationSec: 100, renewable: false })
+      .mockResolvedValueOnce({ clientToken: "hvs.kube.2", leaseDurationSec: 100, renewable: false });
+
+    const reads: string[] = [];
+    const jwts = ["jwt-original", "jwt-rotated"];
+    const readSaToken = vi.fn((path: string) => {
+      reads.push(path);
+      return jwts.shift() ?? null;
+    });
+
+    let t = 0;
+    const tm = new VaultTokenManager({
+      // The cached jwt on the source is "jwt-stale" — what was captured
+      // at session creation. If the fix is missing, the second login will
+      // re-send "jwt-stale". With the fix, readSaToken is consulted and
+      // the rotated value goes out instead.
+      source: { mode: "kubernetes", role: "r", jwt: "jwt-stale", saTokenPath: "/var/run/sa" },
+      gateway: gw as never,
+      now: () => t,
+      readSaToken,
+    });
+
+    await tm.acquire();
+    // jump past the (1 - skew) renewal point so a re-login is required
+    t = 200_000;
+    await tm.acquire();
+
+    expect(gw.loginKubernetes).toHaveBeenCalledTimes(2);
+    // Login 1 used the freshly-read jwt-original (NOT the cached "jwt-stale")
+    expect(gw.loginKubernetes.mock.calls[0][0]).toMatchObject({ jwt: "jwt-original" });
+    // Login 2 used the rotated jwt picked up from disk on this second login
+    expect(gw.loginKubernetes.mock.calls[1][0]).toMatchObject({ jwt: "jwt-rotated" });
+    expect(readSaToken).toHaveBeenCalledWith("/var/run/sa");
+  });
+
+  it("falls back to the cached source.jwt when the SA token file is unreadable", async () => {
+    const gw = fakeGateway();
+    const readSaToken = vi.fn(() => {
+      throw new Error("EACCES: permission denied");
+    });
+    // Silence the expected error log so test output stays clean
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const tm = new VaultTokenManager({
+      source: { mode: "kubernetes", role: "r", jwt: "jwt-cached", saTokenPath: "/var/run/sa" },
+      gateway: gw as never,
+      now: () => 0,
+      readSaToken,
+    });
+    await tm.acquire();
+
+    expect(gw.loginKubernetes).toHaveBeenCalledTimes(1);
+    expect(gw.loginKubernetes.mock.calls[0][0]).toMatchObject({ jwt: "jwt-cached" });
+    expect(errSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats tokens within TOKEN_EXPIRY_SKEW_MS of the renewal threshold as renewable (clock-skew guard)", async () => {
+    // The renewal threshold is (ttlMs * 0.7 - TOKEN_EXPIRY_SKEW_MS).
+    // For a 100s TTL, that's 70_000 - 30_000 = 40_000ms.
+    // At t=45s a token without the skew guard would still be inside the
+    // 70% window and served as-is; with the guard, renewSelf must fire.
+    const gw = fakeGateway();
+    let t = 0;
+    const tm = new VaultTokenManager({
+      source: { mode: "kubernetes", role: "r", jwt: "j", saTokenPath: "/sa" },
+      gateway: gw as never,
+      now: () => t,
+    });
+    await tm.acquire();           // ttl=100s captured at t=0
+    expect(gw.loginKubernetes).toHaveBeenCalledTimes(1);
+
+    t = 45_000;                    // past 40_000 (= 0.7*100s - 30s) but before 70_000 (naive 70%)
+    await tm.acquire();
+    expect(gw.renewSelf).toHaveBeenCalledTimes(1);
+  });
+
+  it("with TOKEN_EXPIRY_SKEW_MS guard, a token at t=39s is still cached (just under the skewed threshold)", async () => {
+    const gw = fakeGateway();
+    let t = 0;
+    const tm = new VaultTokenManager({
+      source: { mode: "kubernetes", role: "r", jwt: "j", saTokenPath: "/sa" },
+      gateway: gw as never,
+      now: () => t,
+    });
+    await tm.acquire();
+    t = 39_000;                    // just under 40_000 — cached token is reused
+    await tm.acquire();
+    expect(gw.renewSelf).not.toHaveBeenCalled();
+    expect(gw.loginKubernetes).toHaveBeenCalledTimes(1);
+  });
 });
 
 type FakeStore = Map<string, { versions: string[][] }>;

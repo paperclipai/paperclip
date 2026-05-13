@@ -919,6 +919,7 @@ export class VaultTokenManager {
   private readonly source: VaultAuthSource;
   private readonly gateway: Pick<VaultHttpGateway, "loginKubernetes" | "renewSelf">;
   private readonly now: () => number;
+  private readonly readSaToken: (path: string) => string | null;
   private cached: { token: string; acquiredAt: number; ttlMs: number; renewable: boolean } | null = null;
   private inflight: Promise<string> | null = null;
 
@@ -926,10 +927,22 @@ export class VaultTokenManager {
     source: VaultAuthSource;
     gateway: Pick<VaultHttpGateway, "loginKubernetes" | "renewSelf">;
     now?: () => number;
+    /** Test seam: re-read the SA token file on each login. Defaults to readFileSync. */
+    readSaToken?: (path: string) => string | null;
   }) {
     this.source = input.source;
     this.gateway = input.gateway;
     this.now = input.now ?? (() => Date.now());
+    this.readSaToken =
+      input.readSaToken ??
+      ((path: string) => {
+        try {
+          if (!existsSync(path)) return null;
+          return readFileSync(path, "utf8").trim() || null;
+        } catch {
+          return null;
+        }
+      });
   }
 
   get sourceMode(): VaultAuthSource["mode"] {
@@ -957,7 +970,11 @@ export class VaultTokenManager {
     if (this.cached) {
       const elapsed = now - this.cached.acquiredAt;
       const ttlMs = this.cached.ttlMs;
-      const renewThreshold = ttlMs * TOKEN_RENEWAL_THRESHOLD;
+      // Subtract a clock-skew margin so we never serve a token that is within
+      // TOKEN_EXPIRY_SKEW_MS of expiry on a slow/skewed clock — Vault would
+      // reject it as expired even though our local clock still thinks it's
+      // valid. Concretely: a 100s TTL with 30s skew renews at 40s, not 70s.
+      const renewThreshold = ttlMs * TOKEN_RENEWAL_THRESHOLD - TOKEN_EXPIRY_SKEW_MS;
       if (elapsed < renewThreshold) return this.cached.token;
       if (this.cached.renewable) {
         try {
@@ -975,9 +992,30 @@ export class VaultTokenManager {
       }
     }
     if (this.source.mode !== "kubernetes") throw new Error("unreachable");
+    // Re-read the SA JWT from disk on every login attempt. Kubernetes
+    // projected SA tokens are rotated on disk roughly every hour; the
+    // value captured at session-creation time goes stale and the
+    // resulting login attempt fails with 403, leaving vault auth
+    // permanently broken until process restart.
+    //
+    // If the disk read fails or the file is missing, fall back to the
+    // jwt captured at session creation — the subsequent 403 (if any) will
+    // be surfaced through withVaultTokenRetry rather than silently
+    // swallowed here.
+    let jwt = this.source.jwt;
+    try {
+      const fresh = this.readSaToken(this.source.saTokenPath);
+      if (fresh) {
+        jwt = fresh;
+      }
+    } catch (error) {
+      console.error(
+        `vault-provider: failed to re-read SA token at ${this.source.saTokenPath}: ${(error as Error).message}; falling back to cached JWT`,
+      );
+    }
     const login = await this.gateway.loginKubernetes({
       role: this.source.role,
-      jwt: this.source.jwt,
+      jwt,
     });
     this.cached = {
       token: login.clientToken,
