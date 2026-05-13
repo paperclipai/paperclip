@@ -125,6 +125,32 @@ export function instanceSettingsRoutes(db: Db) {
         force: true,
         lookbackHours: req.body.lookbackHours,
       });
+      const companyIds = await svc.listCompanyIds();
+      await Promise.all(
+        companyIds.map((companyId) =>
+          logActivity(db, {
+            companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "instance.settings.issue_graph_liveness_auto_recovery_run",
+            entityType: "instance_settings",
+            entityId: "default",
+            details: {
+              lookbackHours: result.lookbackHours,
+              escalationsCreated: result.escalationsCreated,
+              existingEscalations: result.existingEscalations,
+              skippedOutsideLookback: result.skippedOutsideLookback,
+              escalationIssueIds: result.escalationIssueIds,
+            },
+          }),
+        ),
+      );
+      res.json(result);
+    },
+  );
+
   router.get("/instance/settings/backup", async (req, res) => {
     assertCanManageInstanceSettings(req);
     // Read from runtime config (reflects env vars + config file)
