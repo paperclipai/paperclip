@@ -59,6 +59,8 @@ export async function execInPod(
   stderrStream.on("data", (chunk: Buffer) => {
     stderrData += chunk.toString("utf-8");
   });
+  stdoutStream.on("error", () => {});
+  stderrStream.on("error", () => {});
 
   return await new Promise<ExecInPodResult>(
     (resolve, reject) => {

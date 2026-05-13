@@ -17,7 +17,7 @@ import { posix as pathPosix } from "node:path";
 const INIT_RE =
   /^mkdir -p '([^']+)' && rm -f '([^']+)\.paperclip-upload\.b64' && : > '\2\.paperclip-upload\.b64'$/;
 const CHUNK_RE =
-  /^printf '%s' '([A-Za-z0-9+/=]+)' >> '([^']+)\.paperclip-upload\.b64'$/;
+  /^printf '%s' '([A-Za-z0-9+/]+={0,2})' >> '([^']+)\.paperclip-upload\.b64'$/;
 const FINALIZE_RE =
   /^base64 -d < '([^']+)\.paperclip-upload\.b64' > '\1' && rm -f '\1\.paperclip-upload\.b64'$/;
 

@@ -46,6 +46,22 @@ describe("FastUploadInterceptor", () => {
     ).toMatchObject({ action: "passthrough", reason: "finalize without buffered state" });
   });
 
+  it("does not intercept chunks with padding before the end", () => {
+    const interceptor = new FastUploadInterceptor();
+    const target = "/workspace/file.bin";
+
+    expect(
+      interceptor.decide(
+        `mkdir -p '/workspace' && rm -f '${target}.paperclip-upload.b64' && : > '${target}.paperclip-upload.b64'`,
+      ),
+    ).toMatchObject({ action: "ack" });
+
+    expect(
+      interceptor.decide(`printf '%s' 'aGVs=bG8=' >> '${target}.paperclip-upload.b64'`),
+    ).toMatchObject({ action: "passthrough", reason: "no upload pattern" });
+    expect(interceptor.pendingCount).toBe(1);
+  });
+
   it("falls through when the init command does not match the target parent directory", () => {
     const interceptor = new FastUploadInterceptor();
 

@@ -38,6 +38,17 @@ describe("execInPod", () => {
     expect(result).toEqual({ exitCode: 0, timedOut: false, stdout: "ok\n", stderr: "" });
   });
 
+  it("handles output stream errors after status completion", async () => {
+    execMock.mockImplementation((_namespace, _pod, _container, _command, stdout, _stderr, _stdin, _tty, statusCallback) => {
+      statusCallback({ status: "Success" });
+      stdout.emit("error", new Error("write after end"));
+      return Promise.resolve(new EventEmitter());
+    });
+
+    const result = await execInPod({} as never, "ns", "pod-1", "agent", ["echo", "ok"]);
+    expect(result).toEqual({ exitCode: 0, timedOut: false, stdout: "", stderr: "" });
+  });
+
   it("returns an execution failure if the websocket closes before a status frame", async () => {
     const ws = new EventEmitter();
     execMock.mockResolvedValue(ws);
