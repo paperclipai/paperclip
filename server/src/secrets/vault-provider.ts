@@ -14,6 +14,7 @@ import type {
 } from "./types.js";
 import { SecretProviderClientError } from "./types.js";
 import { unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 
 export const VAULT_MATERIAL_SCHEME = "vault_kv_v2";
 export const DEFAULT_KV_MOUNT = "secret";
@@ -1030,8 +1031,12 @@ export class VaultTokenManager {
         jwt = fresh;
       }
     } catch (error) {
-      console.error(
-        `vault-provider: failed to re-read SA token at ${this.source.saTokenPath}: ${(error as Error).message}; falling back to cached JWT`,
+      logger.warn(
+        {
+          err: error,
+          saTokenPath: this.source.saTokenPath,
+        },
+        "vault-provider: failed to re-read SA token; falling back to cached JWT",
       );
     }
     const login = await this.gateway.loginKubernetes({

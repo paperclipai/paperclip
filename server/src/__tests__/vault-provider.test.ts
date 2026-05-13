@@ -574,8 +574,12 @@ describe("VaultTokenManager", () => {
     const readSaToken = vi.fn(() => {
       throw new Error("EACCES: permission denied");
     });
-    // Silence the expected error log so test output stays clean
-    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    // Silence the expected warn log so test output stays clean and assert
+    // the structured logger (not console.error) carries the message —
+    // greptile r5 P2 moved this off console.error to the pino logger so
+    // it shows up in operators' log aggregators.
+    const { logger } = await import("../middleware/logger.js");
+    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => logger);
 
     const tm = new VaultTokenManager({
       source: { mode: "kubernetes", role: "r", jwt: "jwt-cached", saTokenPath: "/var/run/sa" },
@@ -587,7 +591,9 @@ describe("VaultTokenManager", () => {
 
     expect(gw.loginKubernetes).toHaveBeenCalledTimes(1);
     expect(gw.loginKubernetes.mock.calls[0][0]).toMatchObject({ jwt: "jwt-cached" });
-    expect(errSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toMatchObject({ saTokenPath: "/var/run/sa" });
+    warnSpy.mockRestore();
   });
 
   it("treats tokens within TOKEN_EXPIRY_SKEW_MS of the renewal threshold as renewable (clock-skew guard)", async () => {
