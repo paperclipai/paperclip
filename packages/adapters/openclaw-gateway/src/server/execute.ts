@@ -8,6 +8,7 @@ import {
   asString,
   buildPaperclipEnv,
   parseObject,
+  readPaperclipIssueWorkModeFromContext,
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -352,7 +353,9 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
   if (paperclipApiUrlOverride) {
     paperclipEnv.PAPERCLIP_API_URL = paperclipApiUrlOverride;
   }
+  const issueWorkMode = readPaperclipIssueWorkModeFromContext(ctx.context);
   if (!isBoardroom && wakePayload.taskId) paperclipEnv.PAPERCLIP_TASK_ID = wakePayload.taskId;
+  if (!isBoardroom && issueWorkMode) paperclipEnv.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
   if (!isBoardroom && wakePayload.wakeReason) paperclipEnv.PAPERCLIP_WAKE_REASON = wakePayload.wakeReason;
   if (wakePayload.wakeCommentId) paperclipEnv.PAPERCLIP_WAKE_COMMENT_ID = wakePayload.wakeCommentId;
   if (wakePayload.approvalId) paperclipEnv.PAPERCLIP_APPROVAL_ID = wakePayload.approvalId;

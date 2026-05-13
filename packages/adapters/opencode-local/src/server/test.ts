@@ -1,20 +1,32 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import {
   asBoolean,
   asString,
   asStringArray,
   parseObject,
-  ensureAbsoluteDirectory,
-  ensureCommandResolvable,
   ensurePathInEnv,
-  runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
+import {
+  ensureAdapterExecutionTargetCommandResolvable,
+  maybeRunSandboxInstallCommand,
+  ensureAdapterExecutionTargetDirectory,
+  runAdapterExecutionTargetProcess,
+  describeAdapterExecutionTarget,
+  resolveAdapterExecutionTargetCwd,
+  prepareAdapterExecutionTargetRuntime,
+  overrideAdapterExecutionTargetRemoteCwd,
+} from "@paperclipai/adapter-utils/execution-target";
 import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
 import { parseOpenCodeJsonl } from "./parse.js";
+import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -58,10 +70,28 @@ export async function testEnvironment(
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const command = asString(config.command, "opencode");
-  const cwd = asString(config.cwd, process.cwd());
+  const target = ctx.executionTarget ?? null;
+  const targetIsRemote = target?.kind === "remote";
+  const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
+  const targetLabel = targetIsRemote
+    ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
+    : null;
+  const runId = `opencode-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  if (targetLabel) {
+    checks.push({
+      code: "opencode_environment_target",
+      level: "info",
+      message: `Probing inside environment: ${targetLabel}`,
+    });
+  }
 
   try {
-    await ensureAbsoluteDirectory(cwd, { createIfMissing: false });
+    await ensureAdapterExecutionTargetDirectory(runId, target, cwd, {
+      cwd,
+      env: {},
+      createIfMissing: false,
+    });
     checks.push({
       code: "opencode_cwd_valid",
       level: "info",
@@ -95,6 +125,8 @@ export async function testEnvironment(
   // Prevent OpenCode from writing an opencode.json into the working directory.
   env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
   const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
+  const localRuntimeConfigHome =
+    preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
   if (asBoolean(config.dangerouslySkipPermissions, true)) {
     checks.push({
       code: "opencode_headless_permissions_enabled",
@@ -102,7 +134,43 @@ export async function testEnvironment(
       message: "Headless OpenCode external-directory permissions are auto-approved for unattended runs.",
     });
   }
+  let restoreWorkspace: (() => Promise<void>) | null = null;
+  // Declared outside `try` so a failure inside `prepareAdapterExecutionTargetRuntime`
+  // still has the path available for cleanup in `finally` — otherwise the
+  // `fs.mkdtemp` directory leaks on the early-throw path.
+  let preparedRuntimeWorkspaceLocalDir: string | null = null;
   try {
+    let runtimeTarget: AdapterExecutionTarget | null = target ?? null;
+    let runtimeCwd = cwd;
+    if (targetIsRemote) {
+      preparedRuntimeWorkspaceLocalDir = await fs.mkdtemp(path.join(os.tmpdir(), `paperclip-opencode-envtest-${runId}-`));
+      const preparedExecutionTargetRuntime = await prepareAdapterExecutionTargetRuntime({
+        runId,
+        target,
+        adapterKey: "opencode",
+        workspaceLocalDir: preparedRuntimeWorkspaceLocalDir,
+        workspaceRemoteDir: cwd,
+        installCommand: SANDBOX_INSTALL_COMMAND,
+        detectCommand: command,
+        assets: localRuntimeConfigHome
+          ? [{
+            key: "xdgConfig",
+            localDir: localRuntimeConfigHome,
+          }]
+          : [],
+      });
+      restoreWorkspace = async () => {
+        await preparedExecutionTargetRuntime.restoreWorkspace().catch(() => {});
+        if (preparedRuntimeWorkspaceLocalDir) {
+          await fs.rm(preparedRuntimeWorkspaceLocalDir, { recursive: true, force: true }).catch(() => {});
+        }
+      };
+      runtimeCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? runtimeCwd;
+      runtimeTarget = overrideAdapterExecutionTargetRemoteCwd(target ?? null, runtimeCwd) ?? null;
+      if (localRuntimeConfigHome && preparedExecutionTargetRuntime.assetDirs.xdgConfig) {
+        preparedRuntimeConfig.env.XDG_CONFIG_HOME = preparedExecutionTargetRuntime.assetDirs.xdgConfig;
+      }
+    }
     const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...preparedRuntimeConfig.env }));
 
     const cwdInvalid = checks.some((check) => check.code === "opencode_cwd_invalid");
@@ -114,8 +182,17 @@ export async function testEnvironment(
         detail: command,
       });
     } else {
+      const installCheck = await maybeRunSandboxInstallCommand({
+        runId,
+        target,
+        adapterKey: "opencode",
+        installCommand: SANDBOX_INSTALL_COMMAND,
+        detectCommand: command,
+        env,
+      });
+      if (installCheck) checks.push(installCheck);
       try {
-        await ensureCommandResolvable(command, cwd, runtimeEnv);
+        await ensureAdapterExecutionTargetCommandResolvable(command, runtimeTarget, runtimeCwd, runtimeEnv);
         checks.push({
           code: "opencode_command_resolvable",
           level: "info",
@@ -137,7 +214,19 @@ export async function testEnvironment(
     let modelValidationPassed = false;
     const configuredModel = asString(config.model, "").trim();
 
-    if (canRunProbe && configuredModel) {
+    // Model discovery and validation use local child processes against
+    // OpenCode's `models` subcommand and JSON config; these are not yet
+    // wired through the execution target. When probing a remote env, skip
+    // discovery/validation and rely on the remote hello probe to surface
+    // model/auth issues directly.
+    if (targetIsRemote && configuredModel) {
+      checks.push({
+        code: "opencode_model_validation_skipped_remote",
+        level: "info",
+        message: `Skipped local model validation; will be validated by the hello probe inside ${targetLabel}.`,
+      });
+      modelValidationPassed = true;
+    } else if (canRunProbe && configuredModel) {
       try {
         const discovered = await discoverOpenCodeModels({ command, cwd, env: runtimeEnv });
         if (discovered.length > 0) {
@@ -173,7 +262,7 @@ export async function testEnvironment(
           });
         }
       }
-    } else if (canRunProbe && !configuredModel) {
+    } else if (!targetIsRemote && canRunProbe && !configuredModel) {
       try {
         const discovered = await discoverOpenCodeModels({ command, cwd, env: runtimeEnv });
         if (discovered.length > 0) {
@@ -207,7 +296,7 @@ export async function testEnvironment(
     const modelUnavailable = checks.some((check) => check.code === "opencode_hello_probe_model_unavailable");
     if (!configuredModel && !modelUnavailable) {
       // No model configured – skip model requirement if no model-related checks exist
-    } else if (configuredModel && canRunProbe) {
+    } else if (!targetIsRemote && configuredModel && canRunProbe) {
       try {
         await ensureOpenCodeModelConfiguredAndAvailable({
           model: configuredModel,
@@ -246,12 +335,13 @@ export async function testEnvironment(
       if (extraArgs.length > 0) args.push(...extraArgs);
 
       try {
-        const probe = await runChildProcess(
-          `opencode-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        const probe = await runAdapterExecutionTargetProcess(
+          runId,
+          runtimeTarget,
           command,
           args,
           {
-            cwd,
+            cwd: runtimeCwd,
             env: runtimeEnv,
             timeoutSec: 60,
             graceSec: 5,
@@ -323,6 +413,12 @@ export async function testEnvironment(
       }
     }
   } finally {
+    await restoreWorkspace?.();
+    if (!restoreWorkspace && preparedRuntimeWorkspaceLocalDir) {
+      // Reached when `prepareAdapterExecutionTargetRuntime` threw before
+      // assigning `restoreWorkspace`: clean up the temp dir directly.
+      await fs.rm(preparedRuntimeWorkspaceLocalDir, { recursive: true, force: true }).catch(() => {});
+    }
     await preparedRuntimeConfig.cleanup();
   }
 

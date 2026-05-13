@@ -37,7 +37,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Visibility | Full visibility to board and all agents in same company |
 | Communication | Tasks + comments only (no separate chat system) |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
-| Recovery | Liveness/watchdog recovery preserves explicit ownership: retry lost execution continuity where safe, otherwise create visible recovery issues or require human escalation (see `doc/execution-semantics.md`) |
+| Recovery | Liveness/watchdog recovery preserves explicit ownership: retry lost execution continuity where safe, otherwise open visible source-scoped recovery actions by default, use issue-backed recovery only for independent repair work, or require human escalation (see `doc/execution-semantics.md`) |
 | Agent adapters | Built-in `process`, `http`, local CLI/session adapters, and OpenClaw gateway support; external adapters can also be loaded through the adapter plugin flow |
 | Plugin framework | Local/self-hosted early plugin runtime is in scope; cloud marketplace and packaged public distribution remain out of scope |
 | Auth | Mode-dependent human auth (`local_trusted` implicit board in current code; authenticated mode uses sessions), API keys for agents |
@@ -150,7 +150,7 @@ Invariant: every business record belongs to exactly one company.
 - `capabilities` text null
 - `adapter_type` text; built-ins include `process`, `http`, `claude_local`, `codex_local`, `gemini_local`, `opencode_local`, `pi_local`, `cursor`, and `openclaw_gateway`
 - `adapter_config` jsonb not null
-- `runtime_config` jsonb not null default `{}`
+- `runtime_config` jsonb not null default `{}`; may include Paperclip runtime policy such as `modelProfiles.cheap.adapterConfig` for an optional low-cost model lane that does not change the primary adapter config
 - `default_environment_id` uuid fk `environments.id` null
 - `context_mode` enum: `thin | fat` default `thin`
 - `budget_monthly_cents` int not null default 0
@@ -434,9 +434,10 @@ Side effects:
 V1 non-terminal liveness rule:
 
 - agent-owned `todo`, `in_progress`, `in_review`, and `blocked` issues must have a live execution path, an explicit waiting path, or an explicit recovery path
-- `in_review` is healthy only when a typed execution participant, pending issue-thread interaction or approval, user owner, active run, queued wake, or explicit recovery issue owns the next action
+- `in_review` is healthy only when a typed execution participant, pending issue-thread interaction or approval, user owner, active run, queued wake, or explicit recovery action owns the next action
 - a blocked chain is covered only when each unresolved leaf issue is live or explicitly waiting
 - when Paperclip cannot safely infer the next action, it surfaces the problem through visible blocked/recovery work instead of silently completing or reassigning work
+- explicit recovery actions are the liveness primitive; source-scoped actions are the default form, issue-backed recovery is a fallback for independent repair work or safety boundaries, and comments alone are evidence rather than a healthy liveness path
 
 Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and non-terminal liveness semantics are documented in `doc/execution-semantics.md`.
 
@@ -676,7 +677,7 @@ Per-agent schedule fields in `adapter_config`:
 
 - `enabled` boolean
 - `intervalSec` integer (minimum 30)
-- `maxConcurrentRuns` integer; new agents default to `5`
+- `maxConcurrentRuns` integer; new agents default to `20`; scheduler clamps configured values to `1..50`
 
 Scheduler must skip invocation when:
 

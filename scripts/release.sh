@@ -263,9 +263,11 @@ release_info ""
 if [ "$dry_run" = true ]; then
   release_info "==> Step 6/7: Skipping npm verification in dry-run mode..."
 else
-  release_info "==> Step 6/7: Confirming npm package availability..."
+  release_info "==> Step 6/7: Confirming npm package availability and dist-tag integrity..."
   VERIFY_ATTEMPTS="${NPM_PUBLISH_VERIFY_ATTEMPTS:-12}"
   VERIFY_DELAY_SECONDS="${NPM_PUBLISH_VERIFY_DELAY_SECONDS:-5}"
+  REGISTRY_STATE_VERIFY_ATTEMPTS="${NPM_REGISTRY_STATE_VERIFY_ATTEMPTS:-12}"
+  REGISTRY_STATE_VERIFY_DELAY_SECONDS="${NPM_REGISTRY_STATE_VERIFY_DELAY_SECONDS:-5}"
   MISSING_PUBLISHED_PACKAGES=""
 
   while IFS=$'\t' read -r _pkg_dir pkg_name pkg_version; do
@@ -285,6 +287,31 @@ else
   [ -z "$MISSING_PUBLISHED_PACKAGES" ] || release_fail "publish completed but npm never exposed: $MISSING_PUBLISHED_PACKAGES"
 
   release_info "  ✓ Verified all versioned packages are available on npm"
+
+  verify_args=(
+    --channel "$channel"
+    --dist-tag "$DIST_TAG"
+    --target-version "$TARGET_PUBLISH_VERSION"
+  )
+  while IFS=$'\t' read -r _pkg_dir pkg_name _pkg_version; do
+    [ -z "$pkg_name" ] && continue
+    verify_args+=(--package "$pkg_name")
+  done <<< "$VERSIONED_PACKAGE_INFO"
+
+  release_info "  Waiting for npm dist-tags and package metadata to converge..."
+  if wait_for_release_registry_state \
+    "$REGISTRY_STATE_VERIFY_ATTEMPTS" \
+    "$REGISTRY_STATE_VERIFY_DELAY_SECONDS" \
+    "${verify_args[@]}"; then
+    :
+  else
+    verify_status=$?
+    if [ "$verify_status" -eq 2 ]; then
+      release_fail "publish completed, but registry verification failed immediately for ${TARGET_PUBLISH_VERSION}; dist-tag state is wrong or requires operator intervention"
+    fi
+
+    release_fail "publish completed, but npm dist-tags or registry metadata never converged for ${TARGET_PUBLISH_VERSION}"
+  fi
 fi
 
 release_info ""

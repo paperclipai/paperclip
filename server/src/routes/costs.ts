@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   createCostEventSchema,
   createFinanceEventSchema,
+  normalizeIssueIdentifier,
   resolveBudgetIncidentSchema,
   updateBudgetSchema,
   upsertBudgetPolicySchema,
@@ -14,6 +15,7 @@ import {
   financeService,
   companyService,
   agentService,
+  issueService,
   heartbeatService,
   logActivity,
 } from "../services/index.js";
@@ -58,6 +60,15 @@ export function costRoutes(
   const budgets = budgetService(db, budgetHooks);
   const companies = companyService(db);
   const agents = agentService(db);
+  const issues = issueService(db);
+
+  async function resolveIssueByRef(rawId: string) {
+    const identifier = normalizeIssueIdentifier(rawId);
+    if (identifier) {
+      return issues.getByIdentifier(identifier);
+    }
+    return issues.getById(rawId);
+  }
 
   router.post("/companies/:companyId/cost-events", validate(createCostEventSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -123,6 +134,19 @@ export function costRoutes(
     assertCompanyAccess(req, companyId);
     const range = parseCostDateRange(req.query);
     const summary = await costs.summary(companyId, range);
+    res.json(summary);
+  });
+
+  router.get("/issues/:id/cost-summary", async (req, res) => {
+    const rawId = req.params.id as string;
+    const issue = await resolveIssueByRef(rawId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const excludeRoot = req.query.excludeRoot === "true" || req.query.excludeRoot === "1";
+    const summary = await costs.issueTreeSummary(issue.companyId, issue.id, { excludeRoot });
     res.json(summary);
   });
 

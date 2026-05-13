@@ -15,7 +15,15 @@ import {
   PLUGIN_API_ROUTE_AUTH_MODES,
   PLUGIN_API_ROUTE_CHECKOUT_POLICIES,
   PLUGIN_API_ROUTE_METHODS,
+  ISSUE_PRIORITIES,
+  ROUTINE_CATCH_UP_POLICIES,
+  ROUTINE_CONCURRENCY_POLICIES,
+  ROUTINE_STATUSES,
+  ROUTINE_TRIGGER_KINDS,
+  ROUTINE_TRIGGER_SIGNING_MODES,
+  ISSUE_SURFACE_VISIBILITIES,
 } from "../constants.js";
+import { routineVariableSchema } from "./routine.js";
 
 // ---------------------------------------------------------------------------
 // JSON Schema placeholder – a permissive validator for JSON Schema objects
@@ -124,6 +132,142 @@ export type PluginEnvironmentDriverDeclarationInput = z.infer<
 
 export type PluginToolDeclarationInput = z.infer<typeof pluginToolDeclarationSchema>;
 
+export const pluginManagedAgentDeclarationSchema = z.object({
+  agentKey: z.string().min(1).max(100).regex(/^[a-z0-9][a-z0-9._:-]*$/, {
+    message: "agentKey must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, colons, underscores, or hyphens",
+  }),
+  displayName: z.string().min(1).max(100),
+  role: z.string().min(1).max(100).optional(),
+  title: z.string().max(200).nullable().optional(),
+  icon: z.string().max(100).nullable().optional(),
+  capabilities: z.string().max(2000).nullable().optional(),
+  adapterType: z.string().min(1).max(100).optional(),
+  adapterPreference: z.array(z.string().min(1).max(100)).max(10).optional(),
+  adapterConfig: z.record(z.unknown()).optional(),
+  runtimeConfig: z.record(z.unknown()).optional(),
+  permissions: z.record(z.unknown()).optional(),
+  status: z.enum(["idle", "paused"]).optional(),
+  budgetMonthlyCents: z.number().int().min(0).optional(),
+  instructions: z.object({
+    entryFile: z.string().min(1).max(200).optional(),
+    content: z.string().max(200_000).optional(),
+    files: z.record(z.string().max(200_000)).optional(),
+    assetPath: z.string().min(1).max(500).optional(),
+  }).optional(),
+});
+
+export type PluginManagedAgentDeclarationInput = z.infer<typeof pluginManagedAgentDeclarationSchema>;
+
+export const pluginManagedProjectDeclarationSchema = z.object({
+  projectKey: z.string().min(1).max(100).regex(/^[a-z0-9][a-z0-9._:-]*$/, {
+    message: "projectKey must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, colons, underscores, or hyphens",
+  }),
+  displayName: z.string().min(1).max(120),
+  description: z.string().max(2000).nullable().optional(),
+  status: z.enum(["backlog", "planned", "in_progress", "completed", "cancelled"]).optional(),
+  color: z.string().max(32).nullable().optional(),
+  settings: z.record(z.unknown()).optional(),
+});
+
+export type PluginManagedProjectDeclarationInput = z.infer<typeof pluginManagedProjectDeclarationSchema>;
+
+const pluginManagedResourceRefSchema = z.object({
+  pluginKey: z.string().min(1).max(100).optional(),
+  resourceKind: z.enum(["agent", "project", "routine", "skill"]),
+  resourceKey: z.string().min(1).max(100).regex(/^[a-z0-9][a-z0-9._:-]*$/, {
+    message: "resourceKey must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, colons, underscores, or hyphens",
+  }),
+});
+
+export const pluginManagedRoutineDeclarationSchema = z.object({
+  routineKey: z.string().min(1).max(100).regex(/^[a-z0-9][a-z0-9._:-]*$/, {
+    message: "routineKey must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, colons, underscores, or hyphens",
+  }),
+  title: z.string().trim().min(1).max(200),
+  description: z.string().max(10_000).nullable().optional(),
+  assigneeRef: pluginManagedResourceRefSchema.extend({ resourceKind: z.literal("agent") }).nullable().optional(),
+  projectRef: pluginManagedResourceRefSchema.extend({ resourceKind: z.literal("project") }).nullable().optional(),
+  goalId: z.string().uuid().nullable().optional(),
+  status: z.enum(ROUTINE_STATUSES).optional(),
+  priority: z.enum(ISSUE_PRIORITIES).optional(),
+  concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES).optional(),
+  catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES).optional(),
+  variables: z.array(routineVariableSchema).optional(),
+  triggers: z.array(z.object({
+    kind: z.enum(ROUTINE_TRIGGER_KINDS),
+    label: z.string().trim().max(120).nullable().optional(),
+    enabled: z.boolean().optional(),
+    cronExpression: z.string().trim().min(1).optional().nullable(),
+    timezone: z.string().trim().min(1).optional().nullable(),
+    signingMode: z.enum(ROUTINE_TRIGGER_SIGNING_MODES).optional().nullable(),
+    replayWindowSec: z.number().int().min(30).max(86_400).optional().nullable(),
+  })).max(20).optional(),
+  issueTemplate: z.object({
+    surfaceVisibility: z.enum(ISSUE_SURFACE_VISIBILITIES).optional(),
+    originId: z.string().trim().max(255).nullable().optional(),
+    billingCode: z.string().trim().max(200).nullable().optional(),
+  }).optional(),
+});
+
+export type PluginManagedRoutineDeclarationInput = z.infer<typeof pluginManagedRoutineDeclarationSchema>;
+
+const pluginLocalFolderRelativePathSchema = z.string().min(1).max(500).refine(
+  (value) =>
+    !value.startsWith("/") &&
+    !value.includes("..") &&
+    !value.includes("\\") &&
+    !value.split("/").some((segment) => segment === "" || segment === "."),
+  { message: "local folder paths must be relative paths without traversal, empty segments, or backslashes" },
+);
+
+export const pluginLocalFolderDeclarationSchema = z.object({
+  folderKey: z.string().min(1).max(100).regex(/^[a-z0-9][a-z0-9._:-]*$/, {
+    message: "folderKey must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, colons, underscores, or hyphens",
+  }),
+  displayName: z.string().min(1).max(100),
+  description: z.string().max(500).optional(),
+  access: z.enum(["read", "readWrite"]).optional(),
+  requiredDirectories: z.array(pluginLocalFolderRelativePathSchema).optional(),
+  requiredFiles: z.array(pluginLocalFolderRelativePathSchema).optional(),
+});
+
+export type PluginLocalFolderDeclarationInput = z.infer<typeof pluginLocalFolderDeclarationSchema>;
+
+export const pluginManagedSkillFileDeclarationSchema = z.object({
+  path: pluginLocalFolderRelativePathSchema.refine(
+    (value) => value.toLowerCase() !== "skill.md",
+    { message: "managed skill files cannot replace SKILL.md; use markdown for the main skill file" },
+  ),
+  content: z.string().max(200_000),
+});
+
+export type PluginManagedSkillFileDeclarationInput = z.infer<typeof pluginManagedSkillFileDeclarationSchema>;
+
+export const pluginManagedSkillDeclarationSchema = z.object({
+  skillKey: z.string().min(1).max(100).regex(/^[a-z0-9][a-z0-9._:-]*$/, {
+    message: "skillKey must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, colons, underscores, or hyphens",
+  }),
+  displayName: z.string().min(1).max(100),
+  slug: z.string().min(1).max(100).regex(/^[a-z0-9][a-z0-9._:-]*$/, {
+    message: "slug must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, colons, underscores, or hyphens",
+  }).optional(),
+  description: z.string().max(2000).nullable().optional(),
+  markdown: z.string().max(200_000).optional(),
+  files: z.array(pluginManagedSkillFileDeclarationSchema).max(50).optional(),
+}).superRefine((value, ctx) => {
+  const paths = (value.files ?? []).map((file) => file.path);
+  const duplicates = paths.filter((path, index) => paths.indexOf(path) !== index);
+  if (duplicates.length > 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Duplicate managed skill file paths: ${[...new Set(duplicates)].join(", ")}`,
+      path: ["files"],
+    });
+  }
+});
+
+export type PluginManagedSkillDeclarationInput = z.infer<typeof pluginManagedSkillDeclarationSchema>;
+
 /**
  * Validates a {@link PluginUiSlotDeclaration} — a UI extension slot the plugin
  * fills with a React component. Includes `superRefine` checks for slot-specific
@@ -178,10 +322,17 @@ export const pluginUiSlotDeclarationSchema = z.object({
       path: ["entityTypes"],
     });
   }
-  if (value.routePath && value.type !== "page") {
+  if (value.routePath && value.type !== "page" && value.type !== "routeSidebar") {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: "routePath is only supported for page slots",
+      message: "routePath is only supported for page and routeSidebar slots",
+      path: ["routePath"],
+    });
+  }
+  if (value.type === "routeSidebar" && !value.routePath) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "routeSidebar slots require routePath",
       path: ["routePath"],
     });
   }
@@ -471,6 +622,11 @@ export const pluginManifestV1Schema = z.object({
   database: pluginDatabaseDeclarationSchema.optional(),
   apiRoutes: z.array(pluginApiRouteDeclarationSchema).optional(),
   environmentDrivers: z.array(pluginEnvironmentDriverDeclarationSchema).optional(),
+  agents: z.array(pluginManagedAgentDeclarationSchema).optional(),
+  projects: z.array(pluginManagedProjectDeclarationSchema).optional(),
+  routines: z.array(pluginManagedRoutineDeclarationSchema).optional(),
+  skills: z.array(pluginManagedSkillDeclarationSchema).optional(),
+  localFolders: z.array(pluginLocalFolderDeclarationSchema).optional(),
   launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   ui: z.object({
     slots: z.array(pluginUiSlotDeclarationSchema).min(1).optional(),
@@ -524,6 +680,56 @@ export const pluginManifestV1Schema = z.object({
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "Capability 'environment.drivers.register' is required when environmentDrivers are declared",
+        path: ["capabilities"],
+      });
+    }
+  }
+
+  if (manifest.agents && manifest.agents.length > 0) {
+    if (!manifest.capabilities.includes("agents.managed")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Capability 'agents.managed' is required when managed agents are declared",
+        path: ["capabilities"],
+      });
+    }
+  }
+
+  if (manifest.projects && manifest.projects.length > 0) {
+    if (!manifest.capabilities.includes("projects.managed")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Capability 'projects.managed' is required when managed projects are declared",
+        path: ["capabilities"],
+      });
+    }
+  }
+
+  if (manifest.routines && manifest.routines.length > 0) {
+    if (!manifest.capabilities.includes("routines.managed")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Capability 'routines.managed' is required when managed routines are declared",
+        path: ["capabilities"],
+      });
+    }
+  }
+
+  if (manifest.skills && manifest.skills.length > 0) {
+    if (!manifest.capabilities.includes("skills.managed")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Capability 'skills.managed' is required when managed skills are declared",
+        path: ["capabilities"],
+      });
+    }
+  }
+
+  if (manifest.localFolders && manifest.localFolders.length > 0) {
+    if (!manifest.capabilities.includes("local.folders")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Capability 'local.folders' is required when local folders are declared",
         path: ["capabilities"],
       });
     }
@@ -660,6 +866,66 @@ export const pluginManifestV1Schema = z.object({
         code: z.ZodIssueCode.custom,
         message: `Duplicate environment driver keys: ${[...new Set(duplicates)].join(", ")}`,
         path: ["environmentDrivers"],
+      });
+    }
+  }
+
+  if (manifest.localFolders) {
+    const folderKeys = manifest.localFolders.map((folder) => folder.folderKey);
+    const duplicates = folderKeys.filter((key, i) => folderKeys.indexOf(key) !== i);
+    if (duplicates.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Duplicate local folder keys: ${[...new Set(duplicates)].join(", ")}`,
+        path: ["localFolders"],
+      });
+    }
+  }
+
+  if (manifest.agents) {
+    const agentKeys = manifest.agents.map((agent) => agent.agentKey);
+    const duplicates = agentKeys.filter((key, i) => agentKeys.indexOf(key) !== i);
+    if (duplicates.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Duplicate managed agent keys: ${[...new Set(duplicates)].join(", ")}`,
+        path: ["agents"],
+      });
+    }
+  }
+
+  if (manifest.projects) {
+    const projectKeys = manifest.projects.map((project) => project.projectKey);
+    const duplicates = projectKeys.filter((key, i) => projectKeys.indexOf(key) !== i);
+    if (duplicates.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Duplicate managed project keys: ${[...new Set(duplicates)].join(", ")}`,
+        path: ["projects"],
+      });
+    }
+  }
+
+  if (manifest.routines) {
+    const routineKeys = manifest.routines.map((routine) => routine.routineKey);
+    const duplicates = routineKeys.filter((key, i) => routineKeys.indexOf(key) !== i);
+    if (duplicates.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Duplicate managed routine keys: ${[...new Set(duplicates)].join(", ")}`,
+        path: ["routines"],
+      });
+    }
+  }
+
+  if (manifest.skills) {
+    const skillKeys = manifest.skills.map((skill) => skill.skillKey);
+    const duplicates = skillKeys.filter((key, i) => skillKeys.indexOf(key) !== i);
+    if (duplicates.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Duplicate managed skill keys: ${[...new Set(duplicates)].join(", ")}`,
+        path: ["skills"],
       });
     }
   }

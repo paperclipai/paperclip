@@ -10,9 +10,9 @@ const mockHeartbeatService = vi.hoisted(() => ({
   buildRunOutputSilence: vi.fn(),
   getRunIssueSummary: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
-  buildRunOutputSilence: vi.fn(),
   getRunLogAccess: vi.fn(),
   readLog: vi.fn(),
+  wakeup: vi.fn(),
 }));
 
 const mockIssueService = vi.hoisted(() => ({
@@ -26,6 +26,8 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
   getGeneral: vi.fn(),
   listCompanyIds: vi.fn(),
 }));
+
+const routeAgentId = "11111111-1111-4111-8111-111111111111";
 
 function registerModuleMocks() {
   vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
@@ -71,7 +73,7 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+async function createApp(db: Record<string, unknown> = {}) {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -88,9 +90,30 @@ async function createApp() {
     };
     next();
   });
-  app.use("/api", agentRoutes({} as any));
+  app.use("/api", agentRoutes(db as any));
   app.use(errorHandler);
   return app;
+}
+
+function createLiveRunsDbStub(rows: Array<Record<string, unknown>>) {
+  const limit = vi.fn(async (value: number) => rows.slice(0, value));
+  const orderedQuery = {
+    limit,
+    then: (resolve: (value: Array<Record<string, unknown>>) => unknown) => Promise.resolve(rows).then(resolve),
+  };
+  const query = {
+    from: vi.fn().mockReturnThis(),
+    innerJoin: vi.fn().mockReturnThis(),
+    where: vi.fn().mockReturnThis(),
+    orderBy: vi.fn().mockReturnValue(orderedQuery),
+  };
+
+  return {
+    db: {
+      select: vi.fn().mockReturnValue(query),
+    },
+    limit,
+  };
 }
 
 async function requestApp(
@@ -167,6 +190,8 @@ describe("agent live run routes", () => {
       status: "running",
       invocationSource: "on_demand",
       triggerDetail: "manual",
+      contextCommentId: "comment-1",
+      contextWakeCommentId: "comment-1",
       startedAt: new Date("2026-04-10T09:30:00.000Z"),
       finishedAt: null,
       createdAt: new Date("2026-04-10T09:29:59.000Z"),
@@ -188,22 +213,32 @@ describe("agent live run routes", () => {
       content: "chunk",
       nextOffset: 5,
     });
+    mockHeartbeatService.wakeup.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "agent-1",
+      status: "queued",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+    });
   });
 
   it("returns a compact active run payload for issue polling", async () => {
     const res = await requestApp(
       await createApp(),
-      (baseUrl) => request(baseUrl).get("/api/issues/PAP-1295/active-run"),
+      (baseUrl) => request(baseUrl).get("/api/issues/pc1a2-1295/active-run"),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PAP-1295");
+    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PC1A2-1295");
     expect(mockHeartbeatService.getRunIssueSummary).toHaveBeenCalledWith("run-1");
     expect(res.body).toMatchObject({
       id: "run-1",
       status: "running",
       invocationSource: "on_demand",
       triggerDetail: "manual",
+      contextCommentId: "comment-1",
+      contextWakeCommentId: "comment-1",
       startedAt: "2026-04-10T09:30:00.000Z",
       finishedAt: null,
       createdAt: "2026-04-10T09:29:59.000Z",
@@ -244,7 +279,7 @@ describe("agent live run routes", () => {
 
     const res = await requestApp(
       await createApp(),
-      (baseUrl) => request(baseUrl).get("/api/issues/PAP-1295/active-run"),
+      (baseUrl) => request(baseUrl).get("/api/issues/PC1A2-1295/active-run"),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -282,6 +317,284 @@ describe("agent live run routes", () => {
       logRef: "logs/run-1.ndjson",
       content: "chunk",
       nextOffset: 5,
+    });
+  });
+
+  it("caps company live run polling by default", async () => {
+    const rows = Array.from({ length: 75 }, (_, index) => ({
+      id: `run-${index}`,
+      companyId: "company-1",
+      status: "running",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      startedAt: new Date("2026-04-10T09:30:00.000Z"),
+      finishedAt: null,
+      createdAt: new Date(`2026-04-10T09:${String(index % 60).padStart(2, "0")}:00.000Z`),
+      agentId: "agent-1",
+      agentName: "Builder",
+      adapterType: "codex_local",
+      logBytes: 0,
+      livenessState: "healthy",
+      livenessReason: null,
+      continuationAttempt: 0,
+      lastUsefulActionAt: null,
+      nextAction: null,
+      lastOutputAt: null,
+      lastOutputSeq: null,
+      lastOutputStream: null,
+      lastOutputBytes: 0,
+      processStartedAt: null,
+      issueId: "issue-1",
+    }));
+    const { db, limit } = createLiveRunsDbStub(rows);
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/live-runs"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(limit).toHaveBeenCalledWith(50);
+    expect(res.body).toHaveLength(50);
+    expect(mockHeartbeatService.buildRunOutputSilence).toHaveBeenCalledTimes(50);
+  });
+
+  it("treats explicit zero or invalid live run limit as the capped default", async () => {
+    const rows = Array.from({ length: 75 }, (_, index) => ({
+      id: `run-${index}`,
+      companyId: "company-1",
+      status: "running",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      startedAt: new Date("2026-04-10T09:30:00.000Z"),
+      finishedAt: null,
+      createdAt: new Date(`2026-04-10T09:${String(index % 60).padStart(2, "0")}:00.000Z`),
+      agentId: "agent-1",
+      agentName: "Builder",
+      adapterType: "codex_local",
+      logBytes: 0,
+      livenessState: "healthy",
+      livenessReason: null,
+      continuationAttempt: 0,
+      lastUsefulActionAt: null,
+      nextAction: null,
+      lastOutputAt: null,
+      lastOutputSeq: null,
+      lastOutputStream: null,
+      lastOutputBytes: 0,
+      processStartedAt: null,
+      issueId: "issue-1",
+    }));
+    const { db, limit } = createLiveRunsDbStub(rows);
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/live-runs?limit=0&minCount=0"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(limit).toHaveBeenCalledWith(50);
+    expect(res.body).toHaveLength(50);
+  });
+
+  it("does not pad with recent runs when no minCount is requested", async () => {
+    const liveRows = Array.from({ length: 8 }, (_, index) => ({
+      id: `run-live-${index}`,
+      companyId: "company-1",
+      status: "running",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      startedAt: new Date("2026-04-10T09:30:00.000Z"),
+      finishedAt: null,
+      createdAt: new Date(`2026-04-10T09:${String(index % 60).padStart(2, "0")}:00.000Z`),
+      agentId: "agent-1",
+      agentName: "Builder",
+      adapterType: "codex_local",
+      logBytes: 0,
+      livenessState: "healthy",
+      livenessReason: null,
+      continuationAttempt: 0,
+      lastUsefulActionAt: null,
+      nextAction: null,
+      lastOutputAt: null,
+      lastOutputSeq: null,
+      lastOutputStream: null,
+      lastOutputBytes: 0,
+      processStartedAt: null,
+      issueId: "issue-1",
+    }));
+
+    const selectCalls: Array<ReturnType<typeof vi.fn>> = [];
+    const db = {
+      select: vi.fn().mockImplementation(() => {
+        const limitFn = vi.fn(async (value: number) => liveRows.slice(0, value));
+        const orderedQuery = {
+          limit: limitFn,
+          then: (resolve: (value: typeof liveRows) => unknown) =>
+            Promise.resolve(liveRows).then(resolve),
+        };
+        const query = {
+          from: vi.fn().mockReturnThis(),
+          innerJoin: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnValue(orderedQuery),
+        };
+        selectCalls.push(limitFn);
+        return query;
+      }),
+    };
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/live-runs"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toHaveLength(8);
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it("pads with recent runs when minCount is explicitly requested", async () => {
+    const liveRows = Array.from({ length: 2 }, (_, index) => ({
+      id: `run-live-${index}`,
+      companyId: "company-1",
+      status: "running",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      startedAt: new Date("2026-04-10T09:30:00.000Z"),
+      finishedAt: null,
+      createdAt: new Date(`2026-04-10T09:${String(index % 60).padStart(2, "0")}:00.000Z`),
+      agentId: "agent-1",
+      agentName: "Builder",
+      adapterType: "codex_local",
+      logBytes: 0,
+      livenessState: "healthy",
+      livenessReason: null,
+      continuationAttempt: 0,
+      lastUsefulActionAt: null,
+      nextAction: null,
+      lastOutputAt: null,
+      lastOutputSeq: null,
+      lastOutputStream: null,
+      lastOutputBytes: 0,
+      processStartedAt: null,
+      issueId: "issue-1",
+    }));
+    const recentRows = Array.from({ length: 4 }, (_, index) => ({
+      id: `run-recent-${index}`,
+      companyId: "company-1",
+      status: "succeeded",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      startedAt: new Date("2026-04-09T09:30:00.000Z"),
+      finishedAt: new Date("2026-04-09T09:35:00.000Z"),
+      createdAt: new Date(`2026-04-09T09:${String(index % 60).padStart(2, "0")}:00.000Z`),
+      agentId: "agent-1",
+      agentName: "Builder",
+      adapterType: "codex_local",
+      logBytes: 0,
+      livenessState: "healthy",
+      livenessReason: null,
+      continuationAttempt: 0,
+      lastUsefulActionAt: null,
+      nextAction: null,
+      lastOutputAt: null,
+      lastOutputSeq: null,
+      lastOutputStream: null,
+      lastOutputBytes: 0,
+      processStartedAt: null,
+      issueId: "issue-1",
+    }));
+
+    let selectCallCount = 0;
+    const db = {
+      select: vi.fn().mockImplementation(() => {
+        selectCallCount += 1;
+        const rows = selectCallCount === 1 ? liveRows : recentRows;
+        const limitFn = vi.fn(async (value: number) => rows.slice(0, value));
+        const orderedQuery = {
+          limit: limitFn,
+          then: (resolve: (value: typeof rows) => unknown) =>
+            Promise.resolve(rows).then(resolve),
+        };
+        return {
+          from: vi.fn().mockReturnThis(),
+          innerJoin: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnValue(orderedQuery),
+        };
+      }),
+    };
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/live-runs?minCount=4"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toHaveLength(4);
+    expect(db.select).toHaveBeenCalledTimes(2);
+  });
+
+  it("passes scoped wake fields through the legacy heartbeat invoke route", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/heartbeat/invoke?companyId=company-1`)
+        .send({
+          reason: "issue_assigned",
+          payload: {
+            issueId: "issue-1",
+            taskId: "issue-1",
+            taskKey: "issue-1",
+          },
+          forceFreshSession: true,
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    // The legacy /heartbeat/invoke endpoint forwards only the wake fields the
+    // caller actually supplied so empty-body callers (e.g. e2e suites) match
+    // the original fixed-arg `heartbeat.invoke()` shape exactly. When the
+    // caller supplies reason / payload / forceFreshSession those are
+    // forwarded; idempotencyKey is omitted unless explicitly set.
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "issue_assigned",
+      payload: {
+        issueId: "issue-1",
+        taskId: "issue-1",
+        taskKey: "issue-1",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+      contextSnapshot: {
+        triggeredBy: "board",
+        actorId: "local-board",
+        forceFreshSession: true,
+      },
+    });
+  });
+
+  it("calls heartbeat.wakeup with the legacy minimal shape when the body is empty", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/heartbeat/invoke?companyId=company-1`)
+        .send({}),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+      contextSnapshot: {
+        triggeredBy: "board",
+        actorId: "local-board",
+      },
     });
   });
 });
