@@ -131,7 +131,10 @@ export function activityRoutes(db: Db) {
     const runId = req.params.runId as string;
     const run = await heartbeat.getRun(runId);
     if (!run || !hasCompanyAccess(req, run.companyId)) {
-      res.status(404).json({ error: "Heartbeat run not found" });
+      // Return `200 []` for both "doesn't exist" and "cross-tenant" — preserves the
+      // legacy API contract while keeping the cross-tenant existence oracle closed
+      // (both branches yield indistinguishable responses).
+      res.json([]);
       return;
     }
     assertCompanyAccess(req, run.companyId);

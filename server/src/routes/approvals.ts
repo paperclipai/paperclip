@@ -47,6 +47,7 @@ export function approvalRoutes(
     if (!approval || !hasCompanyAccess(req, approval.companyId)) {
       return null;
     }
+    assertCompanyAccess(req, approval.companyId);
     return approval;
   }
 
@@ -304,6 +305,7 @@ export function approvalRoutes(
       res.status(404).json({ error: "Approval not found" });
       return;
     }
+    assertCompanyAccess(req, existing.companyId);
 
     if (req.actor.type === "agent" && req.actor.agentId !== existing.requestedByAgentId) {
       res.status(403).json({ error: "Only requesting agent can resubmit this approval" });
@@ -352,6 +354,7 @@ export function approvalRoutes(
       res.status(404).json({ error: "Approval not found" });
       return;
     }
+    assertCompanyAccess(req, approval.companyId);
     const actor = getActorInfo(req);
     const comment = await svc.addComment(id, req.body.body, {
       agentId: actor.agentId ?? undefined,

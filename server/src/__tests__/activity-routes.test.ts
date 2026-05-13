@@ -177,7 +177,7 @@ describe.sequential("activity routes", () => {
     expect(mockActivityService.create).not.toHaveBeenCalled();
   });
 
-  it("requires company access before listing issues for another company's run", async () => {
+  it("returns 200 [] (not 404) when listing issues for another company's run, preserving API contract and the cross-tenant oracle", async () => {
     mockHeartbeatService.getRun.mockResolvedValue({
       id: "run-2",
       companyId: "company-2",
@@ -186,8 +186,19 @@ describe.sequential("activity routes", () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-2/issues"));
 
-    expect(res.status).toBe(404);
-    expect(res.body.error).toBe("Heartbeat run not found");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+    expect(mockActivityService.issuesForRun).not.toHaveBeenCalled();
+  });
+
+  it("returns 200 [] (not 404) for a non-existent heartbeat run, matching the cross-tenant response", async () => {
+    mockHeartbeatService.getRun.mockResolvedValue(null);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/missing-run/issues"));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
     expect(mockActivityService.issuesForRun).not.toHaveBeenCalled();
   });
 
