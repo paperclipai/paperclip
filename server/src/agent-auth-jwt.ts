@@ -25,6 +25,12 @@ function parseNumber(value: string | undefined, fallback: number) {
   return Math.floor(parsed);
 }
 
+function parseBooleanEnv(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
 function jwtConfig() {
   const secret = process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim() || process.env.BETTER_AUTH_SECRET?.trim();
   if (!secret) return null;
@@ -34,6 +40,7 @@ function jwtConfig() {
     ttlSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 60 * 60),
     issuer: process.env.PAPERCLIP_AGENT_JWT_ISSUER ?? "paperclip",
     audience: process.env.PAPERCLIP_AGENT_JWT_AUDIENCE ?? "paperclip-api",
+    disableLegacyFallback: parseBooleanEnv(process.env.PAPERCLIP_AGENT_JWT_DISABLE_LEGACY_FALLBACK),
   };
 }
 
@@ -134,10 +141,17 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   // raw master secret so tokens issued before per-company derivation existed
   // continue to verify — this preserves backward compatibility for any
   // outstanding tokens (TTL bounds the legacy window naturally).
+  //
+  // Operators should set `PAPERCLIP_AGENT_JWT_DISABLE_LEGACY_FALLBACK=true`
+  // approximately one JWT TTL (~1h by default, see PAPERCLIP_AGENT_JWT_TTL_SECONDS)
+  // after deploying per-company signing. Once set, the master-secret fallback
+  // is disabled and only tokens validating under the per-company derived key
+  // are accepted — closing the window in which a leaked master secret could
+  // be used to forge tokens with arbitrary future `exp` values for any tenant.
   const perCompanyKey = deriveCompanySigningKey(config.secret, claimedCompanyId);
   const perCompanySig = signPayload(perCompanyKey, signingInput);
   let signatureOk = safeCompare(signature, perCompanySig);
-  if (!signatureOk) {
+  if (!signatureOk && !config.disableLegacyFallback) {
     const legacySig = signPayload(config.secret, signingInput);
     signatureOk = safeCompare(signature, legacySig);
   }
