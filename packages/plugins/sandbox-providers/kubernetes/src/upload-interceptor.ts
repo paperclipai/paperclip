@@ -123,6 +123,15 @@ export class FastUploadInterceptor {
       };
     }
 
+    const activeUpload = this.findActiveUploadForCommand(command);
+    if (activeUpload) {
+      this.buffers.delete(activeUpload.tempPath);
+      return {
+        action: "error",
+        message: `Fast upload protocol violation for ${activeUpload.upload.targetPath}; retry the upload from the beginning.`,
+      };
+    }
+
     return { action: "passthrough", reason: "no upload pattern" };
   }
 
@@ -132,5 +141,14 @@ export class FastUploadInterceptor {
 
   get pendingCount(): number {
     return this.buffers.size;
+  }
+
+  private findActiveUploadForCommand(command: string): { tempPath: string; upload: BufferedUpload } | null {
+    for (const [tempPath, upload] of this.buffers) {
+      if (command.includes(`'${tempPath}'`)) {
+        return { tempPath, upload };
+      }
+    }
+    return null;
   }
 }

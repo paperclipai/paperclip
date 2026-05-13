@@ -46,7 +46,7 @@ describe("FastUploadInterceptor", () => {
     ).toMatchObject({ action: "passthrough", reason: "finalize without buffered state" });
   });
 
-  it("does not intercept chunks with padding before the end", () => {
+  it("fails fast when an unrecognized command targets an active upload", () => {
     const interceptor = new FastUploadInterceptor();
     const target = "/workspace/file.bin";
 
@@ -56,10 +56,12 @@ describe("FastUploadInterceptor", () => {
       ),
     ).toMatchObject({ action: "ack" });
 
-    expect(
-      interceptor.decide(`printf '%s' 'aGVs=bG8=' >> '${target}.paperclip-upload.b64'`),
-    ).toMatchObject({ action: "passthrough", reason: "no upload pattern" });
-    expect(interceptor.pendingCount).toBe(1);
+    const decision = interceptor.decide(`printf '%s' 'aGVs=bG8=' >> '${target}.paperclip-upload.b64'`);
+    expect(decision).toMatchObject({
+      action: "error",
+      message: expect.stringContaining("Fast upload protocol violation"),
+    });
+    expect(interceptor.pendingCount).toBe(0);
   });
 
   it("fails fast when data arrives after a padded chunk", () => {
