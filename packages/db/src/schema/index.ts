@@ -76,3 +76,13 @@ export { pluginDatabaseNamespaces, pluginMigrations } from "./plugin_database.js
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
+
+// Legal-domain models (sprint-1 PR-B). Namespaced with `legal_*` prefix per
+// HANDOFF Q2 default, keeping the paperclip-inherited schema in `public.*`
+// untouched. Runtime semantics live in agents/, profiles/, risk-gates/.
+export { legalClients } from "./legal_clients.js";
+export { legalMatters } from "./legal_matters.js";
+export { legalConflictRecords } from "./legal_conflict_records.js";
+export { legalPrivilegeFlags } from "./legal_privilege_flags.js";
+export { legalApprovals } from "./legal_approvals.js";
+export { legalRiskGateEvents } from "./legal_risk_gate_events.js";
