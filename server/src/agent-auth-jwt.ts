@@ -31,10 +31,26 @@ function jwtConfig() {
 
   return {
     secret,
-    ttlSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 60 * 60 * 48),
+    ttlSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 60 * 60),
     issuer: process.env.PAPERCLIP_AGENT_JWT_ISSUER ?? "paperclip",
     audience: process.env.PAPERCLIP_AGENT_JWT_AUDIENCE ?? "paperclip-api",
   };
+}
+
+/**
+ * Derive a per-company signing key from the master JWT secret and a companyId.
+ *
+ * In a multi-tenant deployment this ensures that a JWT signed for company A
+ * cannot be reused to authenticate as an agent in company B, even if the raw
+ * token leaks. The instance-wide master secret is never used to sign new
+ * tokens — it is retained only as a verification fallback so that tokens
+ * issued before this change continue to validate.
+ *
+ * The derivation domain-separates with the `jwt:` prefix so the same master
+ * secret can safely be reused for other HMAC purposes without key reuse.
+ */
+function deriveCompanySigningKey(masterSecret: string, companyId: string): string {
+  return createHmac("sha256", masterSecret).update(`jwt:${companyId}`).digest("hex");
 }
 
 function base64UrlEncode(value: string) {
@@ -87,7 +103,10 @@ export function createLocalAgentJwt(agentId: string, companyId: string, adapterT
   };
 
   const signingInput = `${base64UrlEncode(JSON.stringify(header))}.${base64UrlEncode(JSON.stringify(claims))}`;
-  const signature = signPayload(config.secret, signingInput);
+  // Sign with the per-company derived key so a leaked token cannot be reused
+  // across tenants.
+  const signingKey = deriveCompanySigningKey(config.secret, companyId);
+  const signature = signPayload(signingKey, signingInput);
 
   return `${signingInput}.${signature}`;
 }
@@ -104,20 +123,33 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   const header = parseJson(base64UrlDecode(headerB64));
   if (!header || header.alg !== JWT_ALGORITHM) return null;
 
-  const signingInput = `${headerB64}.${claimsB64}`;
-  const expectedSig = signPayload(config.secret, signingInput);
-  if (!safeCompare(signature, expectedSig)) return null;
-
   const claims = parseJson(base64UrlDecode(claimsB64));
   if (!claims) return null;
 
+  const claimedCompanyId = typeof claims.company_id === "string" ? claims.company_id : null;
+  if (!claimedCompanyId) return null;
+
+  const signingInput = `${headerB64}.${claimsB64}`;
+  // Try the per-company derived key first (current tokens). Fall back to the
+  // raw master secret so tokens issued before per-company derivation existed
+  // continue to verify — this preserves backward compatibility for any
+  // outstanding tokens (TTL bounds the legacy window naturally).
+  const perCompanyKey = deriveCompanySigningKey(config.secret, claimedCompanyId);
+  const perCompanySig = signPayload(perCompanyKey, signingInput);
+  let signatureOk = safeCompare(signature, perCompanySig);
+  if (!signatureOk) {
+    const legacySig = signPayload(config.secret, signingInput);
+    signatureOk = safeCompare(signature, legacySig);
+  }
+  if (!signatureOk) return null;
+
   const sub = typeof claims.sub === "string" ? claims.sub : null;
-  const companyId = typeof claims.company_id === "string" ? claims.company_id : null;
   const adapterType = typeof claims.adapter_type === "string" ? claims.adapter_type : null;
   const runId = typeof claims.run_id === "string" ? claims.run_id : null;
   const iat = typeof claims.iat === "number" ? claims.iat : null;
   const exp = typeof claims.exp === "number" ? claims.exp : null;
-  if (!sub || !companyId || !adapterType || !runId || !iat || !exp) return null;
+  if (!sub || !adapterType || !runId || !iat || !exp) return null;
+  const companyId = claimedCompanyId;
 
   const now = Math.floor(Date.now() / 1000);
   if (exp < now) return null;
