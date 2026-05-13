@@ -5,7 +5,7 @@ import type { Agent, Issue, IssueTreeControlPreview, IssueTreeHold } from "@pape
 import { act, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IssueDetail } from "./IssueDetail";
+import { canBoardResolveRecoveryAction, IssueDetail } from "./IssueDetail";
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -1445,5 +1445,41 @@ describe("IssueDetail", () => {
         && element.textContent?.includes("Close"),
       );
     expect(footer?.className).toContain("bg-background");
+  });
+});
+
+describe("canBoardResolveRecoveryAction", () => {
+  it("falls back to companyIds when memberships are not populated", () => {
+    expect(
+      canBoardResolveRecoveryAction("company-1", {
+        companyIds: ["company-1"],
+        memberships: [],
+        isInstanceAdmin: false,
+        source: "session",
+        keyId: null,
+        user: null,
+        userId: "user-1",
+      }),
+    ).toBe(true);
+  });
+
+  it("uses populated memberships as the authoritative board access source", () => {
+    expect(
+      canBoardResolveRecoveryAction("company-1", {
+        companyIds: ["company-1"],
+        memberships: [
+          {
+            companyId: "company-1",
+            membershipRole: "viewer",
+            status: "active",
+          },
+        ],
+        isInstanceAdmin: false,
+        source: "session",
+        keyId: null,
+        user: null,
+        userId: "user-1",
+      }),
+    ).toBe(false);
   });
 });

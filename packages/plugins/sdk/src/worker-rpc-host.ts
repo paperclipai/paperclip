@@ -34,7 +34,7 @@
  * @see PLUGIN_SPEC.md §14 — SDK Surface
  */
 
-import { realpathSync } from "node:fs";
+import fs from "node:fs";
 import path from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -176,6 +176,21 @@ interface EventRegistration {
 /** Default timeout for worker→host RPC calls. */
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
 
+function realpathOrResolvedPath(filePath: string): string {
+  const resolvedPath = path.resolve(filePath);
+  try {
+    return fs.realpathSync.native(resolvedPath);
+  } catch {
+    return resolvedPath;
+  }
+}
+
+export function isWorkerEntrypoint(entry: string, moduleUrl: string): boolean {
+  const thisFile = realpathOrResolvedPath(fileURLToPath(moduleUrl));
+  const entryPath = realpathOrResolvedPath(entry);
+  return thisFile === entryPath;
+}
+
 // ---------------------------------------------------------------------------
 // startWorkerRpcHost
 // ---------------------------------------------------------------------------
@@ -224,25 +239,8 @@ export function runWorker(
   }
   const entry = process.argv[1];
   if (typeof entry !== "string") return;
-  // Resolve symlinks on both sides before comparing. On macOS, /tmp is a
-  // symlink to /private/tmp; the host's spawn passes the kernel-resolved
-  // real path as argv[1], while fileURLToPath(import.meta.url) preserves
-  // the un-resolved path the module was loaded with. Without realpath the
-  // comparison fails for any plugin built under /tmp and the worker exits
-  // silently (code=0) before the RPC host starts. realpathSync is a no-op
-  // when no symlinks are involved.
-  const thisFile = realPathOrSelf(path.resolve(fileURLToPath(moduleUrl)));
-  const entryPath = realPathOrSelf(path.resolve(entry));
-  if (thisFile === entryPath) {
+  if (isWorkerEntrypoint(entry, moduleUrl)) {
     startWorkerRpcHost({ plugin });
-  }
-}
-
-function realPathOrSelf(p: string): string {
-  try {
-    return realpathSync(p);
-  } catch {
-    return p;
   }
 }
 

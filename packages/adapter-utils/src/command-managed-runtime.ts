@@ -149,7 +149,10 @@ export async function prepareCommandManagedRuntime(input: {
 }): Promise<PreparedSandboxManagedRuntime> {
   const timeoutMs = input.spec.timeoutMs && input.spec.timeoutMs > 0 ? input.spec.timeoutMs : 300_000;
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
-  const commandCwd = input.spec.remoteCwd;
+  // Managed-runtime sync/restore scripts use absolute paths throughout, so
+  // run them from a stable cwd. The target workspace itself may be removed or
+  // recreated during a run, which breaks shell startup if we chdir into it.
+  const commandCwd = "/";
   const runtimeSpec: SandboxRemoteExecutionSpec = {
     transport: "sandbox",
     provider: input.spec.providerKey ?? "sandbox",

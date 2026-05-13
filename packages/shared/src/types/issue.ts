@@ -15,6 +15,10 @@ import type {
   IssueExecutionStateStatus,
   IssueOriginKind,
   IssuePriority,
+  IssueRecoveryActionKind,
+  IssueRecoveryActionOutcome,
+  IssueRecoveryActionOwnerType,
+  IssueRecoveryActionStatus,
   IssueWorkMode,
   ModelProfileKey,
   IssueThreadInteractionContinuationPolicy,
@@ -131,6 +135,7 @@ export interface IssueRelationIssueSummary {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   terminalBlockers?: IssueRelationIssueSummary[];
+  activeRecoveryAction?: IssueRecoveryAction | null;
 }
 
 export type IssueBlockerAttentionState = "none" | "covered" | "stalled" | "needs_attention";
@@ -167,6 +172,35 @@ export interface IssueProductivityReview {
   noCommentStreak: number | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface IssueRecoveryAction {
+  id: string;
+  companyId: string;
+  sourceIssueId: string;
+  recoveryIssueId: string | null;
+  kind: IssueRecoveryActionKind;
+  status: IssueRecoveryActionStatus;
+  ownerType: IssueRecoveryActionOwnerType;
+  ownerAgentId: string | null;
+  ownerUserId: string | null;
+  previousOwnerAgentId: string | null;
+  returnOwnerAgentId: string | null;
+  cause: string;
+  fingerprint: string;
+  evidence: Record<string, unknown>;
+  nextAction: string;
+  wakePolicy: Record<string, unknown> | null;
+  monitorPolicy: Record<string, unknown> | null;
+  attemptCount: number;
+  maxAttempts: number | null;
+  timeoutAt: Date | string | null;
+  lastAttemptAt: Date | string | null;
+  outcome: IssueRecoveryActionOutcome | null;
+  resolutionNote: string | null;
+  resolvedAt: Date | string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
 }
 
 export type SuccessfulRunHandoffStateKind = "required" | "resolved" | "escalated";
@@ -372,6 +406,7 @@ export interface Issue {
   blocks?: IssueRelationIssueSummary[];
   blockerAttention?: IssueBlockerAttention;
   productivityReview?: IssueProductivityReview | null;
+  activeRecoveryAction?: IssueRecoveryAction | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   scheduledRetry?: IssueScheduledRetry | null;
   relatedWork?: IssueRelatedWorkSummary;
@@ -399,6 +434,10 @@ export interface IssueComment {
   authorType: IssueCommentAuthorType;
   authorAgentId: string | null;
   authorUserId: string | null;
+  createdByRunId?: string | null;
+  derivedAuthorAgentId?: string | null;
+  derivedCreatedByRunId?: string | null;
+  derivedAuthorSource?: "run_log_comment_post" | null;
   body: string;
   presentation: IssueCommentPresentation | null;
   metadata: IssueCommentMetadata | null;
