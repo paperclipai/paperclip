@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { PAPERCLIP_MCP_TOOL_POLICIES } from "@paperclipai/shared";
 import { PaperclipApiClient } from "./client.js";
 import { createToolDefinitions } from "./tools.js";
 
@@ -316,6 +317,92 @@ describe("paperclip MCP tools", () => {
       payload: { branch: "pap-1167" },
       issueIds: ["44444444-4444-4444-4444-444444444444"],
     });
+  });
+
+  it("attaches permission policy metadata to every MCP tool", () => {
+    const tools = createToolDefinitions(makeClient());
+    const toolNames = tools.map((tool) => tool.name).sort();
+    const registryNames = Object.keys(PAPERCLIP_MCP_TOOL_POLICIES).sort();
+
+    expect(toolNames).toEqual(registryNames);
+    expect(tools.every((tool) => tool.policy?.toolName === tool.name)).toBe(true);
+    expect(getTool("paperclipControlIssueWorkspaceServices").policy).toMatchObject({
+      actionRiskLevel: "local_only",
+      riskClass: "high",
+      requiredApprovalGate: "board",
+      requiresExplicitApproval: true,
+    });
+  });
+
+  it("lists the MCP tool permission registry", async () => {
+    const tool = getTool("paperclipListToolPolicies");
+    const response = await tool.execute({});
+
+    expect(response.content[0]?.text).toContain("paperclipControlIssueWorkspaceServices");
+    expect(response.content[0]?.text).toContain("requiresExplicitApproval");
+  });
+
+  it("blocks generic mutating API requests through the permission registry", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipApiRequest");
+    const response = await tool.execute({
+      method: "POST",
+      path: "/execution-workspaces/ws-1/runtime-services/restart",
+      jsonBody: "{}",
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(response.content[0]?.text).toContain("blocked by the MCP tool permission registry");
+    expect(response.content[0]?.text).toContain("paperclipControlIssueWorkspaceServices");
+  });
+
+  it("default-denies unknown generic mutating API requests", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipApiRequest");
+    const response = await tool.execute({
+      method: "patch",
+      path: "/some-new-admin-route?debug=true#fragment",
+      jsonBody: "{}",
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(response.content[0]?.text).toContain("blocked by the MCP tool permission registry");
+    expect(response.content[0]?.text).toContain("Unsupported generic mutating /api request");
+  });
+
+  it("allows generic read-only API requests after classification", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ id: "PAP-1" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipApiRequest");
+    const response = await tool.execute({
+      method: "get",
+      path: "/issues/PAP-1?include=summary#top",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe("http://localhost:3100/api/issues/PAP-1?include=summary#top");
+    expect(init.method).toBe("GET");
+    expect(response.content[0]?.text).toContain("PAP-1");
+  });
+
+  it("rejects encoded traversal in generic request paths", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipApiRequest");
+    const response = await tool.execute({
+      method: "GET",
+      path: "/issues/%2e%2e/secrets",
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(response.content[0]?.text).toContain("must not contain encoded traversal");
   });
 
   it("rejects invalid generic request paths", async () => {
