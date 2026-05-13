@@ -176,15 +176,6 @@ export function instanceSettingsRoutes(db: Db) {
             actorId: actor.actorId,
             agentId: actor.agentId,
             runId: actor.runId,
-            action: "instance.settings.issue_graph_liveness_auto_recovery_run",
-            entityType: "instance_settings",
-            entityId: "default",
-            details: {
-              lookbackHours: result.lookbackHours,
-              escalationsCreated: result.escalationsCreated,
-              existingEscalations: result.existingEscalations,
-              skippedOutsideLookback: result.skippedOutsideLookback,
-              escalationIssueIds: result.escalationIssueIds,
             action: "instance.settings.backup_updated",
             entityType: "instance_settings",
             entityId: "backup",
@@ -195,7 +186,6 @@ export function instanceSettingsRoutes(db: Db) {
           }),
         ),
       );
-      res.json(result);
       res.json({
         ...updated.database.backup,
         configFileExists: true,
