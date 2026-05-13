@@ -241,7 +241,7 @@ export function Organizations() {
   }
 
   return (
-    <div className="min-h-screen bg-muted/20">
+    <div className="min-h-screen bg-background">
       <header className="border-b border-border bg-background">
         <div className="mx-auto flex w-full max-w-3xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-2">
