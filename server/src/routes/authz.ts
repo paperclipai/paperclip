@@ -63,6 +63,41 @@ export function assertCompanyAccess(req: Request, companyId: string) {
   }
 }
 
+/**
+ * Non-throwing access check for routes that look up a resource by id
+ * before responding. Prefer this over `assertCompanyAccess` whenever the
+ * route can reach the access check only after a successful `getById`
+ * (i.e. after confirming the resource exists).
+ *
+ * Using `assertCompanyAccess` in that position leaks resource existence
+ * across tenants: a 404 means "no such resource" while a 403 means "exists
+ * in another tenant". An unauthenticated attacker can enumerate IDs and
+ * distinguish the two responses.
+ *
+ * The recommended pattern is:
+ *
+ *     const issue = await svc.getById(id);
+ *     if (!issue || !hasCompanyAccess(req, issue.companyId)) {
+ *       res.status(404).json({ error: "Issue not found" });
+ *       return;
+ *     }
+ *
+ * so both "does not exist" and "exists but cross-tenant" return the same
+ * 404, removing the oracle.
+ *
+ * Note: this intentionally does not replicate the write-path membership
+ * checks in `assertCompanyAccess` (active membership, viewer read-only).
+ * Routes that need those checks for authorized tenants should still call
+ * `assertCompanyAccess` after the 404 gate — the oracle concern is only
+ * about the existence check.
+ */
+export function hasCompanyAccess(req: Request, companyId: string): boolean {
+  if (req.actor.type === "none") return false;
+  if (req.actor.type === "agent") return req.actor.companyId === companyId;
+  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
+  return (req.actor.companyIds ?? []).includes(companyId);
+}
+
 export function getActorInfo(req: Request) {
   assertAuthenticated(req);
   if (req.actor.type === "agent") {

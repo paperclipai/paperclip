@@ -251,7 +251,7 @@ describe("routine routes", () => {
 
     const res = await request(app).get(`/api/routines/${routineId}/revisions`);
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockRoutineService.listRevisions).not.toHaveBeenCalled();
   });
 
