@@ -20,6 +20,7 @@ import type {
   BudgetScopeType,
   BudgetThresholdType,
   BudgetWindowKind,
+  PauseReason,
 } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
@@ -28,7 +29,7 @@ type ScopeRecord = {
   companyId: string;
   name: string;
   paused: boolean;
-  pauseReason: "manual" | "budget" | "system" | null;
+  pauseReason: PauseReason | null;
 };
 
 type PolicyRow = typeof budgetPolicies.$inferSelect;
