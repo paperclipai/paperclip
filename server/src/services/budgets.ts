@@ -831,8 +831,10 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
               reason: `Provider rate limit (${block.limitKind})${block.resetsAt ? ` — resets at ${block.resetsAt.toISOString()}` : ""}`,
             };
           }
-          await providerRateLimits.resolveBlock(block.id, "system");
-          await providerRateLimits.releaseAndResumeForBlock(block);
+          const resolved = await providerRateLimits.resolveBlock(block.id, "system");
+          if (resolved) {
+            await providerRateLimits.releaseAndResumeForBlock(resolved);
+          }
         }
       }
 
@@ -910,8 +912,10 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         resetsAt: block.resetsAt,
       });
       if (!stillBlocked) {
-        await providerRateLimits.resolveBlock(block.id, "system");
-        await providerRateLimits.releaseAndResumeForBlock(block);
+        const resolved = await providerRateLimits.resolveBlock(block.id, "system");
+        if (resolved) {
+          await providerRateLimits.releaseAndResumeForBlock(resolved);
+        }
         return null;
       }
       return {

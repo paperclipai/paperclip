@@ -146,6 +146,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -1157,6 +1158,64 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
 
     expect(comments.map((comment) => comment.id)).toEqual([firstCommentId]);
+  });
+
+  it("lists user-authored comments with run attribution candidates without binding Date objects in raw SQL", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const commentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Developer",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Comment attribution issue",
+      status: "todo",
+      priority: "medium",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "succeeded",
+      contextSnapshot: { issueId },
+      createdAt: new Date("2026-04-30T00:00:00.000Z"),
+      startedAt: new Date("2026-04-30T00:00:00.000Z"),
+      finishedAt: new Date("2026-04-30T00:10:00.000Z"),
+    });
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorUserId: "local-board-user",
+      body: "Agent-posted legacy comment",
+      createdAt: new Date("2026-04-30T00:05:00.000Z"),
+      updatedAt: new Date("2026-04-30T00:05:00.000Z"),
+    });
+
+    const comments = await svc.listComments(issueId, { order: "desc" });
+
+    expect(comments.map((comment) => comment.id)).toEqual([commentId]);
   });
 
   it("includes blockedBy summaries on list rows in one batched pass", async () => {

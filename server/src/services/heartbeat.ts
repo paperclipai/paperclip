@@ -9779,15 +9779,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const issueMonitors = await tickDueIssueMonitors(now);
 
-      // Auto-resolve expired provider rate-limit blocks.
-      const expiredBlocks = await providerRateLimits.resolveExpiredBlocks(now);
-      for (const block of expiredBlocks) {
-        const stillBlocked = await providerRateLimits.isWindowStillBlocked(
-          block.adapterType, block.limitKind,
-        );
-        if (!stillBlocked) {
-          await providerRateLimits.releaseAndResumeForBlock(block);
-        }
+      // Auto-release due provider rate-limit blocks only after verifying the provider window.
+      const providerRelease = await providerRateLimits.releaseDueBlocks(now);
+      const providerRecoveryCleanup = await providerRateLimits.cleanupReleasedProviderRecoveryBlockers(now);
+      if (
+        providerRelease.unblockedIssueIds.length > 0 ||
+        providerRelease.retiredRecoveryIssueIds.length > 0 ||
+        providerRecoveryCleanup.unblockedIssueIds.length > 0 ||
+        providerRecoveryCleanup.retiredRecoveryIssueIds.length > 0
+      ) {
+        await recovery.reconcileStrandedAssignedIssues();
       }
 
       return {
