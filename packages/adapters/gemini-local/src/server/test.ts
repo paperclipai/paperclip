@@ -183,7 +183,7 @@ export async function testEnvironment(
       if (sandbox) {
         args.push("--sandbox");
       } else {
-        args.push("--sandbox=none");
+        args.push("--no-sandbox");
       }
       if (extraArgs.length > 0) args.push(...extraArgs);
 
