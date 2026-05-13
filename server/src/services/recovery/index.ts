@@ -1,4 +1,5 @@
 export {
+  LIVENESS_ALERT_ACTIONS,
   RECOVERY_KEY_PREFIXES,
   RECOVERY_ORIGIN_KINDS,
   RECOVERY_REASON_KINDS,
@@ -7,6 +8,7 @@ export {
   parseIssueGraphLivenessIncidentKey,
 } from "./origins.js";
 export type {
+  LivenessAlertAction,
   RecoveryKeyPrefix,
   RecoveryOriginKind,
   RecoveryReasonKind,
@@ -33,6 +35,7 @@ export {
 export {
   DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS,
   RUN_LIVENESS_CONTINUATION_REASON,
+  buildRunErrorSignature,
   buildRunLivenessContinuationIdempotencyKey,
   decideRunLivenessContinuation,
   findExistingRunLivenessContinuationWake,

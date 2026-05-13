@@ -40,6 +40,11 @@ export type RunContinuationDecision =
       reason: string;
     };
 
+export function buildRunErrorSignature(errorCode: string | null, livenessState: string | null): string | null {
+  if (!errorCode && !livenessState) return null;
+  return `${errorCode ?? "none"}|${livenessState ?? "none"}`;
+}
+
 export function readContinuationAttempt(value: unknown): number {
   const numeric = typeof value === "number" ? value : Number.parseInt(String(value ?? ""), 10);
   return Number.isFinite(numeric) && numeric > 0 ? Math.floor(numeric) : 0;
@@ -91,6 +96,8 @@ export function decideRunLivenessContinuation(input: {
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
   maxAttempts?: number;
+  priorRunErrorSignature?: string | null;
+  currentRunErrorSignature?: string | null;
 }): RunContinuationDecision {
   const {
     run,
@@ -143,6 +150,14 @@ export function decideRunLivenessContinuation(input: {
         "- Next action: a human or manager should inspect the run and either clarify the task, mark it blocked, or assign a concrete follow-up.",
       ].join("\n"),
     };
+  }
+
+  if (
+    input.priorRunErrorSignature &&
+    input.currentRunErrorSignature &&
+    input.priorRunErrorSignature === input.currentRunErrorSignature
+  ) {
+    return { kind: "skip", reason: `consecutive identical error signature: ${input.currentRunErrorSignature}` };
   }
 
   const nextAttempt = currentAttempt + 1;

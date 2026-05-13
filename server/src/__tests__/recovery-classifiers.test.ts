@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import { classifyIssueGraphLiveness as classifyIssueGraphLivenessCompat } from "../services/issue-liveness.ts";
 import { decideRunLivenessContinuation as decideRunLivenessContinuationCompat } from "../services/run-continuations.ts";
 import {
+  LIVENESS_ALERT_ACTIONS,
   RECOVERY_KEY_PREFIXES,
   RECOVERY_ORIGIN_KINDS,
   RECOVERY_REASON_KINDS,
+  buildRunErrorSignature,
   buildIssueGraphLivenessIncidentKey,
   buildIssueGraphLivenessLeafKey,
   buildRunLivenessContinuationIdempotencyKey,
@@ -106,6 +108,15 @@ describe("recovery classifier boundary", () => {
     expect(decideRunLivenessContinuation(input)).toEqual(decideRunLivenessContinuationCompat(input));
   });
 
+  it("keeps liveness alert action strings stable", () => {
+    expect(LIVENESS_ALERT_ACTIONS).toMatchObject({
+      snoozeCapExceeded: "recovery.liveness_alert.snooze_cap_exceeded",
+      continuationDuplicateError: "recovery.liveness_alert.continuation_duplicate_error",
+      issueGraphStaleWarning: "recovery.liveness_alert.issue_graph_stale_warning",
+      issueGraphStaleAutoRecovery: "recovery.liveness_alert.issue_graph_stale_auto_recovery",
+    });
+  });
+
   it("keeps recovery origin and idempotency keys stable", () => {
     expect(RECOVERY_ORIGIN_KINDS).toMatchObject({
       issueGraphLivenessEscalation: "harness_liveness_escalation",
@@ -142,5 +153,57 @@ describe("recovery classifier boundary", () => {
       livenessState: "plan_only",
       nextAttempt: 1,
     })).toBe("run_liveness_continuation:issue-1:run-1:plan_only:1");
+  });
+
+  it("buildRunErrorSignature produces deterministic signatures", () => {
+    expect(buildRunErrorSignature("adapter_error", "empty_response")).toBe("adapter_error|empty_response");
+    expect(buildRunErrorSignature(null, "plan_only")).toBe("none|plan_only");
+    expect(buildRunErrorSignature("timeout", null)).toBe("timeout|none");
+    expect(buildRunErrorSignature(null, null)).toBeNull();
+  });
+
+  it("skips continuation on consecutive identical error signatures", () => {
+    const base = {
+      run: { id: runId, companyId, agentId, continuationAttempt: 0 } as never,
+      issue: {
+        id: issueId, companyId, identifier: "PAP-1", title: "Test",
+        status: "in_progress", assigneeAgentId: agentId, executionState: null, projectId: null,
+      } as never,
+      agent: { id: agentId, companyId, status: "idle" } as never,
+      livenessState: "empty_response" as const,
+      livenessReason: "No output",
+      nextAction: "Take action",
+      budgetBlocked: false,
+      idempotentWakeExists: false,
+    };
+
+    // Identical signatures → skip
+    const skipResult = decideRunLivenessContinuation({
+      ...base,
+      priorRunErrorSignature: "none|empty_response",
+      currentRunErrorSignature: "none|empty_response",
+    });
+    expect(skipResult.kind).toBe("skip");
+    expect(skipResult.kind === "skip" && skipResult.reason).toContain("consecutive identical error signature");
+
+    // Different signatures → enqueue
+    const enqueueResult = decideRunLivenessContinuation({
+      ...base,
+      priorRunErrorSignature: "adapter_error|empty_response",
+      currentRunErrorSignature: "none|empty_response",
+    });
+    expect(enqueueResult.kind).toBe("enqueue");
+
+    // Null prior (first attempt) → enqueue
+    const firstResult = decideRunLivenessContinuation({
+      ...base,
+      priorRunErrorSignature: null,
+      currentRunErrorSignature: "none|empty_response",
+    });
+    expect(firstResult.kind).toBe("enqueue");
+
+    // No signatures provided → enqueue (backward compatible)
+    const noSigResult = decideRunLivenessContinuation(base);
+    expect(noSigResult.kind).toBe("enqueue");
   });
 });

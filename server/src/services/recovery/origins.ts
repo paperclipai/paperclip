@@ -42,6 +42,15 @@ export function parseIssueGraphLivenessIncidentKey(incidentKey: string | null | 
   return { companyId, issueId, state, leafIssueId };
 }
 
+export const LIVENESS_ALERT_ACTIONS = {
+  snoozeCapExceeded: "recovery.liveness_alert.snooze_cap_exceeded",
+  continuationDuplicateError: "recovery.liveness_alert.continuation_duplicate_error",
+  issueGraphStaleWarning: "recovery.liveness_alert.issue_graph_stale_warning",
+  issueGraphStaleAutoRecovery: "recovery.liveness_alert.issue_graph_stale_auto_recovery",
+} as const;
+
+export type LivenessAlertAction = typeof LIVENESS_ALERT_ACTIONS[keyof typeof LIVENESS_ALERT_ACTIONS];
+
 export function buildIssueGraphLivenessLeafKey(input: {
   companyId: string;
   state: string;

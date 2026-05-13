@@ -101,6 +101,7 @@ import {
 import { instanceSettingsService } from "./instance-settings.js";
 import {
   RUN_LIVENESS_CONTINUATION_REASON,
+  buildRunErrorSignature,
   buildRunLivenessContinuationIdempotencyKey,
   decideRunLivenessContinuation,
   findExistingRunLivenessContinuationWake,
@@ -2821,6 +2822,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })
       : null;
 
+    const currentRunErrorSignature = buildRunErrorSignature(run.errorCode, livenessState);
+    let priorRunErrorSignature: string | null = null;
+    if (run.retryOfRunId) {
+      const [priorRun] = await db
+        .select({ errorCode: heartbeatRuns.errorCode, livenessState: heartbeatRuns.livenessState })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run.retryOfRunId))
+        .limit(1);
+      if (priorRun) {
+        priorRunErrorSignature = buildRunErrorSignature(priorRun.errorCode, priorRun.livenessState);
+      }
+    }
+
     const decision = decideRunLivenessContinuation({
       run,
       issue,
@@ -2830,6 +2844,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       nextAction: run.nextAction,
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
+      priorRunErrorSignature,
+      currentRunErrorSignature,
     });
 
     if (decision.kind === "exhausted") {

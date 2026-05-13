@@ -23,6 +23,7 @@ import { issueTreeControlService } from "../issue-tree-control.js";
 import { issueService } from "../issues.js";
 import { getRunLogStore } from "../run-log-store.js";
 import {
+  LIVENESS_ALERT_ACTIONS,
   RECOVERY_ORIGIN_KINDS,
   buildIssueGraphLivenessLeafKey,
   parseIssueGraphLivenessIncidentKey,
@@ -35,10 +36,12 @@ import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js"
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
-const ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_MIN_STALE_MS = 24 * 60 * 60 * 1000;
+const ISSUE_GRAPH_LIVENESS_WARNING_MIN_STALE_MS = 4 * 60 * 60 * 1000;
+const ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_MIN_STALE_MS = 12 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
+export const MAX_WATCHDOG_SNOOZE_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
@@ -1103,13 +1106,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     const decisionNow = input.now ?? new Date();
-    const effectiveSnoozedUntil = input.decision === "snooze"
+    let effectiveSnoozedUntil = input.decision === "snooze"
       ? input.snoozedUntil ?? null
       : input.decision === "continue"
         ? input.snoozedUntil && input.snoozedUntil > decisionNow
           ? input.snoozedUntil
           : new Date(decisionNow.getTime() + ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS)
         : null;
+
+    if (effectiveSnoozedUntil) {
+      const maxSnooze = new Date(decisionNow.getTime() + MAX_WATCHDOG_SNOOZE_DURATION_MS);
+      if (effectiveSnoozedUntil > maxSnooze) {
+        logger.warn({ runId: input.runId, requestedUntil: input.snoozedUntil, clampedUntil: maxSnooze },
+          "watchdog snooze clamped to maximum duration");
+        effectiveSnoozedUntil = maxSnooze;
+      }
+    }
 
     const [row] = await db
       .insert(heartbeatRunWatchdogDecisions)
@@ -1799,18 +1811,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return result;
   }
 
-  async function isLivenessFindingOldEnoughForAutoRecovery(finding: IssueLivenessFinding, now = new Date()) {
+  async function getIssueDependencyPathStalenessMs(finding: IssueLivenessFinding, now = new Date()): Promise<number | null> {
     const issueIds = [...new Set(finding.dependencyPath.map((entry) => entry.issueId))];
-    if (issueIds.length === 0) return false;
+    if (issueIds.length === 0) return null;
     const rows = await db
       .select({ id: issues.id, updatedAt: issues.updatedAt })
       .from(issues)
       .where(and(eq(issues.companyId, finding.companyId), inArray(issues.id, issueIds)));
-    if (rows.length !== issueIds.length) return false;
+    if (rows.length !== issueIds.length) return null;
     const latestUpdatedAt = rows.reduce((latest, row) =>
       row.updatedAt > latest ? row.updatedAt : latest,
     rows[0]!.updatedAt);
-    return now.getTime() - latestUpdatedAt.getTime() >= ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_MIN_STALE_MS;
+    return now.getTime() - latestUpdatedAt.getTime();
+  }
+
+  async function isLivenessFindingOldEnoughForWarning(finding: IssueLivenessFinding, now = new Date()) {
+    const stalenessMs = await getIssueDependencyPathStalenessMs(finding, now);
+    return stalenessMs !== null && stalenessMs >= ISSUE_GRAPH_LIVENESS_WARNING_MIN_STALE_MS;
+  }
+
+  async function isLivenessFindingOldEnoughForAutoRecovery(finding: IssueLivenessFinding, now = new Date()) {
+    const stalenessMs = await getIssueDependencyPathStalenessMs(finding, now);
+    return stalenessMs !== null && stalenessMs >= ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_MIN_STALE_MS;
   }
 
   async function resolveEscalationOwnerAgentId(
@@ -2087,6 +2109,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       escalationsCreated: 0,
       existingEscalations: 0,
       skipped: 0,
+      warned: 0,
       skippedAutoRecoveryDisabled: 0,
       skippedAutoRecoveryTooYoung: 0,
       obsoleteRecoveriesRetired: obsoleteRecoveryCleanup.retired,
@@ -2105,6 +2128,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const now = new Date();
     for (const finding of findings) {
       if (!await isLivenessFindingOldEnoughForAutoRecovery(finding, now)) {
+        if (await isLivenessFindingOldEnoughForWarning(finding, now)) {
+          logger.warn(
+            { companyId: finding.companyId, issueId: finding.issueId, state: finding.state, incidentKey: finding.incidentKey },
+            "issue graph liveness finding approaching auto-recovery threshold",
+          );
+          await logActivity(db, {
+            companyId: finding.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: null,
+            runId: opts?.runId ?? null,
+            action: LIVENESS_ALERT_ACTIONS.issueGraphStaleWarning,
+            entityType: "issue",
+            entityId: finding.issueId,
+            details: {
+              source: "recovery.reconcile_issue_graph_liveness",
+              findingState: finding.state,
+              incidentKey: finding.incidentKey,
+              recoveryIssueId: finding.recoveryIssueId,
+            },
+          });
+          result.warned += 1;
+        }
         result.skippedAutoRecoveryTooYoung += 1;
         result.skipped += 1;
         continue;
