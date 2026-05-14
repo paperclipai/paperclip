@@ -703,7 +703,7 @@ Paperclip already has the right foundation for a project-first model.
 
 - `project_workspaces` already exists in `packages/db/src/schema/project_workspaces.ts`
 - the shared `ProjectWorkspace` type already includes `cwd`, `repoUrl`, and `repoRef` in `packages/shared/src/types/project.ts`
-- docs already state that agents use the project's primary workspace for project-scoped tasks in `docs/API接口/目标和项目 goals-and-projects.md`
+- docs already state that agents use the project's primary workspace for project-scoped tasks in `docs/API接口/06 目标和项目 goals-and-projects.md`
 
 ### Heartbeat already resolves workspace in the right order
 

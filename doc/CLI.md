@@ -156,7 +156,7 @@ pnpm paperclipai secrets migrate-inline-env --company-id <company-id> [--apply]
 
 秘钥列表和声明从不打印秘钥值。`create` 接受 `--value-env` 以避免 shell 历史记录捕获值。`link` 记录提供商拥有的引用而不将秘钥值复制到 Paperclip 中。对于 AWS 支持的秘钥，`secrets doctor` 报告缺失的非秘钥 provider 环境变量和预期的 AWS SDK 运行时凭证来源；不要将 AWS 引导凭证存储在 Paperclip 秘钥中。
 
-每公司的 provider vault（每个 provider 多个 vault 实例、默认 vault 选择、即将支持的 GCP/Vault）在 Board UI 的 `Company Settings → Secrets → Provider vaults` 或通过 `/api/companies/{companyId}/secret-provider-configs` 配置。目前没有用于 vault 管理的 CLI 接口。详见[秘钥部署指南](../docs/部署/08 密钥管理 secrets.md#provider-vaults)和 [API 参考](../docs/API接口/密钥%20secrets.md#provider-vaults)了解契约。
+每公司的 provider vault（每个 provider 多个 vault 实例、默认 vault 选择、即将支持的 GCP/Vault）在 Board UI 的 `Company Settings → Secrets → Provider vaults` 或通过 `/api/companies/{companyId}/secret-provider-configs` 配置。目前没有用于 vault 管理的 CLI 接口。详见[秘钥部署指南](../docs/部署/08 密钥管理 secrets.md#provider-vaults)和 [API 参考](../docs/API接口/12%20密钥%20secrets.md#provider-vaults)了解契约。
 
 ## 审批命令（Approval Commands）
 

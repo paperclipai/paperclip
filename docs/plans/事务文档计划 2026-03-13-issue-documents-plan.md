@@ -376,7 +376,7 @@ v1 的推荐删除规则：
 
 - 更新 `skills/paperclip/SKILL.md`
 - 用文档创建/更新指令替换 `<plan>` 指令
-- 在 `docs/API接口/事务 issues.md` 中记录新端点
+- 在 `docs/API接口/05 事务 issues.md` 中记录新端点
 - 更新任何仍然教授内联 `<plan>` 块的内部规划文档
 
 新规则：
@@ -481,7 +481,7 @@ type ArtifactKind =
 文件：
 
 - `skills/paperclip/SKILL.md`
-- `docs/API接口/事务 issues.md`
+- `docs/API接口/05 事务 issues.md`
 - `doc/SPEC-implementation.md`
 - 提及 `<plan>` 的相关计划/文档
 

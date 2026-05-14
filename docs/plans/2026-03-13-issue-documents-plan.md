@@ -376,7 +376,7 @@ Required changes:
 
 - update `skills/paperclip/SKILL.md`
 - replace the `<plan>` instructions with document creation/update instructions
-- document the new endpoints in `docs/API接口/事务 issues.md`
+- document the new endpoints in `docs/API接口/05 事务 issues.md`
 - update any internal planning docs that still teach inline `<plan>` blocks
 
 New rule:
@@ -481,7 +481,7 @@ Acceptance:
 Files:
 
 - `skills/paperclip/SKILL.md`
-- `docs/API接口/事务 issues.md`
+- `docs/API接口/05 事务 issues.md`
 - `doc/SPEC-implementation.md`
 - relevant plan/docs that mention `<plan>`
 
