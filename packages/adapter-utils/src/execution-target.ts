@@ -564,6 +564,7 @@ export async function runAdapterExecutionTargetShellCommand(
       );
     }
 
+    const shellCommand = preferredSandboxShell(target);
     return await requireSandboxRunner(target).execute({
       command: shellCommand,
       args: shellCommandArgs(command),
@@ -1136,6 +1137,11 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     return null;
   }
   if (!input.target || input.target.kind !== "remote") {
+    return null;
+  }
+  if (input.target.transport === "k8s") {
+    // k8s execution doesn't use the sandbox-style paperclip bridge — the
+    // k8s driver handles its own host↔pod transport via environment-runtime.
     return null;
   }
 

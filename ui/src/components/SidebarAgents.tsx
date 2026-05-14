@@ -2,8 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, NavLink, useLocation } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  ChevronRight,
-  CornerDownRight,
   MoreHorizontal,
   PauseCircle,
   Pencil,
@@ -22,12 +20,6 @@ import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { useAgentOrder } from "../hooks/useAgentOrder";
-import {
-  buildSidebarAgentTree,
-  collectExpandableSidebarAgentIds,
-  normalizeExpandedSidebarAgentIds,
-  type SidebarAgentTreeNode,
-} from "../lib/sidebar-agent-tree";
 import {
   AGENT_SORT_MODE_UPDATED_EVENT,
   getAgentSortModeStorageKey,
@@ -87,60 +79,26 @@ function sortAgents(agents: Agent[], sortMode: AgentSidebarSortMode): Agent[] {
 function SidebarAgentItem({
   activeAgentId,
   activeTab,
+  agent,
+  disabled,
   isMobile,
-  onNavigate,
-  liveCountByAgent,
-  expandedAgentIds,
-  onToggleExpanded,
-  pendingAgentIds,
   onPauseResume,
-}: SidebarAgentTreeListProps) {
-  return (
-    <>
-      {nodes.map((node) => (
-        <SidebarAgentTreeItem
-          key={node.agent.id}
-          node={node}
-          depth={depth}
-          activeAgentId={activeAgentId}
-          activeTab={activeTab}
-          isMobile={isMobile}
-          onNavigate={onNavigate}
-          liveCountByAgent={liveCountByAgent}
-          expandedAgentIds={expandedAgentIds}
-          onToggleExpanded={onToggleExpanded}
-          pendingAgentIds={pendingAgentIds}
-          onPauseResume={onPauseResume}
-        />
-      ))}
-    </>
-  );
-}
-
-type SidebarAgentTreeItemProps = Omit<SidebarAgentTreeListProps, "nodes" | "depth"> & {
-  node: SidebarAgentTreeNode;
-  depth: number;
-};
-
-function SidebarAgentTreeItem({
-  node,
-  depth,
-  activeAgentId,
-  activeTab,
-  isMobile,
-  onNavigate,
-  liveCountByAgent,
-  expandedAgentIds,
-  onToggleExpanded,
-  pendingAgentIds,
-  onPauseResume,
-}: SidebarAgentTreeItemProps) {
-  const { agent, children } = node;
-  const hasChildren = children.length > 0;
-  const expanded = hasChildren && expandedAgentIds.has(agent.id);
-  const runCount = liveCountByAgent.get(agent.id) ?? 0;
+  runCount,
+  setSidebarOpen,
+}: {
+  activeAgentId: string | null;
+  activeTab: string | null;
+  agent: Agent;
+  disabled: boolean;
+  isMobile: boolean;
+  onPauseResume: (agent: Agent, action: "pause" | "resume") => void;
+  runCount: number;
+  setSidebarOpen: (open: boolean) => void;
+}) {
+  const routeRef = agentRouteRef(agent);
+  const href = activeTab ? `${agentUrl(agent)}/${activeTab}` : agentUrl(agent);
   const editHref = `${agentUrl(agent)}/configuration`;
-  const disabled = pendingAgentIds.has(agent.id);
+  const isActive = activeAgentId === routeRef;
   const isPaused = agent.status === "paused";
   const isBudgetPaused = isPaused && agent.pauseReason === "budget";
   const pauseResumeLabel = isPaused ? "Resume agent" : "Pause agent";
@@ -152,125 +110,85 @@ function SidebarAgentTreeItem({
       : pauseResumeLabel;
 
   return (
-    <>
-      <div
+    <div className="group/agent relative flex items-center">
+      <NavLink
+        to={href}
+        state={SIDEBAR_SCROLL_RESET_STATE}
+        onClick={() => {
+          if (isMobile) setSidebarOpen(false);
+        }}
         className={cn(
-          "group/agent relative flex items-center gap-2.5 pl-3 text-[13px] font-medium transition-colors",
-          activeAgentId === agentRouteRef(agent)
+          "flex min-w-0 flex-1 items-center gap-2.5 px-3 py-1.5 pr-8 text-[13px] font-medium transition-colors",
+          isActive
             ? "bg-accent text-foreground"
             : "text-foreground/80 hover:bg-accent/50 hover:text-foreground"
         )}
-        style={{ paddingLeft: `${depth * 14 + 12}px` }}
       >
-        {hasChildren ? (
-          <button
-            type="button"
-            aria-label={expanded ? `Collapse ${agent.name}` : `Expand ${agent.name}`}
-            aria-expanded={expanded}
-            className="flex h-3.5 w-3.5 shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground/60 hover:bg-accent/60 hover:text-foreground"
-            onClick={(event) => {
-              event.stopPropagation();
-              onToggleExpanded(agent.id);
-            }}
-          >
-            <ChevronRight className={cn("h-3 w-3 transition-transform", expanded && "rotate-90")} />
-          </button>
-        ) : depth > 0 ? (
-          <span className="flex h-3.5 w-3.5 items-center justify-center text-muted-foreground/35">
-            <CornerDownRight className="h-3 w-3" />
+        <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
+        <span className="flex-1 truncate">{agent.name}</span>
+        {(agent.pauseReason === "budget" || runCount > 0) && (
+          <span className="ml-auto flex items-center gap-1.5 shrink-0">
+            {agent.pauseReason === "budget" ? (
+              <BudgetSidebarMarker title="Agent paused by budget" />
+            ) : null}
+            {runCount > 0 ? (
+              <span className="relative flex h-2 w-2">
+                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+              </span>
+            ) : null}
+            {runCount > 0 ? (
+              <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
+                {runCount} live
+              </span>
+            ) : null}
           </span>
-        ) : (
-          <span className="h-3.5 w-3.5 shrink-0" />
         )}
-        <NavLink
-          to={activeTab ? `${agentUrl(agent)}/${activeTab}` : agentUrl(agent)}
-          state={SIDEBAR_SCROLL_RESET_STATE}
-          onClick={() => {
-            if (isMobile) onNavigate();
-          }}
-          className="flex min-w-0 flex-1 items-center gap-2.5 py-1.5 pr-8"
-        >
-          <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
-          <span className="flex-1 truncate">{agent.name}</span>
-          {(agent.pauseReason === "budget" || runCount > 0) && (
-            <span className="ml-auto flex items-center gap-1.5 shrink-0">
-              {agent.pauseReason === "budget" ? (
-                <BudgetSidebarMarker title="Agent paused by budget" />
-              ) : null}
-              {runCount > 0 ? (
-                <span className="relative flex h-2 w-2">
-                  <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-                </span>
-              ) : null}
-              {runCount > 0 ? (
-                <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
-                  {runCount} live
-                </span>
-              ) : null}
-            </span>
-          )}
-        </NavLink>
+      </NavLink>
 
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              className={cn(
-                "absolute right-1 top-1/2 h-6 w-6 -translate-y-1/2 transition-opacity data-[state=open]:pointer-events-auto data-[state=open]:opacity-100",
-                isMobile
-                  ? "opacity-100"
-                  : "pointer-events-none opacity-0 group-hover/agent:pointer-events-auto group-hover/agent:opacity-100 group-focus-within/agent:pointer-events-auto group-focus-within/agent:opacity-100",
-              )}
-              aria-label={`Open actions for ${agent.name}`}
-            >
-              <MoreHorizontal className="h-3.5 w-3.5" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-44">
-            <DropdownMenuItem asChild>
-              <Link
-                to={editHref}
-                onClick={() => {
-                  if (isMobile) onNavigate();
-                }}
-              >
-                <Pencil className="size-4" />
-                <span>Edit agent</span>
-              </Link>
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className={cn(
+              "absolute right-1 top-1/2 h-6 w-6 -translate-y-1/2 transition-opacity data-[state=open]:pointer-events-auto data-[state=open]:opacity-100",
+              isMobile
+                ? "opacity-100"
+                : "pointer-events-none opacity-0 group-hover/agent:pointer-events-auto group-hover/agent:opacity-100 group-focus-within/agent:pointer-events-auto group-focus-within/agent:opacity-100",
+            )}
+            aria-label={`Open actions for ${agent.name}`}
+          >
+            <MoreHorizontal className="h-3.5 w-3.5" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-44">
+          <DropdownMenuItem asChild>
+            <Link
+              to={editHref}
               onClick={() => {
-                if (pauseResumeDisabled) return;
-                onPauseResume(agent, isPaused ? "resume" : "pause");
+                if (isMobile) setSidebarOpen(false);
               }}
-              disabled={pauseResumeDisabled}
-              title={isBudgetPaused ? "Agent was paused by budget limits" : undefined}
             >
-              {isPaused ? <PlayCircle className="size-4" /> : <PauseCircle className="size-4" />}
-              <span>{pauseResumeDisabledLabel}</span>
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
-      {hasChildren && expanded ? (
-        <SidebarAgentTreeList
-          nodes={children}
-          depth={depth + 1}
-          activeAgentId={activeAgentId}
-          activeTab={activeTab}
-          isMobile={isMobile}
-          onNavigate={onNavigate}
-          liveCountByAgent={liveCountByAgent}
-          expandedAgentIds={expandedAgentIds}
-          onToggleExpanded={onToggleExpanded}
-          pendingAgentIds={pendingAgentIds}
-          onPauseResume={onPauseResume}
-        />
-      ) : null}
-    </>
+              <Pencil className="size-4" />
+              <span>Edit agent</span>
+            </Link>
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onClick={() => {
+              if (pauseResumeDisabled) return;
+              onPauseResume(agent, isPaused ? "resume" : "pause");
+            }}
+            disabled={pauseResumeDisabled}
+            title={isBudgetPaused ? "Agent was paused by budget limits" : undefined}
+          >
+            {isPaused ? <PlayCircle className="size-4" /> : <PauseCircle className="size-4" />}
+            <span>{pauseResumeDisabledLabel}</span>
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
   );
 }
 
@@ -337,47 +255,6 @@ export function SidebarAgents() {
   const agentMatch = location.pathname.match(/^\/(?:[^/]+\/)?agents\/([^/]+)(?:\/([^/]+))?/);
   const activeAgentId = agentMatch?.[1] ?? null;
   const activeTab = agentMatch?.[2] ?? null;
-  const storageKey = selectedCompanyId ? getSidebarAgentTreeStorageKey(selectedCompanyId) : null;
-  const [expandedAgentIds, setExpandedAgentIds] = useState<string[]>([]);
-
-  useEffect(() => {
-    const baseExpandedIds = storageKey
-      ? readExpandedSidebarAgentIds(storageKey)
-      : expandableAgentIds;
-    const seededExpandedIds = baseExpandedIds.length > 0 ? baseExpandedIds : expandableAgentIds;
-    const nextExpandedIds = normalizeExpandedSidebarAgentIds(
-      treeAgents,
-      seededExpandedIds,
-      activeAgentId,
-    );
-
-    setExpandedAgentIds((current) => {
-      if (
-        current.length === nextExpandedIds.length &&
-        current.every((id, index) => id === nextExpandedIds[index])
-      ) {
-        return current;
-      }
-      return nextExpandedIds;
-    });
-  }, [activeAgentId, expandableAgentIds, storageKey, treeAgents]);
-
-  const expandedAgentIdSet = useMemo(() => new Set(expandedAgentIds), [expandedAgentIds]);
-
-  const toggleExpandedAgent = useCallback((agentId: string) => {
-    const nextExpandedIds = normalizeExpandedSidebarAgentIds(
-      treeAgents,
-      expandedAgentIds.includes(agentId)
-        ? expandedAgentIds.filter((id) => id !== agentId)
-        : [...expandedAgentIds, agentId],
-      activeAgentId,
-    );
-
-    setExpandedAgentIds(nextExpandedIds);
-    if (storageKey) {
-      writeExpandedSidebarAgentIds(storageKey, nextExpandedIds);
-    }
-  }, [activeAgentId, expandedAgentIds, storageKey, treeAgents]);
 
   useEffect(() => {
     if (!sortModeStorageKey) {
@@ -421,7 +298,7 @@ export function SidebarAgents() {
   );
 
   const pauseResumeAgent = useMutation({
-    mutationFn: ({ agent, action }: { agent: Agent; action: AgentPauseAction }) =>
+    mutationFn: ({ agent, action }: { agent: Agent; action: "pause" | "resume" }) =>
       action === "pause"
         ? agentsApi.pause(agent.id, selectedCompanyId ?? undefined)
         : agentsApi.resume(agent.id, selectedCompanyId ?? undefined),
@@ -465,13 +342,6 @@ export function SidebarAgents() {
       });
     },
   });
-
-  const handlePauseResume = useCallback(
-    (agent: Agent, action: AgentPauseAction) => {
-      pauseResumeAgent.mutate({ agent, action });
-    },
-    [pauseResumeAgent],
-  );
 
   return (
     <SidebarSection

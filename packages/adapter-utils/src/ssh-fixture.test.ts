@@ -478,7 +478,6 @@ describe("ssh env-lab fixture", () => {
     expect(conflict.code).toBe("workspace_import_conflict");
     expect(conflict.paths.length).toBeGreaterThan(0);
     expect(conflict.paths.some((entry) => entry.includes("conflict"))).toBe(true);
-  });
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("preserves both concurrent SSH restores in a shared git workspace", async () => {

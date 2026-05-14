@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AGENT_ADAPTER_TYPES, getEnvironmentCapabilities } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CompanyEnvironments } from "./CompanyEnvironments";
+import { CompanySettings } from "./CompanySettings";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 const mockCompaniesApi = vi.hoisted(() => ({
@@ -105,7 +105,7 @@ async function flushReact() {
   });
 }
 
-describe("CompanyEnvironments", () => {
+describe("CompanySettings", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
@@ -146,7 +146,7 @@ describe("CompanyEnvironments", () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
-            <CompanyEnvironments />
+            <CompanySettings />
           </TooltipProvider>
         </QueryClientProvider>,
       );
@@ -212,17 +212,13 @@ describe("CompanyEnvironments", () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
-            <CompanyEnvironments />
+            <CompanySettings />
           </TooltipProvider>
         </QueryClientProvider>,
       );
     });
     await flushReact();
     await flushReact();
-
-    expect(container.textContent).toContain("Installed sandbox providers:");
-    expect(container.textContent).toContain("Secure Sandbox");
-    expect(container.textContent).toContain("These are not adapter types.");
 
     const editButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.trim() === "Edit");

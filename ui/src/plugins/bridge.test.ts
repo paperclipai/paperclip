@@ -89,6 +89,7 @@ describe("useHostNavigation mobile drawer behavior", () => {
         entityId: null,
         entityType: null,
         userId: null,
+        publicUrl: null,
       },
     };
   }

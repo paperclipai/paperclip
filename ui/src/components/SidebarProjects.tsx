@@ -167,7 +167,6 @@ export function SidebarProjects() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { openNewProject } = useDialogActions();
   const { isMobile, setSidebarOpen } = useSidebar();
-  const navigate = useNavigate();
   const location = useLocation();
 
   const { data: projects } = useQuery({

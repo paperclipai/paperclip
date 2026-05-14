@@ -353,6 +353,16 @@ export function clampIssueListLimit(limit: number): number {
   return Math.min(ISSUE_LIST_MAX_LIMIT, Math.max(1, Math.floor(limit)));
 }
 
+function truncateByCodePoint(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return Array.from(value).slice(0, maxChars).join("");
+}
+
+function decodeDatabaseTextPreview(value: string | null | undefined, maxChars: number): string | null {
+  if (value == null) return null;
+  return truncateByCodePoint(Buffer.from(value, "base64").toString("utf8"), maxChars);
+}
+
 function chunkList<T>(values: T[], size: number): T[][] {
   const chunks: T[][] = [];
   for (let index = 0; index < values.length; index += size) {

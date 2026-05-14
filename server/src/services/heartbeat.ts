@@ -5391,33 +5391,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const wakeReason = opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
     const maxAttempts = Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS));
     const nextAttempt = (run.scheduledRetryAttempt ?? 0) + 1;
-    const baseSchedule = opts?.delayMs != null
-      ? nextAttempt <= maxAttempts
-        ? {
-            attempt: nextAttempt,
-            baseDelayMs: Math.max(0, Math.floor(opts.delayMs)),
-            delayMs: Math.max(0, Math.floor(opts.delayMs)),
-            dueAt: new Date(now.getTime() + Math.max(0, Math.floor(opts.delayMs))),
-            maxAttempts,
-          }
-        : null
-      : nextAttempt <= maxAttempts
-        ? computeBoundedTransientHeartbeatRetrySchedule(nextAttempt, now, opts?.random)
-        : null;
     const transientRecovery =
       retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
         ? readTransientRecoveryContractFromRun(run)
         : null;
     // Pick the schedule curve based on the recovery family. Rate-limit gets
     // a flat short delay (gate is the actual decider); generic transient
-    // upstream gets the original exponential backoff.
+    // upstream gets the original exponential backoff. Upstream's explicit
+    // opts.delayMs takes precedence (test-only override).
     const isRateLimitFamily = transientRecovery?.errorFamily === "rate_limit_exhausted";
-    const baseSchedule = isRateLimitFamily
-      ? computeRateLimitHeartbeatRetrySchedule(nextAttempt, now, opts?.random)
-      : computeBoundedTransientHeartbeatRetrySchedule(nextAttempt, now, opts?.random);
     const maxAttemptsForFamily = isRateLimitFamily
       ? RATE_LIMIT_HEARTBEAT_RETRY_MAX_ATTEMPTS
       : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS;
+    const baseSchedule = opts?.delayMs != null
+      ? nextAttempt <= maxAttemptsForFamily
+        ? {
+            attempt: nextAttempt,
+            baseDelayMs: Math.max(0, Math.floor(opts.delayMs)),
+            delayMs: Math.max(0, Math.floor(opts.delayMs)),
+            dueAt: new Date(now.getTime() + Math.max(0, Math.floor(opts.delayMs))),
+            maxAttempts: maxAttemptsForFamily,
+          }
+        : null
+      : nextAttempt <= maxAttemptsForFamily
+        ? isRateLimitFamily
+          ? computeRateLimitHeartbeatRetrySchedule(nextAttempt, now, opts?.random)
+          : computeBoundedTransientHeartbeatRetrySchedule(nextAttempt, now, opts?.random)
+        : null;
     const codexTransientFallbackMode =
       agent.adapterType === "codex_local" && transientRecovery && !isRateLimitFamily
         ? resolveCodexTransientFallbackMode(nextAttempt)

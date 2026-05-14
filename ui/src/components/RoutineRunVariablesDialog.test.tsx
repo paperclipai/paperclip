@@ -136,6 +136,7 @@ function createExecutionWorkspace(): ExecutionWorkspace {
     name: "PAP-1634",
     status: "active",
     cwd: "/tmp/paperclip/PAP-1634",
+    agentCwd: "/tmp/paperclip/PAP-1634",
     repoUrl: null,
     baseRef: "main",
     branchName: "pap-1634-routine-branch",

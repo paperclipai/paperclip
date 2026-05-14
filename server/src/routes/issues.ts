@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
-import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { and, desc, eq, inArray, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -2606,9 +2605,6 @@ export function issueRoutes(
       details: {
         title: issue.title,
         identifier: issue.identifier,
-        status: issue.status,
-        priority: issue.priority,
-        assigneeUserId: issue.assigneeUserId,
         ...buildCreateIssueActivityStatusDetails(issue, res),
         ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
         ...summarizeIssueReferenceActivityDetails({
