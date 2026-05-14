@@ -1,3 +1,6 @@
+---
+context: fork
+---
 # Schemas and Memory Decay
 
 ## Atomic Fact Schema (items.yaml)
