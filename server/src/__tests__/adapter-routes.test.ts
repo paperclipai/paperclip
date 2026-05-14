@@ -158,13 +158,14 @@ describe("adapter routes", () => {
       requiresMaterializedRuntimeSkills: false,
     });
 
-    // process adapter should have no local capabilities
+    // process adapter supports run-scoped local JWTs for opt-in auth injection,
+    // but does not support instructions bundles or skills.
     const processAdapter = res.body.find((a: any) => a.type === "process");
     expect(processAdapter).toBeDefined();
     expect(processAdapter.capabilities).toMatchObject({
       supportsInstructionsBundle: false,
       supportsSkills: false,
-      supportsLocalAgentJwt: false,
+      supportsLocalAgentJwt: true,
       requiresMaterializedRuntimeSkills: false,
     });
 
