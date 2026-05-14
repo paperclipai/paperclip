@@ -1,10 +1,15 @@
 /**
  * Resolved plugin instance config shape.
  *
- * Operator-set values come from paperclip's plugin instance config UI. Secret
- * fields are stored as **references** (e.g. "GITHUB_APP_COMPLIANCE_FIRST_KEY")
- * and resolved via `ctx.secrets.resolve()` at call time — never cached on
- * disk or in logs.
+ * Operator-set values come from paperclip's plugin instance config UI. The
+ * three credential fields can be either:
+ *   - a paperclip secret reference (UUID), resolved via `ctx.secrets.resolve()`
+ *   - or, in v0.1 / local_trusted mode where the host has not yet enabled
+ *     plugin secret refs, the **plaintext value itself**.
+ *
+ * `resolveConfig` tries the secret resolver first and silently falls back to
+ * treating the field as a plaintext literal when resolution fails. Plain
+ * values are never logged or persisted to non-secret storage.
  */
 export interface ResolvedConfig {
   /** Numeric GitHub App ID (resolved from secret ref). */
@@ -66,9 +71,9 @@ export async function resolveConfig(
   parseRepo(cfg.repo);
 
   const [appIdStr, privateKeyPem, installationIdStr] = await Promise.all([
-    secretsResolve(cfg.appId),
-    secretsResolve(cfg.privateKeyPem),
-    secretsResolve(cfg.installationId),
+    maybeResolve(cfg.appId, secretsResolve),
+    maybeResolve(cfg.privateKeyPem, secretsResolve),
+    maybeResolve(cfg.installationId, secretsResolve),
   ]);
 
   const appId = Number(appIdStr);
@@ -88,4 +93,23 @@ export async function resolveConfig(
     defaultBranch: cfg.defaultBranch ?? "main",
     mergeQueueEnabled: cfg.mergeQueueEnabled ?? true,
   };
+}
+
+/**
+ * Resolve a string field as a paperclip secret reference; if the host rejects
+ * the reference (paperclip has not enabled per-plugin secret refs yet, or the
+ * value is plaintext rather than a UUID), fall back to using the raw value.
+ *
+ * This lets the same plugin code work in both modes without a config-shape
+ * migration when paperclip flips the feature on.
+ */
+async function maybeResolve(
+  value: string,
+  secretsResolve: (ref: string) => Promise<string>,
+): Promise<string> {
+  try {
+    return await secretsResolve(value);
+  } catch {
+    return value;
+  }
 }
