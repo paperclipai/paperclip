@@ -11,5 +11,5 @@
     "noEmit": true,
     "lib": ["ES2022"]
   },
-  "include": ["src/**/*", "tests/**/*", "install.js"]
+  "include": ["src/**/*", "tests/**/*"]
 }
