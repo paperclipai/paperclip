@@ -279,6 +279,87 @@ def _save_unindexable_ids(ids: set[str]) -> None:
         logger.warning("Could not save catch-up unindexable tracker: %s", exc)
 
 
+def backfill_null_closed_at(
+    engine: Engine,
+    *,
+    dry_run: bool = False,
+) -> int:
+    """Backfill null ``closed_at`` values in touch_index_bug_files.
+
+    Queries for rows where ``closed_at`` is NULL, fetches the corresponding
+    issue from the Paperclip API, and updates ``closed_at`` if the issue
+    now has a ``completedAt`` timestamp.
+
+    Returns the number of rows updated.
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT DISTINCT bug_issue_id, bug_identifier "
+                "FROM touch_index_bug_files WHERE closed_at IS NULL"
+            )
+        ).fetchall()
+
+    if not rows:
+        return 0
+
+    updated = 0
+    for bug_issue_id, bug_identifier in rows:
+        try:
+            issue = get_issue_by_id(bug_issue_id)
+            if issue is None:
+                logger.info(
+                    "Backfill: issue %s (%s) not found in Paperclip — skipping",
+                    bug_issue_id,
+                    bug_identifier,
+                )
+                continue
+            completed_at = _parse_completed_at(issue)
+            if completed_at is None:
+                logger.info(
+                    "Backfill: issue %s (%s) has no completedAt — skipping",
+                    bug_issue_id,
+                    bug_identifier,
+                )
+                continue
+            if dry_run:
+                logger.info(
+                    "Backfill DRY RUN: would set closed_at=%s for %s (%s)",
+                    completed_at.isoformat(),
+                    bug_issue_id,
+                    bug_identifier,
+                )
+            else:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(
+                            "UPDATE touch_index_bug_files "
+                            "SET closed_at = :closed_at, updated_at = :updated_at "
+                            "WHERE bug_issue_id = :bug_issue_id AND closed_at IS NULL"
+                        ),
+                        {
+                            "closed_at": completed_at,
+                            "bug_issue_id": bug_issue_id,
+                            "updated_at": datetime.now(timezone.utc),
+                        },
+                    )
+                logger.info(
+                    "Backfill: set closed_at=%s for %s (%s)",
+                    completed_at.isoformat(),
+                    bug_issue_id,
+                    bug_identifier,
+                )
+            updated += 1
+        except Exception:
+            logger.exception(
+                "Backfill error for issue %s (%s)", bug_issue_id, bug_identifier
+            )
+
+    if updated:
+        logger.info("Backfill complete: %d row(s) updated", updated)
+    return updated
+
+
 def catch_up_eligible_bug_issues(
     engine: Engine,
     *,

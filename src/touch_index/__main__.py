@@ -47,6 +47,7 @@ def _run_bug_cli() -> None:
     import argparse
 
     from touch_index.bug_worker import (
+        backfill_null_closed_at,
         catch_up_eligible_bug_issues,
         process_bug_issue,
         run_bug_worker,
@@ -200,12 +201,18 @@ def _run_bug_cli() -> None:
                 sum(r.files_indexed for r in catchup_results),
                 len(catchup_results),
             )
+        try:
+            backfilled = backfill_null_closed_at(engine, dry_run=args.dry_run)
+            if backfilled:
+                logger.info("Backfilled %d null-closed_at row(s)", backfilled)
+        except Exception:
+            logger.exception("Backfill null closed_at failed")
         if args.validate:
             report = run_bug_quality_checks(
                 engine, stale_threshold_days=args.stale_days
             )
             if not report.passed:
-                logger.error("VALIDATION FAILED — investigate existing data")
+                logger.error("VALIDATION FAILED \u2014 investigate existing data")
                 if args.json_summary:
                     _emit_json_summary(
                         args,
@@ -220,7 +227,7 @@ def _run_bug_cli() -> None:
                         quality_report=report,
                     )
                 raise SystemExit(1)
-            logger.info("VALIDATION PASSED — existing data clean")
+            logger.info("VALIDATION PASSED \u2014 existing data clean")
         if args.json_summary:
             _emit_json_summary(
                 args,
@@ -248,6 +255,13 @@ def _run_bug_cli() -> None:
             len(catchup_results),
         )
     results.extend(catchup_results)
+
+    try:
+        backfilled = backfill_null_closed_at(engine, dry_run=args.dry_run)
+        if backfilled:
+            logger.info("Backfilled %d null-closed_at row(s)", backfilled)
+    except Exception:
+        logger.exception("Backfill null closed_at failed")
 
     errors = len(issues) - worker_count
     if errors:
