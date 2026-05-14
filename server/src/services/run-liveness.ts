@@ -153,6 +153,16 @@ export function hasUsefulOutput(input: RunLivenessClassificationInput) {
 
 export function declaredBlocker(input: RunLivenessClassificationInput) {
   if (input.issue?.status === "blocked") return true;
+  // Opt-out for operators who find the regex-based blocker detection too
+  // aggressive in practice — see paperclipai/paperclip#5978 for the false-
+  // positive failure modes (incidental keyword matches in agent prose like
+  // "previously blocked", "I need clarification", "waiting on Y" flip the
+  // issue to blocked even when the agent's run was productive). When this
+  // flag is set, only the explicit `issue.status === "blocked"` branch above
+  // can flag a blocker; regex-based prose detection is suppressed.
+  if (process.env.PAPERCLIP_RELAX_LIVENESS_BLOCKER_REGEX === "true") {
+    return false;
+  }
   const actionability = classifyRunActionability(input);
   return actionability === "blocked_external" || actionability === "approval_required";
 }
