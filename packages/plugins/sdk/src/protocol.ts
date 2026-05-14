@@ -1075,7 +1075,7 @@ export interface WorkerToHostMethods {
 
   // Agent Sessions
   "agents.sessions.create": [
-    params: { agentId: string; companyId: string; taskKey?: string; reason?: string },
+    params: { agentId: string; companyId: string; taskKey?: string; reason?: string; mode?: "boardroom" },
     result: { sessionId: string; agentId: string; companyId: string; status: "active" | "closed"; createdAt: string },
   ];
   "agents.sessions.list": [

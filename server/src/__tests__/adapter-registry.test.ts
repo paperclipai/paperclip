@@ -452,6 +452,45 @@ describe("server adapter registry", () => {
     expect(patchedCtx.agent.adapterConfig.promptTemplate).toBeUndefined();
   });
 
+  it("strips stale run/task/wake env vars from Hermes in boardroom mode", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {
+          env: {
+            OPENAI_API_KEY: "llm-token",
+            PAPERCLIP_RUN_ID: "stale-run-id",
+            PAPERCLIP_TASK_ID: "stale-task-id",
+            PAPERCLIP_WAKE_REASON: "stale-wake-reason",
+          },
+        },
+      },
+      runtime: {},
+      config: {},
+      context: { sessionMode: "boardroom" },
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    const env = patchedCtx.agent.adapterConfig.env;
+    expect(env.PAPERCLIP_SESSION_MODE).toBe("boardroom");
+    expect(env.OPENAI_API_KEY).toBe("llm-token");
+    expect(env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
+    expect(env).not.toHaveProperty("PAPERCLIP_RUN_ID");
+    expect(env).not.toHaveProperty("PAPERCLIP_TASK_ID");
+    expect(env).not.toHaveProperty("PAPERCLIP_WAKE_REASON");
+  });
+
   it("does not set promptTemplate when no custom template is configured, preserving Hermes default", async () => {
     const adapter = requireServerAdapter("hermes_local");
 

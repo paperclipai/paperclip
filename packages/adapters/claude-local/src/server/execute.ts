@@ -180,7 +180,13 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
-  env.PAPERCLIP_RUN_ID = runId;
+  const isBoardroom = context.sessionMode === "boardroom";
+
+  if (isBoardroom) {
+    env.PAPERCLIP_SESSION_MODE = "boardroom";
+  } else {
+    env.PAPERCLIP_RUN_ID = runId;
+  }
 
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
@@ -208,14 +214,16 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
 
-  if (wakeTaskId) {
-    env.PAPERCLIP_TASK_ID = wakeTaskId;
-  }
-  if (issueWorkMode) {
-    env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
-  }
-  if (wakeReason) {
-    env.PAPERCLIP_WAKE_REASON = wakeReason;
+  if (!isBoardroom) {
+    if (wakeTaskId) {
+      env.PAPERCLIP_TASK_ID = wakeTaskId;
+    }
+    if (issueWorkMode) {
+      env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
+    }
+    if (wakeReason) {
+      env.PAPERCLIP_WAKE_REASON = wakeReason;
+    }
   }
   if (wakeCommentId) {
     env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;

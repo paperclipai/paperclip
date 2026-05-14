@@ -1948,6 +1948,8 @@ export function buildHostServices(
         requireInCompany("Agent", agent, companyId);
         const taskKey = params.taskKey ?? `plugin:${pluginKey}:session:${randomUUID()}`;
 
+        const sessionMode = params.mode === "boardroom" ? "boardroom" : null;
+
         const row = await db
           .insert(agentTaskSessionsTable)
           .values({
@@ -1955,6 +1957,7 @@ export function buildHostServices(
             agentId: params.agentId,
             adapterType: agent!.adapterType,
             taskKey,
+            mode: sessionMode,
             sessionParamsJson: null,
             sessionDisplayId: null,
             lastRunId: null,
@@ -2018,16 +2021,21 @@ export function buildHostServices(
           .then((rows) => rows[0] ?? null);
         if (!session) throw new Error(`Session not found: ${params.sessionId}`);
 
+        const contextSnapshot: Record<string, unknown> = {
+            taskKey: session.taskKey,
+            wakeSource: "automation",
+            wakeTriggerDetail: "system",
+          };
+        if (session.mode) {
+          contextSnapshot.sessionMode = session.mode;
+        }
+
         const run = await heartbeat.wakeup(session.agentId, {
           source: "automation",
           triggerDetail: "system",
           reason: params.reason ?? null,
           payload: { prompt: params.prompt },
-          contextSnapshot: {
-            taskKey: session.taskKey,
-            wakeSource: "automation",
-            wakeTriggerDetail: "system",
-          },
+          contextSnapshot,
           requestedByActorType: "system",
           requestedByActorId: pluginId,
         });

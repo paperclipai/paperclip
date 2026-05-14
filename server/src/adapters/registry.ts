@@ -427,12 +427,17 @@ const hermesLocalAdapter: ServerAdapterModule = {
       "Never use a board, browser, or local-board session for Paperclip API writes.",
     ].join("\n");
 
+    const isBoardroom = normalizedCtx.context?.sessionMode === "boardroom";
+    const { PAPERCLIP_RUN_ID: _r, PAPERCLIP_TASK_ID: _t, PAPERCLIP_WAKE_REASON: _w, ...cleanExistingEnv } = existingEnv;
+
     const patchedConfig: Record<string, unknown> = {
       ...existingConfig,
       env: {
-        ...existingEnv,
+        ...(isBoardroom ? cleanExistingEnv : existingEnv),
         ...(!explicitApiKey ? { PAPERCLIP_API_KEY: normalizedCtx.authToken } : {}),
-        PAPERCLIP_RUN_ID: normalizedCtx.runId,
+        ...(isBoardroom
+          ? { PAPERCLIP_SESSION_MODE: "boardroom" }
+          : { PAPERCLIP_RUN_ID: normalizedCtx.runId }),
       },
     };
 
