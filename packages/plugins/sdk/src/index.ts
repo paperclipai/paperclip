@@ -243,6 +243,10 @@ export type {
   PluginEntityUpsert,
   PluginEntityRecord,
   PluginEntityQuery,
+  PeerEntityRecord,
+  PeerEntityQuery,
+  PeerEntityGetParams,
+  PluginPeerEntitiesClient,
   PluginWorkspace,
   Company,
   Project,
@@ -314,6 +318,8 @@ export type {
   PluginApiRouteMethod,
   PluginEventType,
   PluginBridgeErrorCode,
+  PluginPeerReadsDeclaration,
+  PluginPeerReadEntityDeclaration,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
