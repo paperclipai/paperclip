@@ -11,6 +11,8 @@ import { Link } from "@/lib/router";
 import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../lib/issue-reference";
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
 import { StatusIcon } from "./StatusIcon";
+import { isLocalFileHref } from "../lib/local-document";
+import { LocalDocumentLink } from "./LocalDocumentLink";
 
 interface MarkdownBodyProps {
   children: string;
@@ -183,6 +185,11 @@ export function MarkdownBody({
           </a>
         );
       }
+
+      if (href && isLocalFileHref(href)) {
+        return <LocalDocumentLink href={href}>{linkChildren}</LocalDocumentLink>;
+      }
+
       return (
         <a href={href} rel="noreferrer">
           {linkChildren}
