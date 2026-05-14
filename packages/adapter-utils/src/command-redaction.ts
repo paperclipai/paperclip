@@ -9,6 +9,11 @@ const COMMAND_OPENAI_KEY_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
 const COMMAND_GITHUB_TOKEN_RE = /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g;
 const COMMAND_JWT_RE =
   /\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,})?\b/g;
+// Slack tokens (xoxb / xapp / xoxa / xoxp / xoxr / xoxs / xoxe variants) - EXPAAAA-772
+const COMMAND_SLACK_TOKEN_RE =
+  /\b(?:xox[abeprs]|xapp)-[A-Za-z0-9_-]{30,}\b/g;
+// Supabase project access token (sbp_ shape, e.g. SUPABASE_ACCESS_TOKEN) - EXPAAAA-772
+const COMMAND_SUPABASE_TOKEN_RE = /\bsbp_[A-Za-z0-9]{40,}\b/g;
 
 export function redactCommandText(command: string, redactedValue = REDACTED_COMMAND_TEXT_VALUE): string {
   return command
@@ -17,5 +22,7 @@ export function redactCommandText(command: string, redactedValue = REDACTED_COMM
     .replace(COMMAND_ENV_SECRET_ASSIGNMENT_RE, `$1${redactedValue}`)
     .replace(COMMAND_OPENAI_KEY_RE, redactedValue)
     .replace(COMMAND_GITHUB_TOKEN_RE, redactedValue)
-    .replace(COMMAND_JWT_RE, redactedValue);
+    .replace(COMMAND_JWT_RE, redactedValue)
+    .replace(COMMAND_SLACK_TOKEN_RE, redactedValue)
+    .replace(COMMAND_SUPABASE_TOKEN_RE, redactedValue);
 }
