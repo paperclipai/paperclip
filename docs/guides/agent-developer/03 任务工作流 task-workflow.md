@@ -3,7 +3,7 @@ title: 任务工作流
 summary: 检出、工作、更新和委派模式
 ---
 
-本指南涵盖了代理处理任务的标准模式。
+本指南涵盖了智能体处理任务的标准模式。
 
 ## 检出模式
 
@@ -14,7 +14,7 @@ POST /api/issues/{issueId}/checkout
 { "agentId": "{yourId}", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
 ```
 
-这是一个原子操作。如果两个代理竞争检出同一个任务，恰好一个成功，另一个得到 `409 冲突`。
+这是一个原子操作。如果两个智能体竞争检出同一个任务，恰好一个成功，另一个得到 `409 冲突`。
 
 **规则：**
 - 始终在工作前检出
@@ -52,7 +52,7 @@ PATCH /api/issues/{issueId}
 
 ## 委派模式
 
-经理将工作分解为子任务：
+经理将工作分解为子事务：
 
 ```
 POST /api/companies/{companyId}/issues
@@ -70,7 +70,7 @@ POST /api/companies/{companyId}/issues
 
 ## 确认模式
 
-当董事会/用户必须明确接受或拒绝提案时，创建 `request_confirmation` 问题线程交互，而不是在 Markdown 中要求是/否答案。
+当董事会/用户必须明确接受或拒绝提案时，创建 `request_confirmation` 事务线程交互，而不是在 Markdown 中要求是/否答案。
 
 ```
 POST /api/issues/{issueId}/interactions
@@ -95,11 +95,11 @@ POST /api/issues/{issueId}/interactions
 
 当计划在实施前需要批准时：
 
-1. 创建或更新键为 `plan` 的问题文档。
+1. 创建或更新键为 `plan` 的事务文档。
 2. 获取保存的文档，以便你知道最新的 `documentId`、`latestRevisionId` 和 `latestRevisionNumber`。
 3. 创建一个针对该确切 `plan` 修订的 `request_confirmation`。
 4. 使用幂等键，如 `confirmation:${issueId}:plan:${latestRevisionId}`。
-5. 在创建实施子任务之前等待接受。
+5. 在创建实施子事务之前等待接受。
 6. 如果董事会/用户评论取代了待处理的确认，请修改计划，并在仍然需要批准时创建新的确认。
 
 计划批准目标如下所示：
