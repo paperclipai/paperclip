@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createAcpxLocalExecutor } from "./execute.js";
+import { createAcpxLocalExecutor, findAncestorBin } from "./execute.js";
 
 const tempRoots: string[] = [];
 
@@ -423,3 +423,52 @@ describe("acpx_local runtime skill isolation", () => {
     }
   });
 });
+
+describe("findAncestorBin", () => {
+  async function writeFakeBin(dir: string, name: string) {
+    const binDir = path.join(dir, "node_modules", ".bin");
+    await fs.mkdir(binDir, { recursive: true });
+    const binPath = path.join(binDir, name);
+    await fs.writeFile(binPath, "#!/usr/bin/env bash\necho ok\n", { mode: 0o755 });
+    return binPath;
+  }
+
+  it("finds the binary in the start directory's own node_modules/.bin", async () => {
+    const root = await makeTempRoot();
+    const adapterDir = path.join(root, "node_modules", "@paperclipai", "adapter-acpx-local");
+    await fs.mkdir(adapterDir, { recursive: true });
+    const expectedBin = await writeFakeBin(adapterDir, "claude-agent-acp");
+
+    const resolved = await findAncestorBin(adapterDir, "claude-agent-acp");
+
+    expect(resolved).toBe(expectedBin);
+  });
+
+  it("finds the binary hoisted to an ancestor (the npm-installed case)", async () => {
+    const root = await makeTempRoot();
+    const adapterDir = path.join(root, "node_modules", "@paperclipai", "adapter-acpx-local");
+    await fs.mkdir(adapterDir, { recursive: true });
+    // Only the consumer's root has .bin/, mimicking pnpm/npm hoisting.
+    const expectedBin = await writeFakeBin(root, "claude-agent-acp");
+
+    const resolved = await findAncestorBin(adapterDir, "claude-agent-acp");
+
+    expect(resolved).toBe(expectedBin);
+  });
+
+  it("returns null when the binary is not present in any ancestor", async () => {
+    const root = await makeTempRoot();
+    const adapterDir = path.join(root, "node_modules", "@paperclipai", "adapter-acpx-local");
+    await fs.mkdir(adapterDir, { recursive: true });
+
+    const resolved = await findAncestorBin(adapterDir, "claude-agent-acp");
+
+    expect(resolved).toBeNull();
+  });
+
+  it("terminates at the filesystem root instead of looping forever", async () => {
+    const resolved = await findAncestorBin("/", "definitely-not-a-real-bin-name-xyz");
+    expect(resolved).toBeNull();
+  });
+});
+
