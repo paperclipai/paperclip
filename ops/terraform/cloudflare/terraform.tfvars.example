@@ -1,0 +1,4 @@
+cloudflare_api_token  = "your-api-token-here"
+cloudflare_account_id = "your-account-id"
+cloudflare_zone_id    = "your-zone-id"
+allowed_emails        = ["nick@thegoodguys.la"]

@@ -1,0 +1,11 @@
+[Unit]
+Description=Paperclip Watchdog Timer
+After=network-online.target
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=60s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
