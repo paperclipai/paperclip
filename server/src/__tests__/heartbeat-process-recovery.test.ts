@@ -2540,40 +2540,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
   });
 
-  it("blocks stranded in-progress work after a successful continuation retry was already used", async () => {
-    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
-      status: "in_progress",
-      runStatus: "succeeded",
-      retryReason: "issue_continuation_needed",
-      runSource: "issue.continuation_recovery",
-      livenessState: "advanced",
-    });
-    const heartbeat = heartbeatService(db);
-
-    const result = await heartbeat.reconcileStrandedAssignedIssues();
-    expect(result.continuationRequeued).toBe(0);
-    expect(result.escalated).toBe(1);
-    expect(result.issueIds).toEqual([issueId]);
-
-    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("blocked");
-
-    const recovery = await expectStrandedRecoveryArtifacts({
-      companyId,
-      agentId,
-      issueId,
-      runId,
-      previousStatus: "in_progress",
-      retryReason: "issue_continuation_needed",
-    });
-
-    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-    expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("retried continuation");
-    expect(comments[0]?.body).toContain("bounded automatic continuation retry was consumed");
-    expect(comments[0]?.body).toContain(`Recovery issue: [${recovery.identifier}]`);
-  });
-
   it("redacts error-code-only stranded recovery failures in issue copy", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
@@ -2919,8 +2885,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
   });
 
-  it("allows one productive-terminal recovery after regular continuation recovery made progress", async () => {
-    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+  it("blocks stranded in-progress work after a successful continuation retry was already used", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "succeeded",
       retryReason: "issue_continuation_needed",
@@ -2930,29 +2896,27 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
-    expect(result.continuationRequeued).toBe(1);
-    expect(result.escalated).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
     expect(result.issueIds).toEqual([issueId]);
 
-    const runs = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.agentId, agentId));
-    const retryRun = runs.find((row) => row.id !== runId);
-    expect(retryRun?.contextSnapshot as Record<string, unknown> | undefined).toMatchObject({
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
       issueId,
-      taskId: issueId,
+      runId,
+      previousStatus: "in_progress",
       retryReason: "issue_continuation_needed",
-      retryOfRunId: runId,
-      source: "issue.productive_terminal_continuation_recovery",
-      modelProfile: "cheap",
-      productiveUncommittableDisposition: {
-        selectedPath: "live_continue",
-        reasonCode: "needs_followup_implementation",
-        boundedRetryCount: 1,
-        boundedRetryLimit: 1,
-      },
     });
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("retried continuation");
+    expect(comments[0]?.body).toContain("bounded automatic continuation retry was consumed");
+    expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
   });
 
   it("does not treat a productive terminal run as healthy when in-progress work has no live path", async () => {
