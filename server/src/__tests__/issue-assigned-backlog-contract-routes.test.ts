@@ -77,6 +77,19 @@ vi.mock("../services/index.js", () => ({
     syncIssue: async () => undefined,
   }),
   issueService: () => mockIssueService,
+  issueVisibilityService: () => ({
+    canSeeIssue: vi.fn(async () => true),
+    filterVisibleIssues: vi.fn(async (_principal, issues) => issues),
+    ensureCollaborator: vi.fn(async () => undefined),
+    resolveMentionsToCollaborators: vi.fn(async () => undefined),
+    listCollaborators: vi.fn(async () => []),
+    removeCollaborator: vi.fn(async () => undefined),
+  }),
+  webPushService: () => ({
+    sendToUser: vi.fn(async () => undefined),
+    sendToUsers: vi.fn(async () => undefined),
+    notifyUsers: vi.fn(async () => undefined),
+  }),
   logActivity: mockLogActivity,
   projectService: () => ({
     getById: vi.fn(async () => null),
@@ -276,7 +289,7 @@ describe("assigned backlog creation contract", () => {
     );
   });
 
-  it("preserves deliberate assigned backlog as parked work without assignment wakeup", async () => {
+  it("auto-promotes assigned backlog to todo so the agent is actually picked up", async () => {
     const res = await request(await createApp())
       .post("/api/companies/company-1/issues")
       .send({
@@ -291,27 +304,19 @@ describe("assigned backlog creation contract", () => {
       expect.objectContaining({
         title: "Parked assigned work",
         assigneeAgentId,
-        status: "backlog",
+        status: "todo",
       }),
     );
     expect(res.body).toEqual(expect.objectContaining({
       assigneeAgentId,
-      status: "backlog",
+      status: "todo",
     }));
-    expect(mockLogActivity).toHaveBeenCalledWith(
-      expect.anything(),
+    expect(mockWakeup).toHaveBeenCalledWith(
+      assigneeAgentId,
       expect.objectContaining({
-        action: "issue.created",
-        entityId: "issue-1",
-        details: expect.objectContaining({
-          status: "backlog",
-          statusDefaulted: false,
-          statusDefaultReason: "explicit",
-          assignmentWakeSkipped: true,
-          assignmentWakeSkipReason: "assigned_backlog",
-        }),
+        source: "assignment",
+        reason: "issue_assigned",
       }),
     );
-    expect(mockWakeup).not.toHaveBeenCalled();
   });
 });

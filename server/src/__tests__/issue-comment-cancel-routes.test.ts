@@ -109,6 +109,19 @@ function registerModuleMocks() {
     projectService: () => ({}),
     routineService: () => ({ syncRunStatusForIssue: vi.fn(async () => undefined) }),
     workProductService: () => ({}),
+    issueVisibilityService: () => ({
+      canSeeIssue: vi.fn(async () => true),
+      filterVisibleIssues: vi.fn(async (_principal, issues) => issues),
+      ensureCollaborator: vi.fn(async () => undefined),
+      resolveMentionsToCollaborators: vi.fn(async () => undefined),
+      listCollaborators: vi.fn(async () => []),
+      removeCollaborator: vi.fn(async () => undefined),
+    }),
+    webPushService: () => ({
+      sendToUser: vi.fn(async () => undefined),
+      sendToUsers: vi.fn(async () => undefined),
+      notifyUsers: vi.fn(async () => undefined),
+    }),
   }));
 }
 
