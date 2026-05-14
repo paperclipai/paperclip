@@ -1,5 +1,6 @@
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { HelperConfig } from "./config.js";
+import { handleAction } from "./handlers.js";
 
 export interface RunningServer {
   server: Server;
@@ -61,6 +62,13 @@ export async function createServer(options: CreateServerOptions): Promise<Runnin
       return;
     }
 
+    // When config is null, action endpoints short-circuit to 503 before CORS check
+    // so callers get a meaningful "not configured" response rather than 403.
+    if (!config && req.method === "POST" && (req.url === "/open" || req.url === "/reveal")) {
+      void handleAction(req, res, null, req.url === "/open" ? "open" : "reveal");
+      return;
+    }
+
     // Apply CORS headers for non-preflight cross-origin responses
     if (!applyCorsHeaders(req, res, allowedOrigins)) {
       res.writeHead(403, { "Content-Type": "application/json" });
@@ -70,6 +78,14 @@ export async function createServer(options: CreateServerOptions): Promise<Runnin
 
     if (req.method === "GET" && req.url === "/health") {
       handleHealth(config, res);
+      return;
+    }
+    if (req.method === "POST" && req.url === "/open") {
+      void handleAction(req, res, config, "open");
+      return;
+    }
+    if (req.method === "POST" && req.url === "/reveal") {
+      void handleAction(req, res, config, "reveal");
       return;
     }
 
