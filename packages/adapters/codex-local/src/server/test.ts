@@ -279,12 +279,6 @@ async function prepareCodexHelloProbe(input: {
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
-  // SSH-aware path: probe the actual host the agent runs on, not the pod.
-  const sshSpec = adapterExecutionTargetToRemoteSpec(ctx.executionTarget ?? null);
-  if (sshSpec) {
-    return testEnvironmentOverSsh(ctx, sshSpec);
-  }
-
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const command = asString(config.command, "codex");
