@@ -423,6 +423,17 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
       const encoder = new TextEncoder();
       const stream = new ReadableStream<Uint8Array>({
         async start(controller) {
+          // Heartbeat keeps the SSE response alive during silent stretches
+          // (e.g. npm install downloading silently). SSE comment lines (`:`)
+          // are ignored by the client parser but keep the underlying HTTP
+          // connection from idling out at the Cloudflare edge.
+          const heartbeat = setInterval(() => {
+            try {
+              controller.enqueue(encoder.encode(": keepalive\n\n"));
+            } catch {
+              // Controller may already be closed; ignore.
+            }
+          }, 15_000);
           try {
             const result = await executeInSandbox({
               sandbox,
@@ -444,6 +455,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
               error: error instanceof Error ? error.message : String(error),
             })));
           } finally {
+            clearInterval(heartbeat);
             controller.close();
           }
         },
