@@ -61,6 +61,8 @@ import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js"
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
+const MAX_RECOVERY_ATTEMPTS_BEFORE_ESCALATION = 3;
+const RECOVERY_ATTEMPT_LOOKBACK_HOURS = 24;
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
@@ -425,6 +427,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function countRecentFailedRuns(companyId: string, issueId: string): Promise<number> {
+    const lookbackCutoff = new Date(Date.now() - RECOVERY_ATTEMPT_LOOKBACK_HOURS * 60 * 60 * 1000);
+    const rows = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          inArray(heartbeatRuns.status, [...UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES]),
+          gt(heartbeatRuns.createdAt, lookbackCutoff),
+        ),
+      );
+    return rows.length;
   }
 
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
@@ -2037,6 +2055,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (issue.status === "todo") {
+        // Recovery loop guard: if this issue has accumulated too many failed runs
+        // within the lookback window, escalate to blocked instead of re-dispatching.
+        // This prevents infinite prune → todo → dispatch → fail → prune loops.
+        const recentFailureCount = await countRecentFailedRuns(issue.companyId, issue.id);
+        if (recentFailureCount >= MAX_RECOVERY_ATTEMPTS_BEFORE_ESCALATION) {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "todo",
+            latestRun: null,
+            comment:
+              `Paperclip detected ${recentFailureCount} failed runs for this issue in the last ${RECOVERY_ATTEMPT_LOOKBACK_HOURS}h. ` +
+              "This exceeds the recovery attempt threshold, indicating a persistent dispatch loop. " +
+              "Moving to `blocked` to stop the cycle and surface for manual intervention.",
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
         if (!latestRun) {
           if (await hasQueuedIssueWake(issue.companyId, issue.id)) {
             result.skipped += 1;
