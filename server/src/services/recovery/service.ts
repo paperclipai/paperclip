@@ -669,6 +669,31 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  async function findOpenStaleRunEvaluationForSourceIssue(companyId: string, sourceIssueId: string) {
+    const [row] = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        priority: issues.priority,
+        assigneeAgentId: issues.assigneeAgentId,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.parentId, sourceIssueId),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(1);
+    return row ?? null;
+  }
+
   async function findStaleRunEvaluationByFingerprint(companyId: string, originFingerprint: string) {
     const [row] = await db
       .select({
@@ -1032,6 +1057,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           originKind: STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND,
         });
       if (recursiveReviewPath) return { kind: "skipped" as const };
+      if (["done", "cancelled"].includes(sourceIssue.status)) {
+        return { kind: "skipped" as const };
+      }
     }
     const prefix = await getCompanyIssuePrefix(input.run.companyId);
     const evidence = await collectStaleRunEvidence({
@@ -1042,6 +1070,35 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       now: input.now,
     });
     const level = (evidence.silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS ? "critical" : "suspicious";
+    const existingForSourceIssue = sourceIssue
+      ? await findOpenStaleRunEvaluationForSourceIssue(input.run.companyId, sourceIssue.id)
+      : null;
+    if (existingForSourceIssue) {
+      if (level === "critical" && existingForSourceIssue.priority !== "high") {
+        await issuesSvc.update(existingForSourceIssue.id, { priority: "high" });
+        await issuesSvc.addComment(existingForSourceIssue.id, [
+          "Critical output silence threshold crossed.",
+          "",
+          `- Run: \`${input.run.id}\``,
+          `- Silent for: ${formatDuration(evidence.silenceAgeMs)}`,
+          `- Last output at: ${input.run.lastOutputAt?.toISOString() ?? "none recorded"}`,
+        ].join("\n"), { runId: input.run.id });
+        await ensureSourceIssueBlockedByStaleEvaluation({
+          sourceIssue,
+          evaluationIssue: existingForSourceIssue,
+          run: input.run,
+        });
+        return { kind: "escalated" as const, evaluationIssueId: existingForSourceIssue.id };
+      }
+      if (level === "critical") {
+        await ensureSourceIssueBlockedByStaleEvaluation({
+          sourceIssue,
+          evaluationIssue: existingForSourceIssue,
+          run: input.run,
+        });
+      }
+      return { kind: "existing" as const, evaluationIssueId: existingForSourceIssue.id };
+    }
     const dedupeFingerprint = staleActiveRunOriginFingerprint({
       companyId: input.run.companyId,
       runId: input.run.id,

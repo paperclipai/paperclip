@@ -256,6 +256,74 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(refreshedEvaluations).toHaveLength(2);
   });
 
+  it("reuses the existing open evaluation when a process-loss retry run goes silent on the same source issue", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, coderId, issueId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first.created).toBe(1);
+
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: now }).where(eq(heartbeatRuns.id, runId));
+
+    const retryRunId = randomUUID();
+    const retryStartedAt = new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS - 120_000);
+    await db.insert(heartbeatRuns).values({
+      id: retryRunId,
+      companyId,
+      agentId: coderId,
+      status: "running",
+      invocationSource: "automation",
+      triggerDetail: "system",
+      startedAt: retryStartedAt,
+      processStartedAt: retryStartedAt,
+      lastOutputAt: null,
+      lastOutputSeq: 0,
+      lastOutputStream: null,
+      contextSnapshot: {
+        issueId,
+        retryOfRunId: runId,
+        retryReason: "process_lost",
+        wakeReason: "process_lost_retry",
+      },
+      retryOfRunId: runId,
+      logBytes: 0,
+    });
+    await db.update(issues).set({ executionRunId: retryRunId }).where(eq(issues.id, issueId));
+
+    const second = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(second).toMatchObject({ created: 0, existing: 1 });
+
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(1);
+  });
+
+  it("suppresses silent-run evaluation creation when the source issue is terminal", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, issueId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await db.update(issues).set({ status: "done", completedAt: now }).where(eq(issues.id, issueId));
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(result).toMatchObject({ scanned: 1, created: 0, existing: 0, skipped: 1 });
+
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
+  });
+
   it("redacts sensitive values from actual run-log evidence", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const leakedJwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
