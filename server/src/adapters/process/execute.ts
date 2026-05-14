@@ -2,6 +2,7 @@ import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.j
 import {
   asString,
   asNumber,
+  asBoolean,
   asStringArray,
   parseObject,
   buildPaperclipEnv,
@@ -22,6 +23,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
   for (const [k, v] of Object.entries(envConfig)) {
     if (typeof v === "string") env[k] = v;
+  }
+  if (asBoolean(config.injectPaperclipRunAuth, false) && ctx.authToken) {
+    env.PAPERCLIP_API_KEY = ctx.authToken;
+    env.PAPERCLIP_RUN_ID = runId;
   }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
