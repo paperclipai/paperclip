@@ -698,6 +698,13 @@ export const PLUGIN_STATUSES = [
 export type PluginStatus = (typeof PLUGIN_STATUSES)[number];
 
 /**
+ * Error code thrown when an org-chart traversal result exceeds the 500-agent cap.
+ * Defined here so both the server service and the SDK testing harness use
+ * the same literal without diverging.
+ */
+export const ORG_CHART_TOO_LARGE_ERROR = "ORG_CHART_TOO_LARGE" as const;
+
+/**
  * Plugin classification categories. A plugin declares one or more categories
  * in its manifest to describe its primary purpose.
  *
@@ -732,6 +739,7 @@ export const PLUGIN_CAPABILITIES = [
   "issue.comments.read",
   "issue.documents.read",
   "agents.read",
+  "agents.org-chart.read",
   "goals.read",
   "goals.create",
   "goals.update",

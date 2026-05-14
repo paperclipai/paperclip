@@ -25,6 +25,11 @@ import type { CreateIssueThreadInteraction, IssueDocumentSummary } from "@paperc
 import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
+import {
+  getDescendants as orgChartGetDescendants,
+  getParent as orgChartGetParent,
+  isDescendantOf as orgChartIsDescendantOf,
+} from "./plugin-agent-orgchart.js";
 import { projectService } from "./projects.js";
 import { issueService } from "./issues.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
@@ -1898,6 +1903,21 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         return managedAgents.reset(params.agentKey, companyId);
+      },
+      async getDescendants(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return orgChartGetDescendants(db, params.agentId, companyId);
+      },
+      async getParent(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return orgChartGetParent(db, params.agentId, companyId);
+      },
+      async isDescendantOf(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return orgChartIsDescendantOf(db, params.candidateId, params.ancestorId, companyId);
       },
     },
 
