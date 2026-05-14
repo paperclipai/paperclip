@@ -7849,6 +7849,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         logBytes: logSummary?.bytes,
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
+      }).catch(async (err) => {
+        // Guardrail: if the full status write fails, fall back to a minimal update
+        // so the run is finalized and the agent is not permanently wedged.
+        await onLog("stderr", `[paperclip] setRunStatus failed, applying fallback finalization: ${err instanceof Error ? err.message : String(err)}\n`);
+        return setRunStatus(run.id, status, { finishedAt: new Date(), error: runErrorMessage, errorCode: runErrorCode });
       });
       if (persistedRun) {
         persistedRun = await classifyAndPersistRunLiveness(persistedRun, persistedResultJson) ?? persistedRun;
