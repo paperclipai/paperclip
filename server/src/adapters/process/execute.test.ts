@@ -58,6 +58,34 @@ describe("process adapter execute", () => {
     expect(JSON.parse(stdout)).toEqual({ apiKey: "token-opt-in", runId: "run-opt-in" });
   });
 
+  it("logs a diagnostic when run auth is enabled but no auth token is available", async () => {
+    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+    const result = await execute({
+      ...baseContext,
+      runId: "run-opt-in-missing-token",
+      config: {
+        command: process.execPath,
+        args: [
+          "-e",
+          "console.log(JSON.stringify({ apiKey: process.env.PAPERCLIP_API_KEY || null, runId: process.env.PAPERCLIP_RUN_ID || null }))",
+        ],
+        injectPaperclipRunAuth: true,
+      },
+      onLog: async (stream, chunk) => {
+        logs.push({ stream, chunk });
+      },
+    });
+
+    const stdout = String(result.resultJson?.stdout ?? "").trim();
+    expect(JSON.parse(stdout)).toEqual({ apiKey: null, runId: null });
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        stream: "stderr",
+        chunk: expect.stringContaining("no run-scoped auth token was available"),
+      }),
+    );
+  });
+
   it("declares support for local agent JWTs so heartbeat can mint run-scoped auth", () => {
     expect(processAdapter.supportsLocalAgentJwt).toBe(true);
   });

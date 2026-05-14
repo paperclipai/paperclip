@@ -24,9 +24,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   for (const [k, v] of Object.entries(envConfig)) {
     if (typeof v === "string") env[k] = v;
   }
-  if (asBoolean(config.injectPaperclipRunAuth, false) && ctx.authToken) {
+  const shouldInjectRunAuth = asBoolean(config.injectPaperclipRunAuth, false);
+  if (shouldInjectRunAuth && ctx.authToken) {
     env.PAPERCLIP_API_KEY = ctx.authToken;
     env.PAPERCLIP_RUN_ID = runId;
+  } else if (shouldInjectRunAuth) {
+    await onLog(
+      "stderr",
+      "[paperclip] Process adapter run auth injection was requested, but no run-scoped auth token was available. PAPERCLIP_API_KEY and PAPERCLIP_RUN_ID were not injected.\n",
+    );
   }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
