@@ -11,6 +11,18 @@ import type { PluginEventBus } from "./plugin-event-bus.js";
 import { instanceSettingsService } from "./instance-settings.js";
 
 const PLUGIN_EVENT_SET: ReadonlySet<string> = new Set(PLUGIN_EVENT_TYPES);
+
+// The lifecycle event bridge (plugin-lifecycle-event-bridge.ts) is the sole
+// publisher for these action names. Blocking them here prevents a second
+// publish from activity-log auto-mapping, which would produce duplicate
+// events with inconsistent payloads.
+const PLUGIN_LIFECYCLE_BLOCKLIST: ReadonlySet<string> = new Set([
+  "plugin.installed",
+  "plugin.uninstalled",
+  "plugin.enabled",
+  "plugin.disabled",
+]);
+
 const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>> = {
   issue_comment_added: "issue.comment.created",
   issue_comment_created: "issue.comment.created",
@@ -37,8 +49,14 @@ export function setPluginEventBus(bus: PluginEventBus): void {
 }
 
 function eventTypeForActivityAction(action: string): PluginEventType | null {
+  if (PLUGIN_LIFECYCLE_BLOCKLIST.has(action)) return null;
   if (PLUGIN_EVENT_SET.has(action)) return action as PluginEventType;
   return ACTIVITY_ACTION_TO_PLUGIN_EVENT[action.replaceAll(".", "_")] ?? null;
+}
+
+/** Returns true if this activity action should be auto-published to the plugin event bus. */
+export function shouldPublishActivityAction(action: string): boolean {
+  return eventTypeForActivityAction(action) !== null;
 }
 
 export function publishPluginDomainEvent(event: PluginEvent): void {

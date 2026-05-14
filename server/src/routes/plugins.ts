@@ -46,6 +46,7 @@ import {
 } from "@paperclipai/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
+import type { LifecycleEventPublisher } from "../services/plugin-lifecycle-event-bridge.js";
 import { getPluginUiContributionMetadata, pluginLoader } from "../services/plugin-loader.js";
 import { logActivity } from "../services/activity-log.js";
 import { publishGlobalLiveEvent } from "../services/live-events.js";
@@ -276,6 +277,11 @@ export interface PluginRouteBridgeDeps {
   streamBus?: PluginStreamBus;
 }
 
+export interface PluginRouteLifecycleDeps {
+  /** Publisher for WS-3 plugin lifecycle events (plugin.installed, etc.). */
+  lifecycleEventPublisher?: LifecycleEventPublisher;
+}
+
 interface PluginScopedApiRequest {
   routeKey: string;
   method: string;
@@ -361,12 +367,14 @@ export function pluginRoutes(
   webhookDeps?: PluginRouteWebhookDeps,
   toolDeps?: PluginRouteToolDeps,
   bridgeDeps?: PluginRouteBridgeDeps,
+  lifecycleDeps?: PluginRouteLifecycleDeps,
 ) {
   const router = Router();
   const registry = pluginRegistryService(db);
   const lifecycle = pluginLifecycleManager(db, {
     loader,
     workerManager: bridgeDeps?.workerManager ?? webhookDeps?.workerManager,
+    lifecycleEventPublisher: lifecycleDeps?.lifecycleEventPublisher,
   });
   const issuesSvc = issueService(db);
 
