@@ -21,6 +21,7 @@
 import { fork, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
+import { pathToFileURL } from "node:url";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import {
   JSONRPC_VERSION,
@@ -618,7 +619,7 @@ export function createPluginWorkerHandle(
       TZ: process.env.TZ ?? "UTC",
     };
 
-    const child = fork(options.entrypointPath, [], {
+    const child = fork(pathToFileURL(options.entrypointPath).href, [], {
       stdio: ["pipe", "pipe", "pipe", "ipc"],
       execArgv: options.execArgv ?? [],
       env: workerEnv,
