@@ -191,3 +191,7 @@ export function useToast() {
   const actions = useToastActions();
   return useMemo<ToastContextValue>(() => ({ toasts, ...actions }), [toasts, actions]);
 }
+
+export function useOptionalToastActions(): ToastActionsContextValue | null {
+  return useContext(ToastActionsContext);
+}
