@@ -70,14 +70,16 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
     kind: "tool_result",
     ts: "2026-03-11T15:21:19.034Z",
     toolUseId: "item_1",
-    content: "command: sed -n '1,220p' doc/GOAL.md\nstatus: completed\nexit_code: 0\n\n# Paperclip\n\nPaperclip is the backbone of the autonomous economy.",
+    content:
+      "command: sed -n '1,220p' doc/GOAL.md\nstatus: completed\nexit_code: 0\n\n# Paperclip 目标（GOAL）\n\n> **路径（path）**：`doc/GOAL.md` — 与 `AGENTS.md` 中的阅读顺序一致。下文中英文专名首次出现时附中文释义。\n\n**Paperclip 是自主经济（autonomous economy）的基础设施。**",
     isError: false,
   },
   {
     kind: "tool_result",
     ts: "2026-03-11T15:21:19.035Z",
     toolUseId: "item_2",
-    content: "command: sed -n '1,320p' doc/SPEC-implementation.md\nstatus: completed\nexit_code: 0\n\n# Paperclip V1 Implementation Spec\n\nPaperclip V1 must provide a full control-plane loop for autonomous agents.",
+    content:
+      "command: sed -n '1,320p' doc/SPEC-implementation.md\nstatus: completed\nexit_code: 0\n\n# Paperclip V1 实现规格（Implementation Spec）\n\n> **路径（path）**：`doc/SPEC-implementation.md`。与 `SPEC.md` 冲突时，**本文件**约束 V1 行为。表名、字段名、API 片段、JSON 键保持英文。\n\n**状态（Status）**：首版发布（V1）的实现契约",
     isError: false,
   },
   {

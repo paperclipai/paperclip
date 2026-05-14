@@ -9,16 +9,16 @@ The current implementation target is V1 and is defined in `doc/SPEC-implementati
 
 ## 2. Read This First
 
-Before making changes, read in this order:
+变更代码前，按此顺序阅读（正文以中文为主；**路径文件名**保持英文以便工具与链接稳定）：
 
-1. `doc/GOAL.md`
-2. `doc/PRODUCT.md`
-3. `doc/SPEC-implementation.md`
-4. `doc/DEVELOPING.md`
-5. `doc/DATABASE.md`
+1. `doc/GOAL.md`（目标与愿景）
+2. `doc/PRODUCT.md`（产品定义）
+3. `doc/SPEC-implementation.md`（V1 实现契约）
+4. `doc/DEVELOPING.md`（开发与本地运行）
+5. `doc/DATABASE.md`（数据库与密钥相关）
 
-`doc/SPEC.md` is long-horizon product context.
-`doc/SPEC-implementation.md` is the concrete V1 build contract.
+`doc/SPEC.md`：长周期产品上下文。  
+`doc/SPEC-implementation.md`：具体 V1 构建契约。
 
 ## 3. Repo Map
 
