@@ -1,0 +1,109 @@
+name: Dead-Man's-Switch Monitor
+
+on:
+  schedule:
+    - cron: '15,45 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (log only, do not create alerts)'
+        required: false
+        default: 'false'
+      threshold:
+        description: 'Alert threshold in minutes'
+        required: false
+        default: '45'
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  monitor:
+    name: Watch backup dead-man's-switch liveness
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv
+
+      - name: Run dead-man's-switch monitor
+        id: monitor
+        env:
+          PAPERCLIP_API_URL: ${{ secrets.PAPERCLIP_API_URL }}
+          PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
+          PAPERCLIP_COMPANY_ID: ${{ secrets.PAPERCLIP_COMPANY_ID }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          FLAGS="--json-summary"
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            FLAGS="$FLAGS --dry-run"
+          fi
+          if [ -n "${{ github.event.inputs.threshold }}" ]; then
+            FLAGS="$FLAGS --threshold ${{ github.event.inputs.threshold }}"
+          fi
+          python scripts/deadman_switch_monitor.py $FLAGS > /tmp/deadman-monitor-summary.json
+
+      - name: Write step summary
+        if: always()
+        run: |
+          if [ -f /tmp/deadman-monitor-summary.json ]; then
+            python -c "
+          import json
+          d = json.load(open('/tmp/deadman-monitor-summary.json'))
+          age = d.get('last_success_age_minutes')
+          age_str = f'{age:.0f}min' if age is not None else 'N/A'
+          lines = []
+          lines.append('## Dead-Man\\'s-Switch Monitor')
+          lines.append('')
+          lines.append('**Status:** ' + d.get('status', 'unknown'))
+          lines.append('**Target workflow:** ' + d.get('target_workflow', '?'))
+          lines.append('**Last success age:** ' + age_str)
+          lines.append('**Threshold:** ' + str(d.get('monitor_threshold_minutes', '?')) + 'min')
+          lines.append('**Alert fired:** ' + str(d.get('alert_fired', False)))
+          lines.append('**Alert skipped (dup):** ' + str(d.get('alert_skipped', False)))
+          lines.append('**Reason:** ' + d.get('alert_reason', 'none'))
+          lines.append('')
+          lines.append('**Self-health:**')
+          lines.append('- Total runs: ' + str(d.get('self_total_runs', '?')))
+          lines.append('- Last run: ' + str(d.get('self_last_run_utc', '?'))[:19])
+          lines.append('- Prev run: ' + str(d.get('self_prev_run_utc', '?'))[:19])
+          print('\n'.join(lines))
+          " > $GITHUB_STEP_SUMMARY
+          else
+            echo "## Dead-Man's-Switch Monitor" >> $GITHUB_STEP_SUMMARY
+            echo "**Status:** unknown (summary file missing)" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload monitor logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deadman-switch-monitor-logs
+          path: ~/.paperclip/deadman_switch_monitor.log
+          retention-days: 7
+
+      - name: Upload monitor state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deadman-switch-monitor-state
+          path: ~/.paperclip/deadman_switch_monitor_state.json
+          retention-days: 7
+
+      - name: Upload summary artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deadman-switch-monitor-summary
+          path: /tmp/deadman-monitor-summary.json
+          retention-days: 7

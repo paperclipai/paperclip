@@ -1,0 +1,17 @@
+[Unit]
+Description=Paperclip Backup Dead-Man's-Switch Monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=python3 /home/sirrus/projects/BTC-Trade-Engine-PaperClip/scripts/backup_deadman_switch_monitor.py --json-summary
+StandardOutput=journal
+StandardError=journal
+Environment=HOME=/home/sirrus
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/snap/bin:/home/sirrus/.local/bin
+WorkingDirectory=/home/sirrus/projects/BTC-Trade-Engine-PaperClip
+EnvironmentFile=/home/sirrus/projects/BTC-Trade-Engine-PaperClip/.env
+
+[Install]
+WantedBy=default.target

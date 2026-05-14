@@ -1,0 +1,12 @@
+[Unit]
+Description=Paperclip Backup Dead-Man's-Switch Timer (every 30 min)
+Requires=paperclip-backup-deadman-switch.service
+
+[Timer]
+OnCalendar=*-*-* *:00:00
+OnCalendar=*-*-* *:30:00
+Persistent=true
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target
