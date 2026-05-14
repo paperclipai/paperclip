@@ -137,6 +137,7 @@ import {
   readContinuationAttempt,
 } from "./recovery/index.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
+import { resolveAdapterModelAvailability } from "./adapter-model-compat.js";
 import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
@@ -4635,6 +4636,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   ) {
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
+
+    const adapterModel = typeof (parseObject(agent.adapterConfig) as Record<string, unknown>).model === "string"
+      ? ((parseObject(agent.adapterConfig) as Record<string, unknown>).model as string).trim()
+      : "";
+    if (adapterModel && agent.adapterType) {
+      const compat = resolveAdapterModelAvailability(agent.adapterType, adapterModel, run.companyId);
+      if (!compat.available) {
+        if (issueId) {
+          const idempotencyPrefix = `recovery:adapter-model-unavailable:${issueId}:${run.id}`;
+          const existing = await db
+            .select({ id: issueComments.id })
+            .from(issueComments)
+            .where(
+              and(
+                eq(issueComments.companyId, run.companyId),
+                eq(issueComments.issueId, issueId),
+                sql`${issueComments.body} like ${`${idempotencyPrefix}%`}`,
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (!existing) {
+            const commentBody = [
+              `<!-- ${idempotencyPrefix} -->`,
+              `**Failure type:** adapter/model incompatibility — process-loss retry suppressed`,
+              `**Failing endpoint / action:** enqueueProcessLossRetry for agent \`${agent.name}\` (adapter: \`${agent.adapterType}\`, model: \`${adapterModel}\`)`,
+              `**Unblock owner:** agent owner or recovery manager — reconfigure the agent's \`adapterConfig.model\` to a supported model (supported: ${compat.supportedModels.join(", ")})`,
+              `**Next wake condition:** re-assign this issue after the agent's model is updated to a supported value`,
+            ].join("\n");
+            await issuesSvc.addComment(issueId, commentBody, { runId: run.id }, { authorType: "system" });
+          }
+        }
+        return null;
+      }
+    }
+
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
     const retryContextSnapshot = withRecoveryModelProfileHint({
