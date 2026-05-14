@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
@@ -92,12 +92,47 @@ export function approvalService(db: Db) {
         .where(eq(approvals.id, id))
         .then((rows) => rows[0] ?? null),
 
-    create: (companyId: string, data: Omit<typeof approvals.$inferInsert, "companyId">) =>
-      db
+    create: async (companyId: string, data: Omit<typeof approvals.$inferInsert, "companyId">) => {
+      // Idempotency for request_board_approval: if the same agent already has a
+      // pending approval for the same issueIdentifier in this company, return
+      // that existing row instead of inserting a duplicate. Multiple concurrent
+      // heartbeat runs (e.g. after an adapter-failed retry storm) can otherwise
+      // each call create() and produce N copies of the same approval row.
+      // The race window between this SELECT and the INSERT is narrow but
+      // non-zero; a partial unique index on
+      //   (company_id, requested_by_agent_id, payload->>'issueIdentifier')
+      //   WHERE status='pending' AND type='request_board_approval'
+      // would close it fully — left as a follow-up migration.
+      if (data.type === "request_board_approval" && data.requestedByAgentId) {
+        const payload = (data.payload ?? null) as Record<string, unknown> | null;
+        const issueIdentifier =
+          payload && typeof payload === "object" && typeof payload.issueIdentifier === "string"
+            ? payload.issueIdentifier
+            : null;
+        if (issueIdentifier && issueIdentifier.length > 0) {
+          const existing = await db
+            .select()
+            .from(approvals)
+            .where(
+              and(
+                eq(approvals.companyId, companyId),
+                eq(approvals.type, data.type),
+                eq(approvals.status, "pending"),
+                eq(approvals.requestedByAgentId, data.requestedByAgentId),
+                sql`${approvals.payload}->>'issueIdentifier' = ${issueIdentifier}`,
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (existing) return existing;
+        }
+      }
+      return db
         .insert(approvals)
         .values({ ...data, companyId })
         .returning()
-        .then((rows) => rows[0]),
+        .then((rows) => rows[0]);
+    },
 
     approve: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
       const { approval: updated, applied } = await resolveApproval(
