@@ -1,6 +1,9 @@
 import { memo, useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent, type DragEvent, type RefObject } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { IssueWorkMode } from "@paperclipai/shared";
+import {
+  DEFAULT_ISSUE_CONSTITUTION_BODY,
+  type IssueWorkMode,
+} from "@paperclipai/shared";
 import { pickTextColorForSolidBg } from "@/lib/color-contrast";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -137,6 +140,12 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
 
 function isIssueWorkMode(value: unknown): value is IssueWorkMode {
   return value === "standard" || value === "planning";
+}
+
+function resolveInitialIssueDescription(description: string | null | undefined) {
+  if (typeof description === "string") return description;
+  if (description === null) return "";
+  return DEFAULT_ISSUE_CONSTITUTION_BODY;
 }
 
 const ISSUE_WORK_MODE_OPTIONS: ReadonlyArray<{
@@ -736,7 +745,10 @@ export function NewIssueDialog() {
       const defaultProjectWorkspaceId = newIssueDefaults.projectWorkspaceId
         ?? defaultProjectWorkspaceIdForProject(defaultProject);
       const defaultExecutionWorkspaceMode = defaultExecutionWorkspaceModeForIssueDefaults(newIssueDefaults, defaultProject);
-      setIssueText(newIssueDefaults.title ?? "", newIssueDefaults.description ?? "");
+      setIssueText(
+        newIssueDefaults.title ?? "",
+        resolveInitialIssueDescription(newIssueDefaults.description),
+      );
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(defaultProjectId);
@@ -754,7 +766,10 @@ export function NewIssueDialog() {
         : null;
     } else if (newIssueDefaults.title) {
       const nextWorkMode = isIssueWorkMode(newIssueDefaults.workMode) ? newIssueDefaults.workMode : "standard";
-      setIssueText(newIssueDefaults.title, newIssueDefaults.description ?? "");
+      setIssueText(
+        newIssueDefaults.title,
+        resolveInitialIssueDescription(newIssueDefaults.description),
+      );
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       const defaultProjectId = newIssueDefaults.projectId ?? "";
@@ -827,7 +842,7 @@ export function NewIssueDialog() {
       const defaultProjectId = newIssueDefaults.projectId ?? "";
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
       const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
-      setIssueText("", "");
+      setIssueText("", DEFAULT_ISSUE_CONSTITUTION_BODY);
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(defaultProjectId);
@@ -978,7 +993,7 @@ export function NewIssueDialog() {
       companyId: effectiveCompanyId,
       stagedFiles,
       title: currentTitle,
-      description: currentDescription || undefined,
+      description: currentDescription,
       status,
       priority: priority || "medium",
       workMode,

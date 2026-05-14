@@ -44,7 +44,7 @@ export function buildOnboardingIssuePayload(input: {
 
   return {
     title,
-    ...(description ? { description } : {}),
+    description,
     assigneeAgentId: input.assigneeAgentId,
     projectId: input.projectId,
     ...(input.goalId ? { goalId: input.goalId } : {}),

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_ISSUE_CONSTITUTION_BODY } from "@paperclipai/shared";
 import {
   buildOnboardingIssuePayload,
   buildOnboardingProjectPayload,
@@ -123,9 +124,22 @@ describe("onboarding launch payloads", () => {
       }),
     ).toEqual({
       title: "Task",
+      description: "",
       assigneeAgentId: "agent-1",
       projectId: "project-1",
       status: "todo",
     });
+  });
+
+  it("passes the shared constitution default body through unchanged", () => {
+    expect(
+      buildOnboardingIssuePayload({
+        title: "Task",
+        description: DEFAULT_ISSUE_CONSTITUTION_BODY,
+        assigneeAgentId: "agent-1",
+        projectId: "project-1",
+        goalId: null,
+      }).description,
+    ).toBe(DEFAULT_ISSUE_CONSTITUTION_BODY);
   });
 });
