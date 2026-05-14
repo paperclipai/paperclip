@@ -7,7 +7,7 @@ import { resolveDefaultCliAuthPath } from "../config/home.js";
 
 type RequestedAccess = "board" | "instance_admin_required";
 
-interface BoardAuthCredential {
+export interface BoardAuthCredential {
   apiBase: string;
   token: string;
   createdAt: string;
@@ -15,10 +15,45 @@ interface BoardAuthCredential {
   userId?: string | null;
 }
 
-interface BoardAuthStore {
+export interface BoardAuthStore {
   version: 1;
   credentials: Record<string, BoardAuthCredential>;
 }
+
+export type StoredBoardCredentialValidation =
+  | {
+      status: "missing";
+      apiBase: string;
+      authPath: string;
+    }
+  | {
+      status: "valid";
+      apiBase: string;
+      authPath: string;
+      userId: string;
+      userName?: string | null;
+      keyId?: string | null;
+    }
+  | {
+      status: "invalid";
+      apiBase: string;
+      authPath: string;
+      statusCode: number;
+      message: string;
+    }
+  | {
+      status: "unreachable";
+      apiBase: string;
+      authPath: string;
+      message: string;
+    }
+  | {
+      status: "error";
+      apiBase: string;
+      authPath: string;
+      statusCode: number;
+      message: string;
+    };
 
 interface CreateChallengeResponse {
   id: string;
@@ -139,6 +174,87 @@ export function removeStoredBoardCredential(apiBase: string, storePath?: string)
   return true;
 }
 
+export async function validateStoredBoardCredential(params: {
+  apiBase: string;
+  storePath?: string;
+}): Promise<StoredBoardCredentialValidation> {
+  const apiBase = normalizeApiBase(params.apiBase);
+  const authPath = resolveBoardAuthStorePath(params.storePath);
+  const credential = getStoredBoardCredential(apiBase, params.storePath);
+  if (!credential) {
+    return { status: "missing", apiBase, authPath };
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`${apiBase}/api/cli-auth/me`, {
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${credential.token}`,
+      },
+    });
+  } catch (err) {
+    return {
+      status: "unreachable",
+      apiBase,
+      authPath,
+      message: formatErrorMessage(err),
+    };
+  }
+
+  const body = await response.text();
+  const parsed = safeParseJson(body);
+  const message = extractResponseMessage(parsed) ?? `Request failed with status ${response.status}`;
+
+  if (response.ok) {
+    const record = typeof parsed === "object" && parsed !== null ? parsed as Record<string, unknown> : {};
+    const user = typeof record.user === "object" && record.user !== null
+      ? record.user as Record<string, unknown>
+      : null;
+    const userId = toStringOrNull(record.userId) ?? toStringOrNull(user?.id) ?? credential.userId ?? "unknown";
+    return {
+      status: "valid",
+      apiBase,
+      authPath,
+      userId,
+      userName: toStringOrNull(user?.name),
+      keyId: toStringOrNull(record.keyId),
+    };
+  }
+
+  if (response.status === 401 || response.status === 403) {
+    return {
+      status: "invalid",
+      apiBase,
+      authPath,
+      statusCode: response.status,
+      message,
+    };
+  }
+
+  return {
+    status: "error",
+    apiBase,
+    authPath,
+    statusCode: response.status,
+    message,
+  };
+}
+
+export async function clearInvalidStoredBoardCredential(params: {
+  apiBase: string;
+  storePath?: string;
+}): Promise<StoredBoardCredentialValidation & { removed: boolean }> {
+  const result = await validateStoredBoardCredential(params);
+  if (result.status !== "invalid") {
+    return { ...result, removed: false };
+  }
+  return {
+    ...result,
+    removed: removeStoredBoardCredential(params.apiBase, params.storePath),
+  };
+}
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -167,6 +283,31 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   }
 
   return response.json() as Promise<T>;
+}
+
+function safeParseJson(text: string): unknown {
+  if (!text.trim()) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+function extractResponseMessage(body: unknown): string | null {
+  if (typeof body === "object" && body !== null && !Array.isArray(body)) {
+    const record = body as Record<string, unknown>;
+    const error = toStringOrNull(record.error);
+    if (error) return error;
+    const message = toStringOrNull(record.message);
+    if (message) return message;
+  }
+  return typeof body === "string" && body.trim() ? body.trim() : null;
+}
+
+function formatErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message.trim() || err.name;
+  return String(err);
 }
 
 export function openUrl(url: string): boolean {

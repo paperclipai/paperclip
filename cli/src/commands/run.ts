@@ -16,6 +16,7 @@ import {
   resolvePaperclipHomeDir,
   resolvePaperclipInstanceId,
 } from "../config/home.js";
+import { clearInvalidStoredBoardCredential } from "../client/board-auth.js";
 
 interface RunOptions {
   config?: string;
@@ -82,6 +83,11 @@ export async function runCommand(opts: RunOptions): Promise<void> {
 
   p.log.step("Starting Paperclip server...");
   const startedServer = await importServerEntry();
+  try {
+    await checkStartedServerBoardAuthCache(startedServer.apiUrl);
+  } catch (err) {
+    p.log.warn(`Could not check cached CLI board auth for ${startedServer.apiUrl}: ${formatError(err)}`);
+  }
 
   if (shouldGenerateBootstrapInviteAfterStart(config)) {
     p.log.step("Generating bootstrap CEO invite");
@@ -91,6 +97,42 @@ export async function runCommand(opts: RunOptions): Promise<void> {
       baseUrl: resolveBootstrapInviteBaseUrl(config, startedServer),
     });
   }
+}
+
+async function checkStartedServerBoardAuthCache(apiBase: string): Promise<void> {
+  const result = await clearInvalidStoredBoardCredential({ apiBase });
+
+  if (result.status === "missing") return;
+
+  if (result.status === "valid") {
+    p.log.message(pc.dim(`Cached CLI board auth verified for ${apiBase} (${result.userName ?? result.userId}).`));
+    return;
+  }
+
+  if (result.status === "invalid") {
+    const action = result.removed ? "Removed" : "Could not remove";
+    p.log.warn(
+      [
+        `${action} stale CLI board auth for ${apiBase} from ${result.authPath}.`,
+        `The current instance rejected the cached token (${result.statusCode}: ${result.message}).`,
+        `Run ${pc.cyan("paperclipai auth login")} if board-user CLI access is needed.`,
+      ].join("\n"),
+    );
+    return;
+  }
+
+  if (result.status === "unreachable") {
+    p.log.warn(`Could not verify cached CLI board auth for ${apiBase}: ${result.message}`);
+    return;
+  }
+
+  if (result.status === "error") {
+    p.log.warn(`Could not verify cached CLI board auth for ${apiBase}: ${result.statusCode}: ${result.message}`);
+    return;
+  }
+
+  const _exhaustive: never = result;
+  return _exhaustive;
 }
 
 function resolveBootstrapInviteBaseUrl(
