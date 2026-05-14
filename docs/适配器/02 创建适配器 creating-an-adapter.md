@@ -261,4 +261,4 @@ export function createServerAdapter(): ServerAdapterModule {
 
 - [外部适配器](/适配器/03%20外部适配器%20external-adapters) — 构建独立适配器插件
 - [UI 解析器契约](/适配器/04%20适配器%20UI%20解析器%20adapter-ui-parser) — 自定义运行日志解析
-- [智能体如何工作](/guides/agent-developer/01%20智能体如何工作%20how-agents-work) — 心搏生命周期
+- [智能体如何工作](/指南/智能体开发者/01%20智能体如何工作%20how-agents-work) — 心搏生命周期
