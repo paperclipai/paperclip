@@ -1,0 +1,22 @@
+[Unit]
+Description=Paperclip Impact Gate Scan-Done Timer (every 5 min)
+Requires=paperclip-impact-gate-scan-done.service
+
+[Timer]
+OnCalendar=*-*-* *:00:00
+OnCalendar=*-*-* *:05:00
+OnCalendar=*-*-* *:10:00
+OnCalendar=*-*-* *:15:00
+OnCalendar=*-*-* *:20:00
+OnCalendar=*-*-* *:25:00
+OnCalendar=*-*-* *:30:00
+OnCalendar=*-*-* *:35:00
+OnCalendar=*-*-* *:40:00
+OnCalendar=*-*-* *:45:00
+OnCalendar=*-*-* *:50:00
+OnCalendar=*-*-* *:55:00
+Persistent=true
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

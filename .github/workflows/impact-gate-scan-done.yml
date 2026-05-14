@@ -1,0 +1,242 @@
+name: Impact Gate Scan Done
+
+on:
+  schedule:
+    # Every 5 minutes — retroactively gate recently-done fix/bug issues
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      full_scan:
+        description: 'Scan ALL done fix issues (ignores days_back)'
+        required: false
+        default: 'false'
+      days_back:
+        description: 'Only scan issues completed within the last N days (ignored when full_scan=true)'
+        required: false
+        default: '7'
+      dry_run:
+        description: 'Dry run (log results only — no comments or transitions)'
+        required: false
+        default: 'false'
+      retroactive:
+        description: 'Run Impact Gate on ungated issues'
+        required: false
+        default: 'true'
+      retry_errors:
+        description: 'Purge muted ERROR entries and re-gate'
+        required: false
+        default: 'false'
+      retry_fails:
+        description: 'Purge muted FAIL entries and re-gate'
+        required: false
+        default: 'false'
+
+concurrency:
+  group: impact-gate-scan-done
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    name: Scan done fix issues for Impact Gate coverage
+    runs-on: ubuntu-latest
+
+    env:
+      PAPERCLIP_API_URL: ${{ secrets.PAPERCLIP_API_URL }}
+      PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
+      PAPERCLIP_BOARD_API_KEY: ${{ secrets.PAPERCLIP_BOARD_API_KEY }}
+      PAPERCLIP_COMPANY_ID: ${{ secrets.PAPERCLIP_COMPANY_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install requests python-dotenv SQLAlchemy psycopg2-binary
+
+      - name: Install system dependencies (Qt headless for impact gate tests)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libxcb-xinerama0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-xkb1 \
+            xvfb libgl1-mesa-glx
+
+      - name: Ensure data directory exists
+        run: mkdir -p data
+
+      - name: Run Impact Gate scan-done
+        id: scan
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONPATH: src
+        run: |
+          FLAGS="--json-summary"
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            # Scheduled runs: retroactively gate issues done in the last 7 days
+            FLAGS="$FLAGS --retroactive --days-back 7"
+            # Auto-retry muted ERROR entries on the hourly boundary run
+            # (every 12th run) to clear transient infrastructure failures
+            if [ "$(date +%M)" = "00" ]; then
+              FLAGS="$FLAGS --retry-errors"
+            fi
+          else
+            # workflow_dispatch: use provided inputs with sensible defaults
+            if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+              FLAGS="$FLAGS --dry-run"
+            fi
+            if [ "${{ github.event.inputs.retroactive }}" = "true" ]; then
+              FLAGS="$FLAGS --retroactive"
+            fi
+            if [ "${{ github.event.inputs.retry_errors }}" = "true" ]; then
+              FLAGS="$FLAGS --retry-errors"
+            fi
+            if [ "${{ github.event.inputs.retry_fails }}" = "true" ]; then
+              FLAGS="$FLAGS --retry-fails"
+            fi
+            if [ "${{ github.event.inputs.full_scan }}" = "true" ]; then
+              echo "Full scan mode — ignoring days_back"
+            else
+              DAYS="${{ github.event.inputs.days_back }}"
+              if [ -n "$DAYS" ]; then
+                FLAGS="$FLAGS --days-back $DAYS"
+              fi
+            fi
+          fi
+          python scripts/scan_fix_issues_done.py $FLAGS > /tmp/scan-output.json
+          echo "scan_exit_code=$?" >> $GITHUB_OUTPUT
+          UNGATED=$(python3 -c "import json; d=json.load(open('/tmp/scan-output.json')); print(d.get('ungated_count', 0))")
+          echo "ungated_count=$UNGATED" >> $GITHUB_OUTPUT
+          if [ "$UNGATED" -gt 0 ]; then
+            echo "alert_needed=true" >> $GITHUB_OUTPUT
+          else
+            echo "alert_needed=false" >> $GITHUB_OUTPUT
+          fi
+          cat /tmp/scan-output.json
+
+      - name: Upload scan output artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: impact-gate-scan-output
+          path: /tmp/scan-output.json
+          retention-days: 30
+
+      - name: Write step summary
+        if: always()
+        run: |
+          if [ -f /tmp/scan-output.json ]; then
+            python3 >> $GITHUB_STEP_SUMMARY << 'PYEOF'
+          import json
+          with open('/tmp/scan-output.json') as f:
+              data = json.load(f)
+          total = data.get('total_done_fix_issues', 0)
+          gated = data.get('gated', {})
+          ungated = data.get('ungated_count', 0)
+          retro = data.get('retroactive_results', [])
+          retro_ok = sum(1 for r in retro if r.get('gate_status') == 'PASS')
+          retro_fail = sum(1 for r in retro if r.get('gate_status') in ('FAIL', 'ERROR'))
+          print(f'## Impact Gate Scan-Done Summary')
+          print(f'')
+          print(f'| Metric | Value |')
+          print(f'|---|---|')
+          print(f'| Total done fix issues | {total} |')
+          print(f'| Gated — PASS | {gated.get("pass", 0)} |')
+          print(f'| Gated — FAIL | {gated.get("fail", 0)} |')
+          print(f'| Gated — BYPASSED | {gated.get("bypassed", 0)} |')
+          print(f'| Gated — ERROR | {gated.get("error", 0)} |')
+          print(f'| Gated — SKIPPED | {gated.get("skipped", 0)} |')
+          print(f'| Retroactively gated — PASS | {retro_ok} |')
+          print(f'| Retroactively gated — FAIL | {retro_fail} |')
+          print(f'| Ungated (remaining) | {ungated} |')
+          PYEOF
+          fi
+
+      - name: Create alert on ungated issues
+        if: steps.scan.outputs.alert_needed == 'true'
+        env:
+          PYTHONPATH: src
+        run: |
+          python scripts/scan_done_alert.py \
+            --scan-output /tmp/scan-output.json
+      - name: Write data quality snapshot
+        id: snapshot
+        run: |
+          python3 << 'SNAPSHOT_EOF'
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          with open("/tmp/scan-output.json") as f:
+              data = json.load(f)
+
+          total = data.get("total_done_fix_issues", 0)
+          gated = data.get("gated", {})
+          ungated = data.get("ungated_count", 0)
+          coverage_pct = round((1 - ungated / total) * 100, 1) if total > 0 else 0.0
+
+          snapshot = {
+              "timestamp": data.get("timestamp", datetime.now(timezone.utc).isoformat()),
+              "impact_gate_scan": {
+                  "total_done_fix_issues": total,
+                  "gated": gated,
+                  "ungated_count": ungated,
+                  "coverage_pct": coverage_pct,
+                  "window_days": data.get("days_back"),
+                  "last_24h": data.get("last_24h"),
+              },
+          }
+
+          date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+          out = Path(f"data_quality_impact_gate_{date_str}.json")
+          out.write_text(json.dumps(snapshot, indent=2) + "\n")
+          print(f"Wrote {out}")
+          SNAPSHOT_EOF
+          echo "snapshot_written=true" >> "$GITHUB_OUTPUT"
+
+      - name: Check coverage threshold
+        id: coverage
+        run: |
+          PCT=$(python3 -c "import json; d=json.load(open('/tmp/scan-output.json')); t=d.get('total_done_fix_issues',0); u=d.get('ungated_count',0); print(round((1-u/t)*100,1) if t>0 else 0.0)")
+          echo "coverage_pct=$PCT" >> "$GITHUB_OUTPUT"
+          LOW=$(python3 -c "import sys; v=float($PCT); sys.exit(0 if v < 50.0 else 1)" 2>/dev/null && echo "true" || echo "false")
+          echo "below_threshold=$LOW" >> "$GITHUB_OUTPUT"
+          if [ "$LOW" = "true" ]; then
+            echo "::warning::Impact Gate coverage $PCT% is below 50% threshold"
+          fi
+
+      - name: Check for changes
+        id: diff
+        run: |
+          SNAPSHOT=$(ls data_quality_impact_gate_*.json 2>/dev/null | sort | tail -1)
+          if [ -n "$SNAPSHOT" ] && ! git diff --quiet "$SNAPSHOT"; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "snapshot_file=$SNAPSHOT" >> "$GITHUB_OUTPUT"
+          elif [ -f .impact_gate_muted_state.json ] && ! git diff --quiet .impact_gate_muted_state.json 2>/dev/null; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif [ -f .impact_gate_muted_state.json ] && ! git ls-files --error-unmatch .impact_gate_muted_state.json 2>/dev/null; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit updated data quality snapshot and muted state
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          SNAPSHOT="${{ steps.diff.outputs.snapshot_file }}"
+          if [ -n "$SNAPSHOT" ]; then
+            git add "$SNAPSHOT"
+          fi
+          git add .impact_gate_muted_state.json
+          git commit --allow-empty -m "chore(impact-gate): update scan-done data quality snapshot"
+          git push
