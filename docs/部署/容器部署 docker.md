@@ -1,9 +1,9 @@
 ---
-
-## title: Docker
+title: 容器部署
 summary: Docker Compose 快速入门
+---
 
-在 Docker 中运行 Paperclip，无需在本地安装 Node 或 pnpm。
+在容器中运行 Paperclip（Docker / Compose），无需在本地安装 Node 或 pnpm。
 
 ## Compose 快速入门（推荐）
 
