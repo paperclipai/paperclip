@@ -34,6 +34,7 @@
 | 2026-05-14 | **T-011 / ROU-21** 代码探查 + 防御 + **探查活动实践方案** | 部分 | `探查-ROU-21-完成后反复唤醒.md` 已补 **§探查活动实践方案**（API 路径 A→F、`live-runs` 探查注意、`判读速查`、收口话术）；`queueIssueAssignmentWakeup` **`done`/`cancelled` 不唤醒**；Board 仍待按该方案填数后收口 |
 | 2026-05-14 | **`process_lost_retry` 机制探测** | 通过 | 仓库 `docs/00-project/探查-process_lost_retry.md`：`reapOrphanedRuns`、启动/周期阈值、`enqueueProcessLossRetry`、`SESSIONED_LOCAL_ADAPTERS` 与 `qwen_local` 差异、API 取证步骤 |
 | 2026-05-14 | **ROU-20** API 运行记录快照 | 通过 | `探查-ROU-20-运行记录.md`：`/api/issues/ROU-20/runs` + 6 条 `heartbeat-runs` 详情；两条独立 `process_lost`→`process_lost_retry` 链；末条 `cancelled`（agent pause） |
+| 2026-05-14 | **工单运行记录 API 取证路径** 文档化 | 通过 | `实践-工单运行记录API取证路径.md`：主路径、`runId` 字段名、Windows/PowerShell 踩坑、Node 抽字段模板、可选加深路由 |
 
 ## 残留风险
 

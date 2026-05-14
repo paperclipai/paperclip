@@ -41,6 +41,8 @@
 
 ## 复现拉数（备忘）
 
+操作顺序与常见踩坑见 **`实践-工单运行记录API取证路径.md`**。
+
 ```http
 GET http://127.0.0.1:3100/api/issues/ROU-20
 GET http://127.0.0.1:3100/api/issues/ROU-20/runs

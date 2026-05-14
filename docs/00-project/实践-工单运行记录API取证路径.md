@@ -1,0 +1,94 @@
+# 实践：从 Board 工单号查到「运行记录」取证路径（API）
+
+本文记录一次真实探查（**ROU-20**）时的**操作顺序与踩坑**，便于下次在几分钟内复现，而不在长 JSON 或错误字段名上耗时间。结论表见 **`探查-ROU-20-运行记录.md`**；`process_lost_retry` 语义见 **`探查-process_lost_retry.md`**。
+
+---
+
+## 0）前置
+
+| 检查项 | 说明 |
+|--------|------|
+| API 可用 | 例如 `curl.exe -sS http://127.0.0.1:3100/api/health` 返回 `"status":"ok"`。 |
+| 部署模式 | **`local_trusted`** 下，未带 Cookie 的 `curl` 通常也可读公司/issue/run（`actorMiddleware` 视为 `local_implicit` Board）。**`authenticated`** 下需浏览器会话或合法 Bearer，否则 401/403。 |
+| 工单标识 | 支持人类可读 **`ROU-20`** 或 issue **UUID**（多条路由共用 `normalizeIssueIdentifier`）。 |
+
+---
+
+## 1）推荐主路径（最少请求）
+
+### 1.1 确认工单存在并拿 UUID（可选）
+
+```http
+GET http://127.0.0.1:3100/api/issues/ROU-20
+```
+
+从 JSON 取 `id`（与 `identifier` 对照），后面某些脚本若只认 UUID 会用上。
+
+### 1.2 拉「与本工单相关的 runs」列表
+
+```http
+GET http://127.0.0.1:3100/api/issues/ROU-20/runs
+```
+
+实现见 `server/src/services/activity.ts` 的 **`runsForIssue`**：按 `contextSnapshot.issueId` 与活动日志里挂到该 issue 的 `runId` 联合筛选，**不是**简单的「当前 executionRunId」。
+
+### 1.3 对每条 run 拉详情（看 error / retry 链）
+
+```http
+GET http://127.0.0.1:3100/api/heartbeat-runs/{runId}
+```
+
+**重要**：`GET /issues/.../runs` 返回的字段名是 **`runId`**，不是 `id`。若用脚本聚合，请以 `runId` 拼上一步 URL。
+
+---
+
+## 2）本次探查中实际多花了时间的点（踩坑记录）
+
+| 现象 | 原因 | 对策 |
+|------|------|------|
+| 把 `/issues/ROU-20/runs` 的整包 JSON 丢进编辑器或 `read` | 单行 JSON **体积大**，工具截断或难读 | **不要**依赖肉眼扫全量；用下面 **Node 一行脚本** 抽字段。 |
+| 脚本里用了 `x.id` 全是 `undefined` | 列表接口返回 **`runId`** | 统一用 **`runId`**；详情接口里才有顶层 `id`。 |
+| PowerShell 里写 `for %i in (...)` / `echo.` | **`for %i` 是 cmd 语法**；`echo.` 在 PowerShell 里会报错 | 用 **`node -e`** 循环调 `http.get`，或 **`curl.exe`** 单条 URL；分段用 PowerShell 时用 `foreach`。 |
+| 想从 `runs` 里直接看到完整 `error` | **`runsForIssue` 的 select 不含 `error` / `errorCode`** | 必须再调 **`GET /api/heartbeat-runs/:id`**。 |
+| 判读 `process_lost_retry` 是否「重复误排队」 | 需看 **`retryOfRunId`** 与 **原 run 的 `wakeReason`** | 对每条 `process_lost_retry` 拉详情 + 再拉 `retryOfRunId` 指向的原 run（或对照 `探查-process_lost_retry.md` 的「最多一次重试」规则）。 |
+
+---
+
+## 3）推荐脚本模板（本机 Node，无需 jq）
+
+在仓库根或任意目录执行（改 `HOST` / `ISSUE` 即可）。
+
+**3.1 列表：压缩列（含 `runId`）**
+
+```bash
+node -e "const h=require('http');const u='http://127.0.0.1:3100/api/issues/ROU-20/runs';h.get(u,r=>{let b='';r.on('data',c=>b+=c);r.on('end',()=>{const j=JSON.parse(b);console.log('count',j.length);for(const x of j){const c=x.contextSnapshot||{};console.log([x.runId,x.status,x.adapterType,x.invocationSource,c.wakeReason||'',x.retryOfRunId||'',x.createdAt].join('\t'));}});});"
+```
+
+**3.2 批量详情：`errorCode` / `error` 摘要**
+
+```bash
+node -e "const http=require('http');const ids=['PUT-RUN-UUIDS-HERE'];function get(id){return new Promise((res,rej)=>{http.get('http://127.0.0.1:3100/api/heartbeat-runs/'+id,r=>{let b='';r.on('data',c=>b+=c);r.on('end',()=>res(JSON.parse(b)));}).on('error',rej);});}(async()=>{for(const id of ids){const j=await get(id);console.log('---',id,j.status);console.log(' errorCode',j.errorCode);console.log(' error',(j.error||'').slice(0,240));console.log(' retryOf',j.retryOfRunId,'processLossRetryCount',j.processLossRetryCount);}})();"
+```
+
+把 `ids` 换成 3.1 输出的第一列 `runId` 列表即可。
+
+---
+
+## 4）可选加深（按需）
+
+| 目的 | 路由 |
+|------|------|
+| 公司维度按 agent 筛 run | `GET /api/companies/{companyId}/heartbeat-runs?agentId={agentId}&limit=100` |
+| 仅排队/运行中 | `GET /api/companies/{companyId}/live-runs?limit=50`（探查时注意 **`minCount`** 会掺历史，见 `探查-ROU-21-完成后反复唤醒.md`） |
+| run 下事件流 | `GET /api/heartbeat-runs/{runId}/events` |
+| 活动侧交叉 | `GET /api/issues/ROU-20/activity` 或 `GET /api/companies/{companyId}/activity?entityType=issue&entityId={issueUuid}` |
+
+---
+
+## 5）收口：写进探查文档的一小段话（模板）
+
+> 于 **{ISO 时间}** 对 **`{ISSUE_REF}`** 执行 `GET /api/issues/{ISSUE_REF}/runs` 得 **{N}** 条；对 **`{runId 列表}`** 执行 `GET /api/heartbeat-runs/:id` 确认 **`errorCode` / `retryOfRunId` / `processLossRetryCount`**；结论：**{一句话}**。
+
+---
+
+**最后更新**：与 **ROU-20 运行记录** 同轮整理入档。

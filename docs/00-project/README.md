@@ -19,6 +19,7 @@ Paperclip 是「可复制的软件公司」三层架构里的**执行平面**—
 - **完成后仍反复唤醒 agent**（与 Board **ROU-21** 对应）：`探查-ROU-21-完成后反复唤醒.md`（含 **探查活动实践方案** API 步骤）  
 - **孤儿进程与 `process_lost_retry`**（heartbeat 自动重试）：`探查-process_lost_retry.md`  
 - **ROU-20 运行记录**（中英混排单、含 `process_lost_retry` 时间线）：`探查-ROU-20-运行记录.md`  
+- **工单 → runs → 详情** 的 API 取证操作路径（含 Windows 踩坑）：`实践-工单运行记录API取证路径.md`  
 
 ## 给 AI 的约定
 
