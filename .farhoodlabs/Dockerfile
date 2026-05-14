@@ -52,7 +52,7 @@ ARG USER_UID=1000
 ARG USER_GID=1000
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
-# Fork additions: kubectl, kubeseal, uv, forgejo CLIs, editor tools
+# Fork additions: kubectl, kubeseal, uv, forgejo CLIs, gitea tea CLI, editor tools
 # Upstream installs: claude-code, codex, opencode-ai, openssh-client, jq
 RUN apt-get update \
   && apt-get install -y --no-install-recommends openssh-client jq nano vim \
@@ -71,6 +71,8 @@ RUN apt-get update \
   && chmod +x /usr/local/bin/fj-ex \
   && curl -fsSL https://codeberg.org/romaintb/fgj/releases/download/v0.3.0/fgj_linux_amd64 -o /usr/local/bin/fgj \
   && chmod +x /usr/local/bin/fgj \
+  && curl -fsSL https://dl.gitea.com/tea/0.14.0/tea-0.14.0-linux-amd64 -o /usr/local/bin/tea \
+  && chmod +x /usr/local/bin/tea \
   && npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
   && mkdir -p /paperclip \
   && chown node:node /paperclip
