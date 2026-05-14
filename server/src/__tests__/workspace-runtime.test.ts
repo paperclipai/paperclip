@@ -304,6 +304,45 @@ describe("ensureServerWorkspaceLinksCurrent", () => {
 });
 
 describe("realizeExecutionWorkspace", () => {
+  it("does not require a git checkout for unscoped git worktree runs", async () => {
+    const agentHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-agent-home-"));
+
+    const realized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: agentHome,
+        source: "agent_home",
+        projectId: null,
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: null,
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(realized).toMatchObject({
+      strategy: "project_primary",
+      cwd: agentHome,
+      source: "agent_home",
+      projectId: null,
+      workspaceId: null,
+      branchName: null,
+      worktreePath: null,
+      created: false,
+    });
+    expect(realized.warnings[0]).toContain("Skipping git worktree strategy");
+  });
+
   it("creates and reuses a git worktree for an issue-scoped branch", async () => {
     const repoRoot = await createTempRepo();
 
