@@ -4218,6 +4218,15 @@ export function issueService(db: Db) {
           }),
         );
 
+        // Auto-create paths (system/harness/liveness/routines) must never open a run
+        // lock at INSERT time. Locks are established only via the /checkout route once
+        // an agent actively picks up the issue. Force-null regardless of what the caller
+        // supplied — a caller that legitimately holds a run must call /checkout after.
+        values.checkoutRunId = null;
+        values.executionRunId = null;
+        values.executionLockedAt = null;
+        values.executionAgentNameKey = null;
+
         const [issue] = await tx.insert(issues).values(values).returning();
         if (inputLabelIds) {
           await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);

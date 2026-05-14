@@ -3113,3 +3113,126 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     expect(row).toEqual({ executionRunId: null, executionLockedAt: null });
   });
 });
+
+describeEmbeddedPostgres("issueService.create — auto-create lock invariant (Fix I)", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-autolock-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(goals);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompanyAndAgent() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "RecoveryAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return { companyId, agentId };
+  }
+
+  it("never sets checkoutRunId or executionRunId on newly created issues even when caller supplies them", async () => {
+    // Regression test for Fix I: auto-create paths (liveness escalation, routines,
+    // stranded-issue recovery) must not stamp run locks at INSERT time.
+    // Reproduces the root cause of TEC-392: blocked_by_cancelled_issue liveness
+    // path created TEC-392 with checkoutRunId populated. The caller explicitly
+    // passes a run UUID — the service must ignore it and force null.
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const fakeRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: fakeRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "automation",
+    });
+
+    const issue = await svc.create(companyId, {
+      title: "Liveness escalation — blocked by cancelled issue",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+      // Simulate a caller that inadvertently passes run IDs (the bug scenario).
+      checkoutRunId: fakeRunId,
+      executionRunId: fakeRunId,
+      executionLockedAt: new Date(),
+    } as any);
+
+    const row = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+        executionAgentNameKey: issues.executionAgentNameKey,
+      })
+      .from(issues)
+      .where(eq(issues.id, issue.id))
+      .then((rows) => rows[0]);
+
+    expect(row?.checkoutRunId).toBeNull();
+    expect(row?.executionRunId).toBeNull();
+    expect(row?.executionLockedAt).toBeNull();
+    expect(row?.executionAgentNameKey).toBeNull();
+  });
+
+  it("creates issues without run locks when no lock fields are supplied (normal auto-create path)", async () => {
+    // Normal path: system/harness creates issue with no lock fields supplied.
+    const { companyId, agentId } = await seedCompanyAndAgent();
+
+    const issue = await svc.create(companyId, {
+      title: "Auto-created recovery issue",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const row = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issue.id))
+      .then((rows) => rows[0]);
+
+    expect(row?.checkoutRunId).toBeNull();
+    expect(row?.executionRunId).toBeNull();
+    expect(row?.executionLockedAt).toBeNull();
+    expect(row?.executionLockedAt).toBeNull();
+  });
+});
