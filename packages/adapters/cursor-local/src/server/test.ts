@@ -232,13 +232,11 @@ export async function testEnvironment(
         hint: "Use `agent` or `cursor-agent` to run the automatic installation and auth probe.",
       });
     } else {
-      // Cursor's `agent` binary has tens-of-seconds of cold-start overhead per
-      // invocation inside container sandboxes (cf. PAPA-320). Give it a wider
-      // budget on sandbox targets so a single warm-up doesn't fail the wiring
-      // check.
+      // Cursor's `agent` binary still pays cold-start overhead in container
+      // sandboxes, but standard-2 probes no longer need a 120s version budget.
       const versionProbeTimeoutSec = Math.max(
         1,
-        asNumber(config.versionProbeTimeoutSec, targetIsSandbox ? 120 : 45),
+        asNumber(config.versionProbeTimeoutSec, targetIsSandbox ? 60 : 45),
       );
       const versionProbe = await runAdapterExecutionTargetProcess(
         runId,
@@ -305,12 +303,11 @@ export async function testEnvironment(
       if (extraArgs.length > 0) args.push(...extraArgs);
       args.push("Respond with hello.");
 
-      // Sandbox bridges (e.g. Cloudflare) add tens of seconds of cursor CLI
-      // cold-start on top of the probe itself; give those targets a much
-      // larger budget so the hello probe can complete or fail honestly.
+      // Sandbox bridges still add cursor CLI cold-start overhead, but the
+      // standard-2 tier now completes probes fast enough that 90s is ample.
       const helloProbeTimeoutSec = Math.max(
         1,
-        asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 180 : 45),
+        asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
       );
       const probe = await runAdapterExecutionTargetProcess(
         runId,

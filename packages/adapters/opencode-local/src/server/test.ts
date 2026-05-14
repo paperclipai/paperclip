@@ -336,13 +336,12 @@ export async function testEnvironment(
       if (variant) args.push("--variant", variant);
       if (extraArgs.length > 0) args.push(...extraArgs);
 
-      // Sandbox bridges (e.g. Cloudflare) add tens of seconds of overhead on
-      // top of the probe itself, so give those targets a much larger budget.
-      // The plugin RPC layer adds another 30s buffer, so 120s probe → 150s
-      // RPC, comfortably covering CF cold-starts observed in the QA matrix.
+      // Sandbox bridges still add cold-start and transport overhead, but the
+      // standard-2 Cloudflare tier now probes quickly enough that 90s keeps
+      // useful headroom without letting slow hangs linger.
       const helloProbeTimeoutSec = Math.max(
         1,
-        asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 120 : 60),
+        asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 60),
       );
 
       try {
