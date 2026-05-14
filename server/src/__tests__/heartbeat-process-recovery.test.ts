@@ -258,10 +258,13 @@ async function spawnOrphanedProcessGroup() {
 describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let priorAutoRecoveryFlag: string | undefined;
   const childProcesses = new Set<ChildProcess>();
   const cleanupPids = new Set<number>();
 
   beforeAll(async () => {
+    priorAutoRecoveryFlag = process.env.PAPERCLIP_AUTO_RECOVERY_ISSUES;
+    process.env.PAPERCLIP_AUTO_RECOVERY_ISSUES = "on";
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-recovery-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
@@ -392,6 +395,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     cleanupPids.clear();
     runningProcesses.clear();
+    if (priorAutoRecoveryFlag === undefined) {
+      delete process.env.PAPERCLIP_AUTO_RECOVERY_ISSUES;
+    } else {
+      process.env.PAPERCLIP_AUTO_RECOVERY_ISSUES = priorAutoRecoveryFlag;
+    }
     await tempDb?.cleanup();
   });
 
