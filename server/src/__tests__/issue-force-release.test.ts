@@ -28,6 +28,7 @@ vi.mock("../services/index.js", () => ({
     cancelRun: vi.fn(async () => null),
   }),
   issueApprovalService: () => ({}),
+  issueRecoveryActionService: () => ({}),
   issueReferenceService: () => ({}),
   issueService: () => mockIssueService,
   issueThreadInteractionService: () => ({}),
