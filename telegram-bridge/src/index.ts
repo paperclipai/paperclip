@@ -569,14 +569,22 @@ export async function main(): Promise<number> {
     completionAcked: boolean;
   };
   const issueToChat = new Map<string, IssueOriginInfo>();
+  // Reverse map: outbound Telegram message ID → issue UUID.
+  // Populated when we send a comment back to Telegram. Lets us thread user
+  // replies to bot messages directly back to the originating issue without
+  // relying on the time-window heuristic in findRecentOpenIssue.
+  const outboundMsgToIssue = new Map<number, string>();
   const memoPath = `${process.env.HOME}/.mattclaw/data/bridge-issue-memo.json`;
   try {
     const fs = await import("fs");
     if (fs.existsSync(memoPath)) {
       const raw = fs.readFileSync(memoPath, "utf-8");
-      const obj = JSON.parse(raw) as Record<string, IssueOriginInfo>;
-      for (const [k, v] of Object.entries(obj)) issueToChat.set(k, v);
-      console.log(`[telegram-bridge] loaded ${issueToChat.size} entries from issue memo`);
+      const obj = JSON.parse(raw) as { issues?: Record<string, IssueOriginInfo>; outbound?: Record<string, string> };
+      // Support old format (plain Record<string, IssueOriginInfo>) and new format.
+      const issuesObj: Record<string, IssueOriginInfo> = obj.issues ?? (obj as any);
+      for (const [k, v] of Object.entries(issuesObj)) issueToChat.set(k, v);
+      for (const [k, v] of Object.entries(obj.outbound ?? {})) outboundMsgToIssue.set(Number(k), v);
+      console.log(`[telegram-bridge] loaded ${issueToChat.size} issue entries, ${outboundMsgToIssue.size} outbound msg entries from memo`);
     }
   } catch (err) {
     console.error(`[telegram-bridge] failed to load issue memo: ${(err as Error)?.message ?? err}`);
@@ -584,9 +592,11 @@ export async function main(): Promise<number> {
   const persistMemo = async () => {
     try {
       const fs = await import("fs");
-      const obj: Record<string, IssueOriginInfo> = {};
-      for (const [k, v] of issueToChat.entries()) obj[k] = v;
-      fs.writeFileSync(memoPath, JSON.stringify(obj));
+      const issuesObj: Record<string, IssueOriginInfo> = {};
+      for (const [k, v] of issueToChat.entries()) issuesObj[k] = v;
+      const outboundObj: Record<string, string> = {};
+      for (const [k, v] of outboundMsgToIssue.entries()) outboundObj[String(k)] = v;
+      fs.writeFileSync(memoPath, JSON.stringify({ issues: issuesObj, outbound: outboundObj }));
     } catch (err) {
       console.error(`[telegram-bridge] failed to persist issue memo: ${(err as Error)?.message ?? err}`);
     }
