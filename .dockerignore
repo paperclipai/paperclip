@@ -8,3 +8,8 @@ coverage
 data
 tmp
 *.log
+# Local stale build artifacts — server/ui-dist gets generated on the host
+# during dev/test (e.g. when running the UI build with `--outDir
+# ../server/ui-dist`). If it sneaks into `COPY . .` it shadows the freshly
+# built ui/dist because server/src/app.ts checks `../ui-dist` first.
+server/ui-dist

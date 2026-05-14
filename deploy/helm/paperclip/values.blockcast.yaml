@@ -1,0 +1,195 @@
+# Production overrides for the paperclip.blockcast.net deployment.
+#
+# Pass to helm with `--values deploy/helm/paperclip/values.blockcast.yaml` so
+# the values persist across helm upgrades instead of relying on stored release
+# state and `--set` flags.
+#
+# Do not commit secrets here — `paperclip-credentials` and
+# `paperclip-database-url` Secrets are pre-created out of band.
+
+image:
+  repository: registry.blockcast.net/paperclip
+  tag: sha-64076ef7-k8s-vendored
+  pullPolicy: Always
+  # Bump this to the kkroo image tag built from this repo when deploying.
+
+imagePullSecrets:
+  - name: registry-blockcast-net-pull
+
+# paperclip.blockcast.net is now served via Cilium Gateway API + HTTPRoute
+# (see onprem-k8s commit 9712d49: gateway-api/httproutes/paperclip.yaml,
+# shared-gateway listener `https-paperclip`, ReferenceGrant in this ns).
+# Public DNS A=69.25.95.135 / AAAA=2602:f74d:1::206 (Azure DNS, TTL 300).
+# The Ingress block below is kept commented for the migration audit trail
+# but disabled — ingress.enabled=false means the chart's templates/ingress.yaml
+# renders nothing and helm upgrade reaps the prior live Ingress.
+ingress:
+  enabled: false
+  # className: nginx
+  # annotations:
+  #   cert-manager.io/cluster-issuer: letsencrypt-blockcast-net
+  #   nginx.ingress.kubernetes.io/proxy-body-size: 50m
+  #   nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+  #   nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  # hosts:
+  #   - host: paperclip.blockcast.net
+  #     paths:
+  #       - path: /
+  #         pathType: Prefix
+  # tls:
+  #   - hosts:
+  #       - paperclip.blockcast.net
+  #     secretName: paperclip-tls
+
+env:
+  host: "0.0.0.0"
+  port: 3100
+  serveUi: true
+  instanceId: default
+  extra:
+    - name: DATABASE_URL
+      valueFrom:
+        secretKeyRef:
+          name: paperclip-database-url
+          key: url
+    # Shared bearer token so paperclip-plugin-alertmanager auto-config matches
+    # the cluster's monitoring/alertmanager-receivers Secret. Same value, two
+    # namespaces. Bootstrap reads this at startup via
+    # autoConfigureAlertmanagerFromEnv. Rotate by updating both Secrets in
+    # lockstep + restarting paperclip-0 + restarting alertmanager-0.
+    - name: PAPERCLIP_ALERTMANAGER_WEBHOOK_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: paperclip-alertmanager-webhook-token
+          key: bearer-token
+    # PAPERCLIP_PUBLIC_URL pins the auth base so plugin UIs do not fall back
+    # to window.location.origin (which would break behind cloudflared / when
+    # iframed). PAPERCLIP_AUTH_BASE_URL_MODE=explicit makes the server treat
+    # PAPERCLIP_PUBLIC_URL as authoritative.
+    - name: PAPERCLIP_PUBLIC_URL
+      value: https://paperclip.blockcast.net
+    - name: PAPERCLIP_AUTH_BASE_URL_MODE
+      value: explicit
+    - name: PAPERCLIP_DEPLOYMENT_MODE
+      value: authenticated
+    - name: PAPERCLIP_DEPLOYMENT_EXPOSURE
+      value: private
+    - name: PAPERCLIP_UI_DEV_MIDDLEWARE
+      value: "false"
+    - name: PAPERCLIP_CODEX_USE_HOST_HOME
+      value: "true"
+    - name: PAPERCLIP_RUNTIME_API_CANDIDATES_JSON
+      value: '["https://paperclip.blockcast.net"]'
+    # GitHub PAT for the in-image github-mcp-server (stdio mode). The
+    # claude_k8s adapter reads this StatefulSet pod's env spec and copies
+    # any valueFrom entry — incl. secretKeyRef — onto every agent Job pod
+    # it creates (paperclip-adapter-claude-k8s job-manifest.ts:
+    # inheritedEnvValueFrom). The bundled github-mcp-server reads
+    # GITHUB_PERSONAL_ACCESS_TOKEN from process env at startup, so each
+    # agent's spawned stdio MCP picks up the PAT without any per-request
+    # auth-header dance. Secret pre-created out of band.
+    - name: GITHUB_PERSONAL_ACCESS_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: paperclip-github-mcp-token
+          key: token
+    # Same token, exposed under GH_TOKEN so the `gh` CLI inside agent pods
+    # picks it up. Without this, gh falls back to ~/.config/gh/hosts.yml on
+    # the per-agent PVC — which holds whatever stale PAT was cached when an
+    # agent ran `gh auth login` weeks ago, and the github-app-refresh
+    # CronJob's hourly token rotation never reaches gh. With GH_TOKEN set,
+    # gh ignores hosts.yml and uses the env var directly, so agents always
+    # have a fresh installation token without needing to re-run
+    # `gh auth login` on every rotation.
+    - name: GH_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: paperclip-github-mcp-token
+          key: token
+    # HMAC verification key for the /api/webhooks/github route added in
+    # paperclip#118 Phase D. The route reads appConfig.githubWebhookSecret
+    # at startup and refuses every request (503) when it is unset, so the
+    # env must be live in the pod before any GitHub webhook is registered
+    # against the Blockcast repos. The same secret value is configured on
+    # the GitHub-side webhook config as the X-Hub-Signature-256 signing
+    # key. Rotate by updating both the k8s Secret and the GitHub webhook
+    # config in lockstep. Secret pre-created out of band:
+    #   kubectl -n paperclip create secret generic paperclip-github-webhook-secret \
+    #     --from-literal=secret=<openssl rand -hex 32>
+    - name: GITHUB_WEBHOOK_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: paperclip-github-webhook-secret
+          key: secret
+    # V8 default heap ceiling is ~2.18 GiB regardless of cgroup limits, so a
+    # Node process inside a 4 GiB container hits the heap ceiling well before
+    # the cgroup OOM and spends CPU on Scavenger/ConcurrentMarking/Sweeper
+    # cycles instead of work (verified via pyroscope eBPF profile of paperclip-0
+    # on 2026-05-01: top frames were V8 GC). Raise the limit so V8 can use most
+    # of the container budget while leaving ~1 GiB for libuv / native deps /
+    # binary code / stack / fs cache. Tune up further if the heap-used metric
+    # gets close to this ceiling under load.
+    - name: NODE_OPTIONS
+      value: "--max-old-space-size=3072"
+
+persistence:
+  enabled: true
+  # storageClassName / accessMode / size are ignored when existingClaim is set —
+  # paperclip-data is a 50Gi RWX cephfs PVC pre-created out of band. Kept here
+  # for documentation only.
+  storageClassName: cephfs
+  accessMode: ReadWriteMany
+  size: 50Gi
+  mountPath: /paperclip
+  # The k8s-Job adapters (paperclip-adapter-claude-k8s + paperclip-adapter-opencode-k8s)
+  # require the paperclip pod and every spawned Job pod to mount the same PVC at
+  # /paperclip. StatefulSet volumeClaimTemplates can't be reused by Job pods, so we
+  # bind to a standalone PVC by name.
+  existingClaim: paperclip-data
+
+# Service account must mount its bearer token so the k8s-Job adapters can
+# create Jobs / read Pod logs / patch Secrets via the in-cluster kubeconfig.
+serviceAccount:
+  automountToken: true
+
+# Render Role + RoleBinding + ClusterRole + ClusterRoleBinding for the k8s-Job
+# adapters. Verbs derived from each adapter's SelfSubjectAccessReview self-test
+# plus runtime patch calls (see deploy/helm/paperclip/templates/role.yaml).
+rbac:
+  create: true
+
+# Pin paperclip-0 to the dedicated paperclip worker (k8s-paperclip-1).
+# Spawned k8s-Job agent pods inherit this scheduling from the parent pod by
+# default. Per-agent adapter config can still override it when needed.
+nodeSelector:
+  workload: paperclip
+
+tolerations:
+  - key: dedicated
+    operator: Equal
+    value: paperclip
+    effect: NoSchedule
+
+secret:
+  existingSecret: paperclip-credentials
+
+networkPolicy:
+  enabled: true
+  allowFromNamespaces:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: paperclip
+    # Alertmanager webhook deliveries from monitoring/alertmanager-0 to
+    # paperclip-plugin-alertmanager. Auth on the plugin side is a static
+    # bearer token (see monitoring/alertmanager-receivers Secret); this
+    # rule is the network-layer prerequisite, not the security boundary.
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+
+pdb:
+  enabled: true
+  maxUnavailable: 1

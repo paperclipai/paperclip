@@ -251,6 +251,25 @@ describeEmbeddedPostgres("environment runtime driver contract", () => {
         });
       },
     },
+    {
+      // BLO-2976: k8s envs claim leases via the runtime same as local; the
+      // claude_k8s / opencode_k8s adapter creates the agent Job pod itself
+      // using the K8sRemoteSpec from environment-execution-target.ts. Without
+      // this driver registered, the heartbeat lease acquire throws on any
+      // k8s-typed environment.
+      name: "k8s",
+      driver: "k8s",
+      config: {
+        namespace: "paperclip",
+        workspaceMountPath: "/workspace",
+      },
+      expectLease: (lease) => {
+        expect(lease.providerLeaseId).toBeNull();
+        expect(lease.metadata).toMatchObject({
+          driver: "k8s",
+        });
+      },
+    },
   ];
 
   for (const testCase of contractCases) {

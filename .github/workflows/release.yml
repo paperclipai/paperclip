@@ -28,7 +28,7 @@ concurrency:
 jobs:
   verify_canary:
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 30
     permissions:
       contents: read
@@ -66,7 +66,15 @@ jobs:
         run: pnpm build
 
   publish_canary:
-    if: github.event_name == 'push'
+    # npm trusted-publisher config (per package settings on npmjs.org) binds
+    # to paperclipai/paperclip's OIDC identity. Forks like Blockcast/paperclip
+    # don't own the @paperclipai/* / paperclipai npm namespaces and don't have
+    # a matching trusted-publisher entry, so publishes from a fork hit
+    # ENEEDAUTH on every master push and red-light the whole Release workflow
+    # for no real reason (Docker workflow handles deploys separately and is
+    # not gated on this). Gate on the upstream repo so forks still run
+    # verify_canary but skip publish cleanly.
+    if: github.event_name == 'push' && github.repository == 'paperclipai/paperclip'
     needs: verify_canary
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -122,7 +130,7 @@ jobs:
 
   verify_stable:
     if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 30
     permissions:
       contents: read
@@ -163,7 +171,7 @@ jobs:
   preview_stable:
     if: github.event_name == 'workflow_dispatch' && inputs.dry_run
     needs: verify_stable
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 45
     permissions:
       contents: read
@@ -195,15 +203,19 @@ jobs:
       - name: Dry-run stable release
         env:
           GITHUB_ACTIONS: "true"
+          INPUT_STABLE_DATE: ${{ inputs.stable_date }}
         run: |
           args=(stable --skip-verify --dry-run)
-          if [ -n "${{ inputs.stable_date }}" ]; then
-            args+=(--date "${{ inputs.stable_date }}")
+          if [ -n "$INPUT_STABLE_DATE" ]; then
+            args+=(--date "$INPUT_STABLE_DATE")
           fi
           ./scripts/release.sh "${args[@]}"
 
   publish_stable:
-    if: github.event_name == 'workflow_dispatch' && !inputs.dry_run
+    # Same fork-gating as publish_canary (see comment above) — only the
+    # upstream repo has the matching npm trusted-publisher entry, so forks
+    # would hit ENEEDAUTH if they ever trigger this job manually.
+    if: github.event_name == 'workflow_dispatch' && !inputs.dry_run && github.repository == 'paperclipai/paperclip'
     needs: verify_stable
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -244,10 +256,11 @@ jobs:
       - name: Publish stable
         env:
           GITHUB_ACTIONS: "true"
+          INPUT_STABLE_DATE: ${{ inputs.stable_date }}
         run: |
           args=(stable --skip-verify)
-          if [ -n "${{ inputs.stable_date }}" ]; then
-            args+=(--date "${{ inputs.stable_date }}")
+          if [ -n "$INPUT_STABLE_DATE" ]; then
+            args+=(--date "$INPUT_STABLE_DATE")
           fi
           ./scripts/release.sh "${args[@]}"
 

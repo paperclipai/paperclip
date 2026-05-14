@@ -1,0 +1,108 @@
+# syntax=docker/dockerfile:1.20
+#
+# paperclip-agent base image — extends the paperclip server image with the
+# build/devops toolchain that technical agents need to actually do work in
+# their workspace pods. Mirrors the proxmox-infra devbox VM template
+# (scripts/05-languages.sh + 03-k8s-tools.sh + 02-docker.sh).
+#
+# Pair with a `docker:dind` sidecar in the agent Job spec — the docker CLI
+# below talks to that sidecar over /var/run/docker.sock (shared via
+# emptyDir). `kind` then spins up nested k8s clusters on top of dind for
+# any agent workflow that uses magma/cdn/fab/k8s_ops.py (which detects
+# `kind-kind` context out of the box).
+#
+# Tagged separately as `paperclip-agent:sha-…-k8s-vendored` so the heavy
+# toolchain doesn't bloat the paperclip-server image.
+
+ARG BASE_IMAGE=registry.blockcast.net/paperclip:latest-k8s-vendored
+FROM ${BASE_IMAGE}
+
+USER root
+
+# Build essentials + unzip (kubelogin ships as a zip)
+# chromium runtime libs (BLO-3663) — required for headless browser / Playwright / screenshot capabilities
+# Canonical list from `npx playwright install-deps chromium --dry-run`
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+        build-essential pkg-config libssl-dev unzip \
+        libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 \
+        libcairo2 libcups2t64 libdbus-1-3 libdrm2 libgbm1 \
+        libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 \
+        libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 \
+        libxfixes3 libxkbcommon0 libxrandr2 xvfb \
+        fonts-noto-color-emoji fonts-unifont libfontconfig1 libfreetype6 \
+        xfonts-scalable fonts-liberation fonts-ipafont-gothic \
+        fonts-wqy-zenhei fonts-tlwg-loma-otf fonts-freefont-ttf \
+  && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# Languages
+# ---------------------------------------------------------------------------
+
+# Go (matches devbox 05-languages.sh)
+ARG GO_VERSION=1.24.4
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+  | tar -C /usr/local -xzf - \
+  && ln -s /usr/local/go/bin/go /usr/local/bin/go \
+  && ln -s /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+
+# Rust (system-wide, matches devbox)
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
+RUN curl -fsSL https://sh.rustup.rs \
+  | sh -s -- -y --no-modify-path --default-toolchain stable \
+  && for b in /usr/local/cargo/bin/*; do ln -sf "$b" /usr/local/bin/; done
+
+# Python dev headers (node:lts-trixie-slim ships python3 but no -dev/venv)
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3-pip python3-venv python3-dev \
+  && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# Container + cluster tooling
+# ---------------------------------------------------------------------------
+
+# Docker CLI only — daemon is provided by a `dind` sidecar in the agent Job.
+RUN install -m 0755 -d /etc/apt/keyrings \
+  && curl -fsSL https://download.docker.com/linux/debian/gpg \
+       -o /etc/apt/keyrings/docker.asc \
+  && chmod a+r /etc/apt/keyrings/docker.asc \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
+       > /etc/apt/sources.list.d/docker.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends \
+       docker-ce-cli docker-buildx-plugin docker-compose-plugin \
+  && rm -rf /var/lib/apt/lists/*
+
+ARG KUBECTL_VERSION=v1.31.4
+RUN curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
+       -o /usr/local/bin/kubectl \
+  && chmod +x /usr/local/bin/kubectl
+
+ARG HELM_VERSION=v3.20.0
+RUN curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" \
+  | tar -C /tmp -xzf - \
+  && mv /tmp/linux-amd64/helm /usr/local/bin/helm \
+  && rm -rf /tmp/linux-amd64
+
+# kind (in-Docker Kubernetes) — magma/cdn/fab/k8s_ops.py detects the
+# `kind-kind` context as a first-class local runtime alongside minikube.
+ARG KIND_VERSION=v0.24.0
+RUN curl -fsSL "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64" \
+       -o /usr/local/bin/kind \
+  && chmod +x /usr/local/bin/kind
+
+# kubelogin (kubectl-oidc_login) — matches devbox 03-k8s-tools.sh; needed
+# for OIDC-authed kubeconfigs that paperclip-0 will start handing to agents
+# once the kubernetes-admin@kubernetes context is rotated out.
+ARG KUBELOGIN_VERSION=v1.30.1
+RUN curl -fsSL "https://github.com/int128/kubelogin/releases/download/${KUBELOGIN_VERSION}/kubelogin_linux_amd64.zip" \
+       -o /tmp/kubelogin.zip \
+  && unzip -d /tmp /tmp/kubelogin.zip \
+  && mv /tmp/kubelogin /usr/local/bin/kubectl-oidc_login \
+  && chmod +x /usr/local/bin/kubectl-oidc_login \
+  && rm -f /tmp/kubelogin.zip /tmp/LICENSE
+
+# Hand back to the non-root `node` user — paperclip's docker-entrypoint.sh
+# runs as that uid (matches the host user mapping established in the base
+# image's USER_UID/USER_GID args).
+USER node

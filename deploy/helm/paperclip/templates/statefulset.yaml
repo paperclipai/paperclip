@@ -1,0 +1,480 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "paperclip.fullname" . }}
+  labels:
+    {{- include "paperclip.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: {{ include "paperclip.fullname" . }}
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "paperclip.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "paperclip.selectorLabels" . | nindent 8 }}
+        {{- with .Values.pod.labels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.pod.annotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "paperclip.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      shareProcessNamespace: {{ .Values.pod.shareProcessNamespace }}
+      securityContext:
+        {{- toYaml .Values.pod.securityContext | nindent 8 }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      initContainers:
+        - name: seed
+          image: {{ include "paperclip.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.pod.containerSecurityContext | nindent 12 }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              BASE={{ .Values.persistence.mountPath | quote }}
+              INST="${BASE}/instances/{{ .Values.env.instanceId }}"
+              mkdir -p "${INST}/secrets"
+              if [ -n "${PAPERCLIP_MASTER_KEY_SEED:-}" ] && [ ! -f "${INST}/secrets/master.key" ]; then
+                printf '%s' "${PAPERCLIP_MASTER_KEY_SEED}" | base64 -d > "${INST}/secrets/master.key"
+                chmod 0600 "${INST}/secrets/master.key"
+              fi
+              # The chat plugin (@lucitra/paperclip-plugin-chat) hard-spawns
+              # `${HOME}/.local/bin/<binary>` for both claude and codex agents.
+              # The image bakes these symlinks at /usr/local/bin/, but the PVC
+              # mount at ${BASE} hides anything baked under it, so we must
+              # recreate the symlinks on every pod boot. The container
+              # deployment overrides the image entrypoint to run `node`
+              # directly, which means docker-entrypoint.sh never runs — the
+              # seed init container is the right place to do this once before
+              # the main container starts.
+              mkdir -p "${BASE}/.local/bin"
+              for bin in claude codex; do
+                if [ ! -e "${BASE}/.local/bin/${bin}" ] && [ -e "/usr/local/bin/${bin}" ]; then
+                  ln -sf "/usr/local/bin/${bin}" "${BASE}/.local/bin/${bin}"
+                fi
+              done
+              chown 1000:1000 "${BASE}/.local" "${BASE}/.local/bin" "${BASE}/.local/bin/claude" "${BASE}/.local/bin/codex" 2>/dev/null || true
+              # Private kkroo plugins and k8s adapters are image-owned now.
+              # Older PVCs may still have package.json/package-lock.json entries
+              # pointing at deleted /tmp tarballs or adapter packages; npm install
+              # in the plugin store will fail until those stale entries are gone.
+              PLUGIN_STORE="${BASE}/.paperclip/plugins"
+              if [ -d "${PLUGIN_STORE}" ]; then
+                python3 - "${PLUGIN_STORE}" <<'PY' || echo "seed: plugin store cleanup failed (non-fatal)"
+              import json
+              import os
+              import shutil
+              import sys
+
+              store = sys.argv[1]
+              remove_names = {
+                  "@kkroo/paperclip-plugin-ccrotate",
+                  "@kkroo/paperclip-plugin-linear",
+                  "@lucitra/paperclip-plugin-linear",
+                  "paperclip-plugin-alertmanager",
+                  "paperclip-adapter-claude-k8s",
+                  "paperclip-adapter-opencode-k8s",
+              }
+              dep_sections = ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies")
+
+
+              def read_json(path):
+                  try:
+                      with open(path) as f:
+                          return json.load(f)
+                  except Exception:
+                      return None
+
+
+              def write_json(path, value):
+                  with open(path, "w") as f:
+                      json.dump(value, f, indent=2)
+                      f.write("\n")
+
+
+              def remove_deps(mapping):
+                  changed = False
+                  if not isinstance(mapping, dict):
+                      return changed
+                  for section in dep_sections:
+                      deps = mapping.get(section)
+                      if not isinstance(deps, dict):
+                          continue
+                      for name in sorted(remove_names):
+                          if name in deps:
+                              print(f"seed: removing stale PVC plugin dependency {name} from {section}")
+                              deps.pop(name, None)
+                              changed = True
+                      if not deps:
+                          mapping.pop(section, None)
+                  return changed
+
+
+              pkg_path = os.path.join(store, "package.json")
+              pkg = read_json(pkg_path)
+              if isinstance(pkg, dict) and remove_deps(pkg):
+                  write_json(pkg_path, pkg)
+
+              lock_path = os.path.join(store, "package-lock.json")
+              lock = read_json(lock_path)
+              if isinstance(lock, dict):
+                  changed = False
+                  root_pkg = lock.get("packages", {}).get("") if isinstance(lock.get("packages"), dict) else None
+                  changed = remove_deps(root_pkg) or changed
+
+                  packages = lock.get("packages")
+                  if isinstance(packages, dict):
+                      remove_prefixes = tuple(f"node_modules/{name}" for name in remove_names)
+                      for key in list(packages):
+                          if any(key == prefix or key.startswith(prefix + "/") for prefix in remove_prefixes):
+                              print(f"seed: removing stale PVC package-lock entry {key}")
+                              packages.pop(key, None)
+                              changed = True
+
+                  deps = lock.get("dependencies")
+                  if isinstance(deps, dict):
+                      for name in sorted(remove_names):
+                          if name in deps:
+                              print(f"seed: removing stale PVC package-lock dependency {name}")
+                              deps.pop(name, None)
+                              changed = True
+
+                  if changed:
+                      write_json(lock_path, lock)
+
+              for name in sorted(remove_names):
+                  module_path = os.path.join(store, "node_modules", *name.split("/"))
+                  if os.path.exists(module_path):
+                      print(f"seed: removing stale PVC module {module_path}")
+                      shutil.rmtree(module_path, ignore_errors=True)
+              PY
+                chown 1000:1000 "${PLUGIN_STORE}/package.json" "${PLUGIN_STORE}/package-lock.json" 2>/dev/null || true
+              fi
+              # Register k8s adapters installed in the image at build time.
+              # Adapter code and dependencies stay in /opt, so a fresh PVC only
+              # needs adapter-plugins.json state, not package contents.
+              if [ -d /opt/paperclip-bundled-adapters/node_modules ]; then
+                for pkg_json in /opt/paperclip-bundled-adapters/node_modules/paperclip-adapter-*/package.json; do
+                  [ -f "${pkg_json}" ] || continue
+                  pkg_dir=$(dirname "${pkg_json}")
+                  pkg_name=$(sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${pkg_json}" | head -1)
+                  pkg_ver=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${pkg_json}" | head -1)
+                  case "${pkg_name}" in
+                    paperclip-adapter-claude-k8s) adapter_type="claude_k8s" ;;
+                    paperclip-adapter-opencode-k8s) adapter_type="opencode_k8s" ;;
+                    *) echo "seed: skipping unknown bundled adapter ${pkg_name:-unknown}"; continue ;;
+                  esac
+                  echo "seed: registering bundled adapter ${pkg_name}@${pkg_ver} as ${adapter_type}"
+                  python3 - "${BASE}/adapter-plugins.json" "${pkg_name}" "${pkg_ver}" "${adapter_type}" "${pkg_dir}" <<'PY' || echo "seed: registry update for ${pkg_name} failed (non-fatal)"
+              import datetime, json, os, sys
+              path, name, ver, adapter_type, local_path = sys.argv[1:6]
+              records = []
+              if os.path.exists(path):
+                  try:
+                      with open(path) as f:
+                          parsed = json.load(f)
+                      records = parsed if isinstance(parsed, list) else []
+                  except Exception:
+                      records = []
+              existing = next(
+                  (
+                      r for r in records
+                      if isinstance(r, dict)
+                      and (r.get("type") == adapter_type or r.get("packageName") == name or r.get("localPath") == local_path)
+                  ),
+                  {},
+              )
+              installed_at = existing.get("installedAt") or datetime.datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+              next_records = [
+                  r for r in records
+                  if not (
+                      isinstance(r, dict)
+                      and (r.get("type") == adapter_type or r.get("packageName") == name or r.get("localPath") == local_path)
+                  )
+              ]
+              next_records.append({
+                  "packageName": name,
+                  "version": ver,
+                  "type": adapter_type,
+                  "localPath": local_path,
+                  "installedAt": installed_at,
+              })
+              with open(path, "w") as f:
+                  json.dump(next_records, f, indent=2)
+              PY
+                done
+                if [ -f "${BASE}/adapter-plugins.json" ]; then
+                  chown 1000:1000 "${BASE}/adapter-plugins.json" 2>/dev/null || true
+                fi
+              fi
+              # Install ccrotate's claude-code hooks into /paperclip/.claude/hooks
+              # and register them in /paperclip/.claude/settings.json. claude-code
+              # only loads hooks declared in $HOME/.claude/settings.json, and on a
+              # k8s Job pod $HOME=/paperclip — so without this step a long-running
+              # claude session inside a Job pod can't refresh OAuth mid-run, and
+              # the spawn-time `ccrotate next` prepend is the only refresh point.
+              # See ccrotate README §Claude Code Hook Integration.
+              CCROTATE_PKG_DIR="/usr/local/lib/node_modules/ccrotate"
+              if [ -d "${CCROTATE_PKG_DIR}/claude-hooks" ]; then
+                CLAUDE_DIR="${BASE}/.claude"
+                HOOKS_DIR="${CLAUDE_DIR}/hooks"
+                SETTINGS="${CLAUDE_DIR}/settings.json"
+                mkdir -p "${HOOKS_DIR}"
+                for src in "${CCROTATE_PKG_DIR}/claude-hooks/"*.sh; do
+                  [ -f "${src}" ] || continue
+                  dst="${HOOKS_DIR}/$(basename "${src}")"
+                  if [ ! -f "${dst}" ] || [ "${src}" -nt "${dst}" ]; then
+                    cp "${src}" "${dst}"
+                    chmod +x "${dst}"
+                    echo "seed: installed claude-code hook $(basename ${src})"
+                  fi
+                done
+                # Merge ccrotate hook entries into settings.json without clobbering
+                # operator-set hooks. Idempotent: skips re-inserting an entry whose
+                # command already matches one of ccrotate's hook scripts.
+                python3 - "${SETTINGS}" "${HOOKS_DIR}" <<'PY' || echo "seed: claude settings hooks merge failed (non-fatal)"
+              import json, os, sys
+              settings_path, hooks_dir = sys.argv[1], sys.argv[2]
+              # claude-code settings.json schema: top-level "hooks" is an object
+              # whose keys are hook event names; each value is an array of {hooks:
+              # [{type, command, timeout, statusMessage}]} groups.
+              desired = {
+                  "Stop": {
+                      "command": f"bash {hooks_dir}/ccrotate-on-limit.sh",
+                      "timeout": 15,
+                      "statusMessage": "Checking rate limits...",
+                  },
+                  "SessionStart": {
+                      "command": f"bash {hooks_dir}/ccrotate-check-tier.sh",
+                      "timeout": 45,
+                      "statusMessage": "Checking usage tier...",
+                  },
+                  "UserPromptSubmit": {
+                      "command": f"bash {hooks_dir}/ccrotate-preemptive.sh",
+                      "timeout": 10,
+                  },
+              }
+              try:
+                  with open(settings_path) as f:
+                      doc = json.load(f) or {}
+              except (FileNotFoundError, ValueError):
+                  doc = {}
+              if not isinstance(doc, dict):
+                  doc = {}
+              hooks = doc.setdefault("hooks", {})
+              if not isinstance(hooks, dict):
+                  hooks = {}
+                  doc["hooks"] = hooks
+              changed = False
+              for event, entry in desired.items():
+                  groups = hooks.setdefault(event, [])
+                  if not isinstance(groups, list):
+                      groups = []
+                      hooks[event] = groups
+                  # Already installed? Match by command path so re-running upgrades
+                  # the timeout/statusMessage if ccrotate's defaults change.
+                  found_idx = None
+                  for i, group in enumerate(groups):
+                      if not isinstance(group, dict): continue
+                      for h in group.get("hooks", []):
+                          if isinstance(h, dict) and h.get("command") == entry["command"]:
+                              found_idx = i
+                              break
+                      if found_idx is not None: break
+                  payload = {"hooks": [{"type": "command", **entry}]}
+                  if found_idx is None:
+                      groups.append(payload)
+                      changed = True
+                  elif groups[found_idx] != payload:
+                      groups[found_idx] = payload
+                      changed = True
+              if changed or not os.path.exists(settings_path):
+                  os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+                  with open(settings_path, "w") as f:
+                      json.dump(doc, f, indent=2)
+                  print(f"seed: updated {settings_path} with ccrotate hooks")
+              else:
+                  print("seed: ccrotate hooks already registered in settings.json")
+              PY
+                chown 1000:1000 "${CLAUDE_DIR}" "${HOOKS_DIR}" "${SETTINGS}" "${HOOKS_DIR}"/*.sh 2>/dev/null || true
+              fi
+
+              # Seed a project-scope .mcp.json at $HOME (CWD for k8s Job pods is
+              # /paperclip by default — matches PAPERCLIP_HOME) so every claude
+              # session in a Job pod auto-loads the bundled paperclip MCP
+              # bridge (`@paperclipai/mcp-server`). The bridge exposes:
+              #   - paperclip's first-class entity tools (issues, agents, ...)
+              #   - all live plugin tools (Linear, Slack, Alertmanager, future
+              #     paperclip-plugin-github/figma) via /api/plugins/tools/execute
+              # Per-run isolation comes from PAPERCLIP_AGENT_ID / RUN_ID /
+              # COMPANY_ID / API_KEY which the adapter injects as Job env.
+              # Safe to overwrite each pod start: it's pure config, no runtime
+              # state. We deliberately don't merge with an existing file —
+              # operators add per-agent MCP servers via adapterConfig in
+              # paperclip-server, not by hand-editing this file.
+              MCP_FILE="${BASE}/.mcp.json"
+              MCP_BRIDGE_JS="/app/packages/mcp-server/dist/stdio.js"
+              if [ -f "${MCP_BRIDGE_JS}" ]; then
+                # Cluster-internal MCP servers (deployed via kubectl in the
+                # paperclip ns; see .planning/mcp-servers.yaml). All agents
+                # in this instance get the same baseline set:
+                #   - paperclip   — stdio bridge to /api/plugins/tools/* and
+                #                    paperclip's first-class entity tools.
+                #   - prometheus  — pab1it0/prometheus-mcp-server, pointed at
+                #                    in-cluster prometheus.monitoring.
+                #   - tempo       — Tempo 2.10's built-in MCP at /api/mcp.
+                #   - kubernetes  — containers/kubernetes-mcp-server, readonly
+                #                    tier (cluster-wide get/list/watch).
+                #   - github      — github/github-mcp-server bundled in this
+                #                    image (see Dockerfile github-mcp stage).
+                #                    Stdio mode reads GITHUB_PERSONAL_ACCESS_TOKEN
+                #                    from env, which the claude_k8s adapter
+                #                    inherits from this StatefulSet's container
+                #                    env (paperclip-github-mcp-token Secret).
+                # Per-agent escalations (k8s-mcp ns-rw, admin, figma) are
+                # layered in later by the claude_k8s adapter from
+                # adapterConfig.mcpServers — this seed only writes the shared
+                # baseline. Re-runs overwrite to keep the file in sync with
+                # what's deployed.
+                cat > "${MCP_FILE}" <<EOF
+              {
+                "mcpServers": {
+                  "paperclip": {
+                    "command": "node",
+                    "args": ["--import", "/app/server/node_modules/tsx/dist/loader.mjs", "${MCP_BRIDGE_JS}"]
+                  },
+                  "prometheus": {
+                    "type": "http",
+                    "url": "http://prometheus-mcp-server.paperclip.svc.cluster.local:8080/mcp"
+                  },
+                  "tempo": {
+                    "type": "http",
+                    "url": "http://tempo.monitoring.svc.cluster.local:3200/api/mcp"
+                  },
+                  "kubernetes": {
+                    "type": "sse",
+                    "url": "http://kubernetes-mcp-server-admin.paperclip.svc.cluster.local:8080/sse"
+                  },
+                  "github": {
+                    "command": "/usr/local/bin/github-mcp-server",
+                    "args": ["stdio"]
+                  },
+                  "linear": {
+                    "type": "http",
+                    "url": "http://linear-mcp-server.paperclip.svc.cluster.local:8000/mcp"
+                  }
+                }
+              }
+              EOF
+                chown 1000:1000 "${MCP_FILE}" 2>/dev/null || true
+                echo "seed: wrote ${MCP_FILE} with paperclip + prometheus + tempo + kubernetes-readonly + github + linear MCP servers"
+              else
+                echo "seed: skipping mcp.json — bridge stdio.js not found at ${MCP_BRIDGE_JS}"
+              fi
+          env:
+            {{- if .Values.secret.masterKey }}
+            - name: PAPERCLIP_MASTER_KEY_SEED
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "paperclip.secretName" . }}
+                  key: masterKey
+            {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+      containers:
+        - name: paperclip
+          image: {{ include "paperclip.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.pod.containerSecurityContext | nindent 12 }}
+          workingDir: /app
+          command: ["node"]
+          args:
+            - --import
+            - ./server/node_modules/tsx/dist/loader.mjs
+            - server/dist/index.js
+          ports:
+            - name: http
+              containerPort: {{ .Values.env.port }}
+              protocol: TCP
+          env:
+            - name: HOST
+              value: {{ .Values.env.host | quote }}
+            - name: PORT
+              value: {{ .Values.env.port | quote }}
+            - name: SERVE_UI
+              value: {{ .Values.env.serveUi | quote }}
+            - name: PAPERCLIP_HOME
+              value: {{ .Values.persistence.mountPath | quote }}
+            - name: PAPERCLIP_INSTANCE_ID
+              value: {{ .Values.env.instanceId | quote }}
+            - name: PAPERCLIP_AGENT_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "paperclip.secretName" . }}
+                  key: agentJwtSecret
+            {{- with .Values.env.extra }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.probes.liveness | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.probes.readiness | nindent 12 }}
+          startupProbe:
+            {{- toYaml .Values.probes.startup | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if and .Values.persistence.enabled .Values.persistence.existingClaim }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | quote }}
+      {{- end }}
+  {{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "paperclip.labels" . | nindent 10 }}
+      spec:
+        accessModes:
+          - {{ .Values.persistence.accessMode }}
+        {{- with .Values.persistence.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}
+  {{- end }}

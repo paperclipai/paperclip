@@ -54,6 +54,11 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   }
 
   if (!existing.isSymbolicLink()) {
+    if (existing.isDirectory()) {
+      return;
+    }
+    await fs.unlink(target);
+    await fs.symlink(source, target);
     return;
   }
 

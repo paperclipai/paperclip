@@ -4,6 +4,7 @@ import {
   AGENT_ADAPTER_TYPES,
   createEnvironmentSchema,
   getEnvironmentCapabilities,
+  K8S_ADAPTERS,
   probeEnvironmentConfigSchema,
   updateEnvironmentSchema,
 } from "@paperclipai/shared";
@@ -171,7 +172,7 @@ export function environmentRoutes(
       workerManager: options.pluginWorkerManager,
     });
     res.json(getEnvironmentCapabilities(
-      AGENT_ADAPTER_TYPES,
+      [...AGENT_ADAPTER_TYPES, ...K8S_ADAPTERS],
       {
         sandboxProviders: Object.fromEntries(pluginDrivers.map((driver) => [
           driver.driverKey,

@@ -251,4 +251,153 @@ describe("CompanyEnvironments", () => {
       root.unmount();
     });
   });
+
+  it("offers a Kubernetes driver option and reveals k8s form fields when selected", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <CompanySettings />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const driverSelect = Array.from(container.querySelectorAll("select"))
+      .find((select) =>
+        Array.from(select.options).some((option) => option.value === "ssh") &&
+          Array.from(select.options).some((option) => option.value === "local"),
+      ) as HTMLSelectElement | undefined;
+    expect(driverSelect, "driver dropdown should be present").toBeTruthy();
+
+    const optionValues = Array.from(driverSelect!.options).map((option) => option.value);
+    expect(optionValues).toContain("k8s");
+    const k8sOption = Array.from(driverSelect!.options).find((option) => option.value === "k8s");
+    expect(k8sOption?.textContent?.trim()).toBe("Kubernetes");
+
+    await act(async () => {
+      driverSelect!.value = "k8s";
+      driverSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Kubeconfig secret");
+    expect(container.textContent).toContain("In-cluster auth");
+    expect(container.textContent).toContain("Namespace");
+    expect(container.textContent).toContain("Service account");
+    expect(container.textContent).toContain("Node selector");
+    expect(container.textContent).toContain("Tolerations");
+    expect(container.textContent).toContain("Labels");
+    expect(container.textContent).toContain("Image pull policy");
+    expect(container.textContent).toContain("Workspace volume claim");
+    expect(container.textContent).toContain("Workspace mount path");
+    expect(container.textContent).toContain("Secrets namespace");
+    expect(container.textContent).toContain("Provider pools");
+    expect(container.textContent).toContain("Anthropic accounts");
+    expect(container.textContent).toContain("OpenAI accounts");
+
+    const poolKindSelects = Array.from(container.querySelectorAll("select"))
+      .filter((s) => s.getAttribute("aria-label")?.toLowerCase().includes("pool kind"));
+    expect(poolKindSelects.length).toBeGreaterThanOrEqual(2);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("disables submit and shows an error when k8s tolerations contain malformed JSON", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <CompanySettings />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const driverSelect = Array.from(container.querySelectorAll("select"))
+      .find((select) =>
+        Array.from(select.options).some((option) => option.value === "ssh") &&
+          Array.from(select.options).some((option) => option.value === "local"),
+      ) as HTMLSelectElement | undefined;
+    expect(driverSelect, "driver dropdown should be present").toBeTruthy();
+
+    await act(async () => {
+      driverSelect!.value = "k8s";
+      driverSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushReact();
+
+    // React's synthetic onChange listens at the document level and reads
+    // target.value at handler time, but the input/textarea must be set via
+    // the prototype's native value setter so React can pick up the diff.
+    const setTextareaValue = (el: HTMLTextAreaElement, value: string) => {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+
+    const tolerationsTextarea = Array.from(container.querySelectorAll("textarea"))
+      .find((t) => t.getAttribute("placeholder")?.includes("dedicated"));
+    expect(tolerationsTextarea, "tolerations textarea should be present").toBeTruthy();
+
+    await act(async () => {
+      setTextareaValue(tolerationsTextarea as HTMLTextAreaElement, "this is not json");
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Tolerations must be a JSON array");
+
+    const saveButton = Array.from(container.querySelectorAll("button"))
+      .find((b) => b.textContent?.trim().toLowerCase().match(/^(save|create)/));
+    expect(saveButton?.disabled).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders a K8s column in the per-adapter capabilities table", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <CompanySettings />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const tableHeaders = Array.from(container.querySelectorAll("th")).map((th) => th.textContent?.trim());
+    expect(tableHeaders).toContain("K8s");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });

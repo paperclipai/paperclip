@@ -9,11 +9,15 @@ on:
 
 permissions:
   contents: read
-  packages: write
+  # Lets us use GITHUB_TOKEN as a ghcr.io pull credential below, which
+  # bypasses the anonymous-pull rate limit ghcr.io enforces. Buildkit
+  # only reads `FROM ghcr.io/...` lines (e.g. github-mcp-server), it
+  # doesn't push anything, so read scope is enough.
+  packages: read
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 60
     concurrency:
       group: docker-${{ github.ref }}
@@ -22,34 +26,175 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Login to GitHub Container Registry
+      # Self-hosted runner reuses its workspace across builds. A previous
+      # build (or a developer session sharing the same checkout dir) may
+      # leave packages/*/node_modules with pnpm symlinks pointing at
+      # ../../../node_modules/.pnpm/...; `git clean -ffdx` in checkout
+      # does not always clear them, and BuildKit's context walker follows
+      # those symlinks before applying .dockerignore rules — failing with
+      # `short read: unexpected EOF`. Pre-nuke any node_modules so the
+      # Docker context is clean.
+      - name: Clean stale node_modules from runner workspace
+        run: |
+          find . -name node_modules -type d -prune -exec rm -rf {} + 2>/dev/null || true
+          find . -name node_modules -type l -exec rm -f {} + 2>/dev/null || true
+
+      # The Blockcast private registry is the only push target. Configure
+      # via repo variable BLOCKCAST_REGISTRY_HOST + the USERNAME variable +
+      # PASSWORD secret in repo Settings. ghcr.io mirroring was removed
+      # because nothing in the deploy path consumes it — the cluster pulls
+      # exclusively from BLOCKCAST_REGISTRY_HOST and skipping the duplicate
+      # push cuts the build-and-push step's wall time roughly in half.
+      - name: Login to Blockcast registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.BLOCKCAST_REGISTRY_HOST }}
+          username: ${{ vars.BLOCKCAST_REGISTRY_USERNAME }}
+          password: ${{ secrets.BLOCKCAST_REGISTRY_PASSWORD }}
+
+      # github-mcp-server is pulled from ghcr.io as part of the multi-stage
+      # build (Dockerfile FROM ghcr.io/github/github-mcp-server:vX.Y.Z).
+      # Anonymous ghcr.io pulls share a low rate limit pool that has been
+      # tripping master builds with `failed to fetch oauth token: denied`.
+      # Authenticated pulls use the per-repo limit which is high enough.
+      - name: Login to ghcr.io for base-image pulls
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.repository_owner }}
+          username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          # Tear the builder down at end-of-job so a corrupt content-store
+          # blob can't survive into the next run. Commit 822ebd0 bumped
+          # buildcache v2->v3 after the same `short read: expected
+          # 29780174 bytes but got 0: unexpected EOF` symptom — that fix
+          # held until v3 itself accumulated the same bad blob and master
+          # builds started failing again with the identical byte count.
+          # The persistent docker-container builder + registry cache
+          # combination is what carries the corruption forward; an
+          # ephemeral builder per run breaks the loop.
+          cleanup: true
 
+      # Tag scheme matches values.blockcast.yaml's expectation:
+      #   - `sha-<7>-k8s-vendored` per-commit tag the deploy step pins to
+      #   - `latest-k8s-vendored` floating tag for ad-hoc pulls
+      # The `-k8s-vendored` suffix marks a kkroo-fork build (vendored
+      # adapter tarballs + ccrotate kkroo patch baked in via the
+      # Dockerfile's `COPY vendor/*` lines).
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
+            type=sha,prefix=sha-,suffix=-k8s-vendored,format=short
+            type=raw,value=latest-k8s-vendored,enable={{is_default_branch}}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Skip SBOM + provenance attestations. v6 adds them by default,
+          # which makes the registry serve an OCI image index with
+          # attestation-manifest entries containing very small blobs (550–750
+          # bytes). The blockcast cluster's containerd sometimes EOFs on
+          # those (`short read: expected 750 bytes but got 0`), causing
+          # ImagePullBackOff after a deploy. Plain image manifests pull
+          # cleanly. Re-enable once the registry / containerd path can
+          # reliably serve attestation manifests.
+          provenance: false
+          sbom: false
+          # Registry-backed cache instead of GHA cache. The GHA backend
+          # bottlenecked on a single ~675 s layer upload (full export 720+ s
+          # vs. ~74 s for the actual build+push). Self-hosted runner has
+          # LAN-speed access to the Blockcast registry, so storing the
+          # buildcache image alongside the app image stays on-LAN, has no
+          # GHA quota, and matches mode=max behavior. image-manifest=true +
+          # oci-mediatypes=true keep the cache as a single OCI image
+          # manifest, consistent with provenance/sbom=false above.
+          # Bumping the cache ref one more time so the next build starts
+          # from a clean slate. The corrupt blob in v3 (same 29780174-byte
+          # short-read as v2) means cache-import fails before the build
+          # context can even be hashed; v4 is empty until cache-to writes
+          # to it, and the cleanup:true above ensures each run's local
+          # builder starts fresh so the corruption can't be re-introduced.
+          cache-from: type=registry,ref=${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip:buildcache-v4
+          cache-to: type=registry,ref=${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip:buildcache-v4,mode=max,image-manifest=true,oci-mediatypes=true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Compute short sha
+        id: sha
+        run: echo "short=$(git rev-parse --short=7 ${{ github.sha }})" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: build-and-push
+    runs-on: self-hosted
+    if: ${{ vars.PAPERCLIP_CI_DEPLOY == 'true' && github.ref == 'refs/heads/master' && vars.BLOCKCAST_REGISTRY_HOST != '' }}
+    timeout-minutes: 15
+    concurrency:
+      # Serialize deploys to the same target so a fast-followup push doesn't
+      # race with an in-flight upgrade.
+      group: deploy-${{ vars.PAPERCLIP_HELM_RELEASE || 'paperclip' }}-${{ vars.PAPERCLIP_NAMESPACE || 'paperclip' }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute short sha
+        id: sha
+        run: echo "short=$(git rev-parse --short=7 ${{ github.sha }})" >> "$GITHUB_OUTPUT"
+
+      - name: Write kubeconfig
+        env:
+          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_KKROO }}
+        run: |
+          set -e
+          mkdir -p "$RUNNER_TEMP/.kube"
+          printf '%s' "$KUBECONFIG_DATA" > "$RUNNER_TEMP/.kube/config"
+          chmod 600 "$RUNNER_TEMP/.kube/config"
+          echo "KUBECONFIG=$RUNNER_TEMP/.kube/config" >> "$GITHUB_ENV"
+
+      # The self-hosted runner is expected to ship with kubectl + helm. The
+      # pve* runners are inside the same network as the cluster API — no
+      # extra networking needed. The kubeconfig comes from secrets.KUBECONFIG_KKROO
+      # (an SA token kubeconfig scoped to the paperclip namespace via a
+      # RoleBinding to the admin ClusterRole). To opt out, unset
+      # `vars.PAPERCLIP_CI_DEPLOY`.
+      - name: Verify tooling + cluster reach
+        env:
+          NS: ${{ vars.PAPERCLIP_NAMESPACE || 'paperclip' }}
+        run: |
+          set -e
+          which helm kubectl
+          helm version --short
+          kubectl -n "$NS" get statefulset paperclip -o jsonpath='{.spec.replicas}{"\n"}'
+
+      # Use --set image.tag so the deployed tag tracks the just-built image
+      # without committing to values.blockcast.yaml. The committed values
+      # file remains the source of truth for non-CI deploys; CI runs are
+      # transparent in helm history (`helm get values paperclip` shows the
+      # override). Adjust by editing values.blockcast.yaml when you want
+      # the file to reflect the live tag.
+      - name: helm upgrade
+        env:
+          NS: ${{ vars.PAPERCLIP_NAMESPACE || 'paperclip' }}
+          RELEASE: ${{ vars.PAPERCLIP_HELM_RELEASE || 'paperclip' }}
+          TAG: sha-${{ steps.sha.outputs.short }}-k8s-vendored
+        run: |
+          set -e
+          echo "rolling out ${TAG} to ${NS}/${RELEASE}"
+          helm upgrade "${RELEASE}" ./deploy/helm/paperclip \
+            -n "${NS}" \
+            -f deploy/helm/paperclip/values.blockcast.yaml \
+            --set image.tag="${TAG}" \
+            --wait --timeout 10m
+          helm -n "${NS}" list | head -3
+          kubectl -n "${NS}" get pod -l app.kubernetes.io/name=paperclip \
+            -o custom-columns=NAME:.metadata.name,IMAGE:.spec.containers[0].image,READY:.status.containerStatuses[0].ready,RESTARTS:.status.containerStatuses[0].restartCount

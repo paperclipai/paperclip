@@ -40,14 +40,29 @@ const REMOTE_MANAGED_ADAPTERS = new Set<AgentAdapterType>([
   "pi_local",
 ]);
 
+export const K8S_ADAPTERS = [
+  "claude_k8s",
+  "opencode_k8s",
+] as const satisfies readonly AgentAdapterType[];
+
+const K8S_ADAPTER_SET = new Set<AgentAdapterType>(K8S_ADAPTERS);
+
 export function adapterSupportsRemoteManagedEnvironments(adapterType: string): boolean {
   return REMOTE_MANAGED_ADAPTERS.has(adapterType as AgentAdapterType);
 }
 
+export function adapterSupportsK8sEnvironment(adapterType: string): boolean {
+  return K8S_ADAPTER_SET.has(adapterType as AgentAdapterType);
+}
+
 export function supportedEnvironmentDriversForAdapter(adapterType: string): EnvironmentDriver[] {
-  return adapterSupportsRemoteManagedEnvironments(adapterType)
-    ? ["local", "ssh", "sandbox"]
-    : ["local"];
+  if (adapterSupportsRemoteManagedEnvironments(adapterType)) {
+    return ["local", "ssh", "sandbox"];
+  }
+  if (adapterSupportsK8sEnvironment(adapterType)) {
+    return ["local", "k8s"];
+  }
+  return ["local"];
 }
 
 export function supportedSandboxProvidersForAdapter(
@@ -98,6 +113,7 @@ export function getAdapterEnvironmentSupport(
       ssh: supportedDrivers.has("ssh") ? "supported" : "unsupported",
       sandbox: supportedDrivers.has("sandbox") ? "supported" : "unsupported",
       plugin: supportedDrivers.has("plugin") ? "supported" : "unsupported",
+      k8s: supportedDrivers.has("k8s") ? "supported" : "unsupported",
     },
     sandboxProviders,
   };
@@ -143,6 +159,7 @@ export function getEnvironmentCapabilities(
       ssh: "supported",
       sandbox: "supported",
       plugin: "unsupported",
+      k8s: "supported",
     },
     sandboxProviders,
   };

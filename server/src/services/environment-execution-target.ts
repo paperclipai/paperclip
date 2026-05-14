@@ -3,12 +3,27 @@ import type { Environment, EnvironmentLease } from "@paperclipai/shared";
 import {
   adapterExecutionTargetToRemoteSpec,
   type AdapterExecutionTarget,
+  type K8sRemoteSpec,
 } from "@paperclipai/adapter-utils/execution-target";
 import { parseObject } from "../adapters/utils.js";
 import { resolveEnvironmentDriverConfigForRuntime } from "./environment-config.js";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
+import { secretService } from "./secrets.js";
 
 export const DEFAULT_SANDBOX_REMOTE_CWD = "/tmp";
+export const DEFAULT_K8S_REMOTE_CWD = "/workspace";
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  for (const v of Object.values(value as Record<string, unknown>)) {
+    if (typeof v !== "string") return false;
+  }
+  return true;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
 
 export async function resolveEnvironmentExecutionTarget(input: {
   db: Db;
@@ -101,6 +116,71 @@ export async function resolveEnvironmentExecutionTarget(input: {
             },
           }
         : undefined,
+    };
+  }
+
+  if (input.environment.driver === "k8s") {
+    if (input.adapterType !== "claude_k8s" && input.adapterType !== "opencode_k8s") {
+      return null;
+    }
+
+    const config = parseObject(input.environment.config);
+
+    const kubeconfigSecretRef =
+      typeof config.kubeconfigSecretRef === "string" && config.kubeconfigSecretRef.trim().length > 0
+        ? config.kubeconfigSecretRef.trim()
+        : null;
+    const kubeconfig: string | null = kubeconfigSecretRef
+      ? await secretService(input.db).resolveSecretValue(input.companyId, kubeconfigSecretRef, "latest")
+      : null;
+
+    const imagePullPolicy: K8sRemoteSpec["imagePullPolicy"] =
+      config.imagePullPolicy === "Always" ||
+      config.imagePullPolicy === "IfNotPresent" ||
+      config.imagePullPolicy === "Never"
+        ? config.imagePullPolicy
+        : null;
+
+    const k8sConfig: K8sRemoteSpec = {
+      kubeconfig,
+      namespace: typeof config.namespace === "string" ? config.namespace : null,
+      workspaceVolumeClaim:
+        typeof config.workspaceVolumeClaim === "string" ? config.workspaceVolumeClaim : null,
+      workspaceMountPath:
+        typeof config.workspaceMountPath === "string" ? config.workspaceMountPath : null,
+      secretsNamespace: typeof config.secretsNamespace === "string" ? config.secretsNamespace : null,
+      nodeSelector: isStringRecord(config.nodeSelector) ? config.nodeSelector : {},
+      tolerations: Array.isArray(config.tolerations)
+        ? (config.tolerations as K8sRemoteSpec["tolerations"])
+        : [],
+      labels: isStringRecord(config.labels) ? config.labels : {},
+      serviceAccountName:
+        typeof config.serviceAccountName === "string" ? config.serviceAccountName : null,
+      imagePullPolicy,
+      resources: isPlainObject(config.resources)
+        ? (config.resources as K8sRemoteSpec["resources"])
+        : null,
+      providers: isPlainObject(config.providers)
+        ? (config.providers as K8sRemoteSpec["providers"])
+        : undefined,
+    };
+
+    const remoteCwd =
+      typeof input.leaseMetadata?.remoteCwd === "string" && input.leaseMetadata.remoteCwd.trim().length > 0
+        ? input.leaseMetadata.remoteCwd.trim()
+        : k8sConfig.workspaceMountPath ?? DEFAULT_K8S_REMOTE_CWD;
+
+    return {
+      kind: "remote",
+      transport: "k8s",
+      environmentId: input.environment.id ?? null,
+      leaseId: input.leaseId ?? null,
+      remoteCwd,
+      paperclipApiUrl:
+        typeof input.leaseMetadata?.paperclipApiUrl === "string" && input.leaseMetadata.paperclipApiUrl.trim().length > 0
+          ? input.leaseMetadata.paperclipApiUrl.trim()
+          : null,
+      config: k8sConfig,
     };
   }
 
