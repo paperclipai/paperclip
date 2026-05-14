@@ -73,6 +73,56 @@ After you post a comment, reassign or hand back the task if it does not complete
 
 Most failed QA tasks should go back to the coder with actionable repro steps. If the task passes, mark it done.
 
+## Re-verify before `done` — fresh artifact check, not paper review
+
+Before you PATCH any issue from `in_review` to `done`, **re-run the evidence against the live artifact in your own context.** The artifact-evidence gate (paperclip-evidence-before-in-review skill) catches missing receipts, but it cannot verify the receipts are real — that is your job. Rubber-stamping `in_review` issues without a fresh check defeats the second line of defense and turns the gate into theater.
+
+### The procedure
+
+1. **Read `## Done when` from the issue description** and the agent's most recent claim comment. Identify the artifact and the evidence shape required (consult the registry table inside the `paperclip-evidence-before-in-review` skill — same one the agent used).
+
+2. **Re-run the shape against the live artifact, fresh:**
+
+   - **Screenshot evidence** — Open the published URL with Playwright at the exact required viewport (`1440x900` and `390x844` for `frontend` issues). Take your own screenshot. Compare structurally to the agent's: same DOM elements, same visual rhythm, no truncated content, no overlapping layout, theme matches the rest of the site. If you see differences from the agent's claim, the artifact regressed since they took theirs.
+
+   - **Test-output evidence** — Re-run the test suite from the workspace yourself. Paste your fresh banner. If the banner doesn't match the agent's claim (different counts, new failures), reject.
+
+   - **URL-probe evidence** — `curl` the URL yourself. Diff the response against the agent's quoted output. CMS or CDN caches mean a stale claim can show "fixed" even after a regression.
+
+   - **Kubectl-state evidence** — Run `kubectl get` fresh. Pods can crash after the agent claims rollout success.
+
+   - **PR-link evidence** — Open the PR. Check CI is actually green, mergeable_state is clean, and the diff matches the issue's scope.
+
+3. **Comment with your fresh verification + a verdict.** Paste your own evidence — don't just say "verified". The next reviewer (operator, or you in three weeks) needs to see what you saw.
+
+4. **Only flip to `done` if fresh matches claim.** Otherwise reject back to `in_progress` with the diff:
+
+   > Re-verified at <timestamp>. Agent's claim was X, my fresh probe shows Y. Reopening. <fix direction>.
+
+### What this looks like in practice
+
+A `frontend` issue agent claims `pass` with two viewport screenshots + a checklist. You:
+
+1. Open the production URL at 1440x900 in your own Playwright session.
+2. Take a fresh screenshot.
+3. Open the production URL at 390x844.
+4. Take another fresh screenshot.
+5. Visually compare to the agent's: did the orange-bordered lede actually render? Is the listing grid actually 1-col on mobile? Did the filter chip actually become active when you clicked it?
+6. Walk through the `## Done when` bullets, marking each pass/fail against what *you* see.
+7. If everything matches: comment with your fresh screenshots + a per-criterion checklist, then `done`. If anything differs: reject to `in_progress` with the diff.
+
+### Anti-patterns
+
+- "✅ verified, marking done" without your own evidence block → No.
+- Quoting the agent's screenshot back at them as "yep that looks right" → No, take your own.
+- Trusting a test-banner paste — re-run the suite yourself.
+- Skipping the re-verify for trivial-looking changes ("just a label rename") — that's exactly when regressions slip.
+
+### Reference
+
+- The shape registry the agent should have used: `paperclip-evidence-before-in-review` skill (search the skills list).
+- The gate's verdict for the in-flight issue: visible as a colored badge on the issue detail page (`EvidenceBadge` next to status). Green = agent shape-satisfied the gate; yellow/red = agent didn't even shape-satisfy. You still need to re-verify even when the badge is green — shape ≠ truth.
+
 ## Collaboration and handoffs
 
 - Functional bugs or broken flows → back to the coder who owned the change, with repro steps and evidence.
