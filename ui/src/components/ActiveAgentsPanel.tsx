@@ -1,16 +1,43 @@
 import { memo, useMemo } from "react";
 import { Link } from "@/lib/router";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, IssueRecoveryAction } from "@paperclipai/shared";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import type { TranscriptEntry } from "../adapters";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
+import {
+  deriveActiveRecoveryDisplayState,
+  RECOVERY_CHIP_DEFAULT_TONE,
+} from "../lib/recovery-display";
 import { ExternalLink } from "lucide-react";
 import { Identity } from "./Identity";
 import { RunChatSurface } from "./RunChatSurface";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
+
+function RunCardRecoveryChip({ action }: { action: IssueRecoveryAction }) {
+  const state = deriveActiveRecoveryDisplayState(action);
+  if (!state) return null;
+  const tone = RECOVERY_CHIP_DEFAULT_TONE[state];
+  const Icon = tone.icon;
+  return (
+    <span
+      data-testid="active-agent-run-recovery-indicator"
+      data-recovery-state={state}
+      role="status"
+      aria-label={tone.label}
+      title={`${tone.label} — open the source issue to act.`}
+      className={cn(
+        "inline-flex shrink-0 items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-[10px] font-medium",
+        tone.className,
+      )}
+    >
+      <Icon className="h-2.5 w-2.5" aria-hidden />
+      {tone.label}
+    </span>
+  );
+}
 
 const MIN_DASHBOARD_RUNS = 4;
 const DASHBOARD_RUN_CARD_LIMIT = 4;
@@ -56,30 +83,24 @@ export function ActiveAgentsPanel({
   const runs = liveRuns ?? [];
   const visibleRuns = useMemo(() => runs.slice(0, cardLimit), [cardLimit, runs]);
   const hiddenRunCount = Math.max(0, runs.length - visibleRuns.length);
-
-  // Each card needs only `issue.identifier` and `issue.title` for the
-  // run-context link. Previously we fetched the full company-scoped issue
-  // list (`/issues?includeRoutineExecutions=true`, ~1.28 MB on a busy
-  // company) on every dashboard load just to build a 4-key lookup map. Use
-  // `useQueries` for parallel single-row fetches by ID — these reuse the
-  // existing IssueDetail cache (`queryKeys.issues.detail(id)`) so navigating
-  // into a run doesn't refetch.
   const visibleIssueIds = useMemo(
-    () => Array.from(new Set(visibleRuns.map((r) => r.issueId).filter((id): id is string => Boolean(id)))),
+    () => [...new Set(visibleRuns.map((run) => run.issueId).filter((issueId): issueId is string => Boolean(issueId)))],
     [visibleRuns],
   );
 
   const issueQueries = useQueries({
-    queries: visibleIssueIds.map((id) => ({
-      queryKey: queryKeys.issues.detail(id),
-      queryFn: () => issuesApi.get(id),
+    queries: visibleIssueIds.map((issueId) => ({
+      queryKey: queryKeys.issues.detail(issueId),
+      queryFn: () => issuesApi.get(issueId),
+      staleTime: 30_000,
+      retry: false,
     })),
   });
 
   const issueById = useMemo(() => {
     const map = new Map<string, Issue>();
-    for (const result of issueQueries) {
-      const issue = result.data;
+    for (const query of issueQueries) {
+      const issue = query.data;
       if (issue) map.set(issue.id, issue);
     }
     return map;
@@ -195,6 +216,11 @@ const AgentRunCard = memo(function AgentRunCard({
               {issue?.identifier ?? run.issueId.slice(0, 8)}
               {issue?.title ? ` - ${issue.title}` : ""}
             </Link>
+            {issue?.activeRecoveryAction ? (
+              <div className="mt-1.5">
+                <RunCardRecoveryChip action={issue.activeRecoveryAction} />
+              </div>
+            ) : null}
           </div>
         )}
       </div>

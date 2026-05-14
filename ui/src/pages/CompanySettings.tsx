@@ -1,8 +1,10 @@
 import { ChangeEvent, useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AGENT_ADAPTER_TYPES,
+  DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
   K8S_ADAPTERS,
+  MAX_COMPANY_ATTACHMENT_MAX_BYTES,
   getAdapterEnvironmentSupport,
   type Environment,
   type EnvironmentProbeResult,
@@ -15,23 +17,17 @@ import {
 } from "../lib/environment-form";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { useToast } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
-import { environmentsApi } from "../api/environments";
-import { instanceSettingsApi } from "../api/instanceSettings";
-import { secretsApi } from "../api/secrets";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Settings, Check, Download, Upload, Loader2 } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
-import { JsonSchemaForm, getDefaultValues, validateJsonSchemaForm } from "@/components/JsonSchemaForm";
 import {
   Field,
   ToggleField,
   HintIcon,
-  adapterLabels,
 } from "../components/agent-config-primitives";
 
 type AgentSnippetInput = {
@@ -286,6 +282,9 @@ function SupportMark({ supported }: { supported: boolean }) {
   );
 }
 
+const BYTES_PER_MIB = 1024 * 1024;
+const DEFAULT_COMPANY_ATTACHMENT_MAX_MIB = DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES / BYTES_PER_MIB;
+const MAX_COMPANY_ATTACHMENT_MAX_MIB = MAX_COMPANY_ATTACHMENT_MAX_BYTES / BYTES_PER_MIB;
 export function CompanySettings() {
   const {
     companies,
@@ -294,17 +293,14 @@ export function CompanySettings() {
     setSelectedCompanyId
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { pushToast } = useToast();
   const queryClient = useQueryClient();
   // General settings local state
   const [companyName, setCompanyName] = useState("");
   const [description, setDescription] = useState("");
   const [brandColor, setBrandColor] = useState("");
+  const [attachmentMaxMiB, setAttachmentMaxMiB] = useState(String(DEFAULT_COMPANY_ATTACHMENT_MAX_MIB));
   const [logoUrl, setLogoUrl] = useState("");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
-  const [editingEnvironmentId, setEditingEnvironmentId] = useState<string | null>(null);
-  const [environmentForm, setEnvironmentForm] = useState<EnvironmentFormState>(createEmptyEnvironmentForm);
-  const [probeResults, setProbeResults] = useState<Record<string, EnvironmentProbeResult | null>>({});
 
   // Sync local state from selected company
   useEffect(() => {
@@ -312,6 +308,7 @@ export function CompanySettings() {
     setCompanyName(selectedCompany.name);
     setDescription(selectedCompany.description ?? "");
     setBrandColor(selectedCompany.brandColor ?? "");
+    setAttachmentMaxMiB(String(Math.round((selectedCompany.attachmentMaxBytes ?? DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES) / BYTES_PER_MIB)));
     setLogoUrl(selectedCompany.logoUrl ?? "");
   }, [selectedCompany]);
 
@@ -320,41 +317,25 @@ export function CompanySettings() {
   const [snippetCopied, setSnippetCopied] = useState(false);
   const [snippetCopyDelightId, setSnippetCopyDelightId] = useState(0);
 
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
-  });
-  const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
-
-  const { data: environments } = useQuery({
-    queryKey: selectedCompanyId ? queryKeys.environments.list(selectedCompanyId) : ["environments", "none"],
-    queryFn: () => environmentsApi.list(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId) && environmentsEnabled,
-  });
-  const { data: environmentCapabilities } = useQuery({
-    queryKey: selectedCompanyId ? ["environment-capabilities", selectedCompanyId] : ["environment-capabilities", "none"],
-    queryFn: () => environmentsApi.capabilities(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId) && environmentsEnabled,
-  });
-
-  const { data: secrets } = useQuery({
-    queryKey: selectedCompanyId ? ["company-secrets", selectedCompanyId] : ["company-secrets", "none"],
-    queryFn: () => secretsApi.list(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId),
-  });
+  const attachmentMaxBytes = Number.parseInt(attachmentMaxMiB, 10) * BYTES_PER_MIB;
+  const attachmentMaxValid =
+    Number.isInteger(attachmentMaxBytes)
+    && attachmentMaxBytes >= BYTES_PER_MIB
+    && attachmentMaxBytes <= MAX_COMPANY_ATTACHMENT_MAX_BYTES;
 
   const generalDirty =
     !!selectedCompany &&
     (companyName !== selectedCompany.name ||
       description !== (selectedCompany.description ?? "") ||
-      brandColor !== (selectedCompany.brandColor ?? ""));
+      brandColor !== (selectedCompany.brandColor ?? "") ||
+      attachmentMaxBytes !== (selectedCompany.attachmentMaxBytes ?? DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES));
 
   const generalMutation = useMutation({
     mutationFn: (data: {
       name: string;
       description: string | null;
       brandColor: string | null;
+      attachmentMaxBytes: number;
     }) => companiesApi.update(selectedCompanyId!, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
@@ -448,90 +429,6 @@ export function CompanySettings() {
     }
   });
 
-  const environmentMutation = useMutation({
-    mutationFn: async (form: EnvironmentFormState) => {
-      const body = buildEnvironmentPayload(form);
-
-      if (editingEnvironmentId) {
-        return await environmentsApi.update(editingEnvironmentId, body);
-      }
-
-      return await environmentsApi.create(selectedCompanyId!, body);
-    },
-    onSuccess: async (environment) => {
-      await queryClient.invalidateQueries({
-        queryKey: queryKeys.environments.list(selectedCompanyId!),
-      });
-      setEditingEnvironmentId(null);
-      setEnvironmentForm(createEmptyEnvironmentForm());
-      pushToast({
-        title: editingEnvironmentId ? "Environment updated" : "Environment created",
-        body: `${environment.name} is ready.`,
-        tone: "success",
-      });
-    },
-    onError: (error) => {
-      pushToast({
-        title: "Failed to save environment",
-        body: error instanceof Error ? error.message : "Environment save failed.",
-        tone: "error",
-      });
-    },
-  });
-
-  const environmentProbeMutation = useMutation({
-    mutationFn: async (environmentId: string) => await environmentsApi.probe(environmentId),
-    onSuccess: (probe, environmentId) => {
-      setProbeResults((current) => ({
-        ...current,
-        [environmentId]: probe,
-      }));
-      pushToast({
-        title: probe.ok ? "Environment probe passed" : "Environment probe failed",
-        body: probe.summary,
-        tone: probe.ok ? "success" : "error",
-      });
-    },
-    onError: (error, environmentId) => {
-      const failedEnvironment = (environments ?? []).find((environment) => environment.id === environmentId);
-      setProbeResults((current) => ({
-        ...current,
-        [environmentId]: {
-          ok: false,
-          driver: failedEnvironment?.driver ?? "local",
-          summary: error instanceof Error ? error.message : "Environment probe failed.",
-          details: null,
-        },
-      }));
-      pushToast({
-        title: "Environment probe failed",
-        body: error instanceof Error ? error.message : "Environment probe failed.",
-        tone: "error",
-      });
-    },
-  });
-
-  const draftEnvironmentProbeMutation = useMutation({
-    mutationFn: async (form: EnvironmentFormState) => {
-      const body = buildEnvironmentPayload(form);
-      return await environmentsApi.probeConfig(selectedCompanyId!, body);
-    },
-    onSuccess: (probe) => {
-      pushToast({
-        title: probe.ok ? "Draft probe passed" : "Draft probe failed",
-        body: probe.summary,
-        tone: probe.ok ? "success" : "error",
-      });
-    },
-    onError: (error) => {
-      pushToast({
-        title: "Draft probe failed",
-        body: error instanceof Error ? error.message : "Environment probe failed.",
-        tone: "error",
-      });
-    },
-  });
-
   function handleLogoFileChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0] ?? null;
     event.currentTarget.value = "";
@@ -549,9 +446,6 @@ export function CompanySettings() {
     setInviteSnippet(null);
     setSnippetCopied(false);
     setSnippetCopyDelightId(0);
-    setEditingEnvironmentId(null);
-    setEnvironmentForm(createEmptyEnvironmentForm());
-    setProbeResults({});
   }, [selectedCompanyId]);
 
   const archiveMutation = useMutation({
@@ -594,7 +488,8 @@ export function CompanySettings() {
     generalMutation.mutate({
       name: companyName.trim(),
       description: description.trim() || null,
-      brandColor: brandColor || null
+      brandColor: brandColor || null,
+      attachmentMaxBytes
     });
   }
 
@@ -853,6 +748,30 @@ export function CompanySettings() {
                   )}
                 </div>
               </Field>
+              <Field
+                label="Attachment size limit"
+                hint={`Accepted range: 1-${MAX_COMPANY_ATTACHMENT_MAX_MIB} MiB.`}
+              >
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min={1}
+                      max={MAX_COMPANY_ATTACHMENT_MAX_MIB}
+                      step={1}
+                      value={attachmentMaxMiB}
+                      onChange={(e) => setAttachmentMaxMiB(e.target.value)}
+                      className="w-28 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                    />
+                    <span className="text-xs text-muted-foreground">MiB</span>
+                  </div>
+                  {!attachmentMaxValid && (
+                    <span className="text-xs text-destructive">
+                      Enter a whole number from 1 to {MAX_COMPANY_ATTACHMENT_MAX_MIB}.
+                    </span>
+                  )}
+                </div>
+              </Field>
             </div>
           </div>
         </div>
@@ -864,7 +783,7 @@ export function CompanySettings() {
           <Button
             size="sm"
             onClick={handleSaveGeneral}
-            disabled={generalMutation.isPending || !companyName.trim()}
+            disabled={generalMutation.isPending || !companyName.trim() || !attachmentMaxValid}
           >
             {generalMutation.isPending ? "Saving..." : "Save changes"}
           </Button>
