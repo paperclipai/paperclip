@@ -48,6 +48,10 @@ import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
 } from "./routes/instance-database-backups.js";
+import { createExecutionTargetRegistry } from "./adapters/execution-target-registry.js";
+import { registerKubernetesExecutionTargetDriver } from "./adapters/execution-targets/kubernetes.js";
+import { clusterConnectionsService } from "./services/cluster-connections.js";
+import { getSecretProvider } from "./secrets/provider-registry.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -593,6 +597,37 @@ export async function startServer(): Promise<StartedServer> {
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
+
+  // ---------------------------------------------------------------------------
+  // Execution-target registry
+  //
+  // The kubeconfigSecretRef stored in cluster_connections uses
+  // { provider, name } where `name` is the externalRef (for external providers
+  // such as AWS Secrets Manager / GCP Secret Manager / Vault). For those
+  // providers, `resolveVersion({ material: {}, externalRef: name })` is the
+  // correct call. For the `local_encrypted` provider the kubeconfig blob must
+  // be stored via an external provider — instance-level local-encrypted storage
+  // is not yet wired (M2 gap: design a cluster-scoped secret vault or let
+  // operators use an external provider for kubeconfig credentials).
+  // ---------------------------------------------------------------------------
+  const clusterConnections = clusterConnectionsService(db as any, {
+    resolveSecret: async (ref) => {
+      const provider = getSecretProvider(ref.provider as Parameters<typeof getSecretProvider>[0]);
+      // `ref.name` is the externalRef used by external secret providers
+      // (AWS SM / GCP SM / Vault). For `local_encrypted`, kubeconfig material
+      // must be stored via an external provider; calling this path with
+      // `local_encrypted` will throw from the provider itself.
+      // TODO(M2): design instance-scoped secret storage for local_encrypted
+      //           kubeconfig blobs so operators without external providers
+      //           can still register clusters.
+      return provider.resolveVersion({ material: {}, externalRef: ref.name });
+    },
+  });
+  const executionTargetRegistry = createExecutionTargetRegistry();
+  registerKubernetesExecutionTargetDriver(executionTargetRegistry, {
+    resolveConnection: (id) => clusterConnections.resolve(id),
+  });
+
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,

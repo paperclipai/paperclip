@@ -35,6 +35,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/adapters/kubernetes-execution",
+    "name": "@paperclipai/execution-target-kubernetes",
+    "publishFromCi": false
+  },
+  {
     "dir": "packages/adapters/opencode-local",
     "name": "@paperclipai/adapter-opencode-local",
     "publishFromCi": true
@@ -85,23 +90,23 @@
     "publishFromCi": true
   },
   {
-    "dir": "packages/plugins/sandbox-providers/cloudflare",
-    "name": "@paperclipai/plugin-cloudflare-sandbox",
-    "publishFromCi": true
-  },
-  {
     "dir": "packages/plugins/sandbox-providers/daytona",
     "name": "@paperclipai/plugin-daytona",
     "publishFromCi": true
   },
   {
-    "dir": "packages/plugins/sandbox-providers/exe-dev",
-    "name": "@paperclipai/plugin-exe-dev",
+    "dir": "packages/plugins/sandbox-providers/e2b",
+    "name": "@paperclipai/plugin-e2b",
     "publishFromCi": true
   },
   {
-    "dir": "packages/plugins/sandbox-providers/e2b",
-    "name": "@paperclipai/plugin-e2b",
+    "dir": "packages/plugins/sandbox-providers/cloudflare",
+    "name": "@paperclipai/plugin-cloudflare-sandbox",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/plugins/sandbox-providers/exe-dev",
+    "name": "@paperclipai/plugin-exe-dev",
     "publishFromCi": true
   },
   {

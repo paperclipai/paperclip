@@ -13,7 +13,11 @@
   },
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./services/cluster-connections": "./src/services/cluster-connections.ts",
+    "./services/cluster-tenant-policies": "./src/services/cluster-tenant-policies.ts",
+    "./services/cluster-namespace-bindings": "./src/services/cluster-namespace-bindings.ts",
+    "./secrets/provider-registry": "./src/secrets/provider-registry.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -21,6 +25,22 @@
       ".": {
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
+      },
+      "./services/cluster-connections": {
+        "types": "./dist/services/cluster-connections.d.ts",
+        "import": "./dist/services/cluster-connections.js"
+      },
+      "./services/cluster-tenant-policies": {
+        "types": "./dist/services/cluster-tenant-policies.d.ts",
+        "import": "./dist/services/cluster-tenant-policies.js"
+      },
+      "./services/cluster-namespace-bindings": {
+        "types": "./dist/services/cluster-namespace-bindings.d.ts",
+        "import": "./dist/services/cluster-namespace-bindings.js"
+      },
+      "./secrets/provider-registry": {
+        "types": "./dist/secrets/provider-registry.d.ts",
+        "import": "./dist/secrets/provider-registry.js"
       }
     },
     "main": "./dist/index.js",
@@ -55,6 +75,7 @@
     "@paperclipai/adapter-pi-local": "workspace:*",
     "@paperclipai/adapter-utils": "workspace:*",
     "@paperclipai/db": "workspace:*",
+    "@paperclipai/execution-target-kubernetes": "workspace:*",
     "@paperclipai/plugin-sdk": "workspace:*",
     "@paperclipai/shared": "workspace:*",
     "ajv": "^8.18.0",

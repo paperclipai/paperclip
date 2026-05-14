@@ -285,6 +285,18 @@ export async function ensureCodexSkillsInjected(
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
 
+  if (ctx.executionTarget?.kind === "kubernetes") {
+    return {
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      errorCode: "execution_target_not_yet_supported",
+      errorMessage:
+        "Kubernetes execution target is not implemented yet for this adapter. " +
+        "Tenant provisioning is available in M1; agent execution lands in M2.",
+    };
+  }
+
   const promptTemplate = asString(
     config.promptTemplate,
     DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,

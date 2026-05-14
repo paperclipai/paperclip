@@ -1,0 +1,105 @@
+name: K8s Integration Tests
+
+on:
+  pull_request:
+    paths:
+      - "packages/adapters/kubernetes-execution/**"
+      - "server/src/services/cluster-connections*"
+      - "server/src/services/cluster-namespace-bindings*"
+      - "server/src/services/cluster-tenant-policies*"
+      - "server/src/adapters/execution-target*"
+      - "server/src/adapters/execution-targets/**"
+      - "server/src/__tests__/k8s-*"
+      - "server/vitest.integration.config.ts"
+      - ".github/workflows/k8s-integration.yml"
+  push:
+    branches: [master, main]
+    paths:
+      - "packages/adapters/kubernetes-execution/**"
+      - "server/src/services/cluster-connections*"
+      - "server/src/services/cluster-namespace-bindings*"
+      - "server/src/services/cluster-tenant-policies*"
+      - "server/src/adapters/execution-target*"
+      - "server/src/adapters/execution-targets/**"
+      - "server/src/__tests__/k8s-*"
+      - "server/vitest.integration.config.ts"
+
+jobs:
+  k8s-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Install kind
+        env:
+          KIND_VERSION: v0.24.0
+        run: |
+          curl -sLo /tmp/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          curl -sLo /tmp/kind.sha256sum "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64.sha256sum"
+          awk '{ print $1 "  /tmp/kind" }' /tmp/kind.sha256sum | sha256sum -c -
+          chmod +x /tmp/kind
+          sudo mv /tmp/kind /usr/local/bin/kind
+          kind --version
+
+      - name: Install kubectl
+        # Pinned to match the kind v0.24.0 default node image (Kubernetes
+        # v1.31.x). Bump deliberately when updating kind so the client/server
+        # skew stays within the supported one-minor-version window.
+        env:
+          KUBECTL_VERSION: v1.31.0
+        run: |
+          curl -sLo /tmp/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          curl -sLo /tmp/kubectl.sha256 "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256"
+          echo "$(cat /tmp/kubectl.sha256)  /tmp/kubectl" | sha256sum -c -
+          chmod +x /tmp/kubectl
+          sudo mv /tmp/kubectl /usr/local/bin/kubectl
+          kubectl version --client
+
+      - name: Build workspace dependencies
+        run: |
+          pnpm --filter @paperclipai/adapter-utils build
+          pnpm --filter @paperclipai/execution-target-kubernetes build
+
+      - name: Run k8s-execution integration tests
+        run: pnpm --filter @paperclipai/execution-target-kubernetes test:integration
+
+      - name: Run server k8s end-to-end smoke
+        # Vitest's include patterns in vitest.integration.config.ts are relative
+        # to the cwd, not the config file path. Run from server/ so they resolve.
+        working-directory: server
+        run: pnpm exec vitest run --config vitest.integration.config.ts k8s-cli-end-to-end
+
+      - name: Collect kind cluster logs on failure
+        if: failure()
+        run: |
+          mkdir -p kind-logs
+          for c in $(kind get clusters 2>/dev/null || true); do
+            echo "=== Logs for cluster: $c ==="
+            kind export logs "./kind-logs/$c" --name "$c" || true
+          done
+
+      - name: Upload kind logs as artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kind-logs-${{ github.run_id }}
+          path: kind-logs/
+          if-no-files-found: ignore
+          retention-days: 7

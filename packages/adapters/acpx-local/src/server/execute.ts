@@ -21,7 +21,6 @@ import {
   readPaperclipIssueWorkModeFromContext,
   renderPaperclipWakePrompt,
   renderTemplate,
-  resolvePaperclipInstanceRootForAdapter,
   resolvePaperclipDesiredSkillNames,
   rewriteWorkspaceCwdEnvVarsForExecution,
   shapePaperclipWorkspaceEnvForExecution,
@@ -116,10 +115,7 @@ function shortHash(value: unknown): string {
 function defaultPaperclipInstanceDir(): string {
   const home = process.env.PAPERCLIP_HOME?.trim() || path.join(os.homedir(), ".paperclip");
   const instanceId = process.env.PAPERCLIP_INSTANCE_ID?.trim() || "default";
-  return resolvePaperclipInstanceRootForAdapter({
-    homeDir: home,
-    instanceId,
-  });
+  return path.join(home, "instances", instanceId);
 }
 
 function defaultStateDir(companyId: string, agentId: string): string {
@@ -1121,6 +1117,17 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
   const warmHandles = deps.warmHandles ?? defaultWarmHandles;
 
   return async function executeAcpxLocal(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+    if (ctx.executionTarget?.kind === "kubernetes") {
+      return {
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+        errorCode: "execution_target_not_yet_supported",
+        errorMessage:
+          "Kubernetes execution target is not implemented yet for this adapter. " +
+          "Tenant provisioning is available in M1; agent execution lands in M2.",
+      };
+    }
     const prepared = await buildRuntime({ ctx });
     const warmIdleMs = asNumber(ctx.config.warmHandleIdleMs, DEFAULT_ACPX_LOCAL_WARM_HANDLE_IDLE_MS);
     await cleanupIdleHandles({ handles: warmHandles, now: now(), idleMs: warmIdleMs });

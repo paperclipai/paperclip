@@ -429,6 +429,16 @@ export interface ServerAdapterModule {
    * and provisioned in fresh remote environments such as sandboxes.
    */
   getRuntimeCommandSpec?: (config: Record<string, unknown>) => AdapterRuntimeCommandSpec | null;
+
+  /**
+   * Optional declaration of outbound network endpoints this adapter requires
+   * at runtime. Used by the kubernetes execution target to compose Cilium
+   * FQDN allowlists. Empty/omitted means "no adapter-specific FQDN allowlist
+   * contribution"; the cluster's default allowlist still applies.
+   */
+  networkRequirements?: {
+    allowFqdns?: string[];
+  };
 }
 
 // ---------------------------------------------------------------------------

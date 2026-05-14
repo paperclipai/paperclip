@@ -48,9 +48,16 @@ Paperclip should support explicit review and approval stages as first-class work
 
 Paperclip needs a clearer path from solo operator to real human teams. That means shared board access, safer collaboration, and a better model for several humans supervising the same autonomous company.
 
-### ⚪ Cloud / Sandbox agents (e.g. Cursor / e2b agents)
+### 🔄 Cloud / Sandbox agents (e.g. Cursor / e2b agents)
 
 We want agents to run in more remote and sandboxed environments while preserving the same Paperclip control-plane model. This makes the system safer, more flexible, and more useful outside a single trusted local machine.
+
+- ✅ **Multi-tenant Kubernetes execution target — Milestone 1 (headless tenant provisioning)** — landed 2026-05-09
+  - Spec: [docs/superpowers/specs/2026-05-08-paperclip-cloud-adapter-design.md](docs/superpowers/specs/2026-05-08-paperclip-cloud-adapter-design.md)
+  - Plan: [docs/superpowers/plans/2026-05-08-paperclip-cloud-adapter-m1-plan.md](docs/superpowers/plans/2026-05-08-paperclip-cloud-adapter-m1-plan.md)
+  - Operator quickstart: [docs/k8s-execution/quickstart.md](docs/k8s-execution/quickstart.md)
+  - M2 (agent execution end-to-end on k8s): planned next
+  - M3 (UI + hardening, full V1): planned after M2
 
 ### ⚪ Artifacts & Work Products
 
