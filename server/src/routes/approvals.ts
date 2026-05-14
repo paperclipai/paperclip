@@ -13,11 +13,13 @@ import {
   approvalService,
   heartbeatService,
   issueApprovalService,
+  issueService,
   logActivity,
   secretService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
+import { parseClassificationBlock } from "../lib/authority-classification.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
@@ -37,6 +39,7 @@ export function approvalRoutes(
     pluginWorkerManager: options.pluginWorkerManager,
   });
   const issueApprovalsSvc = issueApprovalService(db);
+  const issuesSvc = issueService(db);
   const secretsSvc = secretService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
@@ -85,6 +88,34 @@ export function approvalRoutes(
             { strictMode: strictSecretsMode },
           )
         : approvalInput.payload;
+
+    // T3 gate: for request_board_approval, reject if linked issues have T3 triggers but no classification block
+    if (approvalInput.type === "request_board_approval" && uniqueIssueIds.length > 0) {
+      const linkedIssues = (await Promise.all(uniqueIssueIds.map((id) => issuesSvc.getById(id))))
+        .filter((issue): issue is NonNullable<typeof issue> => issue !== null && issue !== undefined);
+      for (const linkedIssue of linkedIssues) {
+        const parseResult = parseClassificationBlock(linkedIssue.description ?? "");
+        if (!parseResult.found) {
+          // No classification block at all — check if description hints at T3 triggers
+          const desc = (linkedIssue.description ?? "").toLowerCase();
+          const hasT3Hint =
+            desc.includes("security-sensitive: yes") ||
+            desc.includes("real-world cost: yes") ||
+            desc.includes("environment integrity risk: yes") ||
+            desc.includes("public/reputational action: yes") ||
+            desc.includes("strategic fork: yes");
+          if (hasT3Hint) {
+            res.status(422).json({
+              error: `Issue ${linkedIssue.identifier} describes T3-trigger actions but lacks a parseable Authority Classification block. Add a classification block before requesting board approval.`,
+              code: "t3_classification_block_required",
+              issueId: linkedIssue.id,
+              identifier: linkedIssue.identifier,
+            });
+            return;
+          }
+        }
+      }
+    }
 
     const actor = getActorInfo(req);
     const approval = await svc.create(companyId, {

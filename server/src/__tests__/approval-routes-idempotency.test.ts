@@ -34,6 +34,7 @@ function registerModuleMocks() {
     approvalService: () => mockApprovalService,
     heartbeatService: () => mockHeartbeatService,
     issueApprovalService: () => mockIssueApprovalService,
+    issueService: () => ({ getById: vi.fn(async () => null) }),
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
   }));

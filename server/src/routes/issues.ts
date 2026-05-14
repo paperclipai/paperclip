@@ -82,6 +82,7 @@ import {
   parseIssueExecutionState,
 } from "../services/issue-execution-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { parseClassificationBlock } from "../lib/authority-classification.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -195,7 +196,7 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   // Only human comments should implicitly reopen finished work.
   // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
-  if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
+  if (input.issueStatus !== "blocked") return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
 }
@@ -381,6 +382,31 @@ function buildExecutionStageWakeup(input: {
   }
 
   return null;
+}
+
+
+async function assertT3GateAllowed(
+  linkedApprovalsFn: () => Promise<Array<{ type: string; status: string }>>,
+  description: string | null | undefined,
+  res: import("express").Response,
+): Promise<boolean> {
+  if (!description) return true;
+  const classification = parseClassificationBlock(description);
+  if (classification.block?.tier !== "T3") return true;
+  if (!classification.block.approvalRequired) return true;
+  const linkedApprovals = await linkedApprovalsFn();
+  const hasApproved = linkedApprovals.some(
+    (a) => a.type === "request_board_approval" && a.status === "approved",
+  );
+  if (!hasApproved) {
+    res.status(422).json({
+      error:
+        "T3-classified issue requires an approved board approval (request_board_approval) before status can advance beyond todo/backlog",
+      code: "t3_gate_violation",
+    });
+    return false;
+  }
+  return true;
 }
 
 export function issueRoutes(
@@ -1965,7 +1991,9 @@ export function issueRoutes(
     await assertIssueEnvironmentSelection(existing.companyId, updateFields.executionWorkspaceSettings?.environmentId);
     const requestedAssigneeAgentId =
       normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
-    const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;
+    const isExplicitBoardReassignment =
+      actor.actorType === "user" && normalizedAssigneeAgentId !== undefined;
+    const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true || isExplicitBoardReassignment;
     const effectiveMoveToTodoRequested =
       explicitMoveToTodoRequested ||
       (!!commentBody &&
@@ -2114,6 +2142,30 @@ export function issueRoutes(
     if (assigneeWillChange && !transition.workflowControlledAssignment) {
       if (!isAgentReturningIssueToCreator) {
         await assertCanAssignTasks(req, existing.companyId);
+      }
+    }
+
+    // T3 gate: block status transitions out of todo/backlog for T3 issues without approved board approval
+    {
+      const nextStatus = typeof updateFields.status === "string" ? updateFields.status : existing.status;
+      const isLeavingTodoOrBacklog =
+        (existing.status === "todo" || existing.status === "backlog") &&
+        nextStatus !== existing.status &&
+        nextStatus !== "todo" &&
+        nextStatus !== "backlog" &&
+        nextStatus !== "blocked" &&
+        nextStatus !== "cancelled";
+      if (isLeavingTodoOrBacklog) {
+        try {
+          if (!(await assertT3GateAllowed(
+            () => issueApprovalsSvc.listApprovalsForIssue(existing.id),
+            existing.description,
+            res,
+          ))) return;
+        } catch (gateErr) {
+          logger.error({ err: gateErr, issueId: existing.id }, "T3 gate check threw unexpectedly");
+          throw gateErr;
+        }
       }
     }
 
@@ -2763,6 +2815,13 @@ export function issueRoutes(
 
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
+    // T3 gate: reject checkout if T3-classified without an approved board approval
+    if (!(await assertT3GateAllowed(
+      () => issueApprovalsSvc.listApprovalsForIssue(issue.id),
+      issue.description,
+      res,
+    ))) return;
+
     const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     const actor = getActorInfo(req);
 
@@ -3513,7 +3572,7 @@ export function issueRoutes(
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
       const skipWake = selfComment || isClosed;
-      if (assigneeId && (reopened || !skipWake)) {
+      if (assigneeId && ((reopened && (!selfComment || resumeRequested === true)) || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {
             source: "automation",
