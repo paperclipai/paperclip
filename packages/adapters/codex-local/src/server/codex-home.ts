@@ -49,7 +49,26 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
     await ensureParentDir(target);
-    await fs.symlink(source, target);
+    try {
+      await fs.symlink(source, target);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") {
+        throw error;
+      }
+      // Concurrent setup can create the same symlink after lstat but before symlink.
+      const racedExisting = await fs.lstat(target).catch(() => null);
+      if (!racedExisting?.isSymbolicLink()) {
+        throw error;
+      }
+      const racedLinkedPath = await fs.readlink(target).catch(() => null);
+      if (!racedLinkedPath) {
+        throw error;
+      }
+      const resolvedRacedLinkedPath = path.resolve(path.dirname(target), racedLinkedPath);
+      if (resolvedRacedLinkedPath !== source) {
+        throw error;
+      }
+    }
     return;
   }
 
