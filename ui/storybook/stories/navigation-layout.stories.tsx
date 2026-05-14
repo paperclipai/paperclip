@@ -11,7 +11,6 @@ import {
 } from "lucide-react";
 import { BreadcrumbBar } from "@/components/BreadcrumbBar";
 import { CommandPalette } from "@/components/CommandPalette";
-import { CompanyRail } from "@/components/CompanyRail";
 import { CompanySwitcher } from "@/components/CompanySwitcher";
 import { KeyboardShortcutsCheatsheetContent } from "@/components/KeyboardShortcutsCheatsheet";
 import { MobileBottomNav } from "@/components/MobileBottomNav";
@@ -75,7 +74,6 @@ function SidebarShell({ collapsed = false }: { collapsed?: boolean }) {
   return (
     <div className="h-[520px] overflow-hidden border border-border bg-background">
       <div className="flex h-full min-h-0">
-        <CompanyRail />
         <div className={cn("overflow-hidden transition-[width]", collapsed ? "w-0" : "w-60")}>
           <Sidebar />
         </div>
@@ -246,12 +244,6 @@ function NavigationLayoutStories() {
           <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_220px]">
             <SidebarShell />
             <SidebarShell collapsed />
-          </div>
-        </Section>
-
-        <Section eyebrow="Company rail" title="Multi-company rail with selected, inactive, live, and unread indicators">
-          <div className="h-[420px] w-[72px] overflow-hidden border border-border bg-background">
-            <CompanyRail />
           </div>
         </Section>
 

@@ -67,4 +67,22 @@ describe("buildCodexExecArgs", () => {
       "-",
     ]);
   });
+
+  it("adds --skip-git-repo-check when requested", () => {
+    const result = buildCodexExecArgs(
+      {
+        model: "gpt-5.3-codex",
+      },
+      { skipGitRepoCheck: true },
+    );
+
+    expect(result.args).toEqual([
+      "exec",
+      "--json",
+      "--skip-git-repo-check",
+      "--model",
+      "gpt-5.3-codex",
+      "-",
+    ]);
+  });
 });
