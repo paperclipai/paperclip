@@ -2,10 +2,12 @@ import type { Db } from "@paperclipai/db";
 import {
   agentTaskSessions as agentTaskSessionsTable,
   agents as agentsTable,
+  authUsers,
   budgetIncidents,
   costEvents,
   heartbeatRuns,
   issues as issuesTable,
+  labels as labelsTable,
   pluginLogs,
 } from "@paperclipai/db";
 import { eq, and, like, desc, inArray, sql } from "drizzle-orm";
@@ -22,7 +24,6 @@ import type {
   PluginIssueOrchestrationSummary,
 } from "@paperclipai/plugin-sdk";
 import type { CreateIssueThreadInteraction, IssueDocumentSummary } from "@paperclipai/shared";
-import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
@@ -35,33 +36,18 @@ import { budgetService } from "./budgets.js";
 import { issueApprovalService } from "./issue-approvals.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { randomUUID } from "node:crypto";
-import path from "node:path";
 import { activityService } from "./activity.js";
 import { costService } from "./costs.js";
 import { assetService } from "./assets.js";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { pluginStateStore } from "./plugin-state-store.js";
 import { pluginDatabaseService } from "./plugin-database.js";
-import { pluginManagedAgentService } from "./plugin-managed-agents.js";
-import { pluginManagedRoutineService } from "./plugin-managed-routines.js";
-import { pluginManagedSkillService } from "./plugin-managed-skills.js";
-import {
-  assertConfiguredLocalFolder,
-  assertWritableConfiguredLocalFolder,
-  getStoredLocalFolders,
-  deletePluginLocalFolderFile,
-  inspectPluginLocalFolder,
-  listPluginLocalFolderEntries,
-  preparePluginLocalFolder,
-  readPluginLocalFolderText,
-  requireLocalFolderDeclaration,
-  setStoredLocalFolder,
-  writePluginLocalFolderTextAtomic,
-} from "./plugin-local-folders.js";
 import { createPluginSecretsHandler } from "./plugin-secrets-handler.js";
+import { secretService } from "./secrets.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import { lookup as dnsLookup } from "node:dns/promises";
 import type { IncomingMessage, RequestOptions as HttpRequestOptions } from "node:http";
 import { request as httpRequest } from "node:http";
@@ -478,7 +464,8 @@ export function buildHostServices(
   pluginKey: string,
   eventBus: PluginEventBus,
   notifyWorker?: (method: string, params: unknown) => void,
-  options: { pluginWorkerManager?: PluginWorkerManager; manifest?: import("@paperclipai/shared").PaperclipPluginManifestV1 } = {},
+  lifecycleManager?: PluginLifecycleManager,
+  options: { pluginWorkerManager?: PluginWorkerManager } = {},
 ): HostServices & { dispose(): void } {
   const registry = pluginRegistryService(db);
   const stateStore = pluginStateStore(db);
@@ -486,36 +473,6 @@ export function buildHostServices(
   const secretsHandler = createPluginSecretsHandler({ db, pluginId });
   const companies = companyService(db);
   const agents = agentService(db);
-  const managedAgents = pluginManagedAgentService(db, {
-    pluginId,
-    pluginKey,
-    manifest: options.manifest,
-    instructionTemplateVariables: async (companyId) => {
-      const variables: Record<string, string | null | undefined> = {};
-      for (const declaration of options.manifest?.localFolders ?? []) {
-        const status = await inspectPluginLocalFolder({
-          folderKey: declaration.folderKey,
-          declaration,
-          storedConfig: await getStoredLocalFolderConfig(companyId, declaration.folderKey),
-        });
-        const prefix = `localFolders.${declaration.folderKey}`;
-        variables[`${prefix}.path`] = status.realPath ?? status.path ?? null;
-        variables[`${prefix}.agentsPath`] = status.realPath ? path.join(status.realPath, "AGENTS.md") : null;
-      }
-      return variables;
-    },
-  });
-  const managedRoutines = pluginManagedRoutineService(db, {
-    pluginId,
-    pluginKey,
-    manifest: options.manifest,
-    pluginWorkerManager: options.pluginWorkerManager,
-  });
-  const managedSkills = pluginManagedSkillService(db, {
-    pluginId,
-    pluginKey,
-    manifest: options.manifest,
-  });
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
@@ -565,23 +522,6 @@ export function buildHostServices(
    * availability gate to enforce here.
    */
   const ensurePluginAvailableForCompany = async (_companyId: string) => {};
-
-  const getLocalFolderDeclaration = (folderKey: string) =>
-    requireLocalFolderDeclaration(options.manifest?.localFolders, folderKey);
-
-  const getStoredLocalFolderConfig = async (companyId: string, folderKey: string) => {
-    ensureCompanyId(companyId);
-    await ensurePluginAvailableForCompany(companyId);
-    const settings = await registry.getCompanySettings(pluginId, companyId);
-    return getStoredLocalFolders(settings?.settingsJson)[folderKey] ?? null;
-  };
-
-  const inspectStoredLocalFolder = async (companyId: string, folderKey: string) =>
-    inspectPluginLocalFolder({
-      folderKey,
-      declaration: getLocalFolderDeclaration(folderKey),
-      storedConfig: await getStoredLocalFolderConfig(companyId, folderKey),
-    });
 
   const inCompany = <T extends { companyId: string | null | undefined }>(
     record: T | null | undefined,
@@ -817,91 +757,6 @@ export function buildHostServices(
       },
     },
 
-    localFolders: {
-      async declarations() {
-        return options.manifest?.localFolders ?? [];
-      },
-
-      async configure(params) {
-        const companyId = ensureCompanyId(params.companyId);
-        await ensurePluginAvailableForCompany(companyId);
-        const declaration = getLocalFolderDeclaration(params.folderKey);
-        const existing = await registry.getCompanySettings(pluginId, companyId);
-        const existingConfig = getStoredLocalFolders(existing?.settingsJson)[params.folderKey] ?? null;
-        await preparePluginLocalFolder({
-          folderKey: params.folderKey,
-          declaration,
-          storedConfig: existingConfig,
-          overrideConfig: {
-            path: params.path,
-          },
-        });
-        const status = await inspectPluginLocalFolder({
-          folderKey: params.folderKey,
-          declaration,
-          storedConfig: existingConfig,
-          overrideConfig: {
-            path: params.path,
-          },
-        });
-
-        const nextSettings = setStoredLocalFolder(existing?.settingsJson, params.folderKey, {
-          path: params.path,
-          access: status.access,
-          requiredDirectories: status.requiredDirectories,
-          requiredFiles: status.requiredFiles,
-        });
-        await registry.upsertCompanySettings(pluginId, companyId, {
-          enabled: existing?.enabled ?? true,
-          settingsJson: nextSettings,
-          lastError: status.healthy ? null : status.problems.map((item: { message: string }) => item.message).join("; "),
-        });
-        return status;
-      },
-
-      async status(params) {
-        return inspectStoredLocalFolder(params.companyId, params.folderKey);
-      },
-
-      async list(params) {
-        const status = await inspectStoredLocalFolder(params.companyId, params.folderKey);
-        assertConfiguredLocalFolder(status);
-        const listing = await listPluginLocalFolderEntries(status.realPath!, {
-          relativePath: params.relativePath,
-          recursive: params.recursive,
-          maxEntries: params.maxEntries,
-        });
-        return { ...listing, folderKey: params.folderKey };
-      },
-
-      async readText(params) {
-        const status = await inspectStoredLocalFolder(params.companyId, params.folderKey);
-        assertConfiguredLocalFolder(status);
-        return readPluginLocalFolderText(status.realPath!, params.relativePath);
-      },
-
-      async writeTextAtomic(params) {
-        const companyId = ensureCompanyId(params.companyId);
-        await preparePluginLocalFolder({
-          folderKey: params.folderKey,
-          declaration: getLocalFolderDeclaration(params.folderKey),
-          storedConfig: await getStoredLocalFolderConfig(companyId, params.folderKey),
-        });
-        const status = await inspectStoredLocalFolder(companyId, params.folderKey);
-        assertWritableConfiguredLocalFolder(status);
-        await writePluginLocalFolderTextAtomic(status.realPath!, params.relativePath, params.contents);
-        return inspectStoredLocalFolder(companyId, params.folderKey);
-      },
-
-      async deleteFile(params) {
-        const companyId = ensureCompanyId(params.companyId);
-        const status = await inspectStoredLocalFolder(companyId, params.folderKey);
-        assertWritableConfiguredLocalFolder(status);
-        await deletePluginLocalFolderFile(status.realPath!, params.relativePath, params.folderKey);
-        return inspectStoredLocalFolder(companyId, params.folderKey);
-      },
-    },
-
     state: {
       async get(params) {
         return stateStore.get(pluginId, params.scopeKind as any, params.stateKey, {
@@ -989,6 +844,45 @@ export function buildHostServices(
     secrets: {
       async resolve(params) {
         return secretsHandler.resolve(params);
+      },
+      async list(params) {
+        const svc = secretService(db);
+        return svc.list(params.companyId);
+      },
+      async providers(params) {
+        const svc = secretService(db);
+        return svc.listProviders();
+      },
+      async create(params) {
+        const svc = secretService(db);
+        return svc.create(
+          params.companyId,
+          {
+            name: params.name,
+            provider: (params.provider ?? "local_encrypted") as import("@paperclipai/shared").SecretProvider,
+            value: params.value,
+            description: params.description,
+            externalRef: params.externalRef,
+          },
+          { userId: `plugin:${pluginKey}`, agentId: null },
+        );
+      },
+      async rotate(params) {
+        const svc = secretService(db);
+        return svc.rotate(params.id, { value: params.value, externalRef: params.externalRef });
+      },
+      async update(params) {
+        const svc = secretService(db);
+        return svc.update(params.id, {
+          name: params.name,
+          description: params.description,
+          externalRef: params.externalRef,
+        });
+      },
+      async remove(params) {
+        const svc = secretService(db);
+        await svc.remove(params.id);
+        return { ok: true as const };
       },
     },
 
@@ -1090,6 +984,27 @@ export function buildHostServices(
       },
     },
 
+    users: {
+      async get(params: { userId: string }) {
+        const rows = await db
+          .select({ id: authUsers.id, email: authUsers.email, name: authUsers.name })
+          .from(authUsers)
+          .where(eq(authUsers.id, params.userId))
+          .limit(1);
+        return rows[0] ?? null;
+      },
+      async findByEmail(params: { email: string }) {
+        const normalized = params.email.trim().toLowerCase();
+        if (!normalized) return null;
+        const rows = await db
+          .select({ id: authUsers.id, email: authUsers.email, name: authUsers.name })
+          .from(authUsers)
+          .where(sql`lower(${authUsers.email}) = ${normalized}`)
+          .limit(1);
+        return rows[0] ?? null;
+      },
+    },
+
     projects: {
       async list(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -1141,6 +1056,25 @@ export function buildHostServices(
         };
       },
 
+      // Lucitra extension: project create/update
+      async create(params: { companyId: string; name: string; description?: string; status?: string; targetDate?: string; color?: string }) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return (await projects.create(companyId, {
+          name: params.name,
+          description: params.description,
+          status: params.status as any ?? "backlog",
+          targetDate: params.targetDate,
+          color: params.color,
+        })) as Project;
+      },
+      async update(params: { projectId: string; companyId: string; patch: Record<string, unknown> }) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        requireInCompany("Project", await projects.getById(params.projectId), companyId);
+        return (await projects.update(params.projectId, params.patch as any)) as Project;
+      },
+
       async getWorkspaceForIssue(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
@@ -1163,95 +1097,6 @@ export function buildHostServices(
           updatedAt: (row?.updatedAt ?? project.updatedAt).toISOString(),
         };
       },
-      async getManaged(params) {
-        const companyId = ensureCompanyId(params.companyId);
-        await ensurePluginAvailableForCompany(companyId);
-        return projects.resolveManagedProject({
-          companyId,
-          pluginId,
-          pluginKey,
-          projectKey: params.projectKey,
-          createIfMissing: false,
-        });
-      },
-      async reconcileManaged(params) {
-        const companyId = ensureCompanyId(params.companyId);
-        await ensurePluginAvailableForCompany(companyId);
-        return projects.resolveManagedProject({
-          companyId,
-          pluginId,
-          pluginKey,
-          projectKey: params.projectKey,
-        });
-      },
-      async resetManaged(params) {
-        const companyId = ensureCompanyId(params.companyId);
-        await ensurePluginAvailableForCompany(companyId);
-        return projects.resolveManagedProject({
-          companyId,
-          pluginId,
-          pluginKey,
-          projectKey: params.projectKey,
-          reset: true,
-        });
-      },
-    },
-
-    routines: {
-      async managedGet(params) {
-        const companyId = ensureCompanyId(params.companyId);
-        await ensurePluginAvailableForCompany(companyId);
-        return managedRoutines.get(params.routineKey, companyId);
-      },
-      async managedReconcile(params) {
-        const companyId = ensureCompanyId(params.companyId);
-        await ensurePluginAvailableForCompany(companyId);
-        return managedRoutines.reconcile(params.routineKey, companyId, {
-          assigneeAgentId: params.assigneeAgentId,
-          projectId: params.projectId,
-        });
-      },
-      async managedReset(params) {
-        const companyId = ensureCompanyId(params.companyId);
-        await ensurePluginAvailableForCompany(companyId);
-        return managedRoutines.reset(params.routineKey, companyId, {
-          assigneeAgentId: params.assigneeAgentId,
-          projectId: params.projectId,
-        });
-      },
-      async managedUpdate(params) {
-        const companyId = ensureCompanyId(params.companyId);
-        await ensurePluginAvailableForCompany(companyId);
-        return managedRoutines.update(params.routineKey, companyId, {
-          status: params.status,
-        });
-      },
-      async managedRun(params) {
-        const companyId = ensureCompanyId(params.companyId);
-        await ensurePluginAvailableForCompany(companyId);
-        return managedRoutines.run(params.routineKey, companyId, {
-          assigneeAgentId: params.assigneeAgentId,
-          projectId: params.projectId,
-        });
-      },
-    },
-
-    skills: {
-      async managedGet(params) {
-        const companyId = ensureCompanyId(params.companyId);
-        await ensurePluginAvailableForCompany(companyId);
-        return managedSkills.get(params.skillKey, companyId);
-      },
-      async managedReconcile(params) {
-        const companyId = ensureCompanyId(params.companyId);
-        await ensurePluginAvailableForCompany(companyId);
-        return managedSkills.reconcile(params.skillKey, companyId);
-      },
-      async managedReset(params) {
-        const companyId = ensureCompanyId(params.companyId);
-        await ensurePluginAvailableForCompany(companyId);
-        return managedSkills.reset(params.skillKey, companyId);
-      },
     },
 
     issues: {
@@ -1267,15 +1112,35 @@ export function buildHostServices(
         const issue = await issues.getById(params.issueId);
         return (inCompany(issue, companyId) ? issue : null) as Issue | null;
       },
+      async getByLinearIssueId(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const issue = await issues.getByLinearIssueId(companyId, params.linearIssueId);
+        // Defense in depth: the underlying query is already scoped to
+        // companyId, so an `issue` whose companyId mismatches is data
+        // corruption (link row + issue row out of sync on company
+        // attribution). Surface as console.error rather than silently
+        // returning null — the silent path makes the caller mint a
+        // duplicate Linear issue, which is exactly the loop the new
+        // dedup is supposed to close. Direct field comparison avoids
+        // `inCompany`'s type predicate narrowing `issue` to `null` in
+        // the negative branch.
+        if (issue && issue.companyId !== companyId) {
+          console.error(
+            `[plugin-host-services.issues.getByLinearIssueId] linear_issue_links ` +
+              `row for companyId=${companyId} linearIssueId=${params.linearIssueId} ` +
+              `resolved to issue ${issue.id} whose companyId=${issue.companyId} ` +
+              `differs — data integrity skew, returning null.`,
+          );
+          return null;
+        }
+        return issue as Issue | null;
+      },
       async create(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const { actorAgentId, actorUserId, actorRunId, originKind, surfaceVisibility, ...issueInput } = params;
-        const normalizedOriginKind = normalizePluginOriginKind(
-          surfaceVisibility === "plugin_operation" && !originKind
-            ? pluginOperationIssueOriginKind(pluginKey)
-            : originKind,
-        );
+        const { actorAgentId, actorUserId, actorRunId, originKind, ...issueInput } = params;
+        const normalizedOriginKind = normalizePluginOriginKind(originKind);
         const issue = (await issues.create(companyId, {
           ...(issueInput as any),
           originKind: normalizedOriginKind,
@@ -1292,7 +1157,17 @@ export function buildHostServices(
           actor: { actorAgentId, actorUserId, actorRunId },
           details: {
             title: issue.title,
+            // `description` is forwarded so issue.created event subscribers
+            // (notably paperclip-plugin-linear's bidirectional sync at
+            // worker.ts:899) receive the body the plugin minted with. Without
+            // it, the Linear-side mirror lands with an empty description —
+            // observed 2026-05-04 with paperclip-plugin-alertmanager: paperclip
+            // rows had 1.2KB descriptions, Linear mirrors had nothing.
+            description: issue.description,
             identifier: issue.identifier,
+            status: issue.status,
+            priority: issue.priority,
+            assigneeUserId: issue.assigneeUserId,
             originKind: normalizedOriginKind,
             originId: issue.originId,
             billingCode: issue.billingCode,
@@ -1779,6 +1654,69 @@ export function buildHostServices(
       },
     },
 
+    // Lucitra extension: labels API for plugin use (not in upstream SDK)
+    labels: {
+      async list(params: { companyId: string }) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const rows = await db.select().from(labelsTable)
+          .where(eq(labelsTable.companyId, companyId))
+          .orderBy(labelsTable.name);
+        return rows;
+      },
+      async create(params: { companyId: string; name: string; color: string }) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const [created] = await db.insert(labelsTable)
+          .values({ companyId, name: params.name, color: params.color })
+          .onConflictDoNothing()
+          .returning();
+        if (created) return created;
+        // Already exists — fetch it
+        const [existing] = await db.select().from(labelsTable)
+          .where(and(eq(labelsTable.companyId, companyId), eq(labelsTable.name, params.name)))
+          .limit(1);
+        return existing ?? null;
+      },
+    },
+
+    // Lucitra extension: plugin management API
+    plugins: {
+      async list(params: { status?: string }) {
+        const rows = params.status
+          ? await registry.listByStatus(params.status as any)
+          : await registry.listInstalled();
+        return rows.map((r: any) => ({
+          id: r.id,
+          pluginKey: r.pluginKey,
+          packageName: r.packageName,
+          version: r.version,
+          status: r.status,
+        }));
+      },
+      async upgrade(params: { pluginId: string; version?: string }) {
+        if (!lifecycleManager) {
+          throw new Error("Plugin upgrade is not available — lifecycle manager not configured");
+        }
+        const before = await registry.getById(params.pluginId);
+        if (!before) throw new Error(`Plugin not found: ${params.pluginId}`);
+        const oldVersion = before.version;
+        const result = await lifecycleManager.upgrade(params.pluginId, params.version);
+        // Compute added capabilities by comparing old vs new manifest
+        const oldCaps = before.manifestJson?.capabilities ?? [];
+        const newCaps = result.manifestJson?.capabilities ?? [];
+        const addedCapabilities = (newCaps as string[]).filter(
+          (cap: string) => !(oldCaps as string[]).includes(cap),
+        );
+        return {
+          oldVersion,
+          newVersion: result.version,
+          status: result.status,
+          addedCapabilities,
+        };
+      },
+    },
+
     issueDocuments: {
       async list(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -1883,21 +1821,6 @@ export function buildHostServices(
         });
         if (!run) throw new Error("Agent wakeup was skipped by heartbeat policy");
         return { runId: run.id };
-      },
-      async managedGet(params) {
-        const companyId = ensureCompanyId(params.companyId);
-        await ensurePluginAvailableForCompany(companyId);
-        return managedAgents.get(params.agentKey, companyId);
-      },
-      async managedReconcile(params) {
-        const companyId = ensureCompanyId(params.companyId);
-        await ensurePluginAvailableForCompany(companyId);
-        return managedAgents.reconcile(params.agentKey, companyId);
-      },
-      async managedReset(params) {
-        const companyId = ensureCompanyId(params.companyId);
-        await ensurePluginAvailableForCompany(companyId);
-        return managedAgents.reset(params.agentKey, companyId);
       },
     },
 

@@ -16,6 +16,8 @@ import type {
   PluginToolDeclaration,
   PluginLauncherDeclaration,
   Company,
+  CompanySecret,
+  SecretProviderDescriptor,
   Project,
   Issue,
   IssueComment,
@@ -105,6 +107,8 @@ export type {
   PluginEventType,
   PluginBridgeErrorCode,
   Company,
+  CompanySecret,
+  SecretProviderDescriptor,
   Project,
   Issue,
   IssueComment,
@@ -604,6 +608,27 @@ export interface PluginSecretsClient {
    * @returns The resolved secret value
    */
   resolve(secretRef: string): Promise<string>;
+
+  /** List all secrets for a company. Requires `secrets.list`. */
+  list(companyId: string): Promise<CompanySecret[]>;
+
+  /** List available secret providers. Requires `secrets.list`. */
+  providers(companyId: string): Promise<SecretProviderDescriptor[]>;
+
+  /** Create a new secret. Requires `secrets.manage`. */
+  create(
+    companyId: string,
+    data: { name: string; value: string; provider?: string; description?: string | null; externalRef?: string | null },
+  ): Promise<CompanySecret>;
+
+  /** Rotate a secret's value. Requires `secrets.manage`. */
+  rotate(id: string, data: { value: string; externalRef?: string | null }): Promise<CompanySecret>;
+
+  /** Update secret metadata. Requires `secrets.manage`. */
+  update(id: string, data: { name?: string; description?: string | null; externalRef?: string | null }): Promise<CompanySecret>;
+
+  /** Delete a secret. Requires `secrets.manage`. */
+  remove(id: string): Promise<{ ok: true }>;
 }
 
 /**
@@ -775,6 +800,12 @@ export interface PluginProjectsClient {
    * Requires the `projects.read` capability.
    */
   get(projectId: string, companyId: string): Promise<Project | null>;
+
+  /** Create a new project. Requires `projects.create`. Lucitra extension. */
+  create(input: { companyId: string; name: string; description?: string; status?: string; targetDate?: string; color?: string }): Promise<Project>;
+
+  /** Update a project. Requires `projects.update`. Lucitra extension. */
+  update(projectId: string, patch: Record<string, unknown>, companyId: string): Promise<Project>;
 
   /**
    * List all workspaces attached to a project.
@@ -999,6 +1030,41 @@ export interface PluginCompaniesClient {
    * Get one company by ID.
    */
   get(companyId: string): Promise<Company | null>;
+}
+
+/**
+ * Public user identity. Returned by `ctx.users.*` lookups so plugins can
+ * resolve a Paperclip user record to email/name for cross-system mapping
+ * (Linear assignees, Slack DMs, etc.). Authentication-sensitive fields
+ * (`emailVerified`, `image`, `createdAt`) intentionally omitted.
+ */
+export interface PluginUser {
+  id: string;
+  email: string;
+  name: string;
+}
+
+/**
+ * `ctx.users` — read instance user identity for cross-system mapping.
+ *
+ * Requires `users.read` capability. Lazy-on-first-need: plugins typically
+ * use `findByEmail` to resolve a Linear/Slack user's email back to a
+ * Paperclip user id for assignment, then cache the mapping in plugin state.
+ *
+ * Scoped at the instance level (not per-company) since `auth_users` is
+ * itself instance-global. Company-scoped checks are the caller's
+ * responsibility — pair with `instanceUserRoles` or company membership
+ * lookups when "is this user a member of company X?" matters.
+ */
+export interface PluginUsersClient {
+  /** Get one user by id. Returns null when not found. */
+  get(userId: string): Promise<PluginUser | null>;
+
+  /**
+   * Find a user by exact email match. Returns null when no user has that
+   * email. `email` is matched case-insensitively against the stored value.
+   */
+  findByEmail(email: string): Promise<PluginUser | null>;
 }
 
 /**
@@ -1270,6 +1336,16 @@ export interface PluginIssuesClient {
     offset?: number;
   }): Promise<Issue[]>;
   get(issueId: string, companyId: string): Promise<Issue | null>;
+  /**
+   * Look up a paperclip issue by its Linear-side issue id (UUID), via
+   * the host's `linear_issue_links` table. Returns null when no link
+   * row exists for (companyId, linearIssueId). Required for the Linear
+   * plugin's pre-create dedup so it can detect mirrors written by the
+   * host's allocator path that the plugin's existing originKind+originId
+   * lookup misses (those mirrors carry a different originKind on the
+   * paperclip row but appear in linear_issue_links). Requires `issues.read`.
+   */
+  getByLinearIssueId(input: { linearIssueId: string; companyId: string }): Promise<Issue | null>;
   create(input: {
     companyId: string;
     projectId?: string;
@@ -1295,6 +1371,16 @@ export interface PluginIssuesClient {
     executionWorkspacePreference?: string | null;
     executionWorkspaceSettings?: Record<string, unknown> | null;
     actor?: PluginIssueMutationActor;
+    /**
+     * Mirror an existing Linear issue. When set, the host skips Linear's
+     * IssueCreate API call (for linear-provider companies) and writes a
+     * linear_issue_links row binding this paperclip issue to the supplied
+     * Linear issue. Use from Linear-side webhooks/sync that import an
+     * existing Linear issue rather than create one — without this, post-
+     * cutover imports duplicate Linear issues and the resulting host link
+     * row points at the duplicate, not the original.
+     */
+    linkedLinearIssue?: { id: string; identifier: string };
   }): Promise<Issue>;
   update(
     issueId: string,
@@ -1517,10 +1603,41 @@ export interface PluginGoalsClient {
     goalId: string,
     patch: Partial<Pick<
       Goal,
-      "title" | "description" | "level" | "status" | "parentId" | "ownerAgentId"
+      "title" | "description" | "level" | "status" | "parentId" | "ownerAgentId" | "targetDate"
     >>,
     companyId: string,
   ): Promise<Goal>;
+}
+
+// ---------------------------------------------------------------------------
+// Plugin management client (Lucitra extension)
+// ---------------------------------------------------------------------------
+
+/**
+ * Client for discovering and managing installed plugins.
+ *
+ * Requires `plugins.read` for list operations and `plugins.upgrade` for
+ * triggering upgrades.
+ *
+ * @see PLUGIN_SPEC.md §15 — Capability Model (Lucitra extension)
+ */
+export interface PluginPluginsClient {
+  /** List installed plugins, optionally filtered by status. */
+  list(options?: { status?: string }): Promise<Array<{
+    id: string;
+    pluginKey: string;
+    packageName: string;
+    version: string;
+    status: string;
+  }>>;
+
+  /** Trigger upgrade for a plugin. Returns old/new version and resulting status. */
+  upgrade(pluginId: string, version?: string): Promise<{
+    oldVersion: string;
+    newVersion: string;
+    status: string;
+    addedCapabilities: string[];
+  }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1651,8 +1768,20 @@ export interface PluginContext {
   /** Read company metadata. Requires `companies.read`. */
   companies: PluginCompaniesClient;
 
+  /** Read instance user identity. Requires `users.read`. */
+  users: PluginUsersClient;
+
   /** Read and write issues, comments, and documents. Requires issue capabilities. */
   issues: PluginIssuesClient;
+
+  /** Read and create labels. Requires `labels.read` / `labels.create`. Lucitra extension. */
+  labels: {
+    list(companyId: string): Promise<Array<{ id: string; name: string; color: string; companyId: string }>>;
+    create(companyId: string, name: string, color: string): Promise<{ id: string; name: string; color: string; companyId: string } | null>;
+  };
+
+  /** Discover and manage installed plugins. Requires `plugins.read` / `plugins.upgrade`. Lucitra extension. */
+  plugins: PluginPluginsClient;
 
   /** Read and manage agents. Requires `agents.read` for reads; `agents.pause` / `agents.resume` / `agents.invoke` for write ops. */
   agents: PluginAgentsClient;
@@ -1680,4 +1809,36 @@ export interface PluginContext {
 
   /** Structured logger. Output is captured and surfaced in the plugin health dashboard. */
   logger: PluginLogger;
+
+  /**
+   * Generic JSON-RPC escape hatch. Lets plugins invoke any host method
+   * by name, including methods added to the wire protocol after the
+   * SDK's typed clients were published. Capability checks still apply
+   * — the host rejects calls the plugin's manifest doesn't authorize.
+   *
+   * Prefer the typed clients (`ctx.projects.update`, etc.) when they
+   * exist. This is the unsafe-but-flexible fallback for forward
+   * compatibility. The caller is responsible for shape validation on
+   * params and the return value.
+   *
+   * @example
+   *   const updated = await ctx.rpc.call("projects.update", {
+   *     projectId: "abc",
+   *     patch: { name: "New name" },
+   *     companyId: "xyz",
+   *   });
+   */
+  rpc: PluginRpcClient;
+}
+
+/**
+ * Generic RPC client — for forward-compat access to host methods that
+ * predate the typed SDK clients on the operator's installed version.
+ */
+export interface PluginRpcClient {
+  call<TResult = unknown>(
+    method: string,
+    params?: unknown,
+    timeoutMs?: number,
+  ): Promise<TResult>;
 }

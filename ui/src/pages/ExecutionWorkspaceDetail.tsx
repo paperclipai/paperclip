@@ -296,7 +296,7 @@ function ExecutionWorkspaceIssuesList({
     queryKey: queryKeys.liveRuns(companyId),
     queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
     enabled: !!companyId,
-    refetchInterval: 5000,
+    refetchInterval: 10_000,
   });
 
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);

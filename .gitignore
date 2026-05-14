@@ -56,3 +56,7 @@ tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
+.claude/scheduled_tasks.lock
+
+# Build artifacts — never commit; the Dockerfile vendor stage rebuilds these from source
+vendor/*.tgz

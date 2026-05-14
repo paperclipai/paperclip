@@ -4,33 +4,28 @@ import { fileURLToPath } from "node:url";
 import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
+  adapterExecutionTargetPaperclipApiUrl,
   adapterExecutionTargetRemoteCwd,
-  overrideAdapterExecutionTargetRemoteCwd,
   adapterExecutionTargetSessionIdentity,
   adapterExecutionTargetSessionMatches,
-  adapterExecutionTargetUsesPaperclipBridge,
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
-  ensureAdapterExecutionTargetRuntimeCommandInstalled,
   prepareAdapterExecutionTargetRuntime,
   readAdapterExecutionTarget,
-  resolveAdapterExecutionTargetTimeoutSec,
   resolveAdapterExecutionTargetCommandForLogs,
   runAdapterExecutionTargetProcess,
-  startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
   asString,
   asNumber,
   parseObject,
+  applyPaperclipWorkspaceEnv,
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
-  refreshPaperclipWorkspaceEnvForExecution,
   readPaperclipRuntimeSkillEntries,
-  readPaperclipIssueWorkModeFromContext,
   resolvePaperclipDesiredSkillNames,
   renderTemplate,
   renderPaperclipWakePrompt,
@@ -47,7 +42,6 @@ import {
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
-import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
@@ -328,23 +322,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
   });
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
+  // When running on a remote SSH host, opt out of Paperclip's CODEX_HOME sync
+  // and let codex use the host's native ~/.codex/. Useful when the host runs
+  // ccrotate (or another credential manager) that owns auth.json directly.
+  // Set via the agent's adapterConfig.env or as a pod-wide env var.
+  const isHostNativeOptIn = (value: unknown): boolean =>
+    typeof value === "boolean"
+      ? value
+      : typeof value === "string" && value.trim().toLowerCase() === "true";
+  const useHostNativeCodexHome =
+    executionTargetIsRemote &&
+    (isHostNativeOptIn(envConfig.PAPERCLIP_CODEX_USE_HOST_HOME) ||
+      isHostNativeOptIn(process.env.PAPERCLIP_CODEX_USE_HOST_HOME));
   const configuredCodexHome =
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
       ? path.resolve(envConfig.CODEX_HOME.trim())
       : null;
   const codexSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = resolveCodexDesiredSkillNames(config, codexSkillEntries);
-  await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
-  const configuredOpenAiApiKey =
-    typeof envConfig.OPENAI_API_KEY === "string" && envConfig.OPENAI_API_KEY.trim().length > 0
-      ? envConfig.OPENAI_API_KEY.trim()
-      : null;
+  if (!executionTargetIsRemote) {
+    await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  }
   const preparedManagedCodexHome =
-    configuredCodexHome
-      ? null
-      : await prepareManagedCodexHome(process.env, onLog, agent.companyId, {
-          apiKey: configuredOpenAiApiKey,
-        });
+    configuredCodexHome ? null : await prepareManagedCodexHome(process.env, onLog, agent.companyId);
   const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
   const effectiveCodexHome = configuredCodexHome ?? preparedManagedCodexHome ?? defaultCodexHome;
   await fs.mkdir(effectiveCodexHome, { recursive: true });
@@ -359,47 +359,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       desiredSkillNames,
     },
   );
-  const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
-    executionTarget,
-    asNumber(config.timeoutSec, 0),
-  );
-  const graceSec = asNumber(config.graceSec, 20);
-  let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
+  const effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   const preparedExecutionTargetRuntime = executionTargetIsRemote
     ? await (async () => {
         await onLog(
           "stdout",
-          `[paperclip] Syncing workspace and CODEX_HOME to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+          useHostNativeCodexHome
+            ? `[paperclip] Syncing workspace to ${describeAdapterExecutionTarget(executionTarget)} (using host's native CODEX_HOME).\n`
+            : `[paperclip] Syncing workspace and CODEX_HOME to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
         );
         return await prepareAdapterExecutionTargetRuntime({
-          runId,
           target: executionTarget,
           adapterKey: "codex",
-          timeoutSec,
           workspaceLocalDir: cwd,
-          installCommand: SANDBOX_INSTALL_COMMAND,
-          detectCommand: command,
-          assets: [
-            {
-              key: "home",
-              localDir: effectiveCodexHome,
-              followSymlinks: true,
-            },
-          ],
+          assets: useHostNativeCodexHome
+            ? []
+            : [
+                {
+                  key: "home",
+                  localDir: effectiveCodexHome,
+                  followSymlinks: true,
+                },
+              ],
         });
       })()
     : null;
-  if (preparedExecutionTargetRuntime?.workspaceRemoteDir) {
-    effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir;
-  }
-  const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
-  const executionTargetIsSandbox =
-    runtimeExecutionTarget?.kind === "remote" && runtimeExecutionTarget.transport === "sandbox";
   const restoreRemoteWorkspace = preparedExecutionTargetRuntime
     ? () => preparedExecutionTargetRuntime.restoreWorkspace()
     : null;
-  let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
-  const remoteCodexHome = executionTargetIsRemote
+  const remoteCodexHome = executionTargetIsRemote && !useHostNativeCodexHome
     ? preparedExecutionTargetRuntime?.assetDirs.home ??
       path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "codex", "home")
     : null;
@@ -431,12 +419,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
   const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
-  const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
   if (wakeTaskId) {
     env.PAPERCLIP_TASK_ID = wakeTaskId;
-  }
-  if (issueWorkMode) {
-    env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
   }
   if (wakeReason) {
     env.PAPERCLIP_WAKE_REASON = wakeReason;
@@ -456,9 +440,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (wakePayloadJson) {
     env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
   }
-  refreshPaperclipWorkspaceEnvForExecution({
-    env,
-    envConfig,
+  applyPaperclipWorkspaceEnv(env, {
     workspaceCwd: effectiveWorkspaceCwd,
     workspaceSource,
     workspaceStrategy,
@@ -467,11 +449,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     workspaceRepoRef,
     workspaceBranch,
     workspaceWorktreePath,
-    workspaceHints,
     agentHome,
-    executionTargetIsRemote,
-    executionCwd: effectiveExecutionCwd,
   });
+  if (workspaceHints.length > 0) {
+    env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
+  }
   if (runtimeServiceIntents.length > 0) {
     env.PAPERCLIP_RUNTIME_SERVICE_INTENTS_JSON = JSON.stringify(runtimeServiceIntents);
   }
@@ -481,23 +463,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (runtimePrimaryUrl) {
     env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
   }
-  env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
+  const targetPaperclipApiUrl = adapterExecutionTargetPaperclipApiUrl(executionTarget);
+  if (targetPaperclipApiUrl) {
+    env.PAPERCLIP_API_URL = targetPaperclipApiUrl;
+  }
+  for (const [k, v] of Object.entries(envConfig)) {
+    if (typeof v === "string") env[k] = v;
+  }
+  if (useHostNativeCodexHome) {
+    delete env.CODEX_HOME;
+  } else {
+    env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
+  }
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
-  }
-  if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
-    paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
-      runId,
-      target: runtimeExecutionTarget,
-      runtimeRootDir: preparedExecutionTargetRuntime?.runtimeRootDir,
-      adapterKey: "codex",
-      timeoutSec,
-      hostApiToken: env.PAPERCLIP_API_KEY,
-      onLog,
-    });
-    if (paperclipBridge) {
-      Object.assign(env, paperclipBridge.env);
-    }
   }
   const effectiveEnv = Object.fromEntries(
     Object.entries({ ...process.env, ...env }).filter(
@@ -505,22 +484,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ),
   );
   const billingType = resolveCodexBillingType(effectiveEnv);
-  const runtimeEnv = Object.fromEntries(
-    Object.entries(ensurePathInEnv(effectiveEnv)).filter(
-      (entry): entry is [string, string] => typeof entry[1] === "string",
-    ),
-  );
-  await ensureAdapterExecutionTargetRuntimeCommandInstalled({
-    runId,
-    target: executionTarget,
-    installCommand: ctx.runtimeCommandSpec?.installCommand,
-    detectCommand: ctx.runtimeCommandSpec?.detectCommand,
-    cwd,
-    env: runtimeEnv,
-    timeoutSec,
-    graceSec,
-    onLog,
-  });
+  const runtimeEnv = ensurePathInEnv(effectiveEnv);
   await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv);
   const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
   const loggedEnv = buildInvocationEnvForLogs(env, {
@@ -529,6 +493,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     resolvedCommand,
   });
 
+  const timeoutSec = asNumber(config.timeoutSec, 0);
+  const graceSec = asNumber(config.graceSec, 20);
+
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
@@ -536,7 +503,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const canResumeSession =
     runtimeSessionId.length > 0 &&
     (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
-    adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
+    adapterExecutionTargetSessionMatches(runtimeRemoteExecution, executionTarget);
   const codexTransientFallbackMode = readCodexTransientFallbackMode(context);
   const forceSaferInvocation = fallbackModeUsesSaferInvocation(codexTransientFallbackMode);
   const forceFreshSession = fallbackModeUsesFreshSession(codexTransientFallbackMode);
@@ -653,11 +620,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     return notes;
   })();
-  if (executionTargetIsSandbox) {
-    commandNotes.push(
-      "Added --skip-git-repo-check for sandbox execution because Codex requires an explicit trust bypass in headless remote workspaces.",
-    );
-  }
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const prompt = joinPromptSections([
@@ -680,10 +642,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runAttempt = async (resumeSessionId: string | null) => {
     const execArgs = buildCodexExecArgs(
       forceSaferInvocation ? { ...config, fastMode: false } : config,
-      {
-        resumeSessionId,
-        skipGitRepoCheck: executionTargetIsSandbox,
-      },
+      { resumeSessionId },
     );
     const args = execArgs.args;
     const commandNotesWithFastMode =
@@ -707,7 +666,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
-    const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+    const proc = await runAdapterExecutionTargetProcess(runId, executionTarget, command, args, {
       cwd,
       env,
       stdin: prompt,
@@ -760,7 +719,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         cwd: effectiveExecutionCwd,
         ...(executionTargetIsRemote
           ? {
-              remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
+              remoteExecution: adapterExecutionTargetSessionIdentity(executionTarget),
             }
           : {}),
         ...(workspaceId ? { workspaceId } : {}),
@@ -843,9 +802,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     return toResult(initial, false, false);
   } finally {
-    if (paperclipBridge) {
-      await paperclipBridge.stop();
-    }
     if (restoreRemoteWorkspace) {
       await onLog(
         "stdout",

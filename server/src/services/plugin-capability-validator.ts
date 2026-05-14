@@ -99,6 +99,10 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "db.migrate": ["database.namespace.migrate"],
   "db.execute": ["database.namespace.write"],
 
+  // Plugin management operations (Lucitra extension)
+  "plugins.list": ["plugins.read"],
+  "plugins.upgrade": ["plugins.upgrade"],
+
   // Plugin state operations
   "plugin.state.get": ["plugin.state.read"],
   "plugin.state.list": ["plugin.state.read"],

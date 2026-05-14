@@ -112,6 +112,13 @@ interface PluginInstallRequest {
   version?: string;
   /** True if packageName is a local filesystem path */
   isLocalPath?: boolean;
+  /**
+   * Repoint an already-installed plugin to a new local path/packageName
+   * (in-place metadata update, no worker restart). Only valid alongside
+   * `isLocalPath: true`. Used by the kkroo bundled-plugin bootstrap to fix
+   * packageName drift between an in-image bundle and the registry row.
+   */
+  force?: boolean;
 }
 
 interface AvailablePluginExample {
@@ -851,7 +858,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/install", async (req, res) => {
     assertInstanceAdmin(req);
-    const { packageName, version, isLocalPath } = req.body as PluginInstallRequest;
+    const { packageName, version, isLocalPath, force } = req.body as PluginInstallRequest;
 
     // Input validation
     if (!packageName || typeof packageName !== "string") {
@@ -866,6 +873,16 @@ export function pluginRoutes(
 
     if (isLocalPath !== undefined && typeof isLocalPath !== "boolean") {
       res.status(400).json({ error: "isLocalPath must be a boolean if provided" });
+      return;
+    }
+
+    if (force !== undefined && typeof force !== "boolean") {
+      res.status(400).json({ error: "force must be a boolean if provided" });
+      return;
+    }
+
+    if (force === true && isLocalPath !== true) {
+      res.status(400).json({ error: "force is only valid when isLocalPath is true" });
       return;
     }
 
@@ -884,7 +901,7 @@ export function pluginRoutes(
 
     try {
       const installOptions = isLocalPath
-        ? { localPath: trimmedPackage }
+        ? { localPath: trimmedPackage, ...(force === true ? { force: true } : {}) }
         : { packageName: trimmedPackage, version: version?.trim() };
 
       const discovered = await loader.installPlugin(installOptions);
@@ -897,7 +914,14 @@ export function pluginRoutes(
       // Transition to ready state
       const existingPlugin = await registry.getByKey(discovered.manifest.id);
       if (existingPlugin) {
-        await lifecycle.load(existingPlugin.id);
+        // Skip lifecycle.load on a force repoint: registry.install has already
+        // updated packageName/path in place while preserving status. Calling
+        // load() here would try to start a worker for a plugin that may already
+        // be running, conflicting with the existing handle. New metadata takes
+        // effect on the next worker (re)start.
+        if (force !== true) {
+          await lifecycle.load(existingPlugin.id);
+        }
         const updated = await registry.getById(existingPlugin.id);
         await logPluginMutationActivity(req, "plugin.installed", existingPlugin.id, {
           pluginId: existingPlugin.id,
@@ -905,6 +929,7 @@ export function pluginRoutes(
           packageName: updated?.packageName ?? existingPlugin.packageName,
           version: updated?.version ?? existingPlugin.version,
           source: isLocalPath ? "local_path" : "npm",
+          force: force === true ? true : undefined,
         });
         publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: existingPlugin.id, action: "installed" } });
         res.json(updated);
@@ -1814,8 +1839,12 @@ export function pluginRoutes(
   router.post("/plugins/:pluginId/upgrade", async (req, res) => {
     assertInstanceAdmin(req);
     const { pluginId } = req.params;
-    const body = req.body as { version?: string } | undefined;
+    const body = req.body as { version?: string; force?: boolean } | undefined;
     const version = body?.version;
+    // `force=true` (instance admin only — already gated above) approves any
+    // capability escalation in the new manifest. Without it, the loader
+    // throws when the new manifest declares capabilities the old one didn't.
+    const force = body?.force === true;
 
     const plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) {
@@ -1829,7 +1858,7 @@ export function pluginRoutes(
       // 2. Compare capabilities
       // 3. If new capabilities, mark as upgrade_pending
       // 4. Otherwise, transition to ready
-      const result = await lifecycle.upgrade(plugin.id, version);
+      const result = await lifecycle.upgrade(plugin.id, version, { force });
       await logPluginMutationActivity(req, "plugin.upgraded", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,
@@ -2296,6 +2325,22 @@ export function pluginRoutes(
       res.status(404).json({
         error: `Webhook endpoint '${endpointKey}' is not declared by this plugin`,
       });
+      return;
+    }
+
+    // Step 4b: Slack-style url_verification handshake.
+    //
+    // Slack tests Events API URLs with a one-time POST that carries
+    // { type: "url_verification", challenge: "<token>" } and expects the
+    // response body to echo the challenge. The plugin SDK's handleWebhook
+    // RPC is fire-and-forget (returns void), so workers cannot set the
+    // HTTP response body — handle this Slack interop convention host-side.
+    const verifBody = req.body as { type?: unknown; challenge?: unknown } | undefined;
+    if (
+      verifBody?.type === "url_verification" &&
+      typeof verifBody.challenge === "string"
+    ) {
+      res.status(200).json({ challenge: verifBody.challenge });
       return;
     }
 

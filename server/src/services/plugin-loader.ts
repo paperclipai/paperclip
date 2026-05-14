@@ -29,7 +29,7 @@ import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { Db } from "@paperclipai/db";
 import type {
@@ -79,36 +79,13 @@ export const DEFAULT_LOCAL_PLUGIN_DIR = path.join(
 
 const DEV_TSX_LOADER_PATH = path.resolve(__dirname, "../../../cli/node_modules/tsx/dist/loader.mjs");
 
-const ADAPTER_ENV_PASSTHROUGH = [
-  "ANTHROPIC_API_KEY",
-  "OPENAI_API_KEY",
-  "GOOGLE_API_KEY",
-  "GEMINI_API_KEY",
-  "OPENROUTER_API_KEY",
-];
-
-export function buildPluginWorkerEnv(input: {
-  manifest: Pick<PaperclipPluginManifestV1, "capabilities">;
-  instanceInfo: { deploymentMode?: string | null; deploymentExposure?: string | null };
-  processEnv?: NodeJS.ProcessEnv;
-}): Record<string, string> {
-  const processEnv = input.processEnv ?? process.env;
-  const env: Record<string, string> = {
-    PAPERCLIP_DEPLOYMENT_MODE: input.instanceInfo.deploymentMode ?? "",
-    PAPERCLIP_DEPLOYMENT_EXPOSURE: input.instanceInfo.deploymentExposure ?? "",
-  };
-  const canRegisterEnvironmentDrivers = Array.isArray(input.manifest.capabilities)
-    && input.manifest.capabilities.includes("environment.drivers.register");
-  if (!canRegisterEnvironmentDrivers) return env;
-
-  for (const key of ADAPTER_ENV_PASSTHROUGH) {
-    const value = processEnv[key];
-    if (value && value.trim().length > 0) {
-      env[key] = value;
-    }
-  }
-  return env;
-}
+/**
+ * Path to the monorepo's pnpm virtual store node_modules, which contains
+ * workspace-linked packages like @paperclipai/plugin-sdk. Used as NODE_PATH
+ * for plugin workers so they resolve the local SDK build (with fork extensions)
+ * instead of the npm-published version that may be out of date.
+ */
+const MONOREPO_NODE_MODULES = path.resolve(__dirname, "../../../node_modules/.pnpm/node_modules");
 
 // ---------------------------------------------------------------------------
 // Discovery result types
@@ -235,6 +212,14 @@ export interface PluginInstallOptions {
    * Defaults to the localPluginDir configured on the service.
    */
   installDir?: string;
+
+  /**
+   * When true, allows reinstall over an existing non-uninstalled row by
+   * updating packageName/packagePath/manifest in place instead of throwing
+   * "Plugin already installed". Used by the kkroo bundled-plugin bootstrap
+   * to repoint a registry row whose packageName has drifted from the bundle.
+   */
+  force?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -279,8 +264,6 @@ export interface PluginRuntimeServices {
   instanceInfo: {
     instanceId: string;
     hostVersion: string;
-    deploymentMode?: "local_trusted" | "authenticated";
-    deploymentExposure?: "private" | "public";
   };
 }
 
@@ -426,7 +409,10 @@ export interface PluginLoader {
    *
    * @see PLUGIN_SPEC.md §25.3 — Upgrade Lifecycle
    */
-  upgradePlugin(pluginId: string, options: Omit<PluginInstallOptions, "installDir">): Promise<{
+  upgradePlugin(
+    pluginId: string,
+    options: Omit<PluginInstallOptions, "installDir"> & { force?: boolean },
+  ): Promise<{
     oldManifest: PaperclipPluginManifestV1;
     newManifest: PaperclipPluginManifestV1;
     discovered: DiscoveredPlugin;
@@ -870,9 +856,19 @@ export function pluginLoader(
         // Use execFile (not exec) to avoid shell injection from package name/version.
         // --ignore-scripts prevents preinstall/install/postinstall hooks from
         // executing arbitrary code on the host before manifest validation.
+        // --cache uses a writable temp dir to avoid EPERM on root-owned ~/.npm cache.
+        // --legacy-peer-deps absorbs ERESOLVE failures from third-party plugin
+        // packages whose `@paperclipai/plugin-sdk` peer ranges don't reconcile
+        // (e.g. `@lucitra/paperclip-plugin-secrets@>=1.0.0` vs
+        // `@lucitra/paperclip-plugin-chat`'s pinned canary). Plugin manifests
+        // are validated separately downstream, so a "potentially broken"
+        // peer-dep tree at install time is bounded — we'd reject a bad
+        // manifest before loading it, rather than letting npm refuse to
+        // install at all.
+        const npmCacheDir = path.join(os.tmpdir(), "paperclip-npm-cache");
         await execFileAsync(
           "npm",
-          ["install", spec, "--prefix", targetInstallDir, "--save", "--ignore-scripts"],
+          ["install", spec, "--prefix", targetInstallDir, "--save", "--ignore-scripts", "--legacy-peer-deps", "--cache", npmCacheDir],
           { timeout: 120_000 }, // 2 minute timeout for npm install
         );
       } catch (err) {
@@ -965,10 +961,7 @@ export function pluginLoader(
 
     try {
       // Dynamic import works for both .js (ESM) and .cjs (CJS) manifests
-      const manifestUrl = pathToFileURL(manifestPath);
-      const manifestStat = await stat(manifestPath);
-      manifestUrl.searchParams.set("mtime", String(Math.trunc(manifestStat.mtimeMs)));
-      const mod = await import(manifestUrl.href) as Record<string, unknown>;
+      const mod = await import(manifestPath) as Record<string, unknown>;
       // The manifest may be the default export or the module itself
       raw = mod["default"] ?? mod;
     } catch (err) {
@@ -978,51 +971,6 @@ export function pluginLoader(
     }
 
     return manifestValidator.parseOrThrow(raw);
-  }
-
-  async function loadManifestFromPackageRoot(
-    packageRoot: string,
-  ): Promise<PaperclipPluginManifestV1 | null> {
-    const pkgJson = await readPackageJson(packageRoot);
-    if (!pkgJson) return null;
-
-    const manifestPath = resolveManifestPath(packageRoot, pkgJson);
-    if (!manifestPath || !existsSync(manifestPath)) return null;
-
-    return loadManifestFromPath(manifestPath);
-  }
-
-  async function refreshPluginManifestFromPackage(
-    plugin: PluginRecord,
-    packageRoot: string,
-  ): Promise<PluginRecord> {
-    const manifest = await loadManifestFromPackageRoot(packageRoot);
-    if (!manifest) {
-      throw new Error(`Plugin package ${plugin.packageName} no longer exposes a Paperclip manifest`);
-    }
-    if (manifest.id !== plugin.pluginKey) {
-      throw new Error(
-        `Plugin manifest ID '${manifest.id}' does not match installed plugin '${plugin.pluginKey}'`,
-      );
-    }
-
-    if (JSON.stringify(manifest) === JSON.stringify(plugin.manifestJson)) {
-      return plugin;
-    }
-
-    await registry.update(plugin.id, {
-      packageName: plugin.packageName,
-      version: manifest.version,
-      manifest,
-    });
-
-    return {
-      ...plugin,
-      version: manifest.version,
-      apiVersion: manifest.apiVersion,
-      categories: manifest.categories,
-      manifestJson: manifest,
-    };
   }
 
   /**
@@ -1337,43 +1285,23 @@ export function pluginLoader(
 
     async installPlugin(installOptions: PluginInstallOptions): Promise<DiscoveredPlugin> {
       const discovered = await fetchAndValidate(installOptions);
-      const manifest = discovered.manifest!;
 
-      // Step 6: Persist install record and apply plugin-owned schema migrations
-      // in one database transaction. If migration validation fails, the plugin
-      // row, namespace record, migration ledger, and created schema all roll back.
-      const installDb = manifest.database ? migrationDb : db;
-      await installDb.transaction(async (tx) => {
-        const txDb = tx as unknown as Db;
-        const txRegistry = pluginRegistryService(txDb);
-        const installed = await txRegistry.install(
-          {
-            packageName: discovered.packageName,
-            packagePath: discovered.source === "local-filesystem" ? discovered.packagePath : undefined,
-          },
-          manifest,
-        );
-
-        if (!installed) {
-          throw new Error(`Plugin install did not return a registry row: ${manifest.id}`);
-        }
-
-        if (manifest.database) {
-          await pluginDatabaseService(txDb).applyMigrations(
-            installed.id,
-            manifest,
-            discovered.packagePath,
-            { persistFailure: false },
-          );
-        }
-      });
+      // Step 6: Persist install record in Postgres (include packagePath for local installs so the worker can be resolved)
+      await registry.install(
+        {
+          packageName: discovered.packageName,
+          packagePath: discovered.source === "local-filesystem" ? discovered.packagePath : undefined,
+        },
+        discovered.manifest!,
+        { force: installOptions.force === true },
+      );
 
       log.info(
         {
-          pluginId: manifest.id,
+          pluginId: discovered.manifest!.id,
           packageName: discovered.packageName,
           version: discovered.version,
-          capabilities: manifest.capabilities,
+          capabilities: discovered.manifest!.capabilities,
         },
         "plugin-loader: plugin installed successfully",
       );
@@ -1400,7 +1328,7 @@ export function pluginLoader(
      */
     async upgradePlugin(
       pluginId: string,
-      upgradeOptions: Omit<PluginInstallOptions, "installDir">,
+      upgradeOptions: Omit<PluginInstallOptions, "installDir"> & { force?: boolean },
     ): Promise<{
       oldManifest: PaperclipPluginManifestV1;
       newManifest: PaperclipPluginManifestV1;
@@ -1422,6 +1350,7 @@ export function pluginLoader(
         // the caller to re-supply the path every time.
         localPath = plugin.packagePath ?? undefined,
         version,
+        force = false,
       } = upgradeOptions;
 
       log.info(
@@ -1452,14 +1381,20 @@ export function pluginLoader(
       const escalated = newCaps.filter((c) => !oldCaps.has(c));
 
       if (escalated.length > 0) {
+        if (!force) {
+          log.warn(
+            { pluginId, escalated, oldVersion: oldManifest.version, newVersion: newManifest.version },
+            "plugin-loader: upgrade introduces new capabilities — requires admin approval",
+          );
+          throw new Error(
+            `Upgrade for "${pluginId}" introduces new capabilities that require approval: ${escalated.join(", ")}. ` +
+              `The previous version declared [${[...oldCaps].join(", ")}]. ` +
+              `Re-run with force=true (instance admin only) to approve the capability escalation.`,
+          );
+        }
         log.warn(
           { pluginId, escalated, oldVersion: oldManifest.version, newVersion: newManifest.version },
-          "plugin-loader: upgrade introduces new capabilities — requires admin approval",
-        );
-        throw new Error(
-          `Upgrade for "${pluginId}" introduces new capabilities that require approval: ${escalated.join(", ")}. ` +
-            `The previous version declared [${[...oldCaps].join(", ")}]. ` +
-            `Please review and approve the capability escalation before upgrading.`,
+          "plugin-loader: capability escalation force-approved",
         );
       }
 
@@ -1505,9 +1440,10 @@ export function pluginLoader(
       const packageJsonPath = path.join(localPluginDir, "package.json");
       if (existsSync(packageJsonPath)) {
         try {
+          const npmCacheDir = path.join(os.tmpdir(), "paperclip-npm-cache");
           await execFileAsync(
             "npm",
-            ["uninstall", plugin.packageName, "--prefix", localPluginDir, "--ignore-scripts"],
+            ["uninstall", plugin.packageName, "--prefix", localPluginDir, "--ignore-scripts", "--cache", npmCacheDir],
             { timeout: 120_000 },
           );
         } catch (err) {
@@ -1710,8 +1646,14 @@ export function pluginLoader(
       toolDispatcher.unregisterPluginTools(pluginKey);
 
       // 4. Stop the worker process
+      //
+      // Stop on ANY handle present — not just `isRunning` — so transitional
+      // states (starting/stopping/errored) still clear the workers Map.
+      // Otherwise the handle leaks and the next startWorker either throws
+      // "already registered" or, after disable+enable, the lifecycle reports
+      // success but bridge calls 502 with "No worker registered".
       try {
-        if (workerManager.isRunning(pluginId)) {
+        if (workerManager.getWorker(pluginId)) {
           await workerManager.stopWorker(pluginId);
         }
       } catch (err) {
@@ -1765,10 +1707,9 @@ export function pluginLoader(
    * `error` in the database when activation fails.
    */
   async function activatePlugin(plugin: PluginRecord): Promise<PluginLoadResult> {
+    const manifest = plugin.manifestJson;
     const pluginId = plugin.id;
     const pluginKey = plugin.pluginKey;
-    let activePlugin = plugin;
-    let manifest = activePlugin.manifestJson;
 
     const registered: PluginLoadResult["registered"] = {
       worker: false,
@@ -1808,10 +1749,8 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       // 1. Resolve worker entrypoint
       // ------------------------------------------------------------------
-      const packageRoot = resolvePluginPackageRoot(activePlugin, localPluginDir);
-      activePlugin = await refreshPluginManifestFromPackage(activePlugin, packageRoot);
-      manifest = activePlugin.manifestJson;
-      const workerEntrypoint = resolveWorkerEntrypoint(activePlugin, localPluginDir);
+      const workerEntrypoint = resolveWorkerEntrypoint(plugin, localPluginDir);
+      const packageRoot = resolvePluginPackageRoot(plugin, localPluginDir);
 
       // ------------------------------------------------------------------
       // 2. Apply restricted database migrations before worker startup
@@ -1851,14 +1790,27 @@ export function pluginLoader(
         databaseNamespace,
         hostHandlers,
         autoRestart: true,
-        env: buildPluginWorkerEnv({ manifest, instanceInfo }),
       };
 
       // Repo-local plugin installs can resolve workspace TS sources at runtime
       // (for example @paperclipai/shared exports). Run those workers through
       // the tsx loader so first-party example plugins work in development.
-      if (activePlugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
+      if (plugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
         workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
+      }
+
+      // Prepend the monorepo's pnpm node_modules to NODE_PATH so plugin
+      // workers resolve @paperclipai/plugin-sdk from the local workspace
+      // build (which includes fork extensions like projects.create/update)
+      // rather than the npm-published version.
+      if (existsSync(MONOREPO_NODE_MODULES)) {
+        const existing = process.env.NODE_PATH ?? "";
+        workerOptions.env = {
+          ...workerOptions.env,
+          NODE_PATH: existing
+            ? `${MONOREPO_NODE_MODULES}:${existing}`
+            : MONOREPO_NODE_MODULES,
+        };
       }
 
       await workerManager.startWorker(pluginId, workerOptions);
@@ -1948,13 +1900,13 @@ export function pluginLoader(
         {
           pluginId,
           pluginKey,
-          version: activePlugin.version,
+          version: plugin.version,
           registered,
         },
         "plugin-loader: plugin activated successfully",
       );
 
-      return { plugin: activePlugin, success: true, registered };
+      return { plugin, success: true, registered };
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
 
@@ -1978,7 +1930,7 @@ export function pluginLoader(
       }
 
       return {
-        plugin: activePlugin,
+        plugin,
         success: false,
         error: errorMessage,
         registered,

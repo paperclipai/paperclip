@@ -326,14 +326,14 @@ export function RoutineDetail() {
     queryKey: queryKeys.issues.liveRuns(activeIssueId!),
     queryFn: () => heartbeatsApi.liveRunsForIssue(activeIssueId!),
     enabled: !!activeIssueId,
-    refetchInterval: 3000,
+    refetchInterval: 5000,
   });
   const hasLiveRun = (liveRuns ?? []).length > 0;
   const { data: routineRuns } = useQuery({
     queryKey: queryKeys.routines.runs(routineId!),
     queryFn: () => routinesApi.listRuns(routineId!),
     enabled: !!routineId,
-    refetchInterval: hasLiveRun ? 3000 : false,
+    refetchInterval: hasLiveRun ? 5000 : false,
   });
   const relatedActivityIds = useMemo(
     () => ({

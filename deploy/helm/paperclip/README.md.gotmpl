@@ -1,0 +1,124 @@
+{{ template "chart.header" . }}
+
+{{ template "chart.description" . }}
+
+{{ template "chart.homepageLine" . }}
+
+## TL;DR
+
+```bash
+helm install paperclip ./deploy/helm/paperclip \
+  --namespace paperclip --create-namespace
+```
+
+Default install creates a single-replica StatefulSet with a 20Gi `local-path` PVC, a ClusterIP Service on port 3100, and auto-generates the `agentJwtSecret`. No Ingress is created unless you opt in.
+
+## Quickstart
+
+1. **Install the chart** into a dedicated namespace (`paperclip` by convention):
+   ```bash
+   helm install paperclip ./deploy/helm/paperclip \
+     --namespace paperclip --create-namespace
+   ```
+2. **Wait for the pod to become Ready**:
+   ```bash
+   kubectl -n paperclip rollout status sts/paperclip --timeout=5m
+   ```
+3. **Run the first-run bootstrap** — see below.
+4. **Expose the UI** via port-forward, Ingress, or cloudflared — see "Exposure".
+
+## Bootstrap auth
+
+Paperclip's auth is always on. After the first pod becomes Ready, create the initial admin (CEO) account by generating a one-time invite URL:
+
+```bash
+kubectl -n paperclip exec -it paperclip-0 -- \
+  npx paperclipai auth bootstrap-ceo \
+    --base-url https://paperclip.example.com
+```
+
+The command prints an invite link that embeds a short-lived token. Open it in a browser to complete sign-up and set an admin password. Replace `--base-url` with whatever host users will browse to — the URL printed must be reachable, or the invite link will be unusable.
+
+Extra flags:
+
+- `--force` — re-issue the invite even if an admin already exists (use when the previous invite expired before it was redeemed).
+- `--expires-hours N` — override the invite TTL.
+
+To log the CLI in separately (for `paperclipai` admin commands from your workstation):
+
+```bash
+paperclipai auth login --api-base https://paperclip.example.com
+```
+
+## Exposure
+
+The chart does **not** create an Ingress by default. Pick one:
+
+- **Ingress** (cluster-internal or LAN-only): set `ingress.enabled=true`, `ingress.className=nginx`, and configure `ingress.hosts[]`.
+- **Cloudflare Tunnel** (external, via `cloudflared` running in-cluster): leave `ingress.enabled=false` and add a route in your tunnel config pointing at `http://paperclip.paperclip.svc.cluster.local:3100`. Paperclip's built-in auth gates the UI.
+- **Port-forward** (ad-hoc):
+  ```bash
+  kubectl -n paperclip port-forward svc/paperclip 3100:3100
+  ```
+
+## Upgrading
+
+The image is pinned via `image.tag` in `values.yaml`. Two common paths:
+
+- **Follow upstream**: every upstream master push and stable tag publishes an image (`sha-<short>` and `vYYYY.MMM.P` respectively). Point `image.tag` at whichever channel you want to track.
+- **Manual**:
+  ```bash
+  helm upgrade paperclip ./deploy/helm/paperclip \
+    --namespace paperclip \
+    --set image.tag=v2026.XXX.Y
+  ```
+
+Roll back by reverting the bump commit, or:
+
+```bash
+helm rollback paperclip <REVISION>
+```
+
+The PVC is untouched on rollback — data persists across image versions.
+
+## Backup & restore
+
+### Hourly pg_dump (built-in)
+
+Paperclip writes hourly SQL dumps to `/paperclip/instances/<instanceId>/data/backups/` with 30-day retention. No configuration needed.
+
+### On-demand dump
+
+```bash
+kubectl -n paperclip exec paperclip-0 -- npx paperclipai db:backup
+```
+
+### Full instance tar
+
+```bash
+kubectl -n paperclip exec paperclip-0 -- \
+  tar czf - --exclude=data/backups -C /paperclip instances/default \
+  > paperclip-instance.tgz
+```
+
+### Restore onto a fresh PVC
+
+1. Install the chart with an empty PVC.
+2. Scale the StatefulSet to 0:
+   ```bash
+   kubectl -n paperclip scale sts paperclip --replicas=0
+   ```
+3. Mount the PVC from a debug pod and extract the tar into `/paperclip/`:
+   ```bash
+   kubectl -n paperclip run seed --rm -i --tty --image=alpine \
+     --overrides='{"spec":{"containers":[{"name":"seed","image":"alpine","stdin":true,"tty":true,"volumeMounts":[{"name":"data","mountPath":"/paperclip"}]}],"volumes":[{"name":"data","persistentVolumeClaim":{"claimName":"data-paperclip-0"}}]}}'
+   # Inside: apk add --no-cache tar; tar xzf /path/to/paperclip-instance.tgz -C /paperclip
+   # Then: chown -R 1000:1000 /paperclip; chmod 0600 /paperclip/instances/default/secrets/master.key
+   ```
+4. Scale back to 1. Paperclip detects existing data and skips DB init.
+
+{{ template "chart.maintainersSection" . }}
+
+{{ template "chart.sourcesSection" . }}
+
+{{ template "chart.valuesSection" . }}

@@ -100,7 +100,7 @@ export function Issues() {
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
     enabled: !!selectedCompanyId,
-    refetchInterval: 5000,
+    refetchInterval: 10_000,
   });
 
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
@@ -167,7 +167,24 @@ export function Issues() {
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
       issuesApi.update(id, data),
-    onSuccess: () => {
+    onMutate: async ({ id, data }) => {
+      const listKey = queryKeys.issues.list(selectedCompanyId!);
+      await queryClient.cancelQueries({ queryKey: listKey });
+      const previousIssues = queryClient.getQueryData<Issue[]>(listKey);
+      if (previousIssues) {
+        queryClient.setQueryData(
+          listKey,
+          previousIssues.map((issue) => (issue.id === id ? { ...issue, ...data } : issue)),
+        );
+      }
+      return { previousIssues };
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previousIssues) {
+        queryClient.setQueryData(queryKeys.issues.list(selectedCompanyId!), context.previousIssues);
+      }
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) });
     },
   });

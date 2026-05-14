@@ -39,6 +39,8 @@ export const AGENT_ADAPTER_TYPES = [
   "pi_local",
   "cursor",
   "openclaw_gateway",
+  "hermes_local",
+  "openrouter_local",
 ] as const;
 export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number] | (string & {});
 
@@ -338,7 +340,7 @@ export const PROJECT_STATUSES = [
 ] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
-export const ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox", "plugin"] as const;
+export const ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox", "plugin", "k8s"] as const;
 export type EnvironmentDriver = (typeof ENVIRONMENT_DRIVERS)[number];
 
 export const ENVIRONMENT_STATUSES = ["active", "archived"] as const;
@@ -724,6 +726,7 @@ export type PluginCategory = (typeof PLUGIN_CATEGORIES)[number];
 export const PLUGIN_CAPABILITIES = [
   // Data Read
   "companies.read",
+  "users.read",
   "projects.read",
   "project.workspaces.read",
   "issues.read",
@@ -764,6 +767,14 @@ export const PLUGIN_CAPABILITIES = [
   "telemetry.track",
   "database.namespace.migrate",
   "database.namespace.write",
+  // Labels & Projects write (Lucitra extension)
+  "labels.read",
+  "labels.create",
+  "projects.create",
+  "projects.update",
+  // Plugin management (Lucitra extension)
+  "plugins.read",
+  "plugins.upgrade",
   // Plugin State
   "plugin.state.read",
   "plugin.state.write",
@@ -775,6 +786,8 @@ export const PLUGIN_CAPABILITIES = [
   "api.routes.register",
   "http.outbound",
   "secrets.read-ref",
+  "secrets.list",
+  "secrets.manage",
   "environment.drivers.register",
   "local.folders",
   // Agent Tools

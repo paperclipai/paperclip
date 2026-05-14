@@ -18,6 +18,9 @@ const mocks = vi.hoisted(() => {
         on: vi.fn(),
       };
     }),
+    // openrouter/execute.ts top-level promisify(exec) — needs a function
+    // present at import time even though no test here exercises that path.
+    exec: vi.fn(),
     listAdapterPlugins: vi.fn(),
     addAdapterPlugin: vi.fn((record: any) => {
       externalRecords.set(record.type, record);
@@ -39,6 +42,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock("node:child_process", () => ({
   execFile: mocks.execFile,
+  exec: mocks.exec,
 }));
 
 vi.mock("../services/adapter-plugin-store.js", () => ({
@@ -62,6 +66,7 @@ vi.mock("../adapters/plugin-loader.js", () => ({
 function registerRouteMocks() {
   vi.doMock("node:child_process", () => ({
     execFile: mocks.execFile,
+    exec: mocks.exec,
   }));
 
   vi.doMock("../services/adapter-plugin-store.js", () => ({

@@ -102,6 +102,13 @@ export interface PluginHostContext {
   parentEntityId?: string | null;
   /** UUID of the current authenticated user. */
   userId: string | null;
+  /**
+   * Configured public-facing origin for this Paperclip instance, or `null`
+   * when none is configured. Prefer over `window.location.origin` for URLs
+   * that must be reachable from the public internet (OAuth `redirect_uri`,
+   * webhook callbacks); fall back to `window.location.origin` when null.
+   */
+  publicUrl: string | null;
   /** Runtime metadata for the host container currently rendering this plugin UI. */
   renderEnvironment?: PluginRenderEnvironmentContext | null;
 }

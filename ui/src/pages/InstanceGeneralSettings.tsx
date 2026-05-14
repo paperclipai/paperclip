@@ -13,6 +13,7 @@ import { healthApi } from "@/api/health";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { ModeBadge } from "@/components/access/ModeBadge";
 import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -24,6 +25,7 @@ export function InstanceGeneralSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
+  const [quotaExhaustedCmdDraft, setQuotaExhaustedCmdDraft] = useState("");
 
   const signOutMutation = useMutation({
     mutationFn: () => authApi.signOut(),
@@ -51,6 +53,11 @@ export function InstanceGeneralSettings() {
     queryFn: () => healthApi.get(),
     retry: false,
   });
+
+  const generalQuotaExhaustedCmd = generalQuery.data?.quotaExhaustedCmd ?? null;
+  useEffect(() => {
+    setQuotaExhaustedCmdDraft(generalQuotaExhaustedCmd ?? "");
+  }, [generalQuotaExhaustedCmd]);
 
   const updateGeneralMutation = useMutation({
     mutationFn: instanceSettingsApi.updateGeneral,
@@ -81,6 +88,8 @@ export function InstanceGeneralSettings() {
   const keyboardShortcuts = generalQuery.data?.keyboardShortcuts === true;
   const feedbackDataSharingPreference = generalQuery.data?.feedbackDataSharingPreference ?? "prompt";
   const backupRetention: BackupRetentionPolicy = generalQuery.data?.backupRetention ?? DEFAULT_BACKUP_RETENTION;
+  const quotaExhaustedCmdServer = generalQuery.data?.quotaExhaustedCmd ?? "";
+  const quotaExhaustedCmdDirty = quotaExhaustedCmdDraft.trim() !== quotaExhaustedCmdServer.trim();
 
   return (
     <div className="max-w-4xl space-y-6">
@@ -168,6 +177,47 @@ export function InstanceGeneralSettings() {
             disabled={updateGeneralMutation.isPending}
             aria-label="Toggle keyboard shortcuts"
           />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Quota-exhausted hook</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Shell command to run when a Claude/Codex adapter reports{" "}
+              <code>provider_quota_exhausted</code>. Typical use: rotate to a non-rate-limited
+              account (e.g. <code>ccrotate next -y</code>) so heartbeats can resume automatically.
+              The <code>-y</code> flag matters: without it, ccrotate's non-TTY default is to deny
+              extra usage and silently refuse to rotate when base accounts are also rate-limited.
+              Leave blank to disable. Calls are debounced to once per 60s and time out after 30s.
+            </p>
+            <p className="max-w-2xl text-xs text-destructive">
+              Security: this command runs as the Paperclip daemon user with full filesystem and
+              network access. Anyone who can edit instance settings can execute arbitrary commands
+              on the host — restrict instance-admin access accordingly.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              value={quotaExhaustedCmdDraft}
+              onChange={(e) => setQuotaExhaustedCmdDraft(e.target.value)}
+              placeholder="ccrotate next -y"
+              className="max-w-xl font-mono text-sm"
+              disabled={updateGeneralMutation.isPending}
+              aria-label="Quota-exhausted hook command"
+            />
+            <Button
+              size="sm"
+              disabled={!quotaExhaustedCmdDirty || updateGeneralMutation.isPending}
+              onClick={() => {
+                const next = quotaExhaustedCmdDraft.trim();
+                updateGeneralMutation.mutate({ quotaExhaustedCmd: next.length > 0 ? next : null });
+              }}
+            >
+              {updateGeneralMutation.isPending ? "Saving..." : "Save"}
+            </Button>
+          </div>
         </div>
       </section>
 

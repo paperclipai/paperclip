@@ -13,10 +13,6 @@ import type {
   Approval,
   AgentConfigRevision,
 } from "@paperclipai/shared";
-import type {
-  AdapterModelProfileDefinition,
-  AdapterModelProfileKey,
-} from "@paperclipai/adapter-utils";
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { ApiError, api } from "./client";
 
@@ -31,9 +27,6 @@ export interface AdapterModel {
   id: string;
   label: string;
 }
-
-export type { AdapterModelProfileKey };
-export type AdapterModelProfile = AdapterModelProfileDefinition;
 
 export interface DetectedAdapterModel {
   model: string;
@@ -67,15 +60,6 @@ export interface AgentHireResponse {
 export interface AgentPermissionUpdate {
   canCreateAgents: boolean;
   canAssignTasks: boolean;
-}
-
-export interface AgentWakeRequest {
-  source?: "timer" | "assignment" | "on_demand" | "automation";
-  triggerDetail?: "manual" | "ping" | "callback" | "system";
-  reason?: string | null;
-  payload?: Record<string, unknown> | null;
-  idempotencyKey?: string | null;
-  forceFreshSession?: boolean;
 }
 
 function withCompanyScope(path: string, companyId?: string) {
@@ -180,54 +164,53 @@ export const agentsApi = {
     api.get<AgentTaskSession[]>(agentPath(id, companyId, "/task-sessions")),
   resetSession: (id: string, taskKey?: string | null, companyId?: string) =>
     api.post<void>(agentPath(id, companyId, "/runtime-state/reset-session"), { taskKey: taskKey ?? null }),
-  adapterModels: (
-    companyId: string,
-    type: string,
-    options?: { refresh?: boolean; environmentId?: string | null },
-  ) => {
-    const params = new URLSearchParams();
-    if (options?.refresh) params.set("refresh", "1");
-    if (options?.environmentId) params.set("environmentId", options.environmentId);
-    const query = params.size > 0 ? `?${params.toString()}` : "";
-    return api.get<AdapterModel[]>(
-      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/models${query}`,
-    );
-  },
+  adapterModels: (companyId: string, type: string, options?: { refresh?: boolean }) =>
+    api.get<AdapterModel[]>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/models${options?.refresh ? "?refresh=1" : ""}`,
+    ),
   detectModel: (companyId: string, type: string) =>
     api.get<DetectedAdapterModel | null>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/detect-model`,
     ),
-  adapterModelProfiles: (companyId: string, type: string) =>
-    api.get<AdapterModelProfile[]>(
-      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/model-profiles`,
-    ),
   testEnvironment: (
     companyId: string,
     type: string,
-    data: {
-      adapterConfig: Record<string, unknown>;
-      environmentId?: string | null;
-    },
+    data: { adapterConfig: Record<string, unknown>; environmentId?: string | null },
   ) =>
     api.post<AdapterEnvironmentTestResult>(
       `/companies/${companyId}/adapters/${type}/test-environment`,
       data,
     ),
-  invoke: (id: string, companyId?: string, data: AgentWakeRequest = {}) =>
-    api.post<HeartbeatRun>(agentPath(id, companyId, "/heartbeat/invoke"), data),
+  invoke: (id: string, companyId?: string) => api.post<HeartbeatRun>(agentPath(id, companyId, "/heartbeat/invoke"), {}),
   wakeup: (
     id: string,
-    data: AgentWakeRequest,
+    data: {
+      source?: "timer" | "assignment" | "on_demand" | "automation";
+      triggerDetail?: "manual" | "ping" | "callback" | "system";
+      reason?: string | null;
+      payload?: Record<string, unknown> | null;
+      idempotencyKey?: string | null;
+    },
     companyId?: string,
   ) => api.post<AgentWakeupResponse>(agentPath(id, companyId, "/wakeup"), data),
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
-  availableSkills: () =>
-    api.get<{ skills: AvailableSkill[] }>("/skills/available"),
+  availableSkills: () => api.get<ClaudeCodeRuntimeSkillsResponse>("/skills/available"),
 };
 
-export interface AvailableSkill {
+/** Skill folder on disk under the Claude Code skills home (read-only / UI observability). */
+export interface ClaudeCodeAvailableSkill {
   name: string;
+  title: string | null;
   description: string;
   isPaperclipManaged: boolean;
 }
+
+export interface ClaudeCodeRuntimeSkillsResponse {
+  skills: ClaudeCodeAvailableSkill[];
+  enabledPlugins: string[];
+  claudeHomeDisplay: string;
+}
+
+/** @deprecated Use {@link ClaudeCodeAvailableSkill} */
+export type AvailableSkill = ClaudeCodeAvailableSkill;

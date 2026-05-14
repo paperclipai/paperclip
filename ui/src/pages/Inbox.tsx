@@ -103,8 +103,12 @@ import {
   ListTree,
 } from "lucide-react";
 
-const INBOX_HEARTBEAT_RUN_LIMIT = 200;
-const INBOX_ISSUE_LIST_LIMIT = 500;
+const INBOX_HEARTBEAT_RUN_LIMIT = 100;
+const INBOX_ISSUE_LIST_LIMIT = 100;
+// Hold inbox query results in cache without refetching on focus/remount;
+// the inbox SQL is expensive (correlated subqueries on issue_comments and
+// issue_read_states) and 4+ parallel re-fetches saturate the connection pool.
+const INBOX_QUERY_STALE_MS = 30_000;
 import { Input } from "@/components/ui/input";
 import { PageTabBar } from "../components/PageTabBar";
 import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
@@ -802,6 +806,7 @@ export function Inbox() {
         limit: INBOX_ISSUE_LIST_LIMIT,
       }),
     enabled: !!selectedCompanyId,
+    staleTime: INBOX_QUERY_STALE_MS,
   });
   const {
     data: mineIssuesRaw = [],
@@ -817,6 +822,7 @@ export function Inbox() {
         limit: INBOX_ISSUE_LIST_LIMIT,
       }),
     enabled: !!selectedCompanyId,
+    staleTime: INBOX_QUERY_STALE_MS,
   });
   const {
     data: touchedIssuesRaw = [],
@@ -831,18 +837,20 @@ export function Inbox() {
         limit: INBOX_ISSUE_LIST_LIMIT,
       }),
     enabled: !!selectedCompanyId,
+    staleTime: INBOX_QUERY_STALE_MS,
   });
 
   const { data: heartbeatRuns, isLoading: isRunsLoading } = useQuery({
     queryKey: [...queryKeys.heartbeats(selectedCompanyId!), "limit", INBOX_HEARTBEAT_RUN_LIMIT],
     queryFn: () => heartbeatsApi.list(selectedCompanyId!, undefined, INBOX_HEARTBEAT_RUN_LIMIT),
     enabled: !!selectedCompanyId,
+    staleTime: INBOX_QUERY_STALE_MS,
   });
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
     enabled: !!selectedCompanyId,
-    refetchInterval: 5000,
+    refetchInterval: 10_000,
   });
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
   const { data: companyMembers } = useQuery({

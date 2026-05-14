@@ -715,6 +715,53 @@ export interface WorkerToHostMethods {
     params: { secretRef: string },
     result: string,
   ];
+  "secrets.list": [
+    params: { companyId: string },
+    result: Array<{
+      id: string; companyId: string; name: string; provider: string;
+      externalRef: string | null; latestVersion: number;
+      description: string | null; createdByAgentId: string | null;
+      createdByUserId: string | null; createdAt: Date | string; updatedAt: Date | string;
+    }>,
+  ];
+  "secrets.providers": [
+    params: { companyId: string },
+    result: Array<{ id: string; label: string; requiresExternalRef: boolean }>,
+  ];
+  "secrets.create": [
+    params: {
+      companyId: string; name: string; value: string;
+      provider?: string; description?: string | null; externalRef?: string | null;
+    },
+    result: {
+      id: string; companyId: string; name: string; provider: string;
+      externalRef: string | null; latestVersion: number;
+      description: string | null; createdByAgentId: string | null;
+      createdByUserId: string | null; createdAt: Date | string; updatedAt: Date | string;
+    },
+  ];
+  "secrets.rotate": [
+    params: { id: string; value: string; externalRef?: string | null },
+    result: {
+      id: string; companyId: string; name: string; provider: string;
+      externalRef: string | null; latestVersion: number;
+      description: string | null; createdByAgentId: string | null;
+      createdByUserId: string | null; createdAt: Date | string; updatedAt: Date | string;
+    },
+  ];
+  "secrets.update": [
+    params: { id: string; name?: string; description?: string | null; externalRef?: string | null },
+    result: {
+      id: string; companyId: string; name: string; provider: string;
+      externalRef: string | null; latestVersion: number;
+      description: string | null; createdByAgentId: string | null;
+      createdByUserId: string | null; createdAt: Date | string; updatedAt: Date | string;
+    },
+  ];
+  "secrets.remove": [
+    params: { id: string },
+    result: { ok: true },
+  ];
 
   // Activity
   "activity.log": [
@@ -754,6 +801,17 @@ export interface WorkerToHostMethods {
   "companies.get": [
     params: { companyId: string },
     result: Company | null,
+  ];
+
+  // Users (read) — for cross-system identity mapping (Linear assignees,
+  // Slack DMs, etc.). Requires `users.read` capability.
+  "users.get": [
+    params: { userId: string },
+    result: { id: string; email: string; name: string } | null,
+  ];
+  "users.findByEmail": [
+    params: { email: string },
+    result: { id: string; email: string; name: string } | null,
   ];
 
   // Projects (read)
@@ -861,6 +919,20 @@ export interface WorkerToHostMethods {
     params: { issueId: string; companyId: string },
     result: Issue | null,
   ];
+  /**
+   * Look up a paperclip issue by its Linear-side issue id (UUID), via
+   * the host's `linear_issue_links` table. Returns null when no link
+   * row exists for (companyId, linearIssueId). Closes a dedup gap in
+   * the Linear plugin's webhook create flow: without this, mirrors
+   * already written by the host's allocator path (parent originKind
+   * != 'plugin:paperclip-plugin-linear') are invisible to the plugin's
+   * existing originKind+originId check and the webhook fires a second
+   * mirror create — looping under identifier_provider='linear'.
+   */
+  "issues.getByLinearIssueId": [
+    params: { linearIssueId: string; companyId: string },
+    result: Issue | null,
+  ];
   "issues.create": [
     params: {
       companyId: string;
@@ -889,6 +961,14 @@ export interface WorkerToHostMethods {
       actorAgentId?: string | null;
       actorUserId?: string | null;
       actorRunId?: string | null;
+      /**
+       * Mirror an existing Linear issue. When set, the host skips
+       * Linear's IssueCreate (for linear-provider companies) and writes
+       * a linear_issue_links row binding this paperclip issue to the
+       * supplied Linear issue. Use from Linear-side webhooks/sync that
+       * import an existing Linear issue rather than create one.
+       */
+      linkedLinearIssue?: { id: string; identifier: string };
     },
     result: Issue,
   ];
@@ -1009,6 +1089,58 @@ export interface WorkerToHostMethods {
       authorAgentId?: string | null;
     },
     result: IssueThreadInteraction,
+  ];
+
+  // Projects write (Lucitra extension)
+  "projects.create": [
+    params: {
+      companyId: string;
+      name: string;
+      description?: string;
+      status?: string;
+      targetDate?: string;
+      color?: string;
+    },
+    result: Project,
+  ];
+  "projects.update": [
+    params: {
+      projectId: string;
+      companyId: string;
+      patch: Record<string, unknown>;
+    },
+    result: Project,
+  ];
+
+  // Labels (Lucitra extension)
+  "labels.list": [
+    params: { companyId: string },
+    result: Array<{ id: string; name: string; color: string; companyId: string }>,
+  ];
+  "labels.create": [
+    params: { companyId: string; name: string; color: string },
+    result: { id: string; name: string; color: string; companyId: string } | null,
+  ];
+
+  // Plugins (Lucitra extension)
+  "plugins.list": [
+    params: { status?: string },
+    result: Array<{
+      id: string;
+      pluginKey: string;
+      packageName: string;
+      version: string;
+      status: string;
+    }>,
+  ];
+  "plugins.upgrade": [
+    params: { pluginId: string; version?: string },
+    result: {
+      oldVersion: string;
+      newVersion: string;
+      status: string;
+      addedCapabilities: string[];
+    },
   ];
 
   // Issue Documents

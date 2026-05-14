@@ -34,7 +34,6 @@
  * @see PLUGIN_SPEC.md §14 — SDK Surface
  */
 
-import fs from "node:fs";
 import path from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -176,21 +175,6 @@ interface EventRegistration {
 /** Default timeout for worker→host RPC calls. */
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
 
-function realpathOrResolvedPath(filePath: string): string {
-  const resolvedPath = path.resolve(filePath);
-  try {
-    return fs.realpathSync.native(resolvedPath);
-  } catch {
-    return resolvedPath;
-  }
-}
-
-export function isWorkerEntrypoint(entry: string, moduleUrl: string): boolean {
-  const thisFile = realpathOrResolvedPath(fileURLToPath(moduleUrl));
-  const entryPath = realpathOrResolvedPath(entry);
-  return thisFile === entryPath;
-}
-
 // ---------------------------------------------------------------------------
 // startWorkerRpcHost
 // ---------------------------------------------------------------------------
@@ -239,7 +223,9 @@ export function runWorker(
   }
   const entry = process.argv[1];
   if (typeof entry !== "string") return;
-  if (isWorkerEntrypoint(entry, moduleUrl)) {
+  const thisFile = path.resolve(fileURLToPath(moduleUrl));
+  const entryPath = path.resolve(entry);
+  if (thisFile === entryPath) {
     startWorkerRpcHost({ plugin });
   }
 }
@@ -282,6 +268,13 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
   // Plugin handler registrations (populated during setup())
   const eventHandlers: EventRegistration[] = [];
+  // Track which (pattern, filter) tuples we have already registered on the
+  // host bus so that multiple `ctx.events.on()` calls for the same event don't
+  // produce N parallel host subscriptions — each of which would generate an
+  // independent `onEvent` notification, and each notification fans out to all
+  // local handlers, causing N×N handler invocations and (visibly) duplicate
+  // side-effects like double-posting Slack messages.
+  const hostSubscriptionKeys = new Set<string>();
   const jobHandlers = new Map<string, (job: PluginJobContext) => Promise<void>>();
   const launcherRegistrations = new Map<string, PluginLauncherRegistration>();
   const dataHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
@@ -401,55 +394,6 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
-      localFolders: {
-        declarations() {
-          if (!manifest) throw new Error("Plugin context accessed before initialization");
-          return manifest.localFolders ?? [];
-        },
-
-        async configure(input) {
-          return callHost("localFolders.configure", {
-            companyId: input.companyId,
-            folderKey: input.folderKey,
-            path: input.path,
-            access: input.access,
-            requiredDirectories: input.requiredDirectories,
-            requiredFiles: input.requiredFiles,
-          });
-        },
-
-        async status(companyId: string, folderKey: string) {
-          return callHost("localFolders.status", { companyId, folderKey });
-        },
-
-        async list(companyId: string, folderKey: string, options = {}) {
-          return callHost("localFolders.list", {
-            companyId,
-            folderKey,
-            relativePath: options.relativePath,
-            recursive: options.recursive,
-            maxEntries: options.maxEntries,
-          });
-        },
-
-        async readText(companyId: string, folderKey: string, relativePath: string) {
-          return callHost("localFolders.readText", { companyId, folderKey, relativePath });
-        },
-
-        async writeTextAtomic(companyId: string, folderKey: string, relativePath: string, contents: string) {
-          return callHost("localFolders.writeTextAtomic", {
-            companyId,
-            folderKey,
-            relativePath,
-            contents,
-          });
-        },
-
-        async deleteFile(companyId: string, folderKey: string, relativePath: string) {
-          return callHost("localFolders.deleteFile", { companyId, folderKey, relativePath });
-        },
-      },
-
       events: {
         on(
           name: string,
@@ -464,16 +408,33 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             registration = { name, filter: filterOrFn, fn: maybeFn };
           }
           eventHandlers.push(registration);
-          // Register subscription on the host so events are forwarded to this worker
-          void callHost("events.subscribe", { eventPattern: name, filter: registration.filter ?? null }).catch((err) => {
-            notifyHost("log", {
-              level: "warn",
-              message: `Failed to subscribe to event "${name}" on host: ${err instanceof Error ? err.message : String(err)}`,
+          // Register subscription on the host. Dedupe per (pattern, filter) so
+          // that calling `ctx.events.on("issue.updated", fn)` twice (or having
+          // a wildcard loop register the same pattern that an explicit handler
+          // already registered) doesn't create a second host bus subscription.
+          // The local `eventHandlers` array still drives the fan-out — every
+          // local handler matching the event still runs on each notification.
+          const filterKey = registration.filter ? JSON.stringify(registration.filter) : "";
+          const subscriptionKey = `${name}\x00${filterKey}`;
+          if (!hostSubscriptionKeys.has(subscriptionKey)) {
+            hostSubscriptionKeys.add(subscriptionKey);
+            void callHost("events.subscribe", { eventPattern: name, filter: registration.filter ?? null }).catch((err) => {
+              hostSubscriptionKeys.delete(subscriptionKey);
+              notifyHost("log", {
+                level: "warn",
+                message: `Failed to subscribe to event "${name}" on host: ${err instanceof Error ? err.message : String(err)}`,
+              });
             });
-          });
+          }
           return () => {
             const idx = eventHandlers.indexOf(registration);
             if (idx !== -1) eventHandlers.splice(idx, 1);
+            // Note: we don't unsubscribe on the host here. The host bus
+            // subscription is shared across any local handlers that matched
+            // the same (pattern, filter); leaving it alive is harmless when
+            // no local handlers remain because handleOnEvent simply finds
+            // nothing to dispatch to. The host clears all of a plugin's bus
+            // subscriptions when the worker shuts down.
           };
         },
 
@@ -549,6 +510,24 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       secrets: {
         async resolve(secretRef: string): Promise<string> {
           return callHost("secrets.resolve", { secretRef });
+        },
+        async list(companyId: string) {
+          return callHost("secrets.list" as any, { companyId });
+        },
+        async providers(companyId: string) {
+          return callHost("secrets.providers" as any, { companyId });
+        },
+        async create(companyId: string, data: { name: string; value: string; provider?: string; description?: string | null; externalRef?: string | null }) {
+          return callHost("secrets.create" as any, { companyId, ...data });
+        },
+        async rotate(id: string, data: { value: string; externalRef?: string | null }) {
+          return callHost("secrets.rotate" as any, { id, ...data });
+        },
+        async update(id: string, data: { name?: string; description?: string | null; externalRef?: string | null }) {
+          return callHost("secrets.update" as any, { id, ...data });
+        },
+        async remove(id: string) {
+          return callHost("secrets.remove" as any, { id });
         },
       },
 
@@ -644,62 +623,20 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           return callHost("projects.getWorkspaceForIssue", { issueId, companyId });
         },
 
-        managed: {
-          async get(projectKey: string, companyId: string) {
-            return callHost("projects.managed.get", { projectKey, companyId });
-          },
-          async reconcile(projectKey: string, companyId: string) {
-            return callHost("projects.managed.reconcile", { projectKey, companyId });
-          },
-          async reset(projectKey: string, companyId: string) {
-            return callHost("projects.managed.reset", { projectKey, companyId });
-          },
+        // Lucitra extension
+        async create(input) {
+          return callHost("projects.create", {
+            companyId: input.companyId,
+            name: input.name,
+            description: input.description,
+            status: input.status,
+            targetDate: input.targetDate,
+            color: input.color,
+          });
         },
-      },
 
-      routines: {
-        managed: {
-          async get(routineKey: string, companyId: string) {
-            return callHost("routines.managed.get", { routineKey, companyId });
-          },
-          async reconcile(
-            routineKey: string,
-            companyId: string,
-            overrides?: { assigneeAgentId?: string | null; projectId?: string | null },
-          ) {
-            return callHost("routines.managed.reconcile", { routineKey, companyId, ...overrides });
-          },
-          async reset(
-            routineKey: string,
-            companyId: string,
-            overrides?: { assigneeAgentId?: string | null; projectId?: string | null },
-          ) {
-            return callHost("routines.managed.reset", { routineKey, companyId, ...overrides });
-          },
-          async update(routineKey: string, companyId: string, patch: { status?: string }) {
-            return callHost("routines.managed.update", { routineKey, companyId, ...patch });
-          },
-          async run(
-            routineKey: string,
-            companyId: string,
-            overrides?: { assigneeAgentId?: string | null; projectId?: string | null },
-          ) {
-            return callHost("routines.managed.run", { routineKey, companyId, ...overrides });
-          },
-        },
-      },
-
-      skills: {
-        managed: {
-          async get(skillKey: string, companyId: string) {
-            return callHost("skills.managed.get", { skillKey, companyId });
-          },
-          async reconcile(skillKey: string, companyId: string) {
-            return callHost("skills.managed.reconcile", { skillKey, companyId });
-          },
-          async reset(skillKey: string, companyId: string) {
-            return callHost("skills.managed.reset", { skillKey, companyId });
-          },
+        async update(projectId: string, patch: Record<string, unknown>, companyId: string) {
+          return callHost("projects.update", { projectId, patch, companyId });
         },
       },
 
@@ -716,6 +653,15 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
+      users: {
+        async get(userId: string) {
+          return callHost("users.get", { userId });
+        },
+        async findByEmail(email: string) {
+          return callHost("users.findByEmail", { email });
+        },
+      },
+
       issues: {
         async list(input) {
           return callHost("issues.list", {
@@ -723,10 +669,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             projectId: input.projectId,
             assigneeAgentId: input.assigneeAgentId,
             originKind: input.originKind,
-            originKindPrefix: input.originKindPrefix,
             originId: input.originId,
             status: input.status,
-            includePluginOperations: input.includePluginOperations,
             limit: input.limit,
             offset: input.offset,
           });
@@ -734,6 +678,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
         async get(issueId: string, companyId: string) {
           return callHost("issues.get", { issueId, companyId });
+        },
+
+        async getByLinearIssueId({ linearIssueId, companyId }) {
+          return callHost("issues.getByLinearIssueId", { linearIssueId, companyId });
         },
 
         async create(input) {
@@ -751,8 +699,6 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             assigneeUserId: input.assigneeUserId,
             requestDepth: input.requestDepth,
             billingCode: input.billingCode,
-            assigneeAdapterOverrides: input.assigneeAdapterOverrides,
-            surfaceVisibility: input.surfaceVisibility,
             originKind: input.originKind,
             originId: input.originId,
             originRunId: input.originRunId,
@@ -962,6 +908,26 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
+      // Lucitra extension: labels API
+      labels: {
+        async list(companyId: string) {
+          return callHost("labels.list" as any, { companyId });
+        },
+        async create(companyId: string, name: string, color: string) {
+          return callHost("labels.create" as any, { companyId, name, color });
+        },
+      },
+
+      // Lucitra extension: plugin management API
+      plugins: {
+        async list(options?: { status?: string }) {
+          return callHost("plugins.list" as any, options ?? {});
+        },
+        async upgrade(pluginId: string, version?: string) {
+          return callHost("plugins.upgrade" as any, { pluginId, version });
+        },
+      },
+
       agents: {
         async list(input) {
           return callHost("agents.list", {
@@ -986,20 +952,6 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
         async invoke(agentId: string, companyId: string, opts: { prompt: string; reason?: string }) {
           return callHost("agents.invoke", { agentId, companyId, prompt: opts.prompt, reason: opts.reason });
-        },
-
-        managed: {
-          async get(agentKey: string, companyId: string) {
-            return callHost("agents.managed.get", { agentKey, companyId });
-          },
-
-          async reconcile(agentKey: string, companyId: string) {
-            return callHost("agents.managed.reconcile", { agentKey, companyId });
-          },
-
-          async reset(agentKey: string, companyId: string) {
-            return callHost("agents.managed.reset", { agentKey, companyId });
-          },
         },
 
         sessions: {
@@ -1149,6 +1101,24 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
         debug(message: string, meta?: Record<string, unknown>): void {
           notifyHost("log", { level: "debug", message, meta });
+        },
+      },
+
+      rpc: {
+        // Untyped passthrough to callHost. Lets plugins invoke any host
+        // method by name — including newer protocol methods that the
+        // installed SDK doesn't expose typed clients for. Capability
+        // checks still run on the host side.
+        async call<TResult = unknown>(
+          method: string,
+          params?: unknown,
+          timeoutMs?: number,
+        ): Promise<TResult> {
+          return callHost(
+            method as WorkerToHostMethodName,
+            (params ?? {}) as never,
+            timeoutMs,
+          ) as Promise<TResult>;
         },
       },
     };

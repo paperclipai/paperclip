@@ -108,6 +108,7 @@ export interface PluginHostContext {
   entityType: string | null;
   parentEntityId?: string | null;
   userId: string | null;
+  publicUrl: string | null;
   renderEnvironment?: PluginRenderEnvironmentContext | null;
 }
 
@@ -580,7 +581,7 @@ export function usePluginStream<T = unknown>(
   const effectiveCompanyId = options?.companyId ?? hostContext.companyId ?? undefined;
   const [events, setEvents] = useState<T[]>([]);
   const [lastEvent, setLastEvent] = useState<T | null>(null);
-  const [connecting, setConnecting] = useState<boolean>(Boolean(effectiveCompanyId));
+  const [connecting, setConnecting] = useState<boolean>(Boolean(effectiveCompanyId && channel));
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
@@ -597,7 +598,13 @@ export function usePluginStream<T = unknown>(
     setLastEvent(null);
     setError(null);
 
-    if (!effectiveCompanyId) {
+    // Plugins legitimately call usePluginStream("") when there's nothing to
+    // subscribe to (e.g. chat plugin with no thread selected). Treat that the
+    // same as missing companyId — don't open a connection. Without this guard,
+    // the EventSource URL becomes `/bridge/stream/?companyId=...` which never
+    // matches the server's `:channel` route param and produces a 404 spam loop
+    // (browser EventSource auto-reconnects on each component render).
+    if (!effectiveCompanyId || !channel) {
       close();
       return;
     }

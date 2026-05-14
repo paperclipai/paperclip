@@ -38,6 +38,7 @@ import type {
 } from "@paperclipai/shared";
 import { pluginsApi, type PluginUiContribution } from "@/api/plugins";
 import { authApi } from "@/api/auth";
+import { healthApi } from "@/api/health";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import {
@@ -337,6 +338,11 @@ function rewriteBareSpecifiers(source: string): string {
     "'@paperclipai/plugin-sdk/ui'": `'${getShimBlobUrl("sdk-ui")}'`,
     '"@paperclipai/plugin-sdk/ui/hooks"': `"${getShimBlobUrl("sdk-ui")}"`,
     "'@paperclipai/plugin-sdk/ui/hooks'": `'${getShimBlobUrl("sdk-ui")}'`,
+    // Lucitra fork SDK — same shim, different package name
+    '"@lucitra/plugin-sdk/ui"': `"${getShimBlobUrl("sdk-ui")}"`,
+    "'@lucitra/plugin-sdk/ui'": `'${getShimBlobUrl("sdk-ui")}'`,
+    '"@lucitra/plugin-sdk/ui/hooks"': `"${getShimBlobUrl("sdk-ui")}"`,
+    "'@lucitra/plugin-sdk/ui/hooks'": `'${getShimBlobUrl("sdk-ui")}'`,
     '"react/jsx-runtime"': `"${getShimBlobUrl("react/jsx-runtime")}"`,
     "'react/jsx-runtime'": `'${getShimBlobUrl("react/jsx-runtime")}'`,
     '"react-dom/client"': `"${getShimBlobUrl("react-dom/client")}"`,
@@ -726,6 +732,7 @@ type PluginSlotMountProps = {
 function slotContextToHostContext(
   pluginSlotContext: PluginSlotContext,
   userId: string | null,
+  publicUrl: string | null,
 ): PluginHostContext {
   return {
     companyId: pluginSlotContext.companyId ?? null,
@@ -735,6 +742,7 @@ function slotContextToHostContext(
     entityType: pluginSlotContext.entityType ?? null,
     parentEntityId: pluginSlotContext.parentEntityId ?? null,
     userId,
+    publicUrl,
     renderEnvironment: null,
   };
 }
@@ -758,8 +766,22 @@ function PluginBridgeScope({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
   });
+  const { data: health, error: healthError } = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    staleTime: 5 * 60 * 1000,
+  });
+  useEffect(() => {
+    if (healthError) {
+      console.error("[plugin-host] /api/health failed; publicUrl unknown — plugins will fall back to window.location.origin", healthError);
+    }
+  }, [healthError]);
   const userId = session?.user?.id ?? session?.session?.userId ?? null;
-  const hostContext = useMemo(() => slotContextToHostContext(context, userId), [context, userId]);
+  const publicUrl = health?.publicUrl ?? null;
+  const hostContext = useMemo(
+    () => slotContextToHostContext(context, userId, publicUrl),
+    [context, userId, publicUrl],
+  );
   const value = useMemo(() => ({ pluginId, hostContext }), [pluginId, hostContext]);
 
   return (

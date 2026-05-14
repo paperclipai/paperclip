@@ -178,6 +178,35 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     );
   });
 
+  it("forwards description on issue.created activity (regression: empty Linear mirrors)", async () => {
+    // Without description in the activity details, the issue.created event
+    // bus payload arrives at paperclip-plugin-linear's handler with
+    // payload.description = undefined, and the Linear-side mirror is created
+    // with an empty body. Observed 2026-05-04 via paperclip-plugin-alertmanager:
+    // paperclip rows had 1.2KB descriptions, Linear mirrors had nothing.
+    const { companyId } = await seedCompanyAndAgent();
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const body = "**Summary**: synthetic body — pinned by regression test";
+    const issue = await services.issues.create({
+      companyId,
+      title: "Issue with description",
+      description: body,
+    });
+
+    const activities = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issue.id)));
+    expect(activities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "issue.created",
+          details: expect.objectContaining({ description: body }),
+        }),
+      ]),
+    );
+  });
+
   it("enforces plugin origin namespaces", async () => {
     const { companyId } = await seedCompanyAndAgent();
     const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());

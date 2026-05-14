@@ -54,8 +54,12 @@ import { logger } from "../middleware/logger.js";
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Default timeout for RPC calls in milliseconds. */
-const DEFAULT_RPC_TIMEOUT_MS = 30_000;
+/** Default timeout for RPC calls in milliseconds. Bumped from 30s to 120s
+ * because plugin actions like Linear `trigger-import` legitimately exceed 30s
+ * for medium workspaces (~500 issues) and TIMEOUT was bubbling up to the UI
+ * even when the worker eventually completed the work. Per-call overrides
+ * still possible via `timeoutMs`; hard cap stays at MAX_RPC_TIMEOUT_MS. */
+const DEFAULT_RPC_TIMEOUT_MS = 120_000;
 
 /** Hard upper bound for any RPC timeout (5 minutes). Prevents unbounded waits. */
 const MAX_RPC_TIMEOUT_MS = 5 * 60 * 1_000;
@@ -610,12 +614,15 @@ export function createPluginWorkerHandle(
     // receive a minimal, controlled environment to prevent leaking host
     // secrets (like DATABASE_URL, internal API keys, etc.).
     const workerEnv: Record<string, string> = {
-      ...options.env,
+      HOME: process.env.HOME ?? "",
       PATH: process.env.PATH ?? "",
       NODE_PATH: process.env.NODE_PATH ?? "",
       PAPERCLIP_PLUGIN_ID: pluginId,
       NODE_ENV: process.env.NODE_ENV ?? "production",
       TZ: process.env.TZ ?? "UTC",
+      // options.env is spread last so per-plugin overrides (like NODE_PATH
+      // pointing to a local SDK build) take precedence over defaults.
+      ...options.env,
     };
 
     const child = fork(options.entrypointPath, [], {
@@ -1198,6 +1205,11 @@ export interface PluginWorkerManagerOptions {
     signal?: string | null;
     willRestart?: boolean;
   }) => void;
+  /**
+   * Global callback for stream notifications from any worker (streams.open/emit/close).
+   * Wired to the PluginStreamBus to fan out events to SSE clients.
+   */
+  onStreamNotification?: (pluginId: string, method: string, params: Record<string, unknown>) => void;
 }
 
 /**
@@ -1253,7 +1265,16 @@ export function createPluginWorkerManager(
         );
       }
 
-      const handle = createPluginWorkerHandle(pluginId, options);
+      // Wire manager-level stream notification callback into per-worker options
+      const mergedOptions = managerOptions?.onStreamNotification && !options.onStreamNotification
+        ? {
+            ...options,
+            onStreamNotification: (method: string, params: Record<string, unknown>) => {
+              managerOptions.onStreamNotification!(pluginId, method, params);
+            },
+          }
+        : options;
+      const handle = createPluginWorkerHandle(pluginId, mergedOptions);
       workers.set(pluginId, handle);
 
       // Subscribe to crash/ready events for live event forwarding
