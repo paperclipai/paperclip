@@ -1,9 +1,15 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Building2, Plus, Settings2 } from "lucide-react";
+import { Building2, Check, ChevronsUpDown, Plus, Settings2 } from "lucide-react";
 import { Link, useNavigate } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useCompany } from "@/context/CompanyContext";
 import { useOrg } from "@/context/OrgContext";
 import { useDialog } from "@/context/DialogContext";
@@ -46,8 +52,8 @@ export function HomePage() {
   const loading = orgsLoading || companiesLoading;
 
   return (
-    <div className="min-h-screen" style={{ background: "linear-gradient(160deg, #fdf4ef 0%, #f0f4ff 50%, #f5f0ff 100%)" }}>
-      <header className="border-b border-border/40 bg-white/60 backdrop-blur-md sticky top-0 z-10">
+    <div className="min-h-screen bg-background">
+      <header className="border-b border-border bg-background sticky top-0 z-10">
         <div className="mx-auto flex w-full max-w-5xl items-center justify-between px-6 py-4">
           <span className="text-base font-semibold tracking-tight">Paperclip</span>
           <div className="flex items-center gap-3">
@@ -63,12 +69,8 @@ export function HomePage() {
       </header>
 
       <main className="mx-auto w-full max-w-5xl px-6 py-10 space-y-8">
-        {/* Hero card — peach-to-lavender gradient */}
-        <div
-          className="rounded-3xl px-8 py-10 shadow-md"
-          style={{ background: "linear-gradient(135deg, #fde8d8 0%, #fce4f0 55%, #e8e4fc 100%)" }}
-        >
-          <p className="text-xs font-semibold uppercase tracking-widest text-rose-400/80 mb-2">
+        <div className="rounded-2xl border border-border bg-card px-8 py-10 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-2">
             {new Date().getHours() < 12 ? "Good morning" : new Date().getHours() < 18 ? "Good afternoon" : "Good evening"}
           </p>
           <h1 className="text-3xl font-bold tracking-tight text-foreground mb-6">
@@ -77,26 +79,47 @@ export function HomePage() {
 
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-2">
-              <Building2 className="size-4 text-muted-foreground/70" />
+              <Building2 className="size-4 text-muted-foreground" />
               {organizations.length > 0 ? (
-                <select
-                  className="rounded-xl border border-white/60 bg-white/70 backdrop-blur-sm px-3 py-1.5 text-sm outline-none shadow-sm"
-                  value={selectedOrg?.id ?? ""}
-                  onChange={(e) => setSelectedOrgId(e.target.value)}
-                >
-                  {organizations.map((org) => (
-                    <option key={org.id} value={org.id}>
-                      {org.name}
-                      {org.archivedAt ? " (archived)" : ""}
-                    </option>
-                  ))}
-                </select>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="justify-between gap-2 rounded-md border-border bg-background font-normal"
+                    >
+                      <span className="truncate">
+                        {selectedOrg
+                          ? `${selectedOrg.name}${selectedOrg.archivedAt ? " (archived)" : ""}`
+                          : "Select organization"}
+                      </span>
+                      <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="min-w-[220px]">
+                    {organizations.map((org) => (
+                      <DropdownMenuItem
+                        key={org.id}
+                        onSelect={() => setSelectedOrgId(org.id)}
+                        className="justify-between gap-2"
+                      >
+                        <span className="truncate">
+                          {org.name}
+                          {org.archivedAt ? " (archived)" : ""}
+                        </span>
+                        {org.id === selectedOrg?.id ? (
+                          <Check className="size-4 shrink-0 text-muted-foreground" />
+                        ) : null}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
               ) : (
                 <span className="text-sm text-muted-foreground">No organization selected</span>
               )}
             </div>
             <div className="ml-auto flex items-center gap-2 shrink-0">
-              <Button variant="outline" size="sm" className="rounded-xl bg-white/60 backdrop-blur-sm border-white/70 shadow-sm" asChild>
+              <Button variant="outline" size="sm" className="rounded-md" asChild>
                 <Link to="/organizations">
                   <Settings2 className="size-4" />
                   Manage
@@ -104,7 +127,7 @@ export function HomePage() {
               </Button>
               <Button
                 size="sm"
-                className="rounded-xl shadow-sm"
+                className="rounded-md"
                 onClick={() => {
                   if (selectedOrg) setSelectedOrgId(selectedOrg.id);
                   openOnboarding();
@@ -118,7 +141,7 @@ export function HomePage() {
         </div>
 
         {loading ? (
-          <div className="rounded-2xl border border-border/50 bg-white/60 backdrop-blur-sm shadow-sm p-8 text-sm text-muted-foreground">
+          <div className="rounded-2xl border border-border bg-card shadow-sm p-8 text-sm text-muted-foreground">
             Loading...
           </div>
         ) : !selectedOrg ? (
@@ -166,7 +189,7 @@ function CompanyGrid({
           <button
             type="button"
             onClick={() => onEnter(company)}
-            className="group flex w-full items-center gap-4 rounded-2xl border border-border/50 bg-white/70 backdrop-blur-sm p-5 text-left shadow-sm transition-all hover:shadow-md hover:border-border/80 hover:bg-white/80 active:scale-[0.98]"
+            className="group flex w-full items-center gap-4 rounded-2xl border border-border bg-card p-5 text-left shadow-sm transition-all hover:shadow-md hover:bg-accent active:scale-[0.98]"
           >
             {company.brandColor ? (
               <span
@@ -201,7 +224,7 @@ function EmptyState({
   onAction: () => void;
 }) {
   return (
-    <div className="rounded-2xl border border-border/50 bg-white/60 backdrop-blur-sm shadow-sm p-12 text-center">
+    <div className="rounded-2xl border border-border bg-card shadow-sm p-12 text-center">
       <Building2 className="mx-auto size-10 text-muted-foreground/50" />
       <h2 className="mt-5 text-lg font-semibold">{title}</h2>
       <p className="mt-2 text-sm text-muted-foreground max-w-xs mx-auto">{message}</p>
