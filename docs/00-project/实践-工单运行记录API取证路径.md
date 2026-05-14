@@ -1,6 +1,6 @@
 # 实践：从 Board 工单号查到「运行记录」取证路径（API）
 
-本文记录一次真实探查（**ROU-20**）时的**操作顺序与踩坑**，便于下次在几分钟内复现，而不在长 JSON 或错误字段名上耗时间。结论表见 **`探查-ROU-20-运行记录.md`**；`process_lost_retry` 语义见 **`探查-process_lost_retry.md`**。
+本文记录一次真实探查（**ROU-20**）时的**操作顺序与踩坑**，便于下次在几分钟内复现，而不在长 JSON 或错误字段名上耗时间。结论表见 **`探查-ROU-20-运行记录.md`**；`process_lost_retry` 语义见 **`探查-process_lost_retry.md`**；**合订（行为 + 指南 + 反查表 + 反复触发）**见 **`探查-ROU-20-process_lost-retry与反复触发-合订.md`**。下文 **§1.5** 记录「同一条工单在 Board 上混杂三类来源」的判读观察。
 
 ---
 
@@ -53,15 +53,34 @@ pnpm issue:forensics -- --company <companyUuid> --issue ROU-20 --run 4
 
 # 或直接写 run UUID（仍建议带 --issue，便于拉 /activity）
 pnpm issue:forensics -- --company <companyUuid> --issue ROU-20 --run-id <uuid>
+
+# 工单全部活动（新 → 旧 宽表，含 action / actor / runId 摘要）
+pnpm issue:forensics -- --company <companyUuid> --issue ROU-20 --issue-activity
+
+# 对每条 run：摘要 + 该 runId 下最后一条活动 + prompt 节选（与 --run / --run-id 互斥）
+pnpm issue:forensics -- --company <companyUuid> --issue ROU-20 --reverse-last-per-run
 ```
 
 - **`--company`**：与 `GET /api/issues/{ref}` 返回的 **`companyId`** 对齐；不一致会直接退出（防串公司）。  
 - **`--issue`**：人类标识（如 **`ROU-20`**）或 issue UUID。  
 - **`--base`**：默认 **`http://127.0.0.1:3100`**；也可用环境变量 **`PAPERCLIP_API_BASE`**。  
 - **`authenticated`** 实例：加 **`--auth "Bearer …"`** 或环境变量 **`PAPERCLIP_AUTH`**。  
-- 可选：`--events-limit`、`--prompt-chars`（控制事件条数与打印的 prompt 长度）。
+- 可选：`--events-limit`、`--prompt-chars`（控制事件条数与打印的 prompt 长度）；`--reverse-last-per-run` 下另有 **`--prompt-excerpt`**（默认 1200）控制 `adapter.invoke` 节选长度。  
+- **`--reverse-last-per-run`** 不得与 **`--run`** / **`--run-id`** 同时使用（脚本会报错退出）。
 
 实现文件：`scripts/issue-run-forensics.mjs`。
+
+### 1.5 Board 时间线：三类来源混杂（读者观察）
+
+**Board 是统一展示面**（网页点操作背后也是 `GET/POST/PATCH /api/...`）。同一条工单在活动流、评论、状态变更里，往往**交错出现三类「谁推动了这件事」**，若不当场拆开，容易误判成「同一个东西在反复折腾」：
+
+| 类别 | 典型含义 | 在活动 / 详情里怎么认 |
+|------|----------|------------------------|
+| **人（Board 操作者）** | 你在控制台里改状态、发评论、指派等 | `actor` 常为 **`user:local-board`**（或你们环境里的 board 用户 id）；与某次 CLI 无必然对应。 |
+| **智能体（适配器进程）** | Cursor / CodeBuddy 等带 agent 身份调 API 写评论、关单 | `actor` 为 **`agent:<uuid>`**；常与 **`runId`** 同列出现；完整提示词在 **`GET .../heartbeat-runs/{runId}/events`** 的 `adapter.invoke` 里。 |
+| **系统 / 自动化** | 心跳、唤醒队列、丢进程重试、延迟评论唤醒等，不经人手点「运行」 | `actor` 常为 **`system:heartbeat`**；`details` 里可出现 **`deferred_comment_wake`**、`source: automation`、`wakeReason: process_lost_retry` 等与 **run 的 `contextSnapshot`** 对照。 |
+
+**取证含义**：判读「谁发起、谁执行、该不该在 `done` 之后还动」时，**先看 activity 的 actor 类型**，再对上有无 **`runId`**，最后拉 **run 详情 + events** 对齐 **`wakeReason` / `invocationSource`**；不要把三类混成「Board 自己在乱读工单」。
 
 ---
 
@@ -114,4 +133,4 @@ node -e "const http=require('http');const ids=['PUT-RUN-UUIDS-HERE'];function ge
 
 ---
 
-**最后更新**：与 **ROU-20 运行记录** 同轮整理入档。
+**最后更新**：与 **ROU-20 运行记录** 同轮整理入档；增补 **`--issue-activity`**、**`--reverse-last-per-run`**；**§1.5** 记入「Board 时间线三类来源混杂」读者观察。
