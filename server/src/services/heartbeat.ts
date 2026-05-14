@@ -1,4 +1,5 @@
-﻿import path from "node:path";
+﻿import fs from "node:fs/promises";
+import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
@@ -8399,7 +8400,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               run.status === "failed" ||
               run.status === "timed_out" ||
               run.status === "cancelled" ||
-              run.status === "succeeded"
+              (run.status === "succeeded" &&
+                run.livenessState !== "advanced" &&
+                run.livenessState !== "blocked" &&
+                run.livenessState !== "completed" &&
+                !readNonEmptyString(run.nextAction))
             )
           )
         );
