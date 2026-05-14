@@ -23,6 +23,20 @@ The `gemini_local` adapter runs Google's Gemini CLI locally. It supports session
 | `graceSec` | number | No | Grace period before force-kill |
 | `yolo` | boolean | No | Pass `--approval-mode yolo` for unattended operation |
 
+## Prompt Composition (Caching)
+
+For non-resumed runs, Paperclip assembles the Gemini `--prompt` value in this order:
+
+1. `instructionsFilePath` contents (if configured and readable)
+2. `bootstrapPromptTemplate` (first run only)
+3. `promptTemplate`
+4. Wake payload (or resume delta, when applicable)
+5. Runtime notes (Paperclip env + API access hints)
+
+This ordering is intentional: models that support prefix prompt caching can reuse the stable `promptTemplate` portion even when the wake payload changes each heartbeat, improving `cached_input_tokens`.
+
+To verify the cache impact, compare two consecutive non-resumed heartbeats with different wake payloads and compute `cachedInputTokens / inputTokens` from the run token usage. The ratio should increase when more stable prompt text is moved into the cacheable prefix.
+
 ## Session Persistence
 
 The adapter persists Gemini session IDs between heartbeats. On the next wake, it resumes the existing conversation with `--resume` so the agent retains context.

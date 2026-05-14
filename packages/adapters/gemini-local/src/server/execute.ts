@@ -487,11 +487,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const prompt = joinPromptSections([
     instructionsPrefix,
     renderedBootstrapPrompt,
+    renderedPrompt,
     wakePrompt,
     sessionHandoffNote,
     paperclipEnvNote,
     apiAccessNote,
-    renderedPrompt,
   ]);
   const promptMetrics = {
     promptChars: prompt.length,

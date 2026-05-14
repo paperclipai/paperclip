@@ -589,9 +589,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const userPrompt = joinPromptSections([
     renderedBootstrapPrompt,
+    renderedHeartbeatPrompt,
     wakePrompt,
     sessionHandoffNote,
-    renderedHeartbeatPrompt,
   ]);
   const promptMetrics = {
     systemPromptChars: renderedSystemPromptExtension.length,
