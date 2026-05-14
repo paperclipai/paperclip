@@ -3,11 +3,12 @@ import { test, expect } from "@playwright/test";
 /**
  * E2E: Onboarding wizard flow (skip_llm mode).
  *
- * Walks through the 4-step OnboardingWizard:
- *   Step 1 — Name your company
+ * Walks through the 5-step OnboardingWizard:
+ *   Step 1 — Set up your company (fresh or import)
  *   Step 2 — Create your first agent (adapter selection + config)
- *   Step 3 — Give it something to do (task creation)
- *   Step 4 — Ready to launch (summary + open issue)
+ *   Step 3 — Link a workspace (optional, can skip)
+ *   Step 4 — Review your team (org chart confirmation)
+ *   Step 5 — Launch with a task (task creation + summary + open issue)
  *
  * By default this runs in skip_llm mode: we do NOT assert that an LLM
  * heartbeat fires. Set PAPERCLIP_E2E_SKIP_LLM=false to enable LLM-dependent
@@ -24,9 +25,23 @@ test.describe("Onboarding wizard", () => {
   test("completes full wizard flow", async ({ page }) => {
     await page.goto("/onboarding");
 
-    const wizardHeading = page.locator("h3", { hasText: "Name your company" });
+    const wizardHeading = page.locator("h3", { hasText: "Set up your company" });
+    const newCompanyBtn = page.getByRole("button", { name: "New Company" });
+
+    await expect(
+      wizardHeading.or(newCompanyBtn)
+    ).toBeVisible({ timeout: 15_000 });
+
+    if (await newCompanyBtn.isVisible()) {
+      await newCompanyBtn.click();
+    }
 
     await expect(wizardHeading).toBeVisible({ timeout: 5_000 });
+
+    // Ensure "Start fresh" mode is selected by default
+    await expect(
+      page.locator("button", { hasText: "Start fresh" })
+    ).toBeVisible();
 
     const companyNameInput = page.locator('input[placeholder="Acme Corp"]');
     await companyNameInput.fill(COMPANY_NAME);
@@ -34,9 +49,16 @@ test.describe("Onboarding wizard", () => {
     const nextButton = page.getByRole("button", { name: "Next" });
     await nextButton.click();
 
-    await expect(
-      page.locator("h3", { hasText: "Create your first agent" })
-    ).toBeVisible({ timeout: 30_000 });
+    // After company creation, a Linear connect prompt may appear — skip it
+    const skipLinear = page.getByRole("button", { name: /Skip for now|Skip import/ });
+    const agentHeading = page.locator("h3", { hasText: "Create your first agent" });
+    await expect(skipLinear.or(agentHeading)).toBeVisible({ timeout: 10_000 });
+    if (await skipLinear.isVisible()) {
+      await skipLinear.click();
+    }
+
+    // Step 2: Agent
+    await expect(agentHeading).toBeVisible({ timeout: 10_000 });
 
     const agentNameInput = page.locator('input[placeholder="CEO"]');
     await expect(agentNameInput).toHaveValue(AGENT_NAME);
@@ -50,9 +72,10 @@ test.describe("Onboarding wizard", () => {
 
     await page.getByRole("button", { name: "Next" }).click();
 
+    // Step 3: Workspace — skip it
     await expect(
-      page.locator("h3", { hasText: "Give it something to do" })
-    ).toBeVisible({ timeout: 30_000 });
+      page.locator("h3", { hasText: "Link a workspace" })
+    ).toBeVisible({ timeout: 10_000 });
 
     const baseUrl = page.url().split("/").slice(0, 3).join("/");
     if (SKIP_LLM) {
@@ -93,23 +116,28 @@ test.describe("Onboarding wizard", () => {
       expect(disableWakeRes.ok()).toBe(true);
     }
 
+    await page.getByRole("button", { name: "Skip" }).click();
+
+    // Step 4: Team review
+    await expect(
+      page.locator("h3", { hasText: "Review your team" })
+    ).toBeVisible({ timeout: 10_000 });
+
+    await page.getByRole("button", { name: "Next" }).click();
+
+    // Step 5: Task + Launch
+    await expect(
+      page.locator("h3", { hasText: "Launch with a task" })
+    ).toBeVisible({ timeout: 10_000 });
+
     const taskTitleInput = page.locator(
-      'input[placeholder="e.g. Research competitor pricing"]'
+      'input[placeholder="e.g. Review the codebase and create a roadmap"]'
     );
     await taskTitleInput.clear();
     await taskTitleInput.fill(TASK_TITLE);
 
-    await page.getByRole("button", { name: "Next" }).click();
-
-    await expect(
-      page.locator("h3", { hasText: "Ready to launch" })
-    ).toBeVisible({ timeout: 30_000 });
-
-    await expect(page.locator("text=" + COMPANY_NAME)).toBeVisible();
-    await expect(page.locator("text=" + AGENT_NAME)).toBeVisible();
-    await expect(page.locator("text=" + TASK_TITLE)).toBeVisible();
-
-    await page.getByRole("button", { name: "Create & Open Issue" }).click();
+    // Use data-slot to distinguish the submit button from the progress tab
+    await page.locator('button[data-slot="button"]', { hasText: "Launch" }).click();
 
     await expect(page).toHaveURL(/\/issues\//, { timeout: 30_000 });
 
@@ -152,6 +180,7 @@ test.describe("Onboarding wizard", () => {
     );
     expect(task).toBeTruthy();
     expect(task.assigneeAgentId).toBe(ceoAgent.id);
+    // Without a workspace scan, the default description is used
     expect(task.description).toContain(
       "You are the CEO. You set the direction for the company."
     );

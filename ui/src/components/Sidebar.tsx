@@ -12,6 +12,7 @@ import {
   Repeat,
   GitBranch,
   Settings,
+  MessageSquare,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink } from "@/lib/router";
@@ -89,6 +90,7 @@ export function Sidebar() {
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
             alert={inboxBadge.failedRuns > 0}
           />
+          <SidebarNavItem to="/plugins/paperclip-chat" label="Chat" icon={MessageSquare} />
           <PluginSlotOutlet
             slotTypes={["sidebar"]}
             context={pluginContext}

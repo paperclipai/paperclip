@@ -82,6 +82,7 @@ import { ScrollToBottom } from "../components/ScrollToBottom";
 import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
 import { ProductivityReviewBadge } from "../components/ProductivityReviewBadge";
+import { EvidenceBadge } from "../components/EvidenceBadge";
 import { Identity } from "../components/Identity";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
@@ -136,6 +137,7 @@ import {
   SlidersHorizontal,
   Trash2,
   XCircle,
+  ExternalLink,
 } from "lucide-react";
 import {
   getClosedIsolatedExecutionWorkspaceMessage,
@@ -744,7 +746,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId),
-    refetchInterval: 3000,
+    refetchInterval: 5000,
     placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueId),
   });
   const resolvedLiveRuns = liveRuns ?? [];
@@ -753,7 +755,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryKey: queryKeys.issues.activeRun(issueId),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId),
     enabled: !!executionRunId || issueStatus === "in_progress",
-    refetchInterval: liveRunCount > 0 ? false : 3000,
+    refetchInterval: liveRunCount > 0 ? false : 5000,
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(issueId),
   });
   const resolvedActiveRun = useMemo(
@@ -1338,7 +1340,7 @@ export function IssueDetail() {
     queryKey: queryKeys.issues.liveRuns(issueId!),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
     enabled: !!issueId,
-    refetchInterval: 3000,
+    refetchInterval: 5000,
     select: (runs) => runs.length,
     placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueId ?? "pending"),
   });
@@ -1347,7 +1349,7 @@ export function IssueDetail() {
     queryKey: queryKeys.issues.activeRun(issueId!),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId!),
     enabled: !!issueId && (!!issue?.executionRunId || issue?.status === "in_progress"),
-    refetchInterval: liveRunCount > 0 ? false : 3000,
+    refetchInterval: liveRunCount > 0 ? false : 5000,
     select: (run) => !!run,
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(issueId ?? "pending"),
   });
@@ -1388,7 +1390,7 @@ export function IssueDetail() {
     queryKey: resolvedCompanyId ? queryKeys.liveRuns(resolvedCompanyId) : ["live-runs", "pending"],
     queryFn: () => heartbeatsApi.liveRunsForCompany(resolvedCompanyId!),
     enabled: !!resolvedCompanyId,
-    refetchInterval: 5000,
+    refetchInterval: 10_000,
     placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(resolvedCompanyId ?? "pending"),
   });
 
@@ -3358,6 +3360,9 @@ export function IssueDetail() {
           {issue.productivityReview ? (
             <ProductivityReviewBadge review={issue.productivityReview} />
           ) : null}
+
+          <EvidenceBadge verdict={issue.lastEvidenceVerdict ?? null} />
+
 
           {issue.originKind === "issue_productivity_review" ? (
             <span

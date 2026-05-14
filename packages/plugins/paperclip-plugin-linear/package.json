@@ -1,0 +1,33 @@
+{
+  "name": "@kkroo/paperclip-plugin-linear",
+  "version": "0.9.3",
+  "description": "Paperclip plugin: bidirectional Linear issue sync with OAuth, webhooks, and import",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
+  },
+  "scripts": {
+    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "build": "tsc && node ./scripts/build-ui.mjs",
+    "clean": "rm -rf dist",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit",
+    "test": "vitest run --config ./vitest.config.ts"
+  },
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.3",
+    "esbuild": "^0.27.3",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.2.4"
+  }
+}

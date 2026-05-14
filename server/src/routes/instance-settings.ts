@@ -1,5 +1,6 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
+import { companies } from "@paperclipai/db";
 import {
   issueGraphLivenessAutoRecoveryRequestSchema,
   patchInstanceExperimentalSettingsSchema,
@@ -7,7 +8,12 @@ import {
 } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
-import { heartbeatService, instanceSettingsService, logActivity } from "../services/index.js";
+import {
+  companyService,
+  heartbeatService,
+  instanceSettingsService,
+  logActivity,
+} from "../services/index.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
 
 function assertCanManageInstanceSettings(req: Request) {
@@ -98,6 +104,17 @@ export function instanceSettingsRoutes(db: Db) {
       res.json(updated.experimental);
     },
   );
+
+  // POST /api/instance/reset — delete all companies (cascades all data) for fresh onboarding
+  router.post("/instance/reset", async (req, res) => {
+    assertCanManageInstanceSettings(req);
+    const svcCompany = companyService(db);
+    const allCompanies = await db.select({ id: companies.id }).from(companies);
+    for (const company of allCompanies) {
+      await svcCompany.remove(company.id);
+    }
+    res.json({ ok: true, deleted: allCompanies.length });
+  });
 
   router.post(
     "/instance/settings/experimental/issue-graph-liveness-auto-recovery/preview",

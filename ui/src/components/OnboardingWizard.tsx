@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
+import type { AdapterEnvironmentTestResult, CompanyPortabilityPreviewResult } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -10,6 +10,7 @@ import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
+import { workspaceApi, type WorkspaceScanResult } from "../api/workspace";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import {
@@ -34,6 +35,7 @@ import { parseOnboardingGoalInput } from "../lib/onboarding-goal";
 import {
   buildOnboardingIssuePayload,
   buildOnboardingProjectPayload,
+  buildContextualTaskDescription,
   selectDefaultCompanyGoalId
 } from "../lib/onboarding-launch";
 import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
@@ -46,6 +48,9 @@ import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
 import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
+import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
+import { OrgTreeView } from "./OrgTreeView";
+import { FolderPicker } from "./FolderPicker";
 import {
   Building2,
   Bot,
@@ -56,18 +61,28 @@ import {
   Check,
   Loader2,
   ChevronDown,
+  FolderOpen,
+  GitBranch,
+  Network,
+  Download,
   X
 } from "lucide-react";
 
 
-type Step = 1 | 2 | 3 | 4;
-type AdapterType = string;
+type Step = 1 | 2 | 3 | 4 | 5;
+type SetupMode = "fresh" | "import";
 
+// Kept for backward compatibility — upstream code may reference this.
+// The contextual builder in onboarding-launch.ts falls back to the
+// same text when no workspace scan is available.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the company.
 
 - hire a founding engineer
 - write a hiring plan
 - break the roadmap into concrete tasks and start delegating work`;
+
+type AdapterType = string;
 
 export function OnboardingWizard() {
   const { onboardingOpen, onboardingOptions, closeOnboarding } = useDialog();
@@ -105,6 +120,10 @@ export function OnboardingWizard() {
   const [modelSearch, setModelSearch] = useState("");
 
   // Step 1
+  const [setupMode, setSetupMode] = useState<SetupMode>("fresh");
+  const [importUrl, setImportUrl] = useState("");
+  const [importPreview, setImportPreview] = useState<CompanyPortabilityPreviewResult | null>(null);
+  const [importLoading, setImportLoading] = useState(false);
   const [companyName, setCompanyName] = useState("");
   const [companyGoal, setCompanyGoal] = useState("");
 
@@ -124,13 +143,18 @@ export function OnboardingWizard() {
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
   const [showMoreAdapters, setShowMoreAdapters] = useState(false);
 
-  // Step 3
-  const [taskTitle, setTaskTitle] = useState(
-    "Hire your first engineer and create a hiring plan"
-  );
-  const [taskDescription, setTaskDescription] = useState(
-    DEFAULT_TASK_DESCRIPTION
-  );
+  // Step 3 — Workspace
+  const [workspacePath, setWorkspacePath] = useState("");
+  const [workspaceScan, setWorkspaceScan] = useState<WorkspaceScanResult | null>(null);
+  const [scanLoading, setScanLoading] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [folderPickerOpen, setFolderPickerOpen] = useState(false);
+
+  // Step 5 — Task (was step 3)
+  const contextual = useMemo(() => buildContextualTaskDescription(workspaceScan), [workspaceScan]);
+  const [taskTitle, setTaskTitle] = useState(contextual.title);
+  const [taskDescription, setTaskDescription] = useState(contextual.description);
+  const [taskTouched, setTaskTouched] = useState(false);
 
   // Auto-grow textarea for task description
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -158,6 +182,14 @@ export function OnboardingWizard() {
   useEffect(() => {
     setRouteDismissed(false);
   }, [location.pathname]);
+
+  // Check which integrations are available on the server
+  useEffect(() => {
+    fetch("/api/integrations")
+      .then((r) => r.ok ? r.json() : {})
+      .then((data: Record<string, unknown>) => setLinearAvailable(!!data.linear))
+      .catch(() => setLinearAvailable(false));
+  }, []);
 
   // Sync step and company when onboarding opens with options.
   // Keep this independent from company-list refreshes so Step 1 completion
@@ -288,6 +320,10 @@ export function OnboardingWizard() {
     setStep(1);
     setLoading(false);
     setError(null);
+    setSetupMode("fresh");
+    setImportUrl("");
+    setImportPreview(null);
+    setImportLoading(false);
     setCompanyName("");
     setCompanyGoal("");
     setAgentName("CEO");
@@ -301,8 +337,15 @@ export function OnboardingWizard() {
     setAdapterEnvLoading(false);
     setForceUnsetAnthropicApiKey(false);
     setUnsetAnthropicLoading(false);
-    setTaskTitle("Hire your first engineer and create a hiring plan");
-    setTaskDescription(DEFAULT_TASK_DESCRIPTION);
+    setWorkspacePath("");
+    setWorkspaceScan(null);
+    setScanLoading(false);
+    setScanError(null);
+    setFolderPickerOpen(false);
+    const defaults = buildContextualTaskDescription(null);
+    setTaskTitle(defaults.title);
+    setTaskDescription(defaults.description);
+    setTaskTouched(false);
     setCreatedCompanyId(null);
     setCreatedCompanyPrefix(null);
     setCreatedCompanyGoalId(null);
@@ -385,7 +428,146 @@ export function OnboardingWizard() {
     }
   }
 
+  const [linearAvailable, setLinearAvailable] = useState(false);
+  const [showLinearConnect, setShowLinearConnect] = useState(false);
+  const [linearConnected, setLinearConnected] = useState(false);
+  const [linearIssueCount, setLinearIssueCount] = useState<number | null>(null);
+  const [linearTeamKey, setLinearTeamKey] = useState<string | null>(null);
+  const [linearHighestNumber, setLinearHighestNumber] = useState<number | null>(null);
+  const [importingIssues, setImportingIssues] = useState(false);
+  const [importPhase, setImportPhase] = useState<"config" | "projects" | "issues" | "labels" | "sync" | "done">("config");
+  const [importResult, setImportResult] = useState<{ imported: number; projects: number; labels: number } | null>(null);
+  const [importDone, setImportDone] = useState(false);
+  const [showAdvancedConfig, setShowAdvancedConfig] = useState(false);
+  const [customPrefix, setCustomPrefix] = useState("");
+  const [startFromOne, setStartFromOne] = useState(true);
+
+  function handleConnectLinear() {
+    if (!createdCompanyId) return;
+    const url = `/api/auth/linear/start?companyId=${createdCompanyId}`;
+    const popup = window.open(url, "linear-oauth", "width=600,height=700");
+    const poll = setInterval(() => {
+      if (popup?.closed) {
+        clearInterval(poll);
+        fetch(`/api/auth/linear/status?companyId=${createdCompanyId}`)
+          .then((r) => r.json())
+          .then((data) => {
+            if (data.connected) {
+              setLinearConnected(true);
+              setLinearIssueCount(data.openIssueCount);
+              setLinearTeamKey(data.teamKey);
+              setLinearHighestNumber(data.highestIssueNumber);
+            }
+          })
+          .catch(() => {});
+      }
+    }, 500);
+  }
+
+  async function handleSaveConfig() {
+    if (!createdCompanyId) return;
+    const body: Record<string, unknown> = {};
+    if (customPrefix.trim()) body.prefix = customPrefix.trim();
+    if (startFromOne) body.startAt = 0;
+    if (Object.keys(body).length > 0) {
+      await fetch(`/api/auth/linear/configure?companyId=${createdCompanyId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    }
+  }
+
+  async function handleImportLinearIssues() {
+    if (!createdCompanyId) return;
+    setImportingIssues(true);
+    setImportPhase("config");
+    try {
+      await handleSaveConfig();
+      setImportPhase("projects");
+
+      // Phase progression: the backend syncs projects → issues → labels in one call.
+      // Advance the UI phases on a timer so the user sees progress.
+      const phaseTimer = setTimeout(() => setImportPhase("issues"), 2000);
+      const labelTimer = setTimeout(() => setImportPhase("labels"), 5000);
+
+      const res = await fetch(`/api/auth/linear/import?companyId=${createdCompanyId}`, {
+        method: "POST",
+      });
+      clearTimeout(phaseTimer);
+      clearTimeout(labelTimer);
+
+      if (res.ok) {
+        const data = await res.json();
+        setImportResult({ imported: data.imported ?? 0, projects: data.projects ?? 0, labels: data.labels ?? 0 });
+      }
+
+      // Auto-trigger full sync to catch anything import missed (completed/cancelled issues, extra labels)
+      setImportPhase("sync");
+      await fetch(`/api/auth/linear/sync?companyId=${createdCompanyId}`, {
+        method: "POST",
+      });
+
+      setImportPhase("done");
+      setImportDone(true);
+    } catch {
+      // Best effort
+    } finally {
+      setImportingIssues(false);
+    }
+  }
+
+  async function handleImportPreview() {
+    if (!importUrl.trim()) return;
+    setImportLoading(true);
+    setError(null);
+    try {
+      const preview = await companiesApi.importPreview({
+        source: { type: "github", url: importUrl.trim() },
+        target: { mode: "new_company" },
+      });
+      setImportPreview(preview);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to preview import");
+    } finally {
+      setImportLoading(false);
+    }
+  }
+
+  async function handleImportApply() {
+    if (!importUrl.trim()) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await companiesApi.importBundle({
+        source: { type: "github", url: importUrl.trim() },
+        target: { mode: "new_company" },
+        collisionStrategy: "rename",
+      });
+      setCreatedCompanyId(result.company.id);
+      setCreatedCompanyPrefix(null); // will be backfilled
+      setSelectedCompanyId(result.company.id);
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+
+      // If agents were imported, use the first CEO agent or first agent
+      const ceoAgent = result.agents.find((a) => a.action === "created" && a.name.toLowerCase().includes("ceo"));
+      const firstAgent = result.agents.find((a) => a.action === "created");
+      if (ceoAgent?.id) setCreatedAgentId(ceoAgent.id);
+      else if (firstAgent?.id) setCreatedAgentId(firstAgent.id);
+
+      setStep(2);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to import company");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleStep1Next() {
+    if (setupMode === "import") {
+      await handleImportApply();
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -413,12 +595,18 @@ export function OnboardingWizard() {
         setCreatedCompanyGoalId(null);
       }
 
+      // Linear integration is now handled by the plugin settings page
       setStep(2);
+      setLoading(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create company");
-    } finally {
       setLoading(false);
     }
+  }
+
+  function handleStep1Continue() {
+    setShowLinearConnect(false);
+    setStep(2);
   }
 
   async function handleStep2Next() {
@@ -518,17 +706,38 @@ export function OnboardingWizard() {
     }
   }
 
-  async function handleStep3Next() {
-    if (!createdCompanyId || !createdAgentId) return;
-    setError(null);
-    setStep(4);
+  async function handleScanWorkspace(pathOverride?: string) {
+    const scanPath = pathOverride ?? workspacePath.trim();
+    if (!scanPath) return;
+    setScanLoading(true);
+    setScanError(null);
+    try {
+      const result = await workspaceApi.scan(scanPath);
+      setWorkspaceScan(result);
+      // Update task description with workspace context if user hasn't edited it
+      if (!taskTouched) {
+        const ctx = buildContextualTaskDescription(result);
+        setTaskTitle(ctx.title);
+        setTaskDescription(ctx.description);
+      }
+    } catch (err) {
+      setScanError(err instanceof Error ? err.message : "Failed to scan workspace");
+    } finally {
+      setScanLoading(false);
+    }
   }
 
-  async function handleLaunch() {
-    if (!createdCompanyId || !createdAgentId) return;
+  async function handleStep3Next() {
+    if (!createdCompanyId) return;
+    // Guard against duplicate project creation on back-navigation
+    if (createdProjectId) {
+      setStep(4);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
+      // Create project with workspace
       let goalId = createdCompanyGoalId;
       if (!goalId) {
         const goals = await goalsApi.list(createdCompanyId);
@@ -536,17 +745,55 @@ export function OnboardingWizard() {
         setCreatedCompanyGoalId(goalId);
       }
 
-      let projectId = createdProjectId;
+      const projectName = workspaceScan?.projectName ?? "Main";
+      const project = await projectsApi.create(
+        createdCompanyId,
+        {
+          ...buildOnboardingProjectPayload(goalId),
+          name: projectName,
+        }
+      );
+      setCreatedProjectId(project.id);
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.list(createdCompanyId)
+      });
+
+      // Create workspace linked to the project if path was provided
+      if (workspacePath.trim()) {
+        await projectsApi.createWorkspace(project.id, {
+          name: projectName,
+          cwd: workspaceScan?.cwd ?? workspacePath.trim(),
+          repoUrl: workspaceScan?.gitRemoteUrl?.startsWith("http") ? workspaceScan.gitRemoteUrl : undefined,
+          repoRef: workspaceScan?.gitDefaultBranch ?? undefined,
+          isPrimary: true,
+        }, createdCompanyId);
+      }
+
+      setStep(4);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create workspace");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleStep4Next() {
+    setStep(5);
+  }
+
+  async function handleLaunch() {
+    if (!createdCompanyId || !createdAgentId) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const goalId = createdCompanyGoalId;
+      const projectId = createdProjectId;
+
+      // Project should already be created in step 3
       if (!projectId) {
-        const project = await projectsApi.create(
-          createdCompanyId,
-          buildOnboardingProjectPayload(goalId)
-        );
-        projectId = project.id;
-        setCreatedProjectId(projectId);
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.projects.list(createdCompanyId)
-        });
+        setError("No project found. Please go back to the workspace step.");
+        setLoading(false);
+        return;
       }
 
       let issueRef = createdIssueRef;
@@ -586,10 +833,13 @@ export function OnboardingWizard() {
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
-      if (step === 1 && companyName.trim()) handleStep1Next();
+      if (step === 1 && showLinearConnect && !importingIssues) handleStep1Continue();
+      else if (step === 1 && setupMode === "fresh" && companyName.trim()) handleStep1Next();
+      else if (step === 1 && setupMode === "import" && importPreview) handleStep1Next();
       else if (step === 2 && agentName.trim()) handleStep2Next();
-      else if (step === 3 && taskTitle.trim()) handleStep3Next();
-      else if (step === 4) handleLaunch();
+      else if (step === 3) handleStep3Next();
+      else if (step === 4) handleStep4Next();
+      else if (step === 5) handleLaunch();
     }
   }
 
@@ -634,8 +884,9 @@ export function OnboardingWizard() {
                   [
                     { step: 1 as Step, label: "Company", icon: Building2 },
                     { step: 2 as Step, label: "Agent", icon: Bot },
-                    { step: 3 as Step, label: "Task", icon: ListTodo },
-                    { step: 4 as Step, label: "Launch", icon: Rocket }
+                    { step: 3 as Step, label: "Workspace", icon: FolderOpen },
+                    { step: 4 as Step, label: "Team", icon: Network },
+                    { step: 5 as Step, label: "Launch", icon: Rocket }
                   ] as const
                 ).map(({ step: s, label, icon: Icon }) => (
                   <button
@@ -656,55 +907,336 @@ export function OnboardingWizard() {
               </div>
 
               {/* Step content */}
-              {step === 1 && (
+              {step === 1 && !showLinearConnect && (
                 <div className="space-y-5">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
                       <Building2 className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">Name your company</h3>
+                      <h3 className="font-medium">Set up your company</h3>
                       <p className="text-xs text-muted-foreground">
-                        This is the organization your agents will work for.
+                        Create a new company or import one from a package.
                       </p>
                     </div>
                   </div>
-                  <div className="mt-3 group">
-                    <label
+
+                  {/* Setup mode toggle */}
+                  <div className="flex gap-2">
+                    <button
                       className={cn(
-                        "text-xs mb-1 block transition-colors",
-                        companyName.trim()
-                          ? "text-foreground"
-                          : "text-muted-foreground group-focus-within:text-foreground"
+                        "flex-1 flex items-center justify-center gap-2 rounded-md border p-2.5 text-xs transition-colors",
+                        setupMode === "fresh"
+                          ? "border-foreground bg-accent"
+                          : "border-border hover:bg-accent/50"
                       )}
+                      onClick={() => setSetupMode("fresh")}
                     >
-                      Company name
-                    </label>
-                    <input
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="Acme Corp"
-                      value={companyName}
-                      onChange={(e) => setCompanyName(e.target.value)}
-                      autoFocus
-                    />
+                      <Building2 className="h-3.5 w-3.5" />
+                      Start fresh
+                    </button>
+                    <button
+                      className={cn(
+                        "flex-1 flex items-center justify-center gap-2 rounded-md border p-2.5 text-xs transition-colors",
+                        setupMode === "import"
+                          ? "border-foreground bg-accent"
+                          : "border-border hover:bg-accent/50"
+                      )}
+                      onClick={() => setSetupMode("import")}
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      Import package
+                    </button>
                   </div>
-                  <div className="group">
-                    <label
-                      className={cn(
-                        "text-xs mb-1 block transition-colors",
-                        companyGoal.trim()
-                          ? "text-foreground"
-                          : "text-muted-foreground group-focus-within:text-foreground"
+
+                  {setupMode === "fresh" && (
+                    <>
+                      <div className="mt-3 group">
+                        <label
+                          className={cn(
+                            "text-xs mb-1 block transition-colors",
+                            companyName.trim()
+                              ? "text-foreground"
+                              : "text-muted-foreground group-focus-within:text-foreground"
+                          )}
+                        >
+                          Company name
+                        </label>
+                        <input
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                          placeholder="Acme Corp"
+                          value={companyName}
+                          onChange={(e) => setCompanyName(e.target.value)}
+                          autoFocus
+                        />
+                      </div>
+                      <div className="group">
+                        <label
+                          className={cn(
+                            "text-xs mb-1 block transition-colors",
+                            companyGoal.trim()
+                              ? "text-foreground"
+                              : "text-muted-foreground group-focus-within:text-foreground"
+                          )}
+                        >
+                          Mission / goal (optional)
+                        </label>
+                        <textarea
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
+                          placeholder="What is this company trying to achieve?"
+                          value={companyGoal}
+                          onChange={(e) => setCompanyGoal(e.target.value)}
+                        />
+                      </div>
+                    </>
+                  )}
+
+                  {setupMode === "import" && (
+                    <>
+                      <div className="group">
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          GitHub URL or companies.sh package
+                        </label>
+                        <input
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                          placeholder="https://github.com/org/company-package"
+                          value={importUrl}
+                          onChange={(e) => {
+                            setImportUrl(e.target.value);
+                            setImportPreview(null);
+                          }}
+                          autoFocus
+                        />
+                      </div>
+
+                      {!importPreview && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={!importUrl.trim() || importLoading}
+                          onClick={handleImportPreview}
+                        >
+                          {importLoading ? (
+                            <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                          ) : (
+                            <GitBranch className="h-3.5 w-3.5 mr-1" />
+                          )}
+                          {importLoading ? "Loading..." : "Preview"}
+                        </Button>
                       )}
+
+                      {importPreview && (
+                        <div className="rounded-md border border-green-500/30 bg-green-500/5 px-4 py-3 space-y-2">
+                          <div className="flex items-center gap-2">
+                            <Check className="h-4 w-4 text-green-500" />
+                            <span className="text-sm font-medium">
+                              {importPreview.targetCompanyName ?? "Company package"}
+                            </span>
+                          </div>
+                          <div className="text-xs text-muted-foreground space-y-0.5">
+                            <p>{importPreview.plan.agentPlans.length} agent{importPreview.plan.agentPlans.length !== 1 ? "s" : ""}</p>
+                            {importPreview.plan.projectPlans.length > 0 && (
+                              <p>{importPreview.plan.projectPlans.length} project{importPreview.plan.projectPlans.length !== 1 ? "s" : ""}</p>
+                            )}
+                            {importPreview.plan.issuePlans.length > 0 && (
+                              <p>{importPreview.plan.issuePlans.length} task{importPreview.plan.issuePlans.length !== 1 ? "s" : ""}</p>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+
+              {step === 1 && showLinearConnect && (
+                <div className="space-y-5">
+                  <div className="flex items-center gap-3 mb-1">
+                    <div className="bg-muted/50 p-2">
+                      <ListTodo className="h-5 w-5 text-muted-foreground" />
+                    </div>
+                    <div>
+                      <h3 className="font-medium">Connect Linear</h3>
+                      <p className="text-xs text-muted-foreground">
+                        Link your Linear workspace so agents can manage issues.
+                      </p>
+                    </div>
+                  </div>
+
+                  {linearConnected ? (
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2 rounded-md border border-green-500/30 bg-green-500/5 px-4 py-3">
+                        <Check className="h-4 w-4 text-green-500" />
+                        <span className="text-sm text-green-400">
+                          Linear connected{linearTeamKey ? ` (${linearTeamKey})` : ""}
+                        </span>
+                      </div>
+
+                      {linearIssueCount !== null && linearIssueCount > 0 && !importDone && (
+                        <div className="rounded-md border border-border bg-muted/30 px-4 py-3 space-y-3">
+                          <p className="text-sm">
+                            Found <span className="font-medium text-foreground">{linearIssueCount} open issues</span> in Linear{linearTeamKey ? ` (${linearTeamKey})` : ""}.
+                          </p>
+
+                          <button
+                            type="button"
+                            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                            onClick={() => setShowAdvancedConfig(!showAdvancedConfig)}
+                          >
+                            {showAdvancedConfig ? "▾" : "▸"} Advanced configuration
+                          </button>
+
+                          {showAdvancedConfig && (
+                            <div className="space-y-3 pl-3 border-l-2 border-border">
+                              <div>
+                                <label className="text-xs text-muted-foreground block mb-1">
+                                  Issue prefix
+                                </label>
+                                <input
+                                  className="w-24 rounded-md border border-border bg-transparent px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 uppercase"
+                                  placeholder={linearTeamKey || "LUC"}
+                                  value={customPrefix}
+                                  onChange={(e) => setCustomPrefix(e.target.value.toUpperCase())}
+                                />
+                              </div>
+                              <div>
+                                <label className="text-xs text-muted-foreground block mb-1">
+                                  Next issue number
+                                </label>
+                                <div className="flex items-center gap-2">
+                                  <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                                    <input
+                                      type="radio"
+                                      name="startNumber"
+                                      checked={!startFromOne}
+                                      onChange={() => setStartFromOne(false)}
+                                      className="accent-primary"
+                                    />
+                                    <span className={!startFromOne ? "text-foreground" : "text-muted-foreground"}>
+                                      {customPrefix || linearTeamKey || "LUC"}-{(linearHighestNumber ?? 0) + 1}
+                                    </span>
+                                    <span className="text-muted-foreground/60">
+                                      (continue from Linear)
+                                    </span>
+                                  </label>
+                                </div>
+                                <div className="flex items-center gap-2 mt-1">
+                                  <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                                    <input
+                                      type="radio"
+                                      name="startNumber"
+                                      checked={startFromOne}
+                                      onChange={() => setStartFromOne(true)}
+                                      className="accent-primary"
+                                    />
+                                    <span className={startFromOne ? "text-foreground" : "text-muted-foreground"}>
+                                      {customPrefix || linearTeamKey || "LUC"}-1
+                                    </span>
+                                    <span className="text-muted-foreground/60">
+                                      (start fresh)
+                                    </span>
+                                  </label>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+
+                          {!importingIssues && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={handleImportLinearIssues}
+                            >
+                              <ArrowRight className="h-3.5 w-3.5 mr-1" />
+                              Import issues
+                            </Button>
+                          )}
+
+                          {importingIssues && (
+                            <div className="space-y-2 pt-1">
+                              {[
+                                { key: "config", label: "Saving configuration" },
+                                { key: "projects", label: "Syncing projects" },
+                                { key: "issues", label: "Importing issues" },
+                                { key: "labels", label: "Linking labels" },
+                                { key: "sync", label: "Full sync from Linear" },
+                              ].map((step) => {
+                                const phases = ["config", "projects", "issues", "labels", "sync", "done"];
+                                const stepIdx = phases.indexOf(step.key);
+                                const currentIdx = phases.indexOf(importPhase);
+                                const isDone = currentIdx > stepIdx;
+                                const isActive = currentIdx === stepIdx;
+                                return (
+                                  <div key={step.key} className="flex items-center gap-2">
+                                    {isDone ? (
+                                      <Check className="h-3 w-3 text-green-500 shrink-0" />
+                                    ) : isActive ? (
+                                      <Loader2 className="h-3 w-3 animate-spin text-foreground shrink-0" />
+                                    ) : (
+                                      <div className="h-3 w-3 rounded-full border border-border shrink-0" />
+                                    )}
+                                    <span className={cn(
+                                      "text-xs transition-colors",
+                                      isDone ? "text-muted-foreground" : isActive ? "text-foreground" : "text-muted-foreground/50"
+                                    )}>
+                                      {step.label}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {importDone && (
+                        <div className="rounded-md border border-green-500/30 bg-green-500/5 px-4 py-3 space-y-1">
+                          <div className="flex items-center gap-2">
+                            <Check className="h-3.5 w-3.5 text-green-500" />
+                            <span className="text-xs text-green-400 font-medium">Import complete</span>
+                          </div>
+                          {importResult && (
+                            <p className="text-xs text-muted-foreground pl-5.5">
+                              {importResult.imported} issues{importResult.projects > 0 ? `, ${importResult.projects} projects` : ""}{importResult.labels > 0 ? `, ${importResult.labels} labels` : ""}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      className="w-full justify-center gap-2"
+                      onClick={handleConnectLinear}
                     >
-                      Mission / goal (optional)
-                    </label>
-                    <textarea
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
-                      placeholder="What is this company trying to achieve?"
-                      value={companyGoal}
-                      onChange={(e) => setCompanyGoal(e.target.value)}
-                    />
+                      <svg viewBox="0 0 100 100" className="h-4 w-4" fill="currentColor">
+                        <path d="M1.22541 61.5228c-.97437-2.7004-.97437-5.6961 0-8.3965L16.3262 10.3963C19.094 2.6584 26.8267 -1.80816 34.9157.614964c8.0889 2.423814 12.7709 10.917336 10.347 18.654936L30.1619 61.9999 45.2627 14.2691"/>
+                      </svg>
+                      Connect Linear
+                    </Button>
+                  )}
+
+                  <div className="flex gap-2 pt-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-xs text-muted-foreground"
+                      disabled={importingIssues}
+                      onClick={handleStep1Continue}
+                    >
+                      {linearConnected ? "Skip import" : "Skip for now"}
+                    </Button>
+                    {linearConnected && (
+                      <Button
+                        size="sm"
+                        className="ml-auto"
+                        disabled={importingIssues}
+                        onClick={handleStep1Continue}
+                      >
+                        Continue
+                        <ArrowRight className="h-3 w-3 ml-1" />
+                      </Button>
+                    )}
                   </div>
                 </div>
               )}
@@ -1087,13 +1619,142 @@ export function OnboardingWizard() {
                 <div className="space-y-5">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
-                      <ListTodo className="h-5 w-5 text-muted-foreground" />
+                      <FolderOpen className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">Give it something to do</h3>
+                      <h3 className="font-medium">Link a workspace</h3>
                       <p className="text-xs text-muted-foreground">
-                        Give your agent a small task to start with — a bug fix,
-                        a research question, writing a script.
+                        Point to a local project folder so agents have real context.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="group">
+                    <label className="text-xs text-muted-foreground mb-1 block">
+                      Project folder path
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        className="flex-1 rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                        placeholder="~/projects/my-app"
+                        value={workspacePath}
+                        onChange={(e) => {
+                          setWorkspacePath(e.target.value);
+                          setWorkspaceScan(null);
+                          setScanError(null);
+                        }}
+                        autoFocus
+                      />
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setFolderPickerOpen(true)}
+                        title="Browse folders"
+                      >
+                        <FolderOpen className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={!workspacePath.trim() || scanLoading}
+                        onClick={() => handleScanWorkspace()}
+                      >
+                        {scanLoading ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          "Scan"
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+
+                  <FolderPicker
+                    open={folderPickerOpen}
+                    onOpenChange={setFolderPickerOpen}
+                    onSelect={(path) => {
+                      setWorkspacePath(path);
+                      setWorkspaceScan(null);
+                      setScanError(null);
+                      void handleScanWorkspace(path);
+                    }}
+                  />
+
+                  {scanError && (
+                    <p className="text-xs text-destructive">{scanError}</p>
+                  )}
+
+                  {workspaceScan && (
+                    <div className="rounded-md border border-border bg-muted/20 px-4 py-3 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <Check className="h-4 w-4 text-green-500 shrink-0" />
+                        <span className="text-sm font-medium">
+                          {workspaceScan.projectName ?? "Project detected"}
+                        </span>
+                      </div>
+                      {workspaceScan.languages.length > 0 && (
+                        <p className="text-xs text-muted-foreground">
+                          Languages: {workspaceScan.languages.join(", ")}
+                        </p>
+                      )}
+                      {workspaceScan.configFiles.length > 0 && (
+                        <p className="text-xs text-muted-foreground">
+                          Config: {workspaceScan.configFiles.join(", ")}
+                        </p>
+                      )}
+                      {workspaceScan.gitRemoteUrl && (
+                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <GitBranch className="h-3 w-3" />
+                          <span className="font-mono truncate">{workspaceScan.gitRemoteUrl}</span>
+                        </div>
+                      )}
+                      {workspaceScan.readmeExcerpt && (
+                        <details className="text-xs">
+                          <summary className="text-muted-foreground cursor-pointer hover:text-foreground">
+                            README preview
+                          </summary>
+                          <pre className="mt-1 text-[11px] text-muted-foreground whitespace-pre-wrap max-h-[120px] overflow-y-auto">
+                            {workspaceScan.readmeExcerpt.slice(0, 500)}
+                          </pre>
+                        </details>
+                      )}
+                    </div>
+                  )}
+
+                  <p className="text-[11px] text-muted-foreground">
+                    Agents will work in this directory. You can skip this step to use a default workspace.
+                  </p>
+                </div>
+              )}
+
+              {step === 4 && (
+                <div className="space-y-5">
+                  <div className="flex items-center gap-3 mb-1">
+                    <div className="bg-muted/50 p-2">
+                      <Network className="h-5 w-5 text-muted-foreground" />
+                    </div>
+                    <div>
+                      <h3 className="font-medium">Review your team</h3>
+                      <p className="text-xs text-muted-foreground">
+                        Confirm the org structure before agents start working.
+                      </p>
+                    </div>
+                  </div>
+
+                  {createdCompanyId && (
+                    <OrgChartPreview companyId={createdCompanyId} />
+                  )}
+                </div>
+              )}
+
+              {step === 5 && (
+                <div className="space-y-5">
+                  <div className="flex items-center gap-3 mb-1">
+                    <div className="bg-muted/50 p-2">
+                      <Rocket className="h-5 w-5 text-muted-foreground" />
+                    </div>
+                    <div>
+                      <h3 className="font-medium">Launch with a task</h3>
+                      <p className="text-xs text-muted-foreground">
+                        Give your CEO agent a grounded task to start with.
                       </p>
                     </div>
                   </div>
@@ -1103,74 +1764,50 @@ export function OnboardingWizard() {
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="e.g. Research competitor pricing"
+                      placeholder="e.g. Review the codebase and create a roadmap"
                       value={taskTitle}
-                      onChange={(e) => setTaskTitle(e.target.value)}
+                      onChange={(e) => {
+                        setTaskTitle(e.target.value);
+                        setTaskTouched(true);
+                      }}
                       autoFocus
                     />
                   </div>
                   <div>
                     <label className="text-xs text-muted-foreground mb-1 block">
-                      Description (optional)
+                      Description
                     </label>
                     <textarea
                       ref={textareaRef}
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[120px] max-h-[300px] overflow-y-auto"
                       placeholder="Add more detail about what the agent should do..."
                       value={taskDescription}
-                      onChange={(e) => setTaskDescription(e.target.value)}
+                      onChange={(e) => {
+                        setTaskDescription(e.target.value);
+                        setTaskTouched(true);
+                      }}
                     />
                   </div>
-                </div>
-              )}
 
-              {step === 4 && (
-                <div className="space-y-5">
-                  <div className="flex items-center gap-3 mb-1">
-                    <div className="bg-muted/50 p-2">
-                      <Rocket className="h-5 w-5 text-muted-foreground" />
+                  {/* Summary */}
+                  <div className="border border-border divide-y divide-border text-xs">
+                    <div className="flex items-center gap-2 px-3 py-2">
+                      <Building2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                      <span className="flex-1 truncate">{companyName || importPreview?.targetCompanyName || "Company"}</span>
+                      <Check className="h-3.5 w-3.5 text-green-500 shrink-0" />
                     </div>
-                    <div>
-                      <h3 className="font-medium">Ready to launch</h3>
-                      <p className="text-xs text-muted-foreground">
-                        Everything is set up. Launching now will create the
-                        starter task, wake the agent, and open the issue.
-                      </p>
+                    <div className="flex items-center gap-2 px-3 py-2">
+                      <Bot className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                      <span className="flex-1 truncate">{agentName} ({getUIAdapter(adapterType).label})</span>
+                      <Check className="h-3.5 w-3.5 text-green-500 shrink-0" />
                     </div>
-                  </div>
-                  <div className="border border-border divide-y divide-border">
-                    <div className="flex items-center gap-3 px-3 py-2.5">
-                      <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">
-                          {companyName}
-                        </p>
-                        <p className="text-xs text-muted-foreground">Company</p>
+                    {workspaceScan && (
+                      <div className="flex items-center gap-2 px-3 py-2">
+                        <FolderOpen className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                        <span className="flex-1 truncate font-mono">{workspaceScan.projectName ?? workspaceScan.cwd}</span>
+                        <Check className="h-3.5 w-3.5 text-green-500 shrink-0" />
                       </div>
-                      <Check className="h-4 w-4 text-green-500 shrink-0" />
-                    </div>
-                    <div className="flex items-center gap-3 px-3 py-2.5">
-                      <Bot className="h-4 w-4 text-muted-foreground shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">
-                          {agentName}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          {getUIAdapter(adapterType).label}
-                        </p>
-                      </div>
-                      <Check className="h-4 w-4 text-green-500 shrink-0" />
-                    </div>
-                    <div className="flex items-center gap-3 px-3 py-2.5">
-                      <ListTodo className="h-4 w-4 text-muted-foreground shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">
-                          {taskTitle}
-                        </p>
-                        <p className="text-xs text-muted-foreground">Task</p>
-                      </div>
-                      <Check className="h-4 w-4 text-green-500 shrink-0" />
-                    </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -1198,10 +1835,14 @@ export function OnboardingWizard() {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  {step === 1 && (
+                  {step === 1 && !showLinearConnect && (
                     <Button
                       size="sm"
-                      disabled={!companyName.trim() || loading}
+                      disabled={
+                        (setupMode === "fresh" && !companyName.trim()) ||
+                        (setupMode === "import" && !importPreview) ||
+                        loading
+                      }
                       onClick={handleStep1Next}
                     >
                       {loading ? (
@@ -1209,7 +1850,9 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Creating..." : "Next"}
+                      {loading
+                        ? setupMode === "import" ? "Importing..." : "Creating..."
+                        : "Next"}
                     </Button>
                   )}
                   {step === 2 && (
@@ -1231,7 +1874,7 @@ export function OnboardingWizard() {
                   {step === 3 && (
                     <Button
                       size="sm"
-                      disabled={!taskTitle.trim() || loading}
+                      disabled={loading}
                       onClick={handleStep3Next}
                     >
                       {loading ? (
@@ -1239,17 +1882,26 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Creating..." : "Next"}
+                      {loading ? "Creating..." : workspacePath.trim() ? "Next" : "Skip"}
                     </Button>
                   )}
                   {step === 4 && (
-                    <Button size="sm" disabled={loading} onClick={handleLaunch}>
+                    <Button
+                      size="sm"
+                      onClick={handleStep4Next}
+                    >
+                      <ArrowRight className="h-3.5 w-3.5 mr-1" />
+                      Next
+                    </Button>
+                  )}
+                  {step === 5 && (
+                    <Button size="sm" disabled={!taskTitle.trim() || loading} onClick={handleLaunch}>
                       {loading ? (
                         <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
                       ) : (
-                        <ArrowRight className="h-3.5 w-3.5 mr-1" />
+                        <Rocket className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Creating..." : "Create & Open Issue"}
+                      {loading ? "Launching..." : "Launch"}
                     </Button>
                   )}
                 </div>
@@ -1269,6 +1921,39 @@ export function OnboardingWizard() {
         </div>
       </DialogPortal>
     </Dialog>
+  );
+}
+
+function OrgChartPreview({ companyId }: { companyId: string }) {
+  const { data, isLoading } = useQuery({
+    queryKey: queryKeys.org(companyId),
+    queryFn: () => agentsApi.org(companyId),
+    enabled: !!companyId,
+  });
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-muted-foreground py-4">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        Loading team...
+      </div>
+    );
+  }
+
+  if (!data || data.length === 0) {
+    return (
+      <div className="rounded-md border border-border px-4 py-3">
+        <p className="text-xs text-muted-foreground">
+          No agents found. You can add more agents after onboarding.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-md border border-border py-1">
+      <OrgTreeView nodes={data} compact />
+    </div>
   );
 }
 

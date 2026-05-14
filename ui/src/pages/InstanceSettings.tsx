@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Clock3, ExternalLink, Settings } from "lucide-react";
+import { Clock3, ExternalLink, Settings, Trash2 } from "lucide-react";
 import type { InstanceSchedulerHeartbeatAgent } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -278,6 +278,72 @@ export function InstanceSettings() {
           ))}
         </div>
       )}
+      {/* Reset Instance */}
+      <Card className="border-destructive/30 mt-8">
+        <CardContent className="pt-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-medium text-destructive">Reset Instance</h3>
+              <p className="text-xs text-muted-foreground mt-1">
+                Delete all companies, agents, issues, and secrets. Returns to onboarding.
+              </p>
+            </div>
+            <ResetButton />
+          </div>
+        </CardContent>
+      </Card>
     </div>
+  );
+}
+
+function ResetButton() {
+  const [confirming, setConfirming] = useState(false);
+  const [resetting, setResetting] = useState(false);
+
+  const handleReset = useCallback(async () => {
+    setResetting(true);
+    try {
+      await fetch("/api/instance/reset", { method: "POST" });
+      window.location.href = "/";
+    } catch {
+      setResetting(false);
+      setConfirming(false);
+    }
+  }, []);
+
+  if (confirming) {
+    return (
+      <div className="flex items-center gap-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setConfirming(false)}
+          disabled={resetting}
+        >
+          Cancel
+        </Button>
+        <Button
+          variant="destructive"
+          size="sm"
+          onClick={handleReset}
+          disabled={resetting}
+        >
+          <Trash2 className="h-3.5 w-3.5 mr-1" />
+          {resetting ? "Resetting..." : "Confirm Reset"}
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      className="text-destructive border-destructive/30 hover:bg-destructive/10"
+      onClick={() => setConfirming(true)}
+    >
+      <Trash2 className="h-3.5 w-3.5 mr-1" />
+      Reset
+    </Button>
   );
 }

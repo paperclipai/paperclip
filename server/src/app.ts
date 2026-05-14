@@ -2,13 +2,15 @@ import express, { Router, type Request as ExpressRequest } from "express";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import type { Db } from "@paperclipai/db";
+import { issues, plugins, type Db } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
+import { appendPublicUrl } from "./middleware/append-public-url.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
@@ -35,9 +37,14 @@ import {
   type InstanceDatabaseBackupService,
 } from "./routes/instance-database-backups.js";
 import { llmRoutes } from "./routes/llms.js";
+import { ccrotateRoutes } from "./routes/ccrotate.js";
 import { authRoutes } from "./routes/auth.js";
+import { linearAuthRoutes } from "./routes/linear-auth.js";
+import { githubWebhookRoutes } from "./routes/github-webhook.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
+import { workspaceScanRoutes } from "./routes/workspace-scan.js";
+import { loadConfig } from "./config.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
@@ -80,6 +87,26 @@ const VITE_DEV_STATIC_PATHS = new Set([
   "/site.webmanifest",
   "/sw.js",
 ]);
+const PRECOMPRESSED_STATIC_EXTENSIONS = new Set([
+  ".css",
+  ".html",
+  ".js",
+  ".json",
+  ".mjs",
+  ".svg",
+  ".txt",
+  ".wasm",
+]);
+const STATIC_CONTENT_TYPES = new Map([
+  [".css", "text/css; charset=utf-8"],
+  [".html", "text/html; charset=utf-8"],
+  [".js", "text/javascript; charset=utf-8"],
+  [".json", "application/json; charset=utf-8"],
+  [".mjs", "text/javascript; charset=utf-8"],
+  [".svg", "image/svg+xml"],
+  [".txt", "text/plain; charset=utf-8"],
+  [".wasm", "application/wasm"],
+]);
 
 export function resolveViteHmrPort(serverPort: number): number {
   if (serverPort <= 55_535) {
@@ -93,6 +120,82 @@ export function shouldServeViteDevHtml(req: ExpressRequest): boolean {
   if (VITE_DEV_STATIC_PATHS.has(pathname)) return false;
   if (VITE_DEV_ASSET_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return false;
   return req.accepts(["html"]) === "html";
+}
+
+function acceptsGzip(req: ExpressRequest): boolean {
+  const header = req.headers["accept-encoding"];
+  const value = Array.isArray(header) ? header.join(",") : (header ?? "");
+  return /\bgzip\b/i.test(value);
+}
+
+function createPrecompressedStaticMiddleware(rootDir: string): express.RequestHandler {
+  const root = path.resolve(rootDir);
+  const rootPrefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+
+  return (req, res, next) => {
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      next();
+      return;
+    }
+    if (req.headers.range || !acceptsGzip(req)) {
+      next();
+      return;
+    }
+
+    const extension = path.extname(req.path);
+    if (!PRECOMPRESSED_STATIC_EXTENSIONS.has(extension)) {
+      next();
+      return;
+    }
+
+    let assetPath: string;
+    try {
+      assetPath = path.resolve(root, `.${req.path}`);
+    } catch {
+      next();
+      return;
+    }
+    if (assetPath !== root && !assetPath.startsWith(rootPrefix)) {
+      next();
+      return;
+    }
+
+    const gzipPath = `${assetPath}.gz`;
+    let assetStat: fs.Stats;
+    let gzipStat: fs.Stats;
+    try {
+      assetStat = fs.statSync(assetPath);
+      gzipStat = fs.statSync(gzipPath);
+    } catch {
+      next();
+      return;
+    }
+    if (!assetStat.isFile() || !gzipStat.isFile() || gzipStat.mtimeMs + 1000 < assetStat.mtimeMs) {
+      next();
+      return;
+    }
+
+    const contentType = STATIC_CONTENT_TYPES.get(extension);
+    if (contentType) {
+      res.set("Content-Type", contentType);
+    }
+    res
+      .status(200)
+      .set("Cache-Control", "public, max-age=31536000, immutable")
+      .set("Content-Encoding", "gzip")
+      .set("Content-Length", String(gzipStat.size))
+      .set("Last-Modified", assetStat.mtime.toUTCString())
+      .vary("Accept-Encoding");
+
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
+
+    const stream = fs.createReadStream(gzipPath);
+    stream.on("error", next);
+    stream.pipe(res);
+  };
 }
 
 export function shouldEnablePrivateHostnameGuard(opts: {
@@ -126,6 +229,7 @@ export async function createApp(
     bindHost: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    authPublicBaseUrl?: string | null;
     instanceId?: string;
     hostVersion?: string;
     localPluginDir?: string;
@@ -133,6 +237,8 @@ export async function createApp(
     pluginWorkerManager?: PluginWorkerManager;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
+    /** Random per-process token for trusted loopback bootstrap. */
+    internalBootstrapToken?: string;
   },
 ) {
   const app = express();
@@ -164,22 +270,89 @@ export async function createApp(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,
       resolveSession: opts.resolveSession,
+      internalBootstrapToken: opts.internalBootstrapToken,
     }),
   );
   app.use("/api/auth", authRoutes(db));
-  if (opts.betterAuthHandler) {
-    app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
-  }
+  app.get("/api/auth/get-session", (req, res) => {
+    if (req.actor.type !== "board" || !req.actor.userId) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    res.json({
+      session: {
+        id: `paperclip:${req.actor.source}:${req.actor.userId}`,
+        userId: req.actor.userId,
+      },
+      user: {
+        id: req.actor.userId,
+        email: null,
+        name: req.actor.source === "local_implicit" ? "Local Board" : null,
+      },
+    });
+  });
+  // Integrations discovery — tells the UI which optional features are available
+  // Linear integration is now fully handled by the paperclip-plugin-linear plugin.
+  const appConfig = loadConfig();
+  app.get("/api/integrations", (_req, res) => {
+    res.json({
+      linear: !!appConfig.linearOAuthClientId,
+    });
+  });
+
+  // Minimal OAuth callback page — captures the code from Linear and sends it
+  // back to the opener window via postMessage. The plugin settings UI listens
+  // for this message and exchanges the code for a token via the plugin action.
+  app.get("/api/auth/linear/callback", (req, res) => {
+    const code = req.query.code as string | undefined;
+    const state = req.query.state as string | undefined;
+    const error = req.query.error as string | undefined;
+    res.status(200).set("Content-Type", "text/html").send(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Linear OAuth</title>
+<style>body{background:#0a0a0a;color:#a1a1aa;font-family:ui-monospace,monospace;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.card{text-align:center;padding:2rem}.icon{font-size:48px;margin-bottom:1rem}h1{font-size:14px;font-weight:500;margin:0 0 .5rem}p{font-size:12px;color:#52525b;margin:0}</style></head>
+<body><div class="card">
+<div class="icon">${error ? "&#10007;" : "&#10003;"}</div>
+<h1>${error ? "OAuth Error: " + error : "Connecting to Linear..."}</h1>
+<p>${error ? "Please try again." : "This window will close automatically."}</p>
+</div>
+<script>
+if(window.opener){window.opener.postMessage({type:"linear-oauth-callback",code:${JSON.stringify(code ?? null)},state:${JSON.stringify(state ?? null)},error:${JSON.stringify(error ?? null)}},"*")}
+${error ? "" : "setTimeout(function(){window.close()},2000)"}
+</script></body></html>`);
+  });
+
+  // The /api/auth/{*authPath} catch-all that routes everything else to
+  // betterAuthHandler is mounted further down, after the linear-auth router
+  // is wired with its plugin-job dependencies (see "Mount linear-auth router"
+  // below). Mounting the catch-all here would 404 the linear endpoints before
+  // the scheduler-aware router gets a chance to handle them.
+
   app.use(llmRoutes(db));
 
   const hostServicesDisposers = new Map<string, () => void>();
-  const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
+  const { createPluginStreamBus } = await import("./services/plugin-stream-bus.js");
+  const streamBus = createPluginStreamBus();
+  const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager({
+    onStreamNotification: (pluginId, method, params) => {
+      const channel = String(params.channel ?? "");
+      const companyId = String(params.companyId ?? "");
+      if (!channel) return;
+      if (method === "streams.emit") {
+        streamBus.publish(pluginId, channel, companyId, params.event ?? params.data);
+      } else if (method === "streams.close") {
+        streamBus.publish(pluginId, channel, companyId, null, "close");
+      } else if (method === "streams.open") {
+        streamBus.publish(pluginId, channel, companyId, null, "open");
+      }
+    },
+  });
 
   // Mount API routes
   const api = Router();
   api.use(boardMutationGuard());
   api.use(
     "/health",
+    appendPublicUrl(opts.authPublicBaseUrl ?? null),
     healthRoutes(db, {
       deploymentMode: opts.deploymentMode,
       deploymentExposure: opts.deploymentExposure,
@@ -235,6 +408,88 @@ export async function createApp(
     scheduler,
     jobStore,
   });
+
+  // Mount linear-auth router. Delegates /import and /sync to the linear
+  // plugin's initial-import / periodic-sync jobs (see linear-auth.ts), so the
+  // UI buttons share secrets/teamId with the working webhook sync code path
+  // instead of the legacy GraphQL fetch (which derived teamKey from the first
+  // issue's identifier prefix and ran against a separate token store —
+  // produced "0 synced, N errors" in the BLO Linear deployment).
+  const triggerLinearPluginJob = async (jobKey: "initial-import" | "periodic-sync") => {
+    const [pluginRow] = await db
+      .select({ id: plugins.id })
+      .from(plugins)
+      .where(eq(plugins.pluginKey, "paperclip-plugin-linear"))
+      .limit(1);
+    if (!pluginRow) return null;
+    const job = await jobStore.getJobByKey(pluginRow.id, jobKey);
+    if (!job) return null;
+    return await scheduler.triggerJob(job.id, "manual");
+  };
+  app.use(
+    "/api/auth/linear",
+    linearAuthRoutes(db, {
+      clientId: appConfig.linearOAuthClientId,
+      clientSecret: appConfig.linearOAuthClientSecret,
+      redirectUri: appConfig.linearOAuthRedirectUri,
+      secretsProvider: appConfig.secretsProvider,
+      triggerPluginJob: triggerLinearPluginJob,
+      // 2026-05-06 BLO-3182 RCA: Linear comments must drive a wake on
+      // the issue's assignee, not just sit silently in the comment
+      // thread. We construct heartbeatService lazily so the existing
+      // route signature stays clean. enqueueWakeup is no-op-safe when
+      // the assignee is missing or paused.
+      wakeIssueAssigneeOnComment: async (input) => {
+        const [issueRow] = await db
+          .select({ assigneeAgentId: issues.assigneeAgentId })
+          .from(issues)
+          .where(eq(issues.id, input.issueId))
+          .limit(1);
+        if (!issueRow?.assigneeAgentId) return;
+        const { heartbeatService } = await import("./services/heartbeat.js");
+        const heartbeat = heartbeatService(db, { pluginWorkerManager: workerManager });
+        await heartbeat.wakeup(issueRow.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "linear_comment",
+          payload: {
+            issueId: input.issueId,
+            commentId: input.commentId,
+            source: "linear",
+          },
+          contextSnapshot: {
+            issueId: input.issueId,
+            taskId: input.issueId,
+            commentId: input.commentId,
+            wakeReason: "issue_commented",
+            wakeSource: "automation",
+            wakeTriggerDetail: "system",
+            commentSource: "linear",
+            commentAuthor: input.linearCommentAuthor,
+          },
+        });
+      },
+    }),
+  );
+  if (opts.betterAuthHandler) {
+    app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
+  }
+
+  // 2026-05-06 BLO-3182 RCA Phase D: GitHub webhook receiver. CI is the
+  // priority external trigger ("particularly CI job completion since
+  // that takes a long time" per operator) -- a 13-min round-trip
+  // (8min CI + 5min heartbeat tick) just to react to a failure was
+  // the operator-facing pain. The route is HMAC-verified against
+  // GITHUB_WEBHOOK_SECRET and refuses every request when the secret
+  // isn't configured.
+  app.use(
+    "/api/webhooks/github",
+    githubWebhookRoutes(db, {
+      webhookSecret: appConfig.githubWebhookSecret || null,
+      pluginWorkerManager: workerManager,
+    }),
+  );
+
   const hostServiceCleanup = createPluginHostServiceCleanup(lifecycle, hostServicesDisposers);
   let viteHtmlRenderer: ReturnType<typeof createCachedViteHtmlRenderer> | null = null;
   const loader = pluginLoader(
@@ -261,7 +516,7 @@ export async function createApp(
           const handle = workerManager.getWorker(pluginId);
           if (handle) handle.notify(method, params);
         };
-        const services = buildHostServices(db, pluginId, manifest.id, eventBus, notifyWorker, {
+        const services = buildHostServices(db, pluginId, manifest.id, eventBus, notifyWorker, lifecycle, {
           pluginWorkerManager: workerManager,
           manifest,
         });
@@ -281,10 +536,15 @@ export async function createApp(
       { scheduler, jobStore },
       { workerManager },
       { toolDispatcher },
-      { workerManager },
+      { workerManager, streamBus },
     ),
   );
   api.use(adapterRoutes());
+  api.use(workspaceScanRoutes());
+  // ccrotate pool status — used by in-cluster health-check CronJob and any
+  // agent that wants to query pool depth without `kubectl exec`. Mounts at
+  // /api/ccrotate/status (the inner router defines /status).
+  api.use("/ccrotate", ccrotateRoutes());
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,
@@ -315,6 +575,7 @@ export async function createApp(
       // never change once built, so they can be cached aggressively.
       app.use(
         "/assets",
+        createPrecompressedStaticMiddleware(path.join(uiDist, "assets")),
         express.static(path.join(uiDist, "assets"), {
           maxAge: "1y",
           immutable: true,

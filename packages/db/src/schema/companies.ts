@@ -11,6 +11,16 @@ export const companies = pgTable(
     pausedAt: timestamp("paused_at", { withTimezone: true }),
     issuePrefix: text("issue_prefix").notNull().default("PAP"),
     issueCounter: integer("issue_counter").notNull().default(0),
+    // Source of truth for this company's issue identifiers.
+    //   "paperclip" → identifiers minted from issuePrefix + issueCounter (default).
+    //   "linear"    → identifiers minted by Linear and mirrored back via the
+    //                 paperclip-plugin-linear adapter at create-time.
+    // Per-company opt-in (see plan: linear-id-unification.md). Companies stay
+    // on "paperclip" until they're explicitly migrated; flipping requires
+    // first re-prefixing pre-existing paperclip-only issues to PCL- so the
+    // BLO-N namespace can be ceded to Linear cleanly. The CHECK constraint
+    // lives in the migration SQL — Drizzle's text() doesn't track it.
+    identifierProvider: text("identifier_provider").notNull().default("paperclip"),
     budgetMonthlyCents: integer("budget_monthly_cents").notNull().default(0),
     spentMonthlyCents: integer("spent_monthly_cents").notNull().default(0),
     attachmentMaxBytes: integer("attachment_max_bytes")

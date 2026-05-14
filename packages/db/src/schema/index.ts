@@ -36,6 +36,8 @@ export { routines, routineRevisions, routineTriggers, routineRuns } from "./rout
 export { issueWorkProducts } from "./issue_work_products.js";
 export { labels } from "./labels.js";
 export { issueLabels } from "./issue_labels.js";
+export { cycles } from "./cycles.js";
+export { issueCycles } from "./issue_cycles.js";
 export { issueApprovals } from "./issue_approvals.js";
 export { issueComments } from "./issue_comments.js";
 export { issueThreadInteractions } from "./issue_thread_interactions.js";
@@ -76,3 +78,5 @@ export { pluginDatabaseNamespaces, pluginMigrations } from "./plugin_database.js
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
+export { syntheticSshProbeResults } from "./synthetic_ssh_probe_results.js";
+export { linearIssueLinks } from "./linear_issue_links.js";
