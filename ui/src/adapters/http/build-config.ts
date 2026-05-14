@@ -69,6 +69,12 @@ function parseEnvBindings(bindings: unknown): Record<string, unknown> {
   return env;
 }
 
+function parseEnvBindingsFromValues(v: CreateConfigValues): Record<string, unknown> {
+  const parsedJson = parseJsonObject(v.envBindingsJson, "Env bindings");
+  if (parsedJson) return parseEnvBindings(parsedJson);
+  return parseEnvBindings(v.envBindings);
+}
+
 function collectHeaderEnvReferences(headers: Record<string, string> | undefined): string[] {
   const refs = new Set<string>();
   if (!headers) return [];
@@ -98,7 +104,7 @@ export function buildHttpConfig(v: CreateConfigValues): Record<string, unknown> 
   const headers = parseHeadersObject(v.httpHeadersJson);
   if (headers && Object.keys(headers).length > 0) ac.headers = headers;
 
-  const env = parseEnvBindings(v.envBindings);
+  const env = parseEnvBindingsFromValues(v);
   for (const key of collectHeaderEnvReferences(headers)) {
     if (!Object.prototype.hasOwnProperty.call(env, key)) {
       throw new Error(`HTTP header references missing environment variable: ${key}`);

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { getAdapterDisplay } from "./adapter-display-registry";
 import {
   isEnabledAdapterType,
   isValidAdapterType,
@@ -40,6 +41,11 @@ describe("adapter metadata", () => {
     expect(isEnabledAdapterType("http")).toBe(true);
     expect(isValidAdapterType("http")).toBe(true);
     expect(isVisualAdapterChoice("http")).toBe(true);
+    expect(getAdapterDisplay("http")).toMatchObject({
+      label: "HTTP Webhook",
+      description: "Remote HTTP webhook adapter (bridges, external services)",
+    });
+    expect(getAdapterDisplay("http").comingSoon).toBeUndefined();
   });
 
   it("keeps ACPX selectable from explicit configuration but out of visual pickers", () => {

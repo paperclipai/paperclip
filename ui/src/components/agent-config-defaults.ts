@@ -17,6 +17,7 @@ export const defaultCreateValues: CreateConfigValues = {
   extraArgs: "",
   envVars: "",
   envBindings: {},
+  envBindingsJson: "",
   url: "",
   httpMethod: "POST",
   httpHeadersJson: "",

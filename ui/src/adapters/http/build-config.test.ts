@@ -20,6 +20,7 @@ function makeValues(overrides: Partial<CreateConfigValues> = {}): CreateConfigVa
     extraArgs: "",
     envVars: "",
     envBindings: {},
+    envBindingsJson: "",
     url: "",
     bootstrapPrompt: "",
     payloadTemplateJson: "",
@@ -115,5 +116,21 @@ describe("buildHttpConfig", () => {
     expect(() =>
       buildHttpConfig(makeValues({ httpHeadersJson: '{"Authorization":"Bearer ${env:BRIDGE_TOKEN}"}' })),
     ).toThrow(/HTTP header references missing environment variable: BRIDGE_TOKEN/);
+  });
+
+  it("builds env bindings from the operator-facing Env bindings JSON field", () => {
+    expect(
+      buildHttpConfig(
+        makeValues({
+          url: "https://example.test/thomas-bridge/v1/runs",
+          httpHeadersJson: '{"Authorization":"Bearer ${env:BRIDGE_TOKEN}"}',
+          envBindingsJson: '{"BRIDGE_TOKEN":{"type":"secret_ref","secretId":"secret-1","version":"latest"}}',
+        }),
+      ),
+    ).toMatchObject({
+      env: {
+        BRIDGE_TOKEN: { type: "secret_ref", secretId: "secret-1", version: "latest" },
+      },
+    });
   });
 });
