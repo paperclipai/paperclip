@@ -19,7 +19,7 @@ summary: 构建自定义适配器的指南
 | 注册方式 | 编辑 3 处注册表 | 启动时自动加载 |
 | 最适合 | 核心适配器、贡献者 | 第三方适配器、内部工具 |
 
-多数情况下，**应构建外部适配器插件**：边界更清晰、可独立发版，且无需改 Paperclip 源码。完整说明见 [外部适配器](/适配器/外部适配器%20external-adapters)。
+多数情况下，**应构建外部适配器插件**：边界更清晰、可独立发版，且无需改 Paperclip 源码。完整说明见 [外部适配器](/适配器/03%20外部适配器%20external-adapters)。
 
 本页其余部分介绍两条路径共用的内部机制。
 
@@ -42,7 +42,7 @@ my-adapter/                   # 外部插件
       index.ts          # UI 导出（仅内置）
       parse-stdout.ts   # 运行记录解析（仅内置）
       build-config.ts   # 配置构建
-    ui-parser.ts        # 自包含 UI 解析器（外部——见 [UI 解析器契约](/适配器/适配器%20UI%20解析器%20adapter-ui-parser)）
+    ui-parser.ts        # 自包含 UI 解析器（外部——见 [UI 解析器契约](/适配器/04%20适配器%20UI%20解析器%20adapter-ui-parser)）
     cli/
       index.ts          # CLI 导出
       format-event.ts   # 终端格式化
@@ -161,7 +161,7 @@ export async function testEnvironment(
 - `build-config.ts` — 将表单值转为 `adapterConfig` JSON
 - 配置字段的 React 组件放在 `ui/src/adapters/<name>/config-fields.tsx`
 
-外部适配器改用自包含的 `ui-parser.ts`，见 [UI 解析器契约](/适配器/适配器%20UI%20解析器%20adapter-ui-parser)。
+外部适配器改用自包含的 `ui-parser.ts`，见 [UI 解析器契约](/适配器/04%20适配器%20UI%20解析器%20adapter-ui-parser)。
 
 ## 步骤 5：CLI 模块
 
@@ -259,6 +259,6 @@ export function createServerAdapter(): ServerAdapterModule {
 
 ## 后续步骤
 
-- [外部适配器](/适配器/外部适配器%20external-adapters) — 构建独立适配器插件
-- [UI 解析器契约](/适配器/适配器%20UI%20解析器%20adapter-ui-parser) — 自定义运行日志解析
+- [外部适配器](/适配器/03%20外部适配器%20external-adapters) — 构建独立适配器插件
+- [UI 解析器契约](/适配器/04%20适配器%20UI%20解析器%20adapter-ui-parser) — 自定义运行日志解析
 - [智能体如何工作](/guides/agent-developer/how-agents-work) — 心搏生命周期

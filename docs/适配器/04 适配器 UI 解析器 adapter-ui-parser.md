@@ -278,5 +278,5 @@ for (const line of sampleLines) {
 
 ## 后续步骤
 
-- [外部适配器](/适配器/外部适配器%20external-adapters) — 适配器包完整指南
-- [创建适配器](/适配器/创建适配器%20creating-an-adapter) — 适配器内部与内置集成
+- [外部适配器](/适配器/03%20外部适配器%20external-adapters) — 适配器包完整指南
+- [创建适配器](/适配器/02%20创建适配器%20creating-an-adapter) — 适配器内部与内置集成
