@@ -982,6 +982,7 @@ async function startOutboundPoller(
           // Gap 2: detect APPROVAL_REQUEST: marker in comment body.
           // If present, surface an approval card instead of forwarding the raw comment.
           const approvalReq = parseApprovalRequest(c.body);
+          let sentMsgId: number | undefined;
           if (approvalReq) {
             const card: ApprovalCardSurface = {
               chatId: origin.mapping.chatId,
@@ -999,10 +1000,16 @@ async function startOutboundPoller(
             const surfaceResult = await maybeSurfaceApproval(card, bot, c.issueId, companyId);
             if (!surfaceResult.surfaced) {
               // Surfacing was suppressed — forward the raw comment so Matt still sees it
-              await sendTelegramReply(c, origin.mapping, bot, replyToMsgId);
+              const r = await sendTelegramReply(c, origin.mapping, bot, replyToMsgId);
+              sentMsgId = r.messageId;
             }
           } else {
-            await sendTelegramReply(c, origin.mapping, bot, replyToMsgId);
+            const r = await sendTelegramReply(c, origin.mapping, bot, replyToMsgId);
+            sentMsgId = r.messageId;
+          }
+          // Record outbound message ID so reply-to threading works for follow-ups.
+          if (sentMsgId != null) {
+            outboundMsgToIssue.set(sentMsgId, c.issueId);
           }
           persistSeen();
           if (origin.logicalTaskId) {
