@@ -17,6 +17,13 @@ export type SubIssueProgressSummary = {
   target: SubIssueProgressTarget | null;
 };
 
+export type IssueSiblingNavigation = {
+  previous: Issue | null;
+  next: Issue | null;
+  currentIndex: number;
+  totalCount: number;
+};
+
 export function shouldRenderRichSubIssuesSection(childIssuesLoading: boolean, childIssueCount: number): boolean {
   return childIssuesLoading || childIssueCount > 0;
 }
@@ -53,6 +60,57 @@ export function buildSubIssueProgressSummary(issues: Issue[]): SubIssueProgressS
       : blockedIssue
         ? { issue: blockedIssue, kind: "blocked" }
         : null,
+  };
+}
+
+export function buildIssueSiblingNavigation(
+  currentIssue: Issue,
+  siblingIssues: Issue[],
+  childIssues: Issue[] = [],
+): IssueSiblingNavigation | null {
+  if (currentIssue.hiddenAt) return null;
+
+  const byId = new Map<string, Issue>();
+  if (currentIssue.parentId) {
+    for (const issue of siblingIssues) {
+      if (issue.parentId !== currentIssue.parentId || issue.hiddenAt) continue;
+      byId.set(
+        issue.id,
+        issue.id === currentIssue.id
+          ? { ...issue, ...currentIssue, blockedBy: currentIssue.blockedBy ?? issue.blockedBy }
+          : issue,
+      );
+    }
+    if (!byId.has(currentIssue.id)) byId.set(currentIssue.id, currentIssue);
+  }
+
+  const ordered = workflowSort(Array.from(byId.values()));
+  const currentIndex = ordered.findIndex((issue) => issue.id === currentIssue.id);
+  const directChildren = workflowSort(
+    childIssues.filter((issue) => issue.parentId === currentIssue.id && !issue.hiddenAt),
+  );
+  const firstChild = directChildren[0] ?? null;
+
+  if (currentIndex < 0) {
+    return firstChild
+      ? {
+          previous: null,
+          next: firstChild,
+          currentIndex: 0,
+          totalCount: directChildren.length + 1,
+        }
+      : null;
+  }
+
+  const previous = currentIndex > 0 ? ordered[currentIndex - 1] : null;
+  const next = currentIndex < ordered.length - 1 ? ordered[currentIndex + 1] : firstChild;
+  if (!previous && !next) return null;
+
+  return {
+    previous,
+    next,
+    currentIndex,
+    totalCount: ordered.length,
   };
 }
 

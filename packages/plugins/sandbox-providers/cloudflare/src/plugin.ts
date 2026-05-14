@@ -317,7 +317,13 @@ const plugin = definePlugin({
     const { config, client } = bridgeClientFor(params.config);
     const session = resolveExecuteSession(config, params.env);
     try {
-      const streamingOptions = pluginLogger
+      // Bridge-channel commands carry machine-consumed stdout (JSON, base64,
+      // file contents). The @cloudflare/sandbox SDK's streaming mode can drop
+      // the final stdout chunk when the inner shell exits the same tick as it
+      // writes (e.g. `cat ready.json && exit 0`), so we never stream for
+      // bridge control traffic — only adapter sessions get live log forwarding.
+      const isBridgeChannel = params.env?.[SANDBOX_EXEC_CHANNEL_ENV] === SANDBOX_EXEC_CHANNEL_BRIDGE;
+      const streamingOptions = pluginLogger && !isBridgeChannel
         ? {
             onOutput: async (stream: "stdout" | "stderr", chunk: string) => {
               logCloudflareExecChunk(pluginLogger, stream, chunk);

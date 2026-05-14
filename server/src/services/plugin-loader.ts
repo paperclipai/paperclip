@@ -79,6 +79,37 @@ export const DEFAULT_LOCAL_PLUGIN_DIR = path.join(
 
 const DEV_TSX_LOADER_PATH = path.resolve(__dirname, "../../../cli/node_modules/tsx/dist/loader.mjs");
 
+const ADAPTER_ENV_PASSTHROUGH = [
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "GOOGLE_API_KEY",
+  "GEMINI_API_KEY",
+  "OPENROUTER_API_KEY",
+];
+
+export function buildPluginWorkerEnv(input: {
+  manifest: Pick<PaperclipPluginManifestV1, "capabilities">;
+  instanceInfo: { deploymentMode?: string | null; deploymentExposure?: string | null };
+  processEnv?: NodeJS.ProcessEnv;
+}): Record<string, string> {
+  const processEnv = input.processEnv ?? process.env;
+  const env: Record<string, string> = {
+    PAPERCLIP_DEPLOYMENT_MODE: input.instanceInfo.deploymentMode ?? "",
+    PAPERCLIP_DEPLOYMENT_EXPOSURE: input.instanceInfo.deploymentExposure ?? "",
+  };
+  const canRegisterEnvironmentDrivers = Array.isArray(input.manifest.capabilities)
+    && input.manifest.capabilities.includes("environment.drivers.register");
+  if (!canRegisterEnvironmentDrivers) return env;
+
+  for (const key of ADAPTER_ENV_PASSTHROUGH) {
+    const value = processEnv[key];
+    if (value && value.trim().length > 0) {
+      env[key] = value;
+    }
+  }
+  return env;
+}
+
 // ---------------------------------------------------------------------------
 // Discovery result types
 // ---------------------------------------------------------------------------
@@ -1820,10 +1851,7 @@ export function pluginLoader(
         databaseNamespace,
         hostHandlers,
         autoRestart: true,
-        env: {
-          PAPERCLIP_DEPLOYMENT_MODE: instanceInfo.deploymentMode ?? "",
-          PAPERCLIP_DEPLOYMENT_EXPOSURE: instanceInfo.deploymentExposure ?? "",
-        },
+        env: buildPluginWorkerEnv({ manifest, instanceInfo }),
       };
 
       // Repo-local plugin installs can resolve workspace TS sources at runtime
