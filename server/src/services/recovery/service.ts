@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -21,6 +21,8 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  routineTriggers,
+  routines,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -456,6 +458,39 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     ]);
 
     return Boolean(run || deferredWake);
+  }
+
+  async function hasActiveScheduledRoutine(
+    companyId: string,
+    issueId: string,
+    assigneeAgentId: string,
+  ) {
+    const now = new Date();
+    const row = await db
+      .select({ id: routines.id })
+      .from(routines)
+      .leftJoin(
+        routineTriggers,
+        and(
+          eq(routineTriggers.routineId, routines.id),
+          eq(routineTriggers.enabled, true),
+        ),
+      )
+      .where(
+        and(
+          eq(routines.companyId, companyId),
+          eq(routines.parentIssueId, issueId),
+          eq(routines.assigneeAgentId, assigneeAgentId),
+          eq(routines.status, "active"),
+          or(
+            isNull(routines.lastTriggeredAt),
+            gt(routineTriggers.nextRunAt, now),
+          ),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return Boolean(row);
   }
 
   async function hasQueuedIssueWake(companyId: string, issueId: string) {
@@ -2011,6 +2046,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (await hasActiveScheduledRoutine(issue.companyId, issue.id, agentId)) {
         result.skipped += 1;
         continue;
       }
