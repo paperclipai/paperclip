@@ -1,0 +1,70 @@
+name: Impact Gate Worker
+
+on:
+  schedule:
+    # Every 5 minutes — scan recently-done fix/bug issues for quality gate
+    - cron: '*/5 * * * *'
+  repository_dispatch:
+    types: [issue_created, issue_updated, issue_status_changed]
+  workflow_dispatch:
+    inputs:
+      issue_id:
+        description: 'Paperclip issue UUID (single-issue webhook trigger)'
+        required: false
+        default: ''
+      lookback_minutes:
+        description: 'Gate done issues completed within this many minutes'
+        required: false
+        default: '10'
+
+concurrency:
+  group: impact-gate-worker
+  cancel-in-progress: false
+
+jobs:
+  worker:
+    name: Run impact gate on done fix/bug issues
+    runs-on: ubuntu-latest
+
+    env:
+      PAPERCLIP_API_URL: ${{ secrets.PAPERCLIP_API_URL }}
+      PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
+      PAPERCLIP_COMPANY_ID: ${{ secrets.PAPERCLIP_COMPANY_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install requests python-dotenv
+
+      - name: Resolve issue ID (event payload)
+        id: resolve-issue
+        run: |
+          ISSUE_ID="${{ github.event.inputs.issue_id || '' }}"
+          if [ -z "$ISSUE_ID" ] && [ -n "${{ github.event.client_payload.issue_id || '' }}" ]; then
+            ISSUE_ID="${{ github.event.client_payload.issue_id }}"
+          fi
+          echo "issue_id=$ISSUE_ID" >> $GITHUB_OUTPUT
+
+      - name: Run impact gate worker
+        run: |
+          FLAGS="--json-summary"
+          ISSUE_ID="${{ steps.resolve-issue.outputs.issue_id }}"
+          if [ -n "$ISSUE_ID" ]; then
+            python scripts/run_impact_gate_worker.py --issue-id "$ISSUE_ID" $FLAGS
+          elif [ -n "${{ github.event.inputs.lookback_minutes }}" ]; then
+            python scripts/run_impact_gate_worker.py \
+              --lookback-minutes ${{ github.event.inputs.lookback_minutes }} $FLAGS
+          else
+            python scripts/run_impact_gate_worker.py $FLAGS
+          fi
