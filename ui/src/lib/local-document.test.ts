@@ -1,5 +1,12 @@
-import { describe, expect, it } from "vitest";
-import { isLocalFileHref, normalizeLocalPath } from "./local-document";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  isLocalFileHref,
+  normalizeLocalPath,
+  documentOpenerHealth,
+  openDocument,
+  revealDocument,
+  DOCUMENT_OPENER_BASE_URL,
+} from "./local-document";
 
 describe("isLocalFileHref", () => {
   it.each([
@@ -54,5 +61,73 @@ describe("normalizeLocalPath", () => {
 
   it("gracefully passes through invalid URL-encoded sequences", () => {
     expect(normalizeLocalPath("/Users/foo%ZZ.md")).toBe("/Users/foo%ZZ.md");
+  });
+});
+
+describe("fetch helpers", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("openDocument POSTs to /open with normalized path", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    await openDocument("file:///Users/foo/x.md");
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${DOCUMENT_OPENER_BASE_URL}/open`,
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "/Users/foo/x.md" }),
+      }),
+    );
+  });
+
+  it("revealDocument POSTs to /reveal", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    await revealDocument("/Users/foo/x.md");
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${DOCUMENT_OPENER_BASE_URL}/reveal`,
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ path: "/Users/foo/x.md" }),
+      }),
+    );
+  });
+
+  it("openDocument throws on non-2xx with parsed error", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: "path outside allowed roots" }), { status: 403 }),
+    );
+    await expect(openDocument("/etc/hosts")).rejects.toThrow(/path outside allowed roots/);
+  });
+
+  it("openDocument throws on network failure", async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    await expect(openDocument("/Users/foo/x.md")).rejects.toThrow();
+  });
+
+  it("documentOpenerHealth returns 'ready' on 200", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    const result = await documentOpenerHealth();
+    expect(result).toBe("ready");
+  });
+
+  it("documentOpenerHealth returns 'unavailable' on 503", async () => {
+    fetchMock.mockResolvedValueOnce(new Response("{}", { status: 503 }));
+    const result = await documentOpenerHealth();
+    expect(result).toBe("unavailable");
+  });
+
+  it("documentOpenerHealth returns 'unavailable' on network error", async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    const result = await documentOpenerHealth();
+    expect(result).toBe("unavailable");
   });
 });
