@@ -42,6 +42,20 @@ process.exit(1);
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeReconnectLoopCodexCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+for (let i = 0; i < 3; i += 1) {
+  console.log("idle timeout waiting for websocket");
+  console.log("Connection reset by peer");
+}
+setInterval(() => {
+  console.log("retrying websocket connection");
+}, 250);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 type CapturePayload = {
   argv: string[];
   prompt: string;
@@ -536,6 +550,55 @@ describe("codex execute", () => {
       expect(result.errorCode).toBe("codex_transient_upstream");
       expect(result.errorFamily).toBe("transient_upstream");
       expect(result.errorMessage).toContain("high demand");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails fast on prolonged websocket reconnect loops as codex_transient_upstream", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-reconnect-loop-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeReconnectLoopCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-reconnect-loop",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.timedOut).toBe(false);
+      expect(result.errorCode).toBe("codex_transient_upstream");
+      expect(result.errorFamily).toBe("transient_upstream");
+      expect(result.errorMessage).toContain("websocket reconnect loop");
+      expect(result.signal).toBe("SIGTERM");
+      expect((result.resultJson as Record<string, unknown> | null)?.reconnectLoopDetected).toBe(true);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

@@ -1231,6 +1231,54 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     }
   });
 
+  it("treats codex_transient_upstream error codes as transient retries even without persisted errorFamily", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-04-22T08:00:00.000Z");
+
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "codex_transient_upstream",
+      errorFamily: null,
+      resultJson: {
+        reconnectLoopDetected: true,
+      },
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      random: () => 0.5,
+    });
+
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+
+    const retryRun = await db
+      .select({
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, scheduled.run.id))
+      .then((rows) => rows[0] ?? null);
+    expect((retryRun?.contextSnapshot as Record<string, unknown> | null)?.codexTransientFallbackMode).toBe(
+      "same_session",
+    );
+
+    const wakeupRequest = await db
+      .select({ payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, retryRun?.wakeupRequestId ?? ""))
+      .then((rows) => rows[0] ?? null);
+    expect((wakeupRequest?.payload as Record<string, unknown> | null)?.codexTransientFallbackMode).toBe(
+      "same_session",
+    );
+  });
+
   it("honors codex retry-not-before timestamps when they exceed the default bounded backoff", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

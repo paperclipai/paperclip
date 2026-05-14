@@ -8,6 +8,9 @@ import {
 const CODEX_TRANSIENT_UPSTREAM_RE =
   /(?:we(?:'|’)re\s+currently\s+experiencing\s+high\s+demand|temporary\s+errors|rate[-\s]?limit(?:ed)?|too\s+many\s+requests|\b429\b|server\s+overloaded|service\s+unavailable|try\s+again\s+later)/i;
 const CODEX_REMOTE_COMPACTION_RE = /remote\s+compact\s+task/i;
+const CODEX_WEBSOCKET_RECONNECT_RE =
+  /(?:idle timeout waiting for websocket|connection reset by peer|websocket\b[\s\S]{0,40}\b(?:reconnect|re-?connect|retry|tim(?:e|ed)\s*out)|\breconnect(?:ing)?\b[\s\S]{0,24}\bwebsocket\b)/i;
+const CODEX_WEBSOCKET_RECONNECT_MIN_EVENTS = 6;
 const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
 
@@ -98,6 +101,14 @@ function buildCodexErrorHaystack(input: {
     .map((line) => line.trim())
     .filter(Boolean)
     .join("\n");
+}
+
+function countCodexReconnectEvents(haystack: string): number {
+  return haystack
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .reduce((count, line) => (CODEX_WEBSOCKET_RECONNECT_RE.test(line) ? count + 1 : count), 0);
 }
 
 function readTimeZoneParts(date: Date, timeZone: string) {
@@ -253,6 +264,7 @@ export function isCodexTransientUpstreamError(input: {
   const haystack = buildCodexErrorHaystack(input);
 
   if (extractCodexRetryNotBefore(input) != null) return true;
+  if (countCodexReconnectEvents(haystack) >= CODEX_WEBSOCKET_RECONNECT_MIN_EVENTS) return true;
   if (!CODEX_TRANSIENT_UPSTREAM_RE.test(haystack)) return false;
   // Keep automatic retries scoped to the observed remote-compaction/high-demand
   // failure shape, plus explicit usage-limit windows that tell us when retrying

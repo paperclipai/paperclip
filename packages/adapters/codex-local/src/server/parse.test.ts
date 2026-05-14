@@ -137,4 +137,32 @@ describe("isCodexTransientUpstreamError", () => {
       }),
     ).toBe(false);
   });
+
+  it("classifies repeated websocket reconnect errors as transient upstream", () => {
+    const reconnectLines = [
+      "idle timeout waiting for websocket",
+      "Connection reset by peer",
+      "idle timeout waiting for websocket",
+      "Connection reset by peer",
+      "idle timeout waiting for websocket",
+      "Connection reset by peer",
+    ].join("\n");
+
+    expect(
+      isCodexTransientUpstreamError({
+        stdout: reconnectLines,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not classify isolated websocket reconnect errors as transient", () => {
+    expect(
+      isCodexTransientUpstreamError({
+        stderr: [
+          "idle timeout waiting for websocket",
+          "Connection reset by peer",
+        ].join("\n"),
+      }),
+    ).toBe(false);
+  });
 });

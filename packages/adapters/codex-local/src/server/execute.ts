@@ -31,6 +31,7 @@ import {
   resolvePaperclipDesiredSkillNames,
   renderTemplate,
   renderPaperclipWakePrompt,
+  runningProcesses,
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   joinPromptSections,
@@ -48,6 +49,10 @@ import { buildCodexExecArgs } from "./codex-args.js";
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
   /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
+const CODEX_WEBSOCKET_RECONNECT_RE =
+  /(?:idle timeout waiting for websocket|connection reset by peer|websocket\b[\s\S]{0,40}\b(?:reconnect|re-?connect|retry|tim(?:e|ed)\s*out)|\breconnect(?:ing)?\b[\s\S]{0,24}\bwebsocket\b)/i;
+const CODEX_WEBSOCKET_RECONNECT_LOOP_WINDOW_MS = 2 * 60 * 1000;
+const CODEX_WEBSOCKET_RECONNECT_LOOP_MIN_EVENTS = 6;
 
 function stripCodexRolloutNoise(text: string): string {
   const parts = text.split(/\r?\n/);
@@ -71,6 +76,46 @@ function firstNonEmptyLine(text: string): string {
       .map((line) => line.trim())
       .find(Boolean) ?? ""
   );
+}
+
+function countReconnectMatchesInChunk(chunk: string): number {
+  return chunk
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .reduce((count, line) => (CODEX_WEBSOCKET_RECONNECT_RE.test(line) ? count + 1 : count), 0);
+}
+
+function terminateCodexRunForReconnectLoop(runId: string, graceSec: number): boolean {
+  const running = runningProcesses.get(runId);
+  if (!running) return false;
+
+  const processGroupId = typeof running.processGroupId === "number" ? running.processGroupId : null;
+  const safeGraceSec = Math.max(1, graceSec);
+
+  if (process.platform !== "win32" && processGroupId && processGroupId > 0) {
+    try {
+      process.kill(-processGroupId, "SIGTERM");
+    } catch {
+      if (!running.child.killed) running.child.kill("SIGTERM");
+    }
+    setTimeout(() => {
+      try {
+        process.kill(-processGroupId, "SIGKILL");
+      } catch {
+        if (!running.child.killed) running.child.kill("SIGKILL");
+      }
+    }, safeGraceSec * 1000);
+    return true;
+  }
+
+  if (!running.child.killed) {
+    running.child.kill("SIGTERM");
+  }
+  setTimeout(() => {
+    if (!running.child.killed) running.child.kill("SIGKILL");
+  }, safeGraceSec * 1000);
+  return true;
 }
 
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
@@ -660,6 +705,43 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
+    const reconnectEventTimes: number[] = [];
+    let reconnectLoopDetected = false;
+    let reconnectLoopErrorMessage: string | null = null;
+    const observeReconnectLoop = async (chunk: string) => {
+      const reconnectMatches = countReconnectMatchesInChunk(chunk);
+      if (reconnectMatches <= 0) return;
+
+      const nowMs = Date.now();
+      for (let i = 0; i < reconnectMatches; i += 1) {
+        reconnectEventTimes.push(nowMs);
+      }
+
+      const windowStartMs = nowMs - CODEX_WEBSOCKET_RECONNECT_LOOP_WINDOW_MS;
+      while (reconnectEventTimes.length > 0 && (reconnectEventTimes[0] ?? 0) < windowStartMs) {
+        reconnectEventTimes.shift();
+      }
+
+      if (reconnectLoopDetected || reconnectEventTimes.length < CODEX_WEBSOCKET_RECONNECT_LOOP_MIN_EVENTS) {
+        return;
+      }
+
+      reconnectLoopDetected = true;
+      reconnectLoopErrorMessage =
+        `Codex websocket reconnect loop detected (${reconnectEventTimes.length} reconnect errors within ${Math.round(CODEX_WEBSOCKET_RECONNECT_LOOP_WINDOW_MS / 1000)}s).`;
+      await onLog(
+        "stdout",
+        `[paperclip] ${reconnectLoopErrorMessage} Terminating run so bounded transient retries can escalate fallback strategy.\n`,
+      );
+      const terminated = terminateCodexRunForReconnectLoop(runId, graceSec);
+      if (!terminated) {
+        await onLog(
+          "stdout",
+          "[paperclip] Reconnect loop detected but no local process handle was available to terminate immediately; waiting for adapter exit.\n",
+        );
+      }
+    };
+
     const proc = await runAdapterExecutionTargetProcess(runId, executionTarget, command, args, {
       cwd,
       env,
@@ -669,11 +751,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onSpawn,
       onLog: async (stream, chunk) => {
         if (stream !== "stderr") {
+          await observeReconnectLoop(chunk);
           await onLog(stream, chunk);
           return;
         }
         const cleaned = stripCodexRolloutNoise(chunk);
         if (!cleaned.trim()) return;
+        await observeReconnectLoop(cleaned);
         await onLog(stream, cleaned);
       },
     });
@@ -685,11 +769,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       },
       rawStderr: proc.stderr,
       parsed: parseCodexJsonl(proc.stdout),
+      reconnectLoopDetected,
+      reconnectLoopErrorMessage,
     };
   };
 
   const toResult = (
-    attempt: { proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string }; rawStderr: string; parsed: ReturnType<typeof parseCodexJsonl> },
+    attempt: {
+      proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string };
+      rawStderr: string;
+      parsed: ReturnType<typeof parseCodexJsonl>;
+      reconnectLoopDetected: boolean;
+      reconnectLoopErrorMessage: string | null;
+    },
     clearSessionOnMissingSession = false,
     isRetry = false,
   ): AdapterExecutionResult => {
@@ -723,12 +815,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
     const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
     const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
+    const attemptFailed = (attempt.proc.exitCode ?? 0) !== 0 || Boolean(attempt.proc.signal);
     const fallbackErrorMessage =
       parsedError ||
       stderrLine ||
       `Codex exited with code ${attempt.proc.exitCode ?? -1}`;
     const transientRetryNotBefore =
-      (attempt.proc.exitCode ?? 0) !== 0
+      attemptFailed
         ? extractCodexRetryNotBefore({
             stdout: attempt.proc.stdout,
             stderr: attempt.proc.stderr,
@@ -736,21 +829,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           })
         : null;
     const transientUpstream =
-      (attempt.proc.exitCode ?? 0) !== 0 &&
-      isCodexTransientUpstreamError({
-        stdout: attempt.proc.stdout,
-        stderr: attempt.proc.stderr,
-        errorMessage: fallbackErrorMessage,
-      });
+      attempt.reconnectLoopDetected ||
+      (attemptFailed &&
+        isCodexTransientUpstreamError({
+          stdout: attempt.proc.stdout,
+          stderr: attempt.proc.stderr,
+          errorMessage: fallbackErrorMessage,
+        }));
 
     return {
       exitCode: attempt.proc.exitCode,
       signal: attempt.proc.signal,
       timedOut: false,
       errorMessage:
-        (attempt.proc.exitCode ?? 0) === 0
+        !attemptFailed
           ? null
-          : fallbackErrorMessage,
+          : attempt.reconnectLoopErrorMessage ?? fallbackErrorMessage,
       errorCode:
         transientUpstream
           ? "codex_transient_upstream"
@@ -770,6 +864,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
         ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
+        ...(attempt.reconnectLoopDetected ? { reconnectLoopDetected: true } : {}),
         ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
         ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       },
