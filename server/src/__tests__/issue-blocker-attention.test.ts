@@ -641,6 +641,33 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("unresolvedBlockerCount equals direct explicit blocker count, not transitive count", async () => {
+    // direct = 2 explicit blockers; transitive = 7 (each blocker has further open children)
+    const { companyId, agentId } = await createCompany("PBD");
+    const rootId = await insertIssue({ companyId, identifier: "PBD-1", title: "Root", status: "blocked" });
+    const blocker1Id = await insertIssue({ companyId, identifier: "PBD-2", title: "Blocker 1", status: "blocked" });
+    const blocker2Id = await insertIssue({ companyId, identifier: "PBD-3", title: "Blocker 2", status: "blocked" });
+    await block({ companyId, blockerIssueId: blocker1Id, blockedIssueId: rootId });
+    await block({ companyId, blockerIssueId: blocker2Id, blockedIssueId: rootId });
+
+    // 5 downstream nodes beneath blocker1 and blocker2 (transitive chain totals 7)
+    for (let i = 4; i <= 8; i++) {
+      const leafId = await insertIssue({
+        companyId,
+        identifier: `PBD-${i}`,
+        title: `Transitive leaf ${i}`,
+        status: "todo",
+        assigneeAgentId: agentId,
+      });
+      await block({ companyId, blockerIssueId: leafId, blockedIssueId: i <= 6 ? blocker1Id : blocker2Id });
+    }
+
+    const root = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === rootId);
+
+    // unresolvedBlockerCount must reflect the 2 direct explicit blockers only
+    expect(root?.blockerAttention?.unresolvedBlockerCount).toBe(2);
+  });
+
   it("classifies recovery issues and missing successful-run dispositions", async () => {
     const { companyId, agentId } = await createCompany("BID");
     const sourceId = await insertIssue({ companyId, identifier: "BID-1", title: "Stopped source", status: "blocked" });
