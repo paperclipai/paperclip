@@ -38,6 +38,8 @@ export const queryKeys = {
     listMineByMe: (companyId: string) => ["issues", companyId, "mine-by-me"] as const,
     listTouchedByMe: (companyId: string) => ["issues", companyId, "touched-by-me"] as const,
     listUnreadTouchedByMe: (companyId: string) => ["issues", companyId, "unread-touched-by-me"] as const,
+    listBlockedAttention: (companyId: string) => ["issues", companyId, "blocked-attention"] as const,
+    countBlockedAttention: (companyId: string) => ["issues", companyId, "blocked-attention", "count"] as const,
     labels: (companyId: string) => ["issues", companyId, "labels"] as const,
     listByProject: (companyId: string, projectId: string) =>
       ["issues", companyId, "project", projectId] as const,
@@ -53,7 +55,10 @@ export const queryKeys = {
     comments: (issueId: string) => ["issues", "comments", issueId] as const,
     interactions: (issueId: string) => ["issues", "interactions", issueId] as const,
     feedbackVotes: (issueId: string) => ["issues", "feedback-votes", issueId] as const,
-    costSummary: (issueId: string) => ["issues", "cost-summary", issueId] as const,
+    costSummary: (issueId: string, options: { excludeRoot?: boolean } = {}) =>
+      options.excludeRoot
+        ? (["issues", "cost-summary", issueId, "exclude-root"] as const)
+        : (["issues", "cost-summary", issueId] as const),
     attachments: (issueId: string) => ["issues", "attachments", issueId] as const,
     documents: (issueId: string) => ["issues", "documents", issueId] as const,
     document: (issueId: string, key: string) => ["issues", "document", issueId, key] as const,
@@ -132,6 +137,13 @@ export const queryKeys = {
   secrets: {
     list: (companyId: string) => ["secrets", companyId] as const,
     providers: (companyId: string) => ["secret-providers", companyId] as const,
+    providerConfigs: (companyId: string) => ["secret-provider-configs", companyId] as const,
+    usage: (secretId: string) => ["secrets", "usage", secretId] as const,
+    accessEvents: (secretId: string) => ["secrets", "access-events", secretId] as const,
+  },
+  companySearch: {
+    search: (companyId: string, q: string, scope: string, limit: number, offset: number) =>
+      ["company-search", companyId, q, scope, limit, offset] as const,
   },
   dashboard: (companyId: string) => ["dashboard", companyId] as const,
   userProfile: (companyId: string, userSlug: string) =>

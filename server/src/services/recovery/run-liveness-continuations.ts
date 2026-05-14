@@ -2,6 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, agents, heartbeatRuns, issues } from "@paperclipai/db";
 import type { RunLivenessState } from "@paperclipai/shared";
+import { withRecoveryModelProfileHint } from "./model-profile-hint.js";
 import { RECOVERY_REASON_KINDS } from "./origins.js";
 
 export const RUN_LIVENESS_CONTINUATION_REASON = RECOVERY_REASON_KINDS.runLivenessContinuation;
@@ -155,7 +156,7 @@ export function decideRunLivenessContinuation(input: {
     return { kind: "skip", reason: "continuation wake already exists for this source run and attempt" };
   }
 
-  const payload = {
+  const payload = withRecoveryModelProfileHint({
     issueId: issue.id,
     sourceRunId: run.id,
     livenessState,
@@ -165,14 +166,14 @@ export function decideRunLivenessContinuation(input: {
     instruction:
       nextAction ??
       "The previous run ended without concrete progress. Take the first concrete action now or mark the issue blocked with a specific unblock request.",
-  };
+  });
 
   return {
     kind: "enqueue",
     nextAttempt,
     idempotencyKey,
     payload,
-    contextSnapshot: {
+    contextSnapshot: withRecoveryModelProfileHint({
       issueId: issue.id,
       taskId: issue.id,
       taskKey: issue.id,
@@ -183,6 +184,6 @@ export function decideRunLivenessContinuation(input: {
       livenessContinuationState: livenessState,
       livenessContinuationReason: livenessReason,
       livenessContinuationInstruction: payload.instruction,
-    },
+    }),
   };
 }

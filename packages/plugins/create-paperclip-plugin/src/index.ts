@@ -62,6 +62,11 @@ function toPosixPath(value: string): string {
   return value.split(path.sep).join("/");
 }
 
+export function shellQuote(value: string): string {
+  if (/^[A-Za-z0-9_/:=.,@%+-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, "'\"'\"'")}'`;
+}
+
 function formatFileDependency(absPath: string): string {
   return `file:${toPosixPath(path.resolve(absPath))}`;
 }
@@ -312,7 +317,8 @@ const manifest: PaperclipPluginManifestV1 = {
   capabilities: [
     "environment.drivers.register",
     "plugin.state.read",
-    "plugin.state.write"
+    "plugin.state.write",
+    "ui.dashboardWidget.register"
   ],
   entrypoints: {
     worker: "./dist/worker.js",
@@ -467,6 +473,11 @@ const BASE_PARAMS = {
 };
 
 describe("environment plugin scaffold", () => {
+  it("declares capabilities for its manifest features", () => {
+    expect(manifest.capabilities).toContain("environment.drivers.register");
+    expect(manifest.capabilities).toContain("ui.dashboardWidget.register");
+  });
+
   it("validates config", async () => {
     const driver = createFakeEnvironmentDriver({ driverKey: BASE_PARAMS.driverKey });
     const harness = createEnvironmentTestHarness({ manifest, environmentDriver: driver });
@@ -533,7 +544,8 @@ const manifest: PaperclipPluginManifestV1 = {
   capabilities: [
     "events.subscribe",
     "plugin.state.read",
-    "plugin.state.write"
+    "plugin.state.write",
+    "ui.dashboardWidget.register"
   ],
   entrypoints: {
     worker: "./dist/worker.js",
@@ -623,6 +635,11 @@ import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
 
 describe("plugin scaffold", () => {
+  it("declares capabilities for its manifest features", () => {
+    expect(manifest.capabilities).toContain("events.subscribe");
+    expect(manifest.capabilities).toContain("ui.dashboardWidget.register");
+  });
+
   it("registers data + actions and handles events", async () => {
     const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
     await plugin.definition.setup(harness.ctx);
@@ -656,6 +673,11 @@ pnpm dev:ui         # local dev server with hot-reload events
 pnpm test
 \`\`\`
 
+\`pnpm dev\` rebuilds the worker, manifest, and UI bundles into \`dist/\`.
+When this package is installed from a local path, Paperclip watches that rebuilt
+output and reloads the plugin worker. Local installs run trusted code from this
+folder on your machine.
+
 ${sdkDependency.startsWith("file:")
   ? `This scaffold snapshots \`@paperclipai/plugin-sdk\` and \`@paperclipai/shared\` from a local Paperclip checkout at:\n\n\`${toPosixPath(localSdkPath)}\`\n\nThe packed tarballs live in \`.paperclip-sdk/\` for local development. Before publishing this plugin, switch those dependencies to published package versions once they are available on npm.\n\n`
   : ""}
@@ -663,9 +685,7 @@ ${sdkDependency.startsWith("file:")
 ## Install Into Paperclip
 
 \`\`\`bash
-curl -X POST http://127.0.0.1:3100/api/plugins/install \\
-  -H "Content-Type: application/json" \\
-  -d '{"packageName":"${toPosixPath(outputDir)}","isLocalPath":true}'
+paperclipai plugin install ${shellQuote(toPosixPath(outputDir))}
 \`\`\`
 
 ## Build Options
