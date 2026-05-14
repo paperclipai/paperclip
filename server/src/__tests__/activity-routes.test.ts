@@ -19,6 +19,10 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(),
 }));
 
+const mockAccessService = vi.hoisted(() => ({
+  canUser: vi.fn(async () => true),
+}));
+
 vi.mock("../services/activity.js", () => ({
   activityService: () => mockActivityService,
   normalizeActivityLimit: (limit: number | undefined) => {
@@ -30,6 +34,7 @@ vi.mock("../services/activity.js", () => ({
 vi.mock("../services/index.js", () => ({
   issueService: () => mockIssueService,
   heartbeatService: () => mockHeartbeatService,
+  accessService: () => mockAccessService,
 }));
 
 async function createApp(

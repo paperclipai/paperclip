@@ -23,10 +23,14 @@ const mockSecretService = vi.hoisted(() => ({
   importRemoteSecrets: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockAccessService = vi.hoisted(() => ({
+  canUser: vi.fn(async () => true),
+}));
 
 vi.mock("../services/index.js", () => ({
   secretService: () => mockSecretService,
   logActivity: mockLogActivity,
+  accessService: () => mockAccessService,
 }));
 
 function createApp(actor: Record<string, unknown> = {

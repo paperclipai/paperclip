@@ -6,10 +6,19 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
+const mockAccessService = vi.hoisted(() => ({
+  canUser: vi.fn(async () => true),
+}));
+
 const mockListServerAdapters = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/agents.js", () => ({
   agentService: () => mockAgentService,
+}));
+
+vi.mock("../services/index.js", () => ({
+  agentService: () => mockAgentService,
+  accessService: () => mockAccessService,
 }));
 
 vi.mock("../adapters/index.js", () => ({
@@ -19,6 +28,11 @@ vi.mock("../adapters/index.js", () => ({
 function registerModuleMocks() {
   vi.doMock("../services/agents.js", () => ({
     agentService: () => mockAgentService,
+  }));
+
+  vi.doMock("../services/index.js", () => ({
+    agentService: () => mockAgentService,
+    accessService: () => mockAccessService,
   }));
 
   vi.doMock("../adapters/index.js", () => ({
