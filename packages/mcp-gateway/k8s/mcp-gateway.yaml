@@ -1,0 +1,153 @@
+# =============================================================================
+# paperclip-mcp-gateway
+# =============================================================================
+# Path-prefix reverse-proxy in front of the cluster's stateful HTTP MCP
+# servers. Catches "Session not found" 404s, replays the cached
+# `initialize` request to mint a fresh upstream session, and retries
+# the original call — Claude Code's MCP client doesn't auto-retry on
+# this and surfaces the failure to the user otherwise.
+#
+# Routes incoming requests by path prefix to upstream MCP servers:
+#   /figma/mcp     → figma-mcp-server.paperclip.svc:8000/mcp
+#   /linear/mcp    → linear-mcp-server.paperclip.svc:8000/mcp
+#   /k8s-admin/mcp → kubernetes-mcp-server-admin.paperclip.svc:8080/mcp
+#   etc.
+#
+# Update the ConfigMap below to add upstreams; pod restart picks up the
+# new mapping. The session cache is in-memory and lost on restart —
+# clients reconnect transparently via a fresh initialize round-trip.
+# =============================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: paperclip-mcp-gateway-upstreams
+  namespace: paperclip
+  labels:
+    app.kubernetes.io/name: paperclip-mcp-gateway
+    app.kubernetes.io/managed-by: paperclip-mcp
+    app.kubernetes.io/part-of: paperclip
+data:
+  upstreams.json: |
+    {
+      "figma":     "http://figma-mcp-server.paperclip.svc.cluster.local:8000/mcp",
+      "linear":    "http://linear-mcp-server.paperclip.svc.cluster.local:8000/mcp",
+      "k8s-admin": "http://kubernetes-mcp-server-admin.paperclip.svc.cluster.local:8080/mcp",
+      "k8s-rw":    "http://kubernetes-mcp-server-ns-rw.paperclip.svc.cluster.local:8080/mcp",
+      "k8s-ro":    "http://kubernetes-mcp-server-readonly.paperclip.svc.cluster.local:8080/mcp",
+      "prom":      "http://prometheus-mcp-server.paperclip.svc.cluster.local:8080/mcp",
+      "webflow":   "http://webflow-mcp-server.paperclip.svc.cluster.local:8000/mcp"
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: paperclip-mcp-gateway
+  namespace: paperclip
+  labels:
+    app.kubernetes.io/name: paperclip-mcp-gateway
+    app.kubernetes.io/managed-by: paperclip-mcp
+    app.kubernetes.io/part-of: paperclip
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Keep maxSurge=1, maxUnavailable=0 so a bad config doesn't kill
+      # all MCP traffic at once. New pod proves itself before the old
+      # pod is drained.
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: paperclip-mcp-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: paperclip-mcp-gateway
+        app.kubernetes.io/managed-by: paperclip-mcp
+        app.kubernetes.io/part-of: paperclip
+    spec:
+      nodeSelector:
+        workload: paperclip
+      tolerations:
+        - key: dedicated
+          operator: Equal
+          value: paperclip
+          effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: gateway
+          # Pin to a specific build. Bump after `kubectl apply -f ...` +
+          # `kubectl set image` proves the new image healthy across all
+          # routes. Latest verified rollout: 2026-05-09 (sha-11e28a6f
+          # adds method/url/cause to request-handler error log so the
+          # SSE-style HeadersTimeoutErrors that show up every ~5min
+          # become attributable to a specific upstream).
+          image: registry.blockcast.net/paperclip-mcp-gateway:sha-11e28a6
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "8080"
+            - name: PAPERCLIP_MCP_UPSTREAMS_FILE
+              value: /config/upstreams.json
+            - name: NODE_ENV
+              value: production
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: config
+          configMap:
+            name: paperclip-mcp-gateway-upstreams
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: paperclip-mcp-gateway
+  namespace: paperclip
+  labels:
+    app.kubernetes.io/name: paperclip-mcp-gateway
+    app.kubernetes.io/managed-by: paperclip-mcp
+    app.kubernetes.io/part-of: paperclip
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: paperclip-mcp-gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

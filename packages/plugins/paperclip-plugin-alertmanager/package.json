@@ -1,0 +1,30 @@
+{
+  "name": "paperclip-plugin-alertmanager",
+  "version": "0.1.0",
+  "description": "Receives Alertmanager v2 webhooks and converts firing alerts into Paperclip issues with the correct assignee, priority, and metadata. Resolves issues when alerts clear.",
+  "type": "module",
+  "private": true,
+  "main": "./dist/index.js",
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js"
+  },
+  "scripts": {
+    "prebuild": "node ../../../scripts/ensure-plugin-build-deps.mjs",
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
+    "@paperclipai/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "esbuild": "^0.27.3",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.0"
+  },
+  "files": ["dist/"]
+}

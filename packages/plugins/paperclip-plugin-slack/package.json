@@ -1,0 +1,31 @@
+{
+  "name": "paperclip-plugin-slack",
+  "version": "2.1.1",
+  "description": "In-tree fork of paperclip-plugin-slack with agent-callable Slack API tools",
+  "type": "module",
+  "private": true,
+  "main": "./dist/index.js",
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js"
+  },
+  "scripts": {
+    "prebuild": "node ../../../scripts/ensure-plugin-build-deps.mjs",
+    "build": "node ./esbuild.config.mjs",
+    "build:tsc": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
+    "@paperclipai/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "esbuild": "^0.27.3",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.0"
+  },
+  "files": ["dist/"]
+}
