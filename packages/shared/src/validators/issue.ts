@@ -26,7 +26,11 @@ import {
   ISSUE_THREAD_INTERACTION_STATUSES,
   MODEL_PROFILE_KEYS,
 } from "../constants.js";
-import { multilineTextSchema } from "./text.js";
+import {
+  containsWorkspaceRootPlanLinks,
+  paperclipTextSurfaceSchema,
+  WORKSPACE_ROOT_PLAN_LINK_ERROR,
+} from "./text.js";
 
 export const issueBlockedInboxStateSchema = z.enum([
   "needs_attention",
@@ -372,7 +376,7 @@ const createIssueBaseSchema = z.object({
   blockedByIssueIds: z.array(z.string().uuid()).optional(),
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
-  description: multilineTextSchema.optional().nullable(),
+  description: paperclipTextSurfaceSchema.optional().nullable(),
   status: z.enum(ISSUE_STATUSES),
   workMode: z.enum(ISSUE_WORK_MODES).optional().default("standard"),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
@@ -418,7 +422,7 @@ export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 export const updateIssueSchema = createIssueBaseSchema.partial().extend({
   requestDepth: issueRequestDepthInputSchema.optional(),
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
-  comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
+  comment: paperclipTextSurfaceSchema.pipe(z.string().min(1)).optional(),
   reviewRequest: issueReviewRequestSchema.optional().nullable(),
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
@@ -522,7 +526,7 @@ export const issueCommentMetadataSchema = z.object({
 export type IssueCommentMetadata = z.infer<typeof issueCommentMetadataSchema>;
 
 export const addIssueCommentSchema = z.object({
-  body: multilineTextSchema.pipe(z.string().min(1)),
+  body: paperclipTextSurfaceSchema.pipe(z.string().min(1)),
   authorType: issueCommentAuthorTypeSchema.optional(),
   presentation: issueCommentPresentationSchema.nullable().optional(),
   metadata: issueCommentMetadataSchema.nullable().optional(),
@@ -551,7 +555,7 @@ export const suggestedTaskDraftSchema = z.object({
   parentClientKey: z.string().trim().min(1).max(120).nullable().optional(),
   parentId: z.string().uuid().nullable().optional(),
   title: z.string().trim().min(1).max(240),
-  description: multilineTextSchema.pipe(z.string().trim().max(20000)).nullable().optional(),
+  description: paperclipTextSurfaceSchema.pipe(z.string().trim().max(20000)).nullable().optional(),
   priority: z.enum(ISSUE_PRIORITIES).nullable().optional(),
   workMode: z.enum(ISSUE_WORK_MODES).nullable().optional(),
   assigneeAgentId: z.string().uuid().nullable().optional(),
@@ -608,14 +612,14 @@ export const suggestTasksResultSchema = z.object({
 
 export const askUserQuestionsQuestionOptionSchema = z.object({
   id: z.string().trim().min(1).max(120),
-  label: z.string().trim().min(1).max(120),
-  description: z.string().trim().max(500).nullable().optional(),
+  label: z.string().trim().min(1).max(120).refine((value) => !containsWorkspaceRootPlanLinks(value), WORKSPACE_ROOT_PLAN_LINK_ERROR),
+  description: z.string().trim().max(500).refine((value) => !containsWorkspaceRootPlanLinks(value), WORKSPACE_ROOT_PLAN_LINK_ERROR).nullable().optional(),
 });
 
 export const askUserQuestionsQuestionSchema = z.object({
   id: z.string().trim().min(1).max(120),
-  prompt: z.string().trim().min(1).max(500),
-  helpText: z.string().trim().max(1000).nullable().optional(),
+  prompt: z.string().trim().min(1).max(500).refine((value) => !containsWorkspaceRootPlanLinks(value), WORKSPACE_ROOT_PLAN_LINK_ERROR),
+  helpText: z.string().trim().max(1000).refine((value) => !containsWorkspaceRootPlanLinks(value), WORKSPACE_ROOT_PLAN_LINK_ERROR).nullable().optional(),
   selectionMode: z.enum(["single", "multi"]),
   required: z.boolean().optional(),
   options: z.array(askUserQuestionsQuestionOptionSchema).min(1).max(10),
@@ -623,8 +627,8 @@ export const askUserQuestionsQuestionSchema = z.object({
 
 export const askUserQuestionsPayloadSchema = z.object({
   version: z.literal(1),
-  title: z.string().trim().max(240).nullable().optional(),
-  submitLabel: z.string().trim().max(120).nullable().optional(),
+  title: z.string().trim().max(240).refine((value) => !containsWorkspaceRootPlanLinks(value), WORKSPACE_ROOT_PLAN_LINK_ERROR).nullable().optional(),
+  submitLabel: z.string().trim().max(120).refine((value) => !containsWorkspaceRootPlanLinks(value), WORKSPACE_ROOT_PLAN_LINK_ERROR).nullable().optional(),
   questions: z.array(askUserQuestionsQuestionSchema).min(1).max(10),
 }).superRefine((value, ctx) => {
   const seenQuestionIds = new Set<string>();
@@ -700,14 +704,14 @@ export const requestConfirmationTargetSchema = z.discriminatedUnion("type", [
 
 export const requestConfirmationPayloadSchema = z.object({
   version: z.literal(1),
-  prompt: z.string().trim().min(1).max(1000),
-  acceptLabel: z.string().trim().min(1).max(80).nullable().optional(),
-  rejectLabel: z.string().trim().min(1).max(80).nullable().optional(),
+  prompt: z.string().trim().min(1).max(1000).refine((value) => !containsWorkspaceRootPlanLinks(value), WORKSPACE_ROOT_PLAN_LINK_ERROR),
+  acceptLabel: z.string().trim().min(1).max(80).refine((value) => !containsWorkspaceRootPlanLinks(value), WORKSPACE_ROOT_PLAN_LINK_ERROR).nullable().optional(),
+  rejectLabel: z.string().trim().min(1).max(80).refine((value) => !containsWorkspaceRootPlanLinks(value), WORKSPACE_ROOT_PLAN_LINK_ERROR).nullable().optional(),
   rejectRequiresReason: z.boolean().optional(),
-  rejectReasonLabel: z.string().trim().min(1).max(160).nullable().optional(),
+  rejectReasonLabel: z.string().trim().min(1).max(160).refine((value) => !containsWorkspaceRootPlanLinks(value), WORKSPACE_ROOT_PLAN_LINK_ERROR).nullable().optional(),
   allowDeclineReason: z.boolean().optional().default(true),
-  declineReasonPlaceholder: z.string().trim().min(1).max(240).nullable().optional(),
-  detailsMarkdown: z.string().max(20000).nullable().optional(),
+  declineReasonPlaceholder: z.string().trim().min(1).max(240).refine((value) => !containsWorkspaceRootPlanLinks(value), WORKSPACE_ROOT_PLAN_LINK_ERROR).nullable().optional(),
+  detailsMarkdown: paperclipTextSurfaceSchema.pipe(z.string().max(20000)).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
   target: requestConfirmationTargetSchema.nullable().optional(),
 });
@@ -726,8 +730,8 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
     idempotencyKey: z.string().trim().max(255).nullable().optional(),
     sourceCommentId: z.string().uuid().nullable().optional(),
     sourceRunId: z.string().uuid().nullable().optional(),
-    title: z.string().trim().max(240).nullable().optional(),
-    summary: z.string().trim().max(1000).nullable().optional(),
+    title: z.string().trim().max(240).refine((value) => !containsWorkspaceRootPlanLinks(value), WORKSPACE_ROOT_PLAN_LINK_ERROR).nullable().optional(),
+    summary: z.string().trim().max(1000).refine((value) => !containsWorkspaceRootPlanLinks(value), WORKSPACE_ROOT_PLAN_LINK_ERROR).nullable().optional(),
     continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
     payload: suggestTasksPayloadSchema,
   }),
@@ -736,8 +740,8 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
     idempotencyKey: z.string().trim().max(255).nullable().optional(),
     sourceCommentId: z.string().uuid().nullable().optional(),
     sourceRunId: z.string().uuid().nullable().optional(),
-    title: z.string().trim().max(240).nullable().optional(),
-    summary: z.string().trim().max(1000).nullable().optional(),
+    title: z.string().trim().max(240).refine((value) => !containsWorkspaceRootPlanLinks(value), WORKSPACE_ROOT_PLAN_LINK_ERROR).nullable().optional(),
+    summary: z.string().trim().max(1000).refine((value) => !containsWorkspaceRootPlanLinks(value), WORKSPACE_ROOT_PLAN_LINK_ERROR).nullable().optional(),
     continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
     payload: askUserQuestionsPayloadSchema,
   }),
@@ -746,8 +750,8 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
     idempotencyKey: z.string().trim().max(255).nullable().optional(),
     sourceCommentId: z.string().uuid().nullable().optional(),
     sourceRunId: z.string().uuid().nullable().optional(),
-    title: z.string().trim().max(240).nullable().optional(),
-    summary: z.string().trim().max(1000).nullable().optional(),
+    title: z.string().trim().max(240).refine((value) => !containsWorkspaceRootPlanLinks(value), WORKSPACE_ROOT_PLAN_LINK_ERROR).nullable().optional(),
+    summary: z.string().trim().max(1000).refine((value) => !containsWorkspaceRootPlanLinks(value), WORKSPACE_ROOT_PLAN_LINK_ERROR).nullable().optional(),
     continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("none"),
     payload: requestConfirmationPayloadSchema,
   }),
@@ -785,7 +789,7 @@ export type CancelIssueThreadInteraction = z.infer<typeof cancelIssueThreadInter
 
 export const respondIssueThreadInteractionSchema = z.object({
   answers: z.array(askUserQuestionsAnswerSchema).max(20),
-  summaryMarkdown: multilineTextSchema.pipe(z.string().max(20000)).nullable().optional(),
+  summaryMarkdown: paperclipTextSurfaceSchema.pipe(z.string().max(20000)).nullable().optional(),
 });
 export type RespondIssueThreadInteraction = z.infer<typeof respondIssueThreadInteractionSchema>;
 
@@ -808,7 +812,7 @@ export const issueDocumentFormatSchema = z.enum(ISSUE_DOCUMENT_FORMATS);
 export const upsertIssueDocumentSchema = z.object({
   title: z.string().trim().max(200).nullable().optional(),
   format: issueDocumentFormatSchema,
-  body: multilineTextSchema.pipe(z.string().max(524288)),
+  body: paperclipTextSurfaceSchema.pipe(z.string().max(524288)),
   changeSummary: z.string().trim().max(500).nullable().optional(),
   baseRevisionId: z.string().uuid().nullable().optional(),
 });

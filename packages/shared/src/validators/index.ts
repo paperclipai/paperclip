@@ -1,4 +1,12 @@
 export {
+  WORKSPACE_ROOT_PLAN_LINK_ERROR,
+  containsWorkspaceRootPlanLinks,
+  isWorkspaceRootPlanLinkTarget,
+  normalizeEscapedLineBreaks,
+  paperclipTextSurfaceSchema,
+} from "./text.js";
+
+export {
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   type InstanceGeneralSettings,

@@ -41,7 +41,9 @@ import type {
   SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
 import {
+  WORKSPACE_ROOT_PLAN_LINK_ERROR,
   clampIssueRequestDepth,
+  containsWorkspaceRootPlanLinks,
   extractAgentMentionIds,
   extractProjectMentionIds,
   issueCommentAuthorTypeSchema,
@@ -368,6 +370,12 @@ function appendAcceptanceCriteriaToDescription(description: string | null | unde
   const base = description?.trim() ?? "";
   const criteriaMarkdown = ["## Acceptance Criteria", "", ...criteria.map((item) => `- ${item}`)].join("\n");
   return base ? `${base}\n\n${criteriaMarkdown}` : criteriaMarkdown;
+}
+
+function assertNoWorkspaceRootPlanLinks(value: string | null | undefined) {
+  if (containsWorkspaceRootPlanLinks(value)) {
+    throw unprocessable(WORKSPACE_ROOT_PLAN_LINK_ERROR);
+  }
 }
 
 function createIssueDependencyReadiness(issueId: string): IssueDependencyReadiness {
@@ -4021,6 +4029,7 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
+      assertNoWorkspaceRootPlanLinks(issueData.description);
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
@@ -4256,6 +4265,7 @@ export function issueService(db: Db) {
         delete issueData.executionWorkspacePreference;
         delete issueData.executionWorkspaceSettings;
       }
+      assertNoWorkspaceRootPlanLinks(issueData.description);
 
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
@@ -5060,6 +5070,7 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (!issue) throw notFound("Issue not found");
+      assertNoWorkspaceRootPlanLinks(body);
 
       const currentUserRedactionOptions = {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
