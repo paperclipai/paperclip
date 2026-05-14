@@ -3798,6 +3798,14 @@ export function issueService(db: Db) {
       return listIssueDependencyReadinessMap(dbOrTx, companyId, issueIds);
     },
 
+    listUnresolvedBlockerIssueIds: async (
+      companyId: string,
+      blockerIssueIds: string[],
+      dbOrTx: any = db,
+    ) => {
+      return listUnresolvedBlockerIssueIds(dbOrTx, companyId, blockerIssueIds);
+    },
+
     listBlockerAttention: async (
       companyId: string,
       issueRows: IssueBlockerAttentionInputNode[],

@@ -2565,6 +2565,27 @@ export function issueRoutes(
     }
     await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
 
+    // CONA-337 Control 1: creation-time enforcement of the continuation contract.
+    // A new issue with status=blocked requires at least one unresolved blockedByIssueIds entry.
+    if (req.body.status === "blocked") {
+      const requestedIds = Array.isArray(req.body.blockedByIssueIds)
+        ? (req.body.blockedByIssueIds as string[])
+        : [];
+      let unresolvedCount = 0;
+      if (requestedIds.length > 0) {
+        const unresolvedIds = await svc.listUnresolvedBlockerIssueIds(companyId, requestedIds);
+        unresolvedCount = unresolvedIds.length;
+      }
+      if (unresolvedCount === 0) {
+        res.status(422).json({
+          error: "continuation_contract_violation",
+          message: "status=blocked requires at least one unresolved blockedByIssueIds entry",
+          code: 422,
+        });
+        return;
+      }
+    }
+
     const actor = getActorInfo(req);
     const executionPolicy = applyActorMonitorScheduledBy(
       normalizeIssueExecutionPolicy(req.body.executionPolicy),
@@ -2659,6 +2680,29 @@ export function issueRoutes(
       await assertCanAssignTasks(req, parent.companyId);
     }
     await assertIssueEnvironmentSelection(parent.companyId, req.body.executionWorkspaceSettings?.environmentId);
+
+    // CONA-337 Control 1: child-creation enforcement of the continuation contract.
+    if (req.body.status === "blocked") {
+      const requestedIds = Array.isArray(req.body.blockedByIssueIds)
+        ? (req.body.blockedByIssueIds as string[])
+        : [];
+      let unresolvedCount = 0;
+      if (requestedIds.length > 0) {
+        const unresolvedIds = await svc.listUnresolvedBlockerIssueIds(
+          parent.companyId,
+          requestedIds,
+        );
+        unresolvedCount = unresolvedIds.length;
+      }
+      if (unresolvedCount === 0) {
+        res.status(422).json({
+          error: "continuation_contract_violation",
+          message: "status=blocked requires at least one unresolved blockedByIssueIds entry",
+          code: 422,
+        });
+        return;
+      }
+    }
 
     const actor = getActorInfo(req);
     const executionPolicy = applyActorMonitorScheduledBy(
@@ -2971,6 +3015,41 @@ export function issueRoutes(
           ...existingExecutionState,
           reviewRequest,
         };
+      }
+    }
+
+    // CONA-337 Control 1: continuation-contract hard gate.
+    // status=blocked requires at least one unresolved blockedByIssueIds entry —
+    // covers both an explicit status=blocked transition and a no-op PATCH that
+    // would leave an already-blocked issue with all blockers done.
+    {
+      const resolvedStatus =
+        typeof updateFields.status === "string" ? updateFields.status : existing.status;
+      if (resolvedStatus === "blocked") {
+        let unresolvedCount: number;
+        if (Array.isArray(req.body.blockedByIssueIds)) {
+          const requestedIds = req.body.blockedByIssueIds as string[];
+          if (requestedIds.length === 0) {
+            unresolvedCount = 0;
+          } else {
+            const unresolvedIds = await svc.listUnresolvedBlockerIssueIds(
+              existing.companyId,
+              requestedIds,
+            );
+            unresolvedCount = unresolvedIds.length;
+          }
+        } else {
+          const readiness = await svc.getDependencyReadiness(existing.id);
+          unresolvedCount = readiness.unresolvedBlockerCount;
+        }
+        if (unresolvedCount === 0) {
+          res.status(422).json({
+            error: "continuation_contract_violation",
+            message: "status=blocked requires at least one unresolved blockedByIssueIds entry",
+            code: 422,
+          });
+          return;
+        }
       }
     }
 
