@@ -1,20 +1,37 @@
 import { redactCommandText } from "@paperclipai/adapter-utils";
 
-const SECRET_FIELD_NAME_PATTERN =
-  String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)[A-Za-z0-9_-]*`;
+const SECRET_KEY_PATTERN = [
+  String.raw`api[-_]?key`,
+  String.raw`access[-_]?token`,
+  String.raw`token`,
+  String.raw`auth(?:_?token)?`,
+  String.raw`authorization`,
+  String.raw`bearer`,
+  String.raw`secret`,
+  String.raw`passwd`,
+  String.raw`password`,
+  String.raw`pwd`,
+  String.raw`credential`,
+  String.raw`jwt`,
+  String.raw`private[-_]?key`,
+  String.raw`cookie`,
+  String.raw`connection[-_]?string`,
+  String.raw`(?:database|db|postgres|postgresql|pg)[-_]?(?:url|uri|dsn|connection[-_]?string|password|passwd|pwd)`,
+  String.raw`openbrain[-_A-Za-z0-9]*(?:url|uri|dsn|secret|token|key|password|passwd|pwd)`,
+].join("|");
 
-const SECRET_PAYLOAD_KEY_RE = new RegExp(SECRET_FIELD_NAME_PATTERN, "i");
+const SECRET_PAYLOAD_KEY_RE = new RegExp(`(?:${SECRET_KEY_PATTERN})`, "i");
 const COMMAND_PAYLOAD_KEY_RE =
   /(^command$|^cmd$|command[-_]?line|resolved[-_]?command|PAPERCLIP_RESOLVED_COMMAND)/i;
 const COMMAND_ARGS_PAYLOAD_KEY_RE = /^(commandArgs|command_?args|argv)$/i;
 const JWT_VALUE_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$/;
-const CLI_SECRET_FLAG_RE = new RegExp(String.raw`^-{1,2}${SECRET_FIELD_NAME_PATTERN}$`, "i");
+const CLI_SECRET_FLAG_RE = new RegExp(`^-{1,2}(?:${SECRET_KEY_PATTERN})$`, "i");
 const JSON_SECRET_FIELD_TEXT_RE = new RegExp(
-  String.raw`((?:"|')?${SECRET_FIELD_NAME_PATTERN}(?:"|')?\s*:\s*(?:"|'))[^"'` + "`" + String.raw`\r\n]+((?:"|'))`,
+  String.raw`((?:"|')?(?:${SECRET_KEY_PATTERN})(?:"|')?\s*:\s*(?:"|'))[^"'` + "`" + String.raw`\r\n]+((?:"|'))`,
   "gi",
 );
 const ESCAPED_JSON_SECRET_FIELD_TEXT_RE = new RegExp(
-  String.raw`((?:\\")?${SECRET_FIELD_NAME_PATTERN}(?:\\")?\s*:\s*(?:\\"))[^\\\r\n]+((?:\\"))`,
+  String.raw`((?:\\")?(?:${SECRET_KEY_PATTERN})(?:\\")?\s*:\s*(?:\\"))[^\\\r\n]+((?:\\"))`,
   "gi",
 );
 const SECRET_TEXT_HINTS = [
