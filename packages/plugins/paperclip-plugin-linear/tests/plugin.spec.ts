@@ -111,8 +111,37 @@ vi.mock("../src/sync.js", () => syncModule);
 describe("paperclip-plugin-linear", () => {
   let harness: TestHarness;
 
+  // Re-install hoisted syncModule defaults. `vi.clearAllMocks()` clears
+  // call history but preserves implementations set via `mockResolvedValue`
+  // — any test that overrides a default would otherwise leak its override
+  // to subsequent tests (see BLO-2350 / BLO-2973 incident in the commit
+  // log for this file). Keep this list in sync with the hoisted block
+  // at the top of the file.
+  function restoreSyncModuleDefaults() {
+    syncModule.getLink.mockResolvedValue(null);
+    syncModule.getLinkByLinear.mockResolvedValue(null);
+    syncModule.createLink.mockImplementation((_ctx: unknown, params: Record<string, unknown>) => ({
+      ...params,
+      lastSyncAt: new Date().toISOString(),
+      lastLinearStateType: params.linearStateType,
+      lastCommentSyncAt: null,
+    }));
+    syncModule.removeLink.mockResolvedValue(true);
+    syncModule.getProjectLink.mockResolvedValue(null);
+    syncModule.getProjectLinkByLinear.mockResolvedValue(null);
+    syncModule.syncToLinear.mockResolvedValue(undefined);
+    syncModule.syncFromLinear.mockResolvedValue(undefined);
+    syncModule.syncProjectToLinear.mockResolvedValue(undefined);
+    syncModule.syncProjectFromLinear.mockResolvedValue(undefined);
+    syncModule.bridgeCommentToLinear.mockResolvedValue(undefined);
+    syncModule.paperclipProjectStateToLinear.mockReturnValue("planned");
+    syncModule.linearProjectStateToPaperclip.mockReturnValue("backlog");
+    syncModule.createProjectLink.mockResolvedValue({});
+  }
+
   beforeEach(async () => {
     vi.clearAllMocks();
+    restoreSyncModuleDefaults();
     harness = createTestHarness({
       manifest,
       config: {
@@ -1388,7 +1417,11 @@ describe("paperclip-plugin-linear", () => {
         },
         headers: {},
         rawBody: "",
-        requestId: "test-webhook-req",
+        // Distinct requestId from the first delivery so this test still
+        // exercises the linearIssueId-based dedup path even if the plugin
+        // later adds requestId-based idempotency (which would otherwise
+        // mask a regression in the actual dedup mechanism being tested).
+        requestId: "test-webhook-req-dup",
       });
 
       // createLink should NOT have been called again
@@ -1513,12 +1546,14 @@ describe("paperclip-plugin-linear", () => {
 
       // Second delivery — Linear retried (or our retry layer fired again).
       // Should be detected as a duplicate via the embedded sentinel and skipped.
+      // Distinct requestId so this test still exercises the comment-id
+      // sentinel dedup path even if requestId-based idempotency lands later.
       await plugin.definition.onWebhook!({
         endpointKey: "linear-events",
         parsedBody: commentPayload,
         headers: {},
         rawBody: "",
-        requestId: "test-webhook-req",
+        requestId: "test-webhook-req-retry",
       });
 
       const comments = await harness.ctx.issues.listComments(paperclipIssue.id, "comp-1");
@@ -1527,10 +1562,8 @@ describe("paperclip-plugin-linear", () => {
       // Sentinel must be present so future webhook deliveries can detect it.
       expect(bridged[0]!.body).toContain("<!-- linear-comment-id: lin-comment-uuid-42 -->");
 
-      // vi.clearAllMocks() in beforeEach clears call history but not
-      // implementations, so the mockResolvedValue above would leak into
-      // subsequent tests and short-circuit their sync.getLinkByLinear lookups.
-      syncModule.getLinkByLinear.mockResolvedValue(null);
+      // (Per-test mock-reset cleanup removed — beforeEach now restores
+      // syncModule defaults systematically via restoreSyncModuleDefaults.)
     });
   });
 

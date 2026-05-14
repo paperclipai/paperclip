@@ -29,19 +29,41 @@ if (!fs.existsSync(tscCliPath)) {
   throw new Error(`TypeScript CLI not found at ${tscCliPath}`);
 }
 
+// Walk a directory and return the newest .ts/.tsx mtime found. Symlinked
+// subdirs are followed (statSync resolves) so workspace setups that
+// symlink shared sources are scanned. Per-entry stat errors (e.g., a file
+// is deleted mid-walk, EACCES, a dangling symlink) log + skip rather than
+// crashing the whole pre-build, but the path is still reported so a real
+// breakage doesn't go silent.
 function newestMtimeInDir(dir) {
   let newest = 0;
   if (!fs.existsSync(dir)) return newest;
   const stack = [dir];
   while (stack.length > 0) {
     const current = stack.pop();
-    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+    let entries;
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch (err) {
+      console.warn(`[ensure-plugin-build-deps] readdir failed at ${current}: ${err.message}`);
+      continue;
+    }
+    for (const entry of entries) {
       const full = path.join(current, entry.name);
-      if (entry.isDirectory()) {
+      // Resolve symlinks so symlink-to-directory entries are followed.
+      // entry.isDirectory() returns false for symlinks-to-dir; statSync
+      // follows the link and tells us the real kind.
+      let stat;
+      try {
+        stat = fs.statSync(full);
+      } catch (err) {
+        console.warn(`[ensure-plugin-build-deps] stat failed at ${full}: ${err.message}`);
+        continue;
+      }
+      if (stat.isDirectory()) {
         stack.push(full);
       } else if (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx")) {
-        const m = fs.statSync(full).mtimeMs;
-        if (m > newest) newest = m;
+        if (stat.mtimeMs > newest) newest = stat.mtimeMs;
       }
     }
   }
@@ -52,10 +74,25 @@ function newestMtimeInDir(dir) {
 // edits) silently produces wrong type-check errors in downstream plugins.
 // Treat the output as up-to-date only if its mtime is at least as recent
 // as the newest .ts/.tsx in src/ and the tsconfig itself.
+//
+// Assumes each buildTarget's sources live under `<tsconfig dir>/src` — keep
+// `buildTargets` aligned with this convention. If a future target uses a
+// different rootDir, missing src/ would otherwise silently let stale dist
+// pass freshness (the whole bug this script exists to prevent). We return
+// false in that case to force a rebuild and log loudly.
 function isFresh(target) {
   if (!fs.existsSync(target.output)) return false;
   const outputMtime = fs.statSync(target.output).mtimeMs;
   const srcDir = path.join(path.dirname(target.tsconfig), "src");
+  if (!fs.existsSync(srcDir)) {
+    console.warn(
+      `[ensure-plugin-build-deps] expected src dir missing at ${srcDir} ` +
+        `for target ${target.name} — forcing rebuild instead of accepting ` +
+        `potentially stale output. If this target uses a non-"src" rootDir, ` +
+        `update buildTargets to encode the source path explicitly.`,
+    );
+    return false;
+  }
   const inputMtime = Math.max(
     newestMtimeInDir(srcDir),
     fs.statSync(target.tsconfig).mtimeMs,
