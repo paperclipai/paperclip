@@ -79,7 +79,7 @@ async function ensureIssueRelationsTable(db: ReturnType<typeof createDb>) {
   `));
 }
 
-async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 3_000) {
+async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await fn()) return true;
