@@ -1735,6 +1735,119 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
+  it("clears stale assignee adapter overrides on reassignment", async () => {
+    const companyId = randomUUID();
+    const firstAgentId = randomUUID();
+    const secondAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: firstAgentId,
+        companyId,
+        name: "Chrysler AI",
+        role: "engineer",
+        status: "active",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: secondAgentId,
+        companyId,
+        name: "Chrysler Codex",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const created = await svc.create(companyId, {
+      assigneeAgentId: firstAgentId,
+      title: "Issue with stale model override",
+      status: "todo",
+      priority: "medium",
+      assigneeAdapterOverrides: {
+        adapterConfig: { model: "claude-opus-4-7" },
+      },
+    });
+    expect(created.assigneeAdapterOverrides).toMatchObject({
+      adapterConfig: { model: "claude-opus-4-7" },
+    });
+
+    const reassigned = await svc.update(created.id, {
+      assigneeAgentId: secondAgentId,
+    });
+    expect(reassigned).not.toBeNull();
+    expect(reassigned!.assigneeAdapterOverrides).toBeNull();
+  });
+
+  it("preserves assignee adapter overrides supplied explicitly on the same reassignment update", async () => {
+    const companyId = randomUUID();
+    const firstAgentId = randomUUID();
+    const secondAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: firstAgentId,
+        companyId,
+        name: "Chrysler AI",
+        role: "engineer",
+        status: "active",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: secondAgentId,
+        companyId,
+        name: "Chrysler Codex",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const created = await svc.create(companyId, {
+      assigneeAgentId: firstAgentId,
+      title: "Issue with override re-set on reassign",
+      status: "todo",
+      priority: "medium",
+      assigneeAdapterOverrides: {
+        adapterConfig: { model: "claude-opus-4-7" },
+      },
+    });
+
+    const reassigned = await svc.update(created.id, {
+      assigneeAgentId: secondAgentId,
+      assigneeAdapterOverrides: { adapterConfig: { model: "gpt-5-codex" } },
+    });
+    expect(reassigned!.assigneeAdapterOverrides).toMatchObject({
+      adapterConfig: { model: "gpt-5-codex" },
+    });
+  });
+
   it("keeps explicit workspace fields instead of inheriting the parent linkage", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();

@@ -3385,6 +3385,10 @@ export function issueService(db: Db) {
         patch.executionRunId = null;
         patch.executionAgentNameKey = null;
         patch.executionLockedAt = null;
+        // Drop overrides pinned to the prior assignee's adapter (e.g. claude model on codex agent).
+        if (issueData.assigneeAdapterOverrides === undefined) {
+          patch.assigneeAdapterOverrides = null;
+        }
       }
 
       const runUpdate = async (tx: any) => {
