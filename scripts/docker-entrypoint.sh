@@ -5,6 +5,14 @@ set -e
 PUID=${USER_UID:-1000}
 PGID=${USER_GID:-1000}
 
+# If already running as the target user AND group, skip privilege management
+# and gosu. Both UID and GID must match: a mismatched GID would otherwise
+# silently skip the groupmod + chown remap below and leave the process
+# unable to write to volumes owned by the expected GID.
+if [ "$(id -u)" = "$PUID" ] && [ "$(id -g)" = "$PGID" ]; then
+    exec "$@"
+fi
+
 # Adjust the node user's UID/GID if they differ from the runtime request
 # and fix volume ownership only when a remap is needed
 changed=0
