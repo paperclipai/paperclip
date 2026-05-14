@@ -80,6 +80,23 @@ elif [[ ! -t 0 ]]; then
   comment="$(cat)"
 fi
 
+# Guard: detect empty inline-code sequences (unresolved template tokens)
+if [[ -n "$comment" ]] && printf '%s' "$comment" | grep -qE '``'; then
+  printf 'WARNING: [TEC-1113] comment contains empty inline-code sequences (unresolved template tokens). Using fallback.\n' >&2
+  comment="[Triage required] Blocked comment — formatting guard triggered
+
+One or more template tokens in the generated comment were empty (rendered as \`\`).
+The original comment has been replaced with this fallback to avoid ambiguous blocker state.
+
+Action: Review the heartbeat run log and update this comment with actual blocker details:
+- Owner (who can unblock)
+- Expected resolution date
+- Exact unblock condition
+
+- Issue: \`${issue_id}\`
+- Run: \`${PAPERCLIP_RUN_ID:-unknown}\`"
+fi
+
 require_command jq
 
 payload="$(
