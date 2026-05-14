@@ -12,6 +12,8 @@ import type {
   HeartbeatRun,
   Approval,
   AgentConfigRevision,
+  AgentCapabilityConfigInput,
+  AgentCapabilitySettingsResponse,
 } from "@paperclipai/shared";
 import type {
   AdapterModelProfileDefinition,
@@ -121,6 +123,10 @@ export const agentsApi = {
   },
   getConfiguration: (id: string, companyId?: string) =>
     api.get<Record<string, unknown>>(agentPath(id, companyId, "/configuration")),
+  getCapabilities: (id: string, companyId?: string) =>
+    api.get<AgentCapabilitySettingsResponse>(agentPath(id, companyId, "/capabilities")),
+  updateCapabilities: (id: string, config: AgentCapabilityConfigInput, companyId?: string) =>
+    api.patch<AgentCapabilitySettingsResponse>(agentPath(id, companyId, "/capabilities"), { config }),
   listConfigRevisions: (id: string, companyId?: string) =>
     api.get<AgentConfigRevision[]>(agentPath(id, companyId, "/config-revisions")),
   getConfigRevision: (id: string, revisionId: string, companyId?: string) =>

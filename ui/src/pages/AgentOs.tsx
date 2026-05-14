@@ -30,6 +30,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { CompanyCapabilityDefaultsCard } from "@/components/AgentCapabilitiesCard";
 import { approvalsApi } from "@/api/approvals";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
@@ -380,6 +381,8 @@ export function AgentOs() {
           </div>
         </CardContent>
       </Card>
+
+      <CompanyCapabilityDefaultsCard companyId={selectedCompanyId} />
 
       <div className="grid gap-4 xl:grid-cols-2">
         <SurfaceCard

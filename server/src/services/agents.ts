@@ -8,6 +8,7 @@ import {
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
+  companies,
   activityLog,
   costEvents,
   heartbeatRunEvents,
@@ -16,7 +17,12 @@ import {
   issues,
   issueComments,
 } from "@paperclipai/db";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
+import {
+  AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  isUuidLike,
+  normalizeAgentUrlKey,
+  resolveAgentCapabilityConfigForCreate,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
@@ -424,9 +430,26 @@ export function agentService(db: Db) {
       const role = data.role ?? "general";
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
       const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
+      const [companyCapabilityDefaults] = await db
+        .select({ agentCapabilityDefaults: companies.agentCapabilityDefaults })
+        .from(companies)
+        .where(eq(companies.id, companyId))
+        .limit(1);
+      const capabilityConfig = resolveAgentCapabilityConfigForCreate(
+        data.capabilityConfig,
+        companyCapabilityDefaults?.agentCapabilityDefaults,
+      );
       const created = await db
         .insert(agents)
-        .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions, runtimeConfig })
+        .values({
+          ...data,
+          name: uniqueName,
+          companyId,
+          role,
+          permissions: normalizedPermissions,
+          runtimeConfig,
+          capabilityConfig,
+        })
         .returning()
         .then((rows) => rows[0]);
 

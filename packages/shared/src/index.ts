@@ -371,6 +371,28 @@ export {
 } from "./mcp-marketplace.js";
 
 export {
+  agentCapabilityConfigSchema,
+  agentCapabilityDesiredStateSchema,
+  agentCapabilityLiveStateSchema,
+  agentCapabilityMcpServerSchema,
+  buildAgentCapabilityApplyPreview,
+  buildAgentCapabilityAuditSummary,
+  parseAgentCapabilityConfig,
+  resolveAgentCapabilityConfigForCreate,
+  updateAgentCapabilityConfigSchema,
+  type AgentCapabilityApplyPreview,
+  type AgentCapabilityAuditSummary,
+  type AgentCapabilityConfig,
+  type AgentCapabilityConfigInput,
+  type AgentCapabilityDesiredState,
+  type AgentCapabilityLiveState,
+  type AgentCapabilityMcpServer,
+  type AgentCapabilityScope,
+  type AgentCapabilitySettingsResponse,
+  type UpdateAgentCapabilityConfig,
+} from "./agent-capabilities.js";
+
+export {
   buildOrgPackageInstallPreview,
   paperclipOrgPackageManifestSchema,
   type OrgPackageInstallPreview,

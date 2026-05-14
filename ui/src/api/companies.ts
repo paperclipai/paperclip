@@ -7,6 +7,8 @@ import type {
   CompanyPortabilityImportResult,
   CompanyPortabilityPreviewRequest,
   CompanyPortabilityPreviewResult,
+  AgentCapabilityConfigInput,
+  AgentCapabilitySettingsResponse,
   UpdateCompanyBranding,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -16,6 +18,10 @@ export type CompanyStats = Record<string, { agentCount: number; issueCount: numb
 export const companiesApi = {
   list: () => api.get<Company[]>("/companies"),
   get: (companyId: string) => api.get<Company>(`/companies/${companyId}`),
+  getCapabilities: (companyId: string) =>
+    api.get<AgentCapabilitySettingsResponse>(`/companies/${companyId}/capabilities`),
+  updateCapabilities: (companyId: string, config: AgentCapabilityConfigInput) =>
+    api.patch<AgentCapabilitySettingsResponse>(`/companies/${companyId}/capabilities`, { config }),
   stats: () => api.get<CompanyStats>("/companies/stats"),
   create: (data: {
     name: string;
