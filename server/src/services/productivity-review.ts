@@ -186,7 +186,10 @@ function choosePrimaryTrigger(input: {
 }): ProductivityReviewTrigger | null {
   if (input.noComment) return "no_comment_streak";
   if (input.highChurn) return "high_churn";
-  if (input.longActive) return "long_active_duration";
+  // LAM-295: long_active_duration removed per board directive 2026-05-09.
+  // longActive is still computed in collectEvidence as observability evidence
+  // (multi-heartbeat work like design docs / customer jobs / campaigns hit 6h
+  // legitimately and should not spawn a productivity review).
   return null;
 }
 
