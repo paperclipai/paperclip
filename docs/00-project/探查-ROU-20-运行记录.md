@@ -35,9 +35,73 @@
 
 ---
 
+## 第五条反查（`f7f3c17d-8641-41d3-8098-a7424ddf7f77`）
+
+**对应上表第 5 行**：`wakeReason` = **`process_lost_retry`**，为原 run **`0607fc70-43b2-4007-905d-aafbf09a9b06`**（`issue_reopened_via_comment`）在 **`process_lost` +「retrying once」** 后由 **`enqueueProcessLossRetry`** 插入的 **自动重试 run**（见 `探查-process_lost_retry.md`）。
+
+### 1）时间点（API 字段）
+
+| 含义 | 值（UTC，`Z`） |
+|------|----------------|
+| 本 run **入队/创建** | `createdAt` = **2026-05-14T04:21:40.862Z**（紧跟原 run 失败收尾后落库） |
+| **开始执行**（调 adapter） | `startedAt` = **2026-05-14T05:20:39.546Z**（与 `createdAt` 间隔约 **59 分钟**，中间为排队/调度/资源等待，需与当时 `live-runs`、agent 暂停策略对照） |
+| **结束** | `finishedAt` = **2026-05-14T06:20:28.208Z** |
+| **与本 `runId` 绑定的最后一条活动**（`activity` 过滤后按 `createdAt` **降序**取首条） | **`issue.updated`**，`createdAt` = **2026-05-14T06:20:28.663Z**（**晚于** `finishedAt` 约 **0.45s** —— 多为 **`deferred_comment_wake`** 与状态机/收尾交错落库，属对账时需注意的边界） |
+
+### 2）「最后一条活动」内容
+
+| 字段 | 值 |
+|------|-----|
+| `id` | `d01f9042-22ea-4f09-ab85-6ec11e446fb6` |
+| `action` | **`issue.updated`** |
+| `actorType` / `actorId` | **`system`** / **`heartbeat`** |
+| `agentId` | `b064fe96-df64-434c-ace3-607674991330`（本单责任 agent，用于归因） |
+| `details.source` | **`deferred_comment_wake`** |
+| `details` 摘要 | `status: "todo"`，`reopened: true`，`reopenedFrom: "done"`，`identifier: "ROU-20"` |
+
+**同 run 上其余活动（共 7 条，节选理解用）**：含多条 **`user` / `local-board`** 的 `issue.comment_added` / `issue.comment_cancelled` / `issue.updated`（约 **05:22–05:23**），对应人类在工单上对 **`process_lost_retry`** 跟进、取消草稿评论、再发结案评论等；与 **`system heartbeat`** 的 **延迟评论唤醒** 不在同一时刻，但 **共享同一 `runId`**（Paperclip 将同一线程上的变更记在该次心跳执行周期下）。
+
+### 3）提示词
+
+- 与第六条相同：**完整 prompt 不在 `activity_log`**，而在 **`GET /api/heartbeat-runs/f7f3c17d-8641-41d3-8098-a7424ddf7f77/events`** 的 **`adapter.invoke`**（本快照 **`seq` = 2**）的 **`payload.prompt`**。  
+- **`contextSnapshot`** 要点：`retryReason` = **`process_lost`**，`retryOfRunId` = **`0607fc70…`**，`wakeReason` = **`process_lost_retry`**；`wakeCommentId` / `commentId` = **`460ddc9c-242a-43fb-a650-b8a59c12f6ef`**（与「重开/评论唤醒」线程绑定，具体正文在工单评论里查 `commentId`）。
+
+### 4）谁发起（唤醒 / 调度链）
+
+| 层级 | 说明 |
+|------|------|
+| **直接技术原因** | **`reapOrphanedRuns`** 判定原 run **`0607fc70…`** 子进程丢失 → **`enqueueProcessLossRetry`** → 插入本 run；首条 **lifecycle** 事件文案为 **「Queued automatic retry after orphaned child process was confirmed dead」**（与人工点「运行」无关）。 |
+| **业务侧上下文** | 原 run 的 **`issue_reopened_via_comment`** 与人类评论链（含 `460ddc9c…` 等）相关；本重试 run 的 **`deferred_comment_wake`** 体现 **评论唤醒与状态 reopen** 仍在推进。 |
+
+### 5）谁执行（进程 / 适配器）
+
+| 层级 | 说明 |
+|------|------|
+| **责任 agent** | **`b064fe96-df64-434c-ace3-607674991330`**（**开发-Cursor-composer2fast**，`cursor`）。 |
+| **OS 行为** | 事件流含 **`adapter.invoke`** → 再次拉起 **Cursor CLI**；随后 **`Process lost -- child pid 24260 is no longer running`**，本 run **`failed` / `errorCode: process_lost`**（**第二次**子进程仍丢失，**不再**排第三条 `process_lost_retry`，见 `processLossRetryCount: 1`）。 |
+
+### 6）执行了什么（事件序）
+
+按 **`/events`** 顺序（摘要）：
+
+1. **`lifecycle` / `warn`** — `Queued automatic retry after orphaned child process was confirmed dead`  
+2. **`lifecycle` / `info`** — `run started`  
+3. **`adapter.invoke` / `info`** — `adapter invocation`（此处含 **`payload.prompt`** 与 **`payload.command`**，与第六条同型）  
+4. **`lifecycle` / `error`** — `Process lost -- child pid 24260 is no longer running`
+
+### 7）反查请求（备忘）
+
+```http
+GET /api/heartbeat-runs/f7f3c17d-8641-41d3-8098-a7424ddf7f77
+GET /api/heartbeat-runs/f7f3c17d-8641-41d3-8098-a7424ddf7f77/events?limit=50
+GET /api/issues/ROU-20/activity
+```
+
+---
+
 ## 第六条（时间上最后一条 run）反查：活动、时间点、提示词、谁发起 / 谁执行
 
-**约定**：与 ROU-20 挂钩的 **6 条**指上表 **6 次 heartbeat run**（不是 `activity_log` 总条数）。**时间上最后一条 run** 为第 6 行：`f3a91ccf-ad66-4a19-8ec6-42eedd186f87`。
+**约定**：与 ROU-20 挂钩的 **6 条**指上表 **6 次 heartbeat run**（不是 `activity_log` 总条数）。**时间上最后一条 run** 为上表 **第 6 行**：`f3a91ccf-ad66-4a19-8ec6-42eedd186f87`。
 
 ### 1）时间点（API 字段）
 
@@ -100,6 +164,7 @@ GET /api/issues/ROU-20/activity
 
 - 同一工单上出现 **两条** `wakeReason === "process_lost_retry"` 的 run（`82eecc3c…`、`f7f3c17d…`），对应 **两条独立原 run**（`1e367944…`、`0607fc70…`）各自触发 **「最多一次」** 自动重试，**不是**单链上重复排队多次。详见 `探查-process_lost_retry.md`。  
 - **首条 run** 为 CEO **CodeBuddy** `adapter_failed`，随后工单由 Board 改派 **Cursor** 继续，后续失败主要为 **本地子进程丢失**（`process_lost`）及一次自动重试后再丢。  
+- 两条 **`process_lost_retry`** 中，**第五条**（`f7f3c17d…`）反查见上文 **「第五条反查」**；**第六条**（`f3a91ccf…`）见 **「第六条反查」**。  
 - 最后一条 run（`f3a91ccf…`）的 **活动 / 提示词 / 发起与执行链** 见上文 **「第六条反查」**；取消原因 **`Cancelled due to agent pause`** 需在 Board 核对当时 **开发-Cursor** 是否被暂停。
 
 ## 复现拉数（备忘）
