@@ -9,21 +9,125 @@ import {
   asNumber,
   asStringArray,
   parseObject,
+  ensureAbsoluteDirectory,
+  ensureCommandResolvable,
   ensurePathInEnv,
+  runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
-import {
-  ensureAdapterExecutionTargetCommandResolvable,
-  ensureAdapterExecutionTargetDirectory,
-  maybeRunSandboxInstallCommand,
-  runAdapterExecutionTargetProcess,
-  describeAdapterExecutionTarget,
-  resolveAdapterExecutionTargetCwd,
-} from "@paperclipai/adapter-utils/execution-target";
+import { adapterExecutionTargetToRemoteSpec } from "@paperclipai/adapter-utils/execution-target";
+import { runSshCommand } from "@paperclipai/adapter-utils/ssh";
 import path from "node:path";
 import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
 import { isBedrockModelId } from "./models.js";
-import { buildClaudeProbePermissionArgs } from "./permissions.js";
-import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+
+function shellQuoteArg(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+async function testEnvironmentOverSsh(
+  ctx: AdapterEnvironmentTestContext,
+  sshConfig: Parameters<typeof runSshCommand>[0],
+): Promise<AdapterEnvironmentTestResult> {
+  const checks: AdapterEnvironmentCheck[] = [];
+  const config = parseObject(ctx.config);
+  const command = asString(config.command, "claude");
+  const remoteLabel = `${sshConfig.username}@${sshConfig.host}:${sshConfig.port}`;
+
+  try {
+    const cmdResult = await runSshCommand(
+      sshConfig,
+      `sh -lc 'command -v ${shellQuoteArg(command)} 2>/dev/null || true'`,
+      { timeoutMs: 10_000 },
+    );
+    const resolved = cmdResult.stdout.trim();
+    if (resolved) {
+      checks.push({
+        code: "claude_command_resolvable",
+        level: "info",
+        message: `Command is executable on ${remoteLabel}: ${resolved}`,
+      });
+    } else {
+      checks.push({
+        code: "claude_command_unresolvable",
+        level: "error",
+        message: `Command \`${command}\` is not on PATH on ${remoteLabel}`,
+        hint: "Install the claude CLI on the remote host or set adapter `command` to its absolute path.",
+      });
+    }
+  } catch (err) {
+    checks.push({
+      code: "claude_command_unresolvable",
+      level: "error",
+      message: `Failed to probe claude command via SSH: ${err instanceof Error ? err.message : String(err)}`,
+      detail: remoteLabel,
+    });
+  }
+
+  try {
+    const credResult = await runSshCommand(
+      sshConfig,
+      `sh -lc 'if [ -f "$HOME/.claude/.credentials.json" ]; then echo "present"; else echo "missing"; fi'`,
+      { timeoutMs: 8_000 },
+    );
+    const out = credResult.stdout.trim();
+    if (out === "missing") {
+      checks.push({
+        code: "claude_native_auth_missing",
+        level: "warn",
+        message: `~/.claude/.credentials.json not found on ${remoteLabel}.`,
+        hint: "Run `claude` once on the remote host to log in (or `ccrotate snap` after login).",
+      });
+    } else {
+      checks.push({
+        code: "claude_native_auth_present",
+        level: "info",
+        message: `Claude credentials file present on ${remoteLabel}.`,
+      });
+    }
+  } catch (err) {
+    checks.push({
+      code: "claude_native_auth_check_failed",
+      level: "warn",
+      message: `Could not probe claude credentials on ${remoteLabel}: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+
+  try {
+    const rotResult = await runSshCommand(
+      sshConfig,
+      `sh -lc 'if command -v ccrotate >/dev/null 2>&1; then CCROTATE_TARGET=claude ccrotate when 2>&1 | head -20; else echo "not-installed"; fi'`,
+      { timeoutMs: 10_000 },
+    );
+    const out = rotResult.stdout.trim();
+    if (out === "not-installed") {
+      checks.push({
+        code: "ccrotate_not_installed",
+        level: "info",
+        message: `ccrotate is not installed on ${remoteLabel} — claude auth rotation is manual.`,
+      });
+    } else if (out) {
+      checks.push({
+        code: "ccrotate_state",
+        level: "info",
+        message: `ccrotate claude accounts on ${remoteLabel}:`,
+        detail: out,
+      });
+    }
+  } catch (err) {
+    checks.push({
+      code: "ccrotate_probe_failed",
+      level: "info",
+      message: `ccrotate probe skipped: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+
+  return {
+    adapterType: ctx.adapterType,
+    status: summarizeStatus(checks),
+    checks,
+    testedAt: new Date().toISOString(),
+  };
+}
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -63,29 +167,10 @@ export async function testEnvironment(
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const command = asString(config.command, "claude");
-  const target = ctx.executionTarget ?? null;
-  const targetIsRemote = target?.kind === "remote";
-  const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
-  const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
-  const targetLabel = targetIsRemote
-    ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
-    : null;
-  const runId = `claude-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-
-  if (targetLabel) {
-    checks.push({
-      code: "claude_environment_target",
-      level: "info",
-      message: `Probing inside environment: ${targetLabel}`,
-    });
-  }
+  const cwd = asString(config.cwd, process.cwd());
 
   try {
-    await ensureAdapterExecutionTargetDirectory(runId, target, cwd, {
-      cwd,
-      env: {},
-      createIfMissing: true,
-    });
+    await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
     checks.push({
       code: "claude_cwd_valid",
       level: "info",
@@ -106,17 +191,8 @@ export async function testEnvironment(
     if (typeof value === "string") env[key] = value;
   }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
-  const installCheck = await maybeRunSandboxInstallCommand({
-    runId,
-    target,
-    adapterKey: "claude",
-    installCommand: SANDBOX_INSTALL_COMMAND,
-    detectCommand: command,
-    env,
-  });
-  if (installCheck) checks.push(installCheck);
   try {
-    await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
+    await ensureCommandResolvable(command, cwd, runtimeEnv);
     checks.push({
       code: "claude_command_resolvable",
       level: "info",
@@ -131,21 +207,16 @@ export async function testEnvironment(
     });
   }
 
-  // When probing a remote target, the Paperclip host's process.env does not
-  // reflect what the agent will actually see at runtime. Only consider env
-  // vars from the adapter config in that case; the probe itself will surface
-  // any auth issues on the remote box.
-  const considerHostEnv = !targetIsRemote;
   const hasBedrock =
     env.CLAUDE_CODE_USE_BEDROCK === "1" ||
     env.CLAUDE_CODE_USE_BEDROCK === "true" ||
-    (considerHostEnv && process.env.CLAUDE_CODE_USE_BEDROCK === "1") ||
-    (considerHostEnv && process.env.CLAUDE_CODE_USE_BEDROCK === "true") ||
+    process.env.CLAUDE_CODE_USE_BEDROCK === "1" ||
+    process.env.CLAUDE_CODE_USE_BEDROCK === "true" ||
     isNonEmpty(env.ANTHROPIC_BEDROCK_BASE_URL) ||
-    (considerHostEnv && isNonEmpty(process.env.ANTHROPIC_BEDROCK_BASE_URL));
+    isNonEmpty(process.env.ANTHROPIC_BEDROCK_BASE_URL);
 
   const configApiKey = env.ANTHROPIC_API_KEY;
-  const hostApiKey = considerHostEnv ? process.env.ANTHROPIC_API_KEY : undefined;
+  const hostApiKey = process.env.ANTHROPIC_API_KEY;
   if (hasBedrock) {
     const source =
       env.CLAUDE_CODE_USE_BEDROCK === "1" ||
@@ -170,7 +241,7 @@ export async function testEnvironment(
       detail: `Detected in ${source}.`,
       hint: "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
     });
-  } else if (!targetIsRemote) {
+  } else {
     checks.push({
       code: "claude_subscription_mode_possible",
       level: "info",
@@ -202,7 +273,7 @@ export async function testEnvironment(
       })();
 
       const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
-      args.push(...buildClaudeProbePermissionArgs({ dangerouslySkipPermissions, targetIsSandbox }));
+      if (dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
       if (chrome) args.push("--chrome");
       // For Bedrock: only pass --model when the ID is a Bedrock-native identifier.
       if (model && (!hasBedrock || isBedrockModelId(model))) {
@@ -212,9 +283,8 @@ export async function testEnvironment(
       if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
       if (extraArgs.length > 0) args.push(...extraArgs);
 
-      const probe = await runAdapterExecutionTargetProcess(
-        runId,
-        target,
+      const probe = await runChildProcess(
+        `claude-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,
         command,
         args,
         {

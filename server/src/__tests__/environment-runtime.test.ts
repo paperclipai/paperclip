@@ -369,6 +369,208 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     }
   });
 
+  it("acquires an SSH lease across a transient 503-then-200 health blip (BLO-1489)", async () => {
+    if (!sshFixtureSupport.supported) {
+      console.warn(
+        `Skipping SSH 503-then-200 retry test: ${sshFixtureSupport.reason ?? "unsupported environment"}`,
+      );
+      return;
+    }
+
+    const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-environment-runtime-ssh-503-"));
+    fixtureRoots.push(fixtureRoot);
+    const statePath = path.join(fixtureRoot, "state.json");
+    const fixture = await startSshEnvLabFixture({ statePath });
+    const sshConfig = await buildSshEnvLabFixtureConfig(fixture);
+
+    let healthHits = 0;
+    const healthServer = createServer((req, res) => {
+      if (req.url === "/api/health") {
+        healthHits += 1;
+        // First two probes return 503 (mimicking the live bug from BLO-1489
+        // where nginx returned 503 in ~50ms during an upstream restart),
+        // then the third recovers.
+        if (healthHits <= 2) {
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end(JSON.stringify({ status: "upstream_unavailable" }));
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ status: "ok" }));
+        return;
+      }
+      res.writeHead(404).end();
+    });
+    await new Promise<void>((resolve, reject) => {
+      healthServer.once("error", reject);
+      healthServer.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = healthServer.address();
+    if (!address || typeof address === "string") {
+      await new Promise<void>((resolve) => healthServer.close(() => resolve()));
+      throw new Error("Expected the test health server to listen on a TCP port.");
+    }
+    const runtimeApiUrl = `http://127.0.0.1:${address.port}`;
+    const previousCandidates = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+    const previousBackoff = process.env.PAPERCLIP_RUNTIME_API_PROBE_BACKOFF_MS_JSON;
+    const previousAttempts = process.env.PAPERCLIP_RUNTIME_API_PROBE_ATTEMPTS;
+    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([runtimeApiUrl]);
+    // Tight backoff so the test doesn't add 7s of sleep wall time.
+    process.env.PAPERCLIP_RUNTIME_API_PROBE_BACKOFF_MS_JSON = JSON.stringify([10, 10]);
+    process.env.PAPERCLIP_RUNTIME_API_PROBE_ATTEMPTS = "3";
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "ssh",
+      name: "Fixture SSH 503",
+      config: sshConfig,
+    });
+    try {
+      const acquired = await runtime.acquireRunLease({
+        companyId,
+        environment,
+        issueId: null,
+        heartbeatRunId: runId,
+        persistedExecutionWorkspace: null,
+      });
+
+      expect(acquired.lease.status).toBe("active");
+      expect(acquired.lease.metadata).toMatchObject({
+        driver: "ssh",
+        paperclipApiUrl: runtimeApiUrl,
+      });
+      // Probe should have hit the health server exactly 3 times (503, 503, 200).
+      expect(healthHits).toBe(3);
+
+      await runtime.releaseRunLeases(runId);
+    } finally {
+      const restore = (key: string, prev: string | undefined) => {
+        if (prev === undefined) delete process.env[key];
+        else process.env[key] = prev;
+      };
+      restore("PAPERCLIP_RUNTIME_API_CANDIDATES_JSON", previousCandidates);
+      restore("PAPERCLIP_RUNTIME_API_PROBE_BACKOFF_MS_JSON", previousBackoff);
+      restore("PAPERCLIP_RUNTIME_API_PROBE_ATTEMPTS", previousAttempts);
+      await new Promise<void>((resolve) => healthServer.close(() => resolve()));
+      await stopSshEnvLabFixture(statePath).catch(() => undefined);
+    }
+  });
+
+  it("short-circuits to the last-good Paperclip API URL on the next acquireRunLease (BLO-1489 cache)", async () => {
+    if (!sshFixtureSupport.supported) {
+      console.warn(
+        `Skipping SSH cache short-circuit test: ${sshFixtureSupport.reason ?? "unsupported environment"}`,
+      );
+      return;
+    }
+
+    const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-environment-runtime-ssh-cache-"));
+    fixtureRoots.push(fixtureRoot);
+    const statePath = path.join(fixtureRoot, "state.json");
+    const fixture = await startSshEnvLabFixture({ statePath });
+    const sshConfig = await buildSshEnvLabFixtureConfig(fixture);
+
+    let cachedHits = 0;
+    let secondaryHits = 0;
+    const cachedServer = createServer((req, res) => {
+      if (req.url === "/api/health") {
+        cachedHits += 1;
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ status: "ok" }));
+        return;
+      }
+      res.writeHead(404).end();
+    });
+    const secondaryServer = createServer((req, res) => {
+      if (req.url === "/api/health") {
+        secondaryHits += 1;
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ status: "ok" }));
+        return;
+      }
+      res.writeHead(404).end();
+    });
+    await new Promise<void>((resolve, reject) => {
+      cachedServer.once("error", reject);
+      cachedServer.listen(0, "127.0.0.1", () => resolve());
+    });
+    await new Promise<void>((resolve, reject) => {
+      secondaryServer.once("error", reject);
+      secondaryServer.listen(0, "127.0.0.1", () => resolve());
+    });
+    const cachedAddr = cachedServer.address();
+    const secondaryAddr = secondaryServer.address();
+    if (
+      !cachedAddr ||
+      typeof cachedAddr === "string" ||
+      !secondaryAddr ||
+      typeof secondaryAddr === "string"
+    ) {
+      await new Promise<void>((resolve) => cachedServer.close(() => resolve()));
+      await new Promise<void>((resolve) => secondaryServer.close(() => resolve()));
+      throw new Error("Expected the test health servers to listen on TCP ports.");
+    }
+    const cachedUrl = `http://127.0.0.1:${cachedAddr.port}`;
+    const otherUrl = `http://127.0.0.1:${secondaryAddr.port}`;
+    const previousCandidates = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+    // First probe: cachedUrl is at index 0 so it wins and lands in the lease's
+    // paperclipApiUrl. Second probe: we move it to index 1 — the only way a
+    // probe still hits cachedUrl first is if the cache lookup promoted it to
+    // the front of the sweep. Without this asymmetry the test would pass
+    // whether or not cache promotion works (Greptile #4715).
+    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([cachedUrl, otherUrl]);
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "ssh",
+      name: "Fixture SSH Cache",
+      config: sshConfig,
+    });
+    try {
+      // First acquire: cachedUrl wins (first in declared order) and is
+      // cached as paperclipApiUrl on the lease.
+      const first = await runtime.acquireRunLease({
+        companyId,
+        environment,
+        issueId: null,
+        heartbeatRunId: runId,
+        persistedExecutionWorkspace: null,
+      });
+      expect(first.lease.metadata).toMatchObject({ paperclipApiUrl: cachedUrl });
+      const cachedHitsAfterFirst = cachedHits;
+      expect(secondaryHits).toBe(0);
+
+      // Release the first lease so it lands as a "released" lease in the table
+      // (still discoverable by listLeases for the cache lookup).
+      await runtime.releaseRunLeases(runId);
+
+      // Reorder candidates so cachedUrl is NOT first on the second probe.
+      // This is the actual reordering test: if cache promotion works, the
+      // second probe still hits cachedUrl first (and otherUrl never gets a
+      // request); if not, otherUrl gets probed first and serves the lease.
+      process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([otherUrl, cachedUrl]);
+
+      const second = await runtime.acquireRunLease({
+        companyId,
+        environment,
+        issueId: null,
+        heartbeatRunId: runId,
+        persistedExecutionWorkspace: null,
+      });
+      expect(second.lease.metadata).toMatchObject({ paperclipApiUrl: cachedUrl });
+      // Cache hit: exactly one additional probe to cachedUrl, zero to otherUrl.
+      expect(cachedHits).toBe(cachedHitsAfterFirst + 1);
+      expect(secondaryHits).toBe(0);
+
+      await runtime.releaseRunLeases(runId);
+    } finally {
+      if (previousCandidates === undefined) {
+        delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+      } else {
+        process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = previousCandidates;
+      }
+      await new Promise<void>((resolve) => cachedServer.close(() => resolve()));
+      await new Promise<void>((resolve) => secondaryServer.close(() => resolve()));
+      await stopSshEnvLabFixture(statePath).catch(() => undefined);
+    }
+  });
+
   it("acquires and releases a fake sandbox run lease through the runtime seam", async () => {
     const { companyId, environment, runId } = await seedEnvironment({
       driver: "sandbox",

@@ -1,13 +1,8 @@
-import { randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { constants as fsConstants, createReadStream, createWriteStream, promises as fs } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
-import type { RunProcessResult } from "./server-utils.js";
-import type { DirectorySnapshot } from "./workspace-restore-merge.js";
-import { mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
 
 export interface SshConnectionConfig {
   host: string;
@@ -19,6 +14,54 @@ export interface SshConnectionConfig {
   strictHostKeyChecking: boolean;
 }
 
+/**
+ * Thrown when the remote tar extract during workspace import hits a path it
+ * cannot reconcile (file-vs-dir or symlink conflict that --overwrite cannot
+ * resolve). Carries the offending paths so the orchestrator can re-emit as
+ * `EnvironmentRunError("workspace_import_conflict", { paths })` for the
+ * recovery owner without parsing logs. See BLO-1497.
+ */
+export class WorkspaceImportConflictError extends Error {
+  readonly code = "workspace_import_conflict" as const;
+  readonly paths: string[];
+  readonly stderr: string;
+
+  constructor(input: { paths: string[]; stderr: string; remoteDir: string }) {
+    const preview = input.paths.slice(0, 3).join(", ");
+    const suffix = input.paths.length > 3 ? `, +${input.paths.length - 3} more` : "";
+    super(
+      `Workspace import into ${input.remoteDir} hit ${input.paths.length} unrecoverable path conflict${input.paths.length === 1 ? "" : "s"}: ${preview}${suffix}`,
+    );
+    this.name = "WorkspaceImportConflictError";
+    this.paths = input.paths;
+    this.stderr = input.stderr;
+  }
+}
+
+const TAR_CONFLICT_PATH_PATTERNS: RegExp[] = [
+  /tar:\s+(?<path>[^:]+):\s+Cannot open:\s+(?:File exists|Is a directory|Not a directory|Permission denied)\.?/g,
+  /tar:\s+(?<path>[^:]+):\s+Cannot mkdir:\s+File exists\.?/g,
+  /tar:\s+(?<path>[^:]+):\s+Cannot create symlink to .*:\s+File exists\.?/g,
+  /tar:\s+(?<path>[^:]+):\s+Cannot hard link to .*:\s+File exists\.?/g,
+  /tar:\s+(?<path>[^:]+):\s+Cannot create directory:\s+(?:Not a directory|File exists)\.?/g,
+  /tar:\s+(?<path>[^:]+):\s+Cannot unlink:\s+(?:Is a directory|Permission denied|Directory not empty)\.?/g,
+  /tar:\s+(?<path>[^:]+):\s+Cannot rmdir:\s+(?:Directory not empty|Permission denied)\.?/g,
+];
+
+export function extractTarConflictPaths(stderr: string): string[] {
+  if (!stderr) return [];
+  const seen = new Set<string>();
+  for (const pattern of TAR_CONFLICT_PATH_PATTERNS) {
+    for (const match of stderr.matchAll(pattern)) {
+      const raw = match.groups?.path ?? match[1];
+      if (!raw) continue;
+      const trimmed = raw.trim().replace(/^\.\//, "");
+      if (trimmed.length > 0) seen.add(trimmed);
+    }
+  }
+  return [...seen];
+}
+
 export interface SshCommandResult {
   stdout: string;
   stderr: string;
@@ -26,85 +69,7 @@ export interface SshCommandResult {
 
 export interface SshRemoteExecutionSpec extends SshConnectionConfig {
   remoteCwd: string;
-}
-
-export function createSshCommandManagedRuntimeRunner(input: {
-  spec: SshRemoteExecutionSpec;
-  defaultCwd?: string | null;
-  maxBufferBytes?: number | null;
-}): CommandManagedRuntimeRunner {
-  const defaultCwd = input.defaultCwd?.trim() || input.spec.remoteCwd;
-  const maxBufferBytes =
-    typeof input.maxBufferBytes === "number" && Number.isFinite(input.maxBufferBytes) && input.maxBufferBytes > 0
-      ? Math.trunc(input.maxBufferBytes)
-      : 1024 * 1024;
-
-  return {
-    execute: async (commandInput): Promise<RunProcessResult> => {
-      const startedAt = new Date().toISOString();
-      const command = commandInput.command.trim();
-      const args = commandInput.args ?? [];
-      const cwd = commandInput.cwd?.trim() || defaultCwd;
-      const envEntries = Object.entries(commandInput.env ?? {})
-        .filter((entry): entry is [string, string] => typeof entry[1] === "string");
-      const envPrefix = envEntries.length > 0
-        ? `env ${envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`).join(" ")} `
-        : "";
-      const exportPrefix = envEntries.length > 0
-        ? envEntries.map(([key, value]) => `export ${key}=${shellQuote(value)};`).join(" ") + " "
-        : "";
-      const commandScript = command === "sh" || command === "bash"
-        ? (args[0] === "-c" || args[0] === "-lc") && typeof args[1] === "string"
-          ? `${exportPrefix}${args[1]}`
-          : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`
-        : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;
-      const remoteCommand = `cd ${shellQuote(cwd)} && ${commandScript}`;
-
-      try {
-        const result = await runSshCommand(input.spec, remoteCommand, {
-          stdin: commandInput.stdin,
-          timeoutMs: commandInput.timeoutMs,
-          maxBuffer: maxBufferBytes,
-        });
-        if (result.stdout) await commandInput.onLog?.("stdout", result.stdout);
-        if (result.stderr) await commandInput.onLog?.("stderr", result.stderr);
-        return {
-          exitCode: 0,
-          signal: null,
-          timedOut: false,
-          stdout: result.stdout,
-          stderr: result.stderr,
-          pid: null,
-          startedAt,
-        };
-      } catch (error) {
-        const failure = error as {
-          stdout?: unknown;
-          stderr?: unknown;
-          code?: unknown;
-          signal?: unknown;
-          killed?: unknown;
-        };
-        const stdout = typeof failure.stdout === "string" ? failure.stdout : "";
-        const stderr = typeof failure.stderr === "string"
-          ? failure.stderr
-          : error instanceof Error
-            ? error.message
-            : String(error);
-        if (stdout) await commandInput.onLog?.("stdout", stdout);
-        if (stderr) await commandInput.onLog?.("stderr", stderr);
-        return {
-          exitCode: typeof failure.code === "number" ? failure.code : null,
-          signal: typeof failure.signal === "string" ? failure.signal : null,
-          timedOut: failure.killed === true,
-          stdout,
-          stderr,
-          pid: null,
-          startedAt,
-        };
-      }
-    },
-  };
+  paperclipApiUrl?: string | null;
 }
 
 export interface SshEnvLabSupport {
@@ -166,6 +131,10 @@ export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionS
     port: portValue,
     username,
     remoteCwd,
+    paperclipApiUrl:
+      typeof parsed.paperclipApiUrl === "string" && parsed.paperclipApiUrl.trim().length > 0
+        ? parsed.paperclipApiUrl.trim()
+        : null,
     remoteWorkspacePath:
       typeof parsed.remoteWorkspacePath === "string" && parsed.remoteWorkspacePath.trim().length > 0
         ? parsed.remoteWorkspacePath.trim()
@@ -175,6 +144,400 @@ export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionS
     strictHostKeyChecking:
       typeof parsed.strictHostKeyChecking === "boolean" ? parsed.strictHostKeyChecking : true,
   };
+}
+
+function normalizeHttpUrlCandidate(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+const DEFAULT_PAPERCLIP_API_PROBE_TIMEOUT_MS = 10_000;
+const DEFAULT_PAPERCLIP_API_PROBE_ATTEMPTS = 3;
+const MAX_PAPERCLIP_API_PROBE_ATTEMPTS = 10;
+const DEFAULT_PAPERCLIP_API_PROBE_TOTAL_BUDGET_MS = 30_000;
+// Per BLO-1490: 300 ms base, sampled uniform from [250, 750] ms per attempt.
+// Short-and-jittered absorbs the sub-second SSH-handshake stalls observed on
+// the worker host without pathologically inflating lease-acquire latency.
+const PROBE_BACKOFF_JITTER_MIN_MS = 250;
+const PROBE_BACKOFF_JITTER_MAX_MS = 750;
+const PROBE_STDERR_TAIL_BYTES = 512;
+
+function resolveProbeTimeoutMs(explicit?: number): number {
+  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit > 0) {
+    return explicit;
+  }
+  const raw = process.env.PAPERCLIP_RUNTIME_API_PROBE_TIMEOUT_MS;
+  if (raw) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return DEFAULT_PAPERCLIP_API_PROBE_TIMEOUT_MS;
+}
+
+function resolveProbeAttempts(explicit?: number): number {
+  // Cap at MAX_PAPERCLIP_API_PROBE_ATTEMPTS so a fat-fingered "9999" can't
+  // strand a heartbeat looping over a flapping upstream.
+  const clamp = (value: number): number =>
+    Math.min(MAX_PAPERCLIP_API_PROBE_ATTEMPTS, Math.max(1, Math.floor(value)));
+  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit >= 1) {
+    return clamp(explicit);
+  }
+  const raw = process.env.PAPERCLIP_RUNTIME_API_PROBE_ATTEMPTS;
+  if (raw) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed >= 1) return clamp(parsed);
+  }
+  return DEFAULT_PAPERCLIP_API_PROBE_ATTEMPTS;
+}
+
+function resolveProbeTotalBudgetMs(explicit?: number): number {
+  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit > 0) {
+    return explicit;
+  }
+  const raw = process.env.PAPERCLIP_RUNTIME_API_PROBE_TOTAL_BUDGET_MS;
+  if (raw) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return DEFAULT_PAPERCLIP_API_PROBE_TOTAL_BUDGET_MS;
+}
+
+/**
+ * Backoff is either an explicit array of sleep durations (one per attempt
+ * boundary) or a function that samples per-attempt with optional jitter.
+ * Tests inject deterministic arrays; production defaults to jittered.
+ */
+type ProbeBackoffSource =
+  | readonly number[]
+  | ((attemptIndex: number, randomMs: () => number) => number);
+
+function defaultJitteredBackoff(_attemptIndex: number, randomMs: () => number): number {
+  return randomMs();
+}
+
+function defaultRandomBackoffMs(): number {
+  // Uniform inclusive [PROBE_BACKOFF_JITTER_MIN_MS, PROBE_BACKOFF_JITTER_MAX_MS].
+  const span = PROBE_BACKOFF_JITTER_MAX_MS - PROBE_BACKOFF_JITTER_MIN_MS;
+  return PROBE_BACKOFF_JITTER_MIN_MS + Math.floor(Math.random() * (span + 1));
+}
+
+function resolveProbeBackoff(explicit?: readonly number[]): ProbeBackoffSource {
+  const sanitize = (values: unknown): number[] | null => {
+    if (!Array.isArray(values)) return null;
+    const cleaned = values
+      .map((entry) => (typeof entry === "number" ? entry : Number(entry)))
+      .filter((entry): entry is number => Number.isFinite(entry) && entry >= 0)
+      // Cap each sleep at 30s so a fat-fingered config can never strand a heartbeat.
+      .map((entry) => Math.min(entry, 30_000));
+    return cleaned.length > 0 ? cleaned : null;
+  };
+  if (explicit) {
+    const cleaned = sanitize(explicit);
+    if (cleaned) return cleaned;
+  }
+  const raw = process.env.PAPERCLIP_RUNTIME_API_PROBE_BACKOFF_MS_JSON;
+  if (raw) {
+    try {
+      const cleaned = sanitize(JSON.parse(raw));
+      if (cleaned) return cleaned;
+    } catch {
+      // Fall through to the default. A malformed knob must never crash acquireRunLease.
+    }
+  }
+  return defaultJitteredBackoff;
+}
+
+function resolveBackoffMs(
+  source: ProbeBackoffSource,
+  attemptIndex: number,
+  randomMs: () => number,
+): number {
+  if (typeof source === "function") return source(attemptIndex, randomMs);
+  return source[Math.min(attemptIndex, source.length - 1)] ?? 0;
+}
+
+/**
+ * Per-attempt detail captured during a Paperclip API probe over SSH. Surfaced
+ * via {@link ProbeResult.attempts} so callers can attach the full failure
+ * trail to their thrown error / structured log instead of swallowing it.
+ */
+export interface PaperclipApiProbeAttempt {
+  candidate: string;
+  attempt: number; // 1-indexed within this candidate
+  ok: boolean;
+  exitCode: number | null;
+  httpStatus: number | null;
+  durationMs: number;
+  stderrTail: string | null;
+  classification: "ok" | "transient" | "permanent";
+  error: string | null;
+}
+
+export interface PaperclipApiProbeResult {
+  url: string | null;
+  attempts: PaperclipApiProbeAttempt[];
+}
+
+const TRANSIENT_HTTP_STATUSES = new Set<number>([408, 425, 429]);
+
+function classifyHttpStatus(status: number | null): "ok" | "transient" | "permanent" {
+  if (status === null) return "transient";
+  if (status >= 200 && status < 300) return "ok";
+  if (status >= 500 && status < 600) return "transient";
+  if (TRANSIENT_HTTP_STATUSES.has(status)) return "transient";
+  return "permanent";
+}
+
+const PROBE_STATUS_SENTINEL = "__PAPERCLIP_PROBE_HTTP_CODE__:";
+
+/**
+ * Test seam: the probe runner. Production code uses {@link runSingleProbe}
+ * which executes curl over SSH; tests can pass a fake to avoid spinning up
+ * a real sshd + http server per case.
+ */
+export type SingleProbeRunner = (input: {
+  config: SshConnectionConfig;
+  healthUrl: string;
+  curlSeconds: number;
+  timeoutMs: number;
+}) => Promise<SingleProbeAttempt>;
+
+export interface SingleProbeAttempt {
+  exitCode: number | null;
+  httpStatus: number | null;
+  durationMs: number;
+  stderrTail: string | null;
+  sshError: string | null;
+}
+
+async function runSingleProbe(input: {
+  config: SshConnectionConfig;
+  healthUrl: string;
+  curlSeconds: number;
+  timeoutMs: number;
+}): Promise<SingleProbeAttempt> {
+  // Capture %{http_code} explicitly. We deliberately drop curl's `-f` so a 5xx
+  // returns exit 0 with the actual status code in stdout — letting us
+  // distinguish transient (5xx) from permanent (4xx) without parsing stderr.
+  // Connection errors keep their non-zero curl exit and surface as null status.
+  const remote = `curl -sS -m ${input.curlSeconds} -o /dev/null -w '${PROBE_STATUS_SENTINEL}%{http_code}\\n' ${shellQuote(input.healthUrl)}`;
+  const startedAt = Date.now();
+  try {
+    const result = await runSshCommand(
+      input.config,
+      `sh -lc ${shellQuote(remote)}`,
+      { timeoutMs: input.timeoutMs },
+    );
+    const durationMs = Date.now() - startedAt;
+    const httpStatus = parseProbeHttpStatus(result.stdout);
+    return {
+      exitCode: 0,
+      httpStatus,
+      durationMs,
+      stderrTail: tailString(result.stderr, PROBE_STDERR_TAIL_BYTES),
+      sshError: null,
+    };
+  } catch (err) {
+    const durationMs = Date.now() - startedAt;
+    const e = err as NodeJS.ErrnoException & { code?: string | number; stdout?: string; stderr?: string };
+    const stdout = typeof e?.stdout === "string" ? e.stdout : "";
+    const stderr = typeof e?.stderr === "string" ? e.stderr : "";
+    const exitCodeRaw = (e as { code?: unknown })?.code;
+    const exitCode =
+      typeof exitCodeRaw === "number"
+        ? exitCodeRaw
+        : typeof exitCodeRaw === "string" && /^\d+$/.test(exitCodeRaw)
+          ? Number(exitCodeRaw)
+          : null;
+    return {
+      exitCode,
+      httpStatus: parseProbeHttpStatus(stdout),
+      durationMs,
+      stderrTail: tailString(stderr, PROBE_STDERR_TAIL_BYTES),
+      sshError: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+function parseProbeHttpStatus(stdout: string): number | null {
+  const idx = stdout.lastIndexOf(PROBE_STATUS_SENTINEL);
+  if (idx < 0) return null;
+  const tail = stdout.slice(idx + PROBE_STATUS_SENTINEL.length).trim();
+  const match = tail.match(/^(\d{3})/);
+  if (!match) return null;
+  const status = Number.parseInt(match[1], 10);
+  // curl writes 000 when no HTTP response was received (DNS/TCP/TLS failure).
+  return status === 0 ? null : status;
+}
+
+function tailString(value: string | null | undefined, bytes: number): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.length <= bytes) return trimmed;
+  return `…${trimmed.slice(-bytes)}`;
+}
+
+function dedupeCandidates(...sources: ReadonlyArray<readonly string[]>): string[] {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const source of sources) {
+    for (const candidate of source) {
+      const normalized = normalizeHttpUrlCandidate(candidate);
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      ordered.push(normalized);
+    }
+  }
+  return ordered;
+}
+
+export async function findReachablePaperclipApiUrlOverSsh(input: {
+  config: SshConnectionConfig;
+  candidates: string[];
+  /** If provided, this candidate is probed first (cache short-circuit). */
+  preferredCandidate?: string | null;
+  timeoutMs?: number;
+  /** Per-candidate attempt count. Env: PAPERCLIP_RUNTIME_API_PROBE_ATTEMPTS. */
+  attempts?: number;
+  /**
+   * Wall-clock cap across the whole candidate sweep. Prevents pathological
+   * lease-acquire latency when every candidate is flapping. Env:
+   * PAPERCLIP_RUNTIME_API_PROBE_TOTAL_BUDGET_MS.
+   */
+  totalBudgetMs?: number;
+  /** Sleep between retries in ms; index N is the wait BEFORE attempt N+2. */
+  backoffMs?: readonly number[];
+  /** Test-only seam to skip real sleeps in unit tests. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Test-only seam: fake the curl-over-SSH runner. */
+  runProbe?: SingleProbeRunner;
+  /** Test-only seam: deterministic clock for total-budget enforcement. */
+  now?: () => number;
+  /** Test-only seam: deterministic jitter sample. */
+  randomBackoffMs?: () => number;
+}): Promise<PaperclipApiProbeResult> {
+  const orderedCandidates = dedupeCandidates(
+    input.preferredCandidate ? [input.preferredCandidate] : [],
+    input.candidates,
+  );
+
+  const timeoutMs = resolveProbeTimeoutMs(input.timeoutMs);
+  const curlSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+  const probeAttempts = resolveProbeAttempts(input.attempts);
+  const totalBudgetMs = resolveProbeTotalBudgetMs(input.totalBudgetMs);
+  const backoffSource = resolveProbeBackoff(input.backoffMs);
+  const sleep = input.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const runProbe: SingleProbeRunner = input.runProbe ?? runSingleProbe;
+  const now = input.now ?? (() => Date.now());
+  const randomBackoffMs = input.randomBackoffMs ?? defaultRandomBackoffMs;
+
+  const startedAt = now();
+  const elapsedMs = (): number => now() - startedAt;
+  const isBudgetExhausted = (): boolean => elapsedMs() >= totalBudgetMs;
+
+  const attemptsLog: PaperclipApiProbeAttempt[] = [];
+
+  outer: for (const candidate of orderedCandidates) {
+    const healthUrl = new URL("/api/health", candidate).toString();
+    for (let attemptIndex = 0; attemptIndex < probeAttempts; attemptIndex++) {
+      // Budget check BEFORE issuing a probe — we don't want to start a curl
+      // we can't afford. The check is intentionally on entry to each attempt,
+      // not just before sleep, so a slow probe + tight budget can't sneak in
+      // an extra request after the budget elapsed.
+      if (isBudgetExhausted()) break outer;
+
+      const probe = await runProbe({ config: input.config, healthUrl, curlSeconds, timeoutMs });
+      // Classification rules:
+      //  - ok: HTTP 2xx with curl exit 0
+      //  - permanent: HTTP 3xx/4xx (except 408/425/429) — retrying won't help
+      //  - transient: anything else (5xx, 408/425/429, curl exit != 0, ssh
+      //    timeout / network blip). Default to transient on uncertainty so a
+      //    misclassified failure still gets the retry budget rather than
+      //    falling through to "all candidates dead" on the first hiccup.
+      const classification: PaperclipApiProbeAttempt["classification"] = (() => {
+        if (probe.exitCode === 0 && probe.httpStatus !== null) {
+          return classifyHttpStatus(probe.httpStatus);
+        }
+        return "transient";
+      })();
+
+      const ok = classification === "ok";
+      const errorMessage = ok
+        ? null
+        : probe.sshError ??
+          (probe.httpStatus !== null ? `HTTP ${probe.httpStatus}` : `curl exit ${probe.exitCode ?? "?"}`);
+      const recorded: PaperclipApiProbeAttempt = {
+        candidate,
+        attempt: attemptIndex + 1,
+        ok,
+        exitCode: probe.exitCode,
+        httpStatus: probe.httpStatus,
+        durationMs: probe.durationMs,
+        stderrTail: probe.stderrTail,
+        classification,
+        error: errorMessage,
+      };
+      attemptsLog.push(recorded);
+
+      if (ok) {
+        return { url: candidate, attempts: attemptsLog };
+      }
+
+      // Spec (BLO-1490): "Log (at info) each failed attempt with: candidate
+      // URL, attempt index, error class, elapsed ms." Emit here so the line
+      // shape is identical regardless of caller. Caller can attach further
+      // context (env id, host) but cannot drop these fields.
+      logFailedProbeAttempt(recorded);
+
+      // Permanent failures — don't burn the retry budget on this candidate.
+      if (classification === "permanent") {
+        break;
+      }
+
+      const isLastAttempt = attemptIndex === probeAttempts - 1;
+      if (isLastAttempt) break;
+
+      const waitMs = resolveBackoffMs(backoffSource, attemptIndex, randomBackoffMs);
+      // Cap the sleep so we don't sit idle past the total budget. If there's
+      // no budget left for *any* sleep, drop straight into the next attempt
+      // — but the budget check at the top of the next iteration will catch
+      // an exhausted budget and exit the sweep cleanly.
+      const remainingBudget = totalBudgetMs - elapsedMs();
+      if (remainingBudget <= 0) break outer;
+      const cappedWait = Math.min(Math.max(0, waitMs), remainingBudget);
+      if (cappedWait > 0) {
+        await sleep(cappedWait);
+      }
+    }
+  }
+
+  return { url: null, attempts: attemptsLog };
+}
+
+function logFailedProbeAttempt(attempt: PaperclipApiProbeAttempt): void {
+  // Structured single-line log. Keep field order stable so log-scrapers
+  // (Loki / journalctl greps) can parse without a schema bump.
+  // eslint-disable-next-line no-console
+  console.info(
+    `[ssh-probe] ` +
+      `candidate=${attempt.candidate} ` +
+      `attempt=${attempt.attempt} ` +
+      `class=${attempt.classification} ` +
+      `status=${attempt.httpStatus ?? "none"} ` +
+      `exit=${attempt.exitCode ?? "none"} ` +
+      `durationMs=${attempt.durationMs}` +
+      (attempt.error ? ` error="${attempt.error.replace(/"/g, "'")}"` : ""),
+  );
 }
 
 async function execFileText(
@@ -207,113 +570,6 @@ async function execFileText(
   });
 }
 
-async function spawnText(
-  file: string,
-  args: string[],
-  options: {
-    stdin?: string;
-    timeout?: number;
-    maxBuffer?: number;
-  } = {},
-): Promise<SshCommandResult> {
-  return await new Promise<SshCommandResult>((resolve, reject) => {
-    const child = spawn(file, args, {
-      stdio: [options.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
-    });
-
-    const maxBuffer = options.maxBuffer ?? 1024 * 128;
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    let timedOut = false;
-
-    const finishReject = (error: Error & { stdout?: string; stderr?: string; code?: number | null; killed?: boolean }) => {
-      if (settled) return;
-      settled = true;
-      error.stdout = stdout;
-      error.stderr = stderr;
-      error.killed = timedOut;
-      reject(error);
-    };
-
-    const append = (
-      streamName: "stdout" | "stderr",
-      chunk: unknown,
-    ) => {
-      const text = String(chunk);
-      if (streamName === "stdout") {
-        stdout += text;
-      } else {
-        stderr += text;
-      }
-      if (Buffer.byteLength(stdout, "utf8") > maxBuffer || Buffer.byteLength(stderr, "utf8") > maxBuffer) {
-        child.kill("SIGTERM");
-        finishReject(Object.assign(new Error(`Process output exceeded maxBuffer of ${maxBuffer} bytes.`), {
-          code: null,
-        }));
-      }
-    };
-
-    let killEscalation: NodeJS.Timeout | null = null;
-    const timeout = options.timeout && options.timeout > 0
-      ? setTimeout(() => {
-          timedOut = true;
-          child.kill("SIGTERM");
-          // Escalate to SIGKILL after a 5s grace window so a hung remote
-          // command that ignores SIGTERM cannot keep the child alive
-          // indefinitely.
-          killEscalation = setTimeout(() => {
-            try {
-              child.kill("SIGKILL");
-            } catch {
-              // child may have already exited between the SIGTERM and the
-              // escalation — that's fine.
-            }
-          }, 5_000);
-          killEscalation.unref?.();
-        }, options.timeout)
-      : null;
-
-    const clearTimers = () => {
-      if (timeout) clearTimeout(timeout);
-      if (killEscalation) clearTimeout(killEscalation);
-    };
-
-    child.stdout?.on("data", (chunk) => {
-      append("stdout", chunk);
-    });
-    child.stderr?.on("data", (chunk) => {
-      append("stderr", chunk);
-    });
-
-    child.on("error", (error) => {
-      clearTimers();
-      finishReject(Object.assign(error, { code: null }));
-    });
-
-    child.on("close", (code, signal) => {
-      clearTimers();
-      if (settled) return;
-      settled = true;
-      if (code === 0) {
-        resolve({ stdout, stderr });
-        return;
-      }
-      reject(Object.assign(new Error(stderr.trim() || stdout.trim() || `Process exited with code ${code ?? -1}`), {
-        stdout,
-        stderr,
-        code,
-        signal,
-        killed: timedOut,
-      }));
-    });
-
-    if (options.stdin != null && child.stdin) {
-      child.stdin.end(options.stdin);
-    }
-  });
-}
-
 async function runLocalGit(
   localDir: string,
   args: string[],
@@ -331,7 +587,7 @@ async function commandExists(command: string): Promise<boolean> {
 
 async function resolveCommandPath(command: string): Promise<string | null> {
   try {
-    const result = await execFileText("sh", ["-c", `command -v ${shellQuote(command)}`], {
+    const result = await execFileText("sh", ["-lc", `command -v ${shellQuote(command)}`], {
       timeout: 5_000,
       maxBuffer: 8 * 1024,
     });
@@ -419,7 +675,7 @@ async function runSshScript(
 ): Promise<SshCommandResult> {
   return await runSshCommand(
     config,
-    script,
+    `sh -lc ${shellQuote(script)}`,
     options,
   );
 }
@@ -500,7 +756,7 @@ async function streamLocalFileToSsh(input: {
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(input.remoteScript)}`,
+    `sh -lc ${shellQuote(input.remoteScript)}`,
   ];
 
   await new Promise<void>((resolve, reject) => {
@@ -549,7 +805,7 @@ async function streamSshToLocalFile(input: {
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(input.remoteScript)}`,
+    `sh -lc ${shellQuote(input.remoteScript)}`,
   ];
 
   await new Promise<void>((resolve, reject) => {
@@ -597,9 +853,7 @@ async function importGitWorkspaceToSsh(input: {
 }): Promise<void> {
   const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-bundle-"));
   const bundlePath = path.join(bundleDir, "workspace.bundle");
-  // Per-import unique ref so concurrent imports against the same local repo
-  // can't race on `update-ref` between this run's update and bundle create.
-  const tempRef = `refs/paperclip/ssh-sync/import/${randomUUID()}`;
+  const tempRef = "refs/paperclip/ssh-sync/import";
 
   try {
     await runLocalGit(input.localDir, ["update-ref", tempRef, input.snapshot.headCommit], {
@@ -620,12 +874,10 @@ async function importGitWorkspaceToSsh(input: {
       `if [ ! -d ${shellQuote(path.posix.join(input.remoteDir, ".git"))} ]; then git init ${shellQuote(input.remoteDir)} >/dev/null; fi`,
       `git -C ${shellQuote(input.remoteDir)} fetch --force "$tmp_bundle" '${tempRef}:${tempRef}' >/dev/null`,
       input.snapshot.branchName
-        ? `git -C ${shellQuote(input.remoteDir)} checkout --force -B ${shellQuote(input.snapshot.branchName)} ${shellQuote(input.snapshot.headCommit)} >/dev/null`
-        : `git -C ${shellQuote(input.remoteDir)} -c advice.detachedHead=false checkout --force --detach ${shellQuote(input.snapshot.headCommit)} >/dev/null`,
+        ? `git -C ${shellQuote(input.remoteDir)} checkout -B ${shellQuote(input.snapshot.branchName)} ${shellQuote(input.snapshot.headCommit)} >/dev/null`
+        : `git -C ${shellQuote(input.remoteDir)} -c advice.detachedHead=false checkout --detach ${shellQuote(input.snapshot.headCommit)} >/dev/null`,
       `git -C ${shellQuote(input.remoteDir)} reset --hard ${shellQuote(input.snapshot.headCommit)} >/dev/null`,
       `git -C ${shellQuote(input.remoteDir)} clean -fdx -e .paperclip-runtime >/dev/null`,
-      // Drop the per-import ref on the remote side too so it can't accumulate.
-      `git -C ${shellQuote(input.remoteDir)} update-ref -d ${shellQuote(tempRef)} >/dev/null 2>&1 || true`,
     ].join("\n");
 
     await streamLocalFileToSsh({
@@ -646,12 +898,10 @@ async function exportGitWorkspaceFromSsh(input: {
   spec: SshRemoteExecutionSpec;
   remoteDir: string;
   localDir: string;
-  importedRef?: string;
-  resetLocalWorkspace?: boolean;
-}): Promise<string> {
+}): Promise<void> {
   const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-bundle-"));
   const bundlePath = path.join(bundleDir, "workspace.bundle");
-  const importedRef = input.importedRef ?? `refs/paperclip/ssh-sync/imported/${randomUUID()}`;
+  const importedRef = "refs/paperclip/ssh-sync/imported";
 
   try {
     const exportScript = [
@@ -675,95 +925,17 @@ async function exportGitWorkspaceFromSsh(input: {
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
     });
-    if (input.resetLocalWorkspace !== false) {
-      await runLocalGit(input.localDir, ["reset", "--hard", importedRef], {
-        timeout: 60_000,
-        maxBuffer: 1024 * 1024,
-      });
-    }
-    const importedHead = await runLocalGit(input.localDir, ["rev-parse", importedRef], {
+    await runLocalGit(input.localDir, ["reset", "--hard", importedRef], {
+      timeout: 60_000,
+      maxBuffer: 1024 * 1024,
+    });
+  } finally {
+    await runLocalGit(input.localDir, ["update-ref", "-d", importedRef], {
       timeout: 10_000,
       maxBuffer: 16 * 1024,
-    });
-    return importedHead.stdout.trim();
-  } finally {
-    if (input.resetLocalWorkspace !== false) {
-      await runLocalGit(input.localDir, ["update-ref", "-d", importedRef], {
-        timeout: 10_000,
-        maxBuffer: 16 * 1024,
-      }).catch(() => undefined);
-    }
+    }).catch(() => undefined);
     await fs.rm(bundleDir, { recursive: true, force: true }).catch(() => undefined);
   }
-}
-
-async function integrateImportedGitHead(input: {
-  localDir: string;
-  importedHead: string;
-}): Promise<void> {
-  const snapshot = await readLocalGitWorkspaceSnapshot(input.localDir);
-  if (!snapshot) return;
-
-  const currentHead = snapshot.headCommit;
-  if (!currentHead || currentHead === input.importedHead) return;
-
-  const headRef = snapshot.branchName ? `refs/heads/${snapshot.branchName}` : "HEAD";
-  const mergeBase = await runLocalGit(input.localDir, ["merge-base", currentHead, input.importedHead], {
-    timeout: 10_000,
-    maxBuffer: 16 * 1024,
-  }).catch(() => null);
-  const mergeBaseHead = mergeBase?.stdout.trim() ?? "";
-
-  if (mergeBaseHead === input.importedHead) {
-    return;
-  }
-
-  if (mergeBaseHead === currentHead) {
-    await runLocalGit(input.localDir, ["update-ref", headRef, input.importedHead, currentHead], {
-      timeout: 10_000,
-      maxBuffer: 16 * 1024,
-    });
-    return;
-  }
-
-  let mergedTree;
-  try {
-    mergedTree = await runLocalGit(input.localDir, ["merge-tree", "--write-tree", currentHead, input.importedHead], {
-      timeout: 60_000,
-      maxBuffer: 256 * 1024,
-    });
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      `Failed to merge concurrent SSH git histories for ${currentHead.slice(0, 12)} and ${input.importedHead.slice(0, 12)}: ${reason}`,
-    );
-  }
-  const mergedTreeId = mergedTree.stdout.trim().split("\n")[0]?.trim() ?? "";
-  if (!mergedTreeId) {
-    throw new Error("Failed to compute a merged git tree for SSH workspace restore.");
-  }
-
-  const mergeCommit = await runLocalGit(
-    input.localDir,
-    [
-      "commit-tree",
-      mergedTreeId,
-      "-p",
-      currentHead,
-      "-p",
-      input.importedHead,
-      "-m",
-      `Paperclip SSH sync merge ${input.importedHead.slice(0, 12)}`,
-    ],
-    {
-      timeout: 60_000,
-      maxBuffer: 64 * 1024,
-    },
-  );
-  await runLocalGit(input.localDir, ["update-ref", headRef, mergeCommit.stdout.trim(), currentHead], {
-    timeout: 10_000,
-    maxBuffer: 16 * 1024,
-  });
 }
 
 async function clearRemoteDirectory(input: {
@@ -887,13 +1059,6 @@ async function isSshEnvLabFixtureProcess(state: Pick<SshEnvLabFixtureState, "pid
 }
 
 export async function getSshEnvLabSupport(): Promise<SshEnvLabSupport> {
-  if (process.platform === "darwin" && process.env.PAPERCLIP_ENABLE_DARWIN_SSH_ENV_LAB !== "1") {
-    return {
-      supported: false,
-      reason: "SSH env-lab fixture is disabled on macOS; set PAPERCLIP_ENABLE_DARWIN_SSH_ENV_LAB=1 to opt in.",
-    };
-  }
-
   for (const command of ["ssh", "sshd", "ssh-keygen"]) {
     if (!(await commandExists(command))) {
       return {
@@ -921,8 +1086,6 @@ export async function runSshCommand(
   config: SshConnectionConfig,
   remoteCommand: string,
   options: {
-    env?: Record<string, string>;
-    stdin?: string;
     timeoutMs?: number;
     maxBuffer?: number;
   } = {},
@@ -932,45 +1095,18 @@ export async function runSshCommand(
     const auth = await createSshAuthArgs(config);
     cleanup = auth.cleanup;
     const sshArgs = [...auth.args];
-    const envEntries = Object.entries(options.env ?? {})
-      .filter((entry): entry is [string, string] => typeof entry[1] === "string");
-    for (const [key] of envEntries) {
-      if (!isValidShellEnvKey(key)) {
-        throw new Error(`Invalid SSH environment variable key: ${key}`);
-      }
-    }
-
-    // Mirror buildSshSpawnTarget: source login profiles first, then run
-    // `env KEY=VAL cmd` so user-supplied identity overrides win over anything
-    // a profile re-exports. Without this, a remote profile that resets HOME
-    // / NVM_DIR / etc. would silently undo the explicit env passed in here.
-    const envArgs = envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`);
-    const remoteScript = [
-      'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
-      'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; fi',
-      'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
-      envArgs.length > 0
-        ? `exec env ${envArgs.join(" ")} sh -c ${shellQuote(remoteCommand)}`
-        : `exec sh -c ${shellQuote(remoteCommand)}`,
-    ].join(" && ");
 
     sshArgs.push(
       "-p",
       String(config.port),
       `${config.username}@${config.host}`,
-      `sh -c ${shellQuote(remoteScript)}`,
+      remoteCommand,
     );
 
-    return options.stdin != null
-      ? await spawnText("ssh", sshArgs, {
-          stdin: options.stdin,
-          timeout: options.timeoutMs ?? 15_000,
-          maxBuffer: options.maxBuffer ?? 1024 * 128,
-        })
-      : await execFileText("ssh", sshArgs, {
-          timeout: options.timeoutMs ?? 15_000,
-          maxBuffer: options.maxBuffer ?? 1024 * 128,
-        });
+    return await execFileText("ssh", sshArgs, {
+      timeout: options.timeoutMs ?? 15_000,
+      maxBuffer: options.maxBuffer ?? 1024 * 128,
+    });
   } finally {
     await cleanup();
   }
@@ -995,7 +1131,23 @@ export async function buildSshSpawnTarget(input: {
   const sshArgs = [...auth.args];
   const envArgs = Object.entries(input.env)
     .filter((entry): entry is [string, string] => typeof entry[1] === "string")
-    .map(([key, value]) => `${key}=${shellQuote(value)}`);
+    .map(([key, value]) => {
+      if (key === "PATH") {
+        // Pod-injected PATH gets prepended so paperclip-specific bins still win
+        // for name collisions, but the host's PATH (with NVM bins, ~/.local/bin,
+        // etc. just sourced from .profile/.bash_profile/nvm.sh above) is
+        // preserved by suffixing $PATH. Without this, `env PATH=…` clobbered
+        // the freshly-sourced login-shell PATH and any host-installed binary
+        // (claude, codex, opencode) became unreachable — surfaced as
+        // `exit 127, env: 'claude': No such file or directory` on the first
+        // claude_local-over-SSH heartbeat. The pod's PATH on its own contains
+        // none of the user-scoped bins where these CLIs are installed, so
+        // an override-style PATH is a category error here regardless of
+        // which adapter is calling.
+        return `PATH=${shellQuote(value)}:"$PATH"`;
+      }
+      return `${key}=${shellQuote(value)}`;
+    });
   const remoteCommandParts = [shellQuote(input.command), ...input.args.map((arg) => shellQuote(arg))].join(" ");
   const remoteScript = [
     'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
@@ -1013,7 +1165,7 @@ export async function buildSshSpawnTarget(input: {
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(remoteScript)}`,
+    `sh -lc ${shellQuote(remoteScript)}`,
   );
 
   return {
@@ -1031,12 +1183,24 @@ export async function syncDirectoryToSsh(input: {
   followSymlinks?: boolean;
 }): Promise<void> {
   const auth = await createSshAuthArgs(input.spec);
+  // --overwrite keeps the remote extract idempotent when the destination
+  // already has files at incoming paths. Without it, leftover scratch from a
+  // prior run (e.g. release-eng-tmp/) crashes the extract with "Cannot open:
+  // File exists" and strands the next adapter run. See BLO-1497. --overwrite
+  // alone resolves the file-over-file case driving the bug; we do not pair
+  // --overwrite-dir because no flag will let tar clobber a non-empty
+  // directory with a regular file. Those genuine type-mismatch collisions
+  // still error and surface through WorkspaceImportConflictError below so
+  // the recovery owner sees the offending path. We also force LC_ALL=C on
+  // the remote so tar emits English error strings — extractTarConflictPaths
+  // matches on those signatures, and a localised host (LANG=de_DE etc.)
+  // would otherwise silently fail to surface as workspace_import_conflict.
   const sshArgs = [
     ...auth.args,
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(`mkdir -p ${shellQuote(input.remoteDir)} && tar -xf - -C ${shellQuote(input.remoteDir)}`)}`,
+    `sh -lc ${shellQuote(`mkdir -p ${shellQuote(input.remoteDir)} && LC_ALL=C tar --overwrite -xf - -C ${shellQuote(input.remoteDir)}`)}`,
   ];
 
   await new Promise<void>((resolve, reject) => {
@@ -1075,6 +1239,17 @@ export async function syncDirectoryToSsh(input: {
         return;
       }
       if ((sshExitCode ?? 0) !== 0) {
+        const conflictPaths = extractTarConflictPaths(sshStderr);
+        if (conflictPaths.length > 0) {
+          reject(
+            new WorkspaceImportConflictError({
+              paths: conflictPaths,
+              stderr: sshStderr,
+              remoteDir: input.remoteDir,
+            }),
+          );
+          return;
+        }
         reject(new Error(sshStderr.trim() || `ssh exited with code ${sshExitCode ?? -1}`));
         return;
       }
@@ -1091,12 +1266,23 @@ export async function syncDirectoryToSsh(input: {
       reject(error);
     };
 
+    // Cap stderr accumulation. spawn() has no maxBuffer, and a misconfigured
+    // remote shell or pathological tar output could otherwise grow these
+    // strings until OOM. 512 KiB is well above what a real conflict report
+    // produces; once the cap is hit we keep the head (where the conflict
+    // signatures live) and drop further bytes.
+    const STDERR_CAP_BYTES = 512 * 1024;
+    const appendCapped = (current: string, chunk: unknown) => {
+      if (current.length >= STDERR_CAP_BYTES) return current;
+      const next = current + String(chunk);
+      return next.length > STDERR_CAP_BYTES ? next.slice(0, STDERR_CAP_BYTES) : next;
+    };
     tar.stdout?.pipe(ssh.stdin ?? null);
     tar.stderr?.on("data", (chunk) => {
-      tarStderr += String(chunk);
+      tarStderr = appendCapped(tarStderr, chunk);
     });
     ssh.stderr?.on("data", (chunk) => {
-      sshStderr += String(chunk);
+      sshStderr = appendCapped(sshStderr, chunk);
     });
 
     tar.on("error", fail);
@@ -1132,7 +1318,7 @@ export async function syncDirectoryFromSsh(input: {
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(remoteTarScript)}`,
+    `sh -lc ${shellQuote(remoteTarScript)}`,
   ];
 
   try {
@@ -1209,7 +1395,7 @@ export async function prepareWorkspaceForSshExecution(input: {
   spec: SshRemoteExecutionSpec;
   localDir: string;
   remoteDir?: string;
-}): Promise<{ gitBacked: boolean }> {
+}): Promise<void> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
   const gitSnapshot = await readLocalGitWorkspaceSnapshot(input.localDir);
 
@@ -1231,7 +1417,7 @@ export async function prepareWorkspaceForSshExecution(input: {
       remoteDir,
       deletedPaths: gitSnapshot.deletedPaths,
     });
-    return { gitBacked: true };
+    return;
   }
 
   await clearRemoteDirectory({
@@ -1245,64 +1431,14 @@ export async function prepareWorkspaceForSshExecution(input: {
     remoteDir,
     exclude: [".paperclip-runtime"],
   });
-  return { gitBacked: false };
 }
 
 export async function restoreWorkspaceFromSshExecution(input: {
   spec: SshRemoteExecutionSpec;
   localDir: string;
   remoteDir?: string;
-  baselineSnapshot?: DirectorySnapshot;
-  restoreGitHistory?: boolean;
 }): Promise<void> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
-  if (input.baselineSnapshot) {
-    const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
-    const importedRef = input.restoreGitHistory
-      ? `refs/paperclip/ssh-sync/imported/${randomUUID()}`
-      : null;
-    try {
-      const importedHead = input.restoreGitHistory
-        ? await exportGitWorkspaceFromSsh({
-          spec: input.spec,
-          remoteDir,
-          localDir: input.localDir,
-          importedRef: importedRef ?? undefined,
-          resetLocalWorkspace: false,
-        })
-        : null;
-      await syncDirectoryFromSsh({
-        spec: input.spec,
-        remoteDir,
-        localDir: stagingDir,
-        exclude: input.baselineSnapshot.exclude,
-      });
-      await mergeDirectoryWithBaseline({
-        baseline: input.baselineSnapshot,
-        sourceDir: stagingDir,
-        targetDir: input.localDir,
-        // Git history advances via integrateImportedGitHead; the working tree
-        // still comes from the remote file snapshot so dirty remote edits win.
-        beforeApply: importedHead
-          ? async () => {
-            await integrateImportedGitHead({
-              localDir: input.localDir,
-              importedHead,
-            });
-          }
-          : undefined,
-      });
-    } finally {
-      if (importedRef) {
-        await runLocalGit(input.localDir, ["update-ref", "-d", importedRef], {
-          timeout: 10_000,
-          maxBuffer: 16 * 1024,
-        }).catch(() => undefined);
-      }
-      await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
-    }
-    return;
-  }
   const gitSnapshot = await readLocalGitWorkspaceSnapshot(input.localDir);
 
   if (gitSnapshot) {
@@ -1334,7 +1470,7 @@ export async function ensureSshWorkspaceReady(
 ): Promise<{ remoteCwd: string }> {
   const result = await runSshCommand(
     config,
-    `mkdir -p ${shellQuote(config.remoteWorkspacePath)} && cd ${shellQuote(config.remoteWorkspacePath)} && pwd`,
+    `sh -lc ${shellQuote(`mkdir -p ${shellQuote(config.remoteWorkspacePath)} && cd ${shellQuote(config.remoteWorkspacePath)} && pwd`)}`,
   );
   return {
     remoteCwd: result.stdout.trim(),
