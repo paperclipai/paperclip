@@ -51,6 +51,7 @@ import {
   describeClaudeFailure,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
+  isClaudeImageProcessingError,
   isClaudeMaxTurnsResult,
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
@@ -943,17 +944,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   try {
     const initial = await runAttempt(sessionId ?? null);
-    if (
+    const isUnknownSession =
       sessionId &&
       !initial.proc.timedOut &&
       (initial.proc.exitCode ?? 0) !== 0 &&
       initial.parsed &&
-      isClaudeUnknownSessionError(initial.parsed)
-    ) {
-      await onLog(
-        "stdout",
-        `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
-      );
+      isClaudeUnknownSessionError(initial.parsed);
+    // Image-processing errors exit with code 0 (subtype:"success", is_error:true), so the
+    // exit-code gate used for unknown-session errors would never fire for them.
+    const isImageErrorOnResume =
+      sessionId && !initial.proc.timedOut && initial.parsed && isClaudeImageProcessingError(initial.parsed);
+    if (isUnknownSession || isImageErrorOnResume) {
+      const reason = isImageErrorOnResume ? `stored session contains an unprocessable image` : `is unavailable`;
+      await onLog("stdout", `[paperclip] Claude resume session "${sessionId}" ${reason}; retrying with a fresh session.\n`);
       const retry = await runAttempt(null);
       return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
     }
