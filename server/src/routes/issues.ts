@@ -1267,7 +1267,8 @@ export function issueRoutes(
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
-    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null; executionState?: unknown },
+    options: { allowExecutionReviewHandoff?: boolean } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -1281,6 +1282,15 @@ export function issueRoutes(
     if (issue.assigneeAgentId !== actorAgentId) {
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
+      }
+      const executionState = parseIssueExecutionState(issue.executionState);
+      const isCurrentExecutionParticipant =
+        issue.status === "in_review" &&
+        executionState?.status === "pending" &&
+        executionState.currentParticipant?.type === "agent" &&
+        executionState.currentParticipant.agentId === actorAgentId;
+      if (options.allowExecutionReviewHandoff && isCurrentExecutionParticipant) {
+        return !!requireAgentRunId(req, res);
       }
       if (issue.status === "in_progress") {
         res.status(409).json({
@@ -1411,6 +1421,23 @@ export function issueRoutes(
       },
     });
     return false;
+  }
+
+  function isExecutionReviewDecisionPatchBody(body: unknown) {
+    if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+    const patch = body as Record<string, unknown>;
+    const keys = Object.keys(patch);
+    if (!keys.every((key) => key === "status" || key === "comment")) return false;
+    if (patch.status !== "done" && patch.status !== "in_progress") return false;
+    return typeof patch.comment === "string" && patch.comment.trim().length > 0;
+  }
+
+  function isExecutionReviewHandoffCommentBody(body: unknown) {
+    if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+    const input = body as Record<string, unknown>;
+    const keys = Object.keys(input);
+    if (!keys.every((key) => key === "body")) return false;
+    return typeof input.body === "string" && input.body.trim().length > 0;
   }
 
   function assertStructuredCommentFieldsAllowed(
@@ -3327,7 +3354,9 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, {
+      allowExecutionReviewHandoff: isExecutionReviewDecisionPatchBody(req.body),
+    }))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -4954,7 +4983,9 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue, {
+      allowExecutionReviewHandoff: isExecutionReviewHandoffCommentBody(req.body),
+    }))) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
