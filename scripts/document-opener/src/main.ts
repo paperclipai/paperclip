@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { loadConfig } from "./config.js";
+import { DEFAULT_PORT, loadConfig } from "./config.js";
 import { createServer } from "./server.js";
 
 async function main() {
@@ -11,7 +11,7 @@ async function main() {
     console.error(`[document-opener] config missing or invalid at ${configPath}; server will reject all requests with 503`);
   }
 
-  const port = config?.port ?? 19327;
+  const port = config?.port ?? DEFAULT_PORT;
   const running = await createServer({ config, port });
   console.log(`[document-opener] listening on 127.0.0.1:${port} (roots: ${config?.roots.join(", ") ?? "<none>"})`);
 
