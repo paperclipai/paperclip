@@ -49,9 +49,9 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
     label: "Cheap",
-    description: "Use the lowest-cost known Codex local model lane without changing the primary model.",
+    description: "Use a stable low-cost Codex local model lane without changing the primary model.",
     adapterConfig: {
-      model: "gpt-5.3-codex-spark",
+      model: "gpt-5.3-codex",
       modelReasoningEffort: "low",
     },
     source: "adapter_default",

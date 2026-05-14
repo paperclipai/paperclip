@@ -288,6 +288,7 @@ export {
 export {
   envBindingPlainSchema,
   envBindingSecretRefSchema,
+  envBindingOAuthTokenSchema,
   envBindingSchema,
   envConfigSchema,
   createSecretSchema,

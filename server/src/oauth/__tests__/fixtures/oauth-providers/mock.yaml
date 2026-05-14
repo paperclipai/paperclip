@@ -1,0 +1,20 @@
+id: mock
+displayName: Mock
+clientCredentials:
+  clientIdEnv: MOCK_OAUTH_CLIENT_ID
+  clientSecretEnv: MOCK_OAUTH_CLIENT_SECRET
+endpoints:
+  authorize: https://mock.example/auth
+  token: https://mock.example/token
+  accountInfo: https://mock.example/me
+scopes:
+  default: [read]
+  offered: [read, write]
+pkce: required
+authMethod: post
+responseFormat: json
+accountIdField: id
+accountLabelField: name
+refresh:
+  supported: true
+  rotatesRefreshToken: true
