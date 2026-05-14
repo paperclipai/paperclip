@@ -498,6 +498,12 @@ describe("readCodexToken", () => {
 // fetchClaudeQuota — response parsing
 // ---------------------------------------------------------------------------
 
+// fetchClaudeQuota holds a process-local cache keyed by token.slice(0, 16).
+// Each test below uses a unique 16-char token prefix so it starts cold —
+// matching the convention established in packages/adapters/claude-local/src/
+// server/quota.test.ts. Reusing "token" across tests would cache the first
+// result (e.g. an empty array from the "empty body" test) and poison every
+// subsequent test (BLO-3804).
 describe("fetchClaudeQuota", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn());
@@ -517,18 +523,18 @@ describe("fetchClaudeQuota", () => {
 
   it("throws when the API returns a non-200 status", async () => {
     mockFetch({}, false, 401);
-    await expect(fetchClaudeQuota("token")).rejects.toThrow("anthropic usage api returned 401");
+    await expect(fetchClaudeQuota("token-throws-401")).rejects.toThrow("anthropic usage api returned 401");
   });
 
   it("returns an empty array when all window fields are absent", async () => {
     mockFetch({});
-    const windows = await fetchClaudeQuota("token");
+    const windows = await fetchClaudeQuota("token-empty-body");
     expect(windows).toEqual([]);
   });
 
   it("parses five_hour window with percentage-range utilization", async () => {
     mockFetch({ five_hour: { utilization: 34.0, resets_at: "2026-01-01T00:00:00Z" } });
-    const windows = await fetchClaudeQuota("token");
+    const windows = await fetchClaudeQuota("token-5hour-pct-");
     expect(windows).toHaveLength(1);
     expect(windows[0]).toMatchObject({
       label: "Current session",
@@ -539,7 +545,7 @@ describe("fetchClaudeQuota", () => {
 
   it("parses seven_day window with percentage-range utilization", async () => {
     mockFetch({ seven_day: { utilization: 91.0, resets_at: null } });
-    const windows = await fetchClaudeQuota("token");
+    const windows = await fetchClaudeQuota("token-7day-pct--");
     expect(windows).toHaveLength(1);
     expect(windows[0]).toMatchObject({
       label: "Current week (all models)",
@@ -550,7 +556,7 @@ describe("fetchClaudeQuota", () => {
 
   it("still handles legacy 0-1 fraction utilization", async () => {
     mockFetch({ five_hour: { utilization: 0.4, resets_at: null } });
-    const windows = await fetchClaudeQuota("token");
+    const windows = await fetchClaudeQuota("token-legacy-frc");
     expect(windows[0]).toMatchObject({
       label: "Current session",
       usedPercent: 40,
@@ -562,7 +568,7 @@ describe("fetchClaudeQuota", () => {
       seven_day_sonnet: { utilization: 23.0, resets_at: null },
       seven_day_opus: { utilization: 85.0, resets_at: null },
     });
-    const windows = await fetchClaudeQuota("token");
+    const windows = await fetchClaudeQuota("token-sonnet-opu");
     expect(windows).toHaveLength(2);
     expect(windows[0]!.label).toBe("Current week (Sonnet only)");
     expect(windows[0]!.usedPercent).toBe(23);
@@ -572,7 +578,7 @@ describe("fetchClaudeQuota", () => {
 
   it("sets usedPercent to null when utilization is absent", async () => {
     mockFetch({ five_hour: { resets_at: null } });
-    const windows = await fetchClaudeQuota("token");
+    const windows = await fetchClaudeQuota("token-no-utiliz-");
     expect(windows[0]!.usedPercent).toBe(null);
   });
 
@@ -583,7 +589,7 @@ describe("fetchClaudeQuota", () => {
       seven_day_sonnet: { utilization: 30.0, resets_at: null },
       seven_day_opus: { utilization: 40.0, resets_at: null },
     });
-    const windows = await fetchClaudeQuota("token");
+    const windows = await fetchClaudeQuota("token-all-window");
     expect(windows).toHaveLength(4);
     const labels = windows.map((w: QuotaWindow) => w.label);
     expect(labels).toEqual([
@@ -602,7 +608,7 @@ describe("fetchClaudeQuota", () => {
         utilization: null,
       },
     });
-    const windows = await fetchClaudeQuota("token");
+    const windows = await fetchClaudeQuota("token-extra-off-");
     expect(windows).toEqual([
       {
         label: "Extra usage",
@@ -623,7 +629,7 @@ describe("fetchClaudeQuota", () => {
         utilization: 48.52,
       },
     });
-    const windows = await fetchClaudeQuota("token");
+    const windows = await fetchClaudeQuota("token-extra-cred");
     expect(windows).toHaveLength(1);
     expect(windows[0]).toMatchObject({
       label: "Extra usage",

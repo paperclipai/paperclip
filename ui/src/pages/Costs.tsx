@@ -965,6 +965,7 @@ export function Costs() {
                         <ProviderQuotaCard
                           key={provider}
                           provider={provider}
+                          companyId={companyId}
                           rows={byProvider.get(provider) ?? []}
                           budgetMonthlyCents={spendData?.summary.budgetCents ?? 0}
                           totalCompanySpendCents={spendData?.summary.spendCents ?? 0}
@@ -985,6 +986,7 @@ export function Costs() {
                   <TabsContent key={provider} value={provider} className="mt-4">
                     <ProviderQuotaCard
                       provider={provider}
+                      companyId={companyId}
                       rows={byProvider.get(provider) ?? []}
                       budgetMonthlyCents={spendData?.summary.budgetCents ?? 0}
                       totalCompanySpendCents={spendData?.summary.spendCents ?? 0}

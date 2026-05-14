@@ -8,7 +8,27 @@ import type { ProviderQuotaResult, QuotaWindow } from "@paperclipai/adapter-util
 const execFileAsync = promisify(execFile);
 
 const CLAUDE_USAGE_SOURCE_OAUTH = "anthropic-oauth";
+const CLAUDE_USAGE_SOURCE_OAUTH_STALE = "anthropic-oauth-stale";
 const CLAUDE_USAGE_SOURCE_CLI = "claude-cli";
+
+// Process-local cache for OAuth /usage responses. The endpoint rate-limits
+// per access-token (429 after ~10-20 calls/min). Without caching, heartbeat
+// + UI polls + tier-gate all hammer the same active-account token and 429
+// becomes the steady state. 60s freshness is fine — the windows (5h / 7d)
+// don't move that fast — and a "stale" entry is kept indefinitely so we
+// can serve last-known-good when a fresh call hits a rate limit. Keyed by
+// token prefix to avoid keeping the full secret in memory longer than the
+// fetch needs.
+const QUOTA_CACHE_FRESH_MS = 60_000;
+type QuotaCacheEntry = { windows: QuotaWindow[]; freshUntil: number; cachedAt: number };
+const quotaCache = new Map<string, QuotaCacheEntry>();
+function tokenCacheKey(token: string): string {
+  return token.slice(0, 16);
+}
+function isRateLimitError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b429\b|rate.?limit/i.test(message);
+}
 
 export function claudeConfigDir(): string {
   const fromEnv = process.env.CLAUDE_CONFIG_DIR;
@@ -210,6 +230,10 @@ export async function fetchWithTimeout(url: string, init: RequestInit, ms = 8000
 }
 
 export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
+  const cacheKey = tokenCacheKey(token);
+  const cached = quotaCache.get(cacheKey);
+  if (cached && cached.freshUntil > Date.now()) return cached.windows;
+
   const resp = await fetchWithTimeout("https://api.anthropic.com/api/oauth/usage", {
     headers: {
       Authorization: `Bearer ${token}`,
@@ -271,6 +295,8 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
           : "Monthly extra usage pool",
     });
   }
+  const now = Date.now();
+  quotaCache.set(cacheKey, { windows, freshUntil: now + QUOTA_CACHE_FRESH_MS, cachedAt: now });
   return windows;
 }
 
@@ -499,14 +525,37 @@ export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
       return { provider: "anthropic", source: CLAUDE_USAGE_SOURCE_OAUTH, ok: true, windows };
     } catch (error) {
       errors.push(formatProviderError("Anthropic OAuth usage", error));
+      // 429 from Anthropic's usage endpoint is per-token rate limit. The
+      // CLI fallback below uses the same OAuth token internally, so it
+      // would 429 too. Serve the last-known-good cached windows instead;
+      // they're at most a few minutes stale, which is fine for a UI that
+      // shows hour-scale and week-scale windows.
+      if (isRateLimitError(error)) {
+        const stale = quotaCache.get(tokenCacheKey(token));
+        if (stale) {
+          return {
+            provider: "anthropic",
+            source: CLAUDE_USAGE_SOURCE_OAUTH_STALE,
+            ok: true,
+            windows: stale.windows,
+          };
+        }
+      }
     }
   }
 
-  try {
-    const windows = await fetchClaudeCliQuota();
-    return { provider: "anthropic", source: CLAUDE_USAGE_SOURCE_CLI, ok: true, windows };
-  } catch (error) {
-    errors.push(formatProviderError("Claude CLI /usage", error));
+  // CLI fallback only fires when there's no OAuth token to use (rare —
+  // typically only during a credential rotation gap). When a token exists
+  // and the OAuth path failed for some non-429 reason, the CLI path uses
+  // the same token under the hood and would fail the same way; skipping
+  // it avoids an avoidable 12s PTY hang on every poll.
+  if (!token) {
+    try {
+      const windows = await fetchClaudeCliQuota();
+      return { provider: "anthropic", source: CLAUDE_USAGE_SOURCE_CLI, ok: true, windows };
+    } catch (error) {
+      errors.push(formatProviderError("Claude CLI /usage", error));
+    }
   }
 
   if (hasNonEmptyProcessEnv("ANTHROPIC_API_KEY") && !authDescription) {
