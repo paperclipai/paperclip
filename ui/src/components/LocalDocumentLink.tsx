@@ -56,7 +56,8 @@ export function LocalDocumentLink({ href, children }: LocalDocumentLinkProps) {
         onClick={handleOpen}
         className={cn(
           "ml-1 inline-flex h-4 w-4 items-center justify-center align-[-0.125em]",
-          disabled && "opacity-40 cursor-not-allowed",
+          "text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300",
+          disabled && "opacity-40 cursor-not-allowed hover:text-blue-600 dark:hover:text-blue-400",
         )}
       >
         <SquareArrowOutUpRight aria-hidden="true" className="h-3.5 w-3.5" />
@@ -69,7 +70,8 @@ export function LocalDocumentLink({ href, children }: LocalDocumentLinkProps) {
         onClick={handleReveal}
         className={cn(
           "ml-1 inline-flex h-4 w-4 items-center justify-center align-[-0.125em]",
-          disabled && "opacity-40 cursor-not-allowed",
+          "text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300",
+          disabled && "opacity-40 cursor-not-allowed hover:text-blue-600 dark:hover:text-blue-400",
         )}
       >
         <FolderOpen aria-hidden="true" className="h-3.5 w-3.5" />
