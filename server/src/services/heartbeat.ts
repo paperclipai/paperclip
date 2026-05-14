@@ -8386,6 +8386,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const isFinishSuccessfulRunHandoffRun =
         readNonEmptyString(parseObject(run.contextSnapshot).wakeReason) === "finish_successful_run_handoff";
       const isIssueContinuationRecoveryRun = didAutomaticRecoveryAttempt(run, "issue_continuation_needed");
+      const isMissingIssueCommentRecoveryRun =
+        run.issueCommentStatus === "retry_queued" ||
+        run.issueCommentStatus === "retry_exhausted" ||
+        readNonEmptyString(parseObject(run.contextSnapshot).retryReason) === "missing_issue_comment";
       const issueNeedsImmediateRecovery =
         !issue.assigneeUserId &&
         issue.assigneeAgentId === run.agentId &&
@@ -8397,6 +8401,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           (
             issue.status === "in_progress" &&
             !isFinishSuccessfulRunHandoffRun &&
+            !isMissingIssueCommentRecoveryRun &&
             (
               run.status === "failed" ||
               run.status === "timed_out" ||
