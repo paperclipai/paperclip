@@ -36,6 +36,7 @@ import {
 } from "./routes/instance-database-backups.js";
 import { llmRoutes } from "./routes/llms.js";
 import { authRoutes } from "./routes/auth.js";
+import { portalCallbackRoutes } from "./routes/portal-callback.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
@@ -170,6 +171,7 @@ export async function createApp(
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
   }
+  app.use(portalCallbackRoutes(db));
   app.use(llmRoutes(db));
 
   const hostServicesDisposers = new Map<string, () => void>();
