@@ -17,6 +17,8 @@ function snapshot(
     serviceTier?: string | null;
     reset5h?: number | null;
     reset7d?: number | null;
+    utilization5h?: number | null;
+    utilization7d?: number | null;
   }>,
 ): CcrotateTierCacheSnapshot {
   return {
@@ -26,11 +28,16 @@ function snapshot(
       status: "success",
       serviceTier: a.serviceTier ?? null,
       rateLimits:
-        a.reset5h === undefined && a.reset7d === undefined
+        a.reset5h === undefined
+          && a.reset7d === undefined
+          && a.utilization5h === undefined
+          && a.utilization7d === undefined
           ? null
           : {
             reset5h: a.reset5h ?? null,
             reset7d: a.reset7d ?? null,
+            utilization5h: a.utilization5h ?? null,
+            utilization7d: a.utilization7d ?? null,
           },
     })),
   };
@@ -272,6 +279,61 @@ describe("evaluateTierCacheSnapshot", () => {
     );
     expect(result.allow).toBe(false);
     expect(result.resumeAt).not.toBeNull();
+  });
+
+  it("picks the Claude base account with lowest utilization, not first-in-cache", () => {
+    // Regression: tier-gate used to return the FIRST base-tier account in
+    // cache order, ignoring rate-limit utilization. Result: it switched to
+    // a "base" account whose 5h window was already at 100%, so the agent
+    // pod immediately hit `out_of_credits overage rejected`. Observed
+    // 2026-05-14 with ramadan@blockcast.net (5h:100%) being picked over
+    // berkeley.edu (5h:27%). Fix: rank by max(util5h,util7d) ascending,
+    // skip any account >=99% practical-exhaustion.
+    const result = evaluateTierCacheSnapshot(
+      "claude",
+      snapshot([
+        { email: "first-but-full@x.com", serviceTier: "base", utilization5h: 100, utilization7d: 18 },
+        { email: "second-also-full@x.com", serviceTier: "base", utilization5h: 95, utilization7d: 17 },
+        { email: "fresh@x.com", serviceTier: "base", utilization5h: 27, utilization7d: 70 },
+      ]),
+      now,
+    );
+    expect(result.allow).toBe(true);
+    expect(result.usableAccount).toBe("fresh@x.com");
+  });
+
+  it("defers when every Claude base account is at >=99% in either window", () => {
+    // Edge case: tier-cache says all base accounts but they're all
+    // practically empty. Fall through to deferral (same as no base
+    // candidates) rather than spawning a doomed agent.
+    const reset = Math.floor(now.getTime() / 1000) + 3600;
+    const result = evaluateTierCacheSnapshot(
+      "claude",
+      snapshot([
+        { email: "a@x.com", serviceTier: "base", utilization5h: 100, utilization7d: 50, reset5h: reset },
+        { email: "b@x.com", serviceTier: "base", utilization5h: 99, utilization7d: 60, reset5h: reset },
+      ]),
+      now,
+    );
+    expect(result.allow).toBe(false);
+    expect(result.usableAccount).toBeNull();
+  });
+
+  it("treats Claude base account with no utilization data as eligible (mid-rank)", () => {
+    // Older ccrotate cache versions / accounts on Usage API cooldown omit
+    // utilization fields. Don't punish them — accept them at neutral rank
+    // (score 50) so they win over known-100% accounts but lose to
+    // known-low-util accounts.
+    const result = evaluateTierCacheSnapshot(
+      "claude",
+      snapshot([
+        { email: "full@x.com", serviceTier: "base", utilization5h: 100, utilization7d: 18 },
+        { email: "unknown-util@x.com", serviceTier: "base" },
+      ]),
+      now,
+    );
+    expect(result.allow).toBe(true);
+    expect(result.usableAccount).toBe("unknown-util@x.com");
   });
 });
 

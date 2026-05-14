@@ -37,6 +37,15 @@ export interface CcrotateTierCacheAccount {
   rateLimits?: {
     reset5h?: number | null;
     reset7d?: number | null;
+    /**
+     * Percent of the 5-hour rolling Claude window consumed (0–100).
+     * Surfaced by `ccrotate refresh` from Anthropic's per-account usage API.
+     * Optional because cached snapshots from older ccrotate versions, or
+     * accounts whose Usage API is on cooldown, omit it.
+     */
+    utilization5h?: number | null;
+    /** Percent of the 7-day rolling Claude window consumed (0–100). */
+    utilization7d?: number | null;
   } | null;
 }
 
@@ -179,17 +188,67 @@ function pickEarliestFutureResetEpoch(
  * `allow=true`, `usableAccount` is the email the gate will switch ccrotate to
  * — the first usable account in tier-cache order.
  */
+/**
+ * Score an account by remaining utilization headroom across both Claude
+ * windows. Lower is better (less consumed). Accounts with no utilization
+ * data fall back to a neutral mid-range so they tie-break behind
+ * accounts with KNOWN low utilization but ahead of accounts at >99%.
+ *
+ * Why: `serviceTier === "base"` only says the org HAS capacity. It does
+ * NOT say the immediate 5h window has headroom. Without ranking by
+ * utilization, the gate picks the first base account in cache order —
+ * and that first account is often the one paperclip just exhausted
+ * (5h:100%). Symptom: tier-gate switches active to a "base" account,
+ * agent spawns, claude wrapper exits with `out_of_credits overage
+ * rejected` on the first API call. Observed 2026-05-14 with
+ * `ramadan@blockcast.net` (base, 5h:100%) being picked while
+ * `omar.ramadan@berkeley.edu` (base, 5h:27%) sat unused.
+ */
+function utilizationScore(account: CcrotateTierCacheAccount): number {
+  const u5 = account.rateLimits?.utilization5h;
+  const u7 = account.rateLimits?.utilization7d;
+  if (typeof u5 !== "number" && typeof u7 !== "number") return 50; // unknown
+  return Math.max(typeof u5 === "number" ? u5 : 0, typeof u7 === "number" ? u7 : 0);
+}
+
+/**
+ * Threshold above which a "base"-tier account is treated as practically
+ * exhausted. 99% leaves enough room for tiny probe calls but not for a
+ * real agent run, which is the right gate (a real run will burn through
+ * the last 1% on input alone and hit `out_of_credits` mid-tool-call).
+ */
+const PRACTICAL_EXHAUSTION_PCT = 99;
+
 export function evaluateTierCacheSnapshot(
   target: CcrotateTarget,
   snapshot: CcrotateTierCacheSnapshot,
   now: Date,
 ): { allow: boolean; resumeAt: Date | null; usableAccount: string | null } {
   const usable = USABLE_TIERS[target];
+
+  // Collect candidates: success-status AND tier in {base,extra}/{available,near_limit}.
+  const candidates: CcrotateTierCacheAccount[] = [];
   for (const account of snapshot.accounts) {
     if (account.status && account.status !== "success") continue;
     if (account.serviceTier && usable.has(account.serviceTier)) {
-      return { allow: true, resumeAt: null, usableAccount: account.email };
+      candidates.push(account);
     }
+  }
+
+  // For Claude, rank by utilization headroom and skip ones already at >=99%
+  // in either window (they will out_of_credits on the next real call).
+  // Codex has no equivalent utilization fields in its tier-cache so it falls
+  // through to first-match (legacy behavior).
+  if (target === "claude" && candidates.length > 0) {
+    const viable = candidates
+      .filter((a) => utilizationScore(a) < PRACTICAL_EXHAUSTION_PCT)
+      .sort((a, b) => utilizationScore(a) - utilizationScore(b));
+    if (viable.length > 0) {
+      return { allow: true, resumeAt: null, usableAccount: viable[0].email };
+    }
+    // All "base" candidates are >=99% used — fall through to deferral.
+  } else if (candidates.length > 0) {
+    return { allow: true, resumeAt: null, usableAccount: candidates[0].email };
   }
 
   // Inconclusive-snapshot fallback. When Anthropic's per-account Usage API is
