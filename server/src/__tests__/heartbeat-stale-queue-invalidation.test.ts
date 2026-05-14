@@ -2,12 +2,21 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
   agents,
+  agentRuntimeState,
   agentWakeupRequests,
   companies,
+  companySkills,
   createDb,
+  documentRevisions,
+  documents,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueDocuments,
+  issueRelations,
+  issueTreeHolds,
   issues,
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
