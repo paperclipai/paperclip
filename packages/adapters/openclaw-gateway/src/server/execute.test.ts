@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveSessionKey } from "./execute.js";
+import { resolveClaimedApiKeyPath, resolveSessionKey } from "./execute.js";
 
 describe("resolveSessionKey", () => {
   it("prefixes run-scoped session keys with the configured agent", () => {
@@ -48,5 +48,40 @@ describe("resolveSessionKey", () => {
         issueId: null,
       }),
     ).toBe("agent:meridian:paperclip");
+  });
+
+  it("does not prefix the shared main gateway agent", () => {
+    expect(
+      resolveSessionKey({
+        strategy: "fixed",
+        configuredSessionKey: "paperclip",
+        agentId: "main",
+        runId: "run-123",
+        issueId: null,
+      }),
+    ).toBe("paperclip");
+  });
+});
+
+describe("resolveClaimedApiKeyPath", () => {
+  it("uses an explicit claimed API key path when configured", () => {
+    expect(
+      resolveClaimedApiKeyPath({
+        agentId: "kimi",
+        claimedApiKeyPath: "/tmp/kimi/key.json",
+      }),
+    ).toBe("/tmp/kimi/key.json");
+  });
+
+  it("defaults non-main gateway agents to isolated workspace key paths", () => {
+    expect(resolveClaimedApiKeyPath({ agentId: "Kimi" })).toBe(
+      "~/.openclaw/workspace-kimi/paperclip-claimed-api-key.json",
+    );
+  });
+
+  it("keeps the shared workspace path for the main gateway agent", () => {
+    expect(resolveClaimedApiKeyPath({ agentId: "main" })).toBe(
+      "~/.openclaw/workspace/paperclip-claimed-api-key.json",
+    );
   });
 });
