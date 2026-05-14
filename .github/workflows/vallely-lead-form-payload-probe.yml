@@ -1,8 +1,6 @@
 name: Vallely Lead Form Payload Probe
 
 on:
-  schedule:
-    - cron: "*/30 * * * *"
   workflow_dispatch:
 
 jobs:
