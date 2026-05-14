@@ -407,4 +407,52 @@ describe("SidebarAgents", () => {
 
     expect(mockAgentsApi.resume).not.toHaveBeenCalled();
   });
+
+  it("renders expand controls outside the navigation link for parent agents", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "agent-1", name: "CEO", urlKey: "ceo" }),
+      makeAgent({ id: "agent-2", name: "Engineer", urlKey: "engineer", reportsTo: "agent-1" }),
+    ]);
+    const currentRoot = createRoot(container);
+    root = currentRoot;
+
+    await act(async () => {
+      currentRoot.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAgents />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const expandButton = document.body.querySelector(
+      'button[aria-label="Collapse CEO"], button[aria-label="Expand CEO"]',
+    );
+    expect(expandButton).not.toBeNull();
+    expect(expandButton?.className).toContain("cursor-pointer");
+
+    const ceoLink = document.body.querySelector('a[href="/agents/ceo"]');
+    expect(ceoLink).not.toBeNull();
+
+    if (expandButton && ceoLink) {
+      // Expand control button must precede the navigation link in DOM order.
+      const relation = expandButton.compareDocumentPosition(ceoLink);
+      expect(relation & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+
+    // The dropdown action path must work for nested (child) tree rows too —
+    // this guards the prop drilling through the recursive SidebarAgentTreeList.
+    await openAgentMenu("Open actions for Engineer");
+    const childPauseItem = Array.from(
+      document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'),
+    ).find((element) => element.textContent?.includes("Pause agent"));
+    expect(childPauseItem).toBeTruthy();
+
+    await act(async () => {
+      childPauseItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockAgentsApi.pause).toHaveBeenCalledWith("agent-2", "company-1");
+  });
 });

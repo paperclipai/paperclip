@@ -135,16 +135,32 @@ export function pluginRegistryService(db: Db) {
      * The caller is expected to have already resolved and validated the
      * manifest from the package.  This method persists the plugin row and
      * assigns the next install order.
+     *
+     * Pass `options.force=true` to repoint an already-installed row to a new
+     * `packageName`/`packagePath` (used by the kkroo bundled-plugin bootstrap
+     * when the on-disk bundle's package name has drifted from the registry).
+     * The existing status is preserved; the worker is not restarted here.
      */
-    install: async (input: InstallPlugin, manifest: PaperclipPluginManifestV1) => {
+    install: async (
+      input: InstallPlugin,
+      manifest: PaperclipPluginManifestV1,
+      options: { force?: boolean } = {},
+    ) => {
       const existing = await getByKey(manifest.id);
       if (existing) {
-        if (existing.status !== "uninstalled") {
+        if (existing.status !== "uninstalled" && !options.force) {
           throw conflict(`Plugin already installed: ${manifest.id}`);
         }
 
-        // Reinstall after soft-delete: reactivate the existing row so plugin-scoped
-        // data and references remain stable across uninstall/reinstall cycles.
+        // Reuse the existing row instead of inserting a duplicate. Two cases:
+        //   - Reinstall after soft-delete (`uninstalled` → `installed`): keeps
+        //     plugin-scoped data and references stable across uninstall cycles.
+        //   - Force repoint (any other status): updates packageName/path/manifest
+        //     while preserving the current lifecycle status. The worker keeps
+        //     running with its in-memory manifest; new metadata takes effect on
+        //     the next worker (re)start.
+        const nextStatus: PluginStatus =
+          existing.status === "uninstalled" ? "installed" : existing.status;
         return db
           .update(plugins)
           .set({
@@ -154,7 +170,7 @@ export function pluginRegistryService(db: Db) {
             apiVersion: manifest.apiVersion,
             categories: manifest.categories,
             manifestJson: manifest,
-            status: "installed" as PluginStatus,
+            status: nextStatus,
             lastError: null,
             updatedAt: new Date(),
           })

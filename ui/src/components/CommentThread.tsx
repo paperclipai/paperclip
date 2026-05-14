@@ -10,7 +10,7 @@ import type {
 } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ArrowRight, Check, Copy, Paperclip } from "lucide-react";
+import { ArrowRight, Check, ChevronDown, ChevronUp, Copy, Paperclip } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
@@ -23,6 +23,7 @@ import { formatAssigneeUserLabel } from "../lib/assignees";
 import { formatTimelineWorkspaceLabel, type IssueTimelineAssignee, type IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatDateTime } from "../lib/utils";
+import { resolveCommentAuthorIdentity } from "../lib/comment-authors";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
@@ -88,10 +89,10 @@ interface CommentThreadProps {
     vote: FeedbackVoteValue,
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
+  currentUserId?: string | null;
   onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
   issueStatus?: string;
   agentMap?: Map<string, Agent>;
-  currentUserId?: string | null;
   imageUploadHandler?: (file: File) => Promise<string>;
   /** Callback to attach an image file to the parent issue (not inline in a comment). */
   onAttachImage?: (file: File) => Promise<void>;
@@ -322,6 +323,7 @@ function CommentCard({
   feedbackTermsUrl = null,
   onVote,
   voting = false,
+  currentUserId,
   highlightCommentId,
   queued = false,
 }: {
@@ -337,6 +339,7 @@ function CommentCard({
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
   voting?: boolean;
+  currentUserId?: string | null;
   highlightCommentId?: string | null;
   queued?: boolean;
 }) {
@@ -344,6 +347,7 @@ function CommentCard({
   const isPending = comment.clientStatus === "pending";
   const isQueued = queued || comment.queueState === "queued" || comment.clientStatus === "queued";
   const followUpRequested = comment.followUpRequested === true;
+  const authorIdentity = resolveCommentAuthorIdentity(comment, currentUserId);
 
   return (
     <div
@@ -358,15 +362,15 @@ function CommentCard({
       } ${isPending ? "opacity-80" : ""}`}
     >
       <div className="flex items-center justify-between mb-1">
-        {comment.authorAgentId ? (
-          <Link to={`/agents/${comment.authorAgentId}`} className="hover:underline">
+        {authorIdentity.kind === "agent" && authorIdentity.agentId ? (
+          <Link to={`/agents/${authorIdentity.agentId}`} className="hover:underline">
             <Identity
-              name={agentMap?.get(comment.authorAgentId)?.name ?? comment.authorAgentId.slice(0, 8)}
+              name={agentMap?.get(authorIdentity.agentId)?.name ?? authorIdentity.agentId.slice(0, 8)}
               size="sm"
             />
           </Link>
         ) : (
-          <Identity name="You" size="sm" />
+          <Identity name={authorIdentity.name} size="sm" />
         )}
         <span className="flex items-center gap-1.5">
           {isQueued ? (
@@ -593,13 +597,31 @@ const TimelineList = memo(function TimelineList({
   votingTargetId?: string | null;
   highlightCommentId?: string | null;
 }) {
+  const COLLAPSE_THRESHOLD = 10;
+  const VISIBLE_WHEN_COLLAPSED = 3;
+  const [expanded, setExpanded] = useState(false);
+
+  const collapsible = timeline.length > COLLAPSE_THRESHOLD;
+  const hiddenCount = collapsible && !expanded ? timeline.length - VISIBLE_WHEN_COLLAPSED : 0;
+  const visibleItems = collapsible && !expanded ? timeline.slice(-VISIBLE_WHEN_COLLAPSED) : timeline;
+
   if (timeline.length === 0) {
     return <p className="text-sm text-muted-foreground">No timeline entries yet.</p>;
   }
 
   return (
     <div className="space-y-3">
-      {timeline.map((item) => {
+      {collapsible && !expanded && (
+        <button
+          type="button"
+          className="flex w-full items-center justify-center gap-1.5 rounded-md border border-border/50 bg-accent/20 px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+          onClick={() => setExpanded(true)}
+        >
+          <ChevronDown className="h-3.5 w-3.5" />
+          Show {hiddenCount} earlier {hiddenCount === 1 ? "item" : "items"}
+        </button>
+      )}
+      {visibleItems.map((item) => {
         if (item.kind === "event") {
           return (
             <TimelineEventCard
@@ -712,10 +734,21 @@ const TimelineList = memo(function TimelineList({
             feedbackTermsUrl={feedbackTermsUrl}
             onVote={onVote ? (vote, options) => onVote(comment.id, vote, options) : undefined}
             voting={votingTargetId === comment.id}
+            currentUserId={currentUserId}
             highlightCommentId={highlightCommentId}
           />
         );
       })}
+      {collapsible && expanded && (
+        <button
+          type="button"
+          className="flex w-full items-center justify-center gap-1.5 rounded-md border border-border/50 bg-accent/20 px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+          onClick={() => setExpanded(false)}
+        >
+          <ChevronUp className="h-3.5 w-3.5" />
+          Show less
+        </button>
+      )}
     </div>
   );
 });
@@ -735,10 +768,10 @@ export function CommentThread({
   onRejectApproval,
   pendingApprovalAction = null,
   onVote,
+  currentUserId,
   onAdd,
   issueStatus,
   agentMap,
-  currentUserId,
   imageUploadHandler,
   onAttachImage,
   draftKey,
@@ -961,6 +994,16 @@ export function CommentThread({
         highlightCommentId={highlightCommentId}
         feedbackTermsUrl={feedbackTermsUrl}
       />
+      {timeline.length > 0 ? (
+        <TimelineList
+          timeline={timeline}
+          agentMap={agentMap}
+          companyId={companyId}
+          projectId={projectId}
+          currentUserId={currentUserId}
+          highlightCommentId={highlightCommentId}
+        />
+      ) : null}
 
       {liveRunSlot}
 
@@ -990,6 +1033,7 @@ export function CommentThread({
                 agentMap={agentMap}
                 companyId={companyId}
                 projectId={projectId}
+                currentUserId={currentUserId}
                 highlightCommentId={highlightCommentId}
                 queued
               />

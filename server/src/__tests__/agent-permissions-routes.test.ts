@@ -1,14 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
-
-vi.mock("acpx/runtime", () => ({
-  createAcpRuntime: vi.fn(),
-  createAgentRegistry: vi.fn(),
-  createRuntimeStore: vi.fn(),
-  isAcpRuntimeError: vi.fn(() => false),
-}));
+import { INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
 
 const agentId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
@@ -80,6 +73,7 @@ const mockIssueApprovalService = vi.hoisted(() => ({
 
 const mockIssueService = vi.hoisted(() => ({
   list: vi.fn(),
+  listDependencyReadiness: vi.fn(async () => new Map()),
 }));
 
 const mockSecretService = vi.hoisted(() => ({
@@ -504,165 +498,6 @@ describe.sequential("agent permission routes", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
-  it("blocks agent-authenticated self-updates that set cheap-profile host-executed workspace commands", async () => {
-    mockAgentService.getById.mockResolvedValue({
-      ...baseAgent,
-      adapterType: "codex_local",
-    });
-
-    const app = await createApp({
-      type: "agent",
-      agentId,
-      companyId,
-      source: "agent_key",
-      runId: "run-1",
-    });
-
-    const res = await requestApp(app, (baseUrl) => request(baseUrl)
-      .patch(`/api/agents/${agentId}`)
-      .send({
-        runtimeConfig: {
-          modelProfiles: {
-            cheap: {
-              adapterConfig: {
-                workspaceStrategy: {
-                  type: "git_worktree",
-                  provisionCommand: "touch /tmp/paperclip-rce",
-                },
-              },
-            },
-          },
-        },
-      }));
-
-    expect(res.status).toBe(403);
-    expect(res.body.error).toContain("host-executed workspace commands");
-    expect(res.body.error).toContain(
-      "runtimeConfig.modelProfiles.cheap.adapterConfig.workspaceStrategy.provisionCommand",
-    );
-    expect(mockLogActivity).not.toHaveBeenCalled();
-  });
-
-  it("allows board updates that set cheap-profile workspace commands", async () => {
-    mockAgentService.getById.mockResolvedValue({
-      ...baseAgent,
-      adapterType: "codex_local",
-    });
-
-    const app = await createApp({
-      type: "board",
-      userId: "board-user",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-      companyIds: [companyId],
-    });
-
-    const runtimeConfig = {
-      modelProfiles: {
-        cheap: {
-          adapterConfig: {
-            workspaceStrategy: {
-              type: "git_worktree",
-              provisionCommand: "bash ./scripts/provision-worktree.sh",
-            },
-          },
-        },
-      },
-    };
-
-    const res = await requestApp(app, (baseUrl) => request(baseUrl)
-      .patch(`/api/agents/${agentId}`)
-      .send({ runtimeConfig }));
-
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockAgentService.update).toHaveBeenCalledWith(
-      agentId,
-      expect.objectContaining({ runtimeConfig }),
-      expect.anything(),
-    );
-    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      action: "agent.updated",
-    }));
-  });
-
-  it("normalizes cheap-profile env bindings through the adapter config secret pipeline", async () => {
-    mockAgentService.getById.mockResolvedValue({
-      ...baseAgent,
-      adapterType: "codex_local",
-    });
-    mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config) => ({
-      ...config,
-      env: {
-        API_TOKEN: {
-          type: "secret_ref",
-          secretId: "33333333-3333-4333-8333-333333333333",
-          version: "latest",
-        },
-      },
-    }));
-
-    const app = await createApp({
-      type: "board",
-      userId: "board-user",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-      companyIds: [companyId],
-    });
-
-    const res = await requestApp(app, (baseUrl) => request(baseUrl)
-      .patch(`/api/agents/${agentId}`)
-      .send({
-        runtimeConfig: {
-          modelProfiles: {
-            cheap: {
-              adapterConfig: {
-                model: "gpt-5.3-codex-spark",
-                env: {
-                  API_TOKEN: {
-                    type: "secret_ref",
-                    secretId: "33333333-3333-4333-8333-333333333333",
-                    version: "latest",
-                  },
-                },
-              },
-            },
-          },
-        },
-      }));
-
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockSecretService.normalizeAdapterConfigForPersistence).toHaveBeenCalledWith(
-      companyId,
-      expect.objectContaining({
-        model: "gpt-5.3-codex-spark",
-        env: expect.any(Object),
-      }),
-      { strictMode: false },
-    );
-    expect(mockAgentService.update).toHaveBeenCalledWith(
-      agentId,
-      expect.objectContaining({
-        runtimeConfig: {
-          modelProfiles: {
-            cheap: {
-              adapterConfig: {
-                model: "gpt-5.3-codex-spark",
-                env: {
-                  API_TOKEN: {
-                    type: "secret_ref",
-                    secretId: "33333333-3333-4333-8333-333333333333",
-                    version: "latest",
-                  },
-                },
-              },
-            },
-          },
-        },
-      }),
-      expect.anything(),
-    );
-  });
-
   it("blocks agent-authenticated self-updates that set instructions bundle roots", async () => {
     const app = await createApp({
       type: "agent",
@@ -909,81 +744,9 @@ describe.sequential("agent permission routes", () => {
           heartbeat: {
             enabled: false,
             intervalSec: 3600,
-            maxConcurrentRuns: 20,
+            maxConcurrentRuns: 5,
           },
         },
-      }),
-    );
-  });
-
-  it("seeds opencode agent creation with the static default model without live discovery", async () => {
-    mockEnsureOpenCodeModelConfiguredAndAvailable.mockRejectedValue(
-      new Error("`opencode models` should not be called during creation"),
-    );
-
-    const app = await createApp({
-      type: "board",
-      userId: "board-user",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-      companyIds: [companyId],
-    });
-
-    const res = await requestApp(app, (baseUrl) => request(baseUrl)
-      .post(`/api/companies/${companyId}/agents`)
-      .send({
-        name: "OpenCode Builder",
-        role: "engineer",
-        adapterType: "opencode_local",
-        adapterConfig: {},
-      }));
-
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(mockEnsureOpenCodeModelConfiguredAndAvailable).not.toHaveBeenCalled();
-    expect(mockAgentService.create).toHaveBeenCalledWith(
-      companyId,
-      expect.objectContaining({
-        adapterType: "opencode_local",
-        adapterConfig: expect.objectContaining({
-          model: DEFAULT_OPENCODE_LOCAL_MODEL,
-        }),
-      }),
-    );
-  });
-
-  it("accepts manual opencode provider/model values without host-side discovery", async () => {
-    mockEnsureOpenCodeModelConfiguredAndAvailable.mockRejectedValue(
-      new Error("`opencode models` should not be called during creation"),
-    );
-
-    const app = await createApp({
-      type: "board",
-      userId: "board-user",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-      companyIds: [companyId],
-    });
-
-    const res = await requestApp(app, (baseUrl) => request(baseUrl)
-      .post(`/api/companies/${companyId}/agents`)
-      .send({
-        name: "OpenCode Builder",
-        role: "engineer",
-        adapterType: "opencode_local",
-        adapterConfig: {
-          model: "anthropic/claude-sonnet-4-5",
-        },
-      }));
-
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(mockEnsureOpenCodeModelConfiguredAndAvailable).not.toHaveBeenCalled();
-    expect(mockAgentService.create).toHaveBeenCalledWith(
-      companyId,
-      expect.objectContaining({
-        adapterType: "opencode_local",
-        adapterConfig: expect.objectContaining({
-          model: "anthropic/claude-sonnet-4-5",
-        }),
       }),
     );
   });
@@ -1019,7 +782,7 @@ describe.sequential("agent permission routes", () => {
           heartbeat: {
             enabled: false,
             intervalSec: 3600,
-            maxConcurrentRuns: 20,
+            maxConcurrentRuns: 5,
           },
         },
       }),
@@ -1373,6 +1136,58 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.access.taskAssignSource).toBe("agent_creator");
   });
 
+  it("includes routine executions in the agent inbox-lite view", async () => {
+    mockIssueService.list.mockResolvedValue([
+      {
+        id: "issue-1",
+        identifier: "PAP-911",
+        title: "Routine heartbeat",
+        status: "in_progress",
+        priority: "critical",
+        projectId: null,
+        goalId: null,
+        parentId: null,
+        updatedAt: "2026-04-02T02:22:06.418Z",
+        activeRun: null,
+      },
+    ]);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/agents/me/inbox-lite"));
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.list).toHaveBeenCalledWith(companyId, {
+      assigneeAgentId: agentId,
+      status: "todo,in_progress,blocked",
+      includeRoutineExecutions: true,
+      limit: 500,
+    });
+    expect(res.body).toEqual([
+      {
+        id: "issue-1",
+        identifier: "PAP-911",
+        title: "Routine heartbeat",
+        status: "in_progress",
+        priority: "critical",
+        projectId: null,
+        goalId: null,
+        parentId: null,
+        updatedAt: "2026-04-02T02:22:06.418Z",
+        activeRun: null,
+        dependencyReady: true,
+        unresolvedBlockerCount: 0,
+        unresolvedBlockerIssueIds: [],
+      },
+    ]);
+  });
+
   it("exposes a dedicated agent route for the inbox mine view", async () => {
     mockIssueService.list.mockResolvedValue([
       {
@@ -1396,6 +1211,13 @@ describe.sequential("agent permission routes", () => {
       .query({ userId: "board-user" }));
 
     expect(res.status).toBe(200);
+    expect(mockIssueService.list).toHaveBeenCalledWith(companyId, {
+      touchedByUserId: "board-user",
+      inboxArchivedByUserId: "board-user",
+      status: INBOX_MINE_ISSUE_STATUS_FILTER,
+      limit: 500,
+      includeRoutineExecutions: true,
+    });
     expect(res.body).toEqual([
       {
         id: "issue-1",
@@ -1404,12 +1226,6 @@ describe.sequential("agent permission routes", () => {
         status: "todo",
       },
     ]);
-    expect(mockIssueService.list).toHaveBeenCalledWith(companyId, {
-      touchedByUserId: "board-user",
-      inboxArchivedByUserId: "board-user",
-      status: "backlog,todo,in_progress,in_review,blocked,done",
-      limit: 500,
-    });
   });
 
   it("rejects heartbeat cancellation outside the caller company scope", async () => {

@@ -110,8 +110,10 @@ describe("codex execute", () => {
     );
     await fs.mkdir(workspace, { recursive: true });
     await fs.mkdir(sharedCodexHome, { recursive: true });
+    await fs.mkdir(managedCodexHome, { recursive: true });
     await fs.writeFile(path.join(sharedCodexHome, "auth.json"), '{"token":"shared"}\n', "utf8");
     await fs.writeFile(path.join(sharedCodexHome, "config.toml"), 'model = "codex-mini-latest"\n', "utf8");
+    await fs.writeFile(path.join(managedCodexHome, "auth.json"), '{"token":"stale"}\n', "utf8");
     await writeFakeCodexCommand(commandPath);
 
     const previousHome = process.env.HOME;
@@ -597,6 +599,62 @@ describe("codex execute", () => {
       expect(new Date(String(result.resultJson?.transientRetryNotBefore)).getTime()).toBe(
         new Date(2026, 3, 22, 23, 31, 0, 0).getTime(),
       );
+    } finally {
+      vi.useRealTimers();
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies generic codex usage-limit failures with full-date reset times as transient", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-generic-usage-limit-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFailingCodexCommand(
+      commandPath,
+      "You've hit your usage limit. To get more access now, send a request to your admin or try again at Apr 30th, 2026 12:01 AM.",
+    );
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 3, 29, 19, 52, 0));
+
+    try {
+      const result = await execute({
+        runId: "run-generic-usage-limit",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "gpt-5.4",
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      const expectedRetryNotBefore = new Date(2026, 3, 30, 0, 1, 0, 0).toISOString();
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("codex_transient_upstream");
+      expect(result.errorFamily).toBe("transient_upstream");
+      expect(result.retryNotBefore).toBe(expectedRetryNotBefore);
+      expect(result.resultJson?.retryNotBefore).toBe(expectedRetryNotBefore);
     } finally {
       vi.useRealTimers();
       if (previousHome === undefined) delete process.env.HOME;
