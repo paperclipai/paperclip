@@ -1,11 +1,7 @@
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { Command, Option } from "commander";
-import {
-  scaffoldPluginProject,
-  shellQuote,
-  type ScaffoldPluginOptions,
-} from "../../../../packages/plugins/create-paperclip-plugin/src/index.js";
+import type { ScaffoldPluginOptions } from "../../../../packages/plugins/create-paperclip-plugin/src/index.js";
 import pc from "picocolors";
 import {
   addCommonClientOptions,
@@ -170,6 +166,11 @@ function packageToDirName(pluginName: string): string {
   return pluginName.replace(/^@[^/]+\//, "");
 }
 
+function shellQuote(value: string): string {
+  if (/^[A-Za-z0-9_/:=.,@%+-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, "'\"'\"'")}'`;
+}
+
 export function buildPluginInitScaffoldOptions(
   packageName: string,
   opts: PluginInitOptions,
@@ -209,8 +210,11 @@ export function renderPluginInitSuccess(result: PluginInitResult): string {
   ].join("\n");
 }
 
-export function runPluginInitCommand(packageName: string, opts: PluginInitOptions): PluginInitResult {
+export async function runPluginInitCommand(packageName: string, opts: PluginInitOptions): Promise<PluginInitResult> {
   const scaffoldOptions = buildPluginInitScaffoldOptions(packageName, opts);
+  const { scaffoldPluginProject } = await import(
+    "../../../../packages/plugins/create-paperclip-plugin/src/index.js"
+  );
   const outputDir = scaffoldPluginProject(scaffoldOptions);
   return {
     outputDir,
@@ -246,9 +250,9 @@ export function registerPluginCommands(program: Command): void {
       .option("--description <description>", "Manifest description")
       .option("--author <author>", "Manifest author")
       .option("--sdk-path <path>", "Local @paperclipai/plugin-sdk package path")
-      .action((packageName: string, opts: PluginInitOptions) => {
+      .action(async (packageName: string, opts: PluginInitOptions) => {
         try {
-          const result = runPluginInitCommand(packageName, opts);
+          const result = await runPluginInitCommand(packageName, opts);
 
           if (opts.json) {
             printOutput(result, { json: true });
