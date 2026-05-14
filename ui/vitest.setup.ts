@@ -30,3 +30,19 @@ if (
 if (typeof window !== "undefined" && window.localStorage !== globalThis.localStorage) {
   installStorageMock(window as unknown as Record<string, unknown>);
 }
+
+if (typeof window !== "undefined" && typeof window.matchMedia !== "function") {
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    value: (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }),
+  });
+}

@@ -247,7 +247,7 @@ export function InviteLandingPage() {
     retry: false,
   });
 
-  const { companies: companyList } = useCompany();
+  const { companies: companyList, loading: companiesLoading } = useCompany();
 
   useEffect(() => {
     if (token) rememberPendingInviteToken(token);
@@ -269,7 +269,7 @@ export function InviteLandingPage() {
   }, [companyList, sessionQuery.data, inviteQuery.data, token, navigate]);
 
   const invite = inviteQuery.data;
-  const isCheckingExistingMembership = false;
+  const isCheckingExistingMembership = Boolean(sessionQuery.data) && companiesLoading;
   const isCurrentMember =
     Boolean(invite?.companyId) &&
     companyList.some((company) => company.id === invite?.companyId);

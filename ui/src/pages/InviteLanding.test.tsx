@@ -15,6 +15,10 @@ const signUpEmailMock = vi.hoisted(() => vi.fn());
 const healthGetMock = vi.hoisted(() => vi.fn());
 const listCompaniesMock = vi.hoisted(() => vi.fn());
 const setSelectedCompanyIdMock = vi.hoisted(() => vi.fn());
+const companyContextState = vi.hoisted(() => ({
+  companies: [] as Array<{ id: string; name: string }>,
+  loading: false,
+}));
 
 vi.mock("../api/access", () => ({
   accessApi: {
@@ -47,9 +51,9 @@ vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
     selectedCompany: null,
     selectedCompanyId: null,
-    companies: [],
+    companies: companyContextState.companies,
     selectionSource: "manual",
-    loading: false,
+    loading: companyContextState.loading,
     error: null,
     setSelectedCompanyId: setSelectedCompanyIdMock,
     reloadCompanies: vi.fn(),
@@ -111,6 +115,8 @@ describe("InviteLandingPage", () => {
     signInEmailMock.mockResolvedValue(undefined);
     signUpEmailMock.mockResolvedValue(undefined);
     setSelectedCompanyIdMock.mockReset();
+    companyContextState.companies = [];
+    companyContextState.loading = false;
   });
 
   afterEach(() => {
@@ -491,6 +497,7 @@ describe("InviteLandingPage", () => {
       },
     });
     listCompaniesMock.mockResolvedValue([{ id: "company-1", name: "Acme Robotics" }]);
+    companyContextState.companies = [{ id: "company-1", name: "Acme Robotics" }];
 
     const root = createRoot(container);
     const queryClient = new QueryClient({
@@ -595,19 +602,13 @@ describe("InviteLandingPage", () => {
   });
 
   it("waits for the membership check before showing invite acceptance to signed-in users", async () => {
-    let resolveCompanies: ((value: Array<{ id: string; name: string }>) => void) | null = null;
+    companyContextState.loading = true;
     acceptInviteMock.mockResolvedValue({
       id: "join-1",
       companyId: "company-1",
       requestType: "human",
       status: "pending_approval",
     });
-    listCompaniesMock.mockImplementation(
-      () =>
-        new Promise<Array<{ id: string; name: string }>>((resolve) => {
-          resolveCompanies = resolve;
-        }),
-    );
     getSessionMock.mockResolvedValue({
       session: { id: "session-1", userId: "user-1" },
       user: {
@@ -622,17 +623,18 @@ describe("InviteLandingPage", () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
+    const buildTree = () => (
+      <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+        <QueryClientProvider client={queryClient}>
+          <Routes>
+            <Route path="/invite/:token" element={<InviteLandingPage />} />
+          </Routes>
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
 
     await act(async () => {
-      root.render(
-        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
-          <QueryClientProvider client={queryClient}>
-            <Routes>
-              <Route path="/invite/:token" element={<InviteLandingPage />} />
-            </Routes>
-          </QueryClientProvider>
-        </MemoryRouter>,
-      );
+      root.render(buildTree());
     });
     await flushReact();
 
@@ -641,7 +643,8 @@ describe("InviteLandingPage", () => {
     expect(acceptInviteMock).not.toHaveBeenCalled();
 
     await act(async () => {
-      resolveCompanies?.([]);
+      companyContextState.loading = false;
+      root.render(buildTree());
     });
     await flushReact();
     await flushReact();
