@@ -1,4 +1,4 @@
-import { realpathSync, statSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { resolve, sep } from "node:path";
 
@@ -71,12 +71,6 @@ export function validatePath(rawPath: string, roots: string[]): string {
   let realPath: string;
   try {
     realPath = realpathSync(resolved);
-  } catch {
-    throw new ValidationError("NOT_FOUND", `file not found: ${rawPath}`);
-  }
-
-  try {
-    statSync(realPath);
   } catch {
     throw new ValidationError("NOT_FOUND", `file not found: ${rawPath}`);
   }
