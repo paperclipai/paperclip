@@ -9,7 +9,7 @@ Paperclip Cloud 所使用的托管 `aws_secrets_manager` 秘密提供者（Secre
 - Paperclip 仅存储所有权、绑定、版本选择、审计和运行时解析所需的元数据。
 - AWS 提供者的引导凭据（Bootstrap Credentials）属于部署/运行时凭据，而非 Paperclip 管理的公司秘密。
 - 对已有 AWS 秘密的远程导入仅为元数据层面。预览/导入使用 AWS 清单元数据并创建 Paperclip 外部引用；不会将明文复制到 Paperclip 中。
-- 每个公司的 AWS 提供者保险库（Provider Vault）（即 `aws_secrets_manager` 的命名实例，拥有独立的 region、namespace、prefix、KMS key id 和 tags）通过管理面板 UI 在 `Company Settings → Secrets → Provider vaults` 中管理。参见 [Provider Vaults](../docs/deploy/secrets.md#provider-vaults) 了解运营者模型，参见 [Provider Vaults API](../docs/API接口/密钥%20secrets.md#provider-vaults) 了解路由。本文档中的引导信任模型仍然适用——保险库配置仅携带非敏感的路由元数据，绝不包含 AWS 凭据。
+- 每个公司的 AWS 提供者保险库（Provider Vault）（即 `aws_secrets_manager` 的命名实例，拥有独立的 region、namespace、prefix、KMS key id 和 tags）通过管理面板 UI 在 `Company Settings → Secrets → Provider vaults` 中管理。参见 [Provider Vaults](../docs/部署/密钥管理 secrets.md#provider-vaults) 了解运营者模型，参见 [Provider Vaults API](../docs/API接口/密钥%20secrets.md#provider-vaults) 了解路由。本文档中的引导信任模型仍然适用——保险库配置仅携带非敏感的路由元数据，绝不包含 AWS 凭据。
 
 ## 引导信任模型
 

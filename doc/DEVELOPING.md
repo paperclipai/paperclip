@@ -509,7 +509,7 @@ CLI 支持：
 - `pnpm paperclipai doctor` 校验 secrets adapter，可用 `--repair` 创建缺失本地密钥文件；选 AWS Secrets Manager 时报告缺失的 bootstrap 环境变量。  
 - Provider 健康：`GET /api/companies/:companyId/secret-providers/health`，含本地密钥权限告警与备份提示。  
 
-各公司的 provider vault 在 Board `Company Settings → Secrets → Provider vaults` 配置，对应 `/api/companies/{companyId}/secret-provider-configs`。CLI 目前不拥有 vault 生命周期；运维模型见 `docs/deploy/secrets.md` 的 `Provider Vaults` 一节。
+各公司的 provider vault 在 Board `Company Settings → Secrets → Provider vaults` 配置，对应 `/api/companies/{companyId}/secret-provider-configs`。CLI 目前不拥有 vault 生命周期；运维模型见 `docs/部署/密钥管理 secrets.md` 的 `Provider Vaults` 一节。
 
 内联 env 秘钥迁移辅助：
 

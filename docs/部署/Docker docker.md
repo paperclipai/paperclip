@@ -1,7 +1,7 @@
 ---
-title: Docker
+
+## title: Docker
 summary: Docker Compose 快速入门
----
 
 在 Docker 中运行 Paperclip，无需在本地安装 Node 或 pnpm。
 

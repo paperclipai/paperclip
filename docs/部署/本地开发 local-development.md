@@ -67,7 +67,7 @@ pnpm dev --authenticated-private
 pnpm paperclipai allowed-hostname dotta-macbook-pro
 ```
 
-有关完整设置和故障排除，请参阅 [Tailscale 私有访问](/deploy/tailscale-private-access)。
+有关完整设置和故障排除，请参阅 [Tailscale 私有访问](/部署/Tailscale%20私有访问%20tailscale-private-access)。
 
 ## 运行状况检查
 
