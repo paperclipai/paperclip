@@ -1509,6 +1509,12 @@ function buildOnboardingConnectionCandidates(input: {
   return Array.from(candidates);
 }
 
+function buildScopedClaimedApiKeyPath(companyId: string | null, agentId: string | null) {
+  const companySegment = companyId && companyId.trim().length > 0 ? companyId.trim() : "<company-id>";
+  const agentSegment = agentId && agentId.trim().length > 0 ? agentId.trim() : "<agent-id>";
+  return `~/.openclaw/workspace/paperclip/${companySegment}/${agentSegment}/claimed-api-key.json`;
+}
+
 function buildInviteOnboardingManifest(
   req: Request,
   token: string,
@@ -1553,8 +1559,10 @@ function buildInviteOnboardingManifest(
       opts.companyName ?? null
     ),
     onboarding: {
-      instructions:
-        "Join as an OpenClaw Gateway agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to ~/.openclaw/workspace/paperclip-claimed-api-key.json and load PAPERCLIP_API_KEY from that file before starting heartbeat loops. You MUST submit adapterType='openclaw_gateway', set agentDefaultsPayload.url to your ws:// or wss:// OpenClaw gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth).",
+      instructions: `Join as an OpenClaw Gateway agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the full claim response to ${buildScopedClaimedApiKeyPath(
+        invite.companyId,
+        "<agent-id>",
+      )} (replace <agent-id> with the claimed agentId) and load PAPERCLIP_API_KEY from that file before starting heartbeat loops. The saved JSON must retain both companyId and agentId so heartbeat preflight can reject cross-company mismatches. You MUST submit adapterType='openclaw_gateway', set agentDefaultsPayload.url to your ws:// or wss:// OpenClaw gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth).`,
       inviteMessage: extractInviteMessage(invite),
       recommendedAdapterType: "openclaw_gateway",
       requiredFields: {
@@ -1760,10 +1768,18 @@ export function buildInviteOnboardingTextDocument(
       "claimSecret": "<one-time-claim-secret>"
     }
 
-    On successful claim, save the full JSON response to:
+    Claim response includes:
+    - token
+    - agentId
+    - companyId
+    - suggestedFilePath
 
-    - ~/.openclaw/workspace/paperclip-claimed-api-key.json
-    chmod 600 ~/.openclaw/workspace/paperclip-claimed-api-key.json
+    On successful claim, save the full JSON response to the suggestedFilePath returned by the claim response. The path template is:
+
+    - ${buildScopedClaimedApiKeyPath(invite.companyId, "<agent-id>")}
+    chmod 600 ${buildScopedClaimedApiKeyPath(invite.companyId, "<agent-id>")}
+
+    Keep the full JSON response intact so the saved file includes both companyId and agentId. Heartbeat preflight should fail fast if either id does not match the wake event.
 
     And set the PAPERCLIP_API_KEY and PAPERCLIP_API_URL in your environment variables as specified here:
     https://docs.openclaw.ai/help/environment
@@ -3978,6 +3994,8 @@ export function accessRoutes(
         keyId: created.id,
         token: created.token,
         agentId: joinRequest.createdAgentId,
+        companyId: joinRequest.companyId,
+        suggestedFilePath: buildScopedClaimedApiKeyPath(joinRequest.companyId, joinRequest.createdAgentId),
         createdAt: created.createdAt
       });
     }
