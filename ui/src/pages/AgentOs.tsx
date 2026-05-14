@@ -1,4 +1,5 @@
-import { useEffect, useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useMutation } from "@tanstack/react-query";
 import {
   BadgeCheck,
   Brain,
@@ -27,8 +28,12 @@ import {
   type PaperclipOrgPackageManifest,
 } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { approvalsApi } from "@/api/approvals";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
+import { useCompany } from "@/context/CompanyContext";
+import { useToastActions } from "@/context/ToastContext";
 
 function joinList(values: readonly string[]): string {
   return values.length > 0 ? values.join(", ") : "None";
@@ -71,6 +76,14 @@ function SurfaceCard({
     </Card>
   );
 }
+
+type AgentOsApprovalAction = "mcp_install_preview" | "ready_agent_provision_preview" | "final_delivery_retry_preview";
+
+const approvalRequestLabels: Record<AgentOsApprovalAction, string> = {
+  mcp_install_preview: "Request MCP install approval",
+  ready_agent_provision_preview: "Request ready-agent approval",
+  final_delivery_retry_preview: "Request final_delivery retry approval",
+};
 
 export function buildAgentOsPreviewModel() {
   const marketplaceServer = normalizeMcpCatalogEntry({
@@ -202,13 +215,112 @@ export function buildAgentOsPreviewModel() {
   };
 }
 
+type AgentOsPreviewModel = ReturnType<typeof buildAgentOsPreviewModel>;
+
+export function buildAgentOsApprovalPayload(model: AgentOsPreviewModel, action: AgentOsApprovalAction): Record<string, unknown> {
+  const base = {
+    version: 1,
+    surface: "agent_os",
+    action,
+    approvalOnly: true,
+    liveExecution: false,
+    liveApply: false,
+    liveExternalActions: false,
+    safetyPosture: "Approval request only. Does not install MCP servers, provision agents, or mutate final_delivery outbox.",
+  };
+
+  if (action === "mcp_install_preview") {
+    return {
+      ...base,
+      title: `Approve MCP marketplace install preview: ${model.marketplacePreview.server.title}`,
+      approvalScope: "mcp_marketplace_install",
+      server: {
+        catalogId: model.marketplacePreview.server.catalogId,
+        provider: model.marketplacePreview.server.provider,
+        title: model.marketplacePreview.server.title,
+        transport: model.marketplacePreview.server.transport,
+        toolNames: model.marketplacePreview.server.toolNames,
+        trust: model.marketplacePreview.server.trust,
+      },
+      blockers: model.marketplacePreview.blockers,
+      requiredSecretNames: model.marketplacePreview.server.requiredSecretNames,
+      requiredSecretPolicy: "Named secret requirements only; no secret values are accepted or stored by Agent OS.",
+    };
+  }
+
+  if (action === "ready_agent_provision_preview") {
+    return {
+      ...base,
+      title: `Approve ready-agent provisioning preview: ${model.readyAgent.blueprint.title}`,
+      approvalScope: "ready_agent_provisioning",
+      blueprint: {
+        key: model.readyAgent.blueprint.key,
+        title: model.readyAgent.blueprint.title,
+        category: model.readyAgent.blueprint.category,
+        requiredSkillRefs: model.readyAgent.blueprint.requiredSkillRefs,
+        mcpBundleRefs: model.readyAgent.blueprint.mcpBundleRefs,
+      },
+      readiness: {
+        ready: model.readyAgent.readiness.ready,
+        checks: model.readyAgent.readiness.checks.map((check) => ({ key: check.key, status: check.status, message: check.message })),
+      },
+      requiredSecretNames: model.readyAgent.blueprint.requiredSecretInputs,
+    };
+  }
+
+  return {
+    ...base,
+    title: "Approve final_delivery retry preview",
+    approvalScope: "final_delivery_retry",
+    destinationMasked: true,
+    maskedDestination: model.finalDelivery.summary.destinationSummary,
+    latestOutcome: model.finalDelivery.summary.latestOutcome,
+    retryPlan: {
+      operation: model.finalDelivery.retryPlan.operation,
+      allowed: model.finalDelivery.retryPlan.allowed,
+      reason: model.finalDelivery.retryPlan.reason,
+      requiredApprovalGate: model.finalDelivery.retryPlan.requiredApprovalGate,
+      mutatesOutbox: model.finalDelivery.retryPlan.mutatesOutbox,
+      sendsImmediately: model.finalDelivery.retryPlan.sendsImmediately,
+    },
+    requiredSecretNames: [],
+  };
+}
+
 export function AgentOs() {
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { selectedCompanyId, selectedCompany } = useCompany();
+  const { pushToast } = useToastActions();
+  const [pendingApprovalId, setPendingApprovalId] = useState<string | null>(null);
   const model = useMemo(() => buildAgentOsPreviewModel(), []);
 
+  const approvalRequest = useMutation({
+    mutationFn: (action: AgentOsApprovalAction) => {
+      if (!selectedCompanyId) {
+        throw new Error("Select a company before requesting approval.");
+      }
+      return approvalsApi.create(selectedCompanyId, {
+        type: "request_board_approval",
+        payload: buildAgentOsApprovalPayload(model, action),
+      });
+    },
+    onSuccess: (approval) => {
+      setPendingApprovalId(approval.id);
+      pushToast({ title: "Approval request created", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Approval request failed",
+        body: err instanceof Error ? err.message : "Unable to create approval request",
+        tone: "error",
+      });
+    },
+  });
+
   useEffect(() => {
-    setBreadcrumbs([{ label: "Agent OS" }]);
-  }, [setBreadcrumbs]);
+    const companyCrumb = selectedCompany ? [{ label: selectedCompany.name, href: "/dashboard" }] : [];
+    setBreadcrumbs([...companyCrumb, { label: "Agent OS" }]);
+  }, [selectedCompany, setBreadcrumbs]);
 
   return (
     <div className="mx-auto max-w-7xl space-y-6 p-4 lg:p-6">
@@ -234,6 +346,37 @@ export function AgentOs() {
           </div>
         </div>
       </section>
+
+      <Card className="rounded-2xl border-dashed border-border/80 bg-card/90">
+        <CardHeader>
+          <CardTitle className="text-base">Approval request queue</CardTitle>
+          <CardDescription>
+            Safe apply previews become internal board approval requests only. Creating a request does not install MCP servers,
+            provision agents, or resend final_delivery messages.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-3 lg:grid-cols-3">
+            {(Object.keys(approvalRequestLabels) as AgentOsApprovalAction[]).map((action) => (
+              <Button
+                key={action}
+                type="button"
+                variant="outline"
+                className="h-auto justify-start whitespace-normal px-4 py-3 text-left"
+                disabled={!selectedCompanyId || approvalRequest.isPending}
+                onClick={() => approvalRequest.mutate(action)}
+              >
+                {approvalRequestLabels[action]}
+              </Button>
+            ))}
+          </div>
+          <div className="rounded-lg border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
+            <div className="font-medium text-foreground">No live apply from this page</div>
+            <div>Approval payloads include policy posture, named secret requirements, masked destinations, and preview plans only.</div>
+            {pendingApprovalId ? <div className="mt-2 text-foreground">Pending approval: {pendingApprovalId}</div> : null}
+          </div>
+        </CardContent>
+      </Card>
 
       <div className="grid gap-4 xl:grid-cols-2">
         <SurfaceCard
