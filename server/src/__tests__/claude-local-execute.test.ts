@@ -1116,4 +1116,61 @@ describe("claude execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("treats Claude success results as success even when the process exits non-zero (SIGTERM cleanup)", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-success-sigterm-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "claude");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFailingClaudeCommand(commandPath, {
+      exitCode: 143,
+      resultEvent: {
+        type: "result",
+        subtype: "success",
+        session_id: "claude-session-success-sigterm",
+        is_error: false,
+        result: "Done — heartbeat finished cleanly before terminal cleanup tore the process down.",
+        usage: { input_tokens: 10, cache_read_input_tokens: 0, output_tokens: 5 },
+      },
+    });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-claude-success-sigterm",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(143);
+      expect(result.errorCode).toBeNull();
+      expect(result.errorFamily).toBeNull();
+      expect(result.errorMessage ?? null).toBeNull();
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });
