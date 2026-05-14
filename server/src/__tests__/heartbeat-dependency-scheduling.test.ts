@@ -32,16 +32,34 @@ const mockAdapterExecute = vi.hoisted(() =>
     signal: null,
     timedOut: false,
     errorMessage: null,
-    summary: "Dependency-aware heartbeat test run.",
     provider: "test",
     model: "test-model",
-    // resultJson satisfies heartbeat.ts's isEmptyResult guard so the run
-    // doesn't get re-classified `failed` by the empty-result override
-    // before its scheduling assertions run. Same mock shape as the
-    // other heartbeat-* tests.
-    resultJson: { exitCode: 0, summary: "Dependency-aware heartbeat test run." },
+    // resultJson satisfies heartbeat.ts's isEmptyResult guard (exitCode is
+    // a substantive value) so the run doesn't get re-classified `failed`
+    // by the empty-result override. Deliberately omit any
+    // `summary`/`result`/`message` field so
+    // buildDetectedSuccessfulRunProgressSummary returns null and
+    // handleSuccessfulRunHandoff doesn't fire a fire-and-forget
+    // corrective wake on completion.
+    resultJson: { exitCode: 0 },
   })),
 );
+
+// Returns true once mockAdapterExecute has been invoked for `runId` at
+// least once. The two failing tests in this file used to assert
+// `toHaveBeenCalledTimes(N)` against the spy's raw count, which made
+// them flaky: every successful `issue_assigned` run that doesn't post
+// an issue comment causes finalizeIssueCommentPolicy to enqueue a
+// `missing_issue_comment` retry wake (production behavior, not a
+// scheduler race). That retry wake triggers a third spy invocation
+// before the test reads the count. Asserting per-runId tolerates the
+// retry wake while still verifying the specific test wakes ran.
+function adapterCalledForRun(runId: string): boolean {
+  return mockAdapterExecute.mock.calls.some((callArgs) => {
+    const args = callArgs[0];
+    return Boolean(args && typeof args === "object" && (args as { runId?: unknown }).runId === runId);
+  });
+}
 
 vi.mock("../adapters/index.ts", async () => {
   const actual = await vi.importActual<typeof import("../adapters/index.ts")>("../adapters/index.ts");
@@ -107,10 +125,11 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       signal: null,
       timedOut: false,
       errorMessage: null,
-      summary: "Dependency-aware heartbeat test run.",
       provider: "test",
       model: "test-model",
-      resultJson: { exitCode: 0, summary: "Dependency-aware heartbeat test run." },
+      // See top-of-file comment: deliberately no `summary` so the
+      // success-handoff productivity heuristic doesn't fire a corrective wake.
+      resultJson: { exitCode: 0 },
     }));
     runningProcesses.clear();
     let idlePolls = 0;
@@ -362,15 +381,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(blockedWakeRequestCount).toBeGreaterThanOrEqual(2);
   });
 
-  // FLAKY-SKIP: deterministic-looking race in the embedded-postgres scheduler integration
-  // makes mockAdapterExecute fire 3-4 times instead of 2. Adding any `console.log` inside
-  // executeRun() shifts JS event-loop scheduling enough to mask the race (test passes
-  // 3/3 with the log; fails 3/3 without). Production code path looks correct on static
-  // reading (claimQueuedRun's dependency gate returns null before executeRun fires),
-  // so the second adapter call is coming from a path we don't yet understand. vitest's
-  // `retry` makes it worse — mock call counts accumulate across attempts. Tracked in
-  // TODO: BLO-XXXX (v513 heartbeat scheduler race).
-  it.skip("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {
+  it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const firstIssueId = randomUUID();
@@ -382,15 +393,17 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
 
     mockAdapterExecute.mockImplementationOnce(async () => {
       await firstRunFinished;
+      // See top-of-file comment: deliberately no `summary` so the
+      // success-handoff productivity heuristic doesn't fire a corrective
+      // wake on completion.
       return {
         exitCode: 0,
         signal: null,
         timedOut: false,
         errorMessage: null,
-        summary: "First assignment run completed.",
         provider: "test",
         model: "test-model",
-        resultJson: { exitCode: 0, summary: "First assignment run completed." },
+        resultJson: { exitCode: 0 },
       };
     });
 
@@ -454,7 +467,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         return run?.status === "running";
       });
       expect(firstRunStarted).toBe(true);
-      const firstAdapterStarted = await waitForCondition(async () => mockAdapterExecute.mock.calls.length === 1);
+      const firstAdapterStarted = await waitForCondition(async () => adapterCalledForRun(firstWake!.id));
       expect(firstAdapterStarted).toBe(true);
 
       const secondWake = await heartbeat.wakeup(agentId, {
@@ -472,7 +485,9 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         .where(eq(heartbeatRuns.id, secondWake!.id))
         .then((rows) => rows[0] ?? null);
       expect(secondRunWhileFirstRunning?.status).toBe("queued");
-      expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+      // The second wake's run must NOT have hit the adapter yet — that's
+      // the point of maxConcurrentRuns=1.
+      expect(adapterCalledForRun(secondWake!.id)).toBe(false);
 
       finishFirstRun();
 
@@ -485,19 +500,20 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         return run?.status === "succeeded";
       });
       expect(secondRunSucceeded).toBe(true);
-      expect(mockAdapterExecute).toHaveBeenCalledTimes(2);
+      // Both explicit test wakes must have been dispatched to the adapter.
+      // Don't assert raw call count: production also fires a
+      // `missing_issue_comment` retry wake after each successful
+      // `issue_assigned` run (since the mock doesn't post an issue
+      // comment), which adds an extra spy invocation that's unrelated
+      // to the concurrency property under test.
+      expect(adapterCalledForRun(firstWake!.id)).toBe(true);
+      expect(adapterCalledForRun(secondWake!.id)).toBe(true);
     } finally {
       finishFirstRun();
     }
   });
 
-  // FLAKY-SKIP: same race family as "honors maxConcurrentRuns 1" above —
-  // mockAdapterExecute fires 2 times (blocked + ready) instead of 1 (ready only),
-  // even though claimQueuedRun's blocker check should cancel the blocked run before
-  // it reaches executeRun. Verified locally: adding `console.log("[DBG]", ...)` at
-  // the top of executeRun() makes the test pass 3/3; without it, fails 3/3.
-  // Production cancellation logic looks correct on static reading. TODO: BLO-XXXX.
-  it.skip("cancels stale queued runs when issue blockers are still unresolved", async () => {
+  it("cancels stale queued runs when issue blockers are still unresolved", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const blockerId = randomUUID();
@@ -686,7 +702,14 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       executionLockedAt: null,
     });
     expect(readyRun?.status).toBe("succeeded");
-    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    // The cancelled blocked run must not have reached the adapter; the
+    // ready run must have. Don't assert raw call count: production fires
+    // a `missing_issue_comment` retry wake after the ready run succeeds
+    // (it's an `issue_assigned` wake with no comment posted by the
+    // mock), which adds an extra spy invocation that's unrelated to the
+    // dependency-gate property under test.
+    expect(adapterCalledForRun(blockedRunId)).toBe(false);
+    expect(adapterCalledForRun(readyRunId)).toBe(true);
   });
 
   it("suppresses normal wakeups while allowing comment interaction wakes under a pause hold", async () => {
