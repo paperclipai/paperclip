@@ -1,5 +1,8 @@
-import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
+import { useEffect } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
+import { queryKeys } from "./lib/queryKeys";
 import { Layout } from "./components/Layout";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { CloudAccessGate } from "./components/CloudAccessGate";
@@ -261,9 +264,42 @@ function NoCompaniesStartPage() {
   );
 }
 
+function AuthExpiredListener() {
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  useEffect(() => {
+    function handleAuthExpired() {
+      // Drop the cached session so CloudAccessGate's session check re-resolves
+      // (and any in-flight queries that fanned out behind the missing cookie
+      // are not retried with the stale assumption that we are signed in).
+      queryClient.setQueryData(queryKeys.auth.session, null);
+      queryClient.cancelQueries();
+      // Avoid redirecting away from public auth flows that should remain visible.
+      const path = location.pathname;
+      const isAlreadyOnAuthFlow =
+        path === "/auth" ||
+        path.startsWith("/auth/") ||
+        path.startsWith("/board-claim/") ||
+        path.startsWith("/cli-auth/") ||
+        path.startsWith("/invite/");
+      if (isAlreadyOnAuthFlow) return;
+      const next = encodeURIComponent(`${location.pathname}${location.search}`);
+      navigate(`/auth?next=${next}`, { replace: true });
+    }
+
+    window.addEventListener("paperclip:auth-expired", handleAuthExpired);
+    return () => window.removeEventListener("paperclip:auth-expired", handleAuthExpired);
+  }, [queryClient, navigate, location.pathname, location.search]);
+
+  return null;
+}
+
 export function App() {
   return (
     <>
+      <AuthExpiredListener />
       <Routes>
         <Route path="auth" element={<AuthPage />} />
         <Route path="board-claim/:token" element={<BoardClaimPage />} />

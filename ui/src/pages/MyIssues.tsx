@@ -20,9 +20,19 @@ export function MyIssues() {
     setBreadcrumbs([{ label: "My Issues" }]);
   }, [setBreadcrumbs]);
 
+  // Push the status filter server-side so the bare `["issues", companyId]`
+  // key isn't reused for an unbounded fetch. The page rendered a client-side
+  // `.filter` to drop done/cancelled rows, which on a busy company meant we
+  // pulled and serialized the full list (~1.28 MB) just to display the
+  // open-and-unassigned subset. Cap at 200 — if a user has more than 200
+  // open unassigned issues, a paginated infinite-scroll surface (Issues.tsx)
+  // is the right place to view them.
   const { data: issues, isLoading, error } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "my-issues", "open", 200],
+    queryFn: () => issuesApi.list(selectedCompanyId!, {
+      status: "backlog,todo,in_progress,in_review,blocked",
+      limit: 200,
+    }),
     enabled: !!selectedCompanyId,
   });
 

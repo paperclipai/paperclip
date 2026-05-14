@@ -12,6 +12,15 @@ function makeReq(input: {
 }
 
 describe("assertCompanyAccess", () => {
+  it("returns 401 when no actor is attached", () => {
+    const req = makeReq({
+      method: "GET",
+      actor: { type: "none", source: "none" },
+    });
+
+    expect(() => assertCompanyAccess(req, "company-1")).toThrow(/unauthorized/i);
+  });
+
   it("allows viewer memberships to read", () => {
     const req = makeReq({
       method: "GET",
@@ -107,6 +116,44 @@ describe("assertCompanyAccess", () => {
 });
 
 describe("assertBoardOrgAccess", () => {
+  it("returns 401 when no actor is attached (deployment auth, no session)", () => {
+    const req = makeReq({
+      actor: { type: "none", source: "none" },
+    });
+
+    expect(() => assertBoardOrgAccess(req)).toThrow(/unauthorized/i);
+  });
+
+  it("returns 403 for board actors with no companies and not instance admin", () => {
+    const req = makeReq({
+      actor: {
+        type: "board",
+        userId: "user-1",
+        source: "session",
+        companyIds: [],
+        memberships: [],
+        isInstanceAdmin: false,
+      },
+    });
+
+    expect(() => assertBoardOrgAccess(req)).toThrow("Company membership or instance admin access required");
+  });
+
+  it("passes for board actors with at least one company", () => {
+    const req = makeReq({
+      actor: {
+        type: "board",
+        userId: "user-1",
+        source: "session",
+        companyIds: ["company-1"],
+        memberships: [{ companyId: "company-1", membershipRole: "operator", status: "active" }],
+        isInstanceAdmin: false,
+      },
+    });
+
+    expect(() => assertBoardOrgAccess(req)).not.toThrow();
+  });
+
   it("allows signed-in board users with active company access", () => {
     const req = makeReq({
       actor: {

@@ -11,6 +11,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { adaptersApi } from "@/api/adapters";
 import type { AdapterInfo } from "@/api/adapters";
+import { ApiError } from "@/api/client";
 import { getAdapterLabel } from "@/adapters/adapter-display-registry";
 import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
@@ -275,6 +276,8 @@ export function AdapterManager() {
   const { data: adapters, isLoading } = useQuery({
     queryKey: queryKeys.adapters.all,
     queryFn: () => adaptersApi.list(),
+    retry: (count, err) =>
+      count < 1 && !(err instanceof ApiError && (err.status === 401 || err.status === 403)),
   });
 
   const invalidate = () => {

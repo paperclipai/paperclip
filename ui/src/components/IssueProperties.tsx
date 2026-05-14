@@ -443,10 +443,59 @@ export function IssueProperties({
     enabled: !!companyId,
   });
 
-  const { data: allIssues } = useQuery({
-    queryKey: queryKeys.issues.list(companyId!),
-    queryFn: () => issuesApi.list(companyId!),
-    enabled: !!companyId && (blockedByOpen || parentOpen),
+  // Parent / blocker pickers used to fetch the entire company-scoped issue
+  // list (~1.28 MB on a busy company) just to (a) build a descendant-set
+  // for cycle prevention and (b) populate a typeahead. Replace with three
+  // narrow queries: server-side descendant tree (small), debounced search
+  // results (capped 20), and a recent-issues fallback when search is empty.
+  const PICKER_DEBOUNCE_MS = 200;
+  const PICKER_RESULT_LIMIT = 20;
+  const PICKER_RECENT_LIMIT = 20;
+
+  const [debouncedParentSearch, setDebouncedParentSearch] = useState("");
+  const [debouncedBlockedBySearch, setDebouncedBlockedBySearch] = useState("");
+  const parentSearchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const blockedBySearchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (parentSearchDebounce.current) clearTimeout(parentSearchDebounce.current);
+    parentSearchDebounce.current = setTimeout(() => setDebouncedParentSearch(parentSearch), PICKER_DEBOUNCE_MS);
+    return () => { if (parentSearchDebounce.current) clearTimeout(parentSearchDebounce.current); };
+  }, [parentSearch]);
+
+  useEffect(() => {
+    if (blockedBySearchDebounce.current) clearTimeout(blockedBySearchDebounce.current);
+    blockedBySearchDebounce.current = setTimeout(() => setDebouncedBlockedBySearch(blockedBySearch), PICKER_DEBOUNCE_MS);
+    return () => { if (blockedBySearchDebounce.current) clearTimeout(blockedBySearchDebounce.current); };
+  }, [blockedBySearch]);
+
+  // Descendants of the current issue. Powers cycle prevention in the parent
+  // picker (a parent can't be a descendant of itself). Only the IDs matter.
+  const { data: descendantIssues } = useQuery({
+    queryKey: [...queryKeys.issues.list(companyId!), "descendants-of", issue.id],
+    queryFn: () => issuesApi.list(companyId!, { descendantOf: issue.id }),
+    enabled: !!companyId && (parentOpen || blockedByOpen),
+  });
+
+  // Recent-issues fallback when the picker is open with empty search. 20
+  // recent rows is enough to feel populated without pulling the full list.
+  const { data: recentPickerIssues } = useQuery({
+    queryKey: [...queryKeys.issues.list(companyId!), "issue-properties-recent", PICKER_RECENT_LIMIT],
+    queryFn: () => issuesApi.list(companyId!, { limit: PICKER_RECENT_LIMIT }),
+    enabled: !!companyId && (parentOpen || blockedByOpen),
+    staleTime: 30_000,
+  });
+
+  const { data: parentSearchResults } = useQuery({
+    queryKey: queryKeys.issues.search(companyId!, debouncedParentSearch, undefined, PICKER_RESULT_LIMIT),
+    queryFn: () => issuesApi.list(companyId!, { q: debouncedParentSearch, limit: PICKER_RESULT_LIMIT }),
+    enabled: !!companyId && parentOpen && debouncedParentSearch.trim().length > 0,
+  });
+
+  const { data: blockerSearchResults } = useQuery({
+    queryKey: queryKeys.issues.search(companyId!, debouncedBlockedBySearch, undefined, PICKER_RESULT_LIMIT),
+    queryFn: () => issuesApi.list(companyId!, { q: debouncedBlockedBySearch, limit: PICKER_RESULT_LIMIT }),
+    enabled: !!companyId && blockedByOpen && debouncedBlockedBySearch.trim().length > 0,
   });
 
   const createLabel = useMutation({
@@ -1544,32 +1593,16 @@ export function IssueProperties({
   );
 
   const blockedByIds = issue.blockedBy?.map((relation) => relation.id) ?? [];
+  // Server-side descendant tree (`?descendantOf=`). Replaces a client-side
+  // graph traversal that required the full issue list.
   const descendantIssueIds = useMemo(() => {
-    if (!allIssues?.length) return new Set<string>();
-    const childrenByParentId = new Map<string, string[]>();
-    for (const candidate of allIssues) {
-      if (!candidate.parentId) continue;
-      const children = childrenByParentId.get(candidate.parentId) ?? [];
-      children.push(candidate.id);
-      childrenByParentId.set(candidate.parentId, children);
-    }
-
-    const descendants = new Set<string>();
-    const stack = [...(childrenByParentId.get(issue.id) ?? [])];
-    while (stack.length > 0) {
-      const candidateId = stack.pop();
-      if (!candidateId || descendants.has(candidateId)) continue;
-      descendants.add(candidateId);
-      stack.push(...(childrenByParentId.get(candidateId) ?? []));
-    }
-    return descendants;
-  }, [allIssues, issue.id]);
-  const currentParentIssue = useMemo(() => {
-    if (!issue.parentId) return null;
-    return allIssues?.find((candidate) => candidate.id === issue.parentId) ?? null;
-  }, [allIssues, issue.parentId]);
-  const parentIdentifier = issue.ancestors?.[0]?.identifier ?? currentParentIssue?.identifier;
-  const parentTitle = issue.ancestors?.[0]?.title ?? currentParentIssue?.title ?? issue.parentId?.slice(0, 8);
+    return new Set((descendantIssues ?? []).map((d) => d.id));
+  }, [descendantIssues]);
+  // Prefer issue.ancestors[0] (already in IssueDetail's response). The full
+  // list lookup that used to back this is gone; the rare case where
+  // ancestors is missing falls through to showing the parent id slug.
+  const parentIdentifier = issue.ancestors?.[0]?.identifier;
+  const parentTitle = issue.ancestors?.[0]?.title ?? issue.parentId?.slice(0, 8);
   const parentTrigger = issue.parentId ? (
     <span className="text-sm break-words min-w-0 inline">
       {parentIdentifier ? `${parentIdentifier} ` : ""}
@@ -1587,17 +1620,14 @@ export function IssueProperties({
       <ArrowUpRight className="h-3 w-3" />
     </Link>
   ) : undefined;
-  const parentOptions = (allIssues ?? [])
+  // Pick the right source: search results when the user has typed, recent
+  // issues when the input is empty. Same exclusion rules either way.
+  const parentOptionsSource = parentSearch.trim().length > 0
+    ? (parentSearchResults ?? [])
+    : (recentPickerIssues ?? []);
+  const parentOptions = parentOptionsSource
     .filter((candidate) => candidate.id !== issue.id)
     .filter((candidate) => !descendantIssueIds.has(candidate.id))
-    .filter((candidate) => {
-      if (!parentSearch.trim()) return true;
-      const query = parentSearch.toLowerCase();
-      return (
-        (candidate.identifier ?? "").toLowerCase().includes(query) ||
-        candidate.title.toLowerCase().includes(query)
-      );
-    })
     .sort((a, b) => {
       const aLabel = `${a.identifier ?? ""} ${a.title}`.trim();
       const bLabel = `${b.identifier ?? ""} ${b.title}`.trim();
@@ -1648,16 +1678,11 @@ export function IssueProperties({
     </>
   );
   const blockingIssues = issue.blocks ?? [];
-  const blockerOptions = (allIssues ?? [])
+  const blockerOptionsSource = blockedBySearch.trim().length > 0
+    ? (blockerSearchResults ?? [])
+    : (recentPickerIssues ?? []);
+  const blockerOptions = blockerOptionsSource
     .filter((candidate) => candidate.id !== issue.id)
-    .filter((candidate) => {
-      if (!blockedBySearch.trim()) return true;
-      const query = blockedBySearch.toLowerCase();
-      return (
-        (candidate.identifier ?? "").toLowerCase().includes(query) ||
-        candidate.title.toLowerCase().includes(query)
-      );
-    })
     .sort((a, b) => {
       const aLabel = `${a.identifier ?? ""} ${a.title}`.trim();
       const bLabel = `${b.identifier ?? ""} ${b.title}`.trim();

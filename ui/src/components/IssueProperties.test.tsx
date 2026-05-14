@@ -221,6 +221,7 @@ function createExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): 
     name: "PAP-1 workspace",
     status: "active",
     cwd: "/tmp/paperclip/PAP-1",
+    agentCwd: null,
     repoUrl: null,
     baseRef: "master",
     branchName: "pap-1-workspace",
@@ -962,9 +963,18 @@ describe("IssueProperties", () => {
 
   it("allows setting and clearing a parent issue from the properties pane", async () => {
     const onUpdate = vi.fn();
-    mockIssuesApi.list.mockResolvedValue([
-      createIssue({ id: "issue-2", identifier: "PAP-2", title: "Candidate parent", status: "in_progress" }),
-    ]);
+    // The parent picker now hits issuesApi.list three times with distinct
+    // filter shapes: { descendantOf } for cycle-prevention, { q, limit }
+    // for typeahead, and { limit } for the empty-search recent fallback.
+    // Return the candidate from the recent fallback path; descendant query
+    // must be empty so the candidate isn't filtered as a descendant of self.
+    mockIssuesApi.list.mockImplementation((_companyId: string, filters?: { descendantOf?: string; q?: string }) => {
+      if (filters?.descendantOf) return Promise.resolve([]);
+      if (filters?.q) return Promise.resolve([]);
+      return Promise.resolve([
+        createIssue({ id: "issue-2", identifier: "PAP-2", title: "Candidate parent", status: "in_progress" }),
+      ]);
+    });
 
     const root = renderProperties(container, {
       issue: createIssue(),

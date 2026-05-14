@@ -627,6 +627,7 @@ describe("optimistic issue comments", () => {
           status: "active",
           name: "Execution workspace",
           cwd: "/tmp/paperclip",
+          agentCwd: null,
           repoUrl: null,
           baseRef: null,
           providerType: "local_fs",

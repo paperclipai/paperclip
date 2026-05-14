@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { adaptersApi, type AdapterCapabilities } from "@/api/adapters";
+import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
 
 const ALL_FALSE: AdapterCapabilities = {
@@ -39,6 +40,9 @@ export function useAdapterCapabilities(): (type: string) => AdapterCapabilities 
     queryKey: queryKeys.adapters.all,
     queryFn: () => adaptersApi.list(),
     staleTime: 5 * 60 * 1000,
+    // Don't fan a 401/403 into 4 hits; KNOWN_DEFAULTS handles the cold-load case.
+    retry: (count, err) =>
+      count < 1 && !(err instanceof ApiError && (err.status === 401 || err.status === 403)),
   });
 
   const capMap = useMemo(() => {

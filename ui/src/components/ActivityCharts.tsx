@@ -1,4 +1,4 @@
-import type { DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
+import type { DashboardIssueActivityDay, DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
 
 /* ---- Utilities ---- */
 
@@ -130,15 +130,29 @@ const priorityColors: Record<string, string> = {
 
 const priorityOrder = ["critical", "high", "medium", "low"] as const;
 
-export function PriorityChart({ issues }: { issues: { priority: string; createdAt: Date }[] }) {
+type PriorityChartProps =
+  | { issues: { priority: string; createdAt: Date }[]; activity?: never }
+  | { activity: DashboardIssueActivityDay[]; issues?: never };
+
+export function PriorityChart(props: PriorityChartProps) {
   const days = getLast14Days();
   const grouped = new Map<string, Record<string, number>>();
   for (const day of days) grouped.set(day, { critical: 0, high: 0, medium: 0, low: 0 });
-  for (const issue of issues) {
-    const day = new Date(issue.createdAt).toISOString().slice(0, 10);
-    const entry = grouped.get(day);
-    if (!entry) continue;
-    if (issue.priority in entry) entry[issue.priority]++;
+  if ("activity" in props && props.activity) {
+    for (const day of props.activity) {
+      const entry = grouped.get(day.date);
+      if (!entry || !day.byPriority) continue;
+      for (const [priority, count] of Object.entries(day.byPriority)) {
+        if (priority in entry) entry[priority] += count;
+      }
+    }
+  } else if ("issues" in props && props.issues) {
+    for (const issue of props.issues) {
+      const day = new Date(issue.createdAt).toISOString().slice(0, 10);
+      const entry = grouped.get(day);
+      if (!entry) continue;
+      if (issue.priority in entry) entry[issue.priority]++;
+    }
   }
 
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
@@ -194,17 +208,32 @@ const statusLabels: Record<string, string> = {
   backlog: "Backlog",
 };
 
-export function IssueStatusChart({ issues }: { issues: { status: string; createdAt: Date }[] }) {
+type IssueStatusChartProps =
+  | { issues: { status: string; createdAt: Date }[]; activity?: never }
+  | { activity: DashboardIssueActivityDay[]; issues?: never };
+
+export function IssueStatusChart(props: IssueStatusChartProps) {
   const days = getLast14Days();
   const allStatuses = new Set<string>();
   const grouped = new Map<string, Record<string, number>>();
   for (const day of days) grouped.set(day, {});
-  for (const issue of issues) {
-    const day = new Date(issue.createdAt).toISOString().slice(0, 10);
-    const entry = grouped.get(day);
-    if (!entry) continue;
-    entry[issue.status] = (entry[issue.status] ?? 0) + 1;
-    allStatuses.add(issue.status);
+  if ("activity" in props && props.activity) {
+    for (const day of props.activity) {
+      const entry = grouped.get(day.date);
+      if (!entry || !day.byStatus) continue;
+      for (const [status, count] of Object.entries(day.byStatus)) {
+        entry[status] = (entry[status] ?? 0) + count;
+        allStatuses.add(status);
+      }
+    }
+  } else if ("issues" in props && props.issues) {
+    for (const issue of props.issues) {
+      const day = new Date(issue.createdAt).toISOString().slice(0, 10);
+      const entry = grouped.get(day);
+      if (!entry) continue;
+      entry[issue.status] = (entry[issue.status] ?? 0) + 1;
+      allStatuses.add(issue.status);
+    }
   }
 
   const statusOrder = ["todo", "in_progress", "in_review", "done", "blocked", "cancelled", "backlog"].filter(s => allStatuses.has(s));

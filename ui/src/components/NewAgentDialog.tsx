@@ -5,6 +5,7 @@ import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { agentsApi } from "../api/agents";
 import { adaptersApi } from "../api/adapters";
+import { ApiError } from "../api/client";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   Dialog,
@@ -43,6 +44,8 @@ export function NewAgentDialog() {
     queryKey: queryKeys.adapters.all,
     queryFn: () => adaptersApi.list(),
     staleTime: 5 * 60 * 1000,
+    retry: (count, err) =>
+      count < 1 && !(err instanceof ApiError && (err.status === 401 || err.status === 403)),
   });
 
   // Fetch existing agents for the "Ask CEO" flow

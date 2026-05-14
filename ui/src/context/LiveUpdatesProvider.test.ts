@@ -11,7 +11,11 @@ vi.mock("../api/issues", () => ({
 }));
 
 import { describe, expect, it, vi } from "vitest";
-import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
+import {
+  __createInvalidationCoalescerForTests,
+  __liveUpdatesTestUtils,
+  __makePassthroughCoalescerForTests,
+} from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
@@ -26,6 +30,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
 
     __liveUpdatesTestUtils.invalidateActivityQueries(
       queryClient as never,
+      __makePassthroughCoalescerForTests(queryClient as { invalidateQueries: (opts: unknown) => unknown }),
       "company-1",
       {
         entityType: "issue",
@@ -36,14 +41,20 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       { userId: null, agentId: null },
     );
 
+    // Inbox-badge keys are invalidated with refetchType: "none" so they
+    // settle on staleTime + tab-focus / next-mount instead of triggering
+    // a synchronous refetch storm (LiveUpdatesProvider.tsx:684-687).
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.listMineByMe("company-1"),
+      refetchType: "none",
     });
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.listTouchedByMe("company-1"),
+      refetchType: "none",
     });
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.listUnreadTouchedByMe("company-1"),
+      refetchType: "none",
     });
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.detail("issue-1"),
@@ -85,6 +96,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
 
     __liveUpdatesTestUtils.invalidateActivityQueries(
       queryClient as never,
+      __makePassthroughCoalescerForTests(queryClient as { invalidateQueries: (opts: unknown) => unknown }),
       "company-1",
       {
         entityType: "issue",
@@ -111,6 +123,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
 
     __liveUpdatesTestUtils.invalidateActivityQueries(
       queryClient as never,
+      __makePassthroughCoalescerForTests(queryClient as { invalidateQueries: (opts: unknown) => unknown }),
       "company-1",
       {
         entityType: "issue",
@@ -148,6 +161,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
 
     __liveUpdatesTestUtils.invalidateActivityQueries(
       queryClient as never,
+      __makePassthroughCoalescerForTests(queryClient as { invalidateQueries: (opts: unknown) => unknown }),
       "company-1",
       {
         entityType: "issue",
@@ -194,6 +208,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
 
     __liveUpdatesTestUtils.invalidateActivityQueries(
       queryClient as never,
+      __makePassthroughCoalescerForTests(queryClient as { invalidateQueries: (opts: unknown) => unknown }),
       "company-1",
       {
         entityType: "issue",
@@ -240,6 +255,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
 
     __liveUpdatesTestUtils.invalidateActivityQueries(
       queryClient as never,
+      __makePassthroughCoalescerForTests(queryClient as { invalidateQueries: (opts: unknown) => unknown }),
       "company-1",
       {
         entityType: "issue",
@@ -288,6 +304,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
 
     __liveUpdatesTestUtils.invalidateActivityQueries(
       queryClient as never,
+      __makePassthroughCoalescerForTests(queryClient as { invalidateQueries: (opts: unknown) => unknown }),
       "company-1",
       {
         entityType: "issue",
@@ -701,5 +718,94 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
       body: "boom",
       tone: "error",
     });
+  });
+});
+
+describe("createInvalidationCoalescer", () => {
+  function makeQueryClient(opts: { isFetchingResults?: number[] } = {}) {
+    const fetchingResults = [...(opts.isFetchingResults ?? [])];
+    const calls: Array<{ kind: "isFetching" | "invalidate"; arg: unknown }> = [];
+    return {
+      calls,
+      queryClient: {
+        isFetching: (arg: unknown) => {
+          calls.push({ kind: "isFetching", arg });
+          return fetchingResults.length ? (fetchingResults.shift() ?? 0) : 0;
+        },
+        invalidateQueries: (arg: unknown) => {
+          calls.push({ kind: "invalidate", arg });
+        },
+      },
+    };
+  }
+
+  it("collapses repeat byKey calls inside the debounce window into one invalidate", async () => {
+    vi.useFakeTimers();
+    try {
+      const { queryClient, calls } = makeQueryClient();
+      const c = __createInvalidationCoalescerForTests(queryClient as never, 1000);
+      const key = ["issues", "list"] as const;
+      for (let i = 0; i < 10; i++) c.byKey({ queryKey: key });
+      await vi.advanceTimersByTimeAsync(999);
+      expect(calls.filter(x => x.kind === "invalidate")).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(2);
+      const inv = calls.filter(x => x.kind === "invalidate");
+      expect(inv).toHaveLength(1);
+      expect(inv[0].arg).toEqual({ queryKey: key, exact: undefined, refetchType: undefined });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("defers active invalidations when the same key is already in flight", async () => {
+    vi.useFakeTimers();
+    try {
+      const { queryClient, calls } = makeQueryClient({ isFetchingResults: [1, 1, 0] });
+      const c = __createInvalidationCoalescerForTests(queryClient as never, 1000);
+      const key = ["issues", "list"] as const;
+      c.byKey({ queryKey: key });
+      // 1st flush: isFetching=1 → defer, no invalidate
+      await vi.advanceTimersByTimeAsync(1001);
+      expect(calls.filter(x => x.kind === "invalidate")).toHaveLength(0);
+      // 2nd flush: isFetching=1 → defer again
+      await vi.advanceTimersByTimeAsync(1001);
+      expect(calls.filter(x => x.kind === "invalidate")).toHaveLength(0);
+      // 3rd flush: isFetching=0 → fires
+      await vi.advanceTimersByTimeAsync(1001);
+      expect(calls.filter(x => x.kind === "invalidate")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not defer invalidations whose refetchType is inactive or none", async () => {
+    vi.useFakeTimers();
+    try {
+      // isFetching would say >0 but we should never even call it for inactive/none.
+      const { queryClient, calls } = makeQueryClient({ isFetchingResults: [99, 99] });
+      const c = __createInvalidationCoalescerForTests(queryClient as never, 1000);
+      c.byKey({ queryKey: ["a"], refetchType: "none" });
+      c.byKey({ queryKey: ["b"], refetchType: "inactive" });
+      await vi.advanceTimersByTimeAsync(1001);
+      const inv = calls.filter(x => x.kind === "invalidate");
+      expect(inv).toHaveLength(2);
+      expect(calls.filter(x => x.kind === "isFetching")).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancel() clears pending tasks and does not re-fire", async () => {
+    vi.useFakeTimers();
+    try {
+      const { queryClient, calls } = makeQueryClient();
+      const c = __createInvalidationCoalescerForTests(queryClient as never, 1000);
+      c.byKey({ queryKey: ["x"] });
+      c.cancel();
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(calls).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

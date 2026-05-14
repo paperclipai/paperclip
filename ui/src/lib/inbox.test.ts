@@ -256,6 +256,7 @@ function makeExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): Ex
     name: "PAP-1 branch",
     status: "active",
     cwd: "/tmp/project/worktree",
+    agentCwd: null,
     repoUrl: null,
     baseRef: null,
     branchName: "pap-1",
@@ -302,6 +303,8 @@ const dashboard: DashboardSummary = {
     pausedProjects: 0,
   },
   runActivity: [],
+  issueActivity: [],
+  recentIssues: [],
 };
 
 describe("inbox helpers", () => {

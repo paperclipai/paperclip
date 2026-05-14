@@ -65,9 +65,14 @@ export function CommandPalette() {
     if (!open) setQuery("");
   }, [open]);
 
+  // Backs the "recent issues" fallback shown when the palette is open but
+  // the user hasn't typed yet. Capped at 50 so opening ⌘K on a busy company
+  // doesn't pull the full company issue list just to render a handful of
+  // rows. Once the user types, `searchedIssues` (server-side search via
+  // `?q=…&limit=10`) takes over.
   const { data: issues = [] } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "command-palette-recent", 50],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { limit: 50 }),
     enabled: !!selectedCompanyId && open && searchQuery.length === 0,
   });
 
