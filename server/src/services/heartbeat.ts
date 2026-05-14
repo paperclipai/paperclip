@@ -1122,7 +1122,7 @@ export function resolveHeartbeatPolicyForRuntimeConfig(runtimeConfigValue: unkno
     preset,
     enabled,
     intervalSec,
-    wakeOnDemand: enabled ? wakeOnDemand : true,
+    wakeOnDemand,
     cooldownSec,
     maxConcurrentRuns,
     idleAutoPauseAfter,
