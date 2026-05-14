@@ -19,6 +19,7 @@ from touch_index.bug_worker import (
     _save_unindexable_ids,
     _parse_completed_at,
     _set_catchup_tracker_path,
+    backfill_null_closed_at,
     catch_up_eligible_bug_issues,
     ingest_bug_issue,
     process_bug_issue,
@@ -3702,3 +3703,267 @@ class TestCatchUpUnindexableTracking:
         assert len(results2) == 0
         mock_get.assert_not_called()
         mock_git.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# backfill_null_closed_at — backfill null closed_at values
+# ---------------------------------------------------------------------------
+
+
+class TestBackfillNullClosedAt:
+    def test_backfill_updates_null_closed_at(self):
+        engine, conn = _mock_engine()
+        issue_id = "cccccccc-0000-0000-0000-000000000001"
+        identifier = "BTCAAAAA-1202"
+        completed_at = "2026-05-11T12:00:00Z"
+        issue = {
+            "id": issue_id,
+            "identifier": identifier,
+            "completedAt": completed_at,
+        }
+
+        conn.execute.return_value.fetchall.return_value = [(issue_id, identifier)]
+
+        with (
+            patch(
+                "touch_index.bug_worker.get_issue_by_id", return_value=issue
+            ) as mock_get,
+        ):
+            result = backfill_null_closed_at(engine)
+
+        assert result == 1
+        mock_get.assert_called_once_with(issue_id)
+
+    def test_backfill_skips_when_no_null_rows(self):
+        engine, conn = _mock_engine()
+        conn.execute.return_value.fetchall.return_value = []
+
+        with (
+            patch("touch_index.bug_worker.get_issue_by_id") as mock_get,
+        ):
+            result = backfill_null_closed_at(engine)
+
+        assert result == 0
+        mock_get.assert_not_called()
+
+    def test_backfill_skips_when_issue_not_found(self):
+        engine, conn = _mock_engine()
+        issue_id = "cccccccc-0000-0000-0000-000000000001"
+        identifier = "BTCAAAAA-1202"
+
+        conn.execute.return_value.fetchall.return_value = [(issue_id, identifier)]
+
+        with (
+            patch(
+                "touch_index.bug_worker.get_issue_by_id", return_value=None
+            ) as mock_get,
+        ):
+            result = backfill_null_closed_at(engine)
+
+        assert result == 0
+        mock_get.assert_called_once_with(issue_id)
+
+    def test_backfill_skips_when_no_completed_at(self):
+        engine, conn = _mock_engine()
+        issue_id = "cccccccc-0000-0000-0000-000000000001"
+        identifier = "BTCAAAAA-1202"
+        issue = {"id": issue_id, "identifier": identifier}
+
+        conn.execute.return_value.fetchall.return_value = [(issue_id, identifier)]
+
+        with (
+            patch(
+                "touch_index.bug_worker.get_issue_by_id", return_value=issue
+            ) as mock_get,
+        ):
+            result = backfill_null_closed_at(engine)
+
+        assert result == 0
+        mock_get.assert_called_once_with(issue_id)
+
+    def test_backfill_dry_run_does_not_update(self):
+        engine, conn = _mock_engine()
+        issue_id = "cccccccc-0000-0000-0000-000000000001"
+        identifier = "BTCAAAAA-1202"
+        completed_at = "2026-05-11T12:00:00Z"
+        issue = {
+            "id": issue_id,
+            "identifier": identifier,
+            "completedAt": completed_at,
+        }
+
+        conn.execute.return_value.fetchall.return_value = [(issue_id, identifier)]
+
+        with (
+            patch(
+                "touch_index.bug_worker.get_issue_by_id", return_value=issue
+            ) as mock_get,
+        ):
+            result = backfill_null_closed_at(engine, dry_run=True)
+
+        assert result == 1
+        mock_get.assert_called_once_with(issue_id)
+        assert conn.begin.call_count == 0
+
+    def test_backfill_continues_after_error(self):
+        engine, conn = _mock_engine()
+        issue_id_1 = "cccccccc-0000-0000-0000-000000000001"
+        issue_id_2 = "cccccccc-0000-0000-0000-000000000002"
+        identifier_1 = "BTCAAAAA-1202"
+        identifier_2 = "BTCAAAAA-1203"
+        issue_2 = {
+            "id": issue_id_2,
+            "identifier": identifier_2,
+            "completedAt": "2026-05-11T12:00:00Z",
+        }
+
+        conn.execute.return_value.fetchall.return_value = [
+            (issue_id_1, identifier_1),
+            (issue_id_2, identifier_2),
+        ]
+
+        with (
+            patch(
+                "touch_index.bug_worker.get_issue_by_id",
+                side_effect=lambda i: (
+                    issue_2 if i == issue_id_2
+                    else (_ for _ in ()).throw(RuntimeError("API timeout"))
+                ),
+            ) as mock_get,
+        ):
+            result = backfill_null_closed_at(engine)
+
+        assert result == 1
+        assert mock_get.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# backfill_null_closed_at — backfill null closed_at values
+# ---------------------------------------------------------------------------
+
+
+class TestBackfillNullClosedAt:
+    def test_backfill_updates_null_closed_at(self):
+        engine, conn = _mock_engine()
+        issue_id = "cccccccc-0000-0000-0000-000000000001"
+        identifier = "BTCAAAAA-1202"
+        completed_at = "2026-05-11T12:00:00Z"
+        issue = {
+            "id": issue_id,
+            "identifier": identifier,
+            "completedAt": completed_at,
+        }
+
+        conn.execute.return_value.fetchall.return_value = [(issue_id, identifier)]
+
+        with (
+            patch(
+                "touch_index.bug_worker.get_issue_by_id", return_value=issue
+            ) as mock_get,
+        ):
+            result = backfill_null_closed_at(engine)
+
+        assert result == 1
+        mock_get.assert_called_once_with(issue_id)
+
+    def test_backfill_skips_when_no_null_rows(self):
+        engine, conn = _mock_engine()
+        conn.execute.return_value.fetchall.return_value = []
+
+        with (
+            patch("touch_index.bug_worker.get_issue_by_id") as mock_get,
+        ):
+            result = backfill_null_closed_at(engine)
+
+        assert result == 0
+        mock_get.assert_not_called()
+
+    def test_backfill_skips_when_issue_not_found(self):
+        engine, conn = _mock_engine()
+        issue_id = "cccccccc-0000-0000-0000-000000000001"
+        identifier = "BTCAAAAA-1202"
+
+        conn.execute.return_value.fetchall.return_value = [(issue_id, identifier)]
+
+        with (
+            patch(
+                "touch_index.bug_worker.get_issue_by_id", return_value=None
+            ) as mock_get,
+        ):
+            result = backfill_null_closed_at(engine)
+
+        assert result == 0
+        mock_get.assert_called_once_with(issue_id)
+
+    def test_backfill_skips_when_no_completed_at(self):
+        engine, conn = _mock_engine()
+        issue_id = "cccccccc-0000-0000-0000-000000000001"
+        identifier = "BTCAAAAA-1202"
+        issue = {"id": issue_id, "identifier": identifier}
+
+        conn.execute.return_value.fetchall.return_value = [(issue_id, identifier)]
+
+        with (
+            patch(
+                "touch_index.bug_worker.get_issue_by_id", return_value=issue
+            ) as mock_get,
+        ):
+            result = backfill_null_closed_at(engine)
+
+        assert result == 0
+        mock_get.assert_called_once_with(issue_id)
+
+    def test_backfill_dry_run_does_not_update(self):
+        engine, conn = _mock_engine()
+        issue_id = "cccccccc-0000-0000-0000-000000000001"
+        identifier = "BTCAAAAA-1202"
+        completed_at = "2026-05-11T12:00:00Z"
+        issue = {
+            "id": issue_id,
+            "identifier": identifier,
+            "completedAt": completed_at,
+        }
+
+        conn.execute.return_value.fetchall.return_value = [(issue_id, identifier)]
+
+        with (
+            patch(
+                "touch_index.bug_worker.get_issue_by_id", return_value=issue
+            ) as mock_get,
+        ):
+            result = backfill_null_closed_at(engine, dry_run=True)
+
+        assert result == 1
+        mock_get.assert_called_once_with(issue_id)
+        assert conn.begin.call_count == 0
+
+    def test_backfill_continues_after_error(self):
+        engine, conn = _mock_engine()
+        issue_id_1 = "cccccccc-0000-0000-0000-000000000001"
+        issue_id_2 = "cccccccc-0000-0000-0000-000000000002"
+        identifier_1 = "BTCAAAAA-1202"
+        identifier_2 = "BTCAAAAA-1203"
+        issue_2 = {
+            "id": issue_id_2,
+            "identifier": identifier_2,
+            "completedAt": "2026-05-11T12:00:00Z",
+        }
+
+        conn.execute.return_value.fetchall.return_value = [
+            (issue_id_1, identifier_1),
+            (issue_id_2, identifier_2),
+        ]
+
+        with (
+            patch(
+                "touch_index.bug_worker.get_issue_by_id",
+                side_effect=lambda i: (
+                    issue_2 if i == issue_id_2
+                    else (_ for _ in ()).throw(RuntimeError("API timeout"))
+                ),
+            ) as mock_get,
+        ):
+            result = backfill_null_closed_at(engine)
+
+        assert result == 1
+        assert mock_get.call_count == 2
