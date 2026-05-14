@@ -156,6 +156,8 @@ import {
   type InboxWorkItemGroupBy,
 } from "../lib/inbox";
 import { useDismissedInboxAlerts, useInboxDismissals, useReadInboxItems } from "../hooks/useInboxBadge";
+import { PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
+import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
 
 export { InboxIssueMetaLeading, InboxIssueTrailingColumns } from "../components/IssueColumns";
 export { IssueGroupHeader as InboxGroupHeader } from "../components/IssueGroupHeader";
@@ -660,8 +662,20 @@ function JoinRequestInboxRow({
   );
 }
 
+function InboxToolbarPlugins({ companyId, companyPrefix }: { companyId: string | null; companyPrefix: string | null }) {
+  const { slots } = usePluginSlots({ slotTypes: ["inboxToolbarButton"], companyId });
+  const { launchers } = usePluginLaunchers({ placementZones: ["inboxToolbarButton"], companyId, enabled: !!companyId });
+  if (slots.length === 0 && launchers.length === 0) return null;
+  return (
+    <>
+      <PluginSlotOutlet slotTypes={["inboxToolbarButton"]} context={{ companyId, companyPrefix }} className="flex items-center gap-1" />
+      <PluginLauncherOutlet placementZones={["inboxToolbarButton"]} context={{ companyId, companyPrefix }} className="flex items-center gap-1" />
+    </>
+  );
+}
+
 export function Inbox() {
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { openNewIssue } = useDialogActions();
   const { isMobile } = useSidebar();
@@ -2154,6 +2168,7 @@ export function Inbox() {
                 title="Choose which inbox columns stay visible"
                 iconOnly
               />
+              <InboxToolbarPlugins companyId={selectedCompanyId} companyPrefix={selectedCompany?.issuePrefix ?? null} />
               {canMarkAllRead && (
                 <>
                   <Button
