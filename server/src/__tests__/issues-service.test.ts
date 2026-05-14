@@ -425,6 +425,97 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result.map((issue) => issue.id)).toEqual([commentMatchId, descriptionMatchId]);
   });
 
+  it("orders project issues by newest creation time with issue number as a tie breaker", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const otherProjectId = randomUUID();
+    const olderHighPriorityIssueId = randomUUID();
+    const sameCreatedLowerNumberIssueId = randomUUID();
+    const sameCreatedHigherNumberIssueId = randomUUID();
+    const otherProjectIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(projects).values([
+      {
+        id: projectId,
+        companyId,
+        name: "Target project",
+        status: "in_progress",
+      },
+      {
+        id: otherProjectId,
+        companyId,
+        name: "Other project",
+        status: "in_progress",
+      },
+    ]);
+
+    await db.insert(issues).values([
+      {
+        id: olderHighPriorityIssueId,
+        companyId,
+        projectId,
+        title: "Older high priority issue",
+        status: "todo",
+        priority: "critical",
+        issueNumber: 41,
+        identifier: "T-41",
+        createdAt: new Date("2026-03-26T09:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T13:00:00.000Z"),
+      },
+      {
+        id: sameCreatedLowerNumberIssueId,
+        companyId,
+        projectId,
+        title: "Same created lower issue number",
+        status: "todo",
+        priority: "low",
+        issueNumber: 42,
+        identifier: "T-42",
+        createdAt: new Date("2026-03-26T10:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T10:00:00.000Z"),
+      },
+      {
+        id: sameCreatedHigherNumberIssueId,
+        companyId,
+        projectId,
+        title: "Same created higher issue number",
+        status: "todo",
+        priority: "low",
+        issueNumber: 43,
+        identifier: "T-43",
+        createdAt: new Date("2026-03-26T10:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T09:00:00.000Z"),
+      },
+      {
+        id: otherProjectIssueId,
+        companyId,
+        projectId: otherProjectId,
+        title: "Other project issue",
+        status: "todo",
+        priority: "low",
+        issueNumber: 44,
+        identifier: "T-44",
+        createdAt: new Date("2026-03-26T11:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T11:00:00.000Z"),
+      },
+    ]);
+
+    const result = await svc.list(companyId, { projectId });
+
+    expect(result.map((issue) => issue.id)).toEqual([
+      sameCreatedHigherNumberIssueId,
+      sameCreatedLowerNumberIssueId,
+      olderHighPriorityIssueId,
+    ]);
+  });
+
   it("filters issue lists to the full descendant tree for a root issue", async () => {
     const companyId = randomUUID();
     const rootId = randomUUID();
