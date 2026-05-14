@@ -1,0 +1,12 @@
+{
+  "name": "@paperclipai/chase-telegram",
+  "version": "0.1.0",
+  "exports": "./index.ts",
+  "tasks": {
+    "start": "deno run --allow-net --allow-env --allow-read index.ts",
+    "serve": "deno serve --allow-net --allow-env --allow-read --port 8080 index.ts"
+  },
+  "imports": {
+    "std/": "https://deno.land/std@0.224.0/"
+  }
+}

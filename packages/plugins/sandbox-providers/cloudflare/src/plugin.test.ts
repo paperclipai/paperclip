@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import plugin from "./plugin.js";
 
 const fetchMock = vi.fn();
+let plugin: typeof import("./plugin.js").default;
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -23,9 +23,11 @@ function requestBodyAt(index = 0): Record<string, unknown> {
 }
 
 describe("Cloudflare sandbox provider plugin", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     fetchMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
+    vi.resetModules();
+    plugin = (await import("./plugin.js")).default;
   });
 
   it("declares the Cloudflare environment lifecycle handlers", async () => {
@@ -210,6 +212,12 @@ describe("Cloudflare sandbox provider plugin", () => {
   });
 
   it("routes bridge-channel execute calls through a dedicated session", async () => {
+    // pluginLogger must be set for the streaming branch to be reachable, so
+    // we can assert that bridge-channel calls take the non-streaming path
+    // even when adapter sessions would otherwise stream.
+    await plugin.definition.setup?.({
+      logger: { info: () => undefined, warn: () => undefined, error: () => undefined, debug: () => undefined },
+    } as never);
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
         exitCode: 0,
@@ -248,6 +256,49 @@ describe("Cloudflare sandbox provider plugin", () => {
       },
     });
     expect(requestBodyAt().env).not.toHaveProperty("PAPERCLIP_SANDBOX_EXEC_CHANNEL");
+    // Bridge-channel commands must use the non-streaming exec path. The
+    // @cloudflare/sandbox SDK's streaming mode can drop the final stdout
+    // chunk when a short shell exits the same tick it writes — bridge ops
+    // carry machine-consumed stdout (readiness JSON, base64 file payloads,
+    // queue response bodies) where that data loss surfaces as opaque
+    // "invalid readiness JSON" / "Invalid bridge request payload" errors.
+    expect(requestBodyAt().streamOutput).toBe(false);
+  });
+
+  it("uses streaming exec for non-bridge adapter commands so live logs flow", async () => {
+    // Streaming is gated on `pluginLogger` being set, which normally happens
+    // in `setup()`. Wire a minimal logger so the streaming branch is reachable.
+    await plugin.definition.setup?.({
+      logger: { info: () => undefined, warn: () => undefined, error: () => undefined, debug: () => undefined },
+    } as never);
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        "event: stdout\ndata: {\"data\":\"hello\\n\"}\n\nevent: complete\ndata: {\"exitCode\":0,\"signal\":null,\"timedOut\":false,\"stdout\":\"hello\\n\",\"stderr\":\"\"}\n\n",
+        {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        },
+      ),
+    );
+
+    await plugin.definition.onEnvironmentExecute?.({
+      driverKey: "cloudflare",
+      companyId: "company-1",
+      environmentId: "env-1",
+      lease: { providerLeaseId: "pc-run-1-abcd1234", metadata: {} },
+      command: "echo",
+      args: ["hello"],
+      cwd: "/workspace/paperclip",
+      env: { KEEP_ME: "visible" },
+      config: {
+        bridgeBaseUrl: "https://bridge.example.workers.dev",
+        bridgeAuthToken: "resolved-token",
+        sessionStrategy: "named",
+        sessionId: "paperclip",
+      },
+    });
+
+    expect(requestBodyAt().streamOutput).toBe(true);
   });
 
   it("maps lost-lease execute errors into a deterministic command failure", async () => {

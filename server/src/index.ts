@@ -98,7 +98,44 @@ export async function startServer(): Promise<StartedServer> {
   if (process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE === undefined) {
     process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
   }
-  
+
+  // Register shutdown handlers early so they fire before async-exit-hook's handlers
+  // (registered when embedded-postgres is imported). This ensures Paperclip's shutdown
+  // orchestration runs first, preventing a race where async-exit-hook's gracefulShutdown
+  // sends SIGINT to PostgreSQL before Paperclip can coordinate the full shutdown sequence.
+  // Without this, signals received during the startup window (e.g., PM2 kill_timeout,
+  // max_memory_restart) would be handled only by async-exit-hook, causing PG to receive
+  // a fast shutdown request immediately after startup.
+  let shutdownStarted = false;
+  const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+
+    const telemetryClient = getTelemetryClient();
+    if (telemetryClient) {
+      telemetryClient.stop();
+      await telemetryClient.flush();
+    }
+
+    if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+      logger.info({ signal }, "Stopping embedded PostgreSQL");
+      try {
+        await embeddedPostgres.stop();
+      } catch (err) {
+        logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
+      }
+    }
+
+    process.exit(0);
+  };
+
+  process.once("SIGINT", () => {
+    void shutdown("SIGINT");
+  });
+  process.once("SIGTERM", () => {
+    void shutdown("SIGTERM");
+  });
+
   type MigrationSummary =
     | "skipped"
     | "already applied"
@@ -871,7 +908,12 @@ export async function startServer(): Promise<StartedServer> {
   });
   
   {
+    let shuttingDown = false;
+
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         telemetryClient.stop();
@@ -890,10 +932,10 @@ export async function startServer(): Promise<StartedServer> {
       process.exit(0);
     };
 
-    process.once("SIGINT", () => {
+    process.on("SIGINT", () => {
       void shutdown("SIGINT");
     });
-    process.once("SIGTERM", () => {
+    process.on("SIGTERM", () => {
       void shutdown("SIGTERM");
     });
   }
