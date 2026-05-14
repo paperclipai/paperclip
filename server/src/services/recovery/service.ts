@@ -193,6 +193,15 @@ function isExhaustedSuccessfulRunHandoff(latestRun: LatestIssueRun) {
   return { ...evidence, exhausted: true };
 }
 
+function didAutomaticRecoveryAttempt(
+  latestRun: LatestIssueRun,
+  expectedRetryReason: "assignment_recovery" | "issue_continuation_needed",
+) {
+  if (!latestRun) return false;
+  const latestContext = parseObject(latestRun.contextSnapshot);
+  return readNonEmptyString(latestContext.retryReason) === expectedRetryReason;
+}
+
 function issueIdFromRunContext(contextSnapshot: unknown) {
   const context = parseObject(contextSnapshot);
   return readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
@@ -2159,6 +2168,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
         continue;
       }
+      if (didAutomaticRecoveryAttempt(latestRun, "issue_continuation_needed")) {
+        const failureSummary = summarizeRunFailureForIssueComment(latestRun);
+        const updated = await escalateStrandedAssignedIssue({
+          issue,
+          previousStatus: "in_progress",
+          latestRun,
+          comment:
+            "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
+            `execution disappeared, but it still has no live execution path.${failureSummary ?? ""} ` +
+            "Disposition: `waiting_on_dependency` (`blocked_by_dependency`) because the bounded automatic continuation retry was consumed. " +
+            "Moving it to `blocked` so it is visible for intervention.",
+        });
+        if (updated) {
+          result.escalated += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
       if (isSuccessfulInProgressContinuationRun(latestRun)) {
         const successfulRun = latestRun;
 
@@ -2215,27 +2244,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
         continue;
       }
-      if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
-        const failureSummary = summarizeRunFailureForIssueComment(latestRun);
-        const updated = await escalateStrandedAssignedIssue({
-          issue,
-          previousStatus: "in_progress",
-          latestRun,
-          comment:
-            "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
-            `execution disappeared, but it still has no live execution path.${failureSummary ?? ""} ` +
-            "Disposition: `waiting_on_dependency` (`blocked_by_dependency`) because automatic continuation recovery failed. " +
-            "Moving it to `blocked` so it is visible for intervention.",
-        });
-        if (updated) {
-          result.escalated += 1;
-          result.issueIds.push(issue.id);
-        } else {
-          result.skipped += 1;
-        }
-        continue;
-      }
-
       if (await isInvocationBudgetBlocked(issue, agentId)) {
         result.skipped += 1;
         continue;
