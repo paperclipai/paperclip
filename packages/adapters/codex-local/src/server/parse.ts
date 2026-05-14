@@ -8,6 +8,10 @@ import {
 const CODEX_TRANSIENT_UPSTREAM_RE =
   /(?:we(?:'|’)re\s+currently\s+experiencing\s+high\s+demand|temporary\s+errors|rate[-\s]?limit(?:ed)?|too\s+many\s+requests|\b429\b|server\s+overloaded|service\s+unavailable|try\s+again\s+later)/i;
 const CODEX_REMOTE_COMPACTION_RE = /remote\s+compact\s+task/i;
+const CODEX_CHATGPT_TRANSPORT_RE =
+  /(?:https|wss):\/\/chatgpt\.com\/backend-api\/codex\/(?:responses|models)\b/i;
+const CODEX_TRANSPORT_FAILURE_RE =
+  /(?:stream\s+disconnected\s+before\s+completion|error\s+sending\s+request|getaddrinfo\s+(?:enotfound|eai_again)|dns\s+lookup\s+failed|websocket\s+dns\s+lookup\s+failed)/i;
 const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
 
@@ -253,6 +257,9 @@ export function isCodexTransientUpstreamError(input: {
   const haystack = buildCodexErrorHaystack(input);
 
   if (extractCodexRetryNotBefore(input) != null) return true;
+  if (CODEX_CHATGPT_TRANSPORT_RE.test(haystack) && CODEX_TRANSPORT_FAILURE_RE.test(haystack)) {
+    return true;
+  }
   if (!CODEX_TRANSIENT_UPSTREAM_RE.test(haystack)) return false;
   // Keep automatic retries scoped to the observed remote-compaction/high-demand
   // failure shape, plus explicit usage-limit windows that tell us when retrying
