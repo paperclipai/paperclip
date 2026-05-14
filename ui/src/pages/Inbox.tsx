@@ -339,7 +339,7 @@ export function FailedRunInboxRow({
             type="button"
             variant="outline"
             size="sm"
-            className="h-8 shrink-0 px-2.5"
+            className="h-8 shrink-0 px-2.5 text-xs sm:h-9 sm:px-3 sm:text-sm"
             onClick={onRetry}
             disabled={isRetrying}
           >
@@ -363,7 +363,7 @@ export function FailedRunInboxRow({
           type="button"
           variant="outline"
           size="sm"
-          className="h-8 shrink-0 px-2.5"
+          className="h-8 shrink-0 px-2.5 text-xs"
           onClick={onRetry}
           disabled={isRetrying}
         >
@@ -484,7 +484,7 @@ function ApprovalInboxRow({
           <div className="hidden shrink-0 items-center gap-2 sm:flex">
             <Button
               size="sm"
-              className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
+              className="h-8 bg-green-700 px-2.5 text-xs text-white hover:bg-green-600 sm:h-9 sm:px-3 sm:text-sm"
               onClick={onApprove}
               disabled={isPending}
             >
@@ -493,7 +493,7 @@ function ApprovalInboxRow({
             <Button
               variant="destructive"
               size="sm"
-              className="h-8 px-3"
+              className="h-8 px-2.5 text-xs sm:h-9 sm:px-3 sm:text-sm"
               onClick={onReject}
               disabled={isPending}
             >
@@ -506,7 +506,7 @@ function ApprovalInboxRow({
         <div className="mt-3 flex gap-2 sm:hidden">
           <Button
             size="sm"
-            className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
+            className="h-8 bg-green-700 px-2.5 text-xs text-white hover:bg-green-600"
             onClick={onApprove}
             disabled={isPending}
           >
@@ -515,7 +515,7 @@ function ApprovalInboxRow({
           <Button
             variant="destructive"
             size="sm"
-            className="h-8 px-3"
+            className="h-8 px-2.5 text-xs"
             onClick={onReject}
             disabled={isPending}
           >
@@ -612,7 +612,7 @@ function JoinRequestInboxRow({
         <div className="hidden shrink-0 items-center gap-2 sm:flex">
           <Button
             size="sm"
-            className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
+            className="h-8 bg-green-700 px-2.5 text-xs text-white hover:bg-green-600 sm:h-9 sm:px-3 sm:text-sm"
             onClick={onApprove}
             disabled={isPending}
           >
@@ -621,7 +621,7 @@ function JoinRequestInboxRow({
           <Button
             variant="destructive"
             size="sm"
-            className="h-8 px-3"
+            className="h-8 px-2.5 text-xs sm:h-9 sm:px-3 sm:text-sm"
             onClick={onReject}
             disabled={isPending}
           >
@@ -632,7 +632,7 @@ function JoinRequestInboxRow({
       <div className="mt-3 flex gap-2 sm:hidden">
         <Button
           size="sm"
-          className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
+          className="h-8 bg-green-700 px-2.5 text-xs text-white hover:bg-green-600"
           onClick={onApprove}
           disabled={isPending}
         >
@@ -641,7 +641,7 @@ function JoinRequestInboxRow({
         <Button
           variant="destructive"
           size="sm"
-          className="h-8 px-3"
+          className="h-8 px-2.5 text-xs"
           onClick={onReject}
           disabled={isPending}
         >
@@ -2082,7 +2082,7 @@ export function Inbox() {
                 type="button"
                 variant="outline"
                 size="sm"
-                className="h-8 shrink-0"
+                className="h-8 shrink-0 px-2.5 text-xs sm:h-9 sm:px-3 sm:text-sm"
                 onClick={() => setShowMarkAllReadConfirm(true)}
                 disabled={markAllReadMutation.isPending}
               >

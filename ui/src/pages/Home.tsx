@@ -118,8 +118,8 @@ export function HomePage() {
                 <span className="text-sm text-muted-foreground">No organization selected</span>
               )}
             </div>
-            <div className="ml-auto flex items-center gap-2 shrink-0">
-              <Button variant="outline" size="sm" className="rounded-md" asChild>
+            <div className="ml-auto flex items-center gap-1.5 sm:gap-2 shrink-0">
+              <Button variant="outline" size="sm" className="h-8 px-2.5 text-xs sm:h-9 sm:px-3 sm:text-sm rounded-md" asChild>
                 <Link to="/organizations">
                   <Settings2 className="size-4" />
                   Manage
@@ -127,7 +127,7 @@ export function HomePage() {
               </Button>
               <Button
                 size="sm"
-                className="rounded-md"
+                className="h-8 px-2.5 text-xs sm:h-9 sm:px-3 sm:text-sm rounded-md"
                 onClick={() => {
                   if (selectedOrg) setSelectedOrgId(selectedOrg.id);
                   openOnboarding();

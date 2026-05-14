@@ -114,7 +114,7 @@ export function ApprovalCard({
               <>
                 <Button
                   size="sm"
-                  className="bg-green-700 hover:bg-green-600 text-white"
+                  className="h-8 px-2.5 text-xs sm:h-9 sm:px-3 sm:text-sm bg-green-700 hover:bg-green-600 text-white"
                   onClick={onApprove}
                   disabled={isPending}
                 >
@@ -123,6 +123,7 @@ export function ApprovalCard({
                 <Button
                   variant="destructive"
                   size="sm"
+                  className="h-8 px-2.5 text-xs sm:h-9 sm:px-3 sm:text-sm"
                   onClick={onReject}
                   disabled={isPending}
                 >
