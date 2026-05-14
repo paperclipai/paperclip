@@ -1,0 +1,11 @@
+[Unit]
+Description=Touch Index FR ingestion worker timer (every 15 minutes)
+Documentation=https://github.com/anomalyco/opencode
+
+[Timer]
+OnCalendar=*:0/15
+RandomizedDelaySec=120
+Persistent=false
+
+[Install]
+WantedBy=timers.target
