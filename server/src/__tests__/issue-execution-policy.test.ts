@@ -1446,4 +1446,223 @@ describe("issue execution policy transitions", () => {
       ).toThrow("Monitor bounds are already exhausted");
     });
   });
+
+  describe("stage participant selection — fallback to executor when only candidate (issue #5104)", () => {
+    it("advances to Stage 2 with the executor as approver when Stage 2 has no other participants", () => {
+      // Repro of the deadlock from #5104. Coder is the executor (returnAssignee).
+      // Stage 2's sole participant is also the coder. Without the fallback,
+      // selectStageParticipant filters the coder out, returns null, and the
+      // function throws "No eligible approval participant is configured for
+      // this issue" — leaving the issue stuck in `in_review` with no normal-flow
+      // way out (only `PATCH executionPolicy=null` clears it, at the cost of
+      // the audit trail).
+      const policy = makePolicy([
+        { type: "review", participants: [{ type: "agent", agentId: qaAgentId }] },
+        { type: "approval", participants: [{ type: "agent", agentId: coderAgentId }] },
+      ]);
+      const reviewStage = policy.stages[0];
+      const approvalStage = policy.stages[1];
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: reviewStage.id,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "Looks good, approving",
+      });
+
+      // After the fix: Stage 2 is in flight with the executor self-approving.
+      // Self-review is better than a permanently stuck issue.
+      expect(result.patch.status).toBe("in_review");
+      expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+      expect(result.patch.executionState).toMatchObject({
+        status: "pending",
+        currentStageId: approvalStage.id,
+        currentStageType: "approval",
+        currentParticipant: { type: "agent", agentId: coderAgentId },
+        returnAssignee: { type: "agent", agentId: coderAgentId },
+        completedStageIds: [reviewStage.id],
+      });
+      expect(result.decision).toMatchObject({
+        stageId: reviewStage.id,
+        outcome: "approved",
+      });
+    });
+
+    it("still excludes returnAssignee when other stage participants are available", () => {
+      // Regression guard. Stage 2 has both an agent and a user; the executor's
+      // exclusion still routes work to the non-executor candidate.
+      const policy = makePolicy([
+        { type: "review", participants: [{ type: "agent", agentId: coderAgentId }] },
+        { type: "approval", participants: [
+          { type: "agent", agentId: qaAgentId },
+          { type: "user", userId: ctoUserId },
+        ]},
+      ]);
+      const reviewStage = policy.stages[0];
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: reviewStage.id,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: coderAgentId },
+            returnAssignee: { type: "agent", agentId: qaAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Implemented",
+      });
+
+      // qaAgentId is excluded (returnAssignee), so ctoUser gets the approval.
+      expect(result.patch.assigneeAgentId).toBeNull();
+      expect(result.patch.assigneeUserId).toBe(ctoUserId);
+      expect(result.patch.executionState).toMatchObject({
+        currentParticipant: { type: "user", userId: ctoUserId },
+      });
+    });
+
+    it("preserves auto-skip when a review stage's only participant equals returnAssignee", () => {
+      // Regression guard for the auto-skip path. A review stage whose only
+      // participant is the executor IS auto-skipped (the existing behavior
+      // canAutoSkipPendingStage asserts at line ~595). We must not collapse
+      // this case into self-review by accident.
+      const policy = makePolicy([
+        { type: "review", participants: [{ type: "agent", agentId: coderAgentId }] },
+        { type: "approval", participants: [{ type: "user", userId: ctoUserId }] },
+      ]);
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: null,
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Done — no peer review configured for this stage",
+      });
+
+      // Stage 1 was auto-skipped (the executor doesn't review themselves);
+      // Stage 2 (the approval) is now in flight.
+      expect(result.patch.status).toBe("in_review");
+      expect(result.patch.assigneeUserId).toBe(ctoUserId);
+      expect(result.patch.executionState).toMatchObject({
+        currentStageId: policy.stages[1].id,
+        currentStageType: "approval",
+        completedStageIds: [policy.stages[0].id],
+      });
+    });
+
+    it("falls back at the post-auto-skip-loop site when the first pending stage is approval-only with the executor", () => {
+      // Site-4 throw path: issue has no executionState yet, requestedStatus is
+      // "done", and the workflow-start branch picks the first pending stage —
+      // an approval whose sole participant equals the executor.
+      // canAutoSkipPendingStage rejects approval stages, so the while loop
+      // never iterates and `participant` is null entering the post-loop
+      // fallback. Before the fix this throws "No eligible approval participant"
+      // right at workflow start; after the fix the executor self-approves.
+      const policy = makePolicy([
+        { type: "approval", participants: [{ type: "agent", agentId: coderAgentId }] },
+      ]);
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: null,
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Done — only configured approver is the executor",
+      });
+
+      expect(result.patch.status).toBe("in_review");
+      expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+      expect(result.patch.executionState).toMatchObject({
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageType: "approval",
+        currentParticipant: { type: "agent", agentId: coderAgentId },
+      });
+    });
+
+    it("falls back at the initial-active-stage path when currentParticipant is missing", () => {
+      // Site-1 throw path: existingState has currentStageId but currentParticipant
+      // is null (e.g., a partial state from an interrupted earlier transition).
+      // The activeStage's only participant equals returnAssignee. Before the
+      // fix this throws at the early "No eligible ... participant" check;
+      // after the fix the executor is self-assigned.
+      const policy = makePolicy([
+        { type: "approval", participants: [{ type: "agent", agentId: coderAgentId }] },
+      ]);
+      const stage = policy.stages[0];
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: stage.id,
+            currentStageIndex: 0,
+            currentStageType: "approval",
+            currentParticipant: null,
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: undefined,
+        requestedAssigneePatch: {},
+        actor: { userId: boardUserId },
+      });
+
+      // The function returns without throwing. We don't pin the exact patch
+      // shape here — site 1's role is to NOT throw on the initial selector.
+      // The lack of an error escape is the regression signal.
+      expect(result.patch).toBeDefined();
+    });
+  });
 });
