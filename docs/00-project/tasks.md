@@ -14,11 +14,11 @@
 | T-008 | routic 公司 CEO 当时在干什么 | AI | 已完成 | API 快照：CEO **idle**、**heartbeat 关**、**live-runs 无**；曾指派 **ROU-8 blocked**（Recover ROU-5）；**ROU-18 done** | 见 `acceptance.md` |
 | T-009 | 活动日志异常探查（与 Board **ROU-19** 对应） | CTO（Board） | 已完成 | 全量活动 API 数据 + 恢复链代码对照分析完成。结论：大部分为预期运维残留或已知限制；需计费跟进 1 项（Cursor Ultra limit）、适配器跟进 2 项（CodeBuddy DLL/parse）；恢复链 cancel→blocked 边界交互已识别并记录改进建议 | 2026-05-14：`探查-活动日志异常汇总.md` 完整版；代码：`server/src/services/recovery/service.ts`；Board 待标 done |
 | T-010 | 控制台任务中英混排：是否英文技能 / 自动生成导致 | 开发-Cursor（Board） | 已完成 | 归因结论见 `探查-控制台任务中英混排.md`；Board **ROU-20** `done` + 评论 | 2026-05-14：代码阅读 recovery / heartbeat / productivity-review / i18n / routines |
-| T-011 | Bug：已完成任务仍反复唤醒 agent（Board **ROU-21** → CTO） | AI（本地）+ Board 复核 | 进行中 | 仓库侧已读代码 + `queueIssueAssignmentWakeup` 终态防御；Board 用活动 / heartbeat-runs 固定 **是否同一 issueId 重复** | `探查-ROU-21-完成后反复唤醒.md`；`issue-assignment-wakeup.ts` |
+| T-011 | Bug：已完成任务仍反复唤醒 agent（Board **ROU-21** → CTO） | AI（本地）+ Board 复核 | 进行中 | 按 `探查-ROU-21-完成后反复唤醒.md` **「探查活动实践方案」** 跑 A→F，填 **判读速查**；对比部署前后 **同一 ROU-21 issueId** 的 run 次数 / `issue_assigned` 占比 | 同上文档 §实践方案；`issue-assignment-wakeup.ts` |
 
 ## 执行顺序
 
-1. **T-011 / ROU-21**：活动 + `heartbeat-runs` 对齐时间线；确认误唤醒是否随 **`queueIssueAssignmentWakeup` 终态跳过** 消失。  
+1. **T-011 / ROU-21**：按 `探查-ROU-21-完成后反复唤醒.md` **实践方案（A→F）** 取证；确认误唤醒是否随 **`queueIssueAssignmentWakeup` 终态跳过** 消失。  
 2. ~~**T-009 / ROU-19**~~：已完成（见 `探查-活动日志异常汇总.md`）。  
 3. ~~**T-010 / Board 中英混排单**~~：已完成（见 `探查-控制台任务中英混排.md` / Board **ROU-20**）；若要做全局中文 Board 再单列决策。  
 4. 回顾 `requirements.md` 的 **开放问题**；需要时在 Board 或本表「当前任务」续写新行。  

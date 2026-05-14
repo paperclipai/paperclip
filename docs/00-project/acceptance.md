@@ -31,7 +31,7 @@
 | 2026-05-14 13:10 | 新建 Board **ROU-20**（中英混排探查）+ 本地 **T-010** | 通过 | 初建时指派 CEO、项目误指上游「Paperclip 开发」；见下行纠正 |
 | 2026-05-14 14:00 | Board **ROU-19** / **ROU-20** 项目与 ROU-20 受指派人 | 通过 | `PATCH`：`projectId`→「Paperclip 控制面（本 fork 仓库）」、`projectWorkspaceId`→`paperclip-latest-fork`；`executionWorkspaceId:null`（避免把 project workspace id 误填进 execution workspace）；ROU-20 `assigneeAgentId`→**开发-Cursor**；Board 评论说明原因 |
 | 2026-05-14 | **ROU-20** / T-010 中英混排探查 | 通过 | 仓库 `docs/00-project/探查-控制台任务中英混排.md`；结论：工单内容语言 + 服务端英文模板 issue + 部分英文 UI + 技能间接影响 agent 产出 |
-| 2026-05-14 | **T-011 / ROU-21** 完成后反复唤醒 CTO：代码探查 + 防御 | 部分 | 新建 `探查-ROU-21-完成后反复唤醒.md`；`queueIssueAssignmentWakeup` 增加 **`done`/`cancelled` 不唤醒**；Board 侧需用活动 + `heartbeat-runs` 验证是否仍「同一 issueId 高密度重复」 |
+| 2026-05-14 | **T-011 / ROU-21** 代码探查 + 防御 + **探查活动实践方案** | 部分 | `探查-ROU-21-完成后反复唤醒.md` 已补 **§探查活动实践方案**（API 路径 A→F、`live-runs` 探查注意、`判读速查`、收口话术）；`queueIssueAssignmentWakeup` **`done`/`cancelled` 不唤醒**；Board 仍待按该方案填数后收口 |
 
 ## 残留风险
 
