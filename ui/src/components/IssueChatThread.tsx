@@ -132,10 +132,11 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
-import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ClipboardList, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
+import { AlertTriangle, ArrowRight, Bot, Brain, Check, ChevronDown, ChevronUp, ClipboardList, Copy, Hammer, Loader2, MessageSquare, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
 import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
 import { IssueRecoveryActionCard, type RecoveryResolveOutcome } from "./IssueRecoveryActionCard";
+import { IssueLinkQuicklook } from "./IssueLinkQuicklook";
 
 interface IssueChatMessageContext {
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
@@ -1260,10 +1261,14 @@ const IssueChatAssistantParts = memo(function IssueChatAssistantParts({
 
 function IssueChatUserMessage({
   message,
-  isInterruptingQueuedRun,
+  isInterruptingQueuedRun = false,
+  isCollapsed = false,
+  onToggleCollapse,
 }: {
   message: ThreadMessage;
-  isInterruptingQueuedRun: boolean;
+  isInterruptingQueuedRun?: boolean;
+  isCollapsed?: boolean;
+  onToggleCollapse?: () => void;
 }) {
   const {
     onInterruptQueued,
@@ -1293,6 +1298,18 @@ function IssueChatUserMessage({
     currentUserId,
     userProfileMap,
   });
+  const userPreviewText = isCollapsed
+    ? message.content
+        .filter((p): p is { type: "text"; text: string } => p.type === "text")
+        .map((p) => p.text)
+        .join(" ")
+        .replace(/#{1,6}\s+/g, "")
+        .replace(/\*\*(.+?)\*\*/gs, "$1")
+        .replace(/\*(.+?)\*/gs, "$1")
+        .replace(/\n+/g, " ")
+        .trim()
+        .slice(0, 120)
+    : null;
   const authorAvatar = (
     <Avatar size="sm" className="shrink-0">
       {avatarUrl ? <AvatarImage src={avatarUrl} alt={resolvedAuthorName} /> : null}
@@ -1400,33 +1417,128 @@ function IssueChatUserMessage({
 
   return (
     <div id={anchorId}>
-      <div className={cn("group flex items-start gap-2.5", isCurrentUser && "justify-end")}>
-        {isCurrentUser ? (
-          <>
-            {messageBody}
-            {authorAvatar}
-          </>
-        ) : (
-          <>
-            {authorAvatar}
-            {messageBody}
-          </>
-        )}
-      </div>
+      {isCollapsed ? (
+        <div
+          className="-mx-1 flex cursor-pointer select-none items-center gap-2 rounded px-1 py-1 hover:bg-accent/20"
+          role="button"
+          aria-expanded={false}
+          onClick={onToggleCollapse}
+        >
+          {authorAvatar}
+          <span className="shrink-0 text-sm font-medium text-foreground">{resolvedAuthorName}</span>
+          {userPreviewText ? (
+            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{userPreviewText}</span>
+          ) : null}
+          <span className="ml-auto flex shrink-0 items-center gap-1">
+            {message.createdAt ? (
+              <span className="text-[11px] text-muted-foreground/50">
+                {commentDateLabel(message.createdAt)}
+              </span>
+            ) : null}
+            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground/40" />
+          </span>
+        </div>
+      ) : (
+        <div className={cn("group flex items-start gap-2.5", isCurrentUser && "justify-end")}>
+          {isCurrentUser ? (
+            <>
+              {messageBody}
+              {authorAvatar}
+            </>
+          ) : (
+            <>
+              {authorAvatar}
+              {messageBody}
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
-function IssueChatAssistantMessage({
+function extractAgentMessageHeadline(message: ThreadMessage): string {
+  const custom = message.metadata.custom as Record<string, unknown>;
+  const presentation = isIssueCommentPresentation(custom.presentation) ? custom.presentation : null;
+  if (presentation?.title) return presentation.title.slice(0, 120);
+  const firstText = message.content
+    .filter((p): p is { type: "text"; text: string } => p.type === "text")
+    .map((p) => p.text)
+    .join(" ");
+  return firstText.split("\n")[0]?.slice(0, 120) ?? "";
+}
+
+function CollapsedAgentMessage({
   message,
-  activeVote,
-  isRunActive,
-  isStoppingRun,
+  onExpand,
 }: {
   message: ThreadMessage;
-  activeVote: FeedbackVoteValue | null;
-  isRunActive: boolean;
-  isStoppingRun: boolean;
+  onExpand?: () => void;
+}) {
+  const { agentMap } = useContext(IssueChatCtx);
+  const custom = message.metadata.custom as Record<string, unknown>;
+  const authorName = typeof custom.authorName === "string"
+    ? custom.authorName
+    : typeof custom.runAgentName === "string"
+      ? custom.runAgentName
+      : "Agent";
+  const authorAgentId = typeof custom.authorAgentId === "string" ? custom.authorAgentId : null;
+  const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
+  const agentId = authorAgentId ?? runAgentId;
+  const agentIcon = agentId ? agentMap?.get(agentId)?.icon : undefined;
+  const headline = extractAgentMessageHeadline(message);
+
+  return (
+    <div
+      className="-mx-1 flex cursor-pointer select-none items-center gap-2 rounded px-1 py-1.5 hover:bg-accent/20"
+      role="button"
+      aria-label="Expand agent message"
+      onClick={onExpand}
+    >
+      <Avatar size="sm" className="shrink-0">
+        {agentIcon ? (
+          <AvatarFallback><AgentIcon icon={agentIcon} className="h-3.5 w-3.5" /></AvatarFallback>
+        ) : (
+          <AvatarFallback>{initialsForName(authorName)}</AvatarFallback>
+        )}
+      </Avatar>
+      <span className="shrink-0 text-sm font-medium text-foreground">{authorName}</span>
+      {headline ? (
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{headline}</span>
+      ) : null}
+      <span className="ml-auto flex shrink-0 items-center gap-1">
+        {message.createdAt ? (
+          <span className="text-[11px] text-muted-foreground/50">
+            {commentDateLabel(message.createdAt)}
+          </span>
+        ) : null}
+        <ChevronDown className="h-3.5 w-3.5 text-muted-foreground/40" />
+      </span>
+    </div>
+  );
+}
+
+function isAssistantFoldable(message: ThreadMessage): boolean {
+  const custom = message.metadata.custom as Record<string, unknown>;
+  const chainOfThoughtLabel = typeof custom.chainOfThoughtLabel === "string" ? custom.chainOfThoughtLabel : null;
+  const isRunning = message.status?.type === "running";
+  return !isRunning && !!chainOfThoughtLabel;
+}
+
+function IssueChatAssistantMessage({
+  message,
+  activeVote = null,
+  isRunActive = false,
+  isStoppingRun = false,
+  isCollapsed = false,
+  onToggleCollapse,
+}: {
+  message: ThreadMessage;
+  activeVote?: FeedbackVoteValue | null;
+  isRunActive?: boolean;
+  isStoppingRun?: boolean;
+  isCollapsed?: boolean;
+  onToggleCollapse?: () => void;
 }) {
   const {
     feedbackDataSharingPreference,
@@ -1466,6 +1578,19 @@ function IssueChatAssistantMessage({
   const [prevFoldKey, setPrevFoldKey] = useState({ messageId: message.id, isFoldable });
   const [copied, setCopied] = useState(false);
   const copyText = getThreadMessageCopyText(message);
+
+  const previewText = !isFoldable && isCollapsed
+    ? getThreadMessageCopyText(message)
+        .replace(/`{3}[\s\S]*?`{3}/g, "")
+        .replace(/#{1,6}\s+/g, "")
+        .replace(/\*\*(.+?)\*\*/gs, "$1")
+        .replace(/\*(.+?)\*/gs, "$1")
+        .replace(/`(.+?)`/g, "$1")
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+        .replace(/\n+/g, " ")
+        .trim()
+        .slice(0, 120)
+    : null;
 
   // Derive fold state synchronously during render (not in useEffect) so the
   // browser never paints the un-folded intermediate state — prevents the
@@ -1524,8 +1649,15 @@ function IssueChatAssistantMessage({
               </span>
             </button>
           ) : (
-            <div className="mb-1.5 flex items-center gap-2">
-              <span className="text-sm font-medium text-foreground">{authorName}</span>
+            <div
+              className={cn(
+                "mb-1 -mx-1 flex cursor-pointer select-none items-center gap-2 rounded px-1 py-0.5 hover:bg-accent/20",
+              )}
+              role="button"
+              aria-expanded={!isCollapsed}
+              onClick={() => onToggleCollapse?.()}
+            >
+              <span className="shrink-0 text-sm font-medium text-foreground">{authorName}</span>
               {followUpRequested ? (
                 <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
                   Follow-up
@@ -1537,10 +1669,25 @@ function IssueChatAssistantMessage({
                   Running
                 </span>
               ) : null}
+              {isCollapsed && previewText ? (
+                <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{previewText}</span>
+              ) : null}
+              <span className="ml-auto flex shrink-0 items-center gap-1">
+                {message.createdAt ? (
+                  <span className="text-[11px] text-muted-foreground/50">
+                    {commentDateLabel(message.createdAt)}
+                  </span>
+                ) : null}
+                {isCollapsed ? (
+                  <ChevronDown className="h-3.5 w-3.5 text-muted-foreground/40" />
+                ) : (
+                  <ChevronUp className="h-3.5 w-3.5 text-muted-foreground/40" />
+                )}
+              </span>
             </div>
           )}
 
-          {!folded ? (
+          {!folded && !isCollapsed ? (
             <>
               <div className="space-y-3">
                 <IssueChatAssistantParts message={message} hasCoT={hasCoT} />
@@ -1991,7 +2138,7 @@ function ExpiredRequestConfirmationActivity({
 function isIssueCommentPresentation(value: unknown): value is IssueCommentPresentation {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
-  return v.kind === "system_notice" || v.kind === "message";
+  return v.kind === "system_notice" || v.kind === "message" || v.kind === "progress_note";
 }
 
 function isIssueCommentMetadata(value: unknown): value is IssueCommentMetadata {
@@ -3607,6 +3754,16 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   );
 });
 
+function isAssistantCollapsedInChatTab(message: ThreadMessage): boolean {
+  if (message.role !== "assistant") return false;
+  const custom = message.metadata.custom as Record<string, unknown>;
+  const presentation = isIssueCommentPresentation(custom.presentation) ? custom.presentation : null;
+  // system_notice and progress_note render fully
+  if (presentation?.kind === "system_notice" || presentation?.kind === "progress_note") return false;
+  // All other assistant messages are collapsed in Chat tab
+  return true;
+}
+
 export function IssueChatThread({
   comments,
   interactions = [],
@@ -3688,6 +3845,7 @@ export function IssueChatThread({
   const latestSettleTimeoutsRef = useRef<number[]>([]);
   const latestSettleCleanupRef = useRef<(() => void) | null>(null);
   const [bottomSpacerHeight, setBottomSpacerHeight] = useState(0);
+  const [chatInternalTab, setChatInternalTab] = useState<"chat" | "agent_notes">("chat");
   const displayLiveRuns = useMemo(() => {
     const deduped = new Map<string, LiveRunForIssue>();
     for (const run of liveRuns) {
@@ -3793,6 +3951,42 @@ export function IssueChatThread({
   }, [rawMessages]);
   const latestMessagesRef = useRef<readonly ThreadMessage[]>(messages);
   latestMessagesRef.current = messages;
+
+  const lastNonFoldableAssistantMsgId = useMemo(
+    () =>
+      [...messages]
+        .reverse()
+        .find((m) => m.role === "assistant" && !isAssistantFoldable(m))
+        ?.id ?? null,
+    [messages],
+  );
+
+  const lastUserMsgId = useMemo(
+    () => [...messages].reverse().find((m) => m.role === "user")?.id ?? null,
+    [messages],
+  );
+
+  const [expandedMsgIds, setExpandedMsgIds] = useState<Set<string>>(() => {
+    const initial = new Set<string>();
+    if (lastNonFoldableAssistantMsgId) initial.add(lastNonFoldableAssistantMsgId);
+    if (lastUserMsgId) initial.add(lastUserMsgId);
+    return initial;
+  });
+
+  const seenMsgIdsRef = useRef(new Set(messages.map((m) => m.id)));
+
+  useEffect(() => {
+    const newIds: string[] = [];
+    for (const m of messages) {
+      if (!seenMsgIdsRef.current.has(m.id)) {
+        newIds.push(m.id);
+        seenMsgIdsRef.current.add(m.id);
+      }
+    }
+    if (newIds.length > 0) {
+      setExpandedMsgIds((prev) => new Set([...prev, ...newIds]));
+    }
+  }, [messages]);
 
   const isRunning = displayLiveRuns.some((run) => run.status === "queued" || run.status === "running");
   const unresolvedBlockers = useMemo(
@@ -4195,13 +4389,81 @@ export function IssueChatThread({
       <IssueChatCtx.Provider value={chatCtx}>
       <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
         {resolvedShowJumpToLatest ? (
-          <div className="flex justify-end">
+          <div className="flex items-center justify-end gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                const collapsibleIds = messages
+                  .filter((m) => (m.role === "assistant" && !isAssistantFoldable(m)) || m.role === "user")
+                  .map((m) => m.id);
+                const anyExpanded = collapsibleIds.some(
+                  (id) =>
+                    expandedMsgIds.has(id) &&
+                    id !== lastNonFoldableAssistantMsgId &&
+                    id !== lastUserMsgId,
+                );
+                if (anyExpanded) {
+                  setExpandedMsgIds(
+                    new Set(
+                      [lastNonFoldableAssistantMsgId, lastUserMsgId].filter(Boolean) as string[],
+                    ),
+                  );
+                } else {
+                  setExpandedMsgIds(new Set(collapsibleIds));
+                }
+              }}
+              className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+            >
+              {(() => {
+                const collapsibleIds = messages
+                  .filter((m) => (m.role === "assistant" && !isAssistantFoldable(m)) || m.role === "user")
+                  .map((m) => m.id);
+                const anyExpanded = collapsibleIds.some(
+                  (id) =>
+                    expandedMsgIds.has(id) &&
+                    id !== lastNonFoldableAssistantMsgId &&
+                    id !== lastUserMsgId,
+                );
+                return anyExpanded ? "Collapse all" : "Expand all";
+              })()}
+            </button>
             <button
               type="button"
               onClick={handleJumpToLatest}
               className="text-xs text-muted-foreground transition-colors hover:text-foreground"
             >
               Jump to latest
+            </button>
+          </div>
+        ) : null}
+
+        {variant === "full" ? (
+          <div className="flex items-center gap-0.5 border-b border-border/60">
+            <button
+              type="button"
+              className={cn(
+                "inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium transition-colors",
+                chatInternalTab === "chat"
+                  ? "border-foreground text-foreground"
+                  : "border-transparent text-muted-foreground hover:text-foreground",
+              )}
+              onClick={() => setChatInternalTab("chat")}
+            >
+              <MessageSquare className="h-3.5 w-3.5" />
+              Chat
+            </button>
+            <button
+              type="button"
+              className={cn(
+                "inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium transition-colors",
+                chatInternalTab === "agent_notes"
+                  ? "border-foreground text-foreground"
+                  : "border-transparent text-muted-foreground hover:text-foreground",
+              )}
+              onClick={() => setChatInternalTab("agent_notes")}
+            >
+              <Bot className="h-3.5 w-3.5" />
+              Agent Notes
             </button>
           </div>
         ) : null}
@@ -4240,17 +4502,65 @@ export function IssueChatThread({
                 // Keep transcript rendering independent from assistant-ui's
                 // index-scoped message providers; live transcripts can shrink
                 // or regroup while the runtime still holds stale indices.
-                messages.map((message) => (
-                  <IssueChatMessageRow
-                    key={message.id}
-                    message={message}
-                    feedbackVoteByTargetId={feedbackVoteByTargetId}
-                    activeRunIds={activeRunIds}
-                    stoppingRunId={stoppingRunId}
-                    interruptingQueuedRunId={interruptingQueuedRunId}
-                  />
-              ))
-            )}
+                messages.map((message) => {
+                  if (message.role === "user") {
+                    return (
+                      <IssueChatUserMessage
+                        key={message.id}
+                        message={message}
+                        isCollapsed={!expandedMsgIds.has(message.id)}
+                        onToggleCollapse={() =>
+                          setExpandedMsgIds((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(message.id)) next.delete(message.id);
+                            else next.add(message.id);
+                            return next;
+                          })
+                        }
+                      />
+                    );
+                  }
+                  if (message.role === "assistant") {
+                    const foldable = isAssistantFoldable(message);
+                    // In Chat tab: collapse raw agent dumps; in Agent Notes: show full verbosity
+                    const collapsedInChatTab = chatInternalTab === "chat" && isAssistantCollapsedInChatTab(message);
+                    if (collapsedInChatTab && !expandedMsgIds.has(message.id)) {
+                      return (
+                        <CollapsedAgentMessage
+                          key={message.id}
+                          message={message}
+                          onExpand={() =>
+                            setExpandedMsgIds((prev) => {
+                              const next = new Set(prev);
+                              next.add(message.id);
+                              return next;
+                            })
+                          }
+                        />
+                      );
+                    }
+                    return (
+                      <IssueChatAssistantMessage
+                        key={message.id}
+                        message={message}
+                        isCollapsed={!foldable && !expandedMsgIds.has(message.id)}
+                        onToggleCollapse={
+                          !foldable
+                            ? () =>
+                                setExpandedMsgIds((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(message.id)) next.delete(message.id);
+                                  else next.add(message.id);
+                                  return next;
+                                })
+                            : undefined
+                        }
+                      />
+                    );
+                  }
+                  return <IssueChatSystemMessage key={message.id} message={message} />;
+                })
+              )}
               {showComposer ? (
                 <div data-testid="issue-chat-thread-notices" className="space-y-2">
                   <IssueAssignedBacklogNotice

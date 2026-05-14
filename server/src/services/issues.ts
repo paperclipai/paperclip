@@ -4052,6 +4052,47 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
+      // Velocity cap: agent may not have more than 4 active root issues
+      if (data.assigneeAgentId && !data.parentId) {
+        const { count: activeRootCount } = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, companyId),
+              eq(issues.assigneeAgentId, data.assigneeAgentId),
+              isNull(issues.parentId),
+              inArray(issues.status, ["todo", "in_progress", "in_review"]),
+            ),
+          )
+          .then((rows) => rows[0] ?? { count: 0 });
+        if (activeRootCount >= 4) {
+          throw unprocessable(
+            `Agent already has ${activeRootCount} active root issues. Complete or reassign existing work before creating more.`,
+          );
+        }
+      }
+      // Dedup: reject if a similar-titled issue already exists under the same goal
+      if (data.goalId && data.title) {
+        const similar = await db
+          .select({ id: issues.id, identifier: issues.identifier, title: issues.title })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, companyId),
+              eq(issues.goalId, data.goalId),
+              notInArray(issues.status, ["done", "cancelled"]),
+              sql`similarity(${issues.title}, ${data.title}) > 0.6`,
+            ),
+          )
+          .limit(3);
+        if (similar.length > 0) {
+          const first = similar[0];
+          throw unprocessable(
+            `Similar issue already exists: ${first.identifier} "${first.title}". Create a sub-issue under it instead, or use a clearly distinct title.`,
+          );
+        }
+      }
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
@@ -5123,6 +5164,34 @@ export function issueService(db: Db) {
       if (!comment) return null;
       const [enrichedComment] = await enrichCommentsWithDerivedAgentAttribution([comment]);
       return redactIssueComment(enrichedComment ?? comment, censorUsernameInLogs);
+    },
+
+    patchCommentAttachments: async (
+      commentId: string,
+      attachments: Array<{ kind: "local_file"; path: string; label?: string; mimeType?: string; preview?: string | null }>,
+    ) => {
+      const { censorUsernameInLogs } = await instanceSettings.getGeneral();
+      const existing = await db
+        .select()
+        .from(issueComments)
+        .where(eq(issueComments.id, commentId))
+        .then((rows) => rows[0] ?? null);
+      if (!existing) return null;
+
+      const prevAttachments: typeof attachments = (existing.metadata as { attachments?: typeof attachments } | null)?.attachments ?? [];
+      const merged = [...prevAttachments, ...attachments];
+      const updatedMetadata = existing.metadata
+        ? { ...existing.metadata, attachments: merged }
+        : { version: 1 as const, sections: [], attachments: merged };
+
+      const [updated] = await db
+        .update(issueComments)
+        .set({ metadata: updatedMetadata as typeof existing.metadata, updatedAt: new Date() })
+        .where(eq(issueComments.id, commentId))
+        .returning();
+      if (!updated) return null;
+      const [enrichedComment] = await enrichCommentsWithDerivedAgentAttribution([updated]);
+      return redactIssueComment(enrichedComment ?? updated, censorUsernameInLogs);
     },
 
     removeComment: async (commentId: string) => {

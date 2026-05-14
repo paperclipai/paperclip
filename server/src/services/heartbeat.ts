@@ -9754,7 +9754,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             and(
               eq(issues.companyId, agent.companyId),
               eq(issues.assigneeAgentId, agent.id),
-              inArray(issues.status, ["todo", "in_progress", "in_review"]),
+              inArray(issues.status, ["todo", "in_progress"]),
             ),
           )
           .limit(1)

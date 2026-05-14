@@ -1232,6 +1232,7 @@ export function IssueDetail() {
   const { pushToast } = useToastActions();
   const { isMobile } = useSidebar();
   const [moreOpen, setMoreOpen] = useState(false);
+  const [confirmDeleteIssue, setConfirmDeleteIssue] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
   const [detailTab, setDetailTab] = useState("chat");
@@ -1766,6 +1767,16 @@ export function IssueDetail() {
       }
     },
   });
+  const deleteIssue = useMutation({
+    mutationFn: () => issuesApi.remove(issueId!),
+    onSuccess: () => {
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+      }
+      navigate(-1);
+    },
+  });
+
   const resolveRecoveryAction = useMutation({
     mutationFn: (data: {
       actionId?: string;
@@ -3599,6 +3610,38 @@ export function IssueDetail() {
                 <EyeOff className="h-3 w-3" />
                 Hide this Issue
               </button>
+              {!confirmDeleteIssue ? (
+                <button
+                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-destructive/10 text-destructive"
+                  onClick={() => setConfirmDeleteIssue(true)}
+                >
+                  <Trash2 className="h-3 w-3" />
+                  Delete issue...
+                </button>
+              ) : (
+                <div className="px-2 py-1.5">
+                  <p className="text-xs text-destructive mb-1.5">Permanently delete this issue?</p>
+                  <div className="flex gap-1.5">
+                    <button
+                      className="flex-1 rounded bg-destructive text-destructive-foreground text-xs px-2 py-1 hover:bg-destructive/90"
+                      onClick={() => {
+                        deleteIssue.mutate();
+                        setMoreOpen(false);
+                        setConfirmDeleteIssue(false);
+                      }}
+                      disabled={deleteIssue.isPending}
+                    >
+                      Delete
+                    </button>
+                    <button
+                      className="flex-1 rounded border text-xs px-2 py-1 hover:bg-accent/50"
+                      onClick={() => setConfirmDeleteIssue(false)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
             </PopoverContent>
             </Popover>
           </div>

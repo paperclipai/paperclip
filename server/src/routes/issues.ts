@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
@@ -4936,6 +4937,63 @@ export function issueRoutes(
     });
 
     res.json({ ok: true });
+  });
+
+  // PATCH /issue-comments/:commentId — attach local files to an existing comment
+  router.patch("/issue-comments/:commentId", async (req, res) => {
+    const commentId = req.params.commentId as string;
+    const comment = await svc.getComment(commentId);
+    if (!comment) {
+      res.status(404).json({ error: "Comment not found" });
+      return;
+    }
+    assertCompanyAccess(req, comment.companyId);
+
+    const rawAttachments = req.body.attachments;
+    if (!Array.isArray(rawAttachments) || rawAttachments.length === 0) {
+      res.status(400).json({ error: "attachments must be a non-empty array" });
+      return;
+    }
+
+    const patchAttachmentSchema = z.object({
+      kind: z.literal("local_file"),
+      path: z.string().min(1),
+      label: z.string().optional(),
+      mimeType: z.string().optional(),
+      preview: z.string().optional(),
+    });
+
+    const enriched: Array<{ kind: "local_file"; path: string; label?: string; mimeType?: string; preview?: string | null }> = [];
+    for (const raw of rawAttachments) {
+      const parsed = patchAttachmentSchema.safeParse(raw);
+      if (!parsed.success) {
+        res.status(400).json({ error: "Invalid attachment", details: parsed.error.issues });
+        return;
+      }
+      const att = parsed.data;
+      // Reject path traversal attempts
+      if (att.path.split("/").includes("..") || att.path.includes("..\\")) {
+        res.status(400).json({ error: "Attachment path must not contain traversal components" });
+        return;
+      }
+      let preview: string | null = att.preview ?? null;
+      if (!preview) {
+        try {
+          preview = readFileSync(att.path, "utf8").slice(0, 500);
+        } catch {
+          // binary or missing — no preview
+          preview = null;
+        }
+      }
+      enriched.push({ kind: "local_file", path: att.path, label: att.label, mimeType: att.mimeType, preview });
+    }
+
+    const updated = await svc.patchCommentAttachments(commentId, enriched);
+    if (!updated) {
+      res.status(404).json({ error: "Comment not found" });
+      return;
+    }
+    res.json(updated);
   });
 
   return router;
