@@ -263,7 +263,7 @@ export function InviteLandingPage() {
   }, [token]);
 
   useEffect(() => {
-    if (!companiesQuery.data || !inviteQuery.data?.companyId) return;
+    if (!Array.isArray(companiesQuery.data) || !inviteQuery.data?.companyId) return;
     const isMember = companiesQuery.data.some(
       (c) => c.id === inviteQuery.data!.companyId
     );
@@ -280,8 +280,9 @@ export function InviteLandingPage() {
     companiesQuery.isLoading;
   const isCurrentMember =
     Boolean(invite?.companyId) &&
+    Array.isArray(companiesQuery.data) &&
     Boolean(
-      companiesQuery.data?.some((company) => company.id === invite?.companyId),
+      companiesQuery.data.some((company) => company.id === invite?.companyId),
     );
   const companyName = invite?.companyName?.trim() || null;
   const companyDisplayName = companyName || "this Paperclip company";
@@ -381,7 +382,7 @@ export function InviteLandingPage() {
         retry: false,
       });
 
-      if (invite?.companyId && companies.some((company) => company.id === invite.companyId)) {
+      if (invite?.companyId && Array.isArray(companies) && companies.some((company) => company.id === invite.companyId)) {
         clearPendingInviteToken(token);
         setSelectedCompanyId(invite.companyId, { source: "manual" });
         navigate("/", { replace: true });
