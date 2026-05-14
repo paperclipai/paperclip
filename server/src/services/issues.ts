@@ -9,7 +9,10 @@ import {
   assets,
   companies,
   companyMemberships,
+  costEvents,
   documents,
+  feedbackVotes,
+  financeEvents,
   goals,
   heartbeatRuns,
   executionWorkspaces,
@@ -4626,6 +4629,15 @@ export function issueService(db: Db) {
           .select({ documentId: issueDocuments.documentId })
           .from(issueDocuments)
           .where(eq(issueDocuments.issueId, id));
+
+        // Delete all rows referencing this issue (NO ACTION FK constraints)
+        await tx.delete(issueComments).where(eq(issueComments.issueId, id));
+        await tx.delete(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, id));
+        await tx.delete(issueInboxArchives).where(eq(issueInboxArchives.issueId, id));
+        await tx.delete(issueReadStates).where(eq(issueReadStates.issueId, id));
+        await tx.delete(costEvents).where(eq(costEvents.issueId, id));
+        await tx.delete(financeEvents).where(eq(financeEvents.issueId, id));
+        await tx.delete(feedbackVotes).where(eq(feedbackVotes.issueId, id));
 
         const removedIssue = await tx
           .delete(issues)
