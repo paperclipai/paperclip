@@ -14,6 +14,7 @@ import { environmentsApi } from "../api/environments";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { secretsApi } from "../api/secrets";
 import { assetsApi } from "../api/assets";
+import { listConnections } from "../api/oauth";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
@@ -215,6 +216,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryFn: () => secretsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
   });
+  const { data: oauthConnectionsData } = useQuery({
+    queryKey: selectedCompanyId
+      ? ["oauth", "connections", selectedCompanyId]
+      : ["oauth", "connections", "none"],
+    queryFn: () => listConnections(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
+  const oauthConnections = oauthConnectionsData?.connections ?? [];
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
@@ -1124,6 +1133,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       )
                   }
                   secrets={availableSecrets}
+                  oauthConnections={oauthConnections}
                   onCreateSecret={async (name, value) => {
                     const created = await createSecret.mutateAsync({ name, value });
                     return created;
