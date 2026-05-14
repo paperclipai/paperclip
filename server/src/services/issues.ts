@@ -1969,8 +1969,8 @@ export function issueService(db: Db) {
                 and ${activityLog.runId} = ${heartbeatRuns.id}
             )`,
           ),
-          sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${new Date(minCommentCreatedAtMs)}`,
-          sql`coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${new Date(maxCommentCreatedAtMs + ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS)}`,
+          sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${new Date(minCommentCreatedAtMs).toISOString()}::timestamptz`,
+          sql`coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${new Date(maxCommentCreatedAtMs + ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS).toISOString()}::timestamptz`,
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt));
@@ -3970,15 +3970,20 @@ export function issueService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!anchor) return [];
+        // anchor.createdAt is a Date object; postgres.js 3.x requires an explicit
+        // ::timestamptz cast when the parameter is used in a cursor-pagination
+        // comparison, otherwise it falls through to the string encoder and throws
+        // ERR_INVALID_ARG_TYPE ("Received an instance of Date").
+        const anchorTs = sql`${anchor.createdAt.toISOString()}::timestamptz`;
         conditions.push(
           order === "asc"
             ? or(
-                gt(issueComments.createdAt, anchor.createdAt),
-                and(eq(issueComments.createdAt, anchor.createdAt), gt(issueComments.id, anchor.id)),
+                gt(issueComments.createdAt, anchorTs),
+                and(eq(issueComments.createdAt, anchorTs), gt(issueComments.id, anchor.id)),
               )!
             : or(
-                lt(issueComments.createdAt, anchor.createdAt),
-                and(eq(issueComments.createdAt, anchor.createdAt), lt(issueComments.id, anchor.id)),
+                lt(issueComments.createdAt, anchorTs),
+                and(eq(issueComments.createdAt, anchorTs), lt(issueComments.id, anchor.id)),
               )!,
         );
       }
