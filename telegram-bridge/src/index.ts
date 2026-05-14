@@ -656,9 +656,30 @@ export async function main(): Promise<number> {
       }
 
       // Task / ephemeral / fallback → Paperclip.
-      // THREADING: if there's a recent open issue for this agent, add the
-      // follow-up as a comment instead of creating a duplicate issue.
-      const existingIssue = await client.findRecentOpenIssue(mapping.companyId, fm.defaultAgentId, 30);
+      // THREADING priority order:
+      //   1. User replied to a bot message → look up issue via outboundMsgToIssue (exact match)
+      //   2. Recent open issue for this agent within 30-min window (heuristic fallback)
+      //   3. Create a new issue
+
+      // Priority 1: reply-to threading. When the user replies directly to one of
+      // Karl's outbound messages, route the follow-up to that exact issue.
+      let replyLinkedIssueId: string | undefined;
+      if (msg.replyTo?.messageId) {
+        const linked = outboundMsgToIssue.get(msg.replyTo.messageId);
+        if (linked) {
+          replyLinkedIssueId = linked;
+          console.log(
+            `[telegram-bridge] reply-thread: msg.replyTo=${msg.replyTo.messageId} → issue=${linked.slice(0, 8)}`,
+          );
+        }
+      }
+
+      const existingIssue = replyLinkedIssueId
+        ? await client.getIssue(replyLinkedIssueId).then(
+            (i) => i && !["done", "cancelled"].includes((i as any).status ?? "") ? i as any : null,
+          ).catch(() => null)
+        : await client.findRecentOpenIssue(mapping.companyId, fm.defaultAgentId, 30);
+
       if (existingIssue) {
         try {
           await client.createComment(existingIssue.id, `**Follow-up:** ${msg.text ?? ""}`);
