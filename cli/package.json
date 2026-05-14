@@ -1,6 +1,6 @@
 {
   "name": "paperclipai",
-  "version": "2026.512.0-sparkeros.40",
+  "version": "2026.512.0-sparkeros.46",
   "description": "Paperclip CLI \u2014 orchestrate AI agent teams to run a business",
   "type": "module",
   "bin": {
