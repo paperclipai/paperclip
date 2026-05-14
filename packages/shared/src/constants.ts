@@ -1,4 +1,4 @@
-export const COMPANY_STATUSES = ["active", "paused", "archived"] as const;
+export const COMPANY_STATUSES = ["draft", "active", "paused", "archived"] as const;
 export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 
 export const DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
@@ -44,6 +44,7 @@ export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number] | (string & 
 
 export const AGENT_ROLES = [
   "ceo",
+  "coach",
   "cto",
   "cmo",
   "cfo",
@@ -60,6 +61,7 @@ export type AgentRole = (typeof AGENT_ROLES)[number];
 
 export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   ceo: "CEO",
+  coach: "Coach",
   cto: "CTO",
   cmo: "CMO",
   cfo: "CFO",

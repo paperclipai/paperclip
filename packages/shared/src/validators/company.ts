@@ -45,6 +45,10 @@ export const updateCompanyBrandingSchema = z
     description: z.string().nullable().optional(),
     brandColor: brandColorSchema,
     logoAssetId: logoAssetIdSchema,
+    // Agents can transition a company out of `draft` to `active` (the Coach
+    // does this at the end of onboarding). Pause/archive transitions still
+    // require board access via updateCompanySchema.
+    status: z.literal("active").optional(),
   })
   .strict()
   .refine(
@@ -52,7 +56,8 @@ export const updateCompanyBrandingSchema = z
       value.name !== undefined
       || value.description !== undefined
       || value.brandColor !== undefined
-      || value.logoAssetId !== undefined,
+      || value.logoAssetId !== undefined
+      || value.status !== undefined,
     "At least one branding field must be provided",
   );
 
