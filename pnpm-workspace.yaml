@@ -3,6 +3,7 @@ packages:
   - packages/adapters/*
   - packages/plugins/*
   - packages/plugins/examples/*
+  - scripts/document-opener
   - server
   - ui
   - cli

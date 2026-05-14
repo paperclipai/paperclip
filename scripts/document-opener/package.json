@@ -1,0 +1,18 @@
+{
+  "name": "@paperclipai/document-opener",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/server.ts --bundle --platform=node --target=node22 --format=esm --outfile=dist/server.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "install:agent": "node install.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.27.3",
+    "typescript": "^5.5.0",
+    "vitest": "^3.0.5"
+  }
+}
