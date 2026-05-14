@@ -616,7 +616,7 @@ describe.sequential("agent permission routes", () => {
           modelProfiles: {
             cheap: {
               adapterConfig: {
-                model: "gpt-5.3-codex-spark",
+                model: "gpt-5.5",
                 env: {
                   API_TOKEN: {
                     type: "secret_ref",
@@ -634,7 +634,7 @@ describe.sequential("agent permission routes", () => {
     expect(mockSecretService.normalizeAdapterConfigForPersistence).toHaveBeenCalledWith(
       companyId,
       expect.objectContaining({
-        model: "gpt-5.3-codex-spark",
+        model: "gpt-5.5",
         env: expect.any(Object),
       }),
       { strictMode: false },
@@ -646,7 +646,7 @@ describe.sequential("agent permission routes", () => {
           modelProfiles: {
             cheap: {
               adapterConfig: {
-                model: "gpt-5.3-codex-spark",
+                model: "gpt-5.5",
                 env: {
                   API_TOKEN: {
                     type: "secret_ref",
