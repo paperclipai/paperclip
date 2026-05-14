@@ -151,7 +151,13 @@ export function takeOptimisticIssueComment(
 export function flattenIssueCommentPages(
   pages: ReadonlyArray<ReadonlyArray<IssueComment>> | undefined,
 ): IssueComment[] {
-  return sortIssueComments((pages ?? []).flatMap((page) => page));
+  const byId = new Map<string, IssueComment>();
+  for (const page of pages ?? []) {
+    for (const comment of page) {
+      byId.set(comment.id, comment);
+    }
+  }
+  return sortIssueComments([...byId.values()]);
 }
 
 export function getNextIssueCommentPageParam(
@@ -363,6 +369,48 @@ export function upsertIssueCommentInPages(
   return nextPages;
 }
 
+// When a new comment is inserted at the head of a desc-paginated infinite
+// query, the cursor pointing at page[1] becomes stale: it still anchors on the
+// old page[0] tail, which has shifted one slot. On the next refetch, page[0]
+// reloads with only `pageSize` items and the shifted-out item falls into a gap
+// before page[1] starts. Insert-with-overflow keeps cache + cursors aligned by
+// shifting the displaced tail into page[1] and re-anchoring its cursor.
+export function upsertIssueCommentInInfiniteData(
+  current:
+    | { pages: ReadonlyArray<ReadonlyArray<IssueComment>>; pageParams: ReadonlyArray<string | null> }
+    | undefined,
+  nextComment: IssueComment,
+  pageSize?: number,
+): { pages: IssueComment[][]; pageParams: Array<string | null> } {
+  if (!current || current.pages.length === 0) {
+    return { pages: [[nextComment]], pageParams: [null] };
+  }
+
+  const pages = current.pages.map((page) => [...page]);
+  const pageParams = [...current.pageParams];
+
+  for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
+    const existingIndex = pages[pageIndex]!.findIndex((comment) => comment.id === nextComment.id);
+    if (existingIndex === -1) continue;
+    pages[pageIndex]![existingIndex] = nextComment;
+    pages[pageIndex] = sortIssueCommentsDesc(pages[pageIndex]!);
+    return { pages, pageParams };
+  }
+
+  pages[0] = sortIssueCommentsDesc([...pages[0]!, nextComment]);
+
+  if (pageSize && pageSize > 0 && pages[0].length > pageSize && pages.length > 1) {
+    const overflow = pages[0].slice(pageSize);
+    pages[0] = pages[0].slice(0, pageSize);
+    const existingIds = new Set(pages[1]!.map((comment) => comment.id));
+    const dedupedOverflow = overflow.filter((comment) => !existingIds.has(comment.id));
+    pages[1] = sortIssueCommentsDesc([...dedupedOverflow, ...pages[1]!]);
+    pageParams[1] = pages[0][pages[0].length - 1]!.id;
+  }
+
+  return { pages, pageParams };
+}
+
 export function removeIssueCommentFromPages(
   pages: ReadonlyArray<ReadonlyArray<IssueComment>> | undefined,
   commentId: string,
@@ -371,7 +419,5 @@ export function removeIssueCommentFromPages(
     return [];
   }
 
-  return pages
-    .map((page) => page.filter((comment) => comment.id !== commentId))
-    .filter((page) => page.length > 0);
+  return pages.map((page) => page.filter((comment) => comment.id !== commentId));
 }

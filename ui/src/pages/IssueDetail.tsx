@@ -55,6 +55,7 @@ import {
   shouldAutoloadOlderIssueComments,
   takeOptimisticIssueComment,
   upsertIssueCommentInPages,
+  upsertIssueCommentInInfiniteData,
   type IssueCommentReassignment,
   type OptimisticIssueComment,
 } from "../lib/optimistic-issue-comments";
@@ -1598,6 +1599,7 @@ export function IssueDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref) });
     }
   }, [issueCacheRefs, queryClient]);
   const invalidateIssueThreadLazily = useCallback(() => {
@@ -1605,6 +1607,7 @@ export function IssueDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref), refetchType: "inactive" });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref), refetchType: "inactive" });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref), refetchType: "inactive" });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref), refetchType: "inactive" });
     }
   }, [issueCacheRefs, queryClient]);
 
@@ -2043,13 +2046,7 @@ export function IssueDetail() {
       }
       queryClient.setQueryData<InfiniteData<IssueComment[], string | null>>(
         queryKeys.issues.comments(issueId!),
-        (current) => current ? {
-          ...current,
-          pages: upsertIssueCommentInPages(current.pages, comment),
-        } : {
-          pageParams: [null],
-          pages: upsertIssueCommentInPages(undefined, comment),
-        },
+        (current) => upsertIssueCommentInInfiniteData(current, comment, ISSUE_COMMENT_PAGE_SIZE),
       );
     },
     onError: (err, _variables, context) => {
@@ -2269,13 +2266,7 @@ export function IssueDetail() {
       if (comment) {
         queryClient.setQueryData<InfiniteData<IssueComment[], string | null>>(
           queryKeys.issues.comments(issueId!),
-          (current) => current ? {
-            ...current,
-            pages: upsertIssueCommentInPages(current.pages, comment),
-          } : {
-            pageParams: [null],
-            pages: upsertIssueCommentInPages(undefined, comment),
-          },
+          (current) => upsertIssueCommentInInfiniteData(current, comment, ISSUE_COMMENT_PAGE_SIZE),
         );
       }
     },

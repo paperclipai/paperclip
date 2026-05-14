@@ -9,7 +9,7 @@ import { authApi } from "../api/auth";
 import { useCompany } from "./CompanyContext";
 import type { ToastInput } from "./ToastContext";
 import { useToastActions } from "./ToastContext";
-import { upsertIssueCommentInPages } from "../lib/optimistic-issue-comments";
+import { upsertIssueCommentInInfiniteData } from "../lib/optimistic-issue-comments";
 import { clearIssueExecutionRun, removeLiveRunById } from "../lib/optimistic-issue-runs";
 import { queryKeys } from "../lib/queryKeys";
 import { toCompanyRelativePath } from "../lib/company-routes";
@@ -21,6 +21,7 @@ const RECONNECT_SUPPRESS_MS = 2000;
 const SOCKET_CONNECTING = 0;
 const SOCKET_OPEN = 1;
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+const ISSUE_COMMENT_PAGE_SIZE = 50;
 
 type LiveUpdatesSocketLike = {
   readyState: number;
@@ -386,19 +387,7 @@ async function hydrateVisibleIssueComment(
     const comment = await issuesApi.getComment(context.routeIssueRef, commentId);
     queryClient.setQueryData<InfiniteData<IssueComment[], string | null> | undefined>(
       queryKeys.issues.comments(context.routeIssueRef),
-      (current) => {
-        if (!current) {
-          return {
-            pages: [[comment]],
-            pageParams: [null],
-          };
-        }
-
-        return {
-          ...current,
-          pages: upsertIssueCommentInPages(current.pages, comment),
-        };
-      },
+      (current) => upsertIssueCommentInInfiniteData(current, comment, ISSUE_COMMENT_PAGE_SIZE),
     );
     return true;
   } catch {
