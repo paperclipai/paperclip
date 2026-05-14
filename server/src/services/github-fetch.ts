@@ -1,19 +1,25 @@
 import { unprocessable } from "../errors.js";
 
-function isGitHubDotCom(hostname: string) {
+export type GitHostFamily = "github" | "gitea";
+
+export function inferGitHostFamily(hostname: string): GitHostFamily {
   const h = hostname.toLowerCase();
-  return h === "github.com" || h === "www.github.com";
+  if (h === "github.com" || h === "www.github.com") return "github";
+  return "gitea";
 }
 
 export function gitHubApiBase(hostname: string) {
-  return isGitHubDotCom(hostname) ? "https://api.github.com" : `https://${hostname}/api/v3`;
+  return inferGitHostFamily(hostname) === "github"
+    ? "https://api.github.com"
+    : `https://${hostname}/api/v1`;
 }
 
 export function resolveRawGitHubUrl(hostname: string, owner: string, repo: string, ref: string, filePath: string) {
   const p = filePath.replace(/^\/+/, "");
-  return isGitHubDotCom(hostname)
-    ? `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${p}`
-    : `https://${hostname}/raw/${owner}/${repo}/${ref}/${p}`;
+  if (inferGitHostFamily(hostname) === "github") {
+    return `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${p}`;
+  }
+  return `https://${hostname}/api/v1/repos/${owner}/${repo}/media/${p}?ref=${encodeURIComponent(ref)}`;
 }
 
 export async function ghFetch(url: string, init?: RequestInit, authToken?: string): Promise<Response> {
@@ -24,6 +30,9 @@ export async function ghFetch(url: string, init?: RequestInit, authToken?: strin
   try {
     return await fetch(url, { ...init, headers, redirect: authToken ? "manual" : "follow" });
   } catch {
-    throw unprocessable(`Could not connect to ${new URL(url).hostname} — ensure the URL points to a GitHub or GitHub Enterprise instance`);
+    const hostname = (() => {
+      try { return new URL(url).hostname; } catch { return url; }
+    })();
+    throw unprocessable(`Could not connect to ${hostname}`);
   }
 }

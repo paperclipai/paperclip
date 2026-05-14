@@ -29,7 +29,7 @@ import type {
 import { normalizeAgentUrlKey } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
-import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
+import { ghFetch, gitHubApiBase, inferGitHostFamily, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { secretService } from "./secrets.js";
@@ -577,7 +577,7 @@ async function resolveGitHubCommitSha(owner: string, repo: string, ref: string, 
   );
   const sha = asString(response.sha);
   if (!sha) {
-    throw unprocessable(`Failed to resolve GitHub ref ${ref}`);
+    throw unprocessable(`Failed to resolve ref ${ref}`);
   }
   return sha;
 }
@@ -585,26 +585,41 @@ async function resolveGitHubCommitSha(owner: string, repo: string, ref: string, 
 function parseGitHubSourceUrl(rawUrl: string) {
   const url = new URL(rawUrl);
   if (url.protocol !== "https:") {
-    throw unprocessable("GitHub source URL must use HTTPS");
+    throw unprocessable("Source URL must use HTTPS");
   }
   const parts = url.pathname.split("/").filter(Boolean);
   if (parts.length < 2) {
-    throw unprocessable("Invalid GitHub URL");
+    throw unprocessable("Invalid git source URL");
   }
   const owner = parts[0]!;
   const repo = parts[1]!.replace(/\.git$/i, "");
+  const family = inferGitHostFamily(url.hostname);
   let ref = "main";
   let basePath = "";
   let filePath: string | null = null;
   let explicitRef = false;
-  if (parts[2] === "tree") {
-    ref = parts[3] ?? "main";
-    basePath = parts.slice(4).join("/");
-    explicitRef = true;
-  } else if (parts[2] === "blob") {
-    ref = parts[3] ?? "main";
-    filePath = parts.slice(4).join("/");
-    basePath = filePath ? path.posix.dirname(filePath) : "";
+  if (family === "github") {
+    if (parts[2] === "tree") {
+      ref = parts[3] ?? "main";
+      basePath = parts.slice(4).join("/");
+      explicitRef = true;
+    } else if (parts[2] === "blob") {
+      ref = parts[3] ?? "main";
+      filePath = parts.slice(4).join("/");
+      basePath = filePath ? path.posix.dirname(filePath) : "";
+      explicitRef = true;
+    }
+  } else if (parts[2] === "src" && (parts[3] === "branch" || parts[3] === "commit" || parts[3] === "tag")) {
+    // Gitea/Forgejo web URLs: /{owner}/{repo}/src/{branch|commit|tag}/{ref}/{path}
+    ref = parts[4] ?? "main";
+    const tail = parts.slice(5);
+    const tailJoined = tail.join("/");
+    if (tail.length > 0 && /\.[A-Za-z0-9]+$/.test(tail[tail.length - 1]!)) {
+      filePath = tailJoined;
+      basePath = path.posix.dirname(tailJoined);
+    } else {
+      basePath = tailJoined;
+    }
     explicitRef = true;
   }
   return { hostname: url.hostname, owner, repo, ref, basePath, filePath, explicitRef };
@@ -2483,7 +2498,7 @@ export function companySkillService(db: Db) {
             name: secretName,
             provider: "local_encrypted",
             value: authToken,
-            description: `GitHub PAT for skill ${skill.slug}`,
+            description: `PAT for skill ${skill.slug}`,
           });
           secretId = created.id;
         }
@@ -2590,7 +2605,7 @@ export function companySkillService(db: Db) {
           name: secretName,
           provider: "local_encrypted",
           value: authToken,
-          description: `GitHub PAT for skill ${skill.slug}`,
+          description: `PAT for skill ${skill.slug}`,
         });
         secretId = created.id;
       }

@@ -33,21 +33,11 @@ export function companySkillRoutes(db: Db) {
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
   }
 
-  function asString(value: unknown): string | null {
-    if (typeof value !== "string") return null;
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-
   function deriveTrackedSkillRef(skill: SkillTelemetryInput): string | null {
     if (skill.sourceType === "skills_sh") {
       return skill.key;
     }
     if (skill.sourceType !== "github") {
-      return null;
-    }
-    const hostname = asString(skill.metadata?.hostname);
-    if (hostname !== "github.com") {
       return null;
     }
     return skill.key;
