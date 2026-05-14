@@ -3,6 +3,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { applyPendingMigrations, ensurePostgresDatabase } from "./client.js";
+import { buildEmbeddedPostgresFlags } from "./embedded-postgres-flags.js";
 
 type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
@@ -17,6 +18,7 @@ type EmbeddedPostgresCtor = new (opts: {
   port: number;
   persistent: boolean;
   initdbFlags?: string[];
+  postgresFlags?: string[];
   onLog?: (message: unknown) => void;
   onError?: (message: unknown) => void;
 }) => EmbeddedPostgresInstance;
@@ -93,6 +95,7 @@ async function createEmbeddedPostgresTestInstance(tempDirPrefix: string) {
     port,
     persistent: true,
     initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
+    postgresFlags: buildEmbeddedPostgresFlags(),
     onLog: () => {},
     onError: () => {},
   });

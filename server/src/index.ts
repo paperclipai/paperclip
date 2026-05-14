@@ -1,6 +1,7 @@
 /// <reference path="./types/express.d.ts" />
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
+import os from "node:os";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -22,7 +23,10 @@ import {
   companies,
   companyMemberships,
   instanceUserRoles,
+  buildEmbeddedPostgresFlags,
+  assertPgNotReachableOnInterfaces,
 } from "@paperclipai/db";
+import { isLoopbackHost } from "@paperclipai/shared";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
@@ -73,6 +77,7 @@ type EmbeddedPostgresCtor = new (opts: {
   port: number;
   persistent: boolean;
   initdbFlags?: string[];
+  postgresFlags?: string[];
   onLog?: (message: unknown) => void;
   onError?: (message: unknown) => void;
 }) => EmbeddedPostgresInstance;
@@ -182,11 +187,6 @@ export async function startServer(): Promise<StartedServer> {
     return "applied (pending migrations)";
   }
   
-  function isLoopbackHost(host: string): boolean {
-    const normalized = host.trim().toLowerCase();
-    return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1";
-  }
-
   function rewriteLocalUrlPort(rawUrl: string | undefined, port: number): string | undefined {
     if (!rawUrl) return undefined;
     try {
@@ -386,6 +386,7 @@ export async function startServer(): Promise<StartedServer> {
           port,
           persistent: true,
           initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
+          postgresFlags: buildEmbeddedPostgresFlags(),
           onLog: appendEmbeddedPostgresLog,
           onError: appendEmbeddedPostgresLog,
         });
@@ -410,6 +411,7 @@ export async function startServer(): Promise<StartedServer> {
         }
         try {
           await embeddedPostgres.start();
+          embeddedPostgresStartedByThisProcess = true;
         } catch (err) {
           logEmbeddedPostgresFailure("start", err);
           throw formatEmbeddedPostgresError(err, {
@@ -417,7 +419,6 @@ export async function startServer(): Promise<StartedServer> {
             recentLogs: logBuffer.getRecentLogs(),
           });
         }
-        embeddedPostgresStartedByThisProcess = true;
       }
     }
   
@@ -442,8 +443,35 @@ export async function startServer(): Promise<StartedServer> {
     activeDatabaseConnectionString = embeddedConnectionString;
     resolvedEmbeddedPostgresPort = port;
     startupDbInfo = { mode: "embedded-postgres", dataDir, port };
+
+    // Startup assertion: verify pg is NOT reachable on any non-loopback interface.
+    // Runs unconditionally — independent of app bind mode — because the invariant
+    // is about pg binding, not HTTP binding. Covers all three startup paths because
+    // this runs after resolvedEmbeddedPostgresPort is set.
+    // Fail closed: only ECONNREFUSED is treated as "not reachable".
+    {
+      const ifaces = Object.values(os.networkInterfaces()).flat();
+      const probeAddresses = [
+        ...new Set(
+          ifaces
+            .filter((iface) => iface && !iface.internal && !iface.scopeid)
+            .map((iface) => iface!.address),
+        ),
+      ];
+      if (probeAddresses.length > 0) {
+        try {
+          await assertPgNotReachableOnInterfaces(probeAddresses, port);
+        } catch (err) {
+          // Stop the pg process if we started it (process-leak guard)
+          if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+            await embeddedPostgres.stop().catch(() => {});
+          }
+          throw err;
+        }
+      }
+    }
   }
-  
+
   if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host)) {
     throw new Error(
       `local_trusted mode requires loopback host binding (received: ${config.host}). ` +

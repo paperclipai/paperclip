@@ -3,6 +3,7 @@ import { createServer } from "node:net";
 import path from "node:path";
 import { ensurePostgresDatabase, getPostgresDataDirectory } from "./client.js";
 import { createEmbeddedPostgresLogBuffer, formatEmbeddedPostgresError } from "./embedded-postgres-error.js";
+import { buildEmbeddedPostgresFlags } from "./embedded-postgres-flags.js";
 import { resolveDatabaseTarget } from "./runtime-config.js";
 
 type EmbeddedPostgresInstance = {
@@ -18,6 +19,7 @@ type EmbeddedPostgresCtor = new (opts: {
   port: number;
   persistent: boolean;
   initdbFlags?: string[];
+  postgresFlags?: string[];
   onLog?: (message: unknown) => void;
   onError?: (message: unknown) => void;
 }) => EmbeddedPostgresInstance;
@@ -141,6 +143,7 @@ async function ensureEmbeddedPostgresConnection(
     port: selectedPort,
     persistent: true,
     initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
+    postgresFlags: buildEmbeddedPostgresFlags(),
     onLog: logBuffer.append,
     onError: logBuffer.append,
   });
