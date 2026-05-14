@@ -357,6 +357,37 @@ export interface PluginWorkspace {
 // ---------------------------------------------------------------------------
 
 /**
+ * Discriminated result from `ctx.host.getReachableUrl`.
+ * When reachable, `url` is a string and `reason` is absent.
+ * When not reachable, `url` is null and `reason` is a canonical reason string.
+ */
+export type ReachableUrlResult =
+  | { url: string; reason?: never }
+  | { url: null; reason: string };
+
+/**
+ * `ctx.host` — query host-level instance metadata.
+ *
+ * Requires the `host.urls.discover` capability.
+ */
+export interface PluginHostClient {
+  /**
+   * Returns the canonical externally-reachable URL for the given `pathname`,
+   * or `null` with a reason string if the instance is not externally reachable.
+   *
+   * Reason strings are stable API contract values:
+   * - `"loopback_bind"` — instance is bound to loopback; not reachable externally.
+   * - `"private_exposure"` — operator declared `deploymentExposure=private`.
+   * - `"no_public_base_url"` — non-loopback instance but `authPublicBaseUrl` not configured.
+   * - `"invalid_base_url"` — `authPublicBaseUrl` is configured but malformed (defensive).
+   * - `"invalid_pathname"` — `pathname` failed validation (empty, absolute URL, CRLF, etc.).
+   *
+   * Requires `host.urls.discover` capability.
+   */
+  getReachableUrl(opts: { pathname: string }): Promise<ReachableUrlResult>;
+}
+
+/**
  * `ctx.config` — read resolved operator configuration for this plugin.
  *
  * Plugin workers receive the resolved config at initialisation. Use `get()`
@@ -1605,6 +1636,9 @@ export interface PluginStreamsClient {
 export interface PluginContext {
   /** The plugin's manifest as validated at install time. */
   manifest: PaperclipPluginManifestV1;
+
+  /** Query host-level instance metadata. Requires `host.urls.discover`. */
+  host: PluginHostClient;
 
   /** Read resolved operator configuration. */
   config: PluginConfigClient;

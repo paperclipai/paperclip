@@ -395,6 +395,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         return manifest;
       },
 
+      host: {
+        async getReachableUrl({ pathname }) {
+          return callHost("host.getReachableUrl", { pathname });
+        },
+      },
+
       config: {
         async get() {
           return callHost("config.get", {} as Record<string, never>);

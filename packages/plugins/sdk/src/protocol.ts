@@ -1120,6 +1120,12 @@ export interface WorkerToHostMethods {
     },
     result: Goal,
   ];
+
+  // Host URL discovery
+  "host.getReachableUrl": [
+    params: { pathname: string },
+    result: { url: string; reason?: never } | { url: null; reason: string },
+  ];
 }
 
 /** Union of all worker→host method names. */
