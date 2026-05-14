@@ -132,7 +132,7 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
-import { AlertTriangle, ArrowRight, Bot, Brain, Check, ChevronDown, ChevronUp, ClipboardList, Copy, Hammer, Loader2, MessageSquare, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
+import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ChevronUp, ClipboardList, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
 import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
 import { IssueRecoveryActionCard, type RecoveryResolveOutcome } from "./IssueRecoveryActionCard";
@@ -377,6 +377,8 @@ interface IssueChatThreadProps {
    * comment is in the loaded set before we scroll to it.
    */
   onRefreshLatestComments?: () => Promise<unknown> | void;
+  /** Controls display mode: "chat" shows collapsed agent dumps; "agent_notes" shows full verbosity */
+  chatMode?: "chat" | "agent_notes";
 }
 
 type IssueChatErrorBoundaryProps = {
@@ -3830,6 +3832,7 @@ export function IssueChatThread({
   assigneeUserId = null,
   onResumeFromBacklog,
   resumeFromBacklogPending = false,
+  chatMode = "chat",
 }: IssueChatThreadProps) {
   const location = useLocation();
   const lastScrolledHashRef = useRef<string | null>(null);
@@ -3845,7 +3848,7 @@ export function IssueChatThread({
   const latestSettleTimeoutsRef = useRef<number[]>([]);
   const latestSettleCleanupRef = useRef<(() => void) | null>(null);
   const [bottomSpacerHeight, setBottomSpacerHeight] = useState(0);
-  const [chatInternalTab, setChatInternalTab] = useState<"chat" | "agent_notes">("chat");
+  const chatInternalTab = chatMode;
   const displayLiveRuns = useMemo(() => {
     const deduped = new Map<string, LiveRunForIssue>();
     for (const run of liveRuns) {
@@ -3951,6 +3954,16 @@ export function IssueChatThread({
   }, [rawMessages]);
   const latestMessagesRef = useRef<readonly ThreadMessage[]>(messages);
   latestMessagesRef.current = messages;
+
+  // In Chat mode, hide raw agent dumps entirely — only show user messages, progress_note, and system_notice.
+  // In Agent Notes mode, show everything.
+  const visibleMessages = useMemo(() => {
+    if (chatInternalTab !== "chat") return messages;
+    return messages.filter((m) => {
+      if (m.role !== "assistant") return true;
+      return !isAssistantCollapsedInChatTab(m);
+    });
+  }, [messages, chatInternalTab]);
 
   const lastNonFoldableAssistantMsgId = useMemo(
     () =>
@@ -4373,9 +4386,11 @@ export function IssueChatThread({
 
   const resolvedShowJumpToLatest = showJumpToLatest ?? variant === "full";
   const resolvedEmptyMessage = emptyMessage
-    ?? (variant === "embedded"
-      ? "No run output yet."
-      : "This issue conversation is empty. Start with a message below.");
+    ?? (chatInternalTab === "chat" && visibleMessages.length === 0 && messages.length > 0
+      ? "No human-readable updates yet. Agent activity is in the Agent Notes tab."
+      : variant === "embedded"
+        ? "No run output yet."
+        : "This issue conversation is empty. Start with a message below.");
   const previousErrorBoundaryMessagesRef = useRef<readonly ThreadMessage[] | null>(null);
   const errorBoundaryResetVersionRef = useRef(0);
   if (previousErrorBoundaryMessagesRef.current !== messages) {
@@ -4437,36 +4452,6 @@ export function IssueChatThread({
           </div>
         ) : null}
 
-        {variant === "full" ? (
-          <div className="flex items-center gap-0.5 border-b border-border/60">
-            <button
-              type="button"
-              className={cn(
-                "inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium transition-colors",
-                chatInternalTab === "chat"
-                  ? "border-foreground text-foreground"
-                  : "border-transparent text-muted-foreground hover:text-foreground",
-              )}
-              onClick={() => setChatInternalTab("chat")}
-            >
-              <MessageSquare className="h-3.5 w-3.5" />
-              Chat
-            </button>
-            <button
-              type="button"
-              className={cn(
-                "inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium transition-colors",
-                chatInternalTab === "agent_notes"
-                  ? "border-foreground text-foreground"
-                  : "border-transparent text-muted-foreground hover:text-foreground",
-              )}
-              onClick={() => setChatInternalTab("agent_notes")}
-            >
-              <Bot className="h-3.5 w-3.5" />
-              Agent Notes
-            </button>
-          </div>
-        ) : null}
 
         <IssueChatErrorBoundary
           resetKey={errorBoundaryResetKey}
@@ -4479,7 +4464,7 @@ export function IssueChatThread({
               data-testid="thread-viewport"
               className={variant === "embedded" ? "space-y-3" : "space-y-4"}
             >
-              {messages.length === 0 ? (
+              {visibleMessages.length === 0 ? (
                 <div className={cn(
                   "text-center text-sm text-muted-foreground",
                   variant === "embedded"
@@ -4488,10 +4473,10 @@ export function IssueChatThread({
                 )}>
                   {resolvedEmptyMessage}
                 </div>
-              ) : messages.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD ? (
+              ) : visibleMessages.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD ? (
                 <VirtualizedIssueChatThreadList
                   ref={virtualizedThreadRef}
-                  messages={messages}
+                  messages={visibleMessages}
                   feedbackVoteByTargetId={feedbackVoteByTargetId}
                   activeRunIds={activeRunIds}
                   stoppingRunId={stoppingRunId}
@@ -4502,7 +4487,7 @@ export function IssueChatThread({
                 // Keep transcript rendering independent from assistant-ui's
                 // index-scoped message providers; live transcripts can shrink
                 // or regroup while the runtime still holds stale indices.
-                messages.map((message) => {
+                visibleMessages.map((message) => {
                   if (message.role === "user") {
                     return (
                       <IssueChatUserMessage
@@ -4522,23 +4507,6 @@ export function IssueChatThread({
                   }
                   if (message.role === "assistant") {
                     const foldable = isAssistantFoldable(message);
-                    // In Chat tab: collapse raw agent dumps; in Agent Notes: show full verbosity
-                    const collapsedInChatTab = chatInternalTab === "chat" && isAssistantCollapsedInChatTab(message);
-                    if (collapsedInChatTab && !expandedMsgIds.has(message.id)) {
-                      return (
-                        <CollapsedAgentMessage
-                          key={message.id}
-                          message={message}
-                          onExpand={() =>
-                            setExpandedMsgIds((prev) => {
-                              const next = new Set(prev);
-                              next.add(message.id);
-                              return next;
-                            })
-                          }
-                        />
-                      );
-                    }
                     return (
                       <IssueChatAssistantMessage
                         key={message.id}

@@ -33,7 +33,7 @@ _load_gsai_secret() {
 patch_issue_status() {
   local issue="$1"
   local status="$2"
-  local api_url="${PAPERCLIP_API_URL:-http://localhost:3101}"
+  local api_url="${PAPERCLIP_API_URL:-http://localhost:3100}"
 
   if [ "$DRY_RUN" = "1" ]; then
     echo "[dry-run] would PATCH ${api_url%/}/api/issues/${issue} status=${status}" >&2
@@ -78,7 +78,7 @@ patch_issue_status() {
 post_issue_comment() {
   local issue="$1"
   local body="$2"
-  local api_url="${PAPERCLIP_API_URL:-http://localhost:3101}"
+  local api_url="${PAPERCLIP_API_URL:-http://localhost:3100}"
 
   if [ "$DRY_RUN" = "1" ]; then
     echo "[dry-run] would POST ${api_url%/}/api/issues/${issue}/comments (${#body} chars)" >&2
@@ -267,7 +267,7 @@ compose_payload() {
     # a quick notification on mobile, not a wall of scene headers. Full brief
     # lives on the Paperclip issue (accessible via the link below) and is also
     # archived there as a comment by ask.sh post-send.
-    local ui_base="${PAPERCLIP_UI_URL:-${PAPERCLIP_API_URL:-http://localhost:3101}}"
+    local ui_base="${PAPERCLIP_UI_URL:-${PAPERCLIP_API_URL:-http://localhost:3100}}"
     local prefix="${issue%%-*}"
     local issue_url="${ui_base%/}/${prefix}/issues/${issue}"
 

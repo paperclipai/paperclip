@@ -151,6 +151,12 @@ type RuntimeSkillEntryOptions = {
 
 const skillInventoryRefreshPromises = new Map<string, Promise<void>>();
 
+const RUNTIME_SKILL_ENTRY_CACHE_TTL_MS = 10_000;
+const runtimeSkillEntryCache = new Map<
+  string,
+  { entries: PaperclipSkillEntry[]; expiresAt: number }
+>();
+
 function selectCompanySkillColumns() {
   return {
     id: companySkills.id,

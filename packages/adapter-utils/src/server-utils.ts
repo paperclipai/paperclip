@@ -110,6 +110,18 @@ export function resolvePaperclipInstanceRootForAdapter(input: {
   return path.resolve(homeDir, "instances", instanceId);
 }
 
+const PAPERCLIP_SKILL_ENTRIES_CACHE_TTL_MS = 10_000;
+const paperclipSkillEntriesCache = new Map<
+  string,
+  { entries: PaperclipSkillEntry[]; expiresAt: number }
+>();
+
+const INSTALLED_SKILL_TARGETS_CACHE_TTL_MS = 10_000;
+const installedSkillTargetsCache = new Map<
+  string,
+  { targets: Map<string, InstalledSkillTarget>; expiresAt: number }
+>();
+
 export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
   "",
@@ -1349,13 +1361,19 @@ export async function listPaperclipSkillEntries(
   moduleDir: string,
   additionalCandidates: string[] = [],
 ): Promise<PaperclipSkillEntry[]> {
+  const cacheKey = `${moduleDir}:${additionalCandidates.join(",")}`;
+  const cached = paperclipSkillEntriesCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.entries;
+  }
+
   const root = await resolvePaperclipSkillsDir(moduleDir, additionalCandidates);
   if (!root) return [];
 
   try {
     const entries = await fs.readdir(root, { withFileTypes: true });
     const dirs = entries.filter((entry) => entry.isDirectory());
-    return Promise.all(dirs.map(async (entry) => {
+    const result = await Promise.all(dirs.map(async (entry) => {
       const skillDir = path.join(root, entry.name);
       const required = await readSkillRequired(skillDir);
       return {
@@ -1368,12 +1386,23 @@ export async function listPaperclipSkillEntries(
           : null,
       };
     }));
+    paperclipSkillEntriesCache.set(cacheKey, {
+      entries: result,
+      expiresAt: Date.now() + PAPERCLIP_SKILL_ENTRIES_CACHE_TTL_MS,
+    });
+    return result;
   } catch {
     return [];
   }
 }
 
 export async function readInstalledSkillTargets(skillsHome: string): Promise<Map<string, InstalledSkillTarget>> {
+  const cacheKey = skillsHome;
+  const cached = installedSkillTargetsCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return new Map(cached.targets);
+  }
+
   const entries = await fs.readdir(skillsHome, { withFileTypes: true }).catch(() => []);
   const out = new Map<string, InstalledSkillTarget>();
   for (const entry of entries) {
@@ -1381,6 +1410,11 @@ export async function readInstalledSkillTargets(skillsHome: string): Promise<Map
     const linkedPath = entry.isSymbolicLink() ? await fs.readlink(fullPath).catch(() => null) : null;
     out.set(entry.name, resolveInstalledEntryTarget(skillsHome, entry.name, entry, linkedPath));
   }
+
+  installedSkillTargetsCache.set(cacheKey, {
+    targets: new Map(out),
+    expiresAt: Date.now() + INSTALLED_SKILL_TARGETS_CACHE_TTL_MS,
+  });
   return out;
 }
 
