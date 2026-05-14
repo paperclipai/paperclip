@@ -349,6 +349,7 @@ HTTP_LISTENER_ARN=$(aws elbv2 create-listener \
 ```
 
 将你的 DNS 指向 ALB：
+
 - 为 `$PAPERCLIP_DOMAIN` -> `$ALB_DNS` 创建 CNAME 或 ALIAS 记录
 
 ## 10. 创建 ECS 服务
@@ -404,6 +405,7 @@ curl -sf https://$PAPERCLIP_DOMAIN/api/health
 ```
 
 **健康指标：**
+
 - ECS 任务状态：`RUNNING`，运行状况：`HEALTHY`
 - 日志显示 `plugin job coordinator started` 和 `plugin-loader: loadAll complete`
 - `/api/health` 返回 200
@@ -563,17 +565,19 @@ aws logs delete-log-group --log-group-name /ecs/paperclip
 
 ## 成本参考
 
-| 服务 | 配置 | 每月 |
-|---------|--------|---------|
-| ECS Fargate | 2 vCPU, 4 GB, 24/7 | ~$70 |
-| RDS Postgres | db.t4g.micro, 20 GB | ~$15 |
-| ALB | 1 LCU 平均 | ~$22 |
-| NAT 网关 | 1 AZ（如果使用私有子网） | ~$35 |
-| EFS | 1 GB 标准 | ~$0.30 |
-| Secrets Manager | 5 个密钥 | ~$2 |
-| CloudWatch Logs | ~1 GB/月 | ~$0.50 |
-| ECR | ~1 GB | ~$0.10 |
-| **总计（公共子网，无 NAT）** | | **~$110/月** |
-| **总计（私有子网 + NAT）** | | **~$145/月** |
+
+| 服务                 | 配置                  | 每月          |
+| ------------------ | ------------------- | ----------- |
+| ECS Fargate        | 2 vCPU, 4 GB, 24/7  | ~$70        |
+| RDS Postgres       | db.t4g.micro, 20 GB | ~$15        |
+| ALB                | 1 LCU 平均            | ~$22        |
+| NAT 网关             | 1 AZ（如果使用私有子网）      | ~$35        |
+| EFS                | 1 GB 标准             | ~$0.30      |
+| Secrets Manager    | 5 个密钥               | ~$2         |
+| CloudWatch Logs    | ~1 GB/月             | ~$0.50      |
+| ECR                | ~1 GB               | ~$0.10      |
+| **总计（公共子网，无 NAT）** |                     | **~$110/月** |
+| **总计（私有子网 + NAT）** |                     | **~$145/月** |
+
 
 使用 Fargate Spot 和在非高峰时间计划缩减到 0，以减少到 ~$60-85/月。
