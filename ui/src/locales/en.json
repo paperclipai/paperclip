@@ -46,9 +46,6 @@
     "unknown": "Unknown",
     "view": "View",
     "location": "Location",
-    "create": "Create",
-    "cancel": "Cancel",
-    "save": "Save",
     "cancelling": "Cancelling",
     "resuming": "Resuming",
     "retrying": "Retrying",
@@ -199,6 +196,8 @@
     "installPlugin": "Install Plugin",
     "install": "Install",
     "installing": "Installing...",
+    "uninstalling": "Uninstalling...",
+    "upgrading": "Upgrading...",
     "npmPackageName": "npm Package Name",
     "npmPackagePlaceholder": "@paperclipai/plugin-example",
     "installPrompt": "Enter the npm package name of the plugin you wish to install.",
@@ -367,6 +366,15 @@
     "description": "Description",
     "comments": "Comments",
     "selectCompany": "Select a company to view issues."
+  },
+  "issue": {
+    "needsNextStep": "Needs Next Step",
+    "needsNextStepDesc": "Work on this issue has stalled because a run finished without closing it. Act on the status or wake the assignee:",
+    "markDoneOrCancelled": "Mark as done or cancelled",
+    "sendForReview": "Send for review",
+    "markBlocked": "Mark as blocked",
+    "delegateFollowUp": "Delegate follow-up to another agent",
+    "correctiveWake": "Send a corrective comment to"
   },
   "projects": {
     "title": "Projects",

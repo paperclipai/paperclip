@@ -415,9 +415,17 @@ export function PluginManager() {
                               enableMutation.mutate(plugin.id);
                             }
                           }}
-                          disabled={enableMutation.isPending || disableMutation.isPending}
+                          disabled={
+                            (enableMutation.isPending && enableMutation.variables === plugin.id) ||
+                            (disableMutation.isPending && disableMutation.variables === plugin.id)
+                          }
                         >
-                          <Power className={cn("h-4 w-4", plugin.status === "ready" ? "text-green-600" : "")} />
+                          {(enableMutation.isPending && enableMutation.variables === plugin.id) ||
+                          (disableMutation.isPending && disableMutation.variables === plugin.id) ? (
+                            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                          ) : (
+                            <Power className={cn("h-4 w-4", plugin.status === "ready" ? "text-green-600" : "")} />
+                          )}
                         </Button>
                         <Button
                           variant="outline"
@@ -427,9 +435,9 @@ export function PluginManager() {
                           onClick={() => {
                             upgradeMutation.mutate(plugin.id);
                           }}
-                          disabled={upgradeMutation.isPending}
+                          disabled={upgradeMutation.isPending && upgradeMutation.variables === plugin.id}
                         >
-                          <RefreshCw className={cn("h-4 w-4", upgradeMutation.isPending && "animate-spin")} />
+                          <RefreshCw className={cn("h-4 w-4", upgradeMutation.isPending && upgradeMutation.variables === plugin.id && "animate-spin")} />
                         </Button>
                         <Button
                           variant="outline"
@@ -440,7 +448,7 @@ export function PluginManager() {
                             setUninstallPluginId(plugin.id);
                             setUninstallPluginName(plugin.manifestJson.displayName ?? plugin.packageName);
                           }}
-                          disabled={uninstallMutation.isPending}
+                          disabled={uninstallMutation.isPending && uninstallMutation.variables === plugin.id}
                         >
                           <Trash className="h-4 w-4" />
                         </Button>
@@ -484,7 +492,7 @@ export function PluginManager() {
                 }
               }}
             >
-              {uninstallMutation.isPending ? t('plugins.installing') : t('plugins.uninstall')}
+              {uninstallMutation.isPending ? t('plugins.uninstalling') : t('plugins.uninstall')}
             </Button>
           </DialogFooter>
         </DialogContent>
