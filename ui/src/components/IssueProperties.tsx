@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
 import type { Issue, IssueLabel, Project, WorkspaceRuntimeService } from "@paperclipai/shared";
+import { isClaudeCliAdapterType, isCodexCliAdapterType } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterModel } from "../api/agents";
 import { accessApi } from "../api/access";
@@ -193,19 +194,19 @@ function compactRecord(record: Record<string, unknown>) {
 }
 
 function thinkingEffortOptionsFor(adapterType: string | null | undefined) {
-  if (adapterType === "codex_local") return ISSUE_THINKING_EFFORT_OPTIONS.codex_local;
+  if (isCodexCliAdapterType(adapterType ?? "")) return ISSUE_THINKING_EFFORT_OPTIONS.codex_local;
   if (adapterType === "opencode_local") return ISSUE_THINKING_EFFORT_OPTIONS.opencode_local;
   return ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
 }
 
 function thinkingEffortKeyFor(adapterType: string | null | undefined) {
-  if (adapterType === "codex_local") return "modelReasoningEffort";
+  if (isCodexCliAdapterType(adapterType ?? "")) return "modelReasoningEffort";
   if (adapterType === "opencode_local") return "variant";
   return "effort";
 }
 
 function thinkingEffortValueFor(adapterType: string | null | undefined, adapterConfig: Record<string, unknown>) {
-  if (adapterType === "codex_local") {
+  if (isCodexCliAdapterType(adapterType ?? "")) {
     return String(adapterConfig.modelReasoningEffort ?? adapterConfig.reasoningEffort ?? adapterConfig.effort ?? "");
   }
   if (adapterType === "opencode_local") {
@@ -559,8 +560,8 @@ export function IssueProperties({
   );
   const assigneeSupportsCheapLane = Boolean(
     supportsAssigneeOverrides
-      && (assigneeAdapterType === "claude_local"
-        || assigneeAdapterType === "codex_local"
+      && (isClaudeCliAdapterType(assigneeAdapterType ?? "")
+        || isCodexCliAdapterType(assigneeAdapterType ?? "")
         || assigneeAdapterType === "opencode_local"),
   );
   const assigneeOverrideLane = overrideLane(assigneeAdapterOverrides);
@@ -571,7 +572,7 @@ export function IssueProperties({
     assigneeAdapterType,
     assigneeOverrideAdapterConfig,
   );
-  const assigneeOverrideChrome = assigneeAdapterType === "claude_local"
+  const assigneeOverrideChrome = isClaudeCliAdapterType(assigneeAdapterType ?? "")
     && assigneeOverrideAdapterConfig.chrome === true;
   const { data: assigneeAdapterModels } = useQuery({
     queryKey:
@@ -736,7 +737,7 @@ export function IssueProperties({
               ))}
             </div>
           </div>
-          {assigneeAdapterType === "claude_local" ? (
+          {isClaudeCliAdapterType(assigneeAdapterType ?? "") ? (
             <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
               <div className="text-xs text-muted-foreground">Enable Chrome (--chrome)</div>
               <ToggleSwitch

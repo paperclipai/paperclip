@@ -153,7 +153,7 @@ describe("ActiveAgentsPanel", () => {
     });
 
     const moreLink = [...container.querySelectorAll("a")].find((anchor) =>
-      anchor.textContent?.includes("more active/recent"),
+      anchor.textContent?.includes("还有"),
     );
     expect(moreLink?.getAttribute("href")).toBe("/dashboard/live");
 
@@ -188,7 +188,7 @@ describe("ActiveAgentsPanel", () => {
       minCount: 50,
       limit: 50,
     });
-    expect(container.textContent).not.toContain("more active/recent");
+    expect(container.textContent).not.toContain("还有");
 
     await act(async () => {
       root.unmount();

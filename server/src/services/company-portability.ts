@@ -43,6 +43,7 @@ import {
   ROUTINE_TRIGGER_SIGNING_MODES,
   deriveProjectUrlKey,
   envConfigSchema,
+  isCodexCliAdapterType,
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
@@ -732,7 +733,7 @@ function applyImportAdapterRunDefaults(
   adapterConfig: Record<string, unknown>,
 ) {
   const next = { ...adapterConfig };
-  if (adapterType === "codex_local") {
+  if (isCodexCliAdapterType(adapterType)) {
     appendCodexImportArg(next, "--skip-git-repo-check");
   }
   return next;

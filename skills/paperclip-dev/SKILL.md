@@ -2,134 +2,117 @@
 name: paperclip-dev
 required: false
 description: >
-  Develop and operate a local Paperclip instance — start and stop servers,
-  pull updates from master, run builds and tests, manage worktrees, back up
-  databases, and diagnose problems. Use whenever you need to work on the
-  Paperclip codebase itself or keep a running instance healthy.
+  开发与运维本地 Paperclip 实例——启停服务、同步 master、构建与测试、worktree、数据库备份与排障。
+  适用于在本仓库上做 Paperclip 本体开发或保持实例可用。
 ---
 
-# Paperclip Dev
+**中文名：** 本地 Paperclip 开发与运维（源码仓库里跑实例）  
+**系统 id：** `paperclip-dev`
 
-This skill covers the day-to-day workflows for developing and operating a local Paperclip instance. It assumes you are working inside the Paperclip repo checkout with `origin` pointing to `git@github.com:paperclipai/paperclip.git`.
+# 本地 Paperclip 开发与运维
 
-> **OPEN SOURCE HYGIENE:** This repository is public-facing. Treat anything you push to `origin` as publishable. Never commit or push secrets, API keys, tokens, private logs, PII, customer data, or machine-local configuration that should stay private. Keep git history tidy as well: avoid pushing throwaway branches, noisy checkpoint commits, or speculative work that does not need to be shared upstream.
+日常围绕「本地 Paperclip 开发与运维」的流程。假定你在 Paperclip 源码仓库，`origin` 指向 `git@github.com:paperclipai/paperclip.git`。
 
-> **MANDATORY:** Before running any CLI command, building, testing, or managing worktrees, you MUST read `doc/DEVELOPING.md` in the Paperclip repo. It is the canonical reference for all `paperclipai` CLI commands, their options, build/test workflows, database operations, worktree management, and diagnostics. Do NOT guess at flags or options — read the doc first.
+> **开源卫生：**仓库对外公开。视作 **推送到 `origin` 的一切内容都可公开发布**。永远不要提交密钥、令牌、私密日志、个人身份信息、客户数据或只适合本机的配置。也别把试错分支的检查点随意推送到上游。
 
-## Quick Command Reference
+> **强制：**跑任何 CLI、编译、测试、worktree **之前**必读仓库内 `doc/DEVELOPING.md`。那是 `paperclipai` CLI 全部子命令与参数、构建/测试、迁移、实例与诊断的**单一权威**。不要去猜命令行参数。
 
-These are the most common commands. For full option tables and details, see `doc/DEVELOPING.md`.
+## 常用命令备忘
 
-| Task | Command |
-|------|---------|
-| Start server (first time or normal) | `npx paperclipai run` |
-| Dev mode with hot reload | `pnpm dev` |
-| Stop dev server | `pnpm dev:stop` |
-| Build | `pnpm build` |
-| Type-check | `pnpm typecheck` |
-| Run tests | `pnpm test` |
-| Run migrations | `pnpm db:migrate` |
-| Regenerate Drizzle client | `pnpm db:generate` |
-| Back up database | `npx paperclipai db:backup` |
-| Health check | `npx paperclipai doctor --repair` |
-| Print env vars | `npx paperclipai env` |
-| Trigger agent heartbeat | `npx paperclipai heartbeat run --agent-id <id>` |
-| Install agent skills locally | `npx paperclipai agent local-cli <agent> --company-id <id>` |
+更全的选项表同样在 `doc/DEVELOPING.md`。
 
-## Pulling from Master
+| 任务 | 命令 |
+|------|------|
+| 启动服务（首次或日常） | `npx paperclipai run` |
+| 开发热更新 | `pnpm dev` |
+| 停开发服 | `pnpm dev:stop` |
+| 构建 | `pnpm build` |
+| 类型检查 | `pnpm typecheck` |
+| 测试 | `pnpm test` |
+| 迁移数据库 | `pnpm db:migrate` |
+| 重新生成 Drizzle | `pnpm db:generate` |
+| 备份数据库 | `npx paperclipai db:backup` |
+| 健康自检/修复建议 | `npx paperclipai doctor --repair` |
+| 打印实例环境 | `npx paperclipai env` |
+| 触发某智能体心跳 | `npx paperclipai heartbeat run --agent-id <id>` |
+| 安装智能体所需本地技能 CLI | `npx paperclipai agent local-cli <agent> --company-id <id>` |
+
+## 从 master 拉取
 
 ```bash
 git fetch origin && git pull origin master
 pnpm install && pnpm build
 ```
 
-If schema changes landed, also run `pnpm db:generate && pnpm db:migrate`.
+若有 schema PR 并进，补上 `pnpm db:generate && pnpm db:migrate`。
 
-## Worktrees
+## Worktree（多工作树实例）
 
-Paperclip worktrees combine git worktrees with isolated Paperclip instances — each gets its own database, server port, and environment seeded from the primary instance.
+Paperclip worktree = git worktree **+** 独立的 Paperclip 实例（端口、嵌入式 DB、环境种子互相隔离）。
 
-> **MANDATORY:** Before creating or managing worktrees, you MUST read the "Worktree-local Instances" and "Worktree CLI Reference" sections in `doc/DEVELOPING.md`. That is the canonical reference for all worktree commands, their options, seed modes, and environment variables.
+> **强制：**建/删/洗 worktree 之前读 `doc/DEVELOPING.md`「Worktree-local Instances」「Worktree CLI Reference」小节。
 
-### When to Use Worktrees
+### 何时用 worktree
 
-- Starting a feature branch that needs its own Paperclip environment
-- Running parallel agent work without cross-contaminating the primary instance
-- Testing Paperclip changes in isolation before merging
+- 某功能分支需要一整套独立 Paperclip；
+- 多路 agent 并行但不想弄脏主实例；
+- 先在隔离环境合并前验证宿主改动。
 
-### Command Overview
+### 命令一览
 
-The CLI has two tiers (see `doc/DEVELOPING.md` for full option tables):
+CLI 分两档能力（仍以 `DEVELOPING.md` 详表为准）：
 
-| Command | Purpose |
-|---------|---------|
-| `worktree:make <name>` | Create worktree + isolated instance in one step |
-| `worktree:list` | List worktrees and their Paperclip status |
-| `worktree:merge-history` | Preview/import issue history between worktrees |
-| `worktree:cleanup <name>` | Remove worktree, branch, and instance data |
-| `worktree init` | Bootstrap instance inside existing worktree |
-| `worktree env` | Print shell exports for worktree instance |
-| `worktree reseed` | Refresh worktree DB from another instance |
-| `worktree repair` | Fix broken/missing worktree instance metadata |
+| 命令 | 用途 |
+|---------|--------|
+| `worktree:make <name>` | 一步到位建 worktree + 实例 |
+| `worktree:list` | 列出 worktrees 与 Paperclip 状态 |
+| `worktree:merge-history` | 预览/导入事务历史 |
+| `worktree:cleanup <name>` | 删分支、实例与数据 |
+| `worktree init` | 已在 git worktree 里时补全引导 |
+| `worktree env` | 打印需 `eval` 的 shell 导出 |
+| `worktree reseed` | 用另一实例数据库快照刷新 |
+| `worktree repair` | 修补损坏或缺失的实例元数据 |
 
-### Typical Workflow
+### 典型操作流程
 
 ```bash
-# 1. Create a worktree for a feature
 npx paperclipai worktree:make my-feature --start-point origin/main
-
-# 2. Move into the worktree (path printed by worktree:make) and source the environment
 cd <worktree-path>
 eval "$(npx paperclipai worktree env)"
-
-# 3. Start the isolated Paperclip server
 npx paperclipai run
-
-# 4. Do your work
-
-# 5. When done, merge history back if needed
+# ... work ...
 npx paperclipai worktree:merge-history --from paperclip-my-feature --to current --apply
-
-# 6. Clean up
 npx paperclipai worktree:cleanup my-feature
 ```
 
-## Forks — Prefer Pushing to a User Fork
+## 优先使用个人 fork —— 推送到你的 fork
 
-If the user has a personal fork of `paperclipai/paperclip` configured as a git remote, push your feature branches to **that fork** instead of creating branches on the main repo. This keeps the upstream branch list clean and matches the standard open-source contribution flow.
+若用户配置了个人 fork 远程，应将 feature branches **推到 fork**，避免污染主干 remote 分支列表。
 
-### Detect a fork remote
-
-Before pushing or creating a PR, list remotes and check for one that points at a non-`paperclipai` GitHub fork:
+### 辨认 fork remote
 
 ```bash
 git remote -v
 ```
 
-Treat any remote whose URL points to `github.com:<user>/paperclip` (or `github.com/<user>/paperclip.git`) as the user's fork. Common names are `fork`, `<username>`, or `myfork`. The remote named `origin` or `upstream` that points at `paperclipai/paperclip` is the canonical upstream — do not push feature branches there if a fork exists.
+若 URL 指向 `github.com:<user>/paperclip`（或 `.git` 形式）且用户名不是组织的默认上游，就把它当 fork。仍指向 `paperclipai/paperclip` 的 `origin/upstream` 是 canonical upstream——**fork 还存在时别把 feature branch 无脑推给它**。
 
-### Pushing to the fork
+### 推到 fork
 
 ```bash
-# Push the current branch to the user's fork and set upstream
 git push -u <fork-remote> HEAD
-```
-
-Then create the PR from the fork branch:
-
-```bash
 gh pr create --repo paperclipai/paperclip --head <fork-owner>:<branch-name> ...
 ```
 
-`gh pr create` usually figures out the head ref automatically when run from a branch tracking the fork; the explicit `--head <owner>:<branch>` form is the reliable fallback when it does not.
+`gh pr create` 在无上游跟踪分支时常能自动推断 head；不可靠时用显式 `--head owner:branch`。
 
-### When no fork exists
+### 没有 fork
 
-If `git remote -v` shows only `paperclipai/paperclip` remotes (no user fork), fall back to pushing branches to `origin` as before. Do NOT create a fork on the user's behalf — ask first.
+若只看到组织仓库 remote，照旧推 `origin`。**不要在未经用户同意的情形下代建新 fork**。
 
-### Keeping the fork up to date
+### 上游同步
 
-The canonical remote that points at `paperclipai/paperclip` may be named `origin` **or** `upstream` depending on how the user set up the repo. Detect it the same way as in the "Detect a fork remote" step, then fetch and push from/with that remote so the sync works under either convention:
+upstream 可能被命名为 `origin` 或 `upstream`，需自行判断 fetch 的那份：
 
 ```bash
 UPSTREAM_REMOTE=$(git remote -v | awk '/paperclipai\/paperclip.*\(fetch\)/{print $1; exit}')
@@ -137,131 +120,55 @@ git fetch "$UPSTREAM_REMOTE"
 git push <fork-remote> "${UPSTREAM_REMOTE}/master:master"
 ```
 
-## Pull Requests
+## 合并请求（PR）
 
-> **MANDATORY PRE-FLIGHT:** Before creating ANY pull request, you MUST read the canonical source files listed below. Do NOT run `gh pr create` until you have read these files and verified your PR body matches every required section.
+> **提交前必读：**任何 `gh pr create` **之前**，必须读过下面三份文件，并逐项对照 PR 正文：
 
-### Step 1 — Read the canonical files
+1. `.github/PULL_REQUEST_TEMPLATE.md`
+2. `CONTRIBUTING.md`
+3. `.github/workflows/pr.yml`
 
-You MUST read all three of these files before creating a PR:
+### 正文自检
 
-1. **`.github/PULL_REQUEST_TEMPLATE.md`** — the required PR body structure
-2. **`CONTRIBUTING.md`** — contribution conventions, PR requirements, and thinking-path examples
-3. **`.github/workflows/pr.yml`** — CI checks that gate merge
+- `## Thinking Path` — 引用块；5–8 步推演
+- `## What Changed` — 具体要点列表
+- `## Verification`
+- `## Risks`
+- `## Model Used`
+- `## Checklist`
 
-### Step 2 — Validate your PR body against this checklist
+缺块就不要交 PR。
 
-After reading the template, verify your `--body` includes every one of these sections (names must match exactly):
+### 创建 PR
 
-- [ ] `## Thinking Path` — blockquote style, 5-8 reasoning steps
-- [ ] `## What Changed` — bullet list of concrete changes
-- [ ] `## Verification` — how a reviewer confirms this works
-- [ ] `## Risks` — what could go wrong
-- [ ] `## Model Used` — provider, model ID, version, capabilities
-- [ ] `## Checklist` — copied from the template, items checked off
+只在上一步完成后提交；不要用随意段落换掉模板结构。
 
-If any section is missing or empty, do NOT submit the PR. Go back and fill it in.
+## 硬规则——禁止旁路操作
 
-### Step 3 — Create the PR
+Agents 曾因 CLI failure 手写 SQL 造成严重事故。**逐字遵守：**
 
-Only after completing Steps 1 and 2, run `gh pr create`. Use the template contents as the structure for `--body` — do not write a freeform summary.
+1. **Worktree / 数据库只允许走 CLI。**禁止：
+   - 直接调用 `pg_dump`/`psql`/手工 `createdb`…
+   - 把某个实例的 `DATABASE_URL` 改成指向隔壁实例嵌入式 DB；
+   - 对 `.paperclip`、`.paperclip-worktrees`、`db/` 目录 `rm -rf`；
+   - 手写嵌入式 Postgres 目录；乱 kill postgres PID。
 
-## Hard Rules — Do NOT Bypass
+2. **CLI 报错就停并报障。**不要做「我以为我能手工替代」：`worktree:make|reseed|init|cleanup…`失败 → 在事务评论中原样贴报错 → `blocked` → 提议 `doctor --repair` 或删了重来。
 
-These rules exist because agents have caused real damage by improvising around CLI failures. Follow them exactly.
+3. **绝对禁止实例间共用 DB**。每个 worktree embed DB 只属于自己。
 
-1. **CLI is the only interface to worktrees and databases.** All worktree and database operations MUST go through `npx paperclipai` / `pnpm paperclipai` commands. You MUST NOT:
-   - Run `pg_dump`, `pg_restore`, `psql`, `createdb`, `dropdb`, or any raw postgres commands
-   - Manually set `DATABASE_URL` to point a worktree server at another instance's database
-   - Run `rm -rf` on any `.paperclip/`, `.paperclip-worktrees/`, or `db/` directory
-   - Directly manipulate embedded postgres data directories
-   - Kill postgres processes by PID
+4. **在 worktree 起 dev server 必须先 eval env。**正确顺序参见原文档代码块节选（`pnpm install/build`→`paperclipai run`，坏掉就停）。
 
-2. **If a CLI command fails, stop and report.** Do NOT attempt workarounds. If `worktree:make`, `worktree reseed`, `worktree init`, `worktree:cleanup`, or any other `paperclipai` command fails:
-   - Report the exact error message in your task comment
-   - Set the task to `blocked`
-   - Suggest running `npx paperclipai doctor --repair` or recreating the worktree from scratch
-   - Do NOT try to manually replicate what the CLI does
+5. **Seeding/reseed** 只允许通过文档列出的 CLI 指令；禁止 dump 二进制互相拷。
 
-3. **Never share databases between instances.** Each worktree instance gets its own isolated database. Never override `DATABASE_URL` to point one instance at another's database. This destroys isolation and can corrupt production data.
+## 常驻开发服务（人工手测）
 
-4. **Starting a dev server in a worktree requires setup first.** The correct sequence is:
-   ```bash
-   # If the worktree already exists but has no running instance:
-   cd <worktree-path>
-   eval "$(npx paperclipai worktree env)"
-   pnpm install && pnpm build
-   npx paperclipai run          # or pnpm dev
+需要心跳结束之后仍常驻时，必须用 **detach session（`tmux`）**；心跳 shell 的直系子进程会随会话结束而退出。
 
-   # If the worktree needs a fresh database:
-   npx paperclipai worktree reseed --seed-mode full
+参见原文命令：`tmux new-session -d -s … 'pnpm dev'`、查看 `capture-pane`、`kill-session`、以及 `curl`/`lsof` 确认端口。**禁止**只靠 `nohup`、`&`。测完关掉会话。
 
-   # If the worktree is broken beyond repair:
-   npx paperclipai worktree:cleanup <name>
-   npx paperclipai worktree:make <name> --seed-mode full
-   ```
-   If any step fails, follow rule 2 — stop and report.
+## 常见翻车点
 
-5. **Seeding is a CLI operation.** When asked to seed a worktree database from the main instance, use `worktree reseed` or recreate with `worktree:make --seed-mode full`. Read `doc/DEVELOPING.md` for the full option tables. Never attempt manual database copying.
+表格（意译）：服务起不来就跑 `doctor --repair`；忘记 source worktree 环境；pull 后未 `pnpm install/build`；schema 脱节；cleanup 前有未推送提交；基准测试打到错误实例端口；CLI 报错还去手搓数据库；心跳短命 dev 服务——改用 tmux；该推 fork 却推组织远程——见上文 Fork 节。
 
-## Persistent Dev Servers (for Manual Testing)
-
-When an agent needs to start a dev server that outlives the current heartbeat — for example, so a human or QA agent can manually test against it — the server process **must** be launched in a detached session. A process started directly from a heartbeat shell is killed when the heartbeat exits.
-
-### Use `tmux` for persistent servers
-
-```bash
-# 1. cd into the worktree (or main repo) and source the environment
-cd <worktree-path>
-eval "$(npx paperclipai worktree env)"   # skip if using the primary instance
-
-# 2. Start the dev server in a named, detached tmux session
-tmux new-session -d -s <session-name> 'pnpm dev'
-
-# Example with a descriptive name:
-tmux new-session -d -s auth-fix-3102 'pnpm dev'
-```
-
-### Managing the session
-
-| Task | Command |
-|------|---------|
-| Check if the session is alive | `tmux has-session -t <session-name> 2>/dev/null && echo running` |
-| View server output | `tmux capture-pane -t <session-name> -p` |
-| Kill the session | `tmux kill-session -t <session-name>` |
-| List all tmux sessions | `tmux list-sessions` |
-
-### Verifying the server is reachable
-
-After launching, confirm the port is listening before reporting success:
-
-```bash
-# Wait briefly for startup, then verify
-sleep 3
-curl -sf http://127.0.0.1:<port>/api/health && echo "Server is up"
-lsof -nP -iTCP:<port> -sTCP:LISTEN
-```
-
-### Key rules
-
-1. **Always use `tmux` (or equivalent)** when a dev server needs to stay running after the heartbeat ends. A server started directly from the agent shell will die when the heartbeat exits, even if it appeared healthy moments before.
-2. **Name the session descriptively** — include the worktree name and port (e.g., `auth-fix-3102`).
-3. **Verify the server is listening** before reporting the URL to anyone.
-4. **Do not use `nohup` or `&` alone** — these are unreliable for agent shells that may have their entire process group killed.
-5. **Clean up when done** — kill the tmux session when the testing is complete.
-
-## Common Mistakes
-
-| Mistake | Fix |
-|---------|-----|
-| Server won't start | Run `npx paperclipai doctor --repair` to diagnose and auto-fix |
-| Forgetting to source worktree env | Run `eval "$(npx paperclipai worktree env)"` after cd-ing into the worktree |
-| Stale dependencies after pull | Run `pnpm install && pnpm build` after pulling |
-| Schema out of date after pull | Run `pnpm db:generate && pnpm db:migrate` |
-| Reseeding while target DB is running | Stop the target server first, or use `--allow-live-target` |
-| Cleaning up with unmerged commits | Merge or push first, or use `--force` if intentionally discarding |
-| Running agents against wrong instance | Verify `PAPERCLIP_API_URL` points to the correct port |
-| CLI command fails | Do NOT work around it — report the error and block (see Hard Rules above) |
-| Agent tries manual postgres operations | NEVER do this — all DB ops go through the CLI (see Hard Rules above) |
-| Dev server dies between heartbeats | Launch in a detached `tmux` session — see "Persistent Dev Servers" above |
-| Pushed feature branch to `paperclipai/paperclip` when a fork exists | Push to the user's fork remote instead — see "Forks" above |
+（与英文原版表格逐项语义等价。）

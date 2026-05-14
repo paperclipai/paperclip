@@ -1,104 +1,104 @@
 ---
 name: para-memory-files
+required: false
 description: >
-  File-based memory system using Tiago Forte's PARA method. Use this skill whenever
-  you need to store, retrieve, update, or organize knowledge across sessions. Covers
-  three memory layers: (1) Knowledge graph in PARA folders with atomic YAML facts,
-  (2) Daily notes as raw timeline, (3) Tacit knowledge about user patterns. Also
-  handles planning files, memory decay, weekly synthesis, and recall via qmd.
-  Trigger on any memory operation: saving facts, writing daily notes, creating
-  entities, running weekly synthesis, recalling past context, or managing plans.
+  基于 Tiago Forte PARA 法的文件型记忆系统。在需要跨会话存储、检索、更新或组织知识时使用。
+  覆盖三层：（1）PARA 目录下的原子化 YAML 事实知识图谱；（2）按日原始时间线笔记；（3）关于用户习惯的默会知识。
+  也涵盖规划文件、记忆衰减、周度汇总与通过 qmd 召回。触发词：保存事实、写日记、创建实体、周度汇总、召回历史上下文、管理计划等。
 ---
 
-# PARA Memory Files
+**中文名：** 用 PARA 法的「文件夹+笔记」做长期记忆（知识图谱 / 日记 / 你的习惯）  
+**系统 id：** `para-memory-files`（PARA = Projects/Areas/Resources/Archives 四类归档思路）
 
-Persistent, file-based memory organized by Tiago Forte's PARA method. Three layers: a knowledge graph, daily notes, and tacit knowledge. All paths are relative to `$AGENT_HOME`.
+# PARA 文件型记忆
 
-## Three Memory Layers
+持久、基于 Tiago Forte PARA 法的文件型记忆：**知识图谱（PARA）、每日原始笔记、对用户自身的默会知识**。路径均相对 `$AGENT_HOME`。
 
-### Layer 1: Knowledge Graph (`$AGENT_HOME/life/` -- PARA)
+## 三层记忆结构
 
-Entity-based storage. Each entity gets a folder with two tiers:
+### 第一层：知识图谱（`$AGENT_HOME/life/` — PARA）
 
-1. `summary.md` -- quick context, load first.
-2. `items.yaml` -- atomic facts, load on demand.
+以实体为中心。每个实体一个文件夹，内有两层：
+
+1. `summary.md` —— 秒懂摘要，优先加载。
+2. `items.yaml` —— 原子事实，按需加载。
 
 ```text
 $AGENT_HOME/life/
-  projects/          # Active work with clear goals/deadlines
+  projects/          # 有明确目标/截止的在办工作
     <name>/
       summary.md
       items.yaml
-  areas/             # Ongoing responsibilities, no end date
+  areas/             # 无结束日的持续责任（人/公司）
     people/<name>/
     companies/<name>/
-  resources/         # Reference material, topics of interest
+  resources/         # 参考资料与兴趣主题
     <topic>/
-  archives/          # Inactive items from the other three
+  archives/          # 从上面三类归档的非活跃项
   index.md
 ```
 
-**PARA rules:**
+**PARA 规则：**
 
-- **Projects** -- active work with a goal or deadline. Move to archives when complete.
-- **Areas** -- ongoing (people, companies, responsibilities). No end date.
-- **Resources** -- reference material, topics of interest.
-- **Archives** -- inactive items from any category.
+- **项目（Projects）：** 有目标或时效的在办事项；完结后归入 `archives`。
+- **领域（Areas）：** 长期持续（人脉、职务、公司等），无截止日期。
+- **资源（Resources）：** 资料与主题。
+- **归档（Archives）：** 其他三类迁入的非活跃项。
 
-**Fact rules:**
+**事实规则：**
 
-- Save durable facts immediately to `items.yaml`.
-- Weekly: rewrite `summary.md` from active facts.
-- Never delete facts. Supersede instead (`status: superseded`, add `superseded_by`).
-- When an entity goes inactive, move its folder to `$AGENT_HOME/life/archives/`.
+- 耐久事实应立即写入 `items.yaml`。
+- 每周依据活跃事实重写 `summary.md`。
+- 不要删除事实——用废止链替代（`status: superseded`，填 `superseded_by`）。
+- 实体不再活跃时，整夹移到 `$AGENT_HOME/life/archives/`。
 
-**When to create an entity:**
+**何时新建实体文件夹：**
 
-- Mentioned 3+ times, OR
-- Direct relationship to the user (family, coworker, partner, client), OR
-- Significant project or company in the user's life.
-- Otherwise, note it in daily notes.
+- 被提及 **≥3** 次，或
+- 与用户有直接私人/职业关系（家人、同事、伙伴、客户等），或
+- 用户人生中的重点项目/公司；
+- 否则先记在每日笔记里。
 
-For the atomic fact YAML schema and memory decay rules, see [references/schemas.md](references/schemas.md).
+原子事实 YAML schema 与衰减规则见 [references/schemas.md](references/schemas.md)。
 
-### Layer 2: Daily Notes (`$AGENT_HOME/memory/YYYY-MM-DD.md`)
+### 第二层：每日笔记（`$AGENT_HOME/memory/YYYY-MM-DD.md`）
 
-Raw timeline of events -- the "when" layer.
+事件原始时间线 —— 「何时发生什么」的一层。
 
-- Write continuously during conversations.
-- Extract durable facts to Layer 1 during heartbeats.
+- 对话过程中持续写入。
+- 在心跳中把耐久事实抽到第一层。
 
-### Layer 3: Tacit Knowledge (`$AGENT_HOME/MEMORY.md`)
+### 第三层：默会知识（`$AGENT_HOME/MEMORY.md`）
 
-How the user operates -- patterns, preferences, lessons learned.
+用户**如何协作**的模式、偏好、教训。
 
-- Not facts about the world; facts about the user.
-- Update whenever you learn new operating patterns.
+- 不是关于外部世界的百科全书式事实；而是关于用户自己的行为习惯。
+- 学到新模式时就更新。
 
-## Write It Down -- No Mental Notes
+## 写下来——别靠短时记忆
 
-Memory does not survive session restarts. Files do.
+记忆无法随会话重启自动保留；文件可以。
 
-- Want to remember something -> WRITE IT TO A FILE.
-- "Remember this" -> update `$AGENT_HOME/memory/YYYY-MM-DD.md` or the relevant entity file.
-- Learn a lesson -> update AGENTS.md, TOOLS.md, or the relevant skill file.
-- Make a mistake -> document it so future-you does not repeat it.
-- On-disk text files are always better than holding it in temporary context.
+- 想留住什么 → **写文件**。
+- 「记住这个」→ 更新 `$AGENT_HOME/memory/YYYY-MM-DD.md` 或相关实体文件。
+- 学到教训 → 更新 AGENTS.md、TOOLS.md 或相关技能文件。
+- 踩坑 → 记录下来让未来的你不重蹈覆辙。
+- 磁盘上的明文永远优于仅存于上下文的碎碎念。
 
-## Memory Recall -- Use qmd
+## 召回——用 qmd
 
-Use `qmd` rather than grepping files:
+优先用 `qmd`，少用裸 grep：
 
 ```bash
-qmd query "what happened at Christmas"   # Semantic search with reranking
-qmd search "specific phrase"              # BM25 keyword search
-qmd vsearch "conceptual question"         # Pure vector similarity
+qmd query "圣诞节前后发生了什么"   # 语义 + 重排序
+qmd search "精确短语"              # BM25 关键字
+qmd vsearch "概念性问题"           # 纯向量相似
 ```
 
-Index your personal folder: `qmd index $AGENT_HOME`
+为个人目录建索引：`qmd index $AGENT_HOME`
 
-Vectors + BM25 + reranking finds things even when the wording differs.
+向量检索 + BM25 + 重排序在措辞不同时仍能找到相关内容。
 
-## Planning
+## 规划
 
-Keep plans in timestamped files in `plans/` at the project root (outside personal memory so other agents can access them). Use `qmd` to search plans. Plans go stale -- if a newer plan exists, do not confuse yourself with an older version. If you notice staleness, update the file to note what it is supersededBy.
+把时间戳版本规划放在仓库根目录的 `plans/`（在个人记忆外侧，便于其他智能体共用计划）。用 `qmd` 检索计划文件。规划会陈旧——若有更新计划，不要被旧版本误导；发现过期就在文件中标明后继关系（例如字段 `supersededBy`）。

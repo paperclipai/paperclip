@@ -9,6 +9,7 @@ import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   MODEL_PROFILE_KEYS,
+  isCodexCliAdapterType,
   isEnvironmentDriverSupportedForAdapter,
   type BillingType,
   type EnvironmentLeaseStatus,
@@ -5133,7 +5134,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? readTransientRecoveryContractFromRun(run)
         : null;
     const codexTransientFallbackMode =
-      agent.adapterType === "codex_local" && transientRecovery
+      isCodexCliAdapterType(agent.adapterType) && transientRecovery
         ? resolveCodexTransientFallbackMode(nextAttempt)
         : null;
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;

@@ -1,3 +1,5 @@
+import { isClaudeCliAdapterType, isCodexCliAdapterType } from "@paperclipai/shared";
+
 export const ISSUE_OVERRIDE_ADAPTER_TYPES = new Set([
   "claude_local",
   "codex_local",
@@ -43,15 +45,15 @@ export function buildAssigneeAdapterOverrides(
   const adapterConfig: Record<string, unknown> = {};
   if (input.modelOverride) adapterConfig.model = input.modelOverride;
   if (input.thinkingEffortOverride) {
-    if (adapterType === "codex_local") {
+    if (isCodexCliAdapterType(adapterType)) {
       adapterConfig.modelReasoningEffort = input.thinkingEffortOverride;
     } else if (adapterType === "opencode_local") {
       adapterConfig.variant = input.thinkingEffortOverride;
-    } else if (adapterType === "claude_local") {
+    } else if (isClaudeCliAdapterType(adapterType)) {
       adapterConfig.effort = input.thinkingEffortOverride;
     }
   }
-  if (adapterType === "claude_local" && input.chrome) {
+  if (isClaudeCliAdapterType(adapterType) && input.chrome) {
     adapterConfig.chrome = true;
   }
 

@@ -1,0 +1,24 @@
+{
+  "name": "@paperclipai/adapter-fork-plugin-demo-b",
+  "version": "0.1.0",
+  "description": "Fork reference: second external-only adapter for plugin load path.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "paperclip": {
+    "adapterServerEntry": "./src/index.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@paperclipai/adapter-utils": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "typescript": "^5.7.3"
+  }
+}

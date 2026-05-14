@@ -1,6 +1,13 @@
 import { Command } from "commander";
 import type { Agent } from "@paperclipai/shared";
 import {
+  isClaudeCliAdapterType,
+  isCodebuddyCliAdapterType,
+  isCodexCliAdapterType,
+  isCursorCliAdapterType,
+  isQwenCliAdapterType,
+} from "@paperclipai/shared";
+import {
   removeMaintainerOnlySkillSymlinks,
   resolvePaperclipSkillsDir,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -35,7 +42,7 @@ interface CreatedAgentKey {
 }
 
 interface SkillsInstallSummary {
-  tool: "codex" | "claude";
+  tool: "codex" | "claude" | "cursor" | "codebuddy" | "qwen";
   target: string;
   linked: string[];
   removed: string[];
@@ -57,10 +64,22 @@ function claudeSkillsHome(): string {
   return path.join(base, "skills");
 }
 
+function cursorSkillsHome(): string {
+  return path.join(os.homedir(), ".cursor", "skills");
+}
+
+function codebuddySkillsHome(): string {
+  return path.join(os.homedir(), ".codebuddy", "skills");
+}
+
+function qwenSkillsHome(): string {
+  return path.join(os.homedir(), ".qwen", "skills");
+}
+
 async function installSkillsForTarget(
   sourceSkillsDir: string,
   targetSkillsDir: string,
-  tool: "codex" | "claude",
+  tool: "codex" | "claude" | "cursor" | "codebuddy" | "qwen",
 ): Promise<SkillsInstallSummary> {
   const summary: SkillsInstallSummary = {
     tool,
@@ -219,14 +238,14 @@ export function registerAgentCommands(program: Command): void {
     agent
       .command("local-cli")
       .description(
-        "Create an agent API key, install local Paperclip skills for Codex/Claude, and print shell exports",
+        "Create an agent API key, install local Paperclip skills for the agent's CLI adapter, and print shell exports",
       )
       .argument("<agentRef>", "Agent ID or shortname/url-key")
       .requiredOption("-C, --company-id <id>", "Company ID")
       .option("--key-name <name>", "API key label", "local-cli")
       .option(
         "--no-install-skills",
-        "Skip installing Paperclip skills into ~/.codex/skills and ~/.claude/skills",
+        "Skip installing Paperclip skills into the CLI home for this agent's adapter (e.g. ~/.codex/skills, ~/.claude/skills, ~/.cursor/skills)",
       )
       .action(async (agentRef: string, opts: AgentLocalCliOptions) => {
         try {
@@ -247,6 +266,7 @@ export function registerAgentCommands(program: Command): void {
           }
 
           const installSummaries: SkillsInstallSummary[] = [];
+          let skillsSkipReason: string | null = null;
           if (opts.installSkills !== false) {
             const skillsDir = await resolvePaperclipSkillsDir(__moduleDir, [path.resolve(process.cwd(), "skills")]);
             if (!skillsDir) {
@@ -255,10 +275,25 @@ export function registerAgentCommands(program: Command): void {
               );
             }
 
-            installSummaries.push(
-              await installSkillsForTarget(skillsDir, codexSkillsHome(), "codex"),
-              await installSkillsForTarget(skillsDir, claudeSkillsHome(), "claude"),
-            );
+            const t = agentRow.adapterType ?? "";
+            const targets: Array<{ tool: SkillsInstallSummary["tool"]; dir: string }> = [];
+            if (isCodexCliAdapterType(t)) targets.push({ tool: "codex", dir: codexSkillsHome() });
+            if (isClaudeCliAdapterType(t)) targets.push({ tool: "claude", dir: claudeSkillsHome() });
+            if (isCursorCliAdapterType(t)) targets.push({ tool: "cursor", dir: cursorSkillsHome() });
+            if (isCodebuddyCliAdapterType(t)) targets.push({ tool: "codebuddy", dir: codebuddySkillsHome() });
+            if (isQwenCliAdapterType(t)) targets.push({ tool: "qwen", dir: qwenSkillsHome() });
+
+            if (targets.length === 0) {
+              skillsSkipReason =
+                `Adapter type "${t}" has no mapped CLI skills home here (codex/claude/cursor/codebuddy_local/qwen_local).`;
+              if (!ctx.json) {
+                console.warn(`Skipping skill install: ${skillsSkipReason}`);
+              }
+            } else {
+              for (const { tool, dir } of targets) {
+                installSummaries.push(await installSkillsForTarget(skillsDir, dir, tool));
+              }
+            }
           }
 
           const exportsText = buildAgentEnvExports({
@@ -284,6 +319,7 @@ export function registerAgentCommands(program: Command): void {
                   token: key.token,
                 },
                 skills: installSummaries,
+                skillsSkipReason,
                 exports: exportsText,
               },
               { json: true },
@@ -304,7 +340,7 @@ export function registerAgentCommands(program: Command): void {
             }
           }
           console.log("");
-          console.log("# Run this in your shell before launching codex/claude:");
+          console.log("# Run this in your shell before launching your CLI agent:");
           console.log(exportsText);
         } catch (err) {
           handleCommandError(err);

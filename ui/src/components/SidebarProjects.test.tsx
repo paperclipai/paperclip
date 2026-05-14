@@ -6,9 +6,9 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Project } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SidebarProjects } from "./SidebarProjects";
+import { Sidebar项目 } from "./Sidebar项目";
 
-const mockProjectsApi = vi.hoisted(() => ({
+const mock项目Api = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
@@ -69,7 +69,7 @@ vi.mock("../context/SidebarContext", () => ({
 }));
 
 vi.mock("../api/projects", () => ({
-  projectsApi: mockProjectsApi,
+  projectsApi: mock项目Api,
 }));
 
 vi.mock("../api/auth", () => ({
@@ -80,7 +80,7 @@ vi.mock("../hooks/useProjectOrder", () => ({
   useProjectOrder: ({ projects }: { projects: Project[] }) => {
     const curatedOrder = ["project-b", "project-a", "project-c"];
     return {
-      orderedProjects: [...projects].sort(
+      ordered项目: [...projects].sort(
         (left, right) => curatedOrder.indexOf(left.id) - curatedOrder.indexOf(right.id),
       ),
       persistOrder: mockPersistOrder,
@@ -157,8 +157,8 @@ function projectLinkLabels(container: HTMLElement) {
     .filter(Boolean);
 }
 
-async function openProjectsMenu(container: HTMLElement) {
-  const trigger = container.querySelector('button[aria-label="Projects section actions"]');
+async function open项目Menu(container: HTMLElement) {
+  const trigger = container.querySelector('button[aria-label="项目区域操作"]');
   expect(trigger).not.toBeNull();
 
   await act(async () => {
@@ -179,7 +179,7 @@ async function chooseSortMode(label: string) {
   await flushReact();
 }
 
-describe("SidebarProjects", () => {
+describe("Sidebar项目", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot> | null;
   let queryClient: QueryClient;
@@ -192,7 +192,7 @@ describe("SidebarProjects", () => {
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
     localStorage.clear();
-    mockProjectsApi.list.mockResolvedValue([
+    mock项目Api.list.mockResolvedValue([
       makeProject({
         id: "project-a",
         urlKey: "alpha",
@@ -235,14 +235,14 @@ describe("SidebarProjects", () => {
     vi.clearAllMocks();
   });
 
-  async function renderSidebarProjects() {
+  async function renderSidebar项目() {
     const currentRoot = createRoot(container);
     root = currentRoot;
 
     await act(async () => {
       currentRoot.render(
         <QueryClientProvider client={queryClient}>
-          <SidebarProjects />
+          <Sidebar项目 />
         </QueryClientProvider>,
       );
     });
@@ -250,49 +250,49 @@ describe("SidebarProjects", () => {
   }
 
   it("keeps top mode in curated order and renders plugin project slots", async () => {
-    await renderSidebarProjects();
+    await renderSidebar项目();
 
     expect(projectLinkLabels(container)).toEqual(["Bravo", "Alpha", "Charlie"]);
     expect(container.querySelector('[data-testid="project-slot-project-b"]')).toBeTruthy();
   });
 
   it("uses the heading for section menu and the plus button for project creation", async () => {
-    await renderSidebarProjects();
+    await renderSidebar项目();
 
-    const sectionMenuTrigger = container.querySelector('button[aria-label="Projects section actions"]');
-    expect(sectionMenuTrigger?.textContent).toContain("Projects");
+    const sectionMenuTrigger = container.querySelector('button[aria-label="项目 section actions"]');
+    expect(sectionMenuTrigger?.textContent).toContain("项目");
     expect(sectionMenuTrigger?.querySelector("svg")).toBeNull();
 
-    const newProjectButton = container.querySelector('button[aria-label="New project"]');
+    const newProjectButton = container.querySelector('button[aria-label="新建项目"]');
     expect(newProjectButton).toBeTruthy();
     await act(async () => {
       newProjectButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(mockOpenNewProject).toHaveBeenCalledTimes(1);
 
-    await openProjectsMenu(container);
+    await open项目Menu(container);
 
     const newProjectItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
-      .find((element) => element.textContent?.includes("New project"));
+      .find((element) => element.textContent?.includes("新建项目"));
     expect(newProjectItem).toBeFalsy();
     const browseLink = Array.from(document.body.querySelectorAll("a"))
-      .find((element) => element.textContent?.includes("Browse projects"));
+      .find((element) => element.textContent?.includes("浏览项目"));
     expect(browseLink?.getAttribute("href")).toBe("/projects");
   });
 
   it("sorts alphabetically and persists the selected mode per company and user", async () => {
-    await renderSidebarProjects();
-    await openProjectsMenu(container);
-    await chooseSortMode("Alphabetical");
+    await renderSidebar项目();
+    await open项目Menu(container);
+    await chooseSortMode("按名称");
 
     expect(projectLinkLabels(container)).toEqual(["Alpha", "Bravo", "Charlie"]);
     expect(localStorage.getItem("paperclip.projectSortMode:company-1:user-1")).toBe("alphabetical");
   });
 
   it("sorts recent projects by updated time descending", async () => {
-    await renderSidebarProjects();
-    await openProjectsMenu(container);
-    await chooseSortMode("Recent");
+    await renderSidebar项目();
+    await open项目Menu(container);
+    await chooseSortMode("最近更新");
 
     expect(projectLinkLabels(container)).toEqual(["Charlie", "Bravo", "Alpha"]);
   });

@@ -133,7 +133,7 @@ describe("issueDetailBreadcrumb", () => {
 
   it("falls back to the source query param when route state is unavailable", () => {
     expect(readIssueDetailBreadcrumb("PAP-465", null, "?from=inbox")).toEqual({
-      label: "Inbox",
+      label: "收件箱",
       href: "/inbox",
     });
   });
@@ -147,20 +147,20 @@ describe("issueDetailBreadcrumb", () => {
     expect(
       readIssueDetailBreadcrumb("PAP-465", null, "?from=inbox&fromHref=%2FPAP%2Finbox%2Funread"),
     ).toEqual({
-      label: "Inbox",
+      label: "收件箱",
       href: "/PAP/inbox/unread",
     });
   });
 
   it("reads hidden breadcrumb context from session storage when route state is unavailable", () => {
-    const state = createIssueDetailLocationState("Inbox", "/inbox/mine", "inbox");
+    const state = createIssueDetailLocationState("收件箱", "/inbox/mine", "inbox");
     sessionStorageMock.clear();
     rememberIssueDetailLocationState("PAP-465", state);
 
     expect(
       readIssueDetailLocationState("PAP-465", null),
     ).toEqual({
-      issueDetailBreadcrumb: { label: "Inbox", href: "/inbox/mine" },
+      issueDetailBreadcrumb: { label: "收件箱", href: "/inbox/mine" },
       issueDetailSource: "inbox",
       issueDetailInboxQuickArchiveArmed: false,
     });

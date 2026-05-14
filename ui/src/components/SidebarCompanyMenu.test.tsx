@@ -155,7 +155,7 @@ describe("SidebarCompanyMenu", () => {
 
     expect(container.textContent).toContain("Acme Labs");
 
-    const trigger = container.querySelector('button[aria-label="Open Acme Labs workspace switcher"]');
+    const trigger = container.querySelector('button[aria-label="打开 Acme Labs 工作区切换"]');
     expect(trigger).not.toBeNull();
 
     await act(async () => {
@@ -164,17 +164,17 @@ describe("SidebarCompanyMenu", () => {
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Switch workspace");
-    expect(document.body.textContent).toContain("Edit");
+    expect(document.body.textContent).toContain("切换工作区");
+    expect(document.body.textContent).toContain("编辑");
     expect(document.body.textContent).toContain("Strata");
     expect(document.body.textContent).toContain("ANA");
-    expect(document.body.textContent).toContain("Add company...");
-    expect(document.body.textContent).toContain("Invite people to Acme Labs");
-    expect(document.body.textContent).toContain("Company settings");
-    expect(document.body.textContent).toContain("Sign out");
+    expect(document.body.textContent).toContain("添加团队…");
+    expect(document.body.textContent).toContain("邀请加入 Acme Labs");
+    expect(document.body.textContent).toContain("团队设置");
+    expect(document.body.textContent).toContain("退出登录");
 
     const signOutButton = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
-      .find((element) => element.textContent?.includes("Sign out"));
+      .find((element) => element.textContent?.includes("退出登录"));
     expect(signOutButton).toBeTruthy();
 
     await act(async () => {
@@ -205,7 +205,7 @@ describe("SidebarCompanyMenu", () => {
     await flushReact();
     await flushReact();
 
-    const trigger = container.querySelector('button[aria-label="Open Acme Labs workspace switcher"]');
+    const trigger = container.querySelector('button[aria-label="打开 Acme Labs 工作区切换"]');
     expect(trigger).not.toBeNull();
 
     await act(async () => {
@@ -215,7 +215,7 @@ describe("SidebarCompanyMenu", () => {
     await flushReact();
 
     const editButton = Array.from(document.body.querySelectorAll("button"))
-      .find((element) => element.textContent === "Edit");
+      .find((element) => element.textContent === "编辑");
     expect(editButton).toBeTruthy();
 
     await act(async () => {
@@ -223,10 +223,10 @@ describe("SidebarCompanyMenu", () => {
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Done");
+    expect(document.body.textContent).toContain("完成");
     expect(document.body.textContent).not.toContain("PAP");
     expect(document.body.textContent).not.toContain("ANA");
-    expect(document.body.querySelector('button[aria-label="Reorder Strata"]')).toBeTruthy();
+    expect(document.body.querySelector('button[aria-label="调整 Strata 的顺序"]')).toBeTruthy();
 
     const strataItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
       .find((element) => element.textContent?.includes("Strata"));
@@ -262,7 +262,7 @@ describe("SidebarCompanyMenu", () => {
     await flushReact();
     await flushReact();
 
-    const trigger = container.querySelector('button[aria-label="Open Acme Labs workspace switcher"]');
+    const trigger = container.querySelector('button[aria-label="打开 Acme Labs 工作区切换"]');
     expect(trigger).not.toBeNull();
 
     await act(async () => {

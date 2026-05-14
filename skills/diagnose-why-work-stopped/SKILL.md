@@ -1,161 +1,146 @@
 ---
 name: diagnose-why-work-stopped
+required: false
 description: >
-  How to handle "why did this work stop / why is this looping?" assignments.
-  Forensics first on the named tree, surface the exact stop-point, frame the
-  fix as a general product rule that respects three invariants (productive
-  work continues, only real blockers stop work, no infinite loops), and
-  deliver a plan — no code changes — gated by board/CTO approval before
-  child issues are created. Use whenever the issue title or body asks for
-  forensics on a stalled, looping, or "went too deep" tree.
+  处理「工作为何停住 / 为何打转」类指派：先对已命名事务树取证，精确标出停损点，
+  把补救框定为尊重三条不变式的通用产品规则（有效工作持续推进、只有真阻塞才停机、不允许无限环路），产出计划但不写代码，
+  且须经董事会/CTO批准后才能拆子事务。适用于停滞、打转或深挖过头的事务树法医分析诉求。
 ---
 
-# Diagnose Why Work Stopped
+**中文名：** 工作为啥停住/为啥打转（只出分析与计划，默认不直接改代码）  
+**系统 id：** `diagnose-why-work-stopped`
 
-A repeatable procedure for the recurring class of issues where the user (or a manager) points at a stalled / looping / over-recovered issue tree and asks "why did this stop / why is this looping / how do we make sure this doesn't happen again?"
+# 工作为何停住（诊断技能）
 
-This skill is **diagnostic + product-design**, not engineering. The output is a written root cause and an approved plan. No code changes leave this skill.
+针对反复出现的一类工单：人或经理指向一棵停滞 / 打转 / 过度恢复的事务树问「为啥停了 / 为啥循环 / 怎么避免再来」？
 
-Canonical execution model: read `doc/execution-semantics.md` before diagnosing or proposing a new liveness/recovery rule. Use that document as the source of truth for status, action-path, post-run disposition, bounded continuation, productivity review, pause-hold, watchdog, and explicit recovery semantics. If the investigation finds a true product-rule gap, the plan should say whether `doc/execution-semantics.md` needs a matching update.
+本技能偏重**取证 + 产品设计**，不负责落地改代码——交付物是可复核的根因分析与已批准的计划。
 
-## When to use
+正式执行前先读 `doc/execution-semantics.md`，把它视作状态词、可行路径、跑后收口、有界延续（bounded continuation）、效率复盘对比活跃度恢复、「暂停占位」静默监控狗等的权威定义。若在调查中出现真实的产品规则空洞，计划中应写明 `doc/execution-semantics.md` 是否需要增补。
 
-Trigger on an assignment whose title or body matches any of:
+## 何时使用
 
-- "why did this work stop", "why did this stall", "why did this just stop"
-- "infinite loop", "looping", "spinning", "going too deep", "recovery went too deep"
-- "liveness — what happened here", "this tree stopped working", "stuck"
-- "approach it from a product perspective", "general product principle / rule"
-- An attached link to a specific stalled / looping / over-recovered issue tree
+工单标题或正文若匹配下列任一（或贴了具体停滞树链接）：
 
-Also use when the user asks for forensics, root cause, or a write-up *before* any product change.
+- 「为啥停了」「为啥卡住」「咋突然不动了」
+- 「无限循环」「打转」「太深」「recovery 太深」
+- 「从产品设计角度」「通用原则」
+- 要求在**任何产品改动前先做法医/复盘**
 
-## When NOT to use
+也包括：用户要求在代码 PR 前先给书面根因的场景。
 
-- The assignment asks you to ship a code change directly. Use normal engineering flow.
-- The assignment is a normal bug report against a specific feature. Use normal investigation.
-- You are the original implementer being asked to fix your own bug. Use normal debugging.
+## 何时不要使用
 
-## Three invariants you must preserve
+- 指派目标就是交付具体代码补丁 → 走普通工程链路。
+- 普通功能缺陷报告 → 普通排查。
+- 你是原始作者被要求修自己的缺陷 → 正常调试。
 
-Every diagnosis and every proposed rule must hold these three invariants together. The user has restated them on at least four issues; treat them as load-bearing:
+## 必须同时满足的三条不变式
 
-1. **Productive work continues.** Agents that have a clear next action must keep working without needing the user to wake them. ([PAP-2674](/PAP/issues/PAP-2674), [PAP-2708](/PAP/issues/PAP-2708))
-2. **Only real blockers stop work.** Stops happen when something genuinely cannot proceed (missing approval, missing dependency, human owner). Pseudo-stops (in_review with no action path, cancelled leaves, malformed metadata) must be detected and routed, not left silent. ([PAP-2335](/PAP/issues/PAP-2335), [PAP-2674](/PAP/issues/PAP-2674))
-3. **No infinite loops.** Stranded-work recovery and continuation loops must be bounded and distinguishable from genuinely productive continuation. ([PAP-2602](/PAP/issues/PAP-2602), [PAP-2486](/PAP/issues/PAP-2486))
+产品与规则设计不得破坏（用户已在多个 issue 强调；视为结构件）：
 
-If a proposed rule violates any of the three, drop it or rework it. State explicitly in the plan how each invariant is held.
+1. **有成效的工作要继续。**能看清下一步的智能体不能因为「没人叫醒」而停住。（示例 issue：PAP-2674、PAP-2708）
+2. **只有真实的外部阻塞才让停。**缺失审批 / 前置依赖 / 责任人才能停；虚构的静默 `in_review`、错误的取消叶节点、残缺元数据要能被发现并导流，不允许一声不吭停下。（示例：PAP-2335、PAP-2674）
+3. **禁止无限回路。**流落工作的恢复链路要有界，不能与「真正有产出的延续（continuation）」混在一起。（示例：PAP-2602、PAP-2486）
 
-## Procedure
+任一规则若会破坏其中任意一条，删掉或重写，并在计划中逐条自检说明如何守卫。
 
-### 0. Read the current execution contract
+## 流程
 
-Before walking the tree, read `doc/execution-semantics.md` and keep its terms intact:
+### 0. 先读现行执行语义
 
-- live path / waiting path / recovery path
-- post-run disposition: terminal, explicitly live, explicitly waiting, invalid
-- bounded `run_liveness_continuation`
-- productivity review vs liveness recovery
-- active subtree pause holds
-- silent active-run watchdog
+在**遍历事务树之前**：读透 `doc/execution-semantics.md` 用词：
 
-Do not invent a new rule until you can state how it differs from the current execution semantics document.
+- active path / waiting path / recovery path（活跃路径 / 等待路径 / 恢复路径）
+- terminal / explicitly live / explicitly waiting / invalid（终态 / 显式存活 / 显式等待 / 无效）
+- bounded `run_liveness_continuation`（有界运行存活延续）
+- productivity review vs liveness recovery（效率复盘 对比 存活恢复）
+- subtree pause hold（子树暂停占位）
+- silent active-run watchdog（静默活跃运行监控）
 
-### 1. Forensics on the named tree — before anything else
+在能说清与原文契约差异之前，不要发明新概念。
 
-Do this in the same heartbeat. Do not propose a rule until you have a concrete stop point.
+### 1. 对指定树的取证——第一步且必须具体
 
-- Open the linked issue (and its blocker chain, parents, recovery siblings, recent runs).
-- Walk the tree node-by-node and find the exact issue + state combination that stops the world. Common shapes seen in the company so far:
-  - `in_review` with no typed execution participant, no active run, no pending interaction, no recovery issue ([PAP-2335](/PAP/issues/PAP-2335), [PAP-2674](/PAP/issues/PAP-2674)).
-  - `in_progress` after a successful run with no future action path queued ([PAP-2674](/PAP/issues/PAP-2674)).
-  - Blocker chain whose leaf is `cancelled` / malformed / cross-company-inaccessible ([PAP-2602](/PAP/issues/PAP-2602)).
-  - `issue.continuation_recovery` waking the same issue >N times after successful runs ([PAP-2602](/PAP/issues/PAP-2602)).
-  - Stranded-work recovery treating its own recovery issues as more recoverable source work ([PAP-2486](/PAP/issues/PAP-2486)).
-- Quote the evidence: run ids, comment timestamps, status transitions. "Inferred" is acceptable only when an API boundary blocks direct evidence — say so explicitly and mark the claim provisional ([PAP-2631](/PAP/issues/PAP-2631)).
+必须在同一心跳内；没拿到停损点前不要抛规则提案。
 
-Respect the API boundary. If the linked issue is in another company and your agent token returns 403, do not bypass scoping. Either request a board-approved diagnostic path or proceed from inferred PAP-side evidence and label it.
+- 打开链接事务（阻塞链、父级、「恢复」兄弟姐妹、近期 run）。
+- 逐节点枚举，找到让全局停下来的 **具体 (issue + status)** 组合。公司里已出现的典型形状包括但不限于：
+  - `in_review` 但没有类型化审查者、没有在跑的运行、无任何待处理交互/恢复（pending interaction/recovery）；
+  - 「成功运行后仍处于 `in_progress` 且无下一跳动作」；
+  - 阻塞链叶节点为 `cancelled`/畸形/跨仓不可访问；
+  - `issue.continuation_recovery` 在同一事务上短时间反复唤醒超限；
+  - 搁浅恢复（stranded-recovery）把自家 recovery 事务当成再恢复源；
+- 附上证据链：run id、评论时间戳、状态迁移。若跨公司边界 API 拿不到直接证据只能说「推论」并标明**暂定**。（示例：PAP-2631）
 
-### 2. Survey recent related work
+### 2. 调研邻近近期工作
 
-Before proposing a new product rule, read what already shipped this week in the same area. The user has explicitly called this out: ([PAP-2602](/PAP/issues/PAP-2602)) "review our recent work on liveness that we shipped in the last couple of days." A new rule that contradicts code merged 48 hours ago is rework, not improvement.
+在产品规则前要读最近相关合并请求/事务。用户口头禅：「看看我们两三天内刚上线的存活（liveness）相关改动」。若计划和 48 小时前落地的行为互相打架那是返工而非改进。
 
-Quick survey:
-- Recent merged PRs in the affected area.
-- Recent done issues whose title mentions liveness, recovery, productivity, continuation, or the affected subsystem.
-- Any active plan documents on parent issues. The fix may belong as a revision to an existing plan, not as a new top-level proposal.
+简述：我读 X/Y/Z → 发现的真正缺口是什么。
 
-State in the forensics: "I reviewed X, Y, Z. The new gap is …"
+### 3. 对树里每个不进度的节点分类
 
-### 3. Classify each non-progressing issue in the tree
+对所有非 `done`/`cancel`/正在跑的事务：
 
-For every issue in the affected tree that is not `done` / `cancelled` / actively running, decide:
+- **真需要人或董事会**：写出责任人与下一步。
+- **本可实现但路由缺失**：要写清「若存在某条契约该如何唤醒谁」。
+- **其实已有**：指到具体 run/wake/recovery/interaction。
 
-- **Truly needs human or board intervention** — name the owner and the action.
-- **Agent-actionable but not currently routed** — name the rule that would have routed it, and the agent that should have been waked.
-- **Already covered** — point at the active run, queued wake, recovery issue, or pending interaction.
+这是用户反复强调要的「表格」（例 PAP-2335）。
 
-This is the table the user has asked for repeatedly ([PAP-2335](/PAP/issues/PAP-2335)). Without it the plan is abstract.
+### 4. 把结论表述成契约级规则而非 if/else 补丁战术
 
-### 4. Frame as a general product rule
+- 句式要是「对所有 X 的统一约束」，而非「这棵树上改一行」。（示例契约：任一 **智能体持有（agent-own）** 的非终态心跳结束须落入终态或显式 **等待/存活（wait/live）**。）
+- 再与 `doc/execution-semantics.md` 对齐：优先援引已有条文；只有当文档不完整或与已采纳实现矛盾时才改文档草稿。
+- 再次逐条自检三条不变式。
 
-The user does not want a one-off patch on the named tree. They want the rule. Two checks:
+若规则会让你「近期一次成功跑」也变不可能，删掉或收窄。
 
-- The rule is **stated as a contract**, not as an if/else patch. Example contract: "every agent-owned non-terminal issue must finish each heartbeat with a terminal state, an explicit waiting path, or an explicit live path" ([PAP-2674](/PAP/issues/PAP-2674)).
-- The rule is reconciled against `doc/execution-semantics.md`. Prefer citing and applying the existing contract; propose a document change only when the current doc is incomplete or contradicted by accepted/implemented behavior.
-- The rule **explicitly preserves the three invariants** above. Show the work.
+### 5. 只写计划，不写代码
 
-If the rule would have blocked a recent productive run from succeeding, drop or narrow it.
+写进事务的 `plan` 文档：
 
-### 5. Plan, do not code
+- 取证小节（根因 + 证据）。
+- 通用契约描述。
+- 现有 `execution-semantics` 是否已经覆盖 vs 你需要补的具体 diff。
+- 分阶段：**阶段 0** 稳妥救活当前树，**阶段 1** 固化文档，**阶段 …** 检测/恢复/UI/安全/QA/CTO……
+- 每阶段写明负责人；优先按专长分工（服务端/前端/UX/安全/QA 等）。
+- 依赖用 `blockedByIssueIds` 表达；可并行的要写清。
 
-Write the plan into the issue's `plan` document. Cover:
+此刻**不许**批量建子工单、不许推送代码。
 
-- Forensics summary (root cause + evidence).
-- The general product rule, stated as a contract.
-- Whether the existing `doc/execution-semantics.md` contract already covers the case, or what exact documentation update is needed.
-- Phased subtasks: typically `Phase 0` resolves the named live tree (carefully, not destructively), `Phase 1` codifies the contract in docs, then implementation phases for detection, recovery, UI surfacing, security review, QA, and CTO review.
-- Explicit assignees per phase; favor team specialty (CodexCoder for server, ClaudeCoder for FE, UXDesigner for visible state, SecurityEngineer for ownership/permissions, QA for validation).
-- Blocking dependencies wired with `blockedByIssueIds`, parallel branches identified.
+### 6. 先 request_confirmation，再拆解
 
-Do not create the child issues yet. Do not push code.
+对最新 plan revision 开 `request_confirmation`，幂等键：`confirmation:{issueId}:plan:{revisionId}`。等董事会 / CTO 接受。若用户在评论否决旧版 plan，作废对应交互，再以新 revision 重开交互。
 
-### 6. Request approval, then decompose
+批准后：再建分阶段事务 + 阻断链，并让父工单最终**阻塞在**末段 QA / CTO 关卡，只有链结束才真正唤醒。
 
-- Open a `request_confirmation` interaction targeting the latest plan revision. Idempotency key `confirmation:{issueId}:plan:{revisionId}`.
-- Wait for board/CTO acceptance. If the user posts a new comment that supersedes the plan, the prior confirmation is invalidated — open a fresh confirmation tied to the new revision ([PAP-2602](/PAP/issues/PAP-2602) cycled three revisions; that is fine).
-- Only after acceptance: create the phased child issues with the right assignees and dependencies, then block this parent on the final QA / CTO review issue so the parent only wakes when the chain finishes.
+### 7. 阶段 0：对活体树的止血
 
-### 7. Phase 0 hygiene on the named tree
+无损证据前提下：
 
-Phase 0 cleans up the live tree without papering over evidence:
+- 无参与者的僵死 `in_review` 叶拉回 `todo` 并写清责任人（参考 PAP-2335）。
+- `cancelled` 占位阻塞链松绑，不要掩耳盗铃把整个树标 `done`。
 
-- Move stalled `in_review` leaves with no participant to `todo` with a precise next action and named owner ([PAP-2335](/PAP/issues/PAP-2335)).
-- Detach cancelled/dead blockers from chains they were holding hostage; do not silently mark issues `done` to clear backlog.
-- Leave a comment on the original named issue summarizing what changed and why; never hide the recovery chain history.
+在原命名事务评论里写明动了什么——历史链要可查。
 
-### 8. Final close-out
+### 8. 全部结束后的收口
 
-When the phase chain is complete, post a board-level summary comment on the parent issue: what changed, what the new contract is, what the rollout step is (e.g. "restart the control-plane to pick up the new response shape"), and the live state of the originally-named tree. Then close the parent.
+链路完成后在父工单发面向董事会的总结评论：修了啥、契约怎么变、如何**推广上线**（如「重启控制面载入新字段」）、原树现今状态——然后收尾。
 
-## Pitfalls
+## 常见坑
 
-- **Coding before approval.** The user has said "make a plan first" on every recent diagnostic issue. Producing code in the forensic phase wastes the round-trip.
-- **Restating one invariant at the cost of another.** Bound continuation too tightly and productive work stalls; loosen recovery and infinite loops return. Always check all three.
-- **Skipping the recent-work survey.** Proposing a contract that contradicts what shipped 24 hours ago is the easiest way to get the plan rejected.
-- **Letting "in_review" mean done.** A leaf assigned to another agent with no participant or active run is not progress; treat it as a stop.
-- **Bypassing company scoping.** Cross-company forensics needs a board-approved diagnostic path, not a database read.
-- **Recursive recovery.** Stranded-work recovery that recovers its own recovery issues is the canonical infinite loop ([PAP-2486](/PAP/issues/PAP-2486)). Detect it and refuse to deepen.
-- **Hiding the chain.** Don't silently delete or hide the symptomatic recovery issues — the operator needs the audit trail.
+（核心意译）抢在审批前写代码；只看一条不变式牺牲另一条；不做近期变更调研；误以为 `in_review` 等于完结；绕过公司访问控制；recovery 递归加深；悄悄删掉表面症状事务。
 
-## Verification checklist (before posting the plan)
+## 发布计划前的自检勾选
 
-- [ ] The exact stop point in the named tree is identified with run ids / comment ids.
-- [ ] Recent shipped work in the same area was surveyed and is referenced.
-- [ ] Every non-progressing issue is classified human-needed / agent-actionable / already-covered.
-- [ ] The proposed rule is stated as a contract, not a patch.
-- [ ] All three invariants are explicitly preserved.
-- [ ] No code change has landed in this heartbeat.
-- [ ] A `request_confirmation` against the latest plan revision is open.
-- [ ] Phase 0 of the plan addresses the live named tree without destroying evidence.
-- [ ] Implementation phases name specialty-appropriate assignees and `blockedByIssueIds` dependencies.
+- [ ] 已为命名树指明**精确停损点**，并附上 run id / comment id。
+- [ ] 已检索并写明近期同源已上线工作引用。
+- [ ] 已对每个不前进的节点分出「人要介入 / 智能体可操作 / 已覆盖」。
+- [ ] 规则以**契约**表述，而非一次性补丁话术。
+- [ ] 三条不变式逐项写明如何守护。
+- [ ] **本心跳内未提交任何代码变更**。
+- [ ] `request_confirmation` 已开在**最新 plan revision** 上。
+- [ ] 阶段 0 描述了如何在不抹证据前提下救活体树。
+- [ ] 实现阶段写清专业分工与 `blockedByIssueIds`。 

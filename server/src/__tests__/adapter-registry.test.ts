@@ -205,7 +205,10 @@ describe("server adapter registry", () => {
     await expect(listAdapterModelProfiles("codex_local")).resolves.toEqual([
       expect.objectContaining({
         key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "gpt-5.3-codex-spark" }),
+        adapterConfig: expect.objectContaining({
+          model: "gpt-5.3-codex",
+          modelReasoningEffort: "low",
+        }),
         source: "adapter_default",
       }),
     ]);
@@ -238,6 +241,8 @@ describe("server adapter registry", () => {
     const expectedCodexInstall = `if ! command -v 'codex' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@openai/codex")}; fi`;
     const expectedGeminiInstall = `if ! command -v 'gemini' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@google/gemini-cli")}; fi`;
     const expectedOpenCodeInstall = `if ! command -v 'opencode' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("opencode-ai")}; fi`;
+    const expectedQwenInstall = `if ! command -v 'qwen' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@qwen-code/qwen-code")}; fi`;
+    const expectedCodebuddyInstall = `if ! command -v 'codebuddy' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@tencent-ai/codebuddy-code")}; fi`;
 
     expect(findActiveServerAdapter("claude_local")?.getRuntimeCommandSpec?.({})).toEqual({
       command: "claude",
@@ -258,6 +263,16 @@ describe("server adapter registry", () => {
       command: "opencode",
       detectCommand: "opencode",
       installCommand: expectedOpenCodeInstall,
+    });
+    expect(findActiveServerAdapter("qwen_local")?.getRuntimeCommandSpec?.({})).toEqual({
+      command: "qwen",
+      detectCommand: "qwen",
+      installCommand: expectedQwenInstall,
+    });
+    expect(findActiveServerAdapter("codebuddy_local")?.getRuntimeCommandSpec?.({})).toEqual({
+      command: "codebuddy",
+      detectCommand: "codebuddy",
+      installCommand: expectedCodebuddyInstall,
     });
   });
 

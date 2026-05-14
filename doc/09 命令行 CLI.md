@@ -130,10 +130,10 @@ pnpm paperclipai agent get <agent-id>
 pnpm paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>
 ```
 
-`agent local-cli` 是手动运行本地 Claude/Codex 作为 Paperclip 智能体的最快方式：
+`agent local-cli` 是手动运行本地 CLI 智能体（Codex / Claude Code / Cursor）作为 Paperclip 智能体的便捷方式：
 
 - 创建一个新的长期智能体 API 密钥
-- 将缺失的 Paperclip 技能安装到 `~/.codex/skills` 和 `~/.claude/skills`
+- 默认按该智能体的 `adapterType` 将 Paperclip 技能装到对应目录：`~/.codex/skills`、`~/.claude/skills` 和/或 `~/.cursor/skills`（`codex_local`、`claude_local`、`cursor` 等会分别匹配；`--no-install-skills` 可跳过）
 - 打印 `PAPERCLIP_API_URL`、`PAPERCLIP_COMPANY_ID`、`PAPERCLIP_AGENT_ID` 和 `PAPERCLIP_API_KEY` 的 `export ...` 行
 
 基于 shortname 的本地设置示例：

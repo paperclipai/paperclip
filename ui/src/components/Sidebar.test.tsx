@@ -129,10 +129,10 @@ describe("Sidebar", () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     const root = await renderSidebar();
 
-    const topSearchLink = container.querySelector('a[aria-label="Search"]');
+    const topSearchLink = container.querySelector('a[aria-label="搜索"]');
     expect(topSearchLink?.getAttribute("href")).toBe("/search");
     const workLinks = [...container.querySelectorAll("nav a")].map((anchor) => anchor.textContent?.trim());
-    expect(workLinks).not.toContain("Search");
+    expect(workLinks).not.toContain("搜索");
 
     await act(async () => {
       root.unmount();
@@ -154,7 +154,7 @@ describe("Sidebar", () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     const root = await renderSidebar();
 
-    const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Workspaces");
+    const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "工作区");
     expect(link?.getAttribute("href")).toBe("/workspaces");
 
     await act(async () => {

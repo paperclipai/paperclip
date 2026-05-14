@@ -173,7 +173,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // ---- Resolve config ----
   const command = asString(config.command, "qwen");
   const model = asString(config.model, "qwen3.6-plus");
-  const maxSessionTurns = asNumber(config.maxSessionTurns, 1);
+  const maxSessionTurns = asNumber(config.maxSessionTurns, 500);
   const approvalMode = asString(config.approvalMode, "yolo");
   const outputFormat = asString(config.outputFormat, "stream-json");
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();

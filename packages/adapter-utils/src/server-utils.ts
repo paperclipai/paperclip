@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import os from "node:os";
@@ -58,6 +58,14 @@ function resolveProcessGroupId(child: ChildProcess) {
   return typeof child.pid === "number" && child.pid > 0 ? child.pid : null;
 }
 
+function killWindowsProcessTree(pid: number): void {
+  try {
+    execSync(`taskkill /F /T /PID ${pid}`, { stdio: "ignore", timeout: 10_000 });
+  } catch {
+    // Process tree may already be dead; ignore.
+  }
+}
+
 function signalRunningProcess(
   running: Pick<RunningProcess, "child" | "processGroupId">,
   signal: NodeJS.Signals,
@@ -70,8 +78,36 @@ function signalRunningProcess(
       // Fall back to the direct child signal if group signaling fails.
     }
   }
-  if (!running.child.killed) {
+
+  if (running.child.killed) return;
+
+  const pid = running.child.pid;
+
+  // On Windows, Node.js child_process.kill('SIGKILL') throws because
+  // SIGKILL is not a supported signal.  Use taskkill /F /T instead to
+  // terminate the entire process tree, which also prevents zombie
+  // processes from Cursor CLI subprocesses (ROU-12/13/14/15/16/28).
+  if (process.platform === "win32" && signal === "SIGKILL") {
+    if (pid && pid > 0) {
+      killWindowsProcessTree(pid);
+    }
+    return;
+  }
+
+  try {
     running.child.kill(signal);
+  } catch {
+    // child.kill may throw on platforms that don't support the signal.
+    if (process.platform === "win32" && pid && pid > 0) {
+      killWindowsProcessTree(pid);
+    }
+  }
+
+  // On Windows TerminateProcess does not kill child processes.  Follow
+  // up with taskkill /T so Cursor CLI subprocesses don't become zombies
+  // after the outer wrapper is terminated (ROU-12/13/14/15/16/28).
+  if (process.platform === "win32" && pid && pid > 0) {
+    killWindowsProcessTree(pid);
   }
 }
 

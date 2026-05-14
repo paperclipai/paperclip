@@ -14,7 +14,7 @@ describe("approvalLabel", () => {
       approvalLabel("request_board_approval", {
         title: "Reply with an ASCII frog",
       }),
-    ).toBe("Board Approval: Reply with an ASCII frog");
+    ).toBe("董事会审批: Reply with an ASCII frog");
   });
 });
 

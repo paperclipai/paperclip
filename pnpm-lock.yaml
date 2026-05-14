@@ -365,6 +365,32 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
+  packages/plugins/examples/adapter-fork-plugin-demo-a:
+    dependencies:
+      '@paperclipai/adapter-utils':
+        specifier: workspace:*
+        version: link:../../../adapter-utils
+    devDependencies:
+      '@types/node':
+        specifier: ^24.6.0
+        version: 24.12.0
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
+  packages/plugins/examples/adapter-fork-plugin-demo-b:
+    dependencies:
+      '@paperclipai/adapter-utils':
+        specifier: workspace:*
+        version: link:../../../adapter-utils
+    devDependencies:
+      '@types/node':
+        specifier: ^24.6.0
+        version: 24.12.0
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
   packages/plugins/examples/plugin-authoring-smoke-example:
     dependencies:
       '@paperclipai/plugin-sdk':
@@ -563,6 +589,9 @@ importers:
       '@paperclipai/adapter-claude-local':
         specifier: workspace:*
         version: link:../packages/adapters/claude-local
+      '@paperclipai/adapter-codebuddy-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/codebuddy-local
       '@paperclipai/adapter-codex-local':
         specifier: workspace:*
         version: link:../packages/adapters/codex-local

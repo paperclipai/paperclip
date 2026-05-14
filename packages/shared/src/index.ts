@@ -1,5 +1,13 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
+  adapterSupportsRemoteCliExecution,
+  isClaudeCliAdapterType,
+  isCodebuddyCliAdapterType,
+  isCodexCliAdapterType,
+  isCursorCliAdapterType,
+  isQwenCliAdapterType,
+} from "./cli-adapter-helpers.js";
+export {
   COMPANY_STATUSES,
   DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,

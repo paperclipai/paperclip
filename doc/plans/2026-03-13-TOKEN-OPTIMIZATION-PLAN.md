@@ -1,7 +1,9 @@
 # Token Optimization Plan
 
+**Chinese translation:** [`2026-03-13-TOKEN-OPTIMIZATION-PLAN.zh.md`](2026-03-13-TOKEN-OPTIMIZATION-PLAN.zh.md)
+
 Date: 2026-03-13  
-Related discussion: https://github.com/paperclipai/paperclip/discussions/449
+Related discussion: [https://github.com/paperclipai/paperclip/discussions/449](https://github.com/paperclipai/paperclip/discussions/449)
 
 ## Goal
 

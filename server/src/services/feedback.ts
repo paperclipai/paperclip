@@ -26,6 +26,8 @@ import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   instanceGeneralSettingsSchema,
+  isClaudeCliAdapterType,
+  isCodexCliAdapterType,
   type FeedbackTargetType,
   type FeedbackTraceBundle,
   type FeedbackTraceBundleCaptureStatus,
@@ -1573,7 +1575,7 @@ async function buildFeedbackTraceBundleFromRow(
         appendNote(notes, "run_log_missing");
       }
 
-      if (run.adapterType === "codex_local") {
+      if (isCodexCliAdapterType(run.adapterType)) {
         const adapter = await buildCodexTraceFiles({
           companyId: row.companyId,
           sessionId: run.sessionIdAfter ?? run.sessionIdBefore,
@@ -1583,7 +1585,7 @@ async function buildFeedbackTraceBundleFromRow(
         files.push(...adapter.files);
         rawAdapterTrace = adapter.raw;
         normalizedAdapterTrace = adapter.normalized;
-      } else if (run.adapterType === "claude_local") {
+      } else if (isClaudeCliAdapterType(run.adapterType)) {
         const adapter = await buildClaudeTraceFiles({
           sessionId: run.sessionIdAfter ?? run.sessionIdBefore,
           stdoutText,

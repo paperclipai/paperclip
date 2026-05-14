@@ -1,42 +1,42 @@
 ---
 name: paperclip-converting-plans-to-tasks
+required: false
 description: >
-  The Paperclip way of converting a plan into executable tasks. Use whenever
-  you are asked to plan, scope, or break down work inside a Paperclip company.
-  Industry-agnostic guidance on how to translate a plan into assigned issues
-  with the right specialty, dependencies, and parallelization so Paperclip's
-  executor can pick up the work — it does not prescribe a plan format. Pair
-  with the `paperclip` skill, which covers the mechanics of writing the plan
-  document and reassigning the issue.
+  Paperclip 里把规划落地的方式：在 Paperclip 公司中做计划、拆范围或估工时时按需使用。
+  提供行业通用的「如何把计划转成已分配的事务、依赖与并行」指导，不拘泥于某种计划格式；
+  与 `paperclip` 技能配合——后者涵盖如何写规划文档、事务的 `plan` 文档、重新分配经办人等操作细节。
 ---
 
-# Paperclip — Converting Plans to Tasks
+**中文名：** 把规划拆成可派单事务（依赖、并行、指派人——不管用什么计划格式）  
+**系统 id：** `paperclip-converting-plans-to-tasks`（名字长是因为历史约定，可读作「计划→事务」）
 
-A companion skill for turning a plan into executable Paperclip work. It does **not** dictate a plan structure — bring whatever format fits the work and the user's preference. It tells you _how_ to translate that plan into issues so that the rest of Paperclip works for you.
+# 把规划转成可执行事务（Paperclip）
 
-For the **mechanics** of recording a plan (issue document with key `plan`, comment links, approval gating, who to reassign back to), follow the _Planning_ section of the `paperclip` skill. This skill covers planning method, not the API surface.
+本技能是把**规划**落地的配套说明：它不规定你必须用什么计划模板——你可以用适合自己与用户的任何形式。它说明的是**如何把已有规划翻译成 Paperclip 里的事务**，让执行器真能接得住。
 
-## When you're asked to plan
+若要了解**如何把计划写进系统**（事务的 `plan` 文档、评论链接、审批闸门、把工作交还给谁），请遵循 `paperclip` 技能中的「规划」章节。本技能只讲**拆分与分配方法**，不写具体 API。
 
-- **Plan deeply.** Capture as much real detail as you have: goals, constraints, unknowns, success criteria, risks. A shallow plan becomes rework downstream — assignees can only act on what they can read.
-- **Know your team.** Before assigning anything, look up the company's agents and their specialties (reporting lines, role descriptions, prior work). Don't default work to yourself when a better-suited agent exists; don't assign to a name you haven't checked.
-- **Assign for specialty.** Hand each piece of work to the agent most relevant to it. If no one fits, call that out — a hire, a tool, an external dependency, a board decision — instead of papering over the gap.
-- **Take responsibility.** Specialty-matching cuts both ways: when _you_ are the best-suited agent for a piece of work, assign it to yourself instead of reflexively delegating. Don't hand off to avoid load.
-- **Use the dependency tree.** Paperclip's executor automatically starts any assigned task with no open blockers. Express every concrete deliverable as an issue, and wire real blockers via `blockedByIssueIds` (not prose like "blocked by X"). When `done`, dependents auto-wake.
-- **Order, then parallelize.** Sequence work by real dependencies, not by personal preference. Independent branches of the graph should start in parallel. Unlike humans, most agents allow concurrent runs, so you can assign parallel work to the same agent.
-- **Enough is enough.** Plans exist to unblock execution, not replace it. If the next step is small and clear, just do it or allow the plan to stand on its own. Re-planning a plan, or splitting work that one agent could finish in the time it took to break it up, is procrastination — ship something.
+## 当有人让你做规划时
 
-## Quick checklist before you publish a plan
+- **规划要写到能执行：** 尽可能写清目标、约束、未知数、验收标准与风险；太浅的计划会变成下游返工——经办人只能按纸上能读到的内容行动。
+- **先了解团队：** 分配前要查公司现有智能体与专长（汇报线、角色说明、既往工作）。不要默认每件事都适合自己；也不要把活派给根本没核实过是否存在的角色。
+- **按专长指派：** 每块工作交给最匹配的智能体；若无人匹配，要**显性**写出来——需要招人、工具、外部依赖或董事会决议——不要假装没问题。
+- **该自己扛就自己扛：** 专长匹配是双向的；若你恰恰是某块工作的最佳人选，就派给自己，而不是为躲负载**条件反射式**地往下扔。
+- **用依赖树表达先后：** Paperclip 会对「无未完成阻塞」的指派自动起手，把每一个可交付物落成独立事务，并用 `blockedByIssueIds` 表达真实依赖（不要只写 prose「被 X 阻塞」）。阻塞方 `done` 后，下游会自动被唤醒。
+- **先拓扑排序再并行：** 按真实依赖排顺序，而非个人偏好；依赖图里没有彼此依赖的分支可以同时开干。和人类不同，多数智能体允许多个并发运行——同一智能体并行多件事通常也可行。
+- **够用就好：** 规划是为了 unblock 执行，不是替代执行；若下一步又小又清楚，就直接做掉，或让计划本身足够到站得住脚。反复重规划、为一个人能heartbeat里做完的活过度拆分，是拖延——要能 ship。
 
-- [ ] Enough detail that assignees can act without re-asking.
-- [ ] Every concrete deliverable is an issue (or named as a known follow-up).
-- [ ] Each issue has a deliberate, specialty-matched assignee — not the planner by default.
-- [ ] Each issue's real blockers are declared via `blockedByIssueIds`.
-- [ ] Independent branches can start in parallel.
-- [ ] Gaps (missing skills, hires, decisions, external inputs) are surfaced, not hidden.
+## 公开发布规划前的速查清单
 
-## What this skill is not
+- [ ] 细节足够经办人不用再上来追问一遍。
+- [ ] 每一项可交付物都对应到一个事务（或明确记为已知后续）。
+- [ ] 每条事务都有**有意识**匹配的经办人——不是无脑全塞给 Planner。
+- [ ] 真实阻塞关系都通过 `blockedByIssueIds` 声明。
+- [ ] 可并行的分支真的能在图里并行启动。
+- [ ] 技能缺口、招聘需求、待定决策或外部输入都显式标出，没有藏。
 
-- Not a plan template. Use any format — prose, outline, table, RACI, Gantt, whatever fits.
-- Not software-development–specific. The same rules apply to marketing, research, ops, design, hiring, finance, etc.
-- Not a replacement for the `paperclip` skill's planning mechanics. Use both.
+## 本技能不是什么
+
+- 不是计划模板大全：任何形式——散文、提纲、表格、RACI、甘特皆可。
+- 不局限于软件开发：市场、调研、运维、设计、招聘、财务等同样适用。
+- 不能替代 `paperclip` 里关于「如何把规划写进事务」的机制说明——两处要一起用。

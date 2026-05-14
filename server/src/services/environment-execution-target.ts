@@ -1,5 +1,6 @@
 import type { Db } from "@paperclipai/db";
 import type { Environment, EnvironmentLease } from "@paperclipai/shared";
+import { adapterSupportsRemoteCliExecution } from "@paperclipai/shared";
 import {
   adapterExecutionTargetToRemoteSpec,
   type AdapterExecutionTarget,
@@ -33,15 +34,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
   }
 
   if (input.environment.driver === "sandbox") {
-    if (
-      input.adapterType !== "acpx_local" &&
-      input.adapterType !== "codex_local" &&
-      input.adapterType !== "claude_local" &&
-      input.adapterType !== "gemini_local" &&
-      input.adapterType !== "opencode_local" &&
-      input.adapterType !== "pi_local" &&
-      input.adapterType !== "cursor"
-    ) {
+    if (!adapterSupportsRemoteCliExecution(input.adapterType)) {
       return null;
     }
 
@@ -104,15 +97,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
   }
 
   if (
-    (
-      input.adapterType !== "codex_local" &&
-      input.adapterType !== "acpx_local" &&
-      input.adapterType !== "claude_local" &&
-      input.adapterType !== "gemini_local" &&
-      input.adapterType !== "opencode_local" &&
-      input.adapterType !== "pi_local" &&
-      input.adapterType !== "cursor"
-    ) ||
+    !adapterSupportsRemoteCliExecution(input.adapterType) ||
     input.environment.driver !== "ssh"
   ) {
     return null;

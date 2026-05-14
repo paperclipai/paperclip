@@ -114,6 +114,18 @@ import {
   modelProfiles as qwenModelProfiles,
 } from "@paperclipai/adapter-qwen-local";
 import {
+  execute as codebuddyExecute,
+  listCodebuddySkills,
+  syncCodebuddySkills,
+  testEnvironment as codebuddyTestEnvironment,
+  sessionCodec as codebuddySessionCodec,
+} from "@paperclipai/adapter-codebuddy-local/server";
+import {
+  agentConfigurationDoc as codebuddyAgentConfigurationDoc,
+  models as codebuddyModels,
+  modelProfiles as codebuddyModelProfiles,
+} from "@paperclipai/adapter-codebuddy-local";
+import {
   execute as piExecute,
   listPiSkills,
   syncPiSkills,
@@ -308,6 +320,7 @@ const codexLocalAdapter: ServerAdapterModule = {
   getQuotaWindows: codexGetQuotaWindows,
 };
 
+
 const cursorLocalAdapter: ServerAdapterModule = {
   type: "cursor",
   execute: cursorExecute,
@@ -408,6 +421,25 @@ const qwenLocalAdapter: ServerAdapterModule = {
   getRuntimeCommandSpec: (config) =>
     buildNpmRuntimeCommandSpec(config, "qwen", "@qwen-code/qwen-code"),
   agentConfigurationDoc: qwenAgentConfigurationDoc,
+};
+
+const codebuddyLocalAdapter: ServerAdapterModule = {
+  type: "codebuddy_local",
+  execute: codebuddyExecute,
+  testEnvironment: codebuddyTestEnvironment,
+  listSkills: listCodebuddySkills,
+  syncSkills: syncCodebuddySkills,
+  sessionCodec: codebuddySessionCodec,
+  sessionManagement: getAdapterSessionManagement("codebuddy_local") ?? undefined,
+  models: codebuddyModels,
+  modelProfiles: codebuddyModelProfiles,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
+  getRuntimeCommandSpec: (config) =>
+    buildNpmRuntimeCommandSpec(config, "codebuddy", "@tencent-ai/codebuddy-code"),
+  agentConfigurationDoc: codebuddyAgentConfigurationDoc,
 };
 
 const piLocalAdapter: ServerAdapterModule = {
@@ -515,6 +547,7 @@ function registerBuiltInAdapters() {
     openCodeLocalAdapter,
     piLocalAdapter,
     qwenLocalAdapter,
+    codebuddyLocalAdapter,
     cursorCloudAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,

@@ -20,6 +20,9 @@ Import the shared agent brief from `AGENTS.md`.
 
 ## Rules
 
+- **No code changes without explicit go-ahead** — same as `AGENTS.md` §5 第 6 条与 `.cursor/rules/routic-project.mdc`：无「批准 / 干 / 做 / 改 …」类行动令时，问句与叙述句只读分析与方案，不动 `server/`、`packages/` 等核心代码。协作条文会随踩坑**先膨胀、后收敛**，新增时仍守此条。
+- **`docs/` voice** — see `AGENTS.md` §5 第 8 条: secondary-topic dirs under `docs/` = Chinese-first, same copy for you + future outsiders, concise; screenshots Chinese UI; no fork fluff. Doc *site* removed ≠ drop Markdown. `.agents/skills/**` etc. exempt unless asked.
+- **Documentation links: purposeful only** — same as `AGENTS.md` §5 第 7 条 / `.cursor/rules/routic-project.mdc` §7 (purposeful links, no zero-info duplicates when an index already covers the target; repeat only when a new step needs it). **Large doc corpora:** link sprawl inflates retrieval noise and context tokens—default stingy.
 - Do not rewrite the project structure without explicit approval.
 - Prefer small, reviewable changes.
 - Keep project decisions in `docs/项目计划/`.

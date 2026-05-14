@@ -42,6 +42,8 @@ export const AGENT_ADAPTER_TYPES = [
   "hermes_local",
   "qwen_local",
   "codebuddy_local",
+  "fork_plugin_demo_a",
+  "fork_plugin_demo_b",
 ] as const;
 export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number] | (string & {});
 

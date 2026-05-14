@@ -13,7 +13,7 @@ summary: 构建自定义适配器的指南
 
 | | 内置 | 外部插件 |
 |---|---|---|
-| 源码位置 | 在 `paperclip-fork` 仓库内 | 独立 npm 包 |
+| 源码位置 | Paperclip 源码树 `packages/adapters/` | 独立 npm 包 |
 | 分发方式 | 随 Paperclip 发布 | 独立发布到 npm |
 | UI 解析器 | 构建时静态导入 | 通过 API 动态加载 |
 | 注册方式 | 编辑 3 处注册表 | 启动时自动加载 |

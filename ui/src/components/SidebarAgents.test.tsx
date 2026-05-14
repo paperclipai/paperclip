@@ -134,7 +134,7 @@ async function flushReact() {
   });
 }
 
-async function openAgentMenu(label = "Open actions for Alpha") {
+async function openAgentMenu(label = "操作：Alpha") {
   const trigger = document.body.querySelector(`button[aria-label="${label}"]`);
   expect(trigger).not.toBeNull();
 
@@ -241,10 +241,10 @@ describe("SidebarAgents", () => {
     await renderSidebarAgents();
 
     const sectionMenuTrigger = container.querySelector('button[aria-label="Agents section actions"]');
-    expect(sectionMenuTrigger?.textContent).toContain("Agents");
+    expect(sectionMenuTrigger?.textContent).toContain("智能体");
     expect(sectionMenuTrigger?.querySelector("svg")).toBeNull();
 
-    const newAgentButton = container.querySelector('button[aria-label="New agent"]');
+    const newAgentButton = container.querySelector('button[aria-label="新建智能体"]');
     expect(newAgentButton).toBeTruthy();
     await act(async () => {
       newAgentButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -254,10 +254,10 @@ describe("SidebarAgents", () => {
     await openAgentsSectionMenu();
 
     const newAgentItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
-      .find((element) => element.textContent?.includes("New agent"));
+      .find((element) => element.textContent?.includes("新建智能体"));
     expect(newAgentItem).toBeFalsy();
     const browseLink = Array.from(document.body.querySelectorAll("a"))
-      .find((element) => element.textContent?.includes("Browse agents"));
+      .find((element) => element.textContent?.includes("浏览智能体"));
     expect(browseLink?.getAttribute("href")).toBe("/agents/all");
   });
 
@@ -270,7 +270,7 @@ describe("SidebarAgents", () => {
 
     await renderSidebarAgents();
     await openAgentsSectionMenu();
-    await chooseSortMode("Alphabetical");
+    await chooseSortMode("按名称");
 
     expect(agentLinkLabels(container)).toEqual(["Alpha", "Bravo", "Charlie"]);
     expect(localStorage.getItem("paperclip.agentSortMode:company-1:user-1")).toBe("alphabetical");
@@ -306,7 +306,7 @@ describe("SidebarAgents", () => {
 
     await renderSidebarAgents();
     await openAgentsSectionMenu();
-    await chooseSortMode("Recent");
+    await chooseSortMode("最近活跃");
 
     expect(agentLinkLabels(container)).toEqual(["Bravo", "Charlie", "Alpha"]);
   });
@@ -316,12 +316,12 @@ describe("SidebarAgents", () => {
     await openAgentMenu();
 
     const editLink = Array.from(document.body.querySelectorAll("a"))
-      .find((element) => element.textContent?.includes("Edit agent"));
+      .find((element) => element.textContent?.includes("编辑智能体"));
     expect(editLink?.getAttribute("href")).toBe("/agents/alpha/configuration");
-    expect(document.body.textContent).toContain("Pause agent");
+    expect(document.body.textContent).toContain("暂停智能体");
 
     const pauseItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
-      .find((element) => element.textContent?.includes("Pause agent"));
+      .find((element) => element.textContent?.includes("暂停智能体"));
     expect(pauseItem).toBeTruthy();
 
     await act(async () => {
@@ -330,7 +330,7 @@ describe("SidebarAgents", () => {
     await flushReact();
 
     expect(mockAgentsApi.pause).toHaveBeenCalledWith("agent-1", "company-1");
-    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Agent paused" }));
+    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "已暂停智能体" }));
   });
 
   it("shows resume for paused sidebar agents", async () => {
@@ -342,7 +342,7 @@ describe("SidebarAgents", () => {
     await openAgentMenu();
 
     const resumeItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
-      .find((element) => element.textContent?.includes("Resume agent"));
+      .find((element) => element.textContent?.includes("恢复智能体"));
     expect(resumeItem).toBeTruthy();
 
     await act(async () => {
@@ -351,7 +351,7 @@ describe("SidebarAgents", () => {
     await flushReact();
 
     expect(mockAgentsApi.resume).toHaveBeenCalledWith("agent-1", "company-1");
-    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Agent resumed" }));
+    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "已恢复智能体" }));
   });
 
   it("only shows updating state for the agent currently being changed", async () => {
@@ -365,21 +365,21 @@ describe("SidebarAgents", () => {
     await openAgentMenu();
 
     const pauseItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
-      .find((element) => element.textContent?.includes("Pause agent"));
+      .find((element) => element.textContent?.includes("暂停智能体"));
     expect(pauseItem).toBeTruthy();
 
     await act(async () => {
       pauseItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
-    await openAgentMenu("Open actions for Beta");
+    await openAgentMenu("操作：Beta");
 
     const betaPauseItem = Array.from(
       document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'),
     )
-      .find((element) => element.textContent?.includes("Pause agent"));
+      .find((element) => element.textContent?.includes("暂停智能体"));
     expect(betaPauseItem).toBeTruthy();
-    expect(document.body.textContent).not.toContain("Updating...");
+    expect(document.body.textContent).not.toContain("更新中…");
   });
 
   it("does not offer sidebar resume for budget-paused agents", async () => {
@@ -397,7 +397,7 @@ describe("SidebarAgents", () => {
     const budgetPausedItem = Array.from(
       document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'),
     )
-      .find((element) => element.textContent?.includes("Budget paused"));
+      .find((element) => element.textContent?.includes("预算已暂停"));
     expect(budgetPausedItem).toBeTruthy();
 
     await act(async () => {

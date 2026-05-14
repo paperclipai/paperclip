@@ -306,10 +306,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
-  const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
+  let timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
     executionTarget,
     asNumber(config.timeoutSec, 0),
   );
+  // Safety net: default 1-hour timeout for local execution to prevent
+  // zombie processes when the Cursor CLI exits its inner agent loop but
+  // the wrapper process stays alive (ROU-12/13/14/15/16/28).
+  if (timeoutSec <= 0) {
+    timeoutSec = 3600;
+  }
   const graceSec = asNumber(config.graceSec, 20);
   await ensureAdapterExecutionTargetRuntimeCommandInstalled({
     runId,
@@ -683,6 +689,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           return;
         }
         await flushStdoutChunk(chunk);
+      },
+      terminalResultCleanup: {
+        // After Cursor emits its final "result" event (stream-json), wait
+        // graceMs then force-kill the process if it hasn't exited on its
+        // own. This prevents zombie processes on Windows where the Cursor
+        // CLI wrapper may not exit after the inner agent loop completes.
+        // (ROU-12/13/14/15/16/28)
+        graceMs: asNumber(config.terminalResultCleanupGraceMs, 5_000),
+        hasTerminalResult: ({ stdout, stderr }) =>
+          stdout.includes('"type":"result"') || stderr.includes('"type":"result"'),
       },
     });
     await flushStdoutChunk("", true);

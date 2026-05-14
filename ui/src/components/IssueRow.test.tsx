@@ -109,7 +109,7 @@ describe("IssueRow", () => {
       root.render(<IssueRow issue={createIssue()} selected unreadState="visible" />);
     });
 
-    const markReadButton = container.querySelector('button[aria-label="Mark as read"]');
+    const markReadButton = container.querySelector('button[aria-label="标记已读"]');
     const unreadDot = markReadButton?.querySelector("span");
     const statusIcon = container.querySelector('span[class*="border-muted-foreground"]');
 
@@ -237,7 +237,7 @@ describe("IssueRow", () => {
 
     const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
     expect(link).not.toBeNull();
-    expect(link?.textContent).toContain("Planning");
+    expect(link?.textContent).toContain("规划中");
 
     act(() => {
       root.unmount();
@@ -281,7 +281,7 @@ describe("IssueRow", () => {
 
     const badges = container.querySelectorAll('[data-testid="issue-row-parked-blocker"]');
     expect(badges.length).toBeGreaterThan(0);
-    expect(badges[0]?.textContent).toContain("Blocked by parked work");
+    expect(badges[0]?.textContent).toContain("阻塞（待整理）");
 
     act(() => {
       root.unmount();

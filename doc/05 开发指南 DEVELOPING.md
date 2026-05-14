@@ -565,8 +565,8 @@ pnpm paperclipai dashboard get
 - `GET /api/invites/:token` — 摘要 + onboarding 与 skills 索引链接  
 - `GET /api/invites/:token/onboarding` — onboarding manifest（注册端点、claim 模板、skill 安装提示）  
 - `GET /api/invites/:token/onboarding.txt` — 纯文本 onboarding，给人与 agent（llm.txt 风格），含可选邀请者消息与建议的 network host 候选  
-- `GET /api/skills/index` — 可用 skill 文档列表  
-- `GET /api/skills/paperclip` — Paperclip heartbeat skill 的 Markdown  
+- `GET /api/skills/index` — 可用 skill 文档列表（**可能未列全**仓库 `skills/` 下全部技能；完整清单与中文说明见仓库根 [`skills/README.md`](../skills/README.md)）  
+- `GET /api/skills/paperclip` — Paperclip heartbeat skill 的 Markdown（其它 `name` 见 `skills/README.md` 与源码白名单）  
 
 ## OpenClaw Join 冒烟测试（OpenClaw Join Smoke Test）
 

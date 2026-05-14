@@ -110,7 +110,7 @@ describe("IssueMonitorActivityCard", () => {
 
     expect(container.textContent).toContain("Monitor scheduled");
     expect(container.textContent).toContain("Next check");
-    expect(container.textContent).toContain("in 30m");
+    expect(container.textContent).toContain("30分钟后");
     expect(container.textContent).toContain("Check deployment health");
 
     const button = Array.from(container.querySelectorAll("button")).find((candidate) =>
@@ -191,7 +191,7 @@ describe("IssueMonitorActivityCard", () => {
 
     expect(container.textContent).toContain("Monitor scheduled");
     expect(container.textContent).toContain("Next check");
-    expect(container.textContent).toContain("in 30m");
+    expect(container.textContent).toContain("30分钟后");
 
     act(() => root.unmount());
   });

@@ -3,9 +3,9 @@ import { describeRunRetryState, formatRetryReason } from "./runRetryState";
 
 describe("runRetryState", () => {
   it("formats internal retry reasons for operators", () => {
-    expect(formatRetryReason("transient_failure")).toBe("Transient failure");
-    expect(formatRetryReason("issue_continuation_needed")).toBe("Continuation needed");
-    expect(formatRetryReason("max_turns_continuation")).toBe("Max-turn continuation");
+    expect(formatRetryReason("transient_failure")).toBe("瞬时故障");
+    expect(formatRetryReason("issue_continuation_needed")).toBe("需要接续");
+    expect(formatRetryReason("max_turns_continuation")).toBe("达到轮次接续");
     expect(formatRetryReason("custom_reason")).toBe("custom reason");
   });
 
@@ -20,8 +20,8 @@ describe("runRetryState", () => {
       }),
     ).toMatchObject({
       kind: "scheduled",
-      badgeLabel: "Retry scheduled",
-      detail: "Attempt 2 · Transient failure",
+      badgeLabel: "已安排重试",
+      detail: "第 2 次尝试 · 瞬时故障",
     });
   });
 
@@ -36,8 +36,8 @@ describe("runRetryState", () => {
       }),
     ).toMatchObject({
       kind: "scheduled",
-      badgeLabel: "Continuation scheduled",
-      detail: "Attempt 1 · Max-turn continuation",
+      badgeLabel: "已安排接续",
+      detail: "第 1 次尝试 · 达到轮次接续",
     });
   });
 
@@ -52,9 +52,9 @@ describe("runRetryState", () => {
       }),
     ).toMatchObject({
       kind: "exhausted",
-      badgeLabel: "Retry exhausted",
-      detail: "Attempt 4 · Transient failure · Automatic retries exhausted",
-      secondary: "Bounded retry exhausted after 4 scheduled attempts; no further automatic retry will be queued Manual intervention required.",
+      badgeLabel: "重试耗尽",
+      detail: "第 4 次尝试 · 瞬时故障 · 自动重试已用尽",
+      secondary: "Bounded retry exhausted after 4 scheduled attempts; no further automatic retry will be queued 需要人工介入。",
     });
   });
 });
