@@ -19,7 +19,7 @@ declare global {
         isInstanceAdmin?: boolean;
         keyId?: string;
         runId?: string;
-        source?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "run_id" | "none";
+        source?: "agent_jwt" | "agent_key" | "board_key" | "cloud_tenant" | "local_implicit" | "run_id" | "session" | "none";
       };
     }
   }
