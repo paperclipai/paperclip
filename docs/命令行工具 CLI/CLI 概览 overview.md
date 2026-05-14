@@ -75,6 +75,6 @@ pnpm paperclipai secrets migrate-inline-env --company-id <company-id> --apply
 
 CLI 有两个类别：
 
-1. **[设置命令](/命令行工具%20CLI/setup-commands)** — 实例引导、诊断、配置
-2. **[控制平面命令](/命令行工具%20CLI/control-plane-commands)** — 问题、代理、批准、活动
+1. **[设置命令](/命令行工具%20CLI/设置命令%20setup-commands)** — 实例引导、诊断、配置
+2. **[控制平面命令](/命令行工具%20CLI/控制平面命令%20control-plane-commands)** — 问题、代理、批准、活动
 
