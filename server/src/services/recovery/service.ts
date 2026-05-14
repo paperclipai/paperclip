@@ -1030,6 +1030,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const runningAgent = await getAgent(input.run.agentId);
     if (!runningAgent || runningAgent.companyId !== input.run.companyId) return { kind: "skipped" as const };
     const sourceIssue = await resolveStaleRunSourceIssue(input.run);
+    // Skip runs whose source issue is already terminal. Without this guard, each
+    // evaluation cycle creates a fresh alert after the assignee closes the previous
+    // one as a false positive, producing runaway duplicate issues (VIG-116).
+    if (sourceIssue !== null && ["done", "cancelled"].includes(sourceIssue.status)) {
+      return { kind: "skipped" as const };
+    }
     const prefix = await getCompanyIssuePrefix(input.run.companyId);
     const evidence = await collectStaleRunEvidence({
       run: input.run,

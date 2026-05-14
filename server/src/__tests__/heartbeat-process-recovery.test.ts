@@ -890,6 +890,40 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
 
+  it("reaps run with a stale in-memory handle when child process has already exited", async () => {
+    // Spawn a process, kill it, wait for it to close — simulating the Windows
+    // edge case where the child exits but the 'close' event never fires back to
+    // the server, leaving a dead ChildProcess object in runningProcesses.
+    const deadChild = spawnAliveProcess();
+    childProcesses.add(deadChild);
+    deadChild.kill("SIGKILL");
+    await new Promise<void>((resolve) => deadChild.once("close", resolve));
+    expect(deadChild.exitCode !== null || deadChild.killed).toBe(true);
+
+    const { agentId, runId } = await seedRunFixture({
+      processPid: deadChild.pid ?? null,
+    });
+    // Simulate the stale handle: put the dead ChildProcess back in the map as
+    // if 'close' had never cleaned it up.
+    runningProcesses.set(runId, { child: deadChild, graceSec: 5 });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+
+    // The stale handle should be detected and the run reaped.
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toContain(runId);
+    expect(runningProcesses.has(runId)).toBe(false);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const failedRun = runs.find((r) => r.id === runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+  });
+
   it("keeps a local run active when the recorded pid is still alive", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
