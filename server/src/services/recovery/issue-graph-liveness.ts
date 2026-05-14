@@ -108,6 +108,16 @@ export interface IssueGraphLivenessInput {
 
 const INVOKABLE_AGENT_STATUSES = new Set(["active", "idle", "running", "error"]);
 const BLOCKING_AGENT_STATUSES = new Set(["paused", "terminated", "pending_approval"]);
+// Recovery fallback rungs (root_agent, ordered_invokable_fallback) restrict to
+// executive roles. Mirrors resolveStaleRunOwnerAgentId / resolveStrandedIssueRecoveryOwnerAgentId
+// in services/recovery/service.ts which already filter to ["cto","ceo"]. Without this filter,
+// the fallback degenerates into a UUID-sort lottery and routes triage work to non-executive
+// agents (notably process adapters that ignore issue context).
+const EXECUTIVE_ROLES = new Set(["cto", "ceo"]);
+
+function isExecutiveRole(role: string | null | undefined): boolean {
+  return typeof role === "string" && EXECUTIVE_ROLES.has(role);
+}
 
 function issueLabel(issue: IssueLivenessIssueInput) {
   return issue.identifier ?? issue.id;
@@ -286,11 +296,12 @@ function ownerCandidatesForRecoveryIssue(
 
   const invokableAgents = orderedInvokableAgents(agents, issue.companyId);
   for (const agent of invokableAgents) {
-    if (!agent.reportsTo) {
+    if (!agent.reportsTo && isExecutiveRole(agent.role)) {
       addOwnerCandidate(candidates, seen, agentsById, issue.companyId, agent.id, "root_agent", issue.id);
     }
   }
   for (const agent of invokableAgents) {
+    if (!isExecutiveRole(agent.role)) continue;
     addOwnerCandidate(
       candidates,
       seen,
