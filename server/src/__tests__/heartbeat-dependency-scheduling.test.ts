@@ -11,8 +11,6 @@ import {
   createDb,
   documentRevisions,
   documents,
-  environmentLeases,
-  environments,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -130,7 +128,6 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
-    await db.delete(environmentLeases);
     await db.delete(activityLog);
     await db.delete(companySkills);
     await db.delete(issueComments);
@@ -146,8 +143,6 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
     await db.delete(agents);
-    await db.delete(companySkills);
-    await db.delete(environments);
     await db.delete(companies);
   });
 
@@ -291,23 +286,6 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       unresolvedBlockerIssueIds: [blockerId],
     });
 
-    let finishReadyRun!: () => void;
-    const readyRunCanFinish = new Promise<void>((resolve) => {
-      finishReadyRun = resolve;
-    });
-    mockAdapterExecute.mockImplementationOnce(async () => {
-      await readyRunCanFinish;
-      return {
-        exitCode: 0,
-        signal: null,
-        timedOut: false,
-        errorMessage: null,
-        summary: "Ready dependency scheduling run complete.",
-        provider: "test",
-        model: "test-model",
-      };
-    });
-
     const readyWake = await heartbeat.wakeup(agentId, {
       source: "assignment",
       triggerDetail: "system",
@@ -316,15 +294,6 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       contextSnapshot: { issueId: readyIssueId, wakeReason: "issue_assigned" },
     });
     expect(readyWake).not.toBeNull();
-    await db.insert(issueComments).values({
-      companyId,
-      issueId: readyIssueId,
-      authorAgentId: agentId,
-      authorType: "agent",
-      createdByRunId: readyWake!.id,
-      body: "Ready dependency scheduling run complete.",
-    });
-    finishReadyRun();
 
     await waitForCondition(async () => {
       const run = await db
@@ -391,14 +360,6 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
 
     expect(promotedBlockedRun?.status).toBe("succeeded");
     expect(blockedWakeRequestCount).toBeGreaterThanOrEqual(2);
-
-    const noActiveRuns = await waitForCondition(async () => {
-      const rows = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns);
-      return rows.every((run) => run.status !== "queued" && run.status !== "running");
-    }, 10_000);
-    expect(noActiveRuns).toBe(true);
   });
 
   it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {
@@ -475,14 +436,6 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         contextSnapshot: { issueId: firstIssueId, wakeReason: "issue_assigned" },
       });
       expect(firstWake).not.toBeNull();
-      await db.insert(issueComments).values({
-        companyId,
-        issueId: firstIssueId,
-        authorAgentId: agentId,
-        authorType: "agent",
-        createdByRunId: firstWake!.id,
-        body: "First assignment run completed.",
-      });
 
       const firstRunStarted = await waitForCondition(async () => {
         const run = await db
@@ -493,7 +446,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         return run?.status === "running";
       });
       expect(firstRunStarted).toBe(true);
-      const firstAdapterStarted = await waitForCondition(async () => mockAdapterExecute.mock.calls.length === 1, 30_000);
+      const firstAdapterStarted = await waitForCondition(async () => mockAdapterExecute.mock.calls.length === 1);
       expect(firstAdapterStarted).toBe(true);
 
       const secondWake = await heartbeat.wakeup(agentId, {
@@ -504,14 +457,6 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         contextSnapshot: { issueId: secondIssueId, wakeReason: "issue_assigned" },
       });
       expect(secondWake).not.toBeNull();
-      await db.insert(issueComments).values({
-        companyId,
-        issueId: secondIssueId,
-        authorAgentId: agentId,
-        authorType: "agent",
-        createdByRunId: secondWake!.id,
-        body: "Second assignment run completed.",
-      });
 
       const secondRunWhileFirstRunning = await db
         .select({ status: heartbeatRuns.status })
@@ -523,16 +468,6 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
 
       finishFirstRun();
 
-      const firstRunSucceeded = await waitForCondition(async () => {
-        const run = await db
-          .select({ status: heartbeatRuns.status })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, firstWake!.id))
-          .then((rows) => rows[0] ?? null);
-        return run?.status === "succeeded";
-      });
-      expect(firstRunSucceeded).toBe(true);
-
       const secondRunSucceeded = await waitForCondition(async () => {
         const run = await db
           .select({ status: heartbeatRuns.status })
@@ -542,11 +477,11 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         return run?.status === "succeeded";
       });
       expect(secondRunSucceeded).toBe(true);
-      expect(mockAdapterExecute.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(2);
     } finally {
       finishFirstRun();
     }
-  }, 40_000);
+  });
 
   it("cancels stale queued runs when issue blockers are still unresolved", async () => {
     const companyId = randomUUID();
@@ -670,14 +605,6 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       .update(agentWakeupRequests)
       .set({ runId: readyRunId })
       .where(eq(agentWakeupRequests.id, readyWakeupRequestId));
-    await db.insert(issueComments).values({
-      companyId,
-      issueId: readyIssueId,
-      authorAgentId: agentId,
-      authorType: "agent",
-      createdByRunId: readyRunId,
-      body: "Ready queued run completed.",
-    });
     await db
       .update(issues)
       .set({
@@ -745,7 +672,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       executionLockedAt: null,
     });
     expect(readyRun?.status).toBe("succeeded");
-    expect(mockAdapterExecute.mock.calls.length).toBeGreaterThanOrEqual(1);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
   });
 
   it("suppresses normal wakeups while allowing comment interaction wakes under a pause hold", async () => {

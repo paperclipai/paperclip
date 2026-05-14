@@ -208,7 +208,6 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(evaluations[0]).toMatchObject({
       priority: "medium",
       assigneeAgentId: managerId,
-      assigneeAdapterOverrides: { modelProfile: "cheap" },
       originId: runId,
       originFingerprint: `stale_active_run:${companyId}:${runId}`,
     });

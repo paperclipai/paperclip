@@ -6989,6 +6989,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // awaiting (because the kube Job vanished without notifying us), the
       // dispatch slot stays held until pod restart unless we clean this up.
       activeRunExecutions.delete(run.id);
+      // Release any active environment leases the orphaned run held so the
+      // environment isn't permanently checked out (ported from upstream
+      // v513). Marks lease as `failed` rather than `released` to preserve
+      // forensic signal for stuck-lease audits.
+      await environmentsSvc.releaseLeasesForRun(run.id, "failed");
       reaped.push(run.id);
 
       // Cascade-delete the live k8s Job whose in-pod process hung. Without
