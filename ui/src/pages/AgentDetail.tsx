@@ -236,9 +236,9 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "capabilities" | "runs" | "budget";
+export type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "capabilities" | "runs" | "budget";
 
-function parseAgentDetailView(value: string | null): AgentDetailView {
+export function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "instructions" || value === "prompts") return "instructions";
   if (value === "configure" || value === "configuration") return "configuration";
   if (value === "skills") return "skills";
@@ -246,6 +246,12 @@ function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "budget") return "budget";
   if (value === "runs") return value;
   return "dashboard";
+}
+
+export function canonicalAgentDetailTab(view: AgentDetailView): AgentDetailView {
+  // parseAgentDetailView already returns canonical tab names; keep this explicit
+  // so future route-normalization edits do not accidentally drop a routable tab.
+  return view;
 }
 
 function usageNumber(usage: Record<string, unknown> | null, ...keys: string[]) {
@@ -752,18 +758,7 @@ export function AgentDetail() {
       }
       return;
     }
-    const canonicalTab =
-      activeView === "instructions"
-        ? "instructions"
-        : activeView === "configuration"
-          ? "configuration"
-          : activeView === "skills"
-            ? "skills"
-            : activeView === "runs"
-              ? "runs"
-              : activeView === "budget"
-                ? "budget"
-              : "dashboard";
+    const canonicalTab = canonicalAgentDetailTab(activeView);
     if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
       navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
       return;
@@ -881,6 +876,8 @@ export function AgentDetail() {
         crumbs.push({ label: "Instructions" });
       } else if (activeView === "configuration") {
         crumbs.push({ label: "Configuration" });
+      } else if (activeView === "capabilities") {
+        crumbs.push({ label: "Capabilities" });
       // } else if (activeView === "skills") { // TODO: bring back later
       //   crumbs.push({ label: "Skills" });
       } else if (activeView === "runs") {
