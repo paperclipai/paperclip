@@ -1,5 +1,4 @@
-﻿import fs from "node:fs/promises";
-import path from "node:path";
+﻿import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
@@ -8383,6 +8382,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
 
+      const isFinishSuccessfulRunHandoffRun =
+        readNonEmptyString(parseObject(run.contextSnapshot).wakeReason) === "finish_successful_run_handoff";
       const issueNeedsImmediateRecovery =
         !issue.assigneeUserId &&
         issue.assigneeAgentId === run.agentId &&
@@ -8393,9 +8394,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ) ||
           (
             issue.status === "in_progress" &&
+            !isFinishSuccessfulRunHandoffRun &&
             (
-              (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled") ||
-              (isHeartbeatRunTerminalStatus(run.status) && didAutomaticRecoveryAttempt(run, "issue_continuation_needed"))
+              run.status === "failed" ||
+              run.status === "timed_out" ||
+              run.status === "cancelled" ||
+              run.status === "succeeded"
             )
           )
         );
