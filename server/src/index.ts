@@ -713,6 +713,12 @@ export async function startServer(): Promise<StartedServer> {
           logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
         }
       })
+      .then(async () => {
+        const escalated = await heartbeat.reconcileStalledBlockerEscalations();
+        if (escalated.created > 0 || escalated.failed > 0) {
+          logger.warn({ ...escalated }, "startup stalled-blocker escalation created escalation tasks");
+        }
+      })
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
@@ -777,6 +783,12 @@ export async function startServer(): Promise<StartedServer> {
           const reviewed = await heartbeat.reconcileProductivityReviews();
           if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
             logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
+          }
+        })
+        .then(async () => {
+          const escalated = await heartbeat.reconcileStalledBlockerEscalations();
+          if (escalated.created > 0 || escalated.failed > 0) {
+            logger.warn({ ...escalated }, "periodic stalled-blocker escalation created escalation tasks");
           }
         })
         .catch((err) => {
