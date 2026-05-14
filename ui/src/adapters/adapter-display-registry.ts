@@ -93,6 +93,16 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Local Pi agent",
     icon: Terminal,
   },
+  qwen_local: {
+    label: "Qwen Code",
+    description: "Local Qwen Code agent",
+    icon: Bot,
+  },
+  codebuddy_local: {
+    label: "CodeBuddy",
+    description: "Local CodeBuddy CLI agent",
+    icon: Terminal,
+  },
   cursor: {
     label: "Cursor",
     description: "Local Cursor agent",

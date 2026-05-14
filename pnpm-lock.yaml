@@ -584,6 +584,9 @@ importers:
       '@paperclipai/adapter-pi-local':
         specifier: workspace:*
         version: link:../packages/adapters/pi-local
+      '@paperclipai/adapter-qwen-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/qwen-local
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../packages/adapter-utils

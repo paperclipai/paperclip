@@ -52,6 +52,8 @@ curl http://localhost:3100/api/health
 curl http://localhost:3100/api/companies
 ```
 
+Stop local dev cleanly: foreground **Ctrl+C** in the terminal that started the server, then **`pnpm dev:list`** / **`pnpm dev:stop`** from repo root; if port **3100** is still in use while the registry is empty, see **`doc/DEVELOPING.md`** (section *Stop dev services*) and the Chinese ops sheet **`doc/运维-回形针本地.md`** (*停止与查看状态*).
+
 Reset local dev DB:
 
 ```sh

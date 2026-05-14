@@ -63,6 +63,19 @@ pnpm dev:list
 pnpm dev:stop
 ```
 
+### Stop dev services (graceful + verify)
+
+1. **Foreground terminal** — If you started `pnpm dev` / `pnpm dev:once` in that same window, press **Ctrl+C** once and wait for the process to exit.
+2. **Managed runner (any terminal, repo root)** — Run `pnpm dev:list`, then `pnpm dev:stop`. That stops processes **registered for this repo** (for example `paperclip-dev-watch`, `paperclip-dev-once`) and clears the local registry entry.
+3. **Orphan API still on port 3100** — `pnpm dev:stop` only sees registered runners. If `pnpm dev:list` is empty but `http://127.0.0.1:3100/api/health` still responds or a new start fails with **address in use**, another `node`/`tsx` may be serving `server/src/index.ts` without registration (for example started from a different shell). Find the owning PID for port **3100**, inspect its command line, and end only the Paperclip server process you intend to remove. On Windows PowerShell:
+
+   ```powershell
+   Get-NetTCPConnection -LocalPort 3100 -ErrorAction SilentlyContinue | Select-Object OwningProcess
+   (Get-CimInstance Win32_Process -Filter 'ProcessId=<PID>').CommandLine
+   ```
+
+4. **Embedded Postgres** — Stopping dev does not always tear down the embedded `postgres` child immediately; if you hit `postmaster.pid` / port **54329** issues, follow the database cleanup notes in this file and in `doc/运维-回形针本地.md` (Chinese ops cheat sheet).
+
 `pnpm dev:once` now tracks backend-relevant file changes and pending migrations. When the current boot is stale, the board UI shows a `Restart required` banner. You can also enable guarded auto-restart in `Instance Settings > Experimental`, which waits for queued/running local agent runs to finish before restarting the dev server.
 
 Tailscale/private-auth dev mode:

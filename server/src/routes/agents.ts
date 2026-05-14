@@ -1212,6 +1212,7 @@ export function agentRoutes(
     "gemini_local",
     "opencode_local",
     "pi_local",
+    "qwen_local",
   ]);
 
   function shouldMaterializeRuntimeSkillsForAdapter(adapterType: string) {
