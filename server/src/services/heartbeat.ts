@@ -3838,6 +3838,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function handleRunLivenessContinuation(run: typeof heartbeatRuns.$inferSelect) {
     const livenessState = run.livenessState as RunLivenessState | null;
     if (livenessState !== "plan_only" && livenessState !== "empty_response") return;
+    if (run.issueCommentStatus === "retry_queued" || run.issueCommentStatus === "retry_exhausted") return;
 
     const context = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(context.issueId);
@@ -7933,17 +7934,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
-        await releaseIssueExecutionAndPromote(livenessRun);
-        await handleRunLivenessContinuation(livenessRun);
-        await handleSuccessfulRunHandoff(
+        const issueCommentPolicyRun =
           issueCommentPolicyResult.outcome === "retry_queued" || issueCommentPolicyResult.outcome === "retry_exhausted"
             ? {
               ...livenessRun,
               issueCommentStatus: issueCommentPolicyResult.outcome,
             }
-            : livenessRun,
-          agent,
-        );
+            : livenessRun;
+        await releaseIssueExecutionAndPromote(issueCommentPolicyRun);
+        await handleRunLivenessContinuation(issueCommentPolicyRun);
+        await handleSuccessfulRunHandoff(issueCommentPolicyRun, agent);
       }
 
       if (finalizedRun) {
@@ -8385,6 +8385,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const isFinishSuccessfulRunHandoffRun =
         readNonEmptyString(parseObject(run.contextSnapshot).wakeReason) === "finish_successful_run_handoff";
+      const isIssueContinuationRecoveryRun = didAutomaticRecoveryAttempt(run, "issue_continuation_needed");
       const issueNeedsImmediateRecovery =
         !issue.assigneeUserId &&
         issue.assigneeAgentId === run.agentId &&
@@ -8401,10 +8402,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               run.status === "timed_out" ||
               run.status === "cancelled" ||
               (run.status === "succeeded" &&
-                run.livenessState !== "advanced" &&
-                run.livenessState !== "blocked" &&
-                run.livenessState !== "completed" &&
-                !readNonEmptyString(run.nextAction))
+                (
+                  isIssueContinuationRecoveryRun ||
+                  (
+                    run.livenessState !== "advanced" &&
+                    run.livenessState !== "blocked" &&
+                    run.livenessState !== "completed" &&
+                    !readNonEmptyString(run.nextAction)
+                  )
+                ))
             )
           )
         );
