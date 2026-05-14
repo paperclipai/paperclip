@@ -438,7 +438,7 @@ const hermesLocalAdapter: ServerAdapterModule = {
       "Paperclip disposition rule (non-negotiable):",
       "Every assignee run MUST end with a disposition write to the issue.",
       "Without one, Paperclip auto-flags the issue as MISSING DISPOSITION and surfaces a RECOVERY NEEDED card.",
-      "Valid dispositions (PATCH http://localhost:3100/api/issues/{issueId} with the two headers above):",
+      "Valid dispositions (PATCH $PAPERCLIP_API_URL/issues/{issueId} with the two headers above; $PAPERCLIP_API_URL is set in your environment and points at the active Paperclip instance):",
       "  - done                  : work complete                              → {\"status\":\"done\"}",
       "  - cancelled             : will not do (obsolete / out of scope)      → {\"status\":\"cancelled\"} + comment with reason",
       "  - in_review             : needs human/board review before close      → {\"status\":\"in_review\"}",
