@@ -31,6 +31,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { Worker } from "node:worker_threads";
 import type { Db } from "@paperclipai/db";
 import type {
   PaperclipPluginManifestV1,
@@ -52,6 +53,28 @@ import { pluginDatabaseService } from "./plugin-database.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Test-only fallback: under vitest, dynamic import() of arbitrary file:// URLs
+ * is intercepted by vite-node and fails ("Cannot find module ... Does the file
+ * exist?"). A worker thread runs Node's native loader so the import succeeds.
+ */
+function importInWorker(href: string): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(
+      "import { workerData, parentPort } from \"node:worker_threads\";"
+      + "import(workerData.url).then((mod) => parentPort.postMessage({ ok: true, value: { ...mod } }))"
+      + ".catch((err) => parentPort.postMessage({ ok: false, error: String(err) }));",
+      { eval: true, workerData: { url: href } },
+    );
+    worker.once("message", (msg: { ok: boolean; value?: Record<string, unknown>; error?: string }) => {
+      void worker.terminate();
+      if (msg.ok && msg.value) resolve(msg.value);
+      else reject(new Error(msg.error ?? "manifest import failed"));
+    });
+    worker.once("error", reject);
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -924,6 +947,21 @@ export function pluginLoader(
   }
 
   /**
+   * Dynamically import a manifest module. Under vitest, `import()` is hooked by
+   * vite-node and rejects file:// URLs outside the project root, so fall back to
+   * a worker thread which runs Node's native ESM loader.
+   */
+  async function importManifestModule(
+    href: string,
+  ): Promise<Record<string, unknown>> {
+    const underVitest = process.env.VITEST === "true";
+    if (!underVitest) {
+      return (await import(href)) as Record<string, unknown>;
+    }
+    return await importInWorker(href);
+  }
+
+  /**
    * Attempt to load and validate a plugin manifest from a resolved path.
    * Returns the manifest on success or throws with a descriptive error.
    */
@@ -933,12 +971,10 @@ export function pluginLoader(
     let raw: unknown;
 
     try {
-      // Dynamic import works for both .js (ESM) and .cjs (CJS) manifests
       const manifestUrl = pathToFileURL(manifestPath);
       const manifestStat = await stat(manifestPath);
       manifestUrl.searchParams.set("mtime", String(Math.trunc(manifestStat.mtimeMs)));
-      const mod = await import(manifestUrl.href) as Record<string, unknown>;
-      // The manifest may be the default export or the module itself
+      const mod = await importManifestModule(manifestUrl.href);
       raw = mod["default"] ?? mod;
     } catch (err) {
       throw new Error(

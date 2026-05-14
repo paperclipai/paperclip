@@ -19,7 +19,15 @@ const {
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
-  const createDbMock = vi.fn(() => ({}) as never);
+  const createDbMock = vi.fn(() => {
+    const chain: any = {
+      from: () => chain,
+      where: () => Promise.resolve([]),
+    };
+    return {
+      select: () => chain,
+    } as never;
+  });
   const detectPortMock = vi.fn(async (port: number) => port);
   const deriveAuthTrustedOriginsMock = vi.fn(() => []);
   const feedbackExportServiceMock = {
