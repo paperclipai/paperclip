@@ -303,6 +303,8 @@ export function App() {
           <Route path="agents/:agentId" element={<UnprefixedBoardRedirect />} />
           <Route path="agents/:agentId/:tab" element={<UnprefixedBoardRedirect />} />
           <Route path="agents/:agentId/runs/:runId" element={<UnprefixedBoardRedirect />} />
+          <Route path="dashboard/*" element={<UnprefixedBoardRedirect />} />
+          <Route path="company/*" element={<UnprefixedBoardRedirect />} />
           <Route path="projects" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/overview" element={<UnprefixedBoardRedirect />} />
@@ -318,6 +320,16 @@ export function App() {
           <Route path="execution-workspaces/:workspaceId/runtime-logs" element={<UnprefixedBoardRedirect />} />
           <Route path="execution-workspaces/:workspaceId/issues" element={<UnprefixedBoardRedirect />} />
           <Route path="execution-workspaces/:workspaceId/routines" element={<UnprefixedBoardRedirect />} />
+          <Route path="goals" element={<UnprefixedBoardRedirect />} />
+          <Route path="goals/:goalId" element={<UnprefixedBoardRedirect />} />
+          <Route path="approvals/*" element={<UnprefixedBoardRedirect />} />
+          <Route path="costs" element={<UnprefixedBoardRedirect />} />
+          <Route path="activity" element={<UnprefixedBoardRedirect />} />
+          <Route path="inbox/*" element={<UnprefixedBoardRedirect />} />
+          <Route path="search" element={<UnprefixedBoardRedirect />} />
+          <Route path="org" element={<UnprefixedBoardRedirect />} />
+          <Route path="agent-os/*" element={<UnprefixedBoardRedirect />} />
+          <Route path="design-guide" element={<UnprefixedBoardRedirect />} />
           <Route path="observability" element={<UnprefixedBoardRedirect />} />
           <Route path=":companyPrefix" element={<Layout />}>
             {boardRoutes()}

@@ -42,4 +42,13 @@ describe("company routes", () => {
     expect(applyCompanyPrefix("/observability", "PAP")).toBe("/PAP/observability");
     expect(toCompanyRelativePath("/PAP/observability")).toBe("/observability");
   });
+
+  it("treats /agent-os as a board route, not as a company prefix", () => {
+    expect(isBoardPathWithoutPrefix("/agent-os")).toBe(true);
+    expect(extractCompanyPrefixFromPath("/agent-os")).toBeNull();
+    expect(extractCompanyPrefixFromPath("/agent-os/goals")).toBeNull();
+    expect(applyCompanyPrefix("/agent-os", "PAP")).toBe("/PAP/agent-os");
+    expect(applyCompanyPrefix("/goals", "AGENT-OS")).toBe("/AGENT-OS/goals");
+    expect(toCompanyRelativePath("/PAP/agent-os")).toBe("/agent-os");
+  });
 });
