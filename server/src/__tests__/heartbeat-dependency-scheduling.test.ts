@@ -37,6 +37,11 @@ const mockAdapterExecute = vi.hoisted(() =>
     summary: "Dependency-aware heartbeat test run.",
     provider: "test",
     model: "test-model",
+    // resultJson satisfies heartbeat.ts's isEmptyResult guard so the run
+    // doesn't get re-classified `failed` by the empty-result override
+    // before its scheduling assertions run. Same mock shape as the
+    // other heartbeat-* tests.
+    resultJson: { exitCode: 0, summary: "Dependency-aware heartbeat test run." },
   })),
 );
 
@@ -107,6 +112,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       summary: "Dependency-aware heartbeat test run.",
       provider: "test",
       model: "test-model",
+      resultJson: { exitCode: 0, summary: "Dependency-aware heartbeat test run." },
     }));
     runningProcesses.clear();
     let idlePolls = 0;
@@ -415,6 +421,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         summary: "First assignment run completed.",
         provider: "test",
         model: "test-model",
+        resultJson: { exitCode: 0, summary: "First assignment run completed." },
       };
     });
 

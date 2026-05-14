@@ -2,11 +2,14 @@ import type { UsageSummary } from "@paperclipai/adapter-utils";
 import {
   asString,
   asNumber,
+  asBoolean,
   parseObject,
   parseJson,
 } from "@paperclipai/adapter-utils/server-utils";
 
-const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+`?claude\s+login`?|login\s+required|requires\s+login|unauthorized|authentication\s+required)/i;
+const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+`?claude\s+login`?|login\s+required|requires\s+login|failed\s+to\s+authenticate|invalid\s+authentication\s+credentials|invalid_auth|invalid_credential)/i;
+const CLAUDE_GENERIC_AUTH_RE = /(?:unauthorized|authentication\s+(?:required|failed))/i;
+const CLAUDE_GENERIC_AUTH_CONTEXT_RE = /(?:claude|anthropic|oauth|api\s+error)/i;
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
 const CLAUDE_TRANSIENT_UPSTREAM_RE =
@@ -141,7 +144,12 @@ export function detectClaudeLoginRequired(input: {
     .map((line) => line.trim())
     .filter(Boolean);
 
-  const requiresLogin = messages.some((line) => CLAUDE_AUTH_REQUIRED_RE.test(line));
+  const requiresLogin = messages.some((line) => {
+    const parsedLine = parseJson(line);
+    if (asString(parsedLine?.type, "") === "assistant") return false;
+    return CLAUDE_AUTH_REQUIRED_RE.test(line) ||
+      (CLAUDE_GENERIC_AUTH_RE.test(line) && CLAUDE_GENERIC_AUTH_CONTEXT_RE.test(line));
+  });
   return {
     requiresLogin,
     loginUrl: extractClaudeLoginUrl([input.stdout, input.stderr].join("\n")),
@@ -150,6 +158,7 @@ export function detectClaudeLoginRequired(input: {
 
 export function describeClaudeFailure(parsed: Record<string, unknown>): string | null {
   const subtype = asString(parsed.subtype, "");
+  const isError = asBoolean(parsed.is_error, false);
   const resultText = asString(parsed.result, "").trim();
   const errors = extractClaudeErrorMessages(parsed);
 
@@ -159,7 +168,13 @@ export function describeClaudeFailure(parsed: Record<string, unknown>): string |
   }
 
   const parts = ["Claude run failed"];
-  if (subtype) parts.push(`subtype=${subtype}`);
+  // Skip subtype="success" when is_error=true — that combo is what claude
+  // emits for quota / rate-limit terminations, where the *CLI envelope*
+  // succeeded but the AI request errored. Surfacing "subtype=success" in a
+  // failure message reads as a contradiction.
+  if (subtype && !(isError && subtype === "success")) {
+    parts.push(`subtype=${subtype}`);
+  }
   if (detail) parts.push(detail);
   return parts.length > 1 ? parts.join(": ") : null;
 }
@@ -183,6 +198,63 @@ export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | 
     reason === "turn_limit" ||
     reason === "turn_limit_exhausted",
   );
+}
+
+/**
+ * Detect provider quota / extra-usage exhaustion from the Claude result.
+ *
+ * Known patterns:
+ *   "You're out of extra usage · resets 2am (Europe/Warsaw)"
+ *   "You've exceeded your usage limit"
+ *   "Claude usage limit reached"
+ *   "5-hour limit reached" / "5 hour limit reached"
+ *   "Weekly limit reached"
+ *   "Usage cap reached"
+ *   "out of usage"
+ */
+const CLAUDE_QUOTA_EXHAUSTED_RE =
+  /out\s+of\s+(?:extra\s+)?usage|exceeded\s+your\s+usage\s+limit|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached/i;
+export function isClaudeQuotaExhausted(parsed: Record<string, unknown> | null | undefined): boolean {
+  if (!parsed) return false;
+  const resultText = asString(parsed.result, "").trim();
+  const errors = extractClaudeErrorMessages(parsed);
+  const allMessages = [resultText, ...errors].map((m) => m.trim()).filter(Boolean);
+  return allMessages.some((msg) => CLAUDE_QUOTA_EXHAUSTED_RE.test(msg));
+}
+
+// Patterns indicating Claude exited cleanly but could not do any real work.
+const CLAUDE_SILENT_FAILURE_RE: RegExp[] = [
+  /unable to (?:proceed|continue|complete|execute|perform|accomplish)/i,
+  /cannot (?:proceed|continue|complete|execute|perform)/i,
+  /couldn'?t (?:proceed|continue|complete|execute|perform)/i,
+  /(?:all|every) (?:\w+ ){0,4}(?:blocked|denied|rejected)/i,
+  /blocked by permission/i,
+  /permissions? (?:block|denied|prevent|restrict)/i,
+  /failed to (?:complete|execute|perform) any/i,
+  /no (?:actions?|work|progress) (?:were |was )?(?:taken|done|made|completed|performed)/i,
+];
+
+export function isClaudeSilentFailure(
+  parsed: Record<string, unknown> | null | undefined,
+  summary: string,
+): { detected: boolean; reason: string | null } {
+  if (!parsed && !summary) return { detected: false, reason: null };
+
+  const texts: string[] = [];
+  if (summary.trim()) texts.push(summary);
+  if (parsed) {
+    for (const key of ["result", "summary", "message", "error"] as const) {
+      const val = asString(parsed[key], "").trim();
+      if (val) texts.push(val);
+    }
+  }
+
+  const combined = texts.join("\n");
+  for (const pattern of CLAUDE_SILENT_FAILURE_RE) {
+    const match = combined.match(pattern);
+    if (match) return { detected: true, reason: match[0] };
+  }
+  return { detected: false, reason: null };
 }
 
 export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): boolean {

@@ -12,6 +12,114 @@ export const agentPermissionsSchema = z.object({
   canCreateAgents: z.boolean().optional().default(false),
 });
 
+export const HEARTBEAT_POLICY_INTERVAL_MIN_SEC = 30;
+export const HEARTBEAT_POLICY_INTERVAL_MAX_SEC = 86_400;
+export const HEARTBEAT_POLICY_COOLDOWN_MIN_SEC = 0;
+export const HEARTBEAT_POLICY_COOLDOWN_MAX_SEC = 3_600;
+export const HEARTBEAT_POLICY_MAX_CONCURRENT_MIN = 1;
+export const HEARTBEAT_POLICY_MAX_CONCURRENT_MAX = 8;
+
+export const heartbeatPresetSchema = z.enum(["economic", "balanced", "aggressive"]);
+export type HeartbeatPreset = z.infer<typeof heartbeatPresetSchema>;
+
+export type HeartbeatPresetConfig = {
+  enabled: boolean;
+  intervalSec: number;
+  wakeOnDemand: boolean;
+  cooldownSec: number;
+  maxConcurrentRuns: number;
+};
+
+export const HEARTBEAT_PRESET_CONFIGS: Record<HeartbeatPreset, HeartbeatPresetConfig> = {
+  economic: {
+    enabled: true,
+    intervalSec: 1800,
+    wakeOnDemand: true,
+    cooldownSec: 30,
+    maxConcurrentRuns: 1,
+  },
+  balanced: {
+    enabled: true,
+    intervalSec: 600,
+    wakeOnDemand: true,
+    cooldownSec: 10,
+    maxConcurrentRuns: 2,
+  },
+  aggressive: {
+    enabled: true,
+    intervalSec: 120,
+    wakeOnDemand: true,
+    cooldownSec: 5,
+    maxConcurrentRuns: 3,
+  },
+};
+
+export const heartbeatPolicySchema = z
+  .object({
+    preset: heartbeatPresetSchema.optional(),
+    enabled: z.boolean().optional(),
+    intervalSec: z.number().int().optional(),
+    wakeOnDemand: z.boolean().optional(),
+    cooldownSec: z.number().int().optional(),
+    maxConcurrentRuns: z.number().int().optional(),
+  })
+  .passthrough()
+  .superRefine((value, ctx) => {
+    if (
+      value.intervalSec !== undefined
+      && (value.intervalSec < HEARTBEAT_POLICY_INTERVAL_MIN_SEC || value.intervalSec > HEARTBEAT_POLICY_INTERVAL_MAX_SEC)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `heartbeat.intervalSec must be between ${HEARTBEAT_POLICY_INTERVAL_MIN_SEC} and ${HEARTBEAT_POLICY_INTERVAL_MAX_SEC}`,
+        path: ["intervalSec"],
+      });
+    }
+
+    if (
+      value.cooldownSec !== undefined
+      && (value.cooldownSec < HEARTBEAT_POLICY_COOLDOWN_MIN_SEC || value.cooldownSec > HEARTBEAT_POLICY_COOLDOWN_MAX_SEC)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `heartbeat.cooldownSec must be between ${HEARTBEAT_POLICY_COOLDOWN_MIN_SEC} and ${HEARTBEAT_POLICY_COOLDOWN_MAX_SEC}`,
+        path: ["cooldownSec"],
+      });
+    }
+
+    if (
+      value.maxConcurrentRuns !== undefined
+      && (value.maxConcurrentRuns < HEARTBEAT_POLICY_MAX_CONCURRENT_MIN || value.maxConcurrentRuns > HEARTBEAT_POLICY_MAX_CONCURRENT_MAX)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `heartbeat.maxConcurrentRuns must be between ${HEARTBEAT_POLICY_MAX_CONCURRENT_MIN} and ${HEARTBEAT_POLICY_MAX_CONCURRENT_MAX}`,
+        path: ["maxConcurrentRuns"],
+      });
+    }
+
+    if (
+      value.enabled === true
+      && value.cooldownSec !== undefined
+      && value.intervalSec !== undefined
+      && value.cooldownSec > value.intervalSec
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "heartbeat.cooldownSec cannot exceed heartbeat.intervalSec when heartbeat is enabled",
+        path: ["cooldownSec"],
+      });
+    }
+
+    if (value.enabled === false && value.wakeOnDemand === false) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "At least one heartbeat trigger must be enabled (interval or wakeOnDemand)",
+        path: ["wakeOnDemand"],
+      });
+    }
+  });
+
 export const agentInstructionsBundleModeSchema = z.enum(["managed", "external"]);
 
 export const updateAgentInstructionsBundleSchema = z.object({
@@ -61,7 +169,20 @@ export const agentRuntimeConfigSchema = z.object({
   modelProfiles: z.object({
     cheap: agentModelProfileConfigSchema.optional(),
   }).strict().optional(),
-}).catchall(z.unknown());
+}).catchall(z.unknown()).superRefine((value, ctx) => {
+  // kkroo: validate optional heartbeat policy if present
+  const heartbeatValue = (value as Record<string, unknown>).heartbeat;
+  if (heartbeatValue === undefined) return;
+  const parsed = heartbeatPolicySchema.safeParse(heartbeatValue);
+  if (parsed.success) return;
+  for (const issue of parsed.error.issues) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: issue.message,
+      path: ["heartbeat", ...issue.path],
+    });
+  }
+});
 
 export const createAgentSchema = z.object({
   name: z.string().min(1),
@@ -74,8 +195,8 @@ export const createAgentSchema = z.object({
   adapterType: agentAdapterTypeSchema,
   adapterConfig: adapterConfigSchema.optional().default({}),
   instructionsBundle: createAgentInstructionsBundleSchema.optional(),
-  runtimeConfig: agentRuntimeConfigSchema.optional().default({}),
   defaultEnvironmentId: z.string().uuid().optional().nullable(),
+  runtimeConfig: agentRuntimeConfigSchema.optional().default({}),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   permissions: agentPermissionsSchema.optional(),
   metadata: z.record(z.unknown()).optional().nullable(),
@@ -149,8 +270,10 @@ export const testAdapterEnvironmentSchema = z.object({
    * test runs against the local Paperclip host. When provided and the
    * environment is non-local (SSH/sandbox), the test probes are executed
    * inside that environment so the result reflects real agent execution.
+   * (For the k8s-vendored deploy, the pod has no per-user codex/claude
+   * credentials, so a non-null environmentId is effectively required.)
    */
-  environmentId: z.string().uuid().optional().nullable(),
+  environmentId: z.string().uuid().nullable().optional(),
 });
 
 export type TestAdapterEnvironment = z.infer<typeof testAdapterEnvironmentSchema>;

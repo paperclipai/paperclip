@@ -16,6 +16,12 @@ import { eq } from "drizzle-orm";
 
 const DEFAULT_SINGLETON_KEY = "default";
 
+function normalizeShellCmd(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
   const parsed = instanceGeneralSettingsSchema.safeParse(raw ?? {});
   if (parsed.success) {
@@ -25,6 +31,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       feedbackDataSharingPreference:
         parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
       backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
+      quotaExhaustedCmd: normalizeShellCmd(parsed.data.quotaExhaustedCmd),
+      preRunCmd: normalizeShellCmd(parsed.data.preRunCmd),
+      postRunCmd: normalizeShellCmd(parsed.data.postRunCmd),
     };
   }
   return {
@@ -32,6 +41,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
     keyboardShortcuts: false,
     feedbackDataSharingPreference: DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
     backupRetention: DEFAULT_BACKUP_RETENTION,
+    quotaExhaustedCmd: null,
+    preRunCmd: null,
+    postRunCmd: null,
   };
 }
 
@@ -42,7 +54,7 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
       enableEnvironments: parsed.data.enableEnvironments ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
-      enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? false,
+      enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? true,
       issueGraphLivenessAutoRecoveryLookbackHours:
         parsed.data.issueGraphLivenessAutoRecoveryLookbackHours ??
         DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -52,7 +64,7 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
     enableEnvironments: false,
     enableIsolatedWorkspaces: false,
     autoRestartDevServerWhenIdle: false,
-    enableIssueGraphLivenessAutoRecovery: false,
+    enableIssueGraphLivenessAutoRecovery: true,
     issueGraphLivenessAutoRecoveryLookbackHours:
       DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   };

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
@@ -638,5 +638,62 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
       resumedPauseHoldIds: [subtreePause.hold.id],
       resumeMode: "subtree",
     });
+  });
+
+  // BLO-3855: in-txn callers must route via tx, not the outer pool, or FOR UPDATE locks deadlock the pool. Visibility of uncommitted writes inside the same txn proves tx was used.
+  it("routes getActivePauseHoldGate through tx so callers see uncommitted txn state", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Locked issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const treeSvc = issueTreeControlService(db);
+
+    const { gateWithTx, gateWithDb } = await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select id from issues where company_id = ${companyId} and id = ${issueId} for update`,
+      );
+
+      const holdId = randomUUID();
+      await tx.insert(issueTreeHolds).values({
+        id: holdId,
+        companyId,
+        rootIssueId: issueId,
+        mode: "pause",
+        status: "active",
+        reason: "in-txn hold for regression test",
+        createdByActorType: "user",
+        createdByUserId: "board-user",
+      });
+
+      const viaTx = await treeSvc.getActivePauseHoldGate(companyId, issueId, tx);
+      // Sanity probe: confirm uncommitted state is invisible to a connection from
+      // the outer pool. This is what made the pre-refactor in-txn db call risky in
+      // the first place: it took an extra pool connection that didn't even see
+      // its own caller's writes.
+      const viaDb = await treeSvc.getActivePauseHoldGate(companyId, issueId);
+
+      return { gateWithTx: viaTx, gateWithDb: viaDb };
+    });
+
+    expect(gateWithTx).toMatchObject({
+      rootIssueId: issueId,
+      issueId,
+      isRoot: true,
+      mode: "pause",
+    });
+    expect(gateWithDb).toBeNull();
   });
 });

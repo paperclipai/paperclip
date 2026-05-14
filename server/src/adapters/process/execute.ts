@@ -70,6 +70,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       resultJson: {
         stdout: proc.stdout,
         stderr: proc.stderr,
+        exitCode: proc.exitCode ?? -1,
       },
     };
   }
@@ -81,6 +82,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     resultJson: {
       stdout: proc.stdout,
       stderr: proc.stderr,
+      exitCode: proc.exitCode ?? 0,
     },
   };
 }

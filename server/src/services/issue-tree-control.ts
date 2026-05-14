@@ -567,8 +567,10 @@ export function issueTreeControlService(db: Db) {
   async function getActivePauseHoldGate(
     companyId: string,
     issueId: string,
+    dbOrTx: Pick<Db, "select"> = db,
   ): Promise<ActiveIssueTreePauseHoldGate | null> {
-    const activePauseHolds = await db
+    // dbOrTx: pass tx from inside db.transaction() — acquiring a separate pool connection while holding FOR UPDATE locks risks pool-exhaustion deadlock (BLO-3855).
+    const activePauseHolds = await dbOrTx
       .select({
         id: issueTreeHolds.id,
         rootIssueId: issueTreeHolds.rootIssueId,
@@ -609,7 +611,7 @@ export function issueTreeControlService(db: Db) {
         };
       }
 
-      const parent: { parentId: string | null } | null = await db
+      const parent: { parentId: string | null } | null = await dbOrTx
         .select({ parentId: issues.parentId })
         .from(issues)
         .where(and(eq(issues.id, currentIssueId), eq(issues.companyId, companyId)))

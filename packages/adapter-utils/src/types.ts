@@ -90,6 +90,7 @@ export interface AdapterExecutionResult {
   resultJson?: Record<string, unknown> | null;
   runtimeServices?: AdapterRuntimeServiceReport[];
   summary?: string | null;
+  silentFailure?: { reason: string } | null;
   clearSession?: boolean;
   question?: {
     prompt: string;
@@ -247,6 +248,13 @@ export interface AdapterEnvironmentTestContext {
     bindHost?: string | null;
     allowedHostnames?: string[];
   };
+  /**
+   * The execution target the agent runs on. When provided and remote (SSH/
+   * sandbox), adapter testEnvironment implementations should redirect
+   * auth/probe checks to that target — running locally tests the wrong place
+   * (the pod has no codex/claude credentials, only the SSH host does).
+   */
+  executionTarget?: AdapterExecutionTarget | null;
 }
 
 /** Payload for the onHireApproved adapter lifecycle hook (e.g. join-request or hire_agent approval). */

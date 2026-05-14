@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { type AnyPgColumn, pgTable, uuid, text, timestamp, jsonb, index, integer, bigint, boolean } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
@@ -54,6 +55,31 @@ export const heartbeatRuns = pgTable(
     lastUsefulActionAt: timestamp("last_useful_action_at", { withTimezone: true }),
     nextAction: text("next_action"),
     contextSnapshot: jsonb("context_snapshot").$type<Record<string, unknown>>(),
+    // Generated stored columns mirroring the hot context_snapshot keys.
+    // See migration 0079. Populated automatically by Postgres on insert /
+    // update; do not write to these directly. Reading them avoids per-row
+    // JSONB detoast on the heartbeat list query path.
+    contextIssueId: text("context_issue_id").generatedAlwaysAs(sql`context_snapshot ->> 'issueId'`),
+    contextTaskId: text("context_task_id").generatedAlwaysAs(sql`context_snapshot ->> 'taskId'`),
+    contextTaskKey: text("context_task_key").generatedAlwaysAs(sql`context_snapshot ->> 'taskKey'`),
+    contextCommentId: text("context_comment_id").generatedAlwaysAs(sql`context_snapshot ->> 'commentId'`),
+    contextWakeCommentId: text("context_wake_comment_id").generatedAlwaysAs(sql`context_snapshot ->> 'wakeCommentId'`),
+    contextWakeReason: text("context_wake_reason").generatedAlwaysAs(sql`context_snapshot ->> 'wakeReason'`),
+    contextWakeSource: text("context_wake_source").generatedAlwaysAs(sql`context_snapshot ->> 'wakeSource'`),
+    contextWakeTriggerDetail: text("context_wake_trigger_detail").generatedAlwaysAs(sql`context_snapshot ->> 'wakeTriggerDetail'`),
+    // Generated stored columns mirroring the hot result_json keys (migration
+    // 0080). Same per-row JSONB detoast cost as context_snapshot — see the
+    // 0080 SQL header for context. Text fields are truncated to 500 chars at
+    // write time (same bound the runtime list query was applying via
+    // `left(..., HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS)`); cost fields are
+    // small numeric strings stored full. Do not write to these directly.
+    resultSummary: text("result_summary").generatedAlwaysAs(sql`left(result_json ->> 'summary', 500)`),
+    resultResult: text("result_result").generatedAlwaysAs(sql`left(result_json ->> 'result', 500)`),
+    resultMessage: text("result_message").generatedAlwaysAs(sql`left(result_json ->> 'message', 500)`),
+    resultError: text("result_error").generatedAlwaysAs(sql`left(result_json ->> 'error', 500)`),
+    resultTotalCostUsd: text("result_total_cost_usd").generatedAlwaysAs(sql`result_json ->> 'total_cost_usd'`),
+    resultCostUsd: text("result_cost_usd").generatedAlwaysAs(sql`result_json ->> 'cost_usd'`),
+    resultCostUsdCamel: text("result_cost_usd_camel").generatedAlwaysAs(sql`result_json ->> 'costUsd'`),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

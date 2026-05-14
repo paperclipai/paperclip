@@ -1,0 +1,377 @@
+/**
+ * GitHub webhook receiver — drives paperclip issue wakes from GitHub
+ * events so a long-running CI cycle, PR review, or PR/branch event
+ * doesn't sit silently while the agent that owns the linked issue
+ * waits for its next 5-min heartbeat-timer tick.
+ *
+ * 2026-05-06 BLO-3182 RCA:
+ *   - The user explicitly called out "issues should respond to linear
+ *     comments or github hooks. particularly CI job completion since
+ *     that takes a long time" -- a build that takes 8 minutes followed
+ *     by a 5-minute heartbeat tick means a 13-minute round-trip just
+ *     to react to a CI failure.
+ *   - Production agents run on `claude_k8s` / `opencode_k8s`; the wake
+ *     plumbing here calls `heartbeatService(db).wakeup(...)` which is
+ *     adapter-agnostic.
+ *
+ * Issue identification: GitHub events don't carry paperclip issue
+ * IDs. We extract the paperclip identifier (e.g. `BLO-3182`) from the
+ * PR's head_branch (`fix/BLO-3182-foo`), title, or body. The match
+ * against `issues.identifier` is exact.
+ *
+ * HMAC verification uses GitHub's `x-hub-signature-256` header
+ * (`sha256=<hex>`) with timing-safe compare against
+ * `GITHUB_WEBHOOK_SECRET`. Rejects all events when the secret isn't
+ * configured -- safer to refuse silently than to accept unsigned
+ * requests masquerading as GitHub.
+ */
+import { Router } from "express";
+import crypto from "node:crypto";
+import { eq } from "drizzle-orm";
+import { type Db, issues } from "@paperclipai/db";
+import { heartbeatService } from "../services/heartbeat.js";
+import { logger } from "../middleware/logger.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+
+export interface GithubWebhookConfig {
+  /**
+   * Shared secret configured on the GitHub webhook. When null/empty,
+   * the route 503s every request -- production must always set this.
+   * Test fixtures that exercise the route in isolation supply a
+   * known value and craft signed payloads.
+   */
+  webhookSecret: string | null;
+  pluginWorkerManager?: PluginWorkerManager;
+}
+
+// Conservative pattern: 2-10 uppercase letters, dash, 1-6 digits.
+// Anchored against word boundaries so `XBLO-3182` doesn't match,
+// but `(BLO-3182)`, `BLO-3182:`, or `feat/BLO-3182-thing` all do.
+const PAPERCLIP_IDENTIFIER_PATTERN = /\b([A-Z]{2,10}-\d{1,6})\b/g;
+
+// GitHub event names that should drive a wake. Anything not in this
+// set is acked with 200 + "ignored" so retries don't pile up.
+const WAKE_DRIVING_EVENTS = new Set([
+  "check_run",
+  "check_suite",
+  "workflow_run",
+  "pull_request_review",
+  "pull_request",
+]);
+
+function timingSafeStringEq(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
+
+function verifyGithubSignature(
+  rawBody: Buffer,
+  signatureHeader: string | null | undefined,
+  secret: string,
+): boolean {
+  if (!signatureHeader || !signatureHeader.startsWith("sha256=")) return false;
+  const expected =
+    "sha256=" + crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+  return timingSafeStringEq(signatureHeader, expected);
+}
+
+function extractPaperclipIdentifiers(...sources: Array<string | null | undefined>): string[] {
+  const found = new Set<string>();
+  for (const source of sources) {
+    if (!source) continue;
+    const matches = source.matchAll(PAPERCLIP_IDENTIFIER_PATTERN);
+    for (const match of matches) {
+      if (match[1]) found.add(match[1]);
+    }
+  }
+  return Array.from(found);
+}
+
+interface ResolvedEventContext {
+  identifiers: string[];
+  wakeReason: string;
+  prNumber: number | null;
+  repoFullName: string | null;
+}
+
+function resolveEventContext(
+  eventName: string,
+  payload: Record<string, unknown>,
+): ResolvedEventContext | null {
+  const repository = payload.repository as Record<string, unknown> | undefined;
+  const repoFullName = (repository?.full_name as string | undefined) ?? null;
+
+  const collectFromPullRequest = (pr: Record<string, unknown> | undefined) => {
+    if (!pr) return { ids: [] as string[], number: null as number | null };
+    const head = pr.head as Record<string, unknown> | undefined;
+    const branch = head?.ref as string | undefined;
+    const title = pr.title as string | undefined;
+    const body = pr.body as string | undefined;
+    const number = (pr.number as number | undefined) ?? null;
+    return { ids: extractPaperclipIdentifiers(branch, title, body), number };
+  };
+
+  switch (eventName) {
+    case "check_run": {
+      const action = payload.action as string | undefined;
+      const checkRun = payload.check_run as Record<string, unknown> | undefined;
+      // Only wake on terminal events, not on every status flip during the run.
+      if (action !== "completed" || !checkRun) return null;
+      const pullRequests = (checkRun.pull_requests as Record<string, unknown>[] | undefined) ?? [];
+      const allIds = new Set<string>();
+      let firstNumber: number | null = null;
+      for (const pr of pullRequests) {
+        const head = pr.head as Record<string, unknown> | undefined;
+        const branch = head?.ref as string | undefined;
+        for (const id of extractPaperclipIdentifiers(branch)) allIds.add(id);
+        const num = pr.number as number | undefined;
+        if (firstNumber === null && typeof num === "number") firstNumber = num;
+      }
+      const headBranch = checkRun.head_branch as string | undefined;
+      for (const id of extractPaperclipIdentifiers(headBranch)) allIds.add(id);
+      return {
+        identifiers: Array.from(allIds),
+        wakeReason: "github_check_completed",
+        prNumber: firstNumber,
+        repoFullName,
+      };
+    }
+    case "check_suite": {
+      const action = payload.action as string | undefined;
+      const checkSuite = payload.check_suite as Record<string, unknown> | undefined;
+      if (action !== "completed" || !checkSuite) return null;
+      const pullRequests = (checkSuite.pull_requests as Record<string, unknown>[] | undefined) ?? [];
+      const allIds = new Set<string>();
+      let firstNumber: number | null = null;
+      for (const pr of pullRequests) {
+        const head = pr.head as Record<string, unknown> | undefined;
+        const branch = head?.ref as string | undefined;
+        for (const id of extractPaperclipIdentifiers(branch)) allIds.add(id);
+        const num = pr.number as number | undefined;
+        if (firstNumber === null && typeof num === "number") firstNumber = num;
+      }
+      const headBranch = checkSuite.head_branch as string | undefined;
+      for (const id of extractPaperclipIdentifiers(headBranch)) allIds.add(id);
+      return {
+        identifiers: Array.from(allIds),
+        wakeReason: "github_check_suite_completed",
+        prNumber: firstNumber,
+        repoFullName,
+      };
+    }
+    case "workflow_run": {
+      const action = payload.action as string | undefined;
+      const workflowRun = payload.workflow_run as Record<string, unknown> | undefined;
+      if (action !== "completed" || !workflowRun) return null;
+      const pullRequests = (workflowRun.pull_requests as Record<string, unknown>[] | undefined) ?? [];
+      const allIds = new Set<string>();
+      let firstNumber: number | null = null;
+      for (const pr of pullRequests) {
+        const head = pr.head as Record<string, unknown> | undefined;
+        const branch = head?.ref as string | undefined;
+        for (const id of extractPaperclipIdentifiers(branch)) allIds.add(id);
+        const num = pr.number as number | undefined;
+        if (firstNumber === null && typeof num === "number") firstNumber = num;
+      }
+      const headBranch = workflowRun.head_branch as string | undefined;
+      for (const id of extractPaperclipIdentifiers(headBranch)) allIds.add(id);
+      return {
+        identifiers: Array.from(allIds),
+        wakeReason: "github_workflow_completed",
+        prNumber: firstNumber,
+        repoFullName,
+      };
+    }
+    case "pull_request_review": {
+      const action = payload.action as string | undefined;
+      // Only "submitted" advances state; "edited"/"dismissed" don't usually
+      // need a wake.
+      if (action !== "submitted") return null;
+      const pr = payload.pull_request as Record<string, unknown> | undefined;
+      const collected = collectFromPullRequest(pr);
+      return {
+        identifiers: collected.ids,
+        wakeReason: "github_pr_review_submitted",
+        prNumber: collected.number,
+        repoFullName,
+      };
+    }
+    case "pull_request": {
+      const action = payload.action as string | undefined;
+      // Wake on the events that change reviewer expectations: opened (CI
+      // starts), ready_for_review (draft -> ready), closed (merged or
+      // abandoned). synchronize fires per push -- skipped here to avoid
+      // thrash; check_run/workflow_run paths cover the same need.
+      if (action !== "opened" && action !== "ready_for_review" && action !== "closed") return null;
+      const pr = payload.pull_request as Record<string, unknown> | undefined;
+      const collected = collectFromPullRequest(pr);
+      const reasonByAction: Record<string, string> = {
+        opened: "github_pr_opened",
+        ready_for_review: "github_pr_ready_for_review",
+        closed: "github_pr_closed",
+      };
+      return {
+        identifiers: collected.ids,
+        wakeReason: reasonByAction[action] ?? "github_pull_request",
+        prNumber: collected.number,
+        repoFullName,
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
+  const router = Router();
+
+  router.post("/", async (req, res) => {
+    if (!config.webhookSecret) {
+      logger.warn("github webhook received but GITHUB_WEBHOOK_SECRET is not configured; refusing");
+      res.status(503).json({ error: "github webhook not configured" });
+      return;
+    }
+
+    const rawBody = (req as unknown as { rawBody?: Buffer }).rawBody;
+    if (!rawBody) {
+      res.status(400).json({ error: "rawBody missing — body parser middleware misconfigured" });
+      return;
+    }
+
+    const signature = req.header("x-hub-signature-256");
+    if (!verifyGithubSignature(rawBody, signature, config.webhookSecret)) {
+      logger.warn(
+        { signaturePresent: Boolean(signature) },
+        "github webhook signature mismatch; rejecting",
+      );
+      res.status(401).json({ error: "invalid signature" });
+      return;
+    }
+
+    const eventName = req.header("x-github-event") ?? "";
+    const deliveryId = req.header("x-github-delivery") ?? null;
+
+    if (!WAKE_DRIVING_EVENTS.has(eventName)) {
+      // Acked but ignored. GitHub retries on non-2xx, and it would
+      // hammer us if we 4xx'd every event we don't handle.
+      res.status(200).json({ ok: true, ignored: eventName });
+      return;
+    }
+
+    const payload = (req.body ?? {}) as Record<string, unknown>;
+    const context = resolveEventContext(eventName, payload);
+    if (!context || context.identifiers.length === 0) {
+      res.status(200).json({ ok: true, ignored: "no_paperclip_identifier" });
+      return;
+    }
+
+    // Look up paperclip issues by identifier. Identifiers are unique
+    // per company, so one parsed identifier may match multiple rows
+    // across companies if two companies share a prefix. We drive a
+    // wake for every match -- GitHub PRs can legitimately reference
+    // identifiers across orgs.
+    const matchedIssues = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        assigneeAgentId: issues.assigneeAgentId,
+        status: issues.status,
+      })
+      .from(issues);
+    const matched = matchedIssues.filter(
+      (row) => row.identifier && context.identifiers.includes(row.identifier),
+    );
+
+    if (matched.length === 0) {
+      res.status(200).json({
+        ok: true,
+        ignored: "no_matching_issue",
+        identifiers: context.identifiers,
+      });
+      return;
+    }
+
+    const heartbeat = heartbeatService(db, {
+      pluginWorkerManager: config.pluginWorkerManager,
+    });
+    const wakes: Array<{ issueIdentifier: string | null; agentId: string }> = [];
+    const skipped: Array<{ issueIdentifier: string | null; reason: string }> = [];
+
+    for (const issue of matched) {
+      // Terminal-status issues don't need to wake -- the assignee
+      // shouldn't reopen `done`/`cancelled` work just because a stale
+      // CI ping arrived.
+      if (issue.status === "done" || issue.status === "cancelled") {
+        skipped.push({ issueIdentifier: issue.identifier, reason: "terminal_status" });
+        continue;
+      }
+      if (!issue.assigneeAgentId) {
+        skipped.push({ issueIdentifier: issue.identifier, reason: "unassigned" });
+        continue;
+      }
+      try {
+        await heartbeat.wakeup(issue.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: context.wakeReason,
+          payload: {
+            issueId: issue.id,
+            source: "github",
+            event: eventName,
+            deliveryId,
+            prNumber: context.prNumber,
+            repoFullName: context.repoFullName,
+          },
+          contextSnapshot: {
+            issueId: issue.id,
+            taskId: issue.id,
+            wakeReason: context.wakeReason,
+            wakeSource: "automation",
+            wakeTriggerDetail: "system",
+            commentSource: "github",
+            githubEvent: eventName,
+            githubDeliveryId: deliveryId,
+            githubPrNumber: context.prNumber,
+            githubRepoFullName: context.repoFullName,
+          },
+        });
+        wakes.push({ issueIdentifier: issue.identifier, agentId: issue.assigneeAgentId });
+      } catch (err) {
+        logger.error(
+          {
+            err,
+            issueId: issue.id,
+            identifier: issue.identifier,
+            agentId: issue.assigneeAgentId,
+            event: eventName,
+          },
+          "github webhook wake failed",
+        );
+        skipped.push({ issueIdentifier: issue.identifier, reason: "wake_threw" });
+      }
+    }
+
+    logger.info(
+      {
+        event: eventName,
+        deliveryId,
+        identifiers: context.identifiers,
+        prNumber: context.prNumber,
+        repoFullName: context.repoFullName,
+        wakeCount: wakes.length,
+        skippedCount: skipped.length,
+      },
+      "github webhook drove issue wakes",
+    );
+
+    res.status(200).json({ ok: true, wakes, skipped });
+  });
+
+  return router;
+}
+
+// Test-only re-exports.
+export const __test_extractPaperclipIdentifiers = extractPaperclipIdentifiers;
+export const __test_verifyGithubSignature = verifyGithubSignature;
+export const __test_resolveEventContext = resolveEventContext;

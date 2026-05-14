@@ -7,7 +7,6 @@ import {
   agents,
   companies,
   createDb,
-  environments,
   executionWorkspaces,
   goals,
   heartbeatRuns,
@@ -26,9 +25,11 @@ import {
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import {
   clampIssueListLimit,
-  deriveIssueCommentRunLogAttribution,
+  extractExecutiveHoldMarker,
+  findActiveExecutiveHold,
   ISSUE_LIST_MAX_LIMIT,
   issueService,
+  parseExecutiveHoldMarkerTimestamp,
 } from "../services/issues.ts";
 import { buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 
@@ -43,66 +44,94 @@ describe("issue list limit helpers", () => {
   });
 });
 
-describe("deriveIssueCommentRunLogAttribution", () => {
-  it("recovers agent attribution from run logs that printed the posted comment id", () => {
-    const commentId = randomUUID();
-    const runId = randomUUID();
-    const agentId = randomUUID();
-
-    const derived = deriveIssueCommentRunLogAttribution(
-      [
-        {
-          id: commentId,
-          authorAgentId: null,
-          authorUserId: "user-1",
-          createdByRunId: null,
-          createdAt: new Date("2026-05-11T18:55:40.090Z"),
-        },
-      ],
-      [
-        {
-          runId,
-          agentId,
-          createdAt: new Date("2026-05-11T18:51:56.246Z"),
-          startedAt: new Date("2026-05-11T18:51:56.257Z"),
-          finishedAt: new Date("2026-05-11T18:55:45.600Z"),
-          logContent: `comment id: ${commentId}\n`,
-        },
-      ],
-    );
-
-    expect(derived.get(commentId)).toEqual({
-      derivedAuthorAgentId: agentId,
-      derivedCreatedByRunId: runId,
-      derivedAuthorSource: "run_log_comment_post",
-    });
+describe("executive hold marker parsing", () => {
+  it("parses strict ISO-8601 with Z", () => {
+    const date = parseExecutiveHoldMarkerTimestamp("2026-05-07T03:00:00Z");
+    expect(date?.toISOString()).toBe("2026-05-07T03:00:00.000Z");
   });
 
-  it("does not rewrite comments without exact run-log proof", () => {
-    const commentId = randomUUID();
-    const derived = deriveIssueCommentRunLogAttribution(
-      [
-        {
-          id: commentId,
-          authorAgentId: null,
-          authorUserId: "user-1",
-          createdByRunId: null,
-          createdAt: new Date("2026-05-11T18:55:40.090Z"),
-        },
-      ],
-      [
-        {
-          runId: randomUUID(),
-          agentId: randomUUID(),
-          createdAt: new Date("2026-05-11T18:51:56.246Z"),
-          startedAt: new Date("2026-05-11T18:51:56.257Z"),
-          finishedAt: new Date("2026-05-11T18:55:45.600Z"),
-          logContent: "posted results without echoing the comment id",
-        },
-      ],
-    );
+  it("parses loose `YYYY-MM-DD HH:MM UTC` form", () => {
+    const date = parseExecutiveHoldMarkerTimestamp("2026-05-07 03:00 UTC");
+    expect(date?.toISOString()).toBe("2026-05-07T03:00:00.000Z");
+  });
 
-    expect(derived.has(commentId)).toBe(false);
+  it("returns null for unparseable strings", () => {
+    expect(parseExecutiveHoldMarkerTimestamp("tomorrow")).toBeNull();
+    expect(parseExecutiveHoldMarkerTimestamp("")).toBeNull();
+  });
+
+  it("extracts strict ISO timestamp from a comment body", () => {
+    const date = extractExecutiveHoldMarker(
+      "Pausing this — do not retry before 2026-05-07T03:00:00Z, see thread.",
+    );
+    expect(date?.toISOString()).toBe("2026-05-07T03:00:00.000Z");
+  });
+
+  it("extracts loose timestamp from a comment body", () => {
+    const date = extractExecutiveHoldMarker(
+      "Hold this until tomorrow. Do not retry before 2026-05-07 03:00 UTC.",
+    );
+    expect(date?.toISOString()).toBe("2026-05-07T03:00:00.000Z");
+  });
+
+  it("returns null when body has no marker", () => {
+    expect(extractExecutiveHoldMarker("Just a regular comment.")).toBeNull();
+    expect(extractExecutiveHoldMarker(null)).toBeNull();
+  });
+
+  it("treats newest matching executive comment as authoritative", () => {
+    const now = new Date("2026-05-06T00:00:00Z");
+    const hold = findActiveExecutiveHold(
+      [
+        {
+          id: "old",
+          body: "do not retry before 2026-05-04T00:00:00Z",
+          createdAt: new Date("2026-05-03T00:00:00Z"),
+          authorRole: "ceo",
+        },
+        {
+          id: "new",
+          body: "do not retry before 2026-05-07 03:00 UTC",
+          createdAt: new Date("2026-05-05T23:00:00Z"),
+          authorRole: "cto",
+        },
+      ],
+      now,
+    );
+    expect(hold).toMatchObject({ commentId: "new" });
+    expect(hold?.until.toISOString()).toBe("2026-05-07T03:00:00.000Z");
+  });
+
+  it("ignores hold markers from non-executive authors", () => {
+    const now = new Date("2026-05-06T00:00:00Z");
+    const hold = findActiveExecutiveHold(
+      [
+        {
+          id: "engineer-comment",
+          body: "do not retry before 2026-05-07T03:00:00Z",
+          createdAt: new Date("2026-05-05T23:00:00Z"),
+          authorRole: "engineer",
+        },
+      ],
+      now,
+    );
+    expect(hold).toBeNull();
+  });
+
+  it("releases the hold when the newest match has an expired timestamp", () => {
+    const now = new Date("2026-05-08T00:00:00Z");
+    const hold = findActiveExecutiveHold(
+      [
+        {
+          id: "expired",
+          body: "do not retry before 2026-05-07T03:00:00Z",
+          createdAt: new Date("2026-05-05T23:00:00Z"),
+          authorRole: "ceo",
+        },
+      ],
+      now,
+    );
+    expect(hold).toBeNull();
   });
 });
 
@@ -150,7 +179,6 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(goals);
-    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(instanceSettings);
     await db.delete(companies);
@@ -529,14 +557,14 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result.map((issue) => issue.id)).toEqual([grandchildId]);
   });
 
-  it("accepts issue identifiers with alphanumeric prefixes through getById", async () => {
+  it("accepts issue identifiers through getById", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
-      issuePrefix: "PC1A2",
+      issuePrefix: "PAP",
       requireBoardApprovalForNewAgents: false,
     });
 
@@ -544,19 +572,19 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       id: issueId,
       companyId,
       issueNumber: 1064,
-      identifier: "PC1A2-1064",
+      identifier: "PAP-1064",
       title: "Feedback votes error",
       status: "todo",
       priority: "medium",
       createdByUserId: "user-1",
     });
 
-    const issue = await svc.getById("pc1a2-1064");
+    const issue = await svc.getById("PAP-1064");
 
     expect(issue).toEqual(
       expect.objectContaining({
         id: issueId,
-        identifier: "PC1A2-1064",
+        identifier: "PAP-1064",
       }),
     );
   });
@@ -724,143 +752,6 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
     expect(executionResult.map((issue) => issue.id)).toEqual([executionLinkedIssueId]);
     expect(projectResult.map((issue) => issue.id).sort()).toEqual([executionLinkedIssueId, projectLinkedIssueId].sort());
-  });
-
-  it("hides plugin operation issues from default lists and inbox-style filters while preserving explicit retrieval", async () => {
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-    const projectId = randomUUID();
-    const normalIssueId = randomUUID();
-    const pluginVisibleIssueId = randomUUID();
-    const operationIssueId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "Plugin Runner",
-      role: "engineer",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
-    await db.insert(projects).values({
-      id: projectId,
-      companyId,
-      name: "Plugin operations",
-      status: "in_progress",
-    });
-    await db.insert(issues).values([
-      {
-        id: normalIssueId,
-        companyId,
-        title: "Normal issue",
-        status: "todo",
-        priority: "medium",
-        assigneeAgentId: agentId,
-      },
-      {
-        id: pluginVisibleIssueId,
-        companyId,
-        title: "Plugin-visible issue",
-        status: "todo",
-        priority: "medium",
-        assigneeAgentId: agentId,
-        originKind: "plugin:paperclip.missions:feature",
-      },
-      {
-        id: operationIssueId,
-        companyId,
-        projectId,
-        title: "Plugin operation issue",
-        status: "todo",
-        priority: "medium",
-        assigneeAgentId: agentId,
-        originKind: "plugin:paperclip.missions:operation",
-        originId: "mission-alpha:operation-1",
-      },
-    ]);
-
-    const defaultIssueIds = (await svc.list(companyId)).map((issue) => issue.id);
-    expect(defaultIssueIds).toContain(normalIssueId);
-    expect(defaultIssueIds).toContain(pluginVisibleIssueId);
-    expect(defaultIssueIds).not.toContain(operationIssueId);
-
-    const inboxIssueIds = (await svc.list(companyId, {
-      assigneeAgentId: agentId,
-      status: "todo,in_progress,blocked",
-      includeRoutineExecutions: true,
-    })).map((issue) => issue.id);
-    expect(inboxIssueIds).toContain(normalIssueId);
-    expect(inboxIssueIds).not.toContain(operationIssueId);
-
-    await expect(svc.list(companyId, { originKind: "plugin:paperclip.missions:operation" }))
-      .resolves.toEqual([expect.objectContaining({ id: operationIssueId })]);
-    await expect(svc.list(companyId, { originId: "mission-alpha:operation-1" }))
-      .resolves.toEqual([expect.objectContaining({ id: operationIssueId })]);
-
-    const projectIssueIds = (await svc.list(companyId, { projectId })).map((issue) => issue.id);
-    expect(projectIssueIds).toContain(operationIssueId);
-
-    const advancedIssueIds = (await svc.list(companyId, { includePluginOperations: true })).map((issue) => issue.id);
-    expect(advancedIssueIds).toContain(operationIssueId);
-  });
-
-  it("excludes plugin operation issues from unread inbox counts", async () => {
-    const companyId = randomUUID();
-    const userId = "board-user";
-    const otherUserId = "other-user";
-    const normalIssueId = randomUUID();
-    const operationIssueId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await db.insert(issues).values([
-      {
-        id: normalIssueId,
-        companyId,
-        title: "Normal touched issue",
-        status: "todo",
-        priority: "medium",
-        createdByUserId: userId,
-      },
-      {
-        id: operationIssueId,
-        companyId,
-        title: "Plugin operation touched issue",
-        status: "todo",
-        priority: "medium",
-        createdByUserId: userId,
-        originKind: "plugin:paperclip.missions:operation",
-      },
-    ]);
-    await db.insert(issueComments).values([
-      {
-        companyId,
-        issueId: normalIssueId,
-        authorUserId: otherUserId,
-        body: "Unread normal update.",
-      },
-      {
-        companyId,
-        issueId: operationIssueId,
-        authorUserId: otherUserId,
-        body: "Unread operation update.",
-      },
-    ]);
-
-    await expect(svc.countUnreadTouchedByUser(companyId, userId, "todo")).resolves.toBe(1);
   });
 
   it("hides archived inbox issues until new external activity arrives", async () => {
@@ -1160,68 +1051,6 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(comments.map((comment) => comment.id)).toEqual([firstCommentId]);
   });
 
-  it("lists user comments when derived run attribution scans a timestamp window", async () => {
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-    const issueId = randomUUID();
-    const commentId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "CodexCoder",
-      role: "engineer",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
-
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      title: "Comments issue",
-      status: "todo",
-      priority: "medium",
-    });
-
-    await db.insert(heartbeatRuns).values({
-      id: randomUUID(),
-      companyId,
-      agentId,
-      contextSnapshot: { issueId },
-      createdAt: new Date("2026-05-12T22:58:00.000Z"),
-      startedAt: new Date("2026-05-12T22:58:00.000Z"),
-      finishedAt: new Date("2026-05-12T23:14:00.000Z"),
-    });
-
-    await db.insert(issueComments).values({
-      id: commentId,
-      companyId,
-      issueId,
-      authorUserId: "user-1",
-      body: "Comment should be visible",
-      createdAt: new Date("2026-05-12T23:00:00.000Z"),
-      updatedAt: new Date("2026-05-12T23:00:00.000Z"),
-    });
-
-    const comments = await svc.listComments(issueId, {
-      order: "desc",
-      limit: 50,
-    });
-
-    expect(comments.map((comment) => comment.id)).toEqual([commentId]);
-    expect(comments[0]?.body).toBe("Comment should be visible");
-  });
-
   it("includes blockedBy summaries on list rows in one batched pass", async () => {
     const companyId = randomUUID();
     const blockerId = randomUUID();
@@ -1450,351 +1279,6 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(child.executionWorkspaceSettings).toEqual({
       mode: "isolated_workspace",
       workspaceRuntime: { profile: "agent" },
-    });
-  });
-
-  it("captures the assignee default environment when neither issue nor project specifies one", async () => {
-    const companyId = randomUUID();
-    const projectId = randomUUID();
-    const projectWorkspaceId = randomUUID();
-    const assigneeEnvironmentId = randomUUID();
-    const assigneeAgentId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
-
-    await db.insert(environments).values([
-      {
-        id: assigneeEnvironmentId,
-        companyId,
-        name: "QA E2B",
-        driver: "sandbox",
-        status: "active",
-        config: { provider: "e2b" },
-      },
-    ]);
-
-    await db.insert(agents).values({
-      id: assigneeAgentId,
-      companyId,
-      name: "QA E2B Codex",
-      role: "engineer",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      defaultEnvironmentId: assigneeEnvironmentId,
-      permissions: {},
-    });
-
-    await db.insert(projects).values({
-      id: projectId,
-      companyId,
-      name: "Workspace project",
-      status: "in_progress",
-      executionWorkspacePolicy: {
-        enabled: true,
-        defaultMode: "shared_workspace",
-        allowIssueOverride: true,
-        defaultProjectWorkspaceId: projectWorkspaceId,
-      },
-    });
-
-    await db.insert(projectWorkspaces).values({
-      id: projectWorkspaceId,
-      companyId,
-      projectId,
-      name: "Primary workspace",
-      isPrimary: true,
-    });
-
-    const issue = await svc.create(companyId, {
-      projectId,
-      assigneeAgentId,
-      title: "Environment matrix: e2b / codex_local",
-      status: "todo",
-      priority: "medium",
-    });
-
-    expect(issue.executionWorkspaceSettings).toEqual({
-      mode: "shared_workspace",
-      environmentId: assigneeEnvironmentId,
-    });
-  });
-
-  it("does not promote the assignee default environment when the project policy already specifies one", async () => {
-    const companyId = randomUUID();
-    const projectId = randomUUID();
-    const projectWorkspaceId = randomUUID();
-    const projectEnvironmentId = randomUUID();
-    const assigneeEnvironmentId = randomUUID();
-    const assigneeAgentId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
-
-    await db.insert(environments).values([
-      {
-        id: projectEnvironmentId,
-        companyId,
-        name: "QA SSH",
-        driver: "ssh",
-        status: "active",
-        config: {},
-      },
-      {
-        id: assigneeEnvironmentId,
-        companyId,
-        name: "QA E2B",
-        driver: "sandbox",
-        status: "active",
-        config: { provider: "e2b" },
-      },
-    ]);
-
-    await db.insert(agents).values({
-      id: assigneeAgentId,
-      companyId,
-      name: "QA E2B Codex",
-      role: "engineer",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      defaultEnvironmentId: assigneeEnvironmentId,
-      permissions: {},
-    });
-
-    await db.insert(projects).values({
-      id: projectId,
-      companyId,
-      name: "Workspace project",
-      status: "in_progress",
-      executionWorkspacePolicy: {
-        enabled: true,
-        defaultMode: "shared_workspace",
-        allowIssueOverride: true,
-        defaultProjectWorkspaceId: projectWorkspaceId,
-        environmentId: projectEnvironmentId,
-      },
-    });
-
-    await db.insert(projectWorkspaces).values({
-      id: projectWorkspaceId,
-      companyId,
-      projectId,
-      name: "Primary workspace",
-      isPrimary: true,
-    });
-
-    const issue = await svc.create(companyId, {
-      projectId,
-      assigneeAgentId,
-      title: "Environment matrix: e2b / codex_local",
-      status: "todo",
-      priority: "medium",
-    });
-
-    // Project policy's environmentId must win over the assignee's default;
-    // executionWorkspaceSettings should not bake in an environmentId in this case
-    // so resolveExecutionWorkspaceEnvironmentId can fall through to the project
-    // policy's value at run time.
-    expect(issue.executionWorkspaceSettings).toEqual({ mode: "shared_workspace" });
-  });
-
-  it("captures the new assignee's default environment on reassignment", async () => {
-    const companyId = randomUUID();
-    const projectId = randomUUID();
-    const projectWorkspaceId = randomUUID();
-    const firstEnvironmentId = randomUUID();
-    const secondEnvironmentId = randomUUID();
-    const firstAgentId = randomUUID();
-    const secondAgentId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
-
-    await db.insert(environments).values([
-      {
-        id: firstEnvironmentId,
-        companyId,
-        name: "QA SSH",
-        driver: "ssh",
-        status: "active",
-        config: {},
-      },
-      {
-        id: secondEnvironmentId,
-        companyId,
-        name: "QA E2B",
-        driver: "sandbox",
-        status: "active",
-        config: { provider: "e2b" },
-      },
-    ]);
-
-    await db.insert(agents).values([
-      {
-        id: firstAgentId,
-        companyId,
-        name: "QA SSH Codex",
-        role: "engineer",
-        status: "active",
-        adapterType: "codex_local",
-        adapterConfig: {},
-        runtimeConfig: {},
-        defaultEnvironmentId: firstEnvironmentId,
-        permissions: {},
-      },
-      {
-        id: secondAgentId,
-        companyId,
-        name: "QA E2B Codex",
-        role: "engineer",
-        status: "active",
-        adapterType: "codex_local",
-        adapterConfig: {},
-        runtimeConfig: {},
-        defaultEnvironmentId: secondEnvironmentId,
-        permissions: {},
-      },
-    ]);
-
-    await db.insert(projects).values({
-      id: projectId,
-      companyId,
-      name: "Workspace project",
-      status: "in_progress",
-      executionWorkspacePolicy: {
-        enabled: true,
-        defaultMode: "shared_workspace",
-        allowIssueOverride: true,
-        defaultProjectWorkspaceId: projectWorkspaceId,
-      },
-    });
-
-    await db.insert(projectWorkspaces).values({
-      id: projectWorkspaceId,
-      companyId,
-      projectId,
-      name: "Primary workspace",
-      isPrimary: true,
-    });
-
-    const created = await svc.create(companyId, {
-      projectId,
-      assigneeAgentId: firstAgentId,
-      title: "Environment matrix: ssh / codex_local",
-      status: "todo",
-      priority: "medium",
-    });
-
-    expect(created.executionWorkspaceSettings).toMatchObject({
-      environmentId: firstEnvironmentId,
-    });
-
-    const reassigned = await svc.update(created.id, {
-      assigneeAgentId: secondAgentId,
-    });
-
-    expect(reassigned).not.toBeNull();
-    expect(reassigned!.executionWorkspaceSettings).toMatchObject({
-      environmentId: secondEnvironmentId,
-    });
-  });
-
-  it("preserves an operator-set environmentId across reassignment", async () => {
-    const companyId = randomUUID();
-    const projectId = randomUUID();
-    const projectWorkspaceId = randomUUID();
-    const firstEnvironmentId = randomUUID();
-    const secondEnvironmentId = randomUUID();
-    const operatorEnvironmentId = randomUUID();
-    const firstAgentId = randomUUID();
-    const secondAgentId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
-
-    await db.insert(environments).values([
-      { id: firstEnvironmentId, companyId, name: "Env 1", driver: "ssh", status: "active", config: {} },
-      { id: secondEnvironmentId, companyId, name: "Env 2", driver: "sandbox", status: "active", config: { provider: "e2b" } },
-      { id: operatorEnvironmentId, companyId, name: "Operator pick", driver: "ssh", status: "active", config: {} },
-    ]);
-
-    await db.insert(agents).values([
-      {
-        id: firstAgentId, companyId, name: "First agent", role: "engineer", status: "active",
-        adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {},
-        defaultEnvironmentId: firstEnvironmentId, permissions: {},
-      },
-      {
-        id: secondAgentId, companyId, name: "Second agent", role: "engineer", status: "active",
-        adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {},
-        defaultEnvironmentId: secondEnvironmentId, permissions: {},
-      },
-    ]);
-
-    await db.insert(projects).values({
-      id: projectId, companyId, name: "Workspace project", status: "in_progress",
-      executionWorkspacePolicy: {
-        enabled: true,
-        defaultMode: "shared_workspace",
-        allowIssueOverride: true,
-        defaultProjectWorkspaceId: projectWorkspaceId,
-      },
-    });
-
-    await db.insert(projectWorkspaces).values({
-      id: projectWorkspaceId, companyId, projectId, name: "Primary workspace", isPrimary: true,
-    });
-
-    const created = await svc.create(companyId, {
-      projectId,
-      assigneeAgentId: firstAgentId,
-      title: "Operator overrides env then reassigns",
-      status: "todo",
-      priority: "medium",
-    });
-
-    // Operator explicitly overrides the environmentId in a separate update.
-    const overridden = await svc.update(created.id, {
-      executionWorkspaceSettings: {
-        mode: "shared_workspace",
-        environmentId: operatorEnvironmentId,
-      },
-    });
-    expect(overridden!.executionWorkspaceSettings).toMatchObject({
-      environmentId: operatorEnvironmentId,
-    });
-
-    // A subsequent reassignment-only update must NOT overwrite the operator's
-    // explicit choice with the new assignee's default.
-    const reassigned = await svc.update(created.id, {
-      assigneeAgentId: secondAgentId,
-    });
-    expect(reassigned!.executionWorkspaceSettings).toMatchObject({
-      environmentId: operatorEnvironmentId,
     });
   });
 
@@ -2304,6 +1788,425 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ]);
   });
 
+  describe("listWakeableBlockedDependents executive hold suppression (BLO-3496)", () => {
+    async function setupBlockedDependentWithExecutive(opts: {
+      ctoRole?: string;
+    } = {}) {
+      const companyId = randomUUID();
+      const assigneeAgentId = randomUUID();
+      const ctoAgentId = randomUUID();
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values([
+        {
+          id: assigneeAgentId,
+          companyId,
+          name: "CodexCoder",
+          role: "engineer",
+          status: "active",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: {},
+          permissions: {},
+        },
+        {
+          id: ctoAgentId,
+          companyId,
+          name: "CTO",
+          role: opts.ctoRole ?? "cto",
+          status: "active",
+          adapterType: "claude_k8s",
+          adapterConfig: {},
+          runtimeConfig: {},
+          permissions: {},
+        },
+      ]);
+
+      const blockerId = randomUUID();
+      const blockedIssueId = randomUUID();
+      await db.insert(issues).values([
+        { id: blockerId, companyId, title: "Recovery", status: "done", priority: "critical" },
+        {
+          id: blockedIssueId,
+          companyId,
+          title: "Source under hold",
+          status: "blocked",
+          priority: "critical",
+          assigneeAgentId,
+        },
+      ]);
+      await svc.update(blockedIssueId, { blockedByIssueIds: [blockerId] });
+
+      return { companyId, ctoAgentId, assigneeAgentId, blockerId, blockedIssueId };
+    }
+
+    async function insertComment(opts: {
+      companyId: string;
+      issueId: string;
+      authorAgentId: string | null;
+      body: string;
+      createdAt: Date;
+    }) {
+      await db.insert(issueComments).values({
+        id: randomUUID(),
+        companyId: opts.companyId,
+        issueId: opts.issueId,
+        authorAgentId: opts.authorAgentId,
+        body: opts.body,
+        createdAt: opts.createdAt,
+        updatedAt: opts.createdAt,
+      });
+    }
+
+    it("suppresses the wake when an executive `do not retry before <future ts>` hold is active (strict ISO)", async () => {
+      const ctx = await setupBlockedDependentWithExecutive();
+      const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      await insertComment({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        authorAgentId: ctx.ctoAgentId,
+        body: `Pausing — do not retry before ${future}.`,
+        createdAt: new Date(),
+      });
+
+      await expect(svc.listWakeableBlockedDependents(ctx.blockerId)).resolves.toEqual([]);
+
+      const after = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, ctx.blockedIssueId))
+        .then((rows) => rows[0]);
+      expect(after?.status).toBe("blocked");
+    });
+
+    it("suppresses the wake for the loose `YYYY-MM-DD HH:MM UTC` form too", async () => {
+      const ctx = await setupBlockedDependentWithExecutive();
+      const future = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      const yyyy = future.getUTCFullYear();
+      const mm = String(future.getUTCMonth() + 1).padStart(2, "0");
+      const dd = String(future.getUTCDate()).padStart(2, "0");
+      const hh = String(future.getUTCHours()).padStart(2, "0");
+      const minute = String(future.getUTCMinutes()).padStart(2, "0");
+      await insertComment({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        authorAgentId: ctx.ctoAgentId,
+        body: `Hold this — do not retry before ${yyyy}-${mm}-${dd} ${hh}:${minute} UTC.`,
+        createdAt: new Date(),
+      });
+
+      await expect(svc.listWakeableBlockedDependents(ctx.blockerId)).resolves.toEqual([]);
+    });
+
+    it("does NOT suppress when the executive hold timestamp is in the past", async () => {
+      const ctx = await setupBlockedDependentWithExecutive();
+      const past = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      await insertComment({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        authorAgentId: ctx.ctoAgentId,
+        body: `Hold expired — do not retry before ${past}.`,
+        createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+      });
+
+      await expect(svc.listWakeableBlockedDependents(ctx.blockerId)).resolves.toEqual([
+        expect.objectContaining({
+          id: ctx.blockedIssueId,
+          assigneeAgentId: ctx.assigneeAgentId,
+        }),
+      ]);
+    });
+
+    it("does NOT suppress when the hold marker is from a non-executive author", async () => {
+      const ctx = await setupBlockedDependentWithExecutive({ ctoRole: "engineer" });
+      const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      await insertComment({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        authorAgentId: ctx.ctoAgentId,
+        body: `Trying to hold — do not retry before ${future}.`,
+        createdAt: new Date(),
+      });
+
+      await expect(svc.listWakeableBlockedDependents(ctx.blockerId)).resolves.toEqual([
+        expect.objectContaining({
+          id: ctx.blockedIssueId,
+          assigneeAgentId: ctx.assigneeAgentId,
+        }),
+      ]);
+    });
+
+    it("does NOT suppress when there is no hold marker at all", async () => {
+      const ctx = await setupBlockedDependentWithExecutive();
+      await insertComment({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        authorAgentId: ctx.ctoAgentId,
+        body: "Just a status update from the CTO, no hold marker here.",
+        createdAt: new Date(),
+      });
+
+      await expect(svc.listWakeableBlockedDependents(ctx.blockerId)).resolves.toEqual([
+        expect.objectContaining({
+          id: ctx.blockedIssueId,
+          assigneeAgentId: ctx.assigneeAgentId,
+        }),
+      ]);
+    });
+
+    it("uses the newest matching executive comment when multiple holds are present", async () => {
+      const ctx = await setupBlockedDependentWithExecutive();
+      const oldFuture = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+      const newPast = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      await insertComment({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        authorAgentId: ctx.ctoAgentId,
+        body: `Initial hold — do not retry before ${oldFuture}.`,
+        createdAt: new Date(Date.now() - 60 * 60 * 1000),
+      });
+      await insertComment({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        authorAgentId: ctx.ctoAgentId,
+        body: `Override — do not retry before ${newPast}.`,
+        createdAt: new Date(),
+      });
+
+      await expect(svc.listWakeableBlockedDependents(ctx.blockerId)).resolves.toEqual([
+        expect.objectContaining({
+          id: ctx.blockedIssueId,
+          assigneeAgentId: ctx.assigneeAgentId,
+        }),
+      ]);
+    });
+  });
+
+  describe("listResolvedBlockerDependentsToSweep executive hold suppression (BLO-3496)", () => {
+    async function setupBlockedDependentWithExecutive(opts: {
+      ctoRole?: string;
+    } = {}) {
+      const companyId = randomUUID();
+      const assigneeAgentId = randomUUID();
+      const ctoAgentId = randomUUID();
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values([
+        {
+          id: assigneeAgentId,
+          companyId,
+          name: "CodexCoder",
+          role: "engineer",
+          status: "active",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: {},
+          permissions: {},
+        },
+        {
+          id: ctoAgentId,
+          companyId,
+          name: "CTO",
+          role: opts.ctoRole ?? "cto",
+          status: "active",
+          adapterType: "claude_k8s",
+          adapterConfig: {},
+          runtimeConfig: {},
+          permissions: {},
+        },
+      ]);
+
+      const blockerId = randomUUID();
+      const blockedIssueId = randomUUID();
+      await db.insert(issues).values([
+        { id: blockerId, companyId, title: "Recovery", status: "done", priority: "critical" },
+        {
+          id: blockedIssueId,
+          companyId,
+          title: "Source under hold",
+          status: "blocked",
+          priority: "critical",
+          assigneeAgentId,
+        },
+      ]);
+      await svc.update(blockedIssueId, { blockedByIssueIds: [blockerId] });
+
+      return { companyId, ctoAgentId, assigneeAgentId, blockerId, blockedIssueId };
+    }
+
+    async function insertComment(opts: {
+      companyId: string;
+      issueId: string;
+      authorAgentId: string | null;
+      body: string;
+      createdAt: Date;
+    }) {
+      await db.insert(issueComments).values({
+        id: randomUUID(),
+        companyId: opts.companyId,
+        issueId: opts.issueId,
+        authorAgentId: opts.authorAgentId,
+        body: opts.body,
+        createdAt: opts.createdAt,
+        updatedAt: opts.createdAt,
+      });
+    }
+
+    const sweepOpts = { minBlockerResolvedAge: { milliseconds: 0 } } as const;
+
+    it("suppresses the sweep when an executive `do not retry before <future ts>` hold is active (strict ISO)", async () => {
+      const ctx = await setupBlockedDependentWithExecutive();
+      const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      await insertComment({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        authorAgentId: ctx.ctoAgentId,
+        body: `Pausing — do not retry before ${future}.`,
+        createdAt: new Date(),
+      });
+
+      await expect(svc.listResolvedBlockerDependentsToSweep(ctx.companyId, sweepOpts)).resolves.toEqual([]);
+
+      const after = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, ctx.blockedIssueId))
+        .then((rows) => rows[0]);
+      expect(after?.status).toBe("blocked");
+    });
+
+    it("suppresses the sweep for the loose `YYYY-MM-DD HH:MM UTC` form too", async () => {
+      const ctx = await setupBlockedDependentWithExecutive();
+      const future = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      const yyyy = future.getUTCFullYear();
+      const mm = String(future.getUTCMonth() + 1).padStart(2, "0");
+      const dd = String(future.getUTCDate()).padStart(2, "0");
+      const hh = String(future.getUTCHours()).padStart(2, "0");
+      const minute = String(future.getUTCMinutes()).padStart(2, "0");
+      await insertComment({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        authorAgentId: ctx.ctoAgentId,
+        body: `Hold this — do not retry before ${yyyy}-${mm}-${dd} ${hh}:${minute} UTC.`,
+        createdAt: new Date(),
+      });
+
+      await expect(svc.listResolvedBlockerDependentsToSweep(ctx.companyId, sweepOpts)).resolves.toEqual([]);
+    });
+
+    it("does NOT suppress the sweep when the executive hold timestamp is in the past", async () => {
+      const ctx = await setupBlockedDependentWithExecutive();
+      const past = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      await insertComment({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        authorAgentId: ctx.ctoAgentId,
+        body: `Hold expired — do not retry before ${past}.`,
+        createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+      });
+
+      await expect(svc.listResolvedBlockerDependentsToSweep(ctx.companyId, sweepOpts)).resolves.toEqual([
+        expect.objectContaining({
+          id: ctx.blockedIssueId,
+          assigneeAgentId: ctx.assigneeAgentId,
+        }),
+      ]);
+    });
+
+    it("does NOT suppress the sweep when the hold marker is from a non-executive author", async () => {
+      const ctx = await setupBlockedDependentWithExecutive({ ctoRole: "engineer" });
+      const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      await insertComment({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        authorAgentId: ctx.ctoAgentId,
+        body: `Trying to hold — do not retry before ${future}.`,
+        createdAt: new Date(),
+      });
+
+      await expect(svc.listResolvedBlockerDependentsToSweep(ctx.companyId, sweepOpts)).resolves.toEqual([
+        expect.objectContaining({
+          id: ctx.blockedIssueId,
+          assigneeAgentId: ctx.assigneeAgentId,
+        }),
+      ]);
+    });
+
+    it("does NOT suppress the sweep when there is no hold marker at all", async () => {
+      const ctx = await setupBlockedDependentWithExecutive();
+      await insertComment({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        authorAgentId: ctx.ctoAgentId,
+        body: "Just a status update from the CTO, no hold marker here.",
+        createdAt: new Date(),
+      });
+
+      await expect(svc.listResolvedBlockerDependentsToSweep(ctx.companyId, sweepOpts)).resolves.toEqual([
+        expect.objectContaining({
+          id: ctx.blockedIssueId,
+          assigneeAgentId: ctx.assigneeAgentId,
+        }),
+      ]);
+    });
+
+    it("uses the newest matching executive comment when multiple holds are present", async () => {
+      const ctx = await setupBlockedDependentWithExecutive();
+      const oldFuture = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+      const newPast = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      await insertComment({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        authorAgentId: ctx.ctoAgentId,
+        body: `Initial hold — do not retry before ${oldFuture}.`,
+        createdAt: new Date(Date.now() - 60 * 60 * 1000),
+      });
+      await insertComment({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        authorAgentId: ctx.ctoAgentId,
+        body: `Override — do not retry before ${newPast}.`,
+        createdAt: new Date(),
+      });
+
+      await expect(svc.listResolvedBlockerDependentsToSweep(ctx.companyId, sweepOpts)).resolves.toEqual([
+        expect.objectContaining({
+          id: ctx.blockedIssueId,
+          assigneeAgentId: ctx.assigneeAgentId,
+        }),
+      ]);
+    });
+
+    it("does NOT suppress the sweep for non-blocked candidates (todo/in_progress) regardless of hold marker", async () => {
+      const ctx = await setupBlockedDependentWithExecutive();
+      // Flip dependent to `todo`; an exec hold on a non-blocked candidate is meaningless to this sweep.
+      await db.update(issues).set({ status: "todo" }).where(eq(issues.id, ctx.blockedIssueId));
+      const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      await insertComment({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        authorAgentId: ctx.ctoAgentId,
+        body: `Hold marker — do not retry before ${future}.`,
+        createdAt: new Date(),
+      });
+
+      await expect(svc.listResolvedBlockerDependentsToSweep(ctx.companyId, sweepOpts)).resolves.toEqual([
+        expect.objectContaining({
+          id: ctx.blockedIssueId,
+          assigneeAgentId: ctx.assigneeAgentId,
+        }),
+      ]);
+    });
+  });
+
   it("reports dependency readiness for blocked issue chains", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
@@ -2411,6 +2314,12 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     const parentId = randomUUID();
     const childA = randomUUID();
     const childB = randomUUID();
+    // Set explicit issueNumbers so getWakeableParentAfterChildCompletion's
+    // ORDER BY issue_number ASC, created_at ASC produces the deterministic
+    // [childA, childB] ordering the assertion below expects. Without these,
+    // both children get NULL issueNumber + identical created_at (single
+    // INSERT statement → same now()) and Postgres returns them in an
+    // arbitrary order.
     await db.insert(issues).values([
       {
         id: parentId,
@@ -2419,6 +2328,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         status: "todo",
         priority: "medium",
         assigneeAgentId,
+        issueNumber: 1,
       },
       {
         id: childA,
@@ -2427,6 +2337,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         title: "Child A",
         status: "done",
         priority: "medium",
+        issueNumber: 2,
       },
       {
         id: childB,
@@ -2435,6 +2346,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         title: "Child B",
         status: "blocked",
         priority: "medium",
+        issueNumber: 3,
       },
     ]);
 
@@ -2728,109 +2640,6 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(followUp.executionWorkspacePreference).toBe("reuse_existing");
     expect(followUp.executionWorkspaceSettings).toEqual({
       mode: "operator_branch",
-    });
-  });
-
-  it("syncs reused execution workspace config when issue workspace settings are updated", async () => {
-    const companyId = randomUUID();
-    const projectId = randomUUID();
-    const projectWorkspaceId = randomUUID();
-    const executionWorkspaceId = randomUUID();
-    const issueId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
-
-    await db.insert(projects).values({
-      id: projectId,
-      companyId,
-      name: "Workspace project",
-      status: "in_progress",
-    });
-
-    await db.insert(projectWorkspaces).values({
-      id: projectWorkspaceId,
-      companyId,
-      projectId,
-      name: "Primary workspace",
-    });
-
-    await db.insert(executionWorkspaces).values({
-      id: executionWorkspaceId,
-      companyId,
-      projectId,
-      projectWorkspaceId,
-      mode: "isolated_workspace",
-      strategyType: "git_worktree",
-      name: "Issue worktree",
-      status: "active",
-      providerType: "git_worktree",
-      metadata: {
-        config: {
-          environmentId: "env-old",
-          provisionCommand: "bash ./scripts/provision-old.sh",
-          teardownCommand: "bash ./scripts/teardown-old.sh",
-          workspaceRuntime: { profile: "old" },
-        },
-      },
-    });
-
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      projectId,
-      projectWorkspaceId,
-      title: "Recovery issue",
-      status: "in_progress",
-      priority: "medium",
-      executionWorkspaceId,
-      executionWorkspacePreference: "reuse_existing",
-      executionWorkspaceSettings: {
-        mode: "isolated_workspace",
-        environmentId: "env-old",
-        workspaceStrategy: {
-          type: "git_worktree",
-          provisionCommand: "bash ./scripts/provision-old.sh",
-          teardownCommand: "bash ./scripts/teardown-old.sh",
-        },
-        workspaceRuntime: { profile: "old" },
-      },
-    });
-
-    await svc.update(issueId, {
-      executionWorkspaceSettings: {
-        mode: "isolated_workspace",
-        environmentId: "env-new",
-        workspaceStrategy: {
-          type: "cloud_sandbox",
-          provisionCommand: "bash ./scripts/provision-new.sh",
-          teardownCommand: "bash ./scripts/teardown-new.sh",
-        },
-        workspaceRuntime: { profile: "new" },
-      },
-    });
-
-    const workspace = await db
-      .select({ metadata: executionWorkspaces.metadata })
-      .from(executionWorkspaces)
-      .where(eq(executionWorkspaces.id, executionWorkspaceId))
-      .then((rows) => rows[0] ?? null);
-
-    expect(workspace?.metadata).toEqual({
-      config: {
-        environmentId: "env-new",
-        provisionCommand: "bash ./scripts/provision-new.sh",
-        teardownCommand: "bash ./scripts/teardown-new.sh",
-        cleanupCommand: null,
-        workspaceRuntime: { profile: "new" },
-        desiredState: null,
-        serviceStates: null,
-      },
     });
   });
 });

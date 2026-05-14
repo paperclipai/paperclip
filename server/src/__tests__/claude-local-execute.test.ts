@@ -7,11 +7,15 @@ import { claudeSessionCwdMatchesExecutionTarget, execute } from "@paperclipai/ad
 
 async function writeFailingClaudeCommand(
   commandPath: string,
-  options: { resultEvent: Record<string, unknown>; exitCode?: number },
+  options: { resultEvent: Record<string, unknown>; exitCode?: number; preludeEvents?: Record<string, unknown>[] },
 ): Promise<void> {
   const payload = JSON.stringify(options.resultEvent);
   const exit = options.exitCode ?? 1;
+  const prelude = (options.preludeEvents ?? [])
+    .map((event) => `console.log(${JSON.stringify(JSON.stringify(event))});`)
+    .join("\n");
   const script = `#!/usr/bin/env node
+${prelude}
 console.log(${JSON.stringify(payload)});
 process.exit(${exit});
 `;
@@ -941,7 +945,7 @@ describe("claude execute", () => {
     }
   }, 15_000);
 
-  it("classifies Claude 'out of extra usage' failures as transient upstream errors", async () => {
+  it("classifies Claude 'out of extra usage' failures as provider_quota_exhausted", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-transient-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "claude");
@@ -989,17 +993,160 @@ describe("claude execute", () => {
       });
 
       expect(result.exitCode).toBe(1);
-      expect(result.errorCode).toBe("claude_transient_upstream");
-      expect(result.errorFamily).toBe("transient_upstream");
-      const expectedRetryNotBefore = "2026-04-22T21:00:00.000Z";
-      expect(result.retryNotBefore).toBe(expectedRetryNotBefore);
-      expect(result.resultJson?.retryNotBefore).toBe(expectedRetryNotBefore);
+      expect(result.errorCode).toBe("provider_quota_exhausted");
       expect(result.errorMessage ?? "").toContain("extra usage");
-      expect(new Date(String(result.resultJson?.transientRetryNotBefore)).getTime()).toBe(
-        new Date("2026-04-22T21:00:00.000Z").getTime(),
-      );
     } finally {
       vi.useRealTimers();
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not classify Paperclip API auth text in Claude output as Claude auth required", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-paperclip-auth-text-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "claude");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFailingClaudeCommand(commandPath, {
+      preludeEvents: [
+        {
+          type: "assistant",
+          session_id: "claude-session-paperclip-auth-text",
+          message: {
+            content: [
+              {
+                type: "text",
+                text: "The Paperclip API is returning 401 (Agent authentication required).",
+              },
+            ],
+          },
+        },
+      ],
+      resultEvent: {
+        type: "result",
+        subtype: "success",
+        session_id: "claude-session-paperclip-auth-text",
+        is_error: true,
+        result: "You're out of extra usage · resets 12:10am (UTC)",
+        api_error_status: 429,
+      },
+    });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-29T20:42:00.000Z"));
+
+    try {
+      const result = await execute({
+        runId: "run-claude-paperclip-auth-text",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      // Contract: a Paperclip-API auth phrase echoed in Claude's assistant
+      // output must NOT trip the claude_auth_required classifier — that
+      // path requires real Claude/Anthropic context (parse.ts guards on
+      // assistant-typed lines + a Claude/Anthropic/oauth context match).
+      expect(result.errorCode).not.toBe("claude_auth_required");
+      // The actual failure here is the result event's "out of extra usage"
+      // message, which classifies first as provider_quota_exhausted (see
+      // execute.ts: quota check runs before transient_upstream).
+      expect(result.errorCode).toBe("provider_quota_exhausted");
+    } finally {
+      vi.useRealTimers();
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("treats subtype=success + is_error=false as success even when CLI exits non-zero", async () => {
+    // Real-world heartbeat-runs from CTO showed status=failed with errorCode=adapter_failed
+    // and the error field literally containing the agent's successful summary text. Trace:
+    // CLI emitted {type:"result", subtype:"success", is_error:false, result:"<summary>"}
+    // and then exited 1 anyway (post-completion cleanup hiccup / stderr noise). The adapter
+    // trusted the exit code and re-queued already-completed work. Trust the SDK's success
+    // signal instead.
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-success-exit1-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "claude");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFailingClaudeCommand(commandPath, {
+      resultEvent: {
+        type: "result",
+        subtype: "success",
+        session_id: "claude-session-success-exit1",
+        is_error: false,
+        result: "Wave-3 closed: BLO-3850, BLO-3845. All same umbrella pattern.",
+        total_cost_usd: 1.07,
+        usage: { input_tokens: 35, cache_read_input_tokens: 882717, output_tokens: 6275 },
+      },
+      exitCode: 1,
+    });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-claude-success-exit1",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      // CLI's exit code is preserved on the result envelope (it really did exit 1)…
+      expect(result.exitCode).toBe(1);
+      // …but the run is NOT classified as adapter_failed: the SDK explicitly said
+      // subtype=success + is_error=false, so the agent's work landed.
+      expect(result.errorMessage).toBeNull();
+      expect(result.errorCode).toBeNull();
+      expect(result.errorFamily).toBeNull();
+      // Summary is preserved — downstream consumers (continuation logic, audit
+      // trail, billing) see the actual completion text, not "Claude run failed:
+      // subtype=success: <summary>".
+      expect(result.summary).toContain("Wave-3 closed");
+    } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
       await fs.rm(root, { recursive: true, force: true });
@@ -1113,6 +1260,162 @@ describe("claude execute", () => {
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("retries claude in-process after ccrotate next switches accounts on provider_quota_exhausted", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-ccrotate-retry-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "claude");
+    const ccrotateBinDir = path.join(root, "bin");
+    const ccrotatePath = path.join(ccrotateBinDir, "ccrotate");
+    const ccrotateLog = path.join(root, "ccrotate-invocations.log");
+    const claudeCallCounter = path.join(root, "claude-calls");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(ccrotateBinDir, { recursive: true });
+
+    // claude: first call exits with provider_quota_exhausted, second call succeeds.
+    const claudeScript = `#!/usr/bin/env node
+const fs = require("node:fs");
+const counterPath = ${JSON.stringify(claudeCallCounter)};
+let n = 0;
+try { n = Number(fs.readFileSync(counterPath, "utf8")) || 0; } catch {}
+fs.writeFileSync(counterPath, String(n + 1), "utf8");
+if (n === 0) {
+  console.log(JSON.stringify({ type: "result", subtype: "error", session_id: "claude-session-q", is_error: true, result: "You're out of extra usage · resets 4pm (UTC)", errors: [{ type: "rate_limit_error", message: "out of extra usage" }] }));
+  process.exit(1);
+}
+console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-r", model: "claude-sonnet" }));
+console.log(JSON.stringify({ type: "result", session_id: "claude-session-r", result: "ok after rotate", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
+`;
+    await fs.writeFile(commandPath, claudeScript, "utf8");
+    await fs.chmod(commandPath, 0o755);
+
+    // ccrotate: log invocation, print "Switched to account: ..." → triggers retry.
+    const ccrotateScript = `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.appendFileSync(${JSON.stringify(ccrotateLog)}, process.argv.slice(2).join(" ") + "\\n", "utf8");
+console.log("✓ Switched to account: rotated@example.com (standard tier)");
+process.exit(0);
+`;
+    await fs.writeFile(ccrotatePath, ccrotateScript, "utf8");
+    await fs.chmod(ccrotatePath, 0o755);
+
+    const previousHome = process.env.HOME;
+    const previousPath = process.env.PATH;
+    process.env.HOME = root;
+    process.env.PATH = `${ccrotateBinDir}${path.delimiter}${previousPath ?? ""}`;
+
+    try {
+      const result = await execute({
+        runId: "run-ccrotate-retry-quota",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      // Final result reflects the SECOND claude attempt (success), not the first failure.
+      expect(result.errorCode).toBeNull();
+      expect(result.summary).toBe("ok after rotate");
+      // Claude was invoked exactly twice.
+      const claudeCalls = Number(await fs.readFile(claudeCallCounter, "utf8"));
+      expect(claudeCalls).toBe(2);
+      // ccrotate next was invoked once.
+      const ccrotateInvocations = (await fs.readFile(ccrotateLog, "utf8")).trim().split("\n");
+      expect(ccrotateInvocations).toHaveLength(1);
+      expect(ccrotateInvocations[0]).toContain("--target claude next --yes");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves provider_quota_exhausted when ccrotate has no further account to rotate to", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-ccrotate-noop-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "claude");
+    const ccrotateBinDir = path.join(root, "bin");
+    const ccrotatePath = path.join(ccrotateBinDir, "ccrotate");
+    const claudeCallCounter = path.join(root, "claude-calls");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(ccrotateBinDir, { recursive: true });
+
+    const claudeScript = `#!/usr/bin/env node
+const fs = require("node:fs");
+const counterPath = ${JSON.stringify(claudeCallCounter)};
+let n = 0;
+try { n = Number(fs.readFileSync(counterPath, "utf8")) || 0; } catch {}
+fs.writeFileSync(counterPath, String(n + 1), "utf8");
+console.log(JSON.stringify({ type: "result", subtype: "error", session_id: "claude-session-q", is_error: true, result: "You're out of extra usage · resets 4pm (UTC)", errors: [{ type: "rate_limit_error", message: "out of extra usage" }] }));
+process.exit(1);
+`;
+    await fs.writeFile(commandPath, claudeScript, "utf8");
+    await fs.chmod(commandPath, 0o755);
+
+    const ccrotateScript = `#!/usr/bin/env node
+console.log("✓ Already on princeomz2004@blockcast.net (profile synced)");
+process.exit(0);
+`;
+    await fs.writeFile(ccrotatePath, ccrotateScript, "utf8");
+    await fs.chmod(ccrotatePath, 0o755);
+
+    const previousHome = process.env.HOME;
+    const previousPath = process.env.PATH;
+    process.env.HOME = root;
+    process.env.PATH = `${ccrotateBinDir}${path.delimiter}${previousPath ?? ""}`;
+
+    try {
+      const result = await execute({
+        runId: "run-ccrotate-noop",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      // ccrotate didn't actually rotate → original quota_exhausted preserved → no second claude attempt.
+      expect(result.errorCode).toBe("provider_quota_exhausted");
+      const claudeCalls = Number(await fs.readFile(claudeCallCounter, "utf8"));
+      expect(claudeCalls).toBe(1);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
       await fs.rm(root, { recursive: true, force: true });
     }
   });

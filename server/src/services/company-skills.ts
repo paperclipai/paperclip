@@ -2174,9 +2174,15 @@ export function companySkillService(db: Db) {
       const sourceKind = asString(getSkillMeta(skill).sourceKind);
       let source = normalizeSkillDirectory(skill);
       if (!source) {
-        source = options.materializeMissing === false
-          ? resolveRuntimeSkillMaterializedPath(companyId, skill)
-          : await materializeRuntimeSkillFiles(companyId, skill).catch(() => null);
+        const cachedPath = resolveRuntimeSkillMaterializedPath(companyId, skill);
+        const cachedStat = await fs.stat(cachedPath).catch(() => null);
+        if (cachedStat?.isDirectory()) {
+          source = cachedPath;
+        } else if (options.materializeMissing === false) {
+          source = cachedPath;
+        } else {
+          source = await materializeRuntimeSkillFiles(companyId, skill).catch(() => null);
+        }
       }
       if (!source) continue;
 
@@ -2370,7 +2376,12 @@ export function companySkillService(db: Db) {
           .returning()
           .then((rows) => rows[0] ?? null);
       if (!row) throw notFound("Failed to persist company skill");
-      out.push(toCompanySkill(row));
+      const persisted = toCompanySkill(row);
+      // Clear cached __runtime__ directory so next heartbeat re-materializes from updated source
+      if (existing) {
+        await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, persisted), { recursive: true, force: true }).catch(() => {});
+      }
+      out.push(persisted);
     }
     return out;
   }

@@ -8,8 +8,15 @@ import {
 const CODEX_TRANSIENT_UPSTREAM_RE =
   /(?:we(?:'|’)re\s+currently\s+experiencing\s+high\s+demand|temporary\s+errors|rate[-\s]?limit(?:ed)?|too\s+many\s+requests|\b429\b|server\s+overloaded|service\s+unavailable|try\s+again\s+later)/i;
 const CODEX_REMOTE_COMPACTION_RE = /remote\s+compact\s+task/i;
+// Matches both wordings Codex emits when a usage cap is hit:
+//   • "You've hit your usage limit for <model>. Switch to another model now, or try again at <time>."
+//   • "You've hit your usage limit. To get more access now, send a request to your admin or try again at <time>."
+// The "for <model>" clause and the middle remediation clause vary, but the suffix
+// "or try again at <time>" is stable — that's what we capture. Model names can
+// contain dots ("GPT-5.3-Codex-Spark"), so .+? is used in the for-clause and
+// anchored by the required ". " sentence break that follows.
 const CODEX_USAGE_LIMIT_RE =
-  /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
+  /you(?:'|’)ve hit your usage limit(?:\s+for\s+.+?)?\.\s+[^.\n]*?\bor try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
 
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
@@ -78,7 +85,7 @@ export function isCodexUnknownSessionError(stdout: string, stderr: string): bool
     .map((line) => line.trim())
     .filter(Boolean)
     .join("\n");
-  return /unknown (session|thread)|session .* not found|thread .* not found|conversation .* not found|missing rollout path for thread|state db missing rollout path|no rollout found for thread id/i.test(
+  return /unknown (session|thread)|session .* not found|thread .* not found|conversation .* not found|missing rollout path for thread|state db missing rollout path|no rollout found for thread/i.test(
     haystack,
   );
 }
@@ -234,6 +241,49 @@ function parseLocalClockTime(clockText: string, now: Date): Date | null {
   return retryAt;
 }
 
+function parseFullDateClockTime(clockText: string): Date | null {
+  const normalized = clockText.trim();
+  const match = normalized.match(
+    /^([A-Za-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\s+(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?(?:\s*\(([^)]+)\)|\s+([A-Z]{2,5}))?$/i,
+  );
+  if (!match) return null;
+
+  const monthIndex = new Date(`${match[1]} 1, 2000`).getMonth();
+  const day = Number.parseInt(match[2] ?? "", 10);
+  const year = Number.parseInt(match[3] ?? "", 10);
+  const hour12 = Number.parseInt(match[4] ?? "", 10);
+  const minute = Number.parseInt(match[5] ?? "0", 10);
+  if (!Number.isInteger(monthIndex) || monthIndex < 0 || monthIndex > 11) return null;
+  if (!Number.isInteger(day) || day < 1 || day > 31) return null;
+  if (!Number.isInteger(year) || year < 2000) return null;
+  if (!Number.isInteger(hour12) || hour12 < 1 || hour12 > 12) return null;
+  if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
+
+  let hour24 = hour12 % 12;
+  if ((match[6] ?? "").toLowerCase() === "p") hour24 += 12;
+
+  const timeZoneHint = match[7] ?? match[8];
+  if (timeZoneHint) {
+    return dateFromTimeZoneWallClock({
+      year,
+      month: monthIndex + 1,
+      day,
+      hour: hour24,
+      minute,
+      timeZone: timeZoneHint,
+    });
+  }
+
+  return new Date(year, monthIndex, day, hour24, minute, 0, 0);
+}
+
+function cleanUsageLimitResetText(resetText: string): string {
+  return resetText
+    .trim()
+    .replace(/(?:[.!])?\s*["'}\]]*\s*$/u, "")
+    .trim();
+}
+
 export function extractCodexRetryNotBefore(input: {
   stdout?: string | null;
   stderr?: string | null;
@@ -242,7 +292,8 @@ export function extractCodexRetryNotBefore(input: {
   const haystack = buildCodexErrorHaystack(input);
   const usageLimitMatch = haystack.match(CODEX_USAGE_LIMIT_RE);
   if (!usageLimitMatch) return null;
-  return parseLocalClockTime(usageLimitMatch[1] ?? "", now);
+  const resetText = cleanUsageLimitResetText(usageLimitMatch[1] ?? "");
+  return parseFullDateClockTime(resetText) ?? parseLocalClockTime(resetText, now);
 }
 
 export function isCodexTransientUpstreamError(input: {

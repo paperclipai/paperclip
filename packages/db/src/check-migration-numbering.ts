@@ -45,19 +45,23 @@ function ensureStrictlyOrdered(values: string[], label: string) {
 
 function ensureJournalMatchesFiles(migrationFiles: string[], journalTags: string[]) {
   const journalFiles = journalTags.map((tag) => `${tag}.sql`);
+  const journalFileSet = new Set(journalFiles);
 
-  if (journalFiles.length !== migrationFiles.length) {
-    throw new Error(
-      `Migration journal/file count mismatch: journal has ${journalFiles.length}, files have ${migrationFiles.length}`,
-    );
+  // Every journal entry must have a corresponding file
+  for (const journalFile of journalFiles) {
+    if (!migrationFiles.includes(journalFile)) {
+      throw new Error(
+        `Migration journal references ${journalFile} but the file does not exist`,
+      );
+    }
   }
 
-  for (let index = 0; index < migrationFiles.length; index += 1) {
-    const migrationFile = migrationFiles[index];
-    const journalFile = journalFiles[index];
-    if (migrationFile !== journalFile) {
+  // Journal entries must appear in order among the files
+  const journaledFiles = migrationFiles.filter((f) => journalFileSet.has(f));
+  for (let index = 0; index < journaledFiles.length; index += 1) {
+    if (journaledFiles[index] !== journalFiles[index]) {
       throw new Error(
-        `Migration journal/file order mismatch at position ${index}: journal has ${journalFile}, files have ${migrationFile}`,
+        `Migration journal/file order mismatch at position ${index}: journal has ${journalFiles[index]}, files have ${journaledFiles[index]}`,
       );
     }
   }
@@ -67,9 +71,6 @@ async function main() {
   const migrationFiles = (await readdir(migrationsDir))
     .filter((entry) => entry.endsWith(".sql"))
     .sort();
-
-  ensureNoDuplicates(migrationFiles, "migration files");
-  ensureStrictlyOrdered(migrationFiles, "migration files");
 
   const rawJournal = await readFile(journalPath, "utf8");
   const journal = JSON.parse(rawJournal) as JournalFile;

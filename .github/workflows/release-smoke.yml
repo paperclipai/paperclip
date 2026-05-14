@@ -62,11 +62,14 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Launch Docker smoke harness
+        env:
+          INPUT_HOST_PORT: ${{ inputs.host_port }}
+          INPUT_PAPERCLIP_VERSION: ${{ inputs.paperclip_version }}
         run: |
           metadata_file="$RUNNER_TEMP/release-smoke.env"
-          HOST_PORT="${{ inputs.host_port }}" \
+          HOST_PORT="$INPUT_HOST_PORT" \
           DATA_DIR="$RUNNER_TEMP/release-smoke-data" \
-          PAPERCLIPAI_VERSION="${{ inputs.paperclip_version }}" \
+          PAPERCLIPAI_VERSION="$INPUT_PAPERCLIP_VERSION" \
           SMOKE_DETACH=true \
           SMOKE_METADATA_FILE="$metadata_file" \
           ./scripts/docker-onboard-smoke.sh

@@ -16,11 +16,10 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 import {
-  DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS,
   DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
-  DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS,
-  PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX,
+  PRODUCTIVITY_REVIEW_MIN_REFRESH_INTERVAL_MS,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+  PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX,
   productivityReviewService,
 } from "../services/productivity-review.ts";
 
@@ -120,6 +119,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     count: number;
     now: Date;
     withRunComments?: boolean;
+    contextSource?: string;
   }) {
     const runs: Array<typeof heartbeatRuns.$inferInsert> = [];
     for (let index = 0; index < input.count; index += 1) {
@@ -134,7 +134,9 @@ describeEmbeddedPostgres("productivity review service", () => {
         triggerDetail: "system",
         startedAt: createdAt,
         finishedAt: new Date(createdAt.getTime() + 30_000),
-        contextSnapshot: { issueId: input.issueId, taskId: input.issueId },
+        contextSnapshot: input.contextSource
+          ? { issueId: input.issueId, taskId: input.issueId, source: input.contextSource }
+          : { issueId: input.issueId, taskId: input.issueId },
         livenessState: "advanced",
         nextAction: "Continue processing the next batch.",
         createdAt,
@@ -168,18 +170,7 @@ describeEmbeddedPostgres("productivity review service", () => {
       .orderBy(issues.createdAt);
   }
 
-  async function listRefreshComments(reviewIssueId: string) {
-    return db
-      .select()
-      .from(issueComments)
-      .where(and(
-        eq(issueComments.issueId, reviewIssueId),
-        sql`${issueComments.body} like ${`${PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX}%`}`,
-      ))
-      .orderBy(issueComments.createdAt);
-  }
-
-  it("creates exactly one manager-assigned review for a no-comment run streak and rate-limits immediate refresh", async () => {
+  it("creates exactly one manager-assigned review for a no-comment run streak and refreshes it idempotently", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
     await insertRuns({
@@ -195,146 +186,21 @@ describeEmbeddedPostgres("productivity review service", () => {
     const second = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
 
     expect(first.created).toBe(1);
-    expect(second.updated).toBe(0);
-    expect(second.existing).toBe(1);
+    expect(second.updated).toBe(1);
     const reviews = await listProductivityReviews(seeded.companyId);
     expect(reviews).toHaveLength(1);
     expect(reviews[0]?.parentId).toBe(seeded.issueId);
     expect(reviews[0]?.assigneeAgentId).toBe(seeded.managerId);
-    expect(reviews[0]?.assigneeAdapterOverrides).toEqual({ modelProfile: "cheap" });
     expect(reviews[0]?.originId).toBe(seeded.issueId);
     expect(reviews[0]?.originFingerprint).toBe(`productivity-review:${seeded.issueId}`);
     expect(reviews[0]?.description).toContain("Primary trigger: `no_comment_streak`");
     expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
 
-    expect(await listRefreshComments(reviews[0]!.id)).toHaveLength(0);
-  });
-
-  it("refreshes open productivity reviews only once per interval and caps refresh comments", async () => {
-    const now = new Date("2026-04-28T12:00:00.000Z");
-    const seeded = await seedAssignedIssue();
-    await insertRuns({
-      companyId: seeded.companyId,
-      agentId: seeded.coderId,
-      issueId: seeded.issueId,
-      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
-      now,
-    });
-
-    const service = productivityReviewService(db);
-    await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
-    const [review] = await listProductivityReviews(seeded.companyId);
-
-    const firstRefreshAt = new Date(now.getTime() + DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS);
-    const firstRefresh = await service.reconcileProductivityReviews({
-      now: firstRefreshAt,
-      companyId: seeded.companyId,
-    });
-    const tooSoonRefresh = await service.reconcileProductivityReviews({
-      now: new Date(firstRefreshAt.getTime() + 30 * 60 * 1000),
-      companyId: seeded.companyId,
-    });
-    await service.reconcileProductivityReviews({
-      now: new Date(firstRefreshAt.getTime() + DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
-      companyId: seeded.companyId,
-    });
-    await service.reconcileProductivityReviews({
-      now: new Date(firstRefreshAt.getTime() + 2 * DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
-      companyId: seeded.companyId,
-    });
-    const cappedRefresh = await service.reconcileProductivityReviews({
-      now: new Date(firstRefreshAt.getTime() + 3 * DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
-      companyId: seeded.companyId,
-    });
-
-    expect(firstRefresh.updated).toBe(1);
-    expect(tooSoonRefresh.updated).toBe(0);
-    expect(tooSoonRefresh.existing).toBe(1);
-    expect(cappedRefresh.updated).toBe(0);
-    expect(cappedRefresh.existing).toBe(1);
-    expect(await listRefreshComments(review!.id)).toHaveLength(DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS);
-  });
-
-  it("caps productivity review creation per source issue in the rolling creation window", async () => {
-    const now = new Date("2026-04-28T12:00:00.000Z");
-    const seeded = await seedAssignedIssue();
-    await insertRuns({
-      companyId: seeded.companyId,
-      agentId: seeded.coderId,
-      issueId: seeded.issueId,
-      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
-      now,
-    });
-    await db.insert(issues).values(
-      [8, 9, 10].map((hoursAgo, index) => {
-        const createdAt = new Date(now.getTime() - hoursAgo * 60 * 60 * 1000);
-        return {
-          id: randomUUID(),
-          companyId: seeded.companyId,
-          title: `Completed productivity review ${index + 1}`,
-          status: "done",
-          priority: "high",
-          originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
-          originId: seeded.issueId,
-          originFingerprint: `productivity-review:${seeded.issueId}`,
-          parentId: seeded.issueId,
-          issueNumber: index + 2,
-          identifier: `${seeded.issuePrefix}-${index + 2}`,
-          createdAt,
-          updatedAt: createdAt,
-        };
-      }),
-    );
-
-    const result = await productivityReviewService(db).reconcileProductivityReviews({
-      now,
-      companyId: seeded.companyId,
-    });
-
-    expect(result.created).toBe(0);
-    expect(result.creationCapped).toBe(1);
-    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(3);
-  });
-
-  it("does not count cancelled productivity reviews toward the creation cap", async () => {
-    const now = new Date("2026-04-28T12:00:00.000Z");
-    const seeded = await seedAssignedIssue();
-    await insertRuns({
-      companyId: seeded.companyId,
-      agentId: seeded.coderId,
-      issueId: seeded.issueId,
-      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
-      now,
-    });
-    await db.insert(issues).values(
-      [8, 9, 10].map((hoursAgo, index) => {
-        const createdAt = new Date(now.getTime() - hoursAgo * 60 * 60 * 1000);
-        return {
-          id: randomUUID(),
-          companyId: seeded.companyId,
-          title: `Cancelled productivity review ${index + 1}`,
-          status: "cancelled",
-          priority: "high",
-          originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
-          originId: seeded.issueId,
-          originFingerprint: `productivity-review:${seeded.issueId}`,
-          parentId: seeded.issueId,
-          issueNumber: index + 2,
-          identifier: `${seeded.issuePrefix}-${index + 2}`,
-          createdAt,
-          updatedAt: createdAt,
-        };
-      }),
-    );
-
-    const result = await productivityReviewService(db).reconcileProductivityReviews({
-      now,
-      companyId: seeded.companyId,
-    });
-
-    expect(result.created).toBe(1);
-    expect(result.creationCapped).toBe(0);
-    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(4);
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, reviews[0]!.id));
+    expect(comments.some((comment) => comment.body.includes("Productivity review evidence refreshed"))).toBe(true);
   });
 
   it("creates a long-active review without enabling a continuation hold", async () => {
@@ -535,6 +401,140 @@ describeEmbeddedPostgres("productivity review service", () => {
       .where(eq(activityLog.action, "issue.productivity_review_continuation_held"));
     expect(activities).toHaveLength(1);
     expect(activities[0]?.entityId).toBe(seeded.issueId);
+  });
+
+  it("honors resolvedSnoozeMs when the prior review was cancelled, not just done", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+    const cancelledReviewCreatedAt = new Date(now.getTime() - 30 * 60 * 1000);
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId: seeded.companyId,
+      title: "Cancelled productivity review (manager closed as harness noise)",
+      status: "cancelled",
+      priority: "high",
+      originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+      originId: seeded.issueId,
+      originFingerprint: `productivity-review:${seeded.issueId}`,
+      parentId: seeded.issueId,
+      issueNumber: 2,
+      identifier: `${seeded.issuePrefix}-2`,
+      createdAt: cancelledReviewCreatedAt,
+      updatedAt: cancelledReviewCreatedAt,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.snoozed).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(1);
+  });
+
+  it("does not file a review when 100% of sampling-window runs are routine-origin", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+      contextSource: "routine.dispatch",
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("throttles refresh-evidence comments at the 5-minute hard floor (BLO-3281 AC2)", async () => {
+    // Reproduces the 2026-05-05 BLO-3277 incident shape: detector
+    // re-runs faster than 5 min apart should NOT keep adding refresh
+    // comments. PRODUCTIVITY_REVIEW_MIN_REFRESH_INTERVAL_MS gates the
+    // addComment call inside createOrUpdateReview.
+    //
+    // The throttle compares the freshly-generated evidence's wall-clock
+    // time to the DB-side createdAt of the latest refresh comment, both
+    // of which are real-now in production. To exercise both branches in
+    // a unit test without sleeping for 5 min, we backdate the latest
+    // refresh comment via SQL UPDATE between scans.
+    const seeded = await seedAssignedIssue();
+    const scanNow = new Date();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now: scanNow,
+    });
+
+    const service = productivityReviewService(db);
+    const first = await service.reconcileProductivityReviews({ now: scanNow, companyId: seeded.companyId });
+    expect(first.created).toBe(1);
+
+    const reviews = await listProductivityReviews(seeded.companyId);
+    expect(reviews).toHaveLength(1);
+    const reviewId = reviews[0]!.id;
+
+    async function countRefreshComments() {
+      const rows = await db
+        .select({ id: issueComments.id })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.issueId, reviewId),
+            sql`${issueComments.body} like ${`${PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX}%`}`,
+          ),
+        );
+      return rows.length;
+    }
+
+    const baselineRefreshCount = await countRefreshComments();
+    expect(baselineRefreshCount).toBe(0);
+
+    // Re-scan: latest refresh comment doesn't exist yet (no refresh on
+    // the create path), so the throttle short-circuits and the existing
+    // branch writes its first refresh comment.
+    const firstRefresh = await service.reconcileProductivityReviews({ now: scanNow, companyId: seeded.companyId });
+    expect(firstRefresh.updated).toBe(1);
+    expect(await countRefreshComments()).toBe(1);
+
+    // Within-floor re-scan: latest refresh just landed seconds ago.
+    // Throttle should kick in — return existing, no new refresh comment.
+    const throttled = await service.reconcileProductivityReviews({ now: new Date(), companyId: seeded.companyId });
+    expect(throttled.existing).toBe(1);
+    expect(throttled.updated).toBe(0);
+    expect(await countRefreshComments()).toBe(1);
+
+    // Backdate the latest refresh comment so the next reconcile sees
+    // it as past the 5-min floor; throttle should release.
+    const backdate = new Date(Date.now() - PRODUCTIVITY_REVIEW_MIN_REFRESH_INTERVAL_MS - 60 * 1000);
+    await db
+      .update(issueComments)
+      .set({ createdAt: backdate })
+      .where(eq(issueComments.issueId, reviewId));
+
+    const allowed = await service.reconcileProductivityReviews({ now: new Date(), companyId: seeded.companyId });
+    expect(allowed.updated).toBe(1);
+    expect(await countRefreshComments()).toBe(2);
   });
 
   it("clamps poisoned requestDepth metadata instead of aborting productivity reconciliation", async () => {

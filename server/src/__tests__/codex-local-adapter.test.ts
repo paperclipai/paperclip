@@ -31,6 +31,13 @@ describe("codex_local stale session detection", () => {
 
     expect(isCodexUnknownSessionError("", stderr)).toBe(true);
   });
+
+  it("treats 'no rollout found for thread id' as an unknown session error", () => {
+    const stderr =
+      "Error: thread/resume: thread/resume failed: no rollout found for thread id 719fccb4-a1e4-4c8c-a1bf-e60c6e928d84";
+
+    expect(isCodexUnknownSessionError("", stderr)).toBe(true);
+  });
 });
 
 describe("codex_local ui stdout parser", () => {
