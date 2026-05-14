@@ -58,6 +58,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { resolveAdapterModelAvailability } from "../adapter-model-compat.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
@@ -481,6 +482,49 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     source: string;
     retryOfRunId?: string | null;
   }) {
+    const agent = await getAgent(input.agentId);
+    if (agent) {
+      const adapterModel =
+        typeof (parseObject(agent.adapterConfig) as Record<string, unknown>).model === "string"
+          ? ((parseObject(agent.adapterConfig) as Record<string, unknown>).model as string).trim()
+          : "";
+      if (adapterModel && agent.adapterType) {
+        const compat = resolveAdapterModelAvailability(agent.adapterType, adapterModel, agent.companyId);
+        if (!compat.available) {
+          const sourceRunId = input.retryOfRunId ?? "none";
+          const idempotencyPrefix = `recovery:adapter-model-unavailable:enqueueStrandedIssueRecovery:${input.issueId}:${sourceRunId}`;
+          const existing = await db
+            .select({ id: issueComments.id })
+            .from(issueComments)
+            .where(
+              and(
+                eq(issueComments.companyId, agent.companyId),
+                eq(issueComments.issueId, input.issueId),
+                sql`${issueComments.body} like ${`<!-- ${idempotencyPrefix}%`}`,
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (!existing) {
+            const commentBody = [
+              `<!-- ${idempotencyPrefix} -->`,
+              `**Failure type:** adapter/model incompatibility — stranded-issue recovery suppressed`,
+              `**Failing endpoint / action:** enqueueStrandedIssueRecovery (source: \`${input.source}\`) for agent \`${agent.name}\` (adapter: \`${agent.adapterType}\`, model: \`${adapterModel}\`)`,
+              `**Unblock owner:** agent owner or recovery manager — reconfigure the agent's \`adapterConfig.model\` to a supported model (supported: ${compat.supportedModels.join(", ")})`,
+              `**Next wake condition:** re-assign this issue after the agent's model is updated to a supported value`,
+            ].join("\n");
+            await issuesSvc.addComment(
+              input.issueId,
+              commentBody,
+              { runId: input.retryOfRunId ?? null },
+              { authorType: "system" },
+            );
+          }
+          return null;
+        }
+      }
+    }
+
     const queued = await deps.enqueueWakeup(input.agentId, {
       source: "automation",
       triggerDetail: "system",

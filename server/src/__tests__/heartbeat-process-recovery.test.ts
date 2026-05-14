@@ -2933,4 +2933,46 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
   });
+
+  it("suppresses stranded-issue recovery wake and posts a dedup comment when agent model is incompatible", async () => {
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+    });
+    await db
+      .update(agents)
+      .set({ adapterConfig: { model: "gpt-5.3-codex-spark" } })
+      .where(eq(agents.id, agentId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+
+    const newRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)));
+    expect(newRuns).toHaveLength(1);
+    expect(newRuns[0]?.id).toBe(runId);
+
+    const newWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.status, "queued")));
+    expect(newWakeups).toHaveLength(0);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("recovery:adapter-model-unavailable:enqueueStrandedIssueRecovery:");
+    expect(comments[0]?.body).toContain("stranded-issue recovery suppressed");
+    expect(comments[0]?.body).toContain("gpt-5.3-codex-spark");
+    expect(comments[0]?.authorType).toBe("system");
+
+    const result2 = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result2.dispatchRequeued).toBe(0);
+
+    const commentsAfterSecondRun = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(commentsAfterSecondRun).toHaveLength(1);
+  });
 });
