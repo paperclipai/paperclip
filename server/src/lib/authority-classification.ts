@@ -1,4 +1,4 @@
-export type AuthorityTier = "T1" | "T2" | "T2A" | "T3";
+export type AuthorityTier = "T1" | "T2" | "T2A" | "T2B" | "T3";
 
 export interface T3Triggers {
   securitySensitive: boolean | null;
@@ -22,7 +22,7 @@ export interface ClassificationParseResult {
   inconsistencies: string[];
 }
 
-const TIER_VALUES = new Set<AuthorityTier>(["T1", "T2", "T2A", "T3"]);
+const TIER_VALUES = new Set<AuthorityTier>(["T1", "T2", "T2A", "T2B", "T3"]);
 const PLACEHOLDER_APPROVAL_ID_PATTERNS = [
   /^\s*required if/i,
   /^\s*\(.*\)\s*$/,
@@ -141,7 +141,7 @@ export function detectInconsistencies(block: AuthorityClassificationBlock): stri
   const issues: string[] = [];
 
   if (!block.tier) {
-    issues.push("Authority tier is missing or unrecognized (expected T1, T2, T2A, or T3)");
+    issues.push("Authority tier is missing or unrecognized (expected T1, T2, T2A, T2B, or T3)");
   }
 
   const anyT3TriggerActive = Object.values(block.t3Triggers).some((v) => v === true);

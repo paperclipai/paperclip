@@ -78,6 +78,31 @@ No
 \`\`\`
 `;
 
+const VALID_T2B_DESCRIPTION = `
+## Authority Classification
+
+\`\`\`markdown
+Authority Classification:
+T2B
+
+T3 Trigger Check:
+- Security-sensitive: No
+- Real-world cost: No
+- Environment integrity risk: No
+- Public/reputational action: No
+- Strategic fork: No
+
+Approval Required:
+Yes
+
+Approval ID:
+(Dranak approves at PR review)
+
+Decision Packet Required:
+No
+\`\`\`
+`;
+
 const NO_BLOCK_DESCRIPTION = `
 ## Some Issue
 
@@ -165,6 +190,15 @@ describe("parseClassificationBlock", () => {
     expect(result.inconsistencies).toHaveLength(0);
   });
 
+  it("parses a valid T2B block correctly", () => {
+    const result = parseClassificationBlock(VALID_T2B_DESCRIPTION);
+    expect(result.found).toBe(true);
+    expect(result.block?.tier).toBe("T2B");
+    expect(result.block?.t3Triggers.securitySensitive).toBe(false);
+    expect(result.block?.approvalId).toBeNull(); // placeholder stripped
+    expect(result.inconsistencies).toHaveLength(0);
+  });
+
   it("detects missing approval ID on T3 with approvalRequired=Yes", () => {
     const result = parseClassificationBlock(T3_MISSING_APPROVAL_ID);
     expect(result.found).toBe(true);
@@ -202,6 +236,11 @@ describe("isT3Issue", () => {
 
   it("returns false for T1 classified issues", () => {
     const result = parseClassificationBlock(VALID_T1_DESCRIPTION);
+    expect(isT3Issue(result)).toBe(false);
+  });
+
+  it("returns false for T2B classified issues", () => {
+    const result = parseClassificationBlock(VALID_T2B_DESCRIPTION);
     expect(isT3Issue(result)).toBe(false);
   });
 
