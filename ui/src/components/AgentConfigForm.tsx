@@ -1109,7 +1109,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       ? set!({ extraArgs: v })
                       : mark("adapterConfig", "extraArgs", v?.trim() ? parseCommaArgs(v) : null)
                   }
-                  immediate
                   className={inputClass}
                   placeholder="e.g. --verbose, --foo=bar"
                 />
