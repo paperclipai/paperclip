@@ -14,7 +14,16 @@ function normalizeDocumentKey(key: string) {
 }
 
 function isUniqueViolation(error: unknown): boolean {
-  return !!error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "23505";
+  // drizzle-orm/postgres-js wraps the driver error in DrizzleQueryError and
+  // exposes the original PostgresError on `.cause` — walk the chain.
+  let current: unknown = error;
+  const seen = new Set<unknown>();
+  while (current && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    if ((current as { code?: unknown }).code === "23505") return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 export function extractLegacyPlanBody(description: string | null | undefined) {
@@ -355,7 +364,19 @@ export function documentService(db: Db) {
         });
       } catch (error) {
         if (isUniqueViolation(error)) {
-          throw conflict("Document key already exists on this issue", { key });
+          // Concurrent writers raced past the baseRevisionId check (or both tried
+          // to create the same key). Re-read the now-committed winner and surface
+          // the same 409 shape the single-writer-stale path returns so clients
+          // can re-base on `currentRevisionId`.
+          const winner = await db
+            .select({ latestRevisionId: documents.latestRevisionId })
+            .from(issueDocuments)
+            .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+            .where(and(eq(issueDocuments.issueId, issue.id), eq(issueDocuments.key, key)))
+            .then((rows) => rows[0] ?? null);
+          throw conflict("Document was updated by someone else", {
+            currentRevisionId: winner?.latestRevisionId ?? null,
+          });
         }
         throw error;
       }
