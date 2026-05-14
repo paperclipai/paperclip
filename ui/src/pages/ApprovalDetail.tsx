@@ -269,7 +269,7 @@ export function ApprovalDetail() {
                 onClick={() => approveMutation.mutate()}
                 disabled={approveMutation.isPending}
               >
-                Approve
+                {approveMutation.isPending ? "Approving\u2026" : "Approve"}
               </Button>
               <Button
                 variant="destructive"
@@ -277,7 +277,7 @@ export function ApprovalDetail() {
                 onClick={() => rejectMutation.mutate()}
                 disabled={rejectMutation.isPending}
               >
-                Reject
+                {rejectMutation.isPending ? "Rejecting\u2026" : "Reject"}
               </Button>
             </>
           )}
@@ -293,7 +293,7 @@ export function ApprovalDetail() {
               onClick={() => revisionMutation.mutate()}
               disabled={revisionMutation.isPending}
             >
-              Request revision
+              {revisionMutation.isPending ? "Requesting\u2026" : "Request revision"}
             </Button>
           )}
           {approval.status === "revision_requested" && (
@@ -303,7 +303,7 @@ export function ApprovalDetail() {
               onClick={() => resubmitMutation.mutate()}
               disabled={resubmitMutation.isPending}
             >
-              Mark resubmitted
+              {resubmitMutation.isPending ? "Submitting\u2026" : "Mark resubmitted"}
             </Button>
           )}
           {approval.status === "rejected" && approval.type === "hire_agent" && linkedAgentId && (
