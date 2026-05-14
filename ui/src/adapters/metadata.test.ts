@@ -34,7 +34,12 @@ describe("adapter metadata", () => {
 
   it("keeps intentionally withheld built-in adapters marked as coming soon", () => {
     expect(isEnabledAdapterType("process")).toBe(false);
-    expect(isEnabledAdapterType("http")).toBe(false);
+  });
+
+  it("enables the built-in HTTP adapter for remote webhook agents", () => {
+    expect(isEnabledAdapterType("http")).toBe(true);
+    expect(isValidAdapterType("http")).toBe(true);
+    expect(isVisualAdapterChoice("http")).toBe(true);
   });
 
   it("keeps ACPX selectable from explicit configuration but out of visual pickers", () => {
