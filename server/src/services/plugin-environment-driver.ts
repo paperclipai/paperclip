@@ -247,6 +247,7 @@ export async function resumePluginEnvironmentLease(input: {
   workerManager: PluginWorkerManager;
   companyId: string;
   environmentId: string;
+  issueId?: string | null;
   config: PluginEnvironmentConfig;
   providerLeaseId: string;
   leaseMetadata?: Record<string, unknown>;
@@ -256,6 +257,7 @@ export async function resumePluginEnvironmentLease(input: {
     driverKey: input.config.driverKey,
     companyId: input.companyId,
     environmentId: input.environmentId,
+    issueId: input.issueId ?? null,
     config: input.config.driverConfig,
     providerLeaseId: input.providerLeaseId,
     leaseMetadata: input.leaseMetadata,
@@ -267,6 +269,7 @@ export async function destroyPluginEnvironmentLease(input: {
   workerManager: PluginWorkerManager;
   companyId: string;
   environmentId: string;
+  issueId?: string | null;
   config: PluginEnvironmentConfig;
   providerLeaseId: string | null;
   leaseMetadata?: Record<string, unknown>;
@@ -276,6 +279,7 @@ export async function destroyPluginEnvironmentLease(input: {
     driverKey: input.config.driverKey,
     companyId: input.companyId,
     environmentId: input.environmentId,
+    issueId: input.issueId ?? null,
     config: input.config.driverConfig,
     providerLeaseId: input.providerLeaseId,
     leaseMetadata: input.leaseMetadata,

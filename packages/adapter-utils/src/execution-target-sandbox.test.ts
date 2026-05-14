@@ -5,8 +5,12 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
   adapterExecutionTargetSessionIdentity,
   adapterExecutionTargetToRemoteSpec,
+  adapterExecutionTargetUsesPaperclipBridge,
+  ensureAdapterExecutionTargetCommandResolvable,
+  resolveAdapterExecutionTargetTimeoutSec,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
   startAdapterExecutionTargetPaperclipBridge,
@@ -18,6 +22,7 @@ describe("sandbox adapter execution targets", () => {
   const cleanupDirs: string[] = [];
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
@@ -39,7 +44,8 @@ describe("sandbox adapter execution targets", () => {
         onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
       }) => {
         counter += 1;
-        return runChildProcess(`sandbox-run-${counter}`, input.command, input.args ?? [], {
+        const command = input.command === "bash" ? "/bin/bash" : input.command;
+        return runChildProcess(`sandbox-run-${counter}`, command, input.args ?? [], {
           cwd: input.cwd ?? process.cwd(),
           env: input.env ?? {},
           stdin: input.stdin,
@@ -103,8 +109,90 @@ describe("sandbox adapter execution targets", () => {
       environmentId: "env-1",
       leaseId: "lease-1",
       remoteCwd: "/workspace",
-      paperclipTransport: "bridge",
     });
+  });
+
+  it("applies the remote sandbox fallback when adapter timeoutSec is unset", () => {
+    const sandboxTarget: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/workspace",
+      runner: createLocalSandboxRunner(),
+    };
+
+    expect(resolveAdapterExecutionTargetTimeoutSec(sandboxTarget, 0)).toBe(
+      DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
+    );
+    expect(resolveAdapterExecutionTargetTimeoutSec(sandboxTarget, 90)).toBe(90);
+    expect(resolveAdapterExecutionTargetTimeoutSec({
+      kind: "remote",
+      transport: "ssh",
+      remoteCwd: "/workspace",
+      spec: {
+        host: "127.0.0.1",
+        port: 22,
+        username: "fixture",
+        remoteWorkspacePath: "/workspace",
+        remoteCwd: "/workspace",
+        privateKey: "KEY",
+        knownHosts: "host key",
+        strictHostKeyChecking: true,
+      },
+    }, 0)).toBe(0);
+  });
+
+  it("uses the caller timeout override when installing a missing sandbox command", async () => {
+    const runner = {
+      execute: vi.fn()
+        .mockResolvedValueOnce({
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          pid: null,
+          startedAt: new Date().toISOString(),
+        })
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          pid: null,
+          startedAt: new Date().toISOString(),
+        })
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: "/usr/bin/opencode\n",
+          stderr: "",
+          pid: null,
+          startedAt: new Date().toISOString(),
+        }),
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/workspace",
+      timeoutMs: 300_000,
+      runner,
+    };
+
+    await ensureAdapterExecutionTargetCommandResolvable(
+      "opencode",
+      target,
+      "/local/workspace",
+      {},
+      { installCommand: "npm install -g opencode", timeoutSec: 1800 },
+    );
+
+    expect(runner.execute).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      command: "sh",
+      args: ["-c", "npm install -g opencode"],
+      timeoutMs: 1_800_000,
+    }));
   });
 
   it("runs shell commands through the same runner", async () => {
@@ -134,7 +222,155 @@ describe("sandbox adapter execution targets", () => {
 
     expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
       command: "sh",
-      args: ["-lc", 'printf %s "$HOME"'],
+      args: ["-c", 'printf %s "$HOME"'],
+      cwd: "/workspace",
+      timeoutMs: 7000,
+    }));
+  });
+
+  it("strips inherited host identity env before sandbox execution", async () => {
+    vi.stubEnv("PATH", "/host/bin:/usr/bin");
+    vi.stubEnv("HOME", "/Users/local");
+    vi.stubEnv("TMPDIR", "/var/folders/local/T");
+
+    const runner = {
+      execute: vi.fn(async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "ok\n",
+        stderr: "",
+        pid: null,
+        startedAt: new Date().toISOString(),
+      })),
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/workspace",
+      runner,
+    };
+
+    await runAdapterExecutionTargetProcess("run-1b", target, "agent-cli", ["--json"], {
+      cwd: "/local/workspace",
+      env: {
+        PATH: "/host/bin:/usr/bin",
+        HOME: "/Users/local",
+        TMPDIR: "/var/folders/local/T",
+        SAFE_VALUE: "visible",
+      },
+      timeoutSec: 5,
+      graceSec: 1,
+      onLog: async () => {},
+    });
+
+    expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
+      env: {
+        SAFE_VALUE: "visible",
+      },
+    }));
+  });
+
+  it("preserves explicit remote identity env overrides for sandbox execution", async () => {
+    vi.stubEnv("PATH", "/host/bin:/usr/bin");
+    vi.stubEnv("HOME", "/Users/local");
+
+    const runner = {
+      execute: vi.fn(async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "ok\n",
+        stderr: "",
+        pid: null,
+        startedAt: new Date().toISOString(),
+      })),
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/workspace",
+      runner,
+    };
+
+    await runAdapterExecutionTargetProcess("run-1c", target, "agent-cli", ["--json"], {
+      cwd: "/local/workspace",
+      env: {
+        PATH: "/custom/remote/bin:/usr/bin",
+        HOME: "/home/sandbox",
+        SAFE_VALUE: "visible",
+      },
+      timeoutSec: 5,
+      graceSec: 1,
+      onLog: async () => {},
+    });
+
+    expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
+      env: {
+        PATH: "/custom/remote/bin:/usr/bin",
+        HOME: "/home/sandbox",
+        SAFE_VALUE: "visible",
+      },
+    }));
+  });
+
+  it("treats SSH targets as bridge-only", () => {
+    const target = {
+      kind: "remote" as const,
+      transport: "ssh" as const,
+      remoteCwd: "/workspace",
+      spec: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "paperclip",
+        remoteWorkspacePath: "/workspace",
+        remoteCwd: "/workspace",
+        privateKey: null,
+        knownHosts: null,
+        strictHostKeyChecking: true,
+      },
+    };
+
+    expect(adapterExecutionTargetUsesPaperclipBridge(target)).toBe(true);
+    expect(adapterExecutionTargetSessionIdentity(target)).toEqual({
+      transport: "ssh",
+      host: "ssh.example.test",
+      port: 22,
+      username: "paperclip",
+      remoteCwd: "/workspace",
+    });
+  });
+
+  it("uses the provider-declared shell for sandbox helper commands", async () => {
+    const runner = {
+      execute: vi.fn(async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "/home/sandbox",
+        stderr: "",
+        pid: null,
+        startedAt: new Date().toISOString(),
+      })),
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "custom-provider",
+      shellCommand: "bash",
+      remoteCwd: "/workspace",
+      runner,
+    };
+
+    await runAdapterExecutionTargetShellCommand("run-2b", target, 'printf %s "$HOME"', {
+      cwd: "/local/workspace",
+      env: {},
+      timeoutSec: 7,
+    });
+
+    expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
+      command: "bash",
+      args: ["-c", 'printf %s "$HOME"'],
       cwd: "/workspace",
       timeoutMs: 7000,
     }));
@@ -174,7 +410,6 @@ describe("sandbox adapter execution targets", () => {
       environmentId: "env-1",
       leaseId: "lease-1",
       remoteCwd,
-      paperclipTransport: "bridge",
       runner: createLocalSandboxRunner(),
       timeoutMs: 30_000,
     };
@@ -208,6 +443,60 @@ describe("sandbox adapter execution targets", () => {
         auth: "Bearer real-run-jwt",
         runId: "run-bridge",
       }]);
+    } finally {
+      await bridge?.stop();
+      await new Promise<void>((resolve) => apiServer.close(() => resolve()));
+    }
+  });
+
+  it("uses the effective adapter timeout when starting the sandbox callback bridge", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-timeout-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    const runtimeRootDir = path.join(remoteCwd, ".paperclip-runtime", "codex");
+    await mkdir(runtimeRootDir, { recursive: true });
+
+    const delegateRunner = createLocalSandboxRunner();
+    const runner = {
+      execute: vi.fn(async (input: Parameters<typeof delegateRunner.execute>[0]) => delegateRunner.execute(input)),
+    };
+    const apiServer = createServer((req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise<void>((resolve, reject) => {
+      apiServer.once("error", reject);
+      apiServer.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = apiServer.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected the bridge timeout test API server to listen on a TCP port.");
+    }
+
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "cloudflare",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+      remoteCwd,
+      runner,
+      timeoutMs: 30_000,
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-bridge-timeout",
+      target,
+      runtimeRootDir,
+      adapterKey: "codex",
+      timeoutSec: DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: `http://127.0.0.1:${address.port}`,
+    });
+    try {
+      expect(bridge).not.toBeNull();
+      expect(runner.execute).toHaveBeenCalled();
+      expect(runner.execute.mock.calls.some(([input]) => input.timeoutMs === 1_800_000)).toBe(true);
     } finally {
       await bridge?.stop();
       await new Promise<void>((resolve) => apiServer.close(() => resolve()));
@@ -252,7 +541,6 @@ describe("sandbox adapter execution targets", () => {
       environmentId: "env-1",
       leaseId: "lease-1",
       remoteCwd,
-      paperclipTransport: "bridge",
       runner: createLocalSandboxRunner(),
       timeoutMs: 30_000,
     };

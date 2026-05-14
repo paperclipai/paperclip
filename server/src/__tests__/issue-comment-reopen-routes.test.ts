@@ -38,7 +38,12 @@ const mockTxInsert = vi.hoisted(() => vi.fn(() => ({ values: mockTxInsertValues 
 const mockTx = vi.hoisted(() => ({
   insert: mockTxInsert,
 }));
+const mockDbSelectOrderBy = vi.hoisted(() => vi.fn(async () => []));
+const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({ orderBy: mockDbSelectOrderBy })));
+const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
+const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
 const mockDb = vi.hoisted(() => ({
+  select: mockDbSelect,
   transaction: vi.fn(async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx)),
 }));
 const mockFeedbackService = vi.hoisted(() => ({
@@ -61,6 +66,9 @@ const mockRoutineService = vi.hoisted(() => ({
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+}));
+const mockIssueRecoveryActionService = vi.hoisted(() => ({
+  getActiveForIssue: vi.fn(async () => null),
 }));
 const mockIssueTreeControlService = vi.hoisted(() => ({
   getActivePauseHoldGate: vi.fn(async () => null),
@@ -120,6 +128,7 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => mockHeartbeatService,
   instanceSettingsService: () => mockInstanceSettingsService,
   issueApprovalService: () => ({}),
+  issueRecoveryActionService: () => mockIssueRecoveryActionService,
   issueReferenceService: () => ({
     deleteDocumentSource: async () => undefined,
     diffIssueReferenceSummary: () => ({
@@ -233,12 +242,21 @@ describe.sequential("issue comment reopen routes", () => {
     mockInstanceSettingsService.get.mockReset();
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockRoutineService.syncRunStatusForIssue.mockReset();
+    mockIssueRecoveryActionService.getActiveForIssue.mockReset();
     mockIssueTreeControlService.getActivePauseHoldGate.mockReset();
     mockTxInsertValues.mockReset();
     mockTxInsert.mockReset();
+    mockDbSelect.mockReset();
+    mockDbSelectFrom.mockReset();
+    mockDbSelectWhere.mockReset();
+    mockDbSelectOrderBy.mockReset();
     mockDb.transaction.mockReset();
     mockTxInsertValues.mockResolvedValue(undefined);
     mockTxInsert.mockImplementation(() => ({ values: mockTxInsertValues }));
+    mockDbSelectOrderBy.mockResolvedValue([]);
+    mockDbSelectWhere.mockImplementation(() => ({ orderBy: mockDbSelectOrderBy }));
+    mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
+    mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDb.transaction.mockImplementation(async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx));
     mockHeartbeatService.wakeup.mockResolvedValue(undefined);
     mockHeartbeatService.reportRunActivity.mockResolvedValue(undefined);
@@ -261,6 +279,7 @@ describe.sequential("issue comment reopen routes", () => {
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(null);
     mockIssueTreeControlService.getActivePauseHoldGate.mockResolvedValue(null);
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
@@ -543,6 +562,87 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
     ));
+  });
+
+  it("passes validated comment presentation fields to trusted board comment writes", async () => {
+    const app = await installActor(createApp());
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      authorType: "user",
+      authorAgentId: null,
+      authorUserId: "local-board",
+      body: "Paperclip needs a disposition before this issue can continue.",
+      presentation: { kind: "system_notice", tone: "warning", detailsDefaultOpen: false },
+      metadata: {
+        version: 1,
+        sections: [{ rows: [{ type: "key_value", label: "Cause", value: "successful_run_missing_state" }] }],
+      },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    mockIssueService.findMentionedAgents.mockResolvedValue([]);
+
+    const metadata = {
+      version: 1,
+      sections: [{ rows: [{ type: "key_value", label: "Cause", value: "successful_run_missing_state" }] }],
+    };
+    const presentation = { kind: "system_notice", tone: "warning" };
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({
+        body: "Paperclip needs a disposition before this issue can continue.",
+        presentation,
+        metadata,
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "Paperclip needs a disposition before this issue can continue.",
+      { agentId: undefined, userId: "local-board", runId: null },
+      {
+        authorType: "user",
+        presentation: { kind: "system_notice", tone: "warning", detailsDefaultOpen: false },
+        metadata,
+      },
+    );
+  });
+
+  it("rejects structured comment presentation fields from agent-authenticated writes", async () => {
+    const app = await installActor(createApp(), agentActor());
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({
+        body: "Hidden details",
+        presentation: { kind: "system_notice", tone: "warning" },
+        metadata: {
+          version: 1,
+          sections: [{ rows: [{ type: "key_value", label: "Cause", value: "covert_channel_attempt" }] }],
+        },
+      });
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid comment metadata before writing a comment", async () => {
+    const app = await installActor(createApp());
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({
+        body: "Invalid metadata",
+        metadata: { version: 1, arbitrary: true },
+      });
+
+    expect(res.status).toBe(400);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
   it("does not move dependency-blocked issues to todo via POST comments", async () => {
