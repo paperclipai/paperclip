@@ -29,8 +29,42 @@ if (!fs.existsSync(tscCliPath)) {
   throw new Error(`TypeScript CLI not found at ${tscCliPath}`);
 }
 
-function allOutputsExist() {
-  return buildTargets.every((target) => fs.existsSync(target.output));
+function newestMtimeInDir(dir) {
+  let newest = 0;
+  if (!fs.existsSync(dir)) return newest;
+  const stack = [dir];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+      } else if (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx")) {
+        const m = fs.statSync(full).mtimeMs;
+        if (m > newest) newest = m;
+      }
+    }
+  }
+  return newest;
+}
+
+// Existence alone is not enough: a stale dist (e.g., predating recent src
+// edits) silently produces wrong type-check errors in downstream plugins.
+// Treat the output as up-to-date only if its mtime is at least as recent
+// as the newest .ts/.tsx in src/ and the tsconfig itself.
+function isFresh(target) {
+  if (!fs.existsSync(target.output)) return false;
+  const outputMtime = fs.statSync(target.output).mtimeMs;
+  const srcDir = path.join(path.dirname(target.tsconfig), "src");
+  const inputMtime = Math.max(
+    newestMtimeInDir(srcDir),
+    fs.statSync(target.tsconfig).mtimeMs,
+  );
+  return outputMtime >= inputMtime;
+}
+
+function allOutputsFresh() {
+  return buildTargets.every(isFresh);
 }
 
 function sleep(ms) {
@@ -43,7 +77,7 @@ function waitForLockRelease() {
     if (!fs.existsSync(lockDir)) {
       return;
     }
-    if (allOutputsExist()) {
+    if (allOutputsFresh()) {
       return;
     }
     sleep(lockPollMs);
@@ -52,7 +86,7 @@ function waitForLockRelease() {
   throw new Error(`Timed out waiting for plugin build dependency lock at ${lockDir}`);
 }
 
-if (allOutputsExist()) {
+if (allOutputsFresh()) {
   process.exit(0);
 }
 
@@ -67,7 +101,7 @@ try {
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "EEXIST") {
       waitForLockRelease();
-      if (!allOutputsExist()) {
+      if (!allOutputsFresh()) {
         throw new Error("Plugin build dependency lock released before all outputs were created");
       }
       process.exit(0);
@@ -76,7 +110,7 @@ try {
   }
 
   for (const target of buildTargets) {
-    if (fs.existsSync(target.output)) {
+    if (isFresh(target)) {
       continue;
     }
 
