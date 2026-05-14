@@ -342,6 +342,7 @@ interface IssueChatThreadProps {
   showComposer?: boolean;
   showJumpToLatest?: boolean;
   emptyMessage?: string;
+  footer?: ReactNode;
   variant?: "full" | "embedded";
   enableLiveTranscriptPolling?: boolean;
   transcriptsByRunId?: ReadonlyMap<string, readonly IssueChatTranscriptEntry[]>;
@@ -3650,6 +3651,7 @@ export function IssueChatThread({
   showComposer = true,
   showJumpToLatest,
   emptyMessage,
+  footer,
   variant = "full",
   enableLiveTranscriptPolling = true,
   transcriptsByRunId,
@@ -4310,6 +4312,7 @@ export function IssueChatThread({
                   <IssueAssigneePausedNotice agent={assignedAgent} />
                 </div>
               ) : null}
+              {footer ? <div data-testid="issue-chat-thread-footer">{footer}</div> : null}
               <div ref={bottomAnchorRef} />
               {showComposer ? (
                 <div
