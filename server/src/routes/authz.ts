@@ -31,6 +31,18 @@ export function assertBoardOrgAccess(req: Request) {
   throw forbidden("Company membership or instance admin access required");
 }
 
+/**
+ * Allows board members (with org access) OR authenticated agents.
+ * Use only on endpoints that perform additional per-agent scope validation
+ * (e.g. validateToolRunContextScope) after this check passes.
+ */
+export function assertBoardOrAgentAccess(req: Request) {
+  if (req.actor.type === "agent") {
+    return;
+  }
+  assertBoardOrgAccess(req);
+}
+
 export function assertInstanceAdmin(req: Request) {
   assertBoard(req);
   if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
