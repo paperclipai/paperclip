@@ -1,0 +1,67 @@
+name: Touch Index Quality Snapshot
+
+on:
+  schedule:
+    # Once daily — snapshot FR and Bug data quality metrics
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: touch-index-quality-snapshot
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    name: Generate data quality snapshot
+    runs-on: ubuntu-latest
+
+    env:
+      PAPERCLIP_API_URL: ${{ secrets.PAPERCLIP_API_URL }}
+      PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
+      PAPERCLIP_COMPANY_ID: ${{ secrets.PAPERCLIP_COMPANY_ID }}
+      POSTGRES_HOST: ${{ secrets.POSTGRES_HOST || 'localhost' }}
+      POSTGRES_PORT: ${{ secrets.POSTGRES_PORT || '5432' }}
+      POSTGRES_DB: ${{ secrets.POSTGRES_DB || 'optimizer_v3' }}
+      POSTGRES_USER: ${{ secrets.POSTGRES_USER || 'optimizer_admin' }}
+      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install requests python-dotenv SQLAlchemy psycopg2-binary
+
+      - name: Generate quality snapshot
+        run: |
+          python scripts/snapshot_touch_index_quality.py
+
+      - name: Check for changes
+        id: diff
+        run: |
+          SNAPSHOT=$(ls data_quality_*.json 2>/dev/null | sort | tail -1)
+          if [ -z "$SNAPSHOT" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          elif ! git diff --quiet "$SNAPSHOT"; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "snapshot_file=$SNAPSHOT" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit updated snapshot
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          SNAPSHOT="${{ steps.diff.outputs.snapshot_file }}"
+          git add "$SNAPSHOT"
+          git commit -m "chore(data-quality): update Touch Index quality snapshot"
+          git push

@@ -1,0 +1,54 @@
+name: Touch Index Backfill
+
+on:
+  schedule:
+    # Daily at 06:00 UTC — reprocess eligible issues referenced in git commits
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Backfill window in days (default: 7)'
+        required: false
+        default: '7'
+
+concurrency:
+  group: touch-index-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    name: Backfill Touch Index coverage
+    runs-on: ubuntu-latest
+
+    env:
+      PAPERCLIP_API_URL: ${{ secrets.PAPERCLIP_API_URL }}
+      PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
+      PAPERCLIP_COMPANY_ID: ${{ secrets.PAPERCLIP_COMPANY_ID }}
+      POSTGRES_HOST: ${{ secrets.POSTGRES_HOST || 'localhost' }}
+      POSTGRES_PORT: ${{ secrets.POSTGRES_PORT || '5432' }}
+      POSTGRES_DB: ${{ secrets.POSTGRES_DB || 'optimizer_v3' }}
+      POSTGRES_USER: ${{ secrets.POSTGRES_USER || 'optimizer_admin' }}
+      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install requests python-dotenv SQLAlchemy psycopg2-binary
+
+      - name: Run touch index backfill
+        run: |
+          DAYS="${{ github.event.inputs.days || '7' }}"
+          python scripts/backfill_touch_index.py --days "$DAYS"
+
+      - name: Run data quality snapshot
+        run: |
+          python scripts/snapshot_touch_index_quality.py --stale-days 30
