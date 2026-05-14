@@ -57,4 +57,4 @@ description: >
 
 ## 技能注入
 
-适配器负责使其代理运行时可以发现技能。`claude_local` 适配器使用带有符号链接和 `--add-dir` 的临时目录。`codex_local` 适配器使用全局技能目录。有关详细信息，请参阅[创建适配器](/adapters/创建适配器%20creating-an-adapter)指南。
+适配器负责使其代理运行时可以发现技能。`claude_local` 适配器使用带有符号链接和 `--add-dir` 的临时目录。`codex_local` 适配器使用全局技能目录。有关详细信息，请参阅[创建适配器](/适配器/创建适配器%20creating-an-adapter)指南。

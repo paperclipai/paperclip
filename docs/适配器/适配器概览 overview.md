@@ -18,16 +18,16 @@ summary: 适配器是什么，以及它们如何把智能体接到 Paperclip
 
 | 适配器 | 类型键 | 说明 |
 |---------|----------|-------------|
-| [Claude 本地](/adapters/Claude%20本地适配器%20claude-local) | `claude_local` | 在本地运行 Claude Code CLI |
-| [Codex 本地](/adapters/Codex%20本地适配器%20codex-local) | `codex_local` | 在本地运行 OpenAI Codex CLI |
-| [Gemini 本地](/adapters/Gemini%20本地适配器%20gemini-local) | `gemini_local` | 在本地运行 Gemini CLI（实验性——适配器包已存在，尚未进入稳定类型枚举） |
+| [Claude 本地](/适配器/Claude%20本地适配器%20claude-local) | `claude_local` | 在本地运行 Claude Code CLI |
+| [Codex 本地](/适配器/Codex%20本地适配器%20codex-local) | `codex_local` | 在本地运行 OpenAI Codex CLI |
+| [Gemini 本地](/适配器/Gemini%20本地适配器%20gemini-local) | `gemini_local` | 在本地运行 Gemini CLI（实验性——适配器包已存在，尚未进入稳定类型枚举） |
 | OpenCode 本地 | `opencode_local` | 在本地运行 OpenCode CLI（多厂商 `provider/model`） |
 | Cursor | `cursor` | 在后台模式下运行 Cursor |
 | Pi 本地 | `pi_local` | 在本地运行嵌入式 Pi 智能体 |
 | Hermes 本地 | `hermes_local` | 在本地运行 Hermes CLI（`hermes-paperclip-adapter`） |
 | OpenClaw 网关 | `openclaw_gateway` | 连接到 OpenClaw 网关端点 |
-| [进程](/adapters/进程适配器%20process) | `process` | 执行任意 shell 命令 |
-| [HTTP](/adapters/HTTP%20适配器%20http) | `http` | 向外部智能体发送 Webhook |
+| [进程](/适配器/进程适配器%20process) | `process` | 执行任意 shell 命令 |
+| [HTTP](/适配器/HTTP%20适配器%20http) | `http` | 向外部智能体发送 Webhook |
 
 ### 外部（插件）适配器
 
@@ -51,7 +51,7 @@ curl -X POST http://localhost:3102/api/adapters \
   -d '{"localPath": "/home/user/my-adapter"}'
 ```
 
-完整说明见 [外部适配器](/adapters/外部适配器%20external-adapters)。
+完整说明见 [外部适配器](/适配器/外部适配器%20external-adapters)。
 
 ## 适配器架构
 
@@ -81,8 +81,8 @@ my-adapter/
 - **需要编程智能体？** 使用 `claude_local`、`codex_local`、`opencode_local`、`hermes_local`，或将 `droid_local` 作为外部插件安装
 - **需要跑脚本或命令？** 使用 `process`
 - **需要调用外部服务？** 使用 `http`
-- **需要完全定制？** [自行创建适配器](/adapters/创建适配器%20creating-an-adapter) 或 [构建外部适配器插件](/adapters/外部适配器%20external-adapters)
+- **需要完全定制？** [自行创建适配器](/适配器/创建适配器%20creating-an-adapter) 或 [构建外部适配器插件](/适配器/外部适配器%20external-adapters)
 
 ## UI 解析器契约
 
-外部适配器可附带自包含的 UI 解析器，告诉 Paperclip Web UI 如何渲染其标准输出。没有它时，UI 使用通用 shell 解析器。详见 [UI 解析器契约](/adapters/适配器%20UI%20解析器%20adapter-ui-parser)。
+外部适配器可附带自包含的 UI 解析器，告诉 Paperclip Web UI 如何渲染其标准输出。没有它时，UI 使用通用 shell 解析器。详见 [UI 解析器契约](/适配器/适配器%20UI%20解析器%20adapter-ui-parser)。
