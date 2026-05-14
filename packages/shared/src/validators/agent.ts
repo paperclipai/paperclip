@@ -57,10 +57,47 @@ const agentModelProfileConfigSchema = z.object({
   adapterConfig: adapterConfigSchema,
 }).strict();
 
+export const agentRuntimePauseReasonCodeSchema = z.enum([
+  "monthly_usage_limit",
+  "quota_exceeded",
+  "rate_limit_exceeded",
+  "invalid_api_key",
+  "auth_failed",
+  "adapter_bootstrap_failed",
+]);
+
+const sha256DigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/i);
+const runtimeReasonTokenSchema = z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9:_-]+$/);
+
+export const agentRuntimePauseReasonSchema = z.object({
+  code: agentRuntimePauseReasonCodeSchema,
+  adapter: runtimeReasonTokenSchema,
+  consecutiveErrorCount: z.number().int().positive(),
+  firstRunId: z.string().uuid(),
+  lastRunId: z.string().uuid(),
+  sampleDigest: sha256DigestSchema,
+  createdAt: z.string().datetime({ offset: true }),
+  guardVersion: z.literal("heartbeat-error-autopause/v1"),
+  sourceIssueId: z.literal("ARI-103"),
+  fingerprint: sha256DigestSchema.optional(),
+  previousHeartbeatEnabled: z.boolean().optional(),
+}).strict();
+
+export const agentRuntimeResumeActorSchema = z.object({
+  type: z.enum(["agent", "user", "system"]),
+  id: runtimeReasonTokenSchema,
+}).strict();
+
 export const agentRuntimeConfigSchema = z.object({
+  heartbeat: z.record(z.unknown()).optional(),
   modelProfiles: z.object({
     cheap: agentModelProfileConfigSchema.optional(),
   }).strict().optional(),
+  pauseReason: agentRuntimePauseReasonSchema.optional(),
+  lastPauseReason: agentRuntimePauseReasonSchema.optional(),
+  resumeReason: runtimeReasonTokenSchema.optional(),
+  resumedBy: agentRuntimeResumeActorSchema.optional(),
+  resumedAt: z.string().datetime({ offset: true }).optional(),
 }).catchall(z.unknown());
 
 export const createAgentSchema = z.object({

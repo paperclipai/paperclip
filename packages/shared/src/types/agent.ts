@@ -20,8 +20,41 @@ export interface AgentModelProfileConfig {
   adapterConfig: Record<string, unknown>;
 }
 
+export type AgentRuntimePauseReasonCode =
+  | "monthly_usage_limit"
+  | "quota_exceeded"
+  | "rate_limit_exceeded"
+  | "invalid_api_key"
+  | "auth_failed"
+  | "adapter_bootstrap_failed";
+
+export interface AgentRuntimePauseReason {
+  code: AgentRuntimePauseReasonCode;
+  adapter: string;
+  consecutiveErrorCount: number;
+  firstRunId: string;
+  lastRunId: string;
+  sampleDigest: string;
+  createdAt: string;
+  guardVersion: "heartbeat-error-autopause/v1";
+  sourceIssueId: "ARI-103";
+  fingerprint?: string;
+  previousHeartbeatEnabled?: boolean;
+}
+
+export interface AgentRuntimeResumeActor {
+  type: "agent" | "user" | "system";
+  id: string;
+}
+
 export interface AgentRuntimeConfig extends Record<string, unknown> {
+  heartbeat?: Record<string, unknown>;
   modelProfiles?: Partial<Record<ModelProfileKey, AgentModelProfileConfig>>;
+  pauseReason?: AgentRuntimePauseReason;
+  lastPauseReason?: AgentRuntimePauseReason;
+  resumeReason?: string;
+  resumedBy?: AgentRuntimeResumeActor;
+  resumedAt?: string;
 }
 
 export type AgentInstructionsBundleMode = "managed" | "external";

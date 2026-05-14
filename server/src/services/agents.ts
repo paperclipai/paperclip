@@ -19,6 +19,12 @@ import {
 import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
+import {
+  buildHeartbeatAutoPauseRuntimeConfig,
+  buildHeartbeatAutoResumeRuntimeConfig,
+  type HeartbeatAutoPauseInput,
+  type HeartbeatAutoResumeInput,
+} from "./agent-runtime-config.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 
 function hashToken(token: string) {
@@ -434,6 +440,40 @@ export function agentService(db: Db) {
     },
 
     update: updateAgent,
+
+    recordHeartbeatAutoPause: async (
+      id: string,
+      input: HeartbeatAutoPauseInput,
+      options?: UpdateAgentOptions,
+    ) => {
+      const existing = await getById(id);
+      if (!existing) return null;
+      const next = buildHeartbeatAutoPauseRuntimeConfig(existing.runtimeConfig, input);
+      if (!next.changed) return existing;
+      return updateAgent(id, { runtimeConfig: next.runtimeConfig }, {
+        recordRevision: {
+          source: "heartbeat_auto_pause",
+          ...options?.recordRevision,
+        },
+      });
+    },
+
+    recordHeartbeatAutoResume: async (
+      id: string,
+      input: HeartbeatAutoResumeInput,
+      options?: UpdateAgentOptions,
+    ) => {
+      const existing = await getById(id);
+      if (!existing) return null;
+      const next = buildHeartbeatAutoResumeRuntimeConfig(existing.runtimeConfig, input);
+      if (!next.changed) return existing;
+      return updateAgent(id, { runtimeConfig: next.runtimeConfig }, {
+        recordRevision: {
+          source: "heartbeat_auto_resume",
+          ...options?.recordRevision,
+        },
+      });
+    },
 
     pause: async (id: string, reason: "manual" | "budget" | "system" = "manual") => {
       const existing = await getById(id);
