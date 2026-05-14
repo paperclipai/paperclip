@@ -39,6 +39,31 @@ const STORAGE_KEY = "paperclip.selectedCompanyId";
 
 const CompanyContext = createContext<CompanyContextValue | null>(null);
 
+/**
+ * Returns the company whose `issuePrefix` matches the first segment of the
+ * given URL pathname (case-insensitive), or `null` if none matches.
+ *
+ * Each route lives under `/<ISSUE_PREFIX>/...` so the URL itself encodes the
+ * active company per browser tab. This helper lets storage-driven bootstrap
+ * defer to the URL whenever the URL already names a known company — which is
+ * what keeps two tabs viewing different companies from drifting into each
+ * other via shared `localStorage`.
+ */
+export function findCompanyByUrlPrefix(
+  pathname: string,
+  companies: Array<Pick<Company, "id" | "issuePrefix">>,
+): Pick<Company, "id" | "issuePrefix"> | null {
+  const firstSegment = pathname.split("/").filter(Boolean)[0];
+  if (!firstSegment) return null;
+  const upper = firstSegment.toUpperCase();
+  return companies.find((c) => c.issuePrefix.toUpperCase() === upper) ?? null;
+}
+
+function readCurrentPathname(): string {
+  if (typeof window === "undefined") return "/";
+  return window.location.pathname ?? "/";
+}
+
 export function resolveBootstrapCompanySelection(input: {
   companies: Array<Pick<Company, "id">>;
   sidebarCompanies: Array<Pick<Company, "id">>;
@@ -102,7 +127,17 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   );
 
   // Auto-select a company when list loads or when selected org changes.
-  // Prefers: stored id (if still in current org) → current selection (if in org) → first in-org.
+  //
+  // The URL prefix is the source of truth for the active company in any given
+  // browser tab — each route lives under `/<ISSUE_PREFIX>/...`. So we only
+  // seed from `localStorage` when the URL has no recognized company prefix
+  // (e.g. `/home`, `/organizations`). When the URL already names a known
+  // company, we leave the in-memory selection alone and let Layout's
+  // route-sync effect drive it. This prevents tab 1 from being silently
+  // pulled to tab 2's company after tab 2 writes its choice to storage.
+  //
+  // Once an in-memory selection exists for this tab, we never re-read storage
+  // here — storage is a bootstrap aid, not a live cross-tab channel.
   useEffect(() => {
     if (isLoading) return;
     if (companies.length === 0) {
@@ -118,12 +153,25 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
     const selectableCompanies = sidebarCompanies.length > 0 ? sidebarCompanies : companiesInOrg;
     if (selectableCompanies.length === 0) return;
 
+    // If this tab's URL already names a known company, defer to the route.
+    // Layout's route-sync effect will call setSelectedCompanyId with
+    // source="route_sync" and the correct company id for *this* tab.
+    const urlCompany = findCompanyByUrlPrefix(readCurrentPathname(), selectableCompanies as Array<Pick<Company, "id" | "issuePrefix">>);
+    if (urlCompany) return;
+
+    // No URL prefix (or unknown one): if we already have a valid in-memory
+    // selection, keep it. Don't re-read storage — another tab may have just
+    // written a different company there.
+    if (selectedCompanyId && selectableCompanies.some((c) => c.id === selectedCompanyId)) return;
+
+    // Fresh bootstrap (no URL prefix and no in-memory pick): seed from
+    // storage if it still points at a selectable company, otherwise fall
+    // back to the first selectable company.
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored && selectableCompanies.some((c) => c.id === stored)) {
-      if (selectedCompanyId !== stored) setSelectedCompanyIdState(stored);
+      setSelectedCompanyIdState(stored);
       return;
     }
-    if (selectedCompanyId && selectableCompanies.some((c) => c.id === selectedCompanyId)) return;
 
     const next = selectableCompanies[0]!.id;
     setSelectedCompanyIdState(next);
@@ -132,9 +180,21 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   }, [companies, companiesInOrg, companyListUnauthorized, isLoading, selectedCompanyId, sidebarCompanies]);
 
   const setSelectedCompanyId = useCallback((companyId: string, options?: CompanySelectionOptions) => {
+    const source = options?.source ?? "manual";
     setSelectedCompanyIdState(companyId);
-    setSelectionSource(options?.source ?? "manual");
-    localStorage.setItem(STORAGE_KEY, companyId);
+    setSelectionSource(source);
+    // Don't broadcast tab-local route syncs to other tabs via storage. A
+    // route_sync is "this tab's URL just told us which company is active",
+    // which is per-tab state. If we wrote that to localStorage, two tabs
+    // on different companies would clobber each other's stored last-pick
+    // and corrupt the bootstrap signal for any future fresh tab.
+    //
+    // Manual switches (sidebar/command palette) and bootstrap picks still
+    // persist so a brand-new tab landing on `/home` or `/organizations`
+    // can re-open the user's most recent company.
+    if (source !== "route_sync") {
+      localStorage.setItem(STORAGE_KEY, companyId);
+    }
   }, []);
 
   const reloadCompanies = useCallback(async () => {
