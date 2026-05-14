@@ -2024,8 +2024,9 @@ export function buildPaperclipTaskMarkdown(input: {
 }
 
 // A positive liveness check means some process currently owns the PID.
-// On Linux, PIDs can be recycled, so this is a best-effort signal rather
-// than proof that the original child is still alive.
+// PIDs can be recycled, so this is a best-effort signal rather than proof
+// that the original child is still alive. Pair it with verifyPidNotRecycled
+// when the caller already recorded the original process start time.
 function isProcessAlive(pid: number | null | undefined) {
   if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
   try {
@@ -2037,6 +2038,74 @@ function isProcessAlive(pid: number | null | undefined) {
     if (code === "ESRCH") return false;
     return false;
   }
+}
+
+// Tolerance for clock skew between when we recorded processStartedAt and the
+// timestamp the OS reports. Process creation times are not perfectly aligned
+// with our wall-clock recording (we read it during child setup, not at the
+// kernel exec moment), so allow a generous window before flagging as reuse.
+const PID_START_TIME_TOLERANCE_MS = 60_000;
+
+type PidVerificationOutcome = "match" | "recycled" | "unknown";
+
+// Returns the OS-reported start time of the given PID in epoch milliseconds,
+// or null if the PID does not exist or the platform query fails. Spawned
+// queries are bounded by a short timeout so the reaper cannot hang.
+async function getOsProcessStartTimeMs(pid: number): Promise<number | null> {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    if (process.platform === "win32") {
+      const { stdout } = await execFile(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `try { (Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o') } catch { exit 1 }`,
+        ],
+        { timeout: 5_000, windowsHide: true },
+      );
+      const trimmed = stdout.trim();
+      if (!trimmed) return null;
+      const parsed = Date.parse(trimmed);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    if (process.platform === "linux" || process.platform === "darwin") {
+      // ps -o lstart= prints a fixed-width local time like "Sat May  3 18:22:33 2026".
+      // Date.parse handles this format on both Linux glibc and macOS BSD ps output.
+      const { stdout } = await execFile("ps", ["-o", "lstart=", "-p", String(pid)], {
+        timeout: 5_000,
+      });
+      const trimmed = stdout.trim();
+      if (!trimmed) return null;
+      const parsed = Date.parse(trimmed);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+// Verify that the live PID still belongs to the process we originally spawned
+// by comparing the OS-reported start time with the timestamp we persisted in
+// processStartedAt. On any inconclusive signal (no expected timestamp, OS
+// query failed, platform unsupported) returns "unknown" so the caller can
+// retain the conservative "assume alive" behaviour.
+async function verifyPidNotRecycled(
+  pid: number,
+  expectedStartedAt: Date | null | undefined,
+): Promise<{ outcome: PidVerificationOutcome; actualStartedAtMs: number | null }> {
+  if (!expectedStartedAt) return { outcome: "unknown", actualStartedAtMs: null };
+  const expectedMs = expectedStartedAt instanceof Date
+    ? expectedStartedAt.getTime()
+    : Date.parse(String(expectedStartedAt));
+  if (!Number.isFinite(expectedMs)) return { outcome: "unknown", actualStartedAtMs: null };
+  const actualMs = await getOsProcessStartTimeMs(pid);
+  if (actualMs === null) return { outcome: "unknown", actualStartedAtMs: null };
+  const outcome: PidVerificationOutcome =
+    Math.abs(actualMs - expectedMs) > PID_START_TIME_TOLERANCE_MS ? "recycled" : "match";
+  return { outcome, actualStartedAtMs: actualMs };
 }
 
 async function terminateHeartbeatRunProcess(input: {
@@ -5815,7 +5884,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
+      let pidReuseEvidence: { actualStartedAtMs: number | null } | null = null;
+      let pidActuallyAlive = !!processPidAlive;
       if (processPidAlive) {
+        const verification = await verifyPidNotRecycled(run.processPid!, run.processStartedAt);
+        if (verification.outcome === "recycled") {
+          pidActuallyAlive = false;
+          pidReuseEvidence = { actualStartedAtMs: verification.actualStartedAtMs };
+          logger.warn(
+            {
+              runId: run.id,
+              processPid: run.processPid,
+              expectedStartedAt: run.processStartedAt,
+              actualStartedAtMs: verification.actualStartedAtMs,
+            },
+            "pid reuse detected; treating run as process_lost",
+          );
+        }
+      }
+      if (pidActuallyAlive) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
           const detachedRun = await setRunStatus(run.id, "running", {
@@ -5847,7 +5934,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
-      const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const baseMessage = pidReuseEvidence
+        ? `Process lost -- pid ${run.processPid} was reused by another process (recorded start ${run.processStartedAt?.toISOString() ?? "unknown"}, observed start ${
+            pidReuseEvidence.actualStartedAtMs !== null
+              ? new Date(pidReuseEvidence.actualStartedAtMs).toISOString()
+              : "unknown"
+          })`
+        : buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
         error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
@@ -5900,6 +5993,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
           ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
+          ...(pidReuseEvidence
+            ? {
+                pidReuseDetected: true,
+                expectedProcessStartedAt: run.processStartedAt?.toISOString() ?? null,
+                actualProcessStartedAt:
+                  pidReuseEvidence.actualStartedAtMs !== null
+                    ? new Date(pidReuseEvidence.actualStartedAtMs).toISOString()
+                    : null,
+              }
+            : {}),
         },
       });
 
@@ -5950,6 +6053,48 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function reconcileProductivityReviews(opts?: { now?: Date; companyId?: string }) {
     return productivityReviews.reconcileProductivityReviews(opts);
+  }
+
+  async function autoCloseStaleAuditExecutionIssues(opts?: { now?: Date; timeoutMs?: number }) {
+    const now = opts?.now ?? new Date();
+    const timeoutMs = opts?.timeoutMs ?? 30 * 60 * 1000; // 30 minutes default
+    const deadline = new Date(now.getTime() - timeoutMs);
+
+    const staleIssues = await db
+      .select({ id: issues.id, companyId: issues.companyId })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.status, "in_progress"),
+          lt(issues.updatedAt, deadline),
+        ),
+      );
+
+    let closed = 0;
+    for (const issue of staleIssues) {
+      try {
+        await db
+          .update(issues)
+          .set({
+            status: "done",
+            updatedAt: new Date(),
+          })
+          .where(eq(issues.id, issue.id));
+        closed++;
+        logger.warn(
+          { issueId: issue.id, companyId: issue.companyId, deadline, now },
+          "auto-closed stale audit-execution issue (in_progress >30min)",
+        );
+      } catch (err) {
+        logger.error(
+          { err, issueId: issue.id, companyId: issue.companyId },
+          "failed to auto-close stale audit-execution issue",
+        );
+      }
+    }
+
+    return { scanned: staleIssues.length, closed };
   }
 
   async function buildRunOutputSilence(
@@ -9008,6 +9153,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     scanSilentActiveRuns,
 
     reconcileProductivityReviews,
+
+    autoCloseStaleAuditExecutionIssues,
 
     buildRunOutputSilence,
 
