@@ -147,6 +147,7 @@ When the phase chain is complete, post a board-level summary comment on the pare
 - **Bypassing company scoping.** Cross-company forensics needs a board-approved diagnostic path, not a database read.
 - **Recursive recovery.** Stranded-work recovery that recovers its own recovery issues is the canonical infinite loop ([PAP-2486](/PAP/issues/PAP-2486)). Detect it and refuse to deepen.
 - **Hiding the chain.** Don't silently delete or hide the symptomatic recovery issues — the operator needs the audit trail.
+- **Treating a stuck recovery action as unresolvable.** A `missing_disposition` recovery on a legitimately `blocked` source issue is not a dead end: resolve it with `POST /api/issues/{id}/recovery-actions/resolve` (`outcome: "blocked"`, `sourceIssueStatus: "blocked"`). This endpoint does not require checkout, so it works even though the issue's blockers reject `POST /api/issues/{id}/checkout`.
 
 ## Verification checklist (before posting the plan)
 

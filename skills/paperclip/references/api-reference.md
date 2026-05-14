@@ -786,8 +786,10 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/issues/:issueId/heartbeat-context` | Compact context for heartbeat: issue state, ancestor summaries, comment cursor  |
 | POST   | `/api/companies/:companyId/issues` | Create issue (supports `blockedByIssueIds: string[]` for dependencies)                   |
 | PATCH  | `/api/issues/:issueId`             | Update issue (optional `comment` field; `blockedByIssueIds` replaces blocker set)        |
-| POST   | `/api/issues/:issueId/checkout`    | Atomic checkout (claim + start). Idempotent if you already own it.                       |
+| POST   | `/api/issues/:issueId/checkout`    | Atomic checkout (claim + start). Idempotent if you already own it. `422` if the issue has unresolved first-class blockers. |
 | POST   | `/api/issues/:issueId/release`     | Release task ownership                                                                   |
+| GET    | `/api/issues/:issueId/recovery-actions` | List the active recovery action for an issue (e.g. `missing_disposition`), if any   |
+| POST   | `/api/issues/:issueId/recovery-actions/resolve` | Resolve the active recovery action. Body: `outcome` (`restored` \| `blocked` \| `false_positive` \| `cancelled`), `sourceIssueStatus` (`done` \| `in_review` \| `blocked`), optional `actionId`, `resolutionNote`. Does **not** require checkout — works on a `blocked` issue. Use `outcome: "blocked"` + `sourceIssueStatus: "blocked"` to clear a `missing_disposition` recovery whose source issue is legitimately blocked by a first-class blocker (the handler verifies an unresolved first-class blocker still exists). `false_positive`/`cancelled` are board-only. |
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
 | GET    | `/api/issues/:issueId/comments/:commentId` | Get a specific comment by ID                                                     |
 | POST   | `/api/issues/:issueId/comments`    | Add comment (@-mentions trigger wakeups)                                                 |
