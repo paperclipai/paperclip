@@ -90,6 +90,7 @@ async function createApp(db: Record<string, unknown> = {}) {
     };
     next();
   });
+  app.use(agentRoutes(db as any));
   app.use("/api", agentRoutes(db as any));
   app.use(errorHandler);
   return app;
@@ -317,6 +318,32 @@ describe("agent live run routes", () => {
       logRef: "logs/run-1.ndjson",
       content: "chunk",
       nextOffset: 5,
+    });
+  });
+
+  it("keeps /api heartbeat log route backward compatible", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-1/log?offset=0&limitBytes=32"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      runId: "run-1",
+      store: "local_file",
+    });
+  });
+
+  it("serves heartbeat log route without /api prefix", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/heartbeat-runs/run-1/log?offset=0&limitBytes=32"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      runId: "run-1",
+      store: "local_file",
     });
   });
 

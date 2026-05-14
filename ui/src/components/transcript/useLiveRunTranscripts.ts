@@ -135,6 +135,7 @@ export function useLiveRunTranscripts({
     () => new Set(normalizedRuns.filter((run) => !isTerminalStatus(run.status)).map((run) => run.id)),
     [normalizedRuns],
   );
+  const streamConnectedRunIdsRef = useRef(new Set<string>());
   const runIdsKey = useMemo(
     () => normalizedRuns.map((run) => run.id).sort((a, b) => a.localeCompare(b)).join(","),
     [normalizedRuns],
@@ -246,21 +247,59 @@ export function useLiveRunTranscripts({
       }
     };
 
+    const activeRuns = normalizedRuns.filter((run) => !isTerminalStatus(run.status));
+    const sseConnections = new Map<string, EventSource>();
+    for (const run of activeRuns) {
+      const offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
+      const source = new EventSource(heartbeatsApi.logStreamPath(run.id, offset, logReadLimitBytes));
+      source.addEventListener("ready", () => {
+        streamConnectedRunIdsRef.current.add(run.id);
+      });
+      source.addEventListener("chunk", (event) => {
+        const message = event as MessageEvent<string>;
+        try {
+          const parsed = JSON.parse(message.data) as { content?: unknown; nextOffset?: unknown };
+          const content = typeof parsed.content === "string" ? parsed.content : "";
+          if (content.length > 0) {
+            appendChunks(run.id, parsePersistedLogContent(run.id, content, pendingLogRowsByRunRef.current));
+          }
+          if (typeof parsed.nextOffset === "number" && Number.isFinite(parsed.nextOffset)) {
+            logOffsetByRunRef.current.set(run.id, parsed.nextOffset);
+          } else if (content.length > 0) {
+            const previousOffset = logOffsetByRunRef.current.get(run.id) ?? offset;
+            logOffsetByRunRef.current.set(run.id, previousOffset + content.length);
+          }
+        } catch {
+          // Ignore malformed stream payloads.
+        }
+      });
+      source.addEventListener("error", () => {
+        streamConnectedRunIdsRef.current.delete(run.id);
+      });
+      sseConnections.set(run.id, source);
+    }
+
     const readAll = async () => {
       await Promise.all(normalizedRuns.map((run) => readRunLog(run)));
     };
 
     void readAll();
-    const activeRuns = normalizedRuns.filter((run) => !isTerminalStatus(run.status));
     const interval = activeRuns.length > 0 && logPollIntervalMs > 0
       ? window.setInterval(() => {
-          void Promise.all(activeRuns.map((run) => readRunLog(run)));
+          if (document.visibilityState === "hidden") return;
+          const fallbackRuns = activeRuns.filter((run) => !streamConnectedRunIdsRef.current.has(run.id));
+          if (fallbackRuns.length === 0) return;
+          void Promise.all(fallbackRuns.map((run) => readRunLog(run)));
         }, logPollIntervalMs)
       : null;
 
     return () => {
       cancelled = true;
       if (interval !== null) window.clearInterval(interval);
+      for (const [runId, source] of sseConnections) {
+        source.close();
+        streamConnectedRunIdsRef.current.delete(runId);
+      }
     };
   }, [logPollIntervalMs, logReadLimitBytes, normalizedRuns, runIdsKey]);
 

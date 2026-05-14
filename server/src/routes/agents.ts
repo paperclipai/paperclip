@@ -3302,6 +3302,78 @@ export function agentRoutes(
     res.json(result);
   });
 
+  router.get("/heartbeat-runs/:runId/log/stream", async (req, res) => {
+    const runId = req.params.runId as string;
+    const run = await heartbeat.getRunLogAccess(runId);
+    if (!run) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+    assertCompanyAccess(req, run.companyId);
+
+    const initialOffset = Number(req.query.offset ?? 0);
+    const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
+    let offset = Number.isFinite(initialOffset) ? initialOffset : 0;
+    let closed = false;
+    let inFlight = false;
+
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-store");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders();
+
+    const writeEvent = (event: string, payload: Record<string, unknown>) => {
+      res.write(`event: ${event}\n`);
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    };
+
+    const poll = async () => {
+      if (closed || inFlight) return;
+      inFlight = true;
+      try {
+        const result = await heartbeat.readLog(run, { offset, limitBytes });
+        if (closed) return;
+        const content = typeof result.content === "string" ? result.content : "";
+        if (result.nextOffset !== undefined) {
+          offset = result.nextOffset;
+        } else if (content.length > 0) {
+          offset += content.length;
+        }
+        if (content.length > 0) {
+          writeEvent("chunk", {
+            runId,
+            content,
+            nextOffset: offset,
+          });
+        }
+      } catch {
+        if (!closed) {
+          writeEvent("error", { runId, error: "log_stream_read_failed" });
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const pollInterval = setInterval(() => {
+      void poll();
+    }, 1_000);
+    const keepAliveInterval = setInterval(() => {
+      if (closed) return;
+      res.write(": keepalive\n\n");
+    }, 15_000);
+
+    req.on("close", () => {
+      closed = true;
+      clearInterval(pollInterval);
+      clearInterval(keepAliveInterval);
+    });
+
+    writeEvent("ready", { runId, offset });
+    void poll();
+  });
+
   router.get("/heartbeat-runs/:runId/workspace-operations", async (req, res) => {
     const runId = req.params.runId as string;
     const run = await heartbeat.getRun(runId);

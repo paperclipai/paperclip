@@ -36,6 +36,11 @@ Paperclip supports three deployment configurations, from zero-friction local to 
 - Stricter security checks
 - Best for: cloud hosting, internet-facing deployment
 
+## Operations Baseline
+
+- Configure server log rotation: [Logging and Rotation](logging.md)
+- Enable automated remediation: [Paperclip Watchdog](watchdog.md)
+
 ## Choosing a Mode
 
 - **Just trying Paperclip?** Use `local_trusted` (the default)

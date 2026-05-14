@@ -19,7 +19,7 @@ function resolveServerLogDir(): string {
 const logDir = resolveServerLogDir();
 fs.mkdirSync(logDir, { recursive: true });
 
-const logFile = path.join(logDir, "server.log");
+export const logFile = path.join(logDir, "server.log");
 
 const sharedOpts = {
   translateTime: "SYS:HH:MM:ss",
@@ -53,7 +53,8 @@ export const httpLogger = pinoHttp({
     }
     if (err || res.statusCode >= 500) return "error";
     if (res.statusCode >= 400) return "warn";
-    return "info";
+    // Keep request-success logs out of default INFO streams to reduce log volume.
+    return "debug";
   },
   customSuccessMessage(req, res) {
     return `${req.method} ${req.url} ${res.statusCode}`;

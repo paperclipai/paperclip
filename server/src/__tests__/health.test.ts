@@ -179,4 +179,33 @@ describe("GET /health", () => {
       },
     });
   });
+
+  it("serves /healthz with required fields", async () => {
+    const db = {
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+    } as unknown as Db;
+    const app = createApp(db);
+
+    const res = await request(app).get("/health/healthz");
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      db_ok: true,
+    });
+    expect(typeof res.body.uptime).toBe("number");
+    expect(typeof res.body.open_connections).toBe("number");
+    expect(typeof res.body.log_size_mb).toBe("number");
+    expect(typeof res.body.memory_mb).toBe("number");
+  });
+
+  it("serves /metrics in Prometheus text format", async () => {
+    const app = createApp();
+    const res = await request(app).get("/health/metrics");
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/plain");
+    expect(res.text).toContain("requests_total");
+    expect(res.text).toContain("request_duration_seconds");
+    expect(res.text).toContain("open_connections");
+    expect(res.text).toContain("event_loop_lag_ms");
+    expect(res.text).toContain("log_size_mb");
+  });
 });

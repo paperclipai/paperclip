@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Paperclip watchdog every minute
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=60s
+Unit=paperclip-watchdog.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -9,6 +9,7 @@ const SILENCED_SUCCESS_API_PATHS = [
   /^\/api\/companies\/[^/]+\/live-runs(?:\/|$)/,
   /^\/api\/companies\/[^/]+\/sidebar-badges(?:\/|$)/,
   /^\/api\/heartbeat-runs\/[^/]+\/log(?:\/|$)/,
+  /^\/api\/heartbeat-runs\/[^/]+\/log\/stream(?:\/|$)/,
 ];
 
 const SILENCED_SUCCESS_STATIC_PREFIXES = [

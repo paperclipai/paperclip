@@ -8,7 +8,7 @@ vi.mock("./client", () => ({
   api: mockApi,
 }));
 
-import { heartbeatsApi } from "./heartbeats";
+import { heartbeatRunLogStreamPath, heartbeatsApi } from "./heartbeats";
 
 describe("heartbeatsApi.liveRunsForCompany", () => {
   beforeEach(() => {
@@ -26,5 +26,16 @@ describe("heartbeatsApi.liveRunsForCompany", () => {
     await heartbeatsApi.liveRunsForCompany("company-1", { minCount: 50, limit: 50 });
 
     expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/live-runs?minCount=50&limit=50");
+  });
+});
+
+describe("heartbeatsApi.logStreamPath", () => {
+  it("builds a stream path under /api for EventSource", () => {
+    expect(heartbeatsApi.logStreamPath("run-1", 42, 99)).toBe(
+      "/api/heartbeat-runs/run-1/log/stream?offset=42&limitBytes=99",
+    );
+    expect(heartbeatRunLogStreamPath("run/with spaces", 0, 256000)).toContain(
+      "/api/heartbeat-runs/run%2Fwith%20spaces/log/stream",
+    );
   });
 });

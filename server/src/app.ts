@@ -6,6 +6,7 @@ import type { Db } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
+import { createApiRateLimitMiddleware, createApiTimeoutMiddleware } from "./middleware/api-edge-protection.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
@@ -43,6 +44,7 @@ import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
+import { recordHttpRequestMetric } from "./observability.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
 import { createPluginWorkerManager, type PluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
@@ -144,6 +146,21 @@ export async function createApp(
       (req as unknown as { rawBody: Buffer }).rawBody = buf;
     },
   }));
+  app.use((req, res, next) => {
+    const startedAt = process.hrtime.bigint();
+    res.on("finish", () => {
+      const elapsedNs = process.hrtime.bigint() - startedAt;
+      const durationSeconds = Number(elapsedNs) / 1_000_000_000;
+      const routePath = (req.route as { path?: string } | undefined)?.path;
+      const route = `${req.baseUrl || ""}${typeof routePath === "string" ? routePath : req.path}`;
+      recordHttpRequestMetric({
+        route: route || "unknown",
+        status: res.statusCode,
+        durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : 0,
+      });
+    });
+    next();
+  });
   app.use(httpLogger);
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
@@ -166,6 +183,8 @@ export async function createApp(
       resolveSession: opts.resolveSession,
     }),
   );
+  app.use(createApiRateLimitMiddleware());
+  app.use(createApiTimeoutMiddleware());
   app.use("/api/auth", authRoutes(db));
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
@@ -293,6 +312,14 @@ export async function createApp(
       allowedHostnames: opts.allowedHostnames,
     }),
   );
+  const healthAliasRewrite: express.RequestHandler = (req, _res, next) => {
+    req.url = `/health${req.url}`;
+    next();
+  };
+  app.use("/healthz", healthAliasRewrite, api);
+  app.use("/metrics", healthAliasRewrite, api);
+  // Backward compatibility: serve API routes both with and without the /api prefix.
+  app.use(api);
   app.use("/api", api);
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });

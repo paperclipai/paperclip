@@ -3706,6 +3706,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   useEffect(() => {
     if (!isLive || isStreamingConnected) return;
     const interval = setInterval(async () => {
+      if (document.visibilityState === "hidden") return;
       const maxSeq = events.length > 0 ? Math.max(...events.map((e) => e.seq)) : 0;
       try {
         const newEvents = await heartbeatsApi.events(run.id, maxSeq, 100);
@@ -3723,6 +3724,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   useEffect(() => {
     if (!isLive || isStreamingConnected) return;
     const interval = setInterval(async () => {
+      if (document.visibilityState === "hidden") return;
       try {
         const result = await heartbeatsApi.log(run.id, logOffset, 256_000);
         if (result.content) {

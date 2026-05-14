@@ -25,6 +25,13 @@ describe("shouldSilenceHttpSuccessLog", () => {
     expect(
       shouldSilenceHttpSuccessLog(
         "GET",
+        "/api/heartbeat-runs/b7044268-19b6-4b3a-a9f3-9c57dce70253/log/stream?offset=1103894&limitBytes=256000",
+        200,
+      ),
+    ).toBe(true);
+    expect(
+      shouldSilenceHttpSuccessLog(
+        "GET",
         "/api/companies/5cbe79ee-acb3-4597-896e-7662742593cd/live-runs?minCount=3",
         200,
       ),

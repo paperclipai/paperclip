@@ -1,0 +1,8 @@
+cloudflare_account_id = "replace-with-account-id"
+cloudflare_zone_id    = "replace-with-zone-id"
+paperclip_subdomain   = "paperclip"
+
+allowed_emails = [
+  "nick@thegoodguys.la",
+]
+

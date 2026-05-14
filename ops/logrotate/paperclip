@@ -1,0 +1,11 @@
+/home/paperclip/.paperclip/instances/default/logs/server.log {
+  daily
+  rotate 7
+  size 100M
+  missingok
+  notifempty
+  copytruncate
+  compress
+  delaycompress
+  create 0640 paperclip paperclip
+}

@@ -70,6 +70,10 @@ export interface WatchdogDecisionInput {
   snoozedUntil?: string | null;
 }
 
+export function heartbeatRunLogStreamPath(runId: string, offset = 0, limitBytes = 256000): string {
+  return `/api/heartbeat-runs/${encodeURIComponent(runId)}/log/stream?offset=${encodeURIComponent(String(offset))}&limitBytes=${encodeURIComponent(String(limitBytes))}`;
+}
+
 export const heartbeatsApi = {
   list: (companyId: string, agentId?: string, limit?: number) => {
     const searchParams = new URLSearchParams();
@@ -87,6 +91,8 @@ export const heartbeatsApi = {
     api.get<{ runId: string; store: string; logRef: string; content: string; nextOffset?: number }>(
       `/heartbeat-runs/${runId}/log?offset=${encodeURIComponent(String(offset))}&limitBytes=${encodeURIComponent(String(limitBytes))}`,
     ),
+  logStreamPath: (runId: string, offset = 0, limitBytes = 256000) =>
+    heartbeatRunLogStreamPath(runId, offset, limitBytes),
   workspaceOperations: (runId: string) =>
     api.get<WorkspaceOperation[]>(`/heartbeat-runs/${runId}/workspace-operations`),
   workspaceOperationLog: (operationId: string, offset = 0, limitBytes = 256000) =>
