@@ -185,6 +185,131 @@ describe("project workspace skill discovery", () => {
       ],
     });
   });
+
+  it("parses folded scalar (>) description and joins continuation lines with spaces", async () => {
+    const workspace = await makeTempDir("paperclip-folded-scalar-");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(
+      path.join(workspace, "SKILL.md"),
+      [
+        "---",
+        "name: Query GA4",
+        "description: >",
+        "  Queries Google Analytics 4 for a given date range",
+        "  and returns a structured report.",
+        "---",
+        "",
+        "# Query GA4",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const imported = await readLocalSkillImportFromDirectory(
+      "33333333-3333-4333-8333-333333333333",
+      workspace,
+      { inventoryMode: "full" },
+    );
+
+    // asString() trims the raw parsed value; the trailing "\n" added by
+    // clip chomping is normalised away at the API boundary.
+    expect(imported.description).toBe(
+      "Queries Google Analytics 4 for a given date range and returns a structured report.",
+    );
+  });
+
+  it("parses literal scalar (|) description and preserves newlines", async () => {
+    const workspace = await makeTempDir("paperclip-literal-scalar-");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(
+      path.join(workspace, "SKILL.md"),
+      [
+        "---",
+        "name: Multi-Step Skill",
+        "description: |",
+        "  Step 1: gather data.",
+        "  Step 2: analyse results.",
+        "---",
+        "",
+        "# Multi-Step Skill",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const imported = await readLocalSkillImportFromDirectory(
+      "33333333-3333-4333-8333-333333333333",
+      workspace,
+      { inventoryMode: "full" },
+    );
+
+    // asString() trims the raw parsed value; the trailing "\n" added by
+    // clip chomping is normalised away at the API boundary.
+    expect(imported.description).toBe(
+      "Step 1: gather data.\nStep 2: analyse results.",
+    );
+  });
+
+  it("parses plain string description without regression", async () => {
+    const workspace = await makeTempDir("paperclip-plain-description-");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(
+      path.join(workspace, "SKILL.md"),
+      [
+        "---",
+        "name: Simple Skill",
+        "description: This is a plain description.",
+        "---",
+        "",
+        "# Simple Skill",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const imported = await readLocalSkillImportFromDirectory(
+      "33333333-3333-4333-8333-333333333333",
+      workspace,
+      { inventoryMode: "full" },
+    );
+
+    expect(imported.description).toBe("This is a plain description.");
+  });
+
+  it("accepts chomping indicator (|-) and treats it as default clip (follow-up: proper strip semantics)", async () => {
+    // |- is the YAML 1.2 'strip' chomping variant of literal (|). We accept it
+    // via startsWith("|") but currently treat it as default 'clip', so a single
+    // trailing newline is still appended. Proper strip semantics (no trailing
+    // newline) are deferred to a follow-up.
+    const workspace = await makeTempDir("paperclip-chomping-indicator-");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(
+      path.join(workspace, "SKILL.md"),
+      [
+        "---",
+        "name: Chomping Skill",
+        "description: |-",
+        "  Hello",
+        "  World",
+        "---",
+        "",
+        "# Chomping Skill",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const imported = await readLocalSkillImportFromDirectory(
+      "33333333-3333-4333-8333-333333333333",
+      workspace,
+      { inventoryMode: "full" },
+    );
+
+    // parseYamlBlock emits "Hello\nWorld\n" (clip chomping per §8.1.1.2);
+    // asString() trims at the API boundary, so the final description is without
+    // the trailing newline.
+    expect(imported.description).toBe("Hello\nWorld");
+  });
 });
 
 describe("missing local skill reconciliation", () => {
