@@ -1174,8 +1174,15 @@ export function defaultPathForPlatform() {
   return "/usr/local/bin:/opt/homebrew/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin";
 }
 
+const DEFAULT_WINDOWS_PATHEXT = ".EXE;.CMD;.BAT;.COM";
+
 function windowsPathExts(env: NodeJS.ProcessEnv): string[] {
-  return (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean);
+  const rawFromEnv = typeof env.PATHEXT === "string" ? env.PATHEXT.trim() : "";
+  const rawFromProcess =
+    typeof process.env.PATHEXT === "string" ? process.env.PATHEXT.trim() : "";
+  const raw = rawFromEnv.length > 0 ? env.PATHEXT! : rawFromProcess.length > 0 ? process.env.PATHEXT! : DEFAULT_WINDOWS_PATHEXT;
+  const list = raw.split(";").map((s) => s.trim()).filter(Boolean);
+  return list.length > 0 ? list : DEFAULT_WINDOWS_PATHEXT.split(";").filter(Boolean);
 }
 
 async function pathExists(candidate: string) {
@@ -1302,9 +1309,31 @@ async function resolveSpawnTarget(
 }
 
 export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  if (typeof env.PATH === "string" && env.PATH.length > 0) return env;
-  if (typeof env.Path === "string" && env.Path.length > 0) return env;
-  return { ...env, PATH: defaultPathForPlatform() };
+  let next: NodeJS.ProcessEnv = env;
+  if (!(typeof env.PATH === "string" && env.PATH.length > 0)) {
+    if (typeof env.Path === "string" && env.Path.length > 0) {
+      next = { ...next, PATH: env.Path };
+    } else {
+      next = { ...next, PATH: defaultPathForPlatform() };
+    }
+  }
+  // Empty PATHEXT is truthy in JS (`"" ?? default` keeps "") and breaks PATH
+  // resolution for extensioned executables (e.g. npm's codebuddy.cmd).
+  if (process.platform === "win32") {
+    const p = next.PATHEXT;
+    const unusable =
+      typeof p !== "string" ||
+      p.trim().length === 0 ||
+      p.split(";").every((segment) => segment.trim().length === 0);
+    if (unusable) {
+      const inherited =
+        typeof process.env.PATHEXT === "string" && process.env.PATHEXT.trim().length > 0
+          ? process.env.PATHEXT
+          : DEFAULT_WINDOWS_PATHEXT;
+      next = { ...next, PATHEXT: inherited };
+    }
+  }
+  return next;
 }
 
 export async function ensureAbsoluteDirectory(

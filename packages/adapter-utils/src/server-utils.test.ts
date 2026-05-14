@@ -8,6 +8,7 @@ import {
   appendWithByteCap,
   buildInvocationEnvForLogs,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  ensurePathInEnv,
   materializePaperclipSkillCopy,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
@@ -932,5 +933,12 @@ describe("appendWithByteCap", () => {
     expect(output).not.toContain("\uFFFD");
     expect(Buffer.from(output, "utf8").toString("utf8")).toBe(output);
     expect(Buffer.byteLength(output, "utf8")).toBeLessThanOrEqual(7);
+  });
+});
+
+describe("ensurePathInEnv", () => {
+  it.skipIf(process.platform !== "win32")("replaces empty PATHEXT so .cmd shims resolve on PATH", () => {
+    const e = ensurePathInEnv({ PATH: "C:\\Windows", PATHEXT: "" });
+    expect(e.PATHEXT?.toUpperCase()).toContain(".CMD");
   });
 });
