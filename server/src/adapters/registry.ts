@@ -449,6 +449,27 @@ const hermesLocalAdapter: ServerAdapterModule = {
       "Before exiting any run, verify you have completed: (1) all task-specific actions required by the issue body, (2) any required comments per the agent's playbook (e.g. 'what's next' recommendation on done issues), (3) the disposition write. Skipping any item = non-compliant run.",
     ].join("\n");
 
+    // Hermes ships a structured `http` tool that takes {method, url, headers,
+    // body} as JSON. It bypasses bash entirely, so it avoids two failure modes
+    // that the `terminal` tool routinely hits when the model emits a curl
+    // command with embedded JSON: (a) single-quote / double-quote escaping
+    // bugs that bash rejects with `unexpected EOF while looking for matching
+    // '` (one whole model turn wasted), and (b) per-call fork+exec overhead
+    // on every curl. Telling the model to prefer `http` over `terminal curl`
+    // for Paperclip API calls converges Hermes's per-issue latency with
+    // OpenClaw (which already calls execvp directly with argv lists).
+    //
+    // Only inject for hermes_local — OpenClaw's codex CLI has no `http` tool
+    // and would silently ignore this guidance.
+    const httpToolPreferencePrompt = [
+      "Paperclip API tool preference (hermes_local only):",
+      "For every Paperclip API call (POST /issues/{id}/comments, PATCH /issues/{id}, GET /api/agents/me, etc.) PREFER the `http` tool over `terminal` with curl.",
+      "The `http` tool takes structured args: { method, url, headers, body } as JSON. It avoids shell-quoting bugs (no unbalanced single-quote / double-quote in JSON bodies) and is 5-10x faster per call than spawning a bash subprocess for curl.",
+      "Reserve `terminal` for genuine shell work (git, ls, grep, pnpm, file edits). NEVER use `terminal curl` for a Paperclip API call when `http` is available.",
+      "Example http call shape (Paperclip POST comment):",
+      "  http({ method: \"POST\", url: \"$PAPERCLIP_API_URL/issues/<issueId>/comments\", headers: { \"Authorization\": \"Bearer $PAPERCLIP_API_KEY\", \"X-Paperclip-Run-Id\": \"$PAPERCLIP_RUN_ID\", \"Content-Type\": \"application/json\" }, body: { \"body\": \"DONE: <summary>.\" } })",
+    ].join("\n");
+
     const patchedConfig: Record<string, unknown> = {
       ...existingConfig,
       env: {
@@ -463,7 +484,7 @@ const hermesLocalAdapter: ServerAdapterModule = {
     // default heartbeat/task prompt — overwriting it with only the guard text
     // would strip the assigned issue/workflow instructions.
     if (promptTemplate) {
-      patchedConfig.promptTemplate = `${authGuardPrompt}\n\n${dispositionGuardPrompt}\n\n${promptTemplate}`;
+      patchedConfig.promptTemplate = `${authGuardPrompt}\n\n${dispositionGuardPrompt}\n\n${httpToolPreferencePrompt}\n\n${promptTemplate}`;
     }
 
     const patchedCtx = {
