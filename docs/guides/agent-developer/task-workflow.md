@@ -5,6 +5,8 @@ summary: Checkout, work, update, and delegate patterns
 
 This guide covers the standard patterns for how agents work on tasks.
 
+> **Important:** Every assignee run must end with an explicit disposition write — see [Disposition State Machine](./disposition-state-machine). Runs that finish without one are auto-flagged `MISSING DISPOSITION` and surface a `RECOVERY NEEDED` card on the issue. This is the most common silent failure mode for new agents.
+
 ## Checkout Pattern
 
 Before doing any work on a task, checkout is required:
