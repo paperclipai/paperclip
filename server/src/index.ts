@@ -34,6 +34,7 @@ import {
   instanceSettingsService,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
+  runProjectsGc,
 } from "./services/index.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
@@ -42,6 +43,7 @@ import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
+import { runWorktreeGc } from "@paperclipai/shared/worktree-gc";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
 import type {
@@ -668,11 +670,54 @@ export async function startServer(): Promise<StartedServer> {
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of persisted runtime services failed");
     });
-  
+
+  if (config.projectsGcEnabled) {
+    const runProjectsGcSweep = async (trigger: "startup" | "scheduled") => {
+      try {
+        const result = await runProjectsGc({
+          db: db as any,
+          retentionDays: config.projectsGcRetentionDays,
+        });
+        if (result.orphans.length > 0 || result.swept.length > 0 || result.errors.length > 0) {
+          logger.info(
+            {
+              trigger,
+              scanned: result.scanned,
+              quarantined: result.quarantined.length,
+              swept: result.swept.length,
+              errors: result.errors.length,
+              retentionDays: config.projectsGcRetentionDays,
+            },
+            "projects GC sweep ran",
+          );
+          for (const err of result.errors) {
+            logger.warn({ err, phase: err.phase, path: err.path }, "projects GC sweep error");
+          }
+        }
+      } catch (err) {
+        logger.error({ err, trigger }, "projects GC sweep failed");
+      }
+    };
+    void runProjectsGcSweep("startup");
+    const intervalMs = Math.max(1, config.projectsGcIntervalHours) * 60 * 60 * 1000;
+    setInterval(() => {
+      void runProjectsGcSweep("scheduled");
+    }, intervalMs);
+  }
+
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
-  
+    let lastWorktreeGcAtMs = 0;
+    const worktreeGcEnabled =
+      process.env.PAPERCLIP_IN_WORKTREE !== "true" &&
+      process.env.PAPERCLIP_WORKTREE_AUTOPRUNE !== "false";
+    const worktreeGcIntervalMs = Math.max(
+      5 * 60 * 1000,
+      Number(process.env.PAPERCLIP_WORKTREE_AUTOPRUNE_INTERVAL_MS) || 60 * 60 * 1000,
+    );
+    const worktreeGcRepoCwd = process.cwd();
+
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
     void heartbeat
@@ -782,6 +827,37 @@ export async function startServer(): Promise<StartedServer> {
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
+
+      const tickNow = new Date();
+      if (
+        worktreeGcEnabled &&
+        tickNow.getTime() - lastWorktreeGcAtMs >= worktreeGcIntervalMs
+      ) {
+        lastWorktreeGcAtMs = tickNow.getTime();
+        try {
+          const result = runWorktreeGc({
+            repoCwd: worktreeGcRepoCwd,
+            now: tickNow,
+            logger: {
+              info: (msg, meta) => logger.info(meta ?? {}, msg),
+              warn: (msg, meta) => logger.warn(meta ?? {}, msg),
+            },
+          });
+          if (result.pruned.length > 0 || result.errors.length > 0) {
+            logger.info(
+              {
+                pruned: result.pruned,
+                skipped: result.skipped,
+                errors: result.errors,
+                scanned: result.scanned,
+              },
+              "worktree gc sweep ran",
+            );
+          }
+        } catch (err) {
+          logger.error({ err }, "worktree gc sweep failed");
+        }
+      }
     }, config.heartbeatSchedulerIntervalMs);
   }
   

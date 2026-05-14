@@ -55,4 +55,12 @@ export { logActivity, type LogActivityInput } from "./activity-log.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
+export {
+  findOrphanScratchDirs,
+  runProjectsGc,
+  type OrphanScratchDir,
+  type OrphanScratchKind,
+  type ProjectsGcOptions,
+  type ProjectsGcResult,
+} from "./projects-gc.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";

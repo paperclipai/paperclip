@@ -1076,6 +1076,21 @@ export {
 } from "./routine-variables.js";
 
 export {
+  DEFAULT_WORKTREE_GC_HOME,
+  DEFAULT_WORKTREE_GC_MIN_AGE_MS,
+  WORKTREE_NAME_PREFIX,
+  findStaleWorktreeInstances,
+  pruneStaleWorktreeInstance,
+  runWorktreeGc,
+  type StaleWorktreeCandidate,
+  type StaleWorktreeReason,
+  type WorktreeGcLogger,
+  type WorktreeGcOptions,
+  type WorktreeGcRunOptions,
+  type WorktreeGcRunResult,
+} from "./worktree-gc.js";
+
+export {
   paperclipConfigSchema,
   configMetaSchema,
   llmConfigSchema,
