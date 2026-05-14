@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type Ref } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode, type Ref } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
@@ -66,6 +66,7 @@ import { InlineEditor } from "../components/InlineEditor";
 import { IssueChatThread, type IssueChatComposerHandle } from "../components/IssueChatThread";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
+import { IssueSiblingNavigation } from "../components/IssueSiblingNavigation";
 import { IssuesList } from "../components/IssuesList";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { IssueReferenceActivitySummary } from "../components/IssueReferenceActivitySummary";
@@ -102,7 +103,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { formatIssueActivityAction } from "@/lib/activity-format";
 import { buildIssuePropertiesPanelKey } from "../lib/issue-properties-panel-key";
-import { shouldRenderRichSubIssuesSection } from "../lib/issue-detail-subissues";
+import { buildIssueSiblingNavigation, shouldRenderRichSubIssuesSection } from "../lib/issue-detail-subissues";
 import { filterIssueDescendants } from "../lib/issue-tree";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import {
@@ -633,6 +634,7 @@ type IssueDetailChatTabProps = {
   onRefreshLatestComments: () => Promise<unknown> | void;
   onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
   composerRef: Ref<IssueChatComposerHandle>;
+  footer?: ReactNode;
   feedbackVotes?: FeedbackVote[];
   feedbackDataSharingPreference: "allowed" | "not_allowed" | "prompt";
   feedbackTermsUrl: string | null;
@@ -700,6 +702,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onRefreshLatestComments,
   onWorkModeChange,
   composerRef,
+  footer,
   feedbackVotes,
   feedbackDataSharingPreference,
   feedbackTermsUrl,
@@ -946,6 +949,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         assigneeUserId={assigneeUserId}
         onResumeFromBacklog={onResumeFromBacklog}
         resumeFromBacklogPending={resumeFromBacklogPending}
+        footer={footer}
       />
     </div>
   );
@@ -1368,6 +1372,18 @@ export function IssueDetail() {
     enabled: !!resolvedCompanyId && !!issue?.id,
     placeholderData: keepPreviousDataForSameQueryTail<Issue[]>(issue?.id ?? "pending"),
   });
+  const {
+    data: rawSiblingIssues = [],
+    isLoading: siblingIssuesLoading,
+    isError: siblingIssuesError,
+  } = useQuery({
+    queryKey:
+      issue?.parentId && resolvedCompanyId
+        ? queryKeys.issues.listByParent(resolvedCompanyId, issue.parentId)
+        : ["issues", "siblings", "pending"],
+    queryFn: () => issuesApi.list(resolvedCompanyId!, { parentId: issue!.parentId!, includeBlockedBy: true }),
+    enabled: !!resolvedCompanyId && !!issue?.parentId,
+  });
   const { data: companyLiveRuns } = useQuery({
     queryKey: resolvedCompanyId ? queryKeys.liveRuns(resolvedCompanyId) : ["live-runs", "pending"],
     queryFn: () => heartbeatsApi.liveRunsForCompany(resolvedCompanyId!),
@@ -1537,6 +1553,12 @@ export function IssueDetail() {
     [issuePanelKey],
   );
   const showRichSubIssuesSection = shouldRenderRichSubIssuesSection(childIssuesLoading, childIssues.length);
+  const siblingNavigation = useMemo(
+    () => issue && !childIssuesLoading && !siblingIssuesLoading && !siblingIssuesError
+      ? buildIssueSiblingNavigation(issue, rawSiblingIssues, childIssues)
+      : null,
+    [childIssues, childIssuesLoading, issue, rawSiblingIssues, siblingIssuesError, siblingIssuesLoading],
+  );
   const openNewSubIssue = useCallback(() => {
     if (!issue) return;
     openNewIssue(buildSubIssueDefaultsForViewer(issue, currentUserId));
@@ -3900,6 +3922,14 @@ export function IssueDetail() {
               onLoadOlderComments={loadOlderComments}
               onRefreshLatestComments={refetchLatestComments}
               composerRef={commentComposerRef}
+              footer={
+                siblingNavigation ? (
+                  <IssueSiblingNavigation
+                    navigation={siblingNavigation}
+                    linkState={resolvedIssueDetailState ?? location.state}
+                  />
+                ) : null
+              }
               feedbackVotes={feedbackVotes}
               feedbackDataSharingPreference={feedbackDataSharingPreference}
               feedbackTermsUrl={FEEDBACK_TERMS_URL}

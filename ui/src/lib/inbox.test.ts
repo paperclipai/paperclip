@@ -1002,6 +1002,12 @@ describe("inbox helpers", () => {
     expect(loadLastInboxTab()).toBe("all");
   });
 
+  it("persists the blocked inbox tab", () => {
+    localStorage.clear();
+    saveLastInboxTab("blocked");
+    expect(loadLastInboxTab()).toBe("blocked");
+  });
+
   it("persists inbox filters per company", () => {
     saveInboxFilterPreferences("company-1", {
       allCategoryFilter: "approvals",

@@ -151,6 +151,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(goals);
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(instanceSettings);
     await db.delete(companies);
@@ -1160,10 +1161,10 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(comments.map((comment) => comment.id)).toEqual([firstCommentId]);
   });
 
-  it("lists user-authored comments with run attribution candidates without binding Date objects in raw SQL", async () => {
+  it("lists user comments when derived run attribution scans a timestamp window", async () => {
     const companyId = randomUUID();
-    const issueId = randomUUID();
     const agentId = randomUUID();
+    const issueId = randomUUID();
     const runId = randomUUID();
     const commentId = randomUUID();
 
@@ -1173,24 +1174,27 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
+
     await db.insert(agents).values({
       id: agentId,
       companyId,
-      name: "Developer",
+      name: "CodexCoder",
       role: "engineer",
       status: "active",
-      adapterType: "claude_local",
+      adapterType: "codex_local",
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
     });
+
     await db.insert(issues).values({
       id: issueId,
       companyId,
-      title: "Comment attribution issue",
+      title: "Comments issue",
       status: "todo",
       priority: "medium",
     });
+
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId,
@@ -1199,23 +1203,28 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       triggerDetail: "system",
       status: "succeeded",
       contextSnapshot: { issueId },
-      createdAt: new Date("2026-04-30T00:00:00.000Z"),
-      startedAt: new Date("2026-04-30T00:00:00.000Z"),
-      finishedAt: new Date("2026-04-30T00:10:00.000Z"),
+      createdAt: new Date("2026-05-12T22:58:00.000Z"),
+      startedAt: new Date("2026-05-12T22:58:00.000Z"),
+      finishedAt: new Date("2026-05-12T23:14:00.000Z"),
     });
+
     await db.insert(issueComments).values({
       id: commentId,
       companyId,
       issueId,
-      authorUserId: "local-board-user",
-      body: "Agent-posted legacy comment",
-      createdAt: new Date("2026-04-30T00:05:00.000Z"),
-      updatedAt: new Date("2026-04-30T00:05:00.000Z"),
+      authorUserId: "user-1",
+      body: "Comment should be visible",
+      createdAt: new Date("2026-05-12T23:00:00.000Z"),
+      updatedAt: new Date("2026-05-12T23:00:00.000Z"),
     });
 
-    const comments = await svc.listComments(issueId, { order: "desc" });
+    const comments = await svc.listComments(issueId, {
+      order: "desc",
+      limit: 50,
+    });
 
     expect(comments.map((comment) => comment.id)).toEqual([commentId]);
+    expect(comments[0]?.body).toBe("Comment should be visible");
   });
 
   it("includes blockedBy summaries on list rows in one batched pass", async () => {
