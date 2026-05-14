@@ -76,6 +76,10 @@ const mockIssueService = vi.hoisted(() => ({
   listDependencyReadiness: vi.fn(async () => new Map()),
 }));
 
+const mockIssueRecoveryActionService = vi.hoisted(() => ({
+  listActiveForIssues: vi.fn(async () => new Map()),
+}));
+
 const mockSecretService = vi.hoisted(() => ({
   normalizeAdapterConfigForPersistence: vi.fn(),
   resolveAdapterConfigForRuntime: vi.fn(),
@@ -152,6 +156,10 @@ function registerModuleMocks() {
     issueService: () => mockIssueService,
   }));
 
+  vi.doMock("../services/issue-recovery-actions.js", () => ({
+    issueRecoveryActionService: () => mockIssueRecoveryActionService,
+  }));
+
   vi.doMock("../services/secrets.js", () => ({
     secretService: () => mockSecretService,
   }));
@@ -187,6 +195,7 @@ function registerModuleMocks() {
     heartbeatService: () => mockHeartbeatService,
     ISSUE_LIST_DEFAULT_LIMIT: 500,
     issueApprovalService: () => mockIssueApprovalService,
+    issueRecoveryActionService: () => mockIssueRecoveryActionService,
     issueService: () => mockIssueService,
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
@@ -744,7 +753,7 @@ describe.sequential("agent permission routes", () => {
           heartbeat: {
             enabled: false,
             intervalSec: 3600,
-            maxConcurrentRuns: 5,
+            maxConcurrentRuns: 20,
           },
         },
       }),
@@ -782,7 +791,7 @@ describe.sequential("agent permission routes", () => {
           heartbeat: {
             enabled: false,
             intervalSec: 3600,
-            maxConcurrentRuns: 5,
+            maxConcurrentRuns: 20,
           },
         },
       }),
@@ -1181,6 +1190,7 @@ describe.sequential("agent permission routes", () => {
         parentId: null,
         updatedAt: "2026-04-02T02:22:06.418Z",
         activeRun: null,
+        activeRecoveryAction: null,
         dependencyReady: true,
         unresolvedBlockerCount: 0,
         unresolvedBlockerIssueIds: [],
