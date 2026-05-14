@@ -94,7 +94,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     await tempDb?.cleanup();
   });
 
-  async function seedRunningRun(opts: { now: Date; ageMs: number; withOutput?: boolean; logChunk?: string }) {
+  async function seedRunningRun(opts: { now: Date; ageMs: number; withOutput?: boolean; logChunk?: string; processPid?: number }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
     const coderId = randomUUID();
@@ -162,6 +162,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       contextSnapshot: { issueId },
       stdoutExcerpt: "OPENAI_API_KEY=sk-test-secret-value should not leak",
       logBytes: 0,
+      processPid: opts.processPid ?? null,
     });
     if (opts.logChunk) {
       const store = getRunLogStore();
@@ -546,5 +547,158 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       createdByRunId: randomUUID(),
     });
     expect(decision.createdByRunId).toBe(managerRunId);
+  });
+
+  describe("dead-pid detection", () => {
+    it("reaps a run whose processPid is dead (ESRCH) without creating an eval issue", async () => {
+      const now = new Date("2026-04-22T20:00:00.000Z");
+      const fakePid = 99999;
+      const { companyId, runId } = await seedRunningRun({
+        now,
+        ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+        processPid: fakePid,
+      });
+
+      const killSpy = vi.spyOn(process, "kill").mockImplementation((pid) => {
+        if (pid === fakePid) {
+          const err = Object.assign(new Error("ESRCH"), { code: "ESRCH" });
+          throw err;
+        }
+        return true;
+      });
+
+      try {
+        const heartbeat = heartbeatService(db);
+        const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+        expect(result.reaped).toBe(1);
+        expect(result.created).toBe(0);
+
+        const evaluations = await db
+          .select()
+          .from(issues)
+          .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+        expect(evaluations).toHaveLength(0);
+      } finally {
+        killSpy.mockRestore();
+      }
+    });
+
+    it("does NOT reap a run when process.kill throws EPERM (process exists, different OS user)", async () => {
+      const now = new Date("2026-04-22T20:00:00.000Z");
+      const fakePid = 99998;
+      const { companyId } = await seedRunningRun({
+        now,
+        ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+        processPid: fakePid,
+      });
+
+      const killSpy = vi.spyOn(process, "kill").mockImplementation((pid) => {
+        if (pid === fakePid) {
+          const err = Object.assign(new Error("EPERM"), { code: "EPERM" });
+          throw err;
+        }
+        return true;
+      });
+
+      try {
+        const heartbeat = heartbeatService(db);
+        const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+        // EPERM means the process is alive — should create eval, not reap
+        expect(result.reaped).toBe(0);
+        expect(result.created).toBe(1);
+
+        const evaluations = await db
+          .select()
+          .from(issues)
+          .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+        expect(evaluations).toHaveLength(1);
+      } finally {
+        killSpy.mockRestore();
+      }
+    });
+  });
+
+  describe("all-time dedup with closed eval", () => {
+    it("returns existing when closed eval is found for an alive-pid run, does not create new eval or re-block source", async () => {
+      const now = new Date("2026-04-22T20:00:00.000Z");
+      const { companyId, runId, issueId } = await seedRunningRun({
+        now,
+        ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      });
+      const heartbeat = heartbeatService(db);
+
+      // First scan creates the eval issue
+      const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+      expect(first.created).toBe(1);
+      const evalIssueId = first.evaluationIssueIds[0];
+      expect(evalIssueId).toBeTruthy();
+
+      // Close the eval issue
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, evalIssueId!));
+
+      // Second scan: closed eval exists, pid alive → return existing, no new ticket, no re-block
+      const second = await heartbeat.scanSilentActiveRuns({ now, companyId });
+      expect(second.created).toBe(0);
+      expect(second.existing).toBe(1);
+
+      // Source issue must NOT be blocked by the done eval issue
+      const sourceIssue = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)).then((r) => r[0]);
+      expect(sourceIssue?.status).not.toBe("blocked");
+
+      const allEvals = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+      expect(allEvals).toHaveLength(1);
+    });
+
+    it("reaps a dead-pid run even when a closed eval issue exists", async () => {
+      const now = new Date("2026-04-22T20:00:00.000Z");
+      const fakePid = 99997;
+      const { companyId, runId } = await seedRunningRun({
+        now,
+        ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+        processPid: fakePid,
+      });
+      const heartbeat = heartbeatService(db);
+
+      // Manually seed a closed eval issue for this run
+      const companyRows = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId));
+      const issuePrefix = companyRows[0]?.issuePrefix ?? "TST";
+      await db.insert(issues).values({
+        id: randomUUID(),
+        companyId,
+        title: "Review silent active run (closed)",
+        status: "done",
+        priority: "medium",
+        issueNumber: 99,
+        identifier: `${issuePrefix}-99`,
+        updatedAt: now,
+        createdAt: now,
+        originKind: "stale_active_run_evaluation",
+        originId: runId,
+        originFingerprint: `stale_active_run:${companyId}:${runId}`,
+      });
+
+      const killSpy = vi.spyOn(process, "kill").mockImplementation((pid) => {
+        if (pid === fakePid) {
+          const err = Object.assign(new Error("ESRCH"), { code: "ESRCH" });
+          throw err;
+        }
+        return true;
+      });
+
+      try {
+        const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+        // Dead pid takes priority — run is reaped, no new eval
+        expect(result.reaped).toBe(1);
+        expect(result.created).toBe(0);
+      } finally {
+        killSpy.mockRestore();
+      }
+    });
   });
 });

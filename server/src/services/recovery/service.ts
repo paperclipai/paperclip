@@ -388,7 +388,17 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
   ].join("\n");
 }
 
-export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup }) {
+function isProcessAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (err) {
+    // EPERM: the process exists but we can't signal it (different OS user). Treat as alive.
+    if ((err as NodeJS.ErrnoException).code === "EPERM") return true;
+    // ESRCH or anything else: process not found.
+    return false;
+  }
+}
+
+export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; cancelRun?: (runId: string, reason: string) => Promise<unknown> }) {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -716,7 +726,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
           eq(issues.originId, runId),
           isNull(issues.hiddenAt),
-          notInArray(issues.status, ["done", "cancelled"]),
         ),
       )
       .limit(1);
@@ -1041,32 +1050,61 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const level = (evidence.silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS ? "critical" : "suspicious";
     const existing = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
     if (existing) {
-      if (level === "critical" && existing.priority !== "high") {
-        await issuesSvc.update(existing.id, {
-          priority: "high",
-        });
-        await issuesSvc.addComment(existing.id, [
-          "Critical output silence threshold crossed.",
-          "",
-          `- Run: \`${input.run.id}\``,
-          `- Silent for: ${formatDuration(evidence.silenceAgeMs)}`,
-          `- Last output at: ${input.run.lastOutputAt?.toISOString() ?? "none recorded"}`,
-        ].join("\n"), { runId: input.run.id });
-        await ensureSourceIssueBlockedByStaleEvaluation({
-          sourceIssue,
-          evaluationIssue: existing,
-          run: input.run,
-        });
-        return { kind: "escalated" as const, evaluationIssueId: existing.id };
+      const existingIsTerminal = ["done", "cancelled"].includes(existing.status);
+      if (existingIsTerminal) {
+        // Re-arm check: a "continue"/"snooze" decision on this eval means the quiet window
+        // has since expired and a fresh evaluation should be created. Without a prior continue
+        // decision the eval was simply closed — return existing to prevent looping.
+        const [priorContinue] = await db
+          .select({ id: heartbeatRunWatchdogDecisions.id })
+          .from(heartbeatRunWatchdogDecisions)
+          .where(and(
+            eq(heartbeatRunWatchdogDecisions.companyId, input.run.companyId),
+            eq(heartbeatRunWatchdogDecisions.runId, input.run.id),
+            eq(heartbeatRunWatchdogDecisions.evaluationIssueId, existing.id),
+            inArray(heartbeatRunWatchdogDecisions.decision, ["continue", "snooze"]),
+          ))
+          .limit(1);
+        if (!priorContinue) {
+          // Dedup: closed without re-arm — re-escalate source priority if critical but don't re-block.
+          if (level === "critical" && sourceIssue && !["done", "cancelled"].includes(sourceIssue.status)) {
+            const escalatedPriority = sourceIssue.priority === "critical" ? "critical" : "high";
+            if (sourceIssue.priority !== escalatedPriority) {
+              await issuesSvc.update(sourceIssue.id, { priority: escalatedPriority });
+            }
+          }
+          return { kind: "existing" as const, evaluationIssueId: existing.id };
+        }
+        // priorContinue exists: re-arm after snooze expiry — fall through to create a new eval.
+      } else {
+        // Non-terminal: escalate priority or ensure source is blocked, then dedup.
+        if (level === "critical" && existing.priority !== "high") {
+          await issuesSvc.update(existing.id, {
+            priority: "high",
+          });
+          await issuesSvc.addComment(existing.id, [
+            "Critical output silence threshold crossed.",
+            "",
+            `- Run: \`${input.run.id}\``,
+            `- Silent for: ${formatDuration(evidence.silenceAgeMs)}`,
+            `- Last output at: ${input.run.lastOutputAt?.toISOString() ?? "none recorded"}`,
+          ].join("\n"), { runId: input.run.id });
+          await ensureSourceIssueBlockedByStaleEvaluation({
+            sourceIssue,
+            evaluationIssue: existing,
+            run: input.run,
+          });
+          return { kind: "escalated" as const, evaluationIssueId: existing.id };
+        }
+        if (level === "critical") {
+          await ensureSourceIssueBlockedByStaleEvaluation({
+            sourceIssue,
+            evaluationIssue: existing,
+            run: input.run,
+          });
+        }
+        return { kind: "existing" as const, evaluationIssueId: existing.id };
       }
-      if (level === "critical") {
-        await ensureSourceIssueBlockedByStaleEvaluation({
-          sourceIssue,
-          evaluationIssue: existing,
-          run: input.run,
-        });
-      }
-      return { kind: "existing" as const, evaluationIssueId: existing.id };
     }
 
     const ownerAgentId = await resolveStaleRunOwnerAgentId({ run: input.run, runningAgent, sourceIssue });
@@ -1175,6 +1213,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       existing: 0,
       escalated: 0,
       snoozed: 0,
+      reaped: 0,
       skipped: 0,
       evaluationIssueIds: [] as string[],
     };
@@ -1182,6 +1221,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     for (const run of candidates) {
       if (await latestActiveOutputQuietUntilDecision(run.companyId, run.id, now)) {
         result.snoozed += 1;
+        continue;
+      }
+      if (!runningProcesses.has(run.id) && run.processPid && !isProcessAlive(run.processPid)) {
+        if (deps.cancelRun) {
+          logger.info({ runId: run.id, pid: run.processPid }, "Dead pid detected by stale-run scanner — reaping run");
+          await deps.cancelRun(run.id, "Dead pid detected by stale-run scanner");
+          result.reaped += 1;
+        } else {
+          logger.warn({ runId: run.id, pid: run.processPid }, "Dead pid detected but cancelRun not available — skipping reap");
+        }
         continue;
       }
       const outcome = await createOrUpdateStaleRunEvaluation({ run, now });
