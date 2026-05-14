@@ -367,6 +367,20 @@ export function decideSuccessfulRunHandoff(input: {
   if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
     return { kind: "skip", reason: `agent status ${agent.status} is not invokable` };
   }
+  // Successful runs that produced visible progress (comments / work products
+  // captured as detectedProgressSummary) leave evidence the board operator can
+  // act on directly. Surfacing a `MISSING DISPOSITION` recovery card on top of
+  // that evidence creates a second-tier escalation that the operator must
+  // manually dismiss, even though they can see the agent's output and the run
+  // succeeded cleanly. We keep recovery active only for the truly silent-stall
+  // case: liveness claims advanced/completed/blocked/needs_followup but the run
+  // produced no visible artifact (no detectedProgressSummary).
+  if (input.detectedProgressSummary && input.detectedProgressSummary.trim().length > 0) {
+    return {
+      kind: "skip",
+      reason: "successful run produced visible progress; awaiting operator disposition without auto-escalation",
+    };
+  }
   if (!isProductiveSuccessfulRun(input)) {
     return { kind: "skip", reason: "successful run did not produce handoff-relevant progress" };
   }
