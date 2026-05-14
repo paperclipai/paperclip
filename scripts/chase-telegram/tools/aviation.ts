@@ -38,6 +38,7 @@ export async function handleMetarQuery(station: string): Promise<QueryResult> {
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    console.error(`METAR query for ${station} failed: ${message}`);
     return {
       text: `Unable to fetch METAR for <code>${escapeHtml(station)}</code>: ${escapeHtml(message)}`,
     };
@@ -57,6 +58,7 @@ export async function handleTafQuery(station: string): Promise<QueryResult> {
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    console.error(`TAF query for ${station} failed: ${message}`);
     return {
       text: `Unable to fetch TAF for <code>${escapeHtml(station)}</code>: ${escapeHtml(message)}`,
     };

@@ -54,7 +54,8 @@ async function handleWebhook(update: TelegramUpdate): Promise<Response> {
     await sendTelegram(chatId, result.text);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`Query failed: ${message}`);
+    const snippet = text.length > 80 ? text.slice(0, 80) + "..." : text;
+    console.error(`Query failed [chatId=${chatId}, query="${snippet}"]: ${message}`);
     await sendTelegram(
       chatId,
       "Sorry, I ran into an issue looking that up. Please try again shortly.",

@@ -120,7 +120,8 @@ export async function generateReply(userMessage: string): Promise<string> {
   ];
   try {
     return await callLlm(SYSTEM_PROMPT, messages);
-  } catch {
+  } catch (err) {
+    console.error(`AI generateReply failed: ${err}`);
     return fallbackReply();
   }
 }
@@ -171,7 +172,8 @@ export async function formatNotification(
 
   try {
     return await callLlm(systemMsg, [{ role: "user", content: prompt }]);
-  } catch {
+  } catch (err) {
+    console.error(`AI formatNotification failed: ${err}`);
     return null;
   }
 }

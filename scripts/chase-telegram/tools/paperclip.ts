@@ -155,10 +155,16 @@ export async function handleSearchQuery(query: string): Promise<QueryResult> {
 
 export async function handleOverviewQuery(): Promise<QueryResult> {
   const [agents, blocked] = await Promise.all([
-    paperclipGet<PaperclipAgent[]>(`/api/companies/${COMPANY_ID}/agents`).catch(() => []),
+    paperclipGet<PaperclipAgent[]>(`/api/companies/${COMPANY_ID}/agents`).catch((err) => {
+      console.error(`Overview agents query failed: ${err}`);
+      return [];
+    }),
     paperclipGet<PaperclipIssue[]>(
       `/api/companies/${COMPANY_ID}/issues?status=blocked`,
-    ).catch(() => []),
+    ).catch((err) => {
+      console.error(`Overview blocked query failed: ${err}`);
+      return [];
+    }),
   ]);
   return {
     text: [
