@@ -99,6 +99,7 @@ import {
 import { getTelemetryClient } from "../telemetry.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { recoveryService } from "../services/recovery/service.js";
+import { resolveAdapterModelAvailability } from "../services/adapter-model-compat.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
@@ -1047,12 +1048,25 @@ export function agentRoutes(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
-    if (adapterType !== "opencode_local") return;
-    try {
-      requireOpenCodeModelId(adapterConfig.model);
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
+    if (adapterType === "opencode_local") {
+      try {
+        requireOpenCodeModelId(adapterConfig.model);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
+      }
+    }
+
+    if (adapterType) {
+      const model = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
+      if (model) {
+        const compat = resolveAdapterModelAvailability(adapterType, model, "");
+        if (!compat.available) {
+          throw unprocessable(
+            `Model "${model}" is not available for this account at field adapterConfig.model. Supported: ${compat.supportedModels.join(", ")}.`,
+          );
+        }
+      }
     }
   }
 
