@@ -111,13 +111,6 @@ export const heartbeatPolicySchema = z
       });
     }
 
-    if (value.enabled === false && value.wakeOnDemand === false) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "At least one heartbeat trigger must be enabled (interval or wakeOnDemand)",
-        path: ["wakeOnDemand"],
-      });
-    }
   });
 
 export const agentInstructionsBundleModeSchema = z.enum(["managed", "external"]);

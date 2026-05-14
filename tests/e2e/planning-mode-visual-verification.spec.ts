@@ -11,16 +11,32 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   const screenshotDir = "test-results/planning-mode";
 
   await page.goto("/onboarding");
-  await expect(page.locator("h3", { hasText: "Name your company" })).toBeVisible({ timeout: 5_000 });
+
+  const wizardHeading = page.locator("h3", { hasText: "Set up your company" });
+  const newCompanyBtn = page.getByRole("button", { name: "New Company" });
+  await expect(wizardHeading.or(newCompanyBtn)).toBeVisible({ timeout: 15_000 });
+  if (await newCompanyBtn.isVisible()) {
+    await newCompanyBtn.click();
+  }
+  await expect(wizardHeading).toBeVisible({ timeout: 5_000 });
 
   await page.locator('input[placeholder="Acme Corp"]').fill(companyName);
   await page.getByRole("button", { name: "Next" }).click();
 
-  await expect(page.locator("h3", { hasText: "Create your first agent" })).toBeVisible({ timeout: 30_000 });
+  // After company creation, a Linear connect prompt may appear — skip it
+  const skipLinear = page.getByRole("button", { name: /Skip for now|Skip import/ });
+  const agentHeading = page.locator("h3", { hasText: "Create your first agent" });
+  await expect(skipLinear.or(agentHeading)).toBeVisible({ timeout: 10_000 });
+  if (await skipLinear.isVisible()) {
+    await skipLinear.click();
+  }
+
+  await expect(agentHeading).toBeVisible({ timeout: 30_000 });
   await expect(page.locator('input[placeholder="CEO"]')).toHaveValue(AGENT_NAME);
   await page.getByRole("button", { name: "Next" }).click();
 
-  await expect(page.locator("h3", { hasText: "Give it something to do" })).toBeVisible({ timeout: 30_000 });
+  // Step 3: Workspace — skip it
+  await expect(page.locator("h3", { hasText: "Link a workspace" })).toBeVisible({ timeout: 10_000 });
   const baseUrl = page.url().split("/").slice(0, 3).join("/");
 
   if (SKIP_LLM) {
@@ -55,13 +71,16 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
     expect(disableWakeRes.ok()).toBe(true);
   }
 
-  const taskTitleInput = page.locator('input[placeholder="e.g. Research competitor pricing"]');
-  await taskTitleInput.clear();
-  await taskTitleInput.fill(TASK_TITLE);
+  // Skip workspace, advance through Review your team
+  await page.getByRole("button", { name: "Skip" }).click();
+  await expect(page.locator("h3", { hasText: "Review your team" })).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Next" }).click();
 
-  await expect(page.locator("h3", { hasText: "Ready to launch" })).toBeVisible({ timeout: 30_000 });
-  await page.getByRole("button", { name: "Create & Open Issue" }).click();
+  await expect(page.locator("h3", { hasText: "Launch with a task" })).toBeVisible({ timeout: 30_000 });
+  const taskTitleInput = page.locator('input[placeholder="e.g. Review the codebase and create a roadmap"]');
+  await taskTitleInput.clear();
+  await taskTitleInput.fill(TASK_TITLE);
+  await page.locator('button[data-slot="button"]', { hasText: "Launch" }).click();
   await expect(page).toHaveURL(/\/issues\//, { timeout: 30_000 });
 
   const openedIssueUrl = page.url();
