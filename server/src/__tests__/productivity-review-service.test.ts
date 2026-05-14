@@ -8,6 +8,8 @@ import {
   createDb,
   heartbeatRuns,
   issueComments,
+  issueRelations,
+  issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
 import {
@@ -51,7 +53,7 @@ describeEmbeddedPostgres("productivity review service", () => {
   });
 
   async function seedAssignedIssue(opts?: {
-    status?: "todo" | "in_progress";
+    status?: "todo" | "in_progress" | "blocked";
     startedAt?: Date;
     parentId?: string | null;
     originKind?: string;
@@ -111,6 +113,42 @@ describeEmbeddedPostgres("productivity review service", () => {
     });
 
     return { companyId, managerId, coderId, issueId, issuePrefix, createdAt };
+  }
+
+  async function addUnresolvedBlocker(
+    seeded: { companyId: string; issueId: string; issuePrefix: string },
+    opts?: { status?: "todo" | "in_progress" | "blocked" | "done" },
+  ) {
+    const blockerId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerId,
+      companyId: seeded.companyId,
+      title: "Upstream blocker",
+      status: opts?.status ?? "in_progress",
+      priority: "medium",
+      issueNumber: 900,
+      identifier: `${seeded.issuePrefix}-900`,
+    });
+    await db.insert(issueRelations).values({
+      companyId: seeded.companyId,
+      issueId: blockerId,
+      relatedIssueId: seeded.issueId,
+      type: "blocks",
+    });
+    return blockerId;
+  }
+
+  async function addPendingConfirmation(seeded: { companyId: string; issueId: string }) {
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      payload: { version: 1, prompt: "Confirm before proceeding" },
+    });
+    return interactionId;
   }
 
   async function insertRuns(input: {
@@ -358,6 +396,116 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(review?.description).toContain("Primary trigger: `long_active_duration`");
     expect(review?.priority).toBe("medium");
     expect(hold.held).toBe(false);
+  });
+
+  it("exempts long_active_duration while the source issue has an unresolved first-class blocker", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 24 * 60 * 60 * 1000),
+    });
+    await addUnresolvedBlocker(seeded);
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("exempts long_active_duration while a pending request_confirmation interaction is open", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 24 * 60 * 60 * 1000),
+    });
+    const interactionId = await addPendingConfirmation(seeded);
+    const service = productivityReviewService(db);
+
+    const exempt = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    expect(exempt.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+
+    // Exemption is keyed on `pending` specifically — once resolved the clock runs.
+    await db
+      .update(issueThreadInteractions)
+      .set({ status: "accepted" })
+      .where(eq(issueThreadInteractions.id, interactionId));
+    const resumed = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    expect(resumed.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `long_active_duration`");
+  });
+
+  it("still fires long_active_duration for a bare blocked issue with no blocker or interaction", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "blocked",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `long_active_duration`");
+  });
+
+  it("leaves no_comment_streak unaffected when the long_active_duration exemption applies", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 24 * 60 * 60 * 1000),
+    });
+    await addUnresolvedBlocker(seeded);
+    await addPendingConfirmation(seeded);
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `no_comment_streak`");
+  });
+
+  it("leaves high_churn unaffected when the long_active_duration exemption applies", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 24 * 60 * 60 * 1000),
+    });
+    await addUnresolvedBlocker(seeded);
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 10,
+      now,
+      withRunComments: true,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `high_churn`");
   });
 
   it("creates a high-churn review even when every sampled run has a progress comment", async () => {
