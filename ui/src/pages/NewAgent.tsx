@@ -22,38 +22,18 @@ import {
   AdapterEnvironmentResult,
   type CreateConfigValues,
 } from "../components/AgentConfigForm";
-import { defaultCreateValues } from "../components/agent-config-defaults";
 import { getUIAdapter, listUIAdapters } from "../adapters";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { isValidAdapterType } from "../adapters/metadata";
 import { ReportsToPicker } from "../components/ReportsToPicker";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import {
-  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
-  DEFAULT_CODEX_LOCAL_MODEL,
-} from "@paperclipai/adapter-codex-local";
-import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
-import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+  buildNewAgentDefaultCreateValues,
+  createValuesForAdapterType,
+  resolveNewAgentDefaultAdapterType,
+} from "../lib/new-agent-create-values";
+import { defaultCreateValues } from "../components/agent-config-defaults";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
-
-function createValuesForAdapterType(
-  adapterType: CreateConfigValues["adapterType"],
-): CreateConfigValues {
-  const { adapterType: _discard, ...defaults } = defaultCreateValues;
-  const nextValues: CreateConfigValues = { ...defaults, adapterType };
-  if (adapterType === "codex_local") {
-    nextValues.model = DEFAULT_CODEX_LOCAL_MODEL;
-    nextValues.dangerouslyBypassSandbox =
-      DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
-  } else if (adapterType === "gemini_local") {
-    nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
-  } else if (adapterType === "cursor") {
-    nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
-  } else if (adapterType === "opencode_local") {
-    nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
-  }
-  return nextValues;
-}
 
 export function NewAgent() {
   const { selectedCompanyId } = useCompany();
@@ -95,6 +75,10 @@ export function NewAgent() {
 
   const isFirstAgent = !agents || agents.length === 0;
   const effectiveRole = isFirstAgent ? "ceo" : role;
+  const defaultAdapterType = resolveNewAgentDefaultAdapterType({
+    companyAgents: agents ?? null,
+    presetAdapterType,
+  });
 
   useEffect(() => {
     setBreadcrumbs([
@@ -119,6 +103,18 @@ export function NewAgent() {
       return createValuesForAdapterType(requested as CreateConfigValues["adapterType"]);
     });
   }, [presetAdapterType]);
+
+  useEffect(() => {
+    if (presetAdapterType) return;
+    if (!agents) return;
+    setConfigValues((prev) => {
+      if (prev.adapterType !== defaultCreateValues.adapterType) return prev;
+      if (prev.adapterType === defaultAdapterType) return prev;
+      return buildNewAgentDefaultCreateValues({
+        companyAgents: agents,
+      });
+    });
+  }, [agents, defaultAdapterType, presetAdapterType]);
 
   const createAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
