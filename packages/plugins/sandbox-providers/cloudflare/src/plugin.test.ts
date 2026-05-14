@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import plugin from "./plugin.js";
 
 const fetchMock = vi.fn();
+let plugin: typeof import("./plugin.js").default;
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -23,9 +23,11 @@ function requestBodyAt(index = 0): Record<string, unknown> {
 }
 
 describe("Cloudflare sandbox provider plugin", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     fetchMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
+    vi.resetModules();
+    plugin = (await import("./plugin.js")).default;
   });
 
   it("declares the Cloudflare environment lifecycle handlers", async () => {
