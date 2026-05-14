@@ -1,4 +1,4 @@
-import fs from "node:fs/promises";
+﻿import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -8393,7 +8393,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ) ||
           (
             issue.status === "in_progress" &&
-            isHeartbeatRunTerminalStatus(run.status)
+            (
+              (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled") ||
+              (isHeartbeatRunTerminalStatus(run.status) && didAutomaticRecoveryAttempt(run, "issue_continuation_needed"))
+            )
           )
         );
 

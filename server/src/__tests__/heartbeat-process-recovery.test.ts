@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+﻿import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { and, eq, or, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -2397,16 +2397,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("blocks plan-only continuation retries after the bounded in-progress retry is consumed", async () => {
-    mockAdapterExecute.mockResolvedValueOnce({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
-      errorMessage: null,
-      summary: "I will inspect the repo next and then implement the fix.",
-      provider: "test",
-      model: "test-model",
+    let continuationRunId: string | undefined;
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
+      continuationRunId = ctx.runId;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "I will inspect the repo next and then implement the fix.",
+        provider: "test",
+        model: "test-model",
+      };
     });
-    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "failed",
     });
@@ -2427,16 +2431,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }, 5_000);
     expect(blockedIssue?.status).toBe("blocked");
 
-    const recovery = await db
-      .select()
-      .from(issues)
-      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery"), eq(issues.originId, issueId)))
-      .then((rows) => rows[0] ?? null);
-    expect(recovery).toBeTruthy();
-    expect(recovery?.assigneeAgentId).toBe(agentId);
-    expect(["todo", "in_progress"]).toContain(recovery?.status);
-    expect(recovery?.originRunId).toBeTruthy();
-    expect(recovery?.originRunId).not.toBe(runId);
+    expect(continuationRunId).toBeDefined();
+    await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId: continuationRunId!,
+      previousStatus: "in_progress",
+      retryReason: "issue_continuation_needed",
+    });
 
     const livenessWake = await db
       .select()
