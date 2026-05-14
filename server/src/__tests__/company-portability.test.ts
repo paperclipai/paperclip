@@ -38,6 +38,7 @@ const issueSvc = {
   getById: vi.fn(),
   getByIdentifier: vi.fn(),
   create: vi.fn(),
+  listComments: vi.fn(async () => []),
 };
 
 const routineSvc = {
@@ -2158,7 +2159,7 @@ describe("company portability", () => {
       runtimeConfig: {
         heartbeat: {
           enabled: false,
-          maxConcurrentRuns: 5,
+          maxConcurrentRuns: 20,
         },
       },
     });
@@ -2237,7 +2238,7 @@ describe("company portability", () => {
       runtimeConfig: {
         heartbeat: {
           enabled: false,
-          maxConcurrentRuns: 5,
+          maxConcurrentRuns: 20,
         },
       },
     }));
