@@ -10,12 +10,15 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueComments,
+  issues,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { agentService } from "../services/agents.ts";
 import {
   normalizeHeartbeatAutoPauseErrorClass,
   resolveHeartbeatErrorAutoPausePolicy,
@@ -66,15 +69,19 @@ describe("heartbeat error auto-pause 정규화", () => {
 describeEmbeddedPostgres("heartbeat error auto-pause guard", () => {
   let db!: ReturnType<typeof createDb>;
   let heartbeat!: ReturnType<typeof heartbeatService>;
+  let agentsSvc!: ReturnType<typeof agentService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-error-autopause-");
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
+    agentsSvc = agentService(db);
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
@@ -133,6 +140,8 @@ describeEmbeddedPostgres("heartbeat error auto-pause guard", () => {
     error?: string | null;
     errorCode?: string | null;
     resultJson?: Record<string, unknown> | null;
+    issueId?: string | null;
+    contextSnapshot?: Record<string, unknown> | null;
   }) {
     const runId = randomUUID();
     const at = new Date(input.at);
@@ -146,6 +155,7 @@ describeEmbeddedPostgres("heartbeat error auto-pause guard", () => {
       error: input.error ?? null,
       errorCode: input.errorCode ?? null,
       resultJson: input.resultJson ?? null,
+      contextSnapshot: input.contextSnapshot ?? (input.issueId ? { issueId: input.issueId } : null),
       startedAt: new Date(at.getTime() - 1_000),
       finishedAt: at,
       createdAt: at,
@@ -154,12 +164,38 @@ describeEmbeddedPostgres("heartbeat error auto-pause guard", () => {
     return runId;
   }
 
+  async function seedIssue(input: {
+    companyId: string;
+    agentId: string;
+    identifier?: string;
+  }) {
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId: input.companyId,
+      title: "Synthetic auto-pause issue",
+      status: "in_progress",
+      assigneeAgentId: input.agentId,
+      issueNumber: Math.floor(Math.random() * 100_000),
+      identifier: input.identifier ?? `T-${issueId.slice(0, 8)}`,
+    });
+    return issueId;
+  }
+
   async function readRuntimeConfig(agentId: string) {
     const [row] = await db
       .select({ runtimeConfig: agents.runtimeConfig })
       .from(agents)
       .where(eq(agents.id, agentId));
     return row?.runtimeConfig as Record<string, unknown>;
+  }
+
+  async function readIssueComments(issueId: string) {
+    return db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .orderBy(issueComments.createdAt, issueComments.id);
   }
 
   it("2회 실패는 미발화하고 3회 동일 class에서 pause를 기록한다", async () => {
@@ -287,5 +323,69 @@ describeEmbeddedPostgres("heartbeat error auto-pause guard", () => {
     });
     expect(resumedResult).toMatchObject({ outcome: "below_threshold", count: 1 });
     expect(((await readRuntimeConfig(resumed.agentId)).heartbeat as Record<string, unknown>).enabled).toBe(true);
+  });
+
+  it("수동 재개 후 24시간 내 동일 fingerprint는 N=1로 재발화하고 alert comment를 디바운스한다", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId });
+    const error = "You've hit your usage limit for GPT-5. Try again at 11:31 PM.";
+    await seedRun({ companyId, agentId, issueId, at: "2026-05-14T06:00:00.000Z", errorCode: "codex_transient_upstream", error });
+    await seedRun({ companyId, agentId, issueId, at: "2026-05-14T06:01:00.000Z", errorCode: "codex_transient_upstream", error });
+    const firstPauseRunId = await seedRun({ companyId, agentId, issueId, at: "2026-05-14T06:02:00.000Z", errorCode: "codex_transient_upstream", error });
+
+    const firstPauseResult = await heartbeat.applyHeartbeatErrorAutoPause(firstPauseRunId, {
+      policy: { enabled: true, threshold: 3 },
+    });
+    expect(firstPauseResult).toMatchObject({
+      outcome: "paused",
+      count: 3,
+      threshold: 3,
+    });
+    const firstPauseConfig = await readRuntimeConfig(agentId);
+    const firstPauseReason = firstPauseConfig.pauseReason as Record<string, unknown>;
+    const fingerprint = firstPauseReason.fingerprint;
+    expect(fingerprint).toMatch(/^sha256:[a-f0-9]{64}$/);
+
+    const firstComments = await readIssueComments(issueId);
+    expect(firstComments).toHaveLength(1);
+    expect(firstComments[0]?.body).toContain("heartbeat-auto-pause-alert:v1");
+    expect(firstComments[0]?.body).toContain(String(fingerprint));
+
+    await agentsSvc.recordHeartbeatAutoResume(agentId, {
+      resumeReason: "provider_limit_resolved",
+      resumedBy: {
+        type: "agent",
+        id: agentId,
+      },
+      resumedAt: "2026-05-14T06:10:00.000Z",
+    });
+    await db
+      .update(agentConfigRevisions)
+      .set({ createdAt: new Date("2026-05-14T06:10:00.000Z") })
+      .where(eq(agentConfigRevisions.source, "heartbeat_auto_resume"));
+
+    const refireRunId = await seedRun({ companyId, agentId, issueId, at: "2026-05-14T06:11:00.000Z", errorCode: "codex_transient_upstream", error });
+    const refireResult = await heartbeat.applyHeartbeatErrorAutoPause(refireRunId, {
+      policy: { enabled: true, threshold: 3 },
+    });
+
+    expect(refireResult).toMatchObject({
+      outcome: "paused",
+      count: 1,
+      threshold: 1,
+      code: "monthly_usage_limit",
+    });
+    const refireConfig = await readRuntimeConfig(agentId);
+    expect(refireConfig.pauseReason).toMatchObject({
+      consecutiveErrorCount: 1,
+      lastRunId: refireRunId,
+      fingerprint,
+    });
+
+    const commentsAfterRefire = await readIssueComments(issueId);
+    expect(commentsAfterRefire).toHaveLength(1);
+
+    const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, refireRunId));
+    expect(events.some((event) => (event.payload as Record<string, unknown> | null)?.quickRefire === true)).toBe(true);
   });
 });

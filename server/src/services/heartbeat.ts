@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -4325,12 +4325,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         fingerprint: string;
       };
 
-  async function latestHeartbeatAutoPauseResetAt(
+  const HEARTBEAT_ERROR_AUTOPAUSE_REFIRE_WINDOW_MS = 24 * 60 * 60 * 1000;
+  const HEARTBEAT_ERROR_AUTOPAUSE_ALERT_DEBOUNCE_MS = 24 * 60 * 60 * 1000;
+  const HEARTBEAT_ERROR_AUTOPAUSE_ALERT_MARKER = "heartbeat-auto-pause-alert:v1";
+
+  type HeartbeatAutoPauseReset = {
+    createdAt: Date;
+    source: string;
+    changedKeys: string[];
+    beforeConfig: Record<string, unknown>;
+    afterConfig: Record<string, unknown>;
+  };
+
+  type HeartbeatAutoPauseQuickRefire = {
+    previousPauseRunId: string | null;
+    previousPauseCreatedAt: string | null;
+    resumedAt: string;
+  };
+
+  async function latestHeartbeatAutoPauseReset(
     run: typeof heartbeatRuns.$inferSelect,
-  ) {
+  ): Promise<HeartbeatAutoPauseReset | null> {
     const runFinishedAt = run.finishedAt ?? run.updatedAt ?? run.createdAt ?? new Date();
     const row = await db
-      .select({ createdAt: agentConfigRevisions.createdAt })
+      .select({
+        createdAt: agentConfigRevisions.createdAt,
+        source: agentConfigRevisions.source,
+        changedKeys: agentConfigRevisions.changedKeys,
+        beforeConfig: agentConfigRevisions.beforeConfig,
+        afterConfig: agentConfigRevisions.afterConfig,
+      })
       .from(agentConfigRevisions)
       .where(and(
         eq(agentConfigRevisions.companyId, run.companyId),
@@ -4345,7 +4369,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .orderBy(desc(agentConfigRevisions.createdAt), desc(agentConfigRevisions.id))
       .limit(1)
       .then((rows) => rows[0] ?? null);
-    return row?.createdAt ?? null;
+    if (!row) return null;
+    return {
+      createdAt: row.createdAt,
+      source: row.source,
+      changedKeys: Array.isArray(row.changedKeys) ? row.changedKeys : [],
+      beforeConfig: parseObject(row.beforeConfig),
+      afterConfig: parseObject(row.afterConfig),
+    };
   }
 
   function isSameHeartbeatAutoPauseReason(input: {
@@ -4360,6 +4391,198 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       pauseReason.lastRunId === input.run.id &&
       pauseReason.code === input.code &&
       pauseReason.sampleDigest === input.sampleDigest;
+  }
+
+  function parseIsoDate(value: unknown): Date | null {
+    if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+    if (typeof value !== "string") return null;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  function readRuntimeConfigFromSnapshot(value: unknown) {
+    const record = parseObject(value);
+    const nested = parseObject(record.runtimeConfig);
+    return Object.keys(nested).length > 0 ? nested : record;
+  }
+
+  function readAutoPauseReason(value: unknown) {
+    const reason = parseObject(value);
+    const fingerprint = readNonEmptyString(reason.fingerprint);
+    return {
+      guardVersion: readNonEmptyString(reason.guardVersion),
+      sourceIssueId: readNonEmptyString(reason.sourceIssueId),
+      code: readNonEmptyString(reason.code),
+      fingerprint,
+      lastRunId: readNonEmptyString(reason.lastRunId),
+      createdAt: readNonEmptyString(reason.createdAt),
+    };
+  }
+
+  function isMatchingAutoPauseReason(input: {
+    reason: ReturnType<typeof readAutoPauseReason>;
+    code: string;
+    fingerprint: string;
+  }) {
+    return input.reason.guardVersion === "heartbeat-error-autopause/v1" &&
+      input.reason.sourceIssueId === "ARI-103" &&
+      input.reason.code === input.code &&
+      input.reason.fingerprint === input.fingerprint;
+  }
+
+  function resolveHeartbeatAutoPauseQuickRefire(input: {
+    agent: typeof agents.$inferSelect;
+    reset: HeartbeatAutoPauseReset | null;
+    runFinishedAt: Date;
+    code: string;
+    fingerprint: string;
+  }): HeartbeatAutoPauseQuickRefire | null {
+    if (input.reset?.source !== "heartbeat_auto_resume") return null;
+
+    const runtimeConfig = parseObject(input.agent.runtimeConfig);
+    const resetAfterRuntimeConfig = readRuntimeConfigFromSnapshot(input.reset.afterConfig);
+    const resetBeforeRuntimeConfig = readRuntimeConfigFromSnapshot(input.reset.beforeConfig);
+    const resumedAt =
+      parseIsoDate(runtimeConfig.resumedAt) ??
+      parseIsoDate(resetAfterRuntimeConfig.resumedAt) ??
+      input.reset.createdAt;
+
+    const ageMs = input.runFinishedAt.getTime() - resumedAt.getTime();
+    if (ageMs < 0 || ageMs > HEARTBEAT_ERROR_AUTOPAUSE_REFIRE_WINDOW_MS) return null;
+
+    const candidates = [
+      readAutoPauseReason(runtimeConfig.lastPauseReason),
+      readAutoPauseReason(resetAfterRuntimeConfig.lastPauseReason),
+      readAutoPauseReason(resetBeforeRuntimeConfig.pauseReason),
+    ];
+    const matched = candidates.find((reason) =>
+      isMatchingAutoPauseReason({
+        reason,
+        code: input.code,
+        fingerprint: input.fingerprint,
+      })
+    );
+    if (!matched) return null;
+
+    return {
+      previousPauseRunId: matched.lastRunId,
+      previousPauseCreatedAt: matched.createdAt,
+      resumedAt: resumedAt.toISOString(),
+    };
+  }
+
+  function buildHeartbeatAutoPauseAlertBody(input: {
+    agent: typeof agents.$inferSelect;
+    code: string;
+    adapter: string;
+    count: number;
+    threshold: number;
+    firstRunId: string;
+    lastRunId: string;
+    sampleDigest: string;
+    fingerprint: string;
+    quickRefire: HeartbeatAutoPauseQuickRefire | null;
+  }) {
+    const quickRefireLine = input.quickRefire
+      ? "- 재발화 모드: 수동 재개 후 24시간 내 동일 fingerprint가 재발해 `N=1`로 즉시 일시정지했습니다."
+      : "- 재발화 모드: 기존 연속 실패 임계값으로 일시정지했습니다.";
+    return [
+      `<!-- ${HEARTBEAT_ERROR_AUTOPAUSE_ALERT_MARKER} -->`,
+      "## Heartbeat auto-pause 알림",
+      "",
+      "동일 provider/runtime 오류가 반복되어 timer heartbeat를 비활성화했습니다.",
+      "",
+      `- Agent: ${input.agent.name}`,
+      `- Adapter: \`${input.adapter}\``,
+      `- Error class: \`${input.code}\``,
+      `- Count: ${input.count}/${input.threshold}`,
+      `- First run: \`${input.firstRunId}\``,
+      `- Last run: \`${input.lastRunId}\``,
+      `- Fingerprint: \`${input.fingerprint}\``,
+      `- Sample digest: \`${input.sampleDigest}\``,
+      quickRefireLine,
+      "- Rollback: `HEARTBEAT_ERROR_AUTOPAUSE_ENABLED=false` 적용 후 server를 재시작하거나, 원인 해소 후 수동 재개합니다.",
+    ].join("\n");
+  }
+
+  async function findRecentHeartbeatAutoPauseAlertComment(input: {
+    companyId: string;
+    issueId: string;
+    fingerprint: string;
+    now: Date;
+  }) {
+    const debounceSince = new Date(input.now.getTime() - HEARTBEAT_ERROR_AUTOPAUSE_ALERT_DEBOUNCE_MS);
+    return db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(and(
+        eq(issueComments.companyId, input.companyId),
+        eq(issueComments.issueId, input.issueId),
+        gte(issueComments.createdAt, debounceSince),
+        sql`${issueComments.body} LIKE ${`%${HEARTBEAT_ERROR_AUTOPAUSE_ALERT_MARKER}%`}`,
+        sql`${issueComments.body} LIKE ${`%${input.fingerprint}%`}`,
+      ))
+      .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function postHeartbeatAutoPauseAlertComment(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    agent: typeof agents.$inferSelect;
+    code: string;
+    adapter: string;
+    count: number;
+    threshold: number;
+    firstRunId: string;
+    lastRunId: string;
+    sampleDigest: string;
+    fingerprint: string;
+    quickRefire: HeartbeatAutoPauseQuickRefire | null;
+  }) {
+    const issueId = readNonEmptyString(parseObject(input.run.contextSnapshot).issueId);
+    if (!issueId) return { posted: false as const, reason: "missing_issue" as const };
+
+    const now = new Date();
+    const recent = await findRecentHeartbeatAutoPauseAlertComment({
+      companyId: input.run.companyId,
+      issueId,
+      fingerprint: input.fingerprint,
+      now,
+    });
+    if (recent) {
+      return { posted: false as const, reason: "debounced" as const, commentId: recent.id };
+    }
+
+    const comment = await issuesSvc.addComment(
+      issueId,
+      buildHeartbeatAutoPauseAlertBody(input),
+      { agentId: input.agent.id, runId: input.run.id },
+      {
+        presentation: {
+          kind: "system_notice",
+          tone: "warning",
+          title: "Heartbeat auto-pause",
+          detailsDefaultOpen: false,
+        },
+        metadata: {
+          version: 1,
+          sourceRunId: input.run.id,
+          sections: [
+            {
+              title: "Auto-pause",
+              rows: [
+                { type: "key_value", label: "code", value: input.code },
+                { type: "key_value", label: "adapter", value: input.adapter },
+                { type: "key_value", label: "fingerprint", value: input.fingerprint },
+                { type: "run_link", runId: input.lastRunId, title: "last run" },
+              ],
+            },
+          ],
+        },
+      },
+    );
+    return { posted: true as const, commentId: comment.id };
   }
 
   async function applyHeartbeatErrorAutoPauseForRun(
@@ -4395,7 +4618,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const runFinishedAt = run.finishedAt ?? run.updatedAt ?? run.createdAt ?? new Date();
-    const resetAt = await latestHeartbeatAutoPauseResetAt(run);
+    const reset = await latestHeartbeatAutoPauseReset(run);
+    const resetAt = reset?.createdAt ?? null;
+    const fingerprint = buildHeartbeatAutoPauseFingerprint({
+      adapterType: agent.adapterType,
+      code,
+      sampleDigest,
+    });
+    const quickRefire = resolveHeartbeatAutoPauseQuickRefire({
+      agent,
+      reset,
+      runFinishedAt,
+      code,
+      fingerprint,
+    });
+    const triggerThreshold = quickRefire ? 1 : threshold;
     const recentRuns = await db
       .select()
       .from(heartbeatRuns)
@@ -4429,19 +4666,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
       if (candidateCode !== code) break;
       consecutiveRuns.push(candidate);
-      if (consecutiveRuns.length >= threshold) break;
+      if (consecutiveRuns.length >= triggerThreshold) break;
     }
 
-    if (consecutiveRuns.length < threshold) {
+    if (consecutiveRuns.length < triggerThreshold) {
       return { outcome: "below_threshold", count: consecutiveRuns.length, threshold, code };
     }
 
     const firstRun = consecutiveRuns[consecutiveRuns.length - 1]!;
-    const fingerprint = buildHeartbeatAutoPauseFingerprint({
-      adapterType: agent.adapterType,
-      code,
-      sampleDigest,
-    });
     const updatedAgent = await agentsSvc.recordHeartbeatAutoPause(agent.id, {
       code,
       adapter: agent.adapterType,
@@ -4465,19 +4697,47 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         code,
         adapter: agent.adapterType,
         consecutiveErrorCount: consecutiveRuns.length,
-        threshold,
+        threshold: triggerThreshold,
+        configuredThreshold: threshold,
         firstRunId: firstRun.id,
         lastRunId: run.id,
         sampleDigest,
         fingerprint,
+        ...(quickRefire
+          ? {
+              quickRefire: true,
+              previousPauseRunId: quickRefire.previousPauseRunId,
+              previousPauseCreatedAt: quickRefire.previousPauseCreatedAt,
+              resumedAt: quickRefire.resumedAt,
+              refireWindowHours: 24,
+            }
+          : {}),
       },
+    });
+    await postHeartbeatAutoPauseAlertComment({
+      run,
+      agent,
+      code,
+      adapter: agent.adapterType,
+      count: consecutiveRuns.length,
+      threshold: triggerThreshold,
+      firstRunId: firstRun.id,
+      lastRunId: run.id,
+      sampleDigest,
+      fingerprint,
+      quickRefire,
+    }).catch((err) => {
+      logger.warn(
+        { err, runId: run.id, agentId: agent.id, fingerprint },
+        "failed to post heartbeat auto-pause alert comment",
+      );
     });
 
     return {
       outcome: "paused",
       code,
       count: consecutiveRuns.length,
-      threshold,
+      threshold: triggerThreshold,
       firstRunId: firstRun.id,
       lastRunId: run.id,
       sampleDigest,
