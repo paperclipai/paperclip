@@ -251,6 +251,9 @@ export function buildAgentOsApprovalPayload(model: AgentOsPreviewModel, action: 
   if (action === "ready_agent_provision_preview") {
     return {
       ...base,
+      approvalOnly: false,
+      liveApply: true,
+      safetyPosture: "Approval-gated live apply: provisions an internal ready-agent only after board approval; no external actions or secret values are executed.",
       title: `Approve ready-agent provisioning preview: ${model.readyAgent.blueprint.title}`,
       approvalScope: "ready_agent_provisioning",
       blueprint: {
@@ -328,7 +331,7 @@ export function AgentOs() {
         <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-3xl space-y-3">
             <Badge variant="outline" className="bg-background/80">
-              Preview-only · approval-gated apply flows next
+              approval-gated live apply · ready-agent provisioning applies after board approval
             </Badge>
             <h1 className="text-3xl font-semibold tracking-tight">Agent OS command center</h1>
             <p className="text-sm leading-6 text-muted-foreground">
@@ -342,7 +345,7 @@ export function AgentOs() {
           <div className="grid min-w-[320px] grid-cols-3 gap-3">
             <StatPill label="Blueprints" value={INITIAL_READY_AGENT_BLUEPRINTS.length} />
             <StatPill label="MCP tools" value={model.marketplacePreview.server.toolNames.length} />
-            <StatPill label="Queue gate" value="0 live (preview)" />
+            <StatPill label="Queue gate" value="internal apply" />
           </div>
         </div>
       </section>
@@ -351,8 +354,8 @@ export function AgentOs() {
         <CardHeader>
           <CardTitle className="text-base">Approval request queue</CardTitle>
           <CardDescription>
-            Safe apply previews become internal board approval requests only. Creating a request does not install MCP servers,
-            provision agents, or resend final_delivery messages.
+            Safe apply previews become internal board approval requests. Ready-agent approvals are executed by the Agent OS apply
+            engine after approval; MCP installs and final_delivery retries stay preview-only in this slice.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -371,8 +374,8 @@ export function AgentOs() {
             ))}
           </div>
           <div className="rounded-lg border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
-            <div className="font-medium text-foreground">No live apply from this page</div>
-            <div>Approval payloads include policy posture, named secret requirements, masked destinations, and preview plans only.</div>
+            <div className="font-medium text-foreground">Approval-gated live apply status</div>
+            <div>Ready-agent requests provision an internal Hermes agent after board approval; external MCP installs and final_delivery sends remain disabled here.</div>
             {pendingApprovalId ? <div className="mt-2 text-foreground">Pending approval: {pendingApprovalId}</div> : null}
           </div>
         </CardContent>

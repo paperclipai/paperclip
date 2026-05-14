@@ -84,7 +84,7 @@ describe("AgentOs page", () => {
     await flush();
 
     expect(container.textContent).toContain("Agent OS command center");
-    expect(container.textContent).toContain("Preview-only");
+    expect(container.textContent).toContain("approval-gated live apply");
     expect(container.textContent).toContain("no live MCP install/execution");
     expect(container.textContent).toContain("MCP marketplace");
     expect(container.textContent).toContain("blocked_pending_approval");
@@ -98,7 +98,7 @@ describe("AgentOs page", () => {
     expect(container.textContent).toContain("/api/health");
     expect(container.textContent).toContain("Learning loop");
     expect(container.textContent).toContain("pending_review");
-    expect(container.textContent).toContain("approval-gated apply flows next");
+    expect(container.textContent).toContain("ready-agent provisioning applies after board approval");
     expect(breadcrumbState.setBreadcrumbs).toHaveBeenCalledWith([{ label: "Paperclip", href: "/dashboard" }, { label: "Agent OS" }]);
 
     await act(async () => root.unmount());
@@ -180,6 +180,42 @@ describe("AgentOs page", () => {
     expect(JSON.stringify(approvalInput)).not.toContain("demo-chat-0123");
     expect(JSON.stringify(approvalInput)).not.toContain("demo-topic-0103");
     expect(JSON.stringify(approvalInput)).not.toContain("demo-message-0456");
+
+    await act(async () => root.unmount());
+  });
+
+  it("requests ready-agent provisioning with approval-gated live apply enabled", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AgentOs />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+
+    const button = Array.from(container.querySelectorAll("button")).find((entry) =>
+      entry.textContent?.includes("Request ready-agent approval"),
+    );
+    expect(button).toBeTruthy();
+
+    await act(async () => {
+      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const [, approvalInput] = mockApprovalCreate.mock.calls[0];
+    expect(approvalInput.payload.action).toBe("ready_agent_provision_preview");
+    expect(approvalInput.payload.approvalScope).toBe("ready_agent_provisioning");
+    expect(approvalInput.payload.approvalOnly).toBe(false);
+    expect(approvalInput.payload.liveApply).toBe(true);
+    expect(approvalInput.payload.liveExecution).toBe(false);
+    expect(approvalInput.payload.liveExternalActions).toBe(false);
+    expect(approvalInput.payload.safetyPosture).toContain("provisions an internal ready-agent");
+    expect(approvalInput.payload.blueprint).toMatchObject({ key: "ceo-pm", title: "CEO/PM" });
 
     await act(async () => root.unmount());
   });

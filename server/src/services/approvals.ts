@@ -6,6 +6,12 @@ import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
+import {
+  agentOsApprovalApplyService,
+  hasCompletedAgentOsApplyRecord,
+  isAgentOsApplyApproval,
+  stripAgentOsApplyState,
+} from "./agent-os-apply.js";
 import { instanceSettingsService } from "./instance-settings.js";
 
 export function approvalService(db: Db) {
@@ -106,6 +112,7 @@ export function approvalService(db: Db) {
         decidedByUserId,
         decisionNote,
       );
+      let approvalAfterSideEffects = updated;
 
       let hireApprovedAgentId: string | null = null;
       const now = new Date();
@@ -165,7 +172,15 @@ export function approvalService(db: Db) {
         }
       }
 
-      return { approval: updated, applied };
+      if (isAgentOsApplyApproval(updated) && (applied || !hasCompletedAgentOsApplyRecord(updated))) {
+        const agentOsApplyResult = await agentOsApprovalApplyService(db).applyApprovedApproval(
+          stripAgentOsApplyState(updated),
+          decidedByUserId,
+        );
+        approvalAfterSideEffects = agentOsApplyResult.approval;
+      }
+
+      return { approval: approvalAfterSideEffects, applied };
     },
 
     reject: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
