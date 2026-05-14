@@ -12,6 +12,7 @@ import {
   buildUserMentionHref,
 } from "@paperclipai/shared";
 import { ThemeProvider } from "../context/ThemeContext";
+import { DocumentOpenerProvider } from "../context/DocumentOpenerContext";
 import { MarkdownBody } from "./MarkdownBody";
 import { queryKeys } from "../lib/queryKeys";
 
@@ -468,5 +469,53 @@ describe("MarkdownBody", () => {
     expect(html).toContain('data-mention-kind="issue"');
     expect(html).toContain("paperclip-markdown-issue-ref");
     expect(html).not.toContain("paperclip-mention-chip--issue");
+  });
+
+  it("renders a POSIX local-path link with two action buttons", () => {
+    const html = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <ThemeProvider>
+          <DocumentOpenerProvider>
+            <MarkdownBody>{"[Tagesplan](/Users/foo/Tagesplan.md)"}</MarkdownBody>
+          </DocumentOpenerProvider>
+        </ThemeProvider>
+      </QueryClientProvider>,
+    );
+
+    expect(html).toContain('aria-label="Öffnen"');
+    expect(html).toMatch(/aria-label="Im (Finder|Explorer) zeigen"/);
+    expect(html).toContain("Tagesplan");
+  });
+
+  it("renders a Windows local-path link with two action buttons", () => {
+    const html = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <ThemeProvider>
+          <DocumentOpenerProvider>
+            <MarkdownBody>{"[Datei](C:/Users/Walter/x.md)"}</MarkdownBody>
+          </DocumentOpenerProvider>
+        </ThemeProvider>
+      </QueryClientProvider>,
+    );
+
+    expect(html).toContain('aria-label="Öffnen"');
+    expect(html).toMatch(/aria-label="Im (Finder|Explorer) zeigen"/);
+    expect(html).toContain("Datei");
+  });
+
+  it("does NOT render action buttons for a regular HTTP link", () => {
+    const html = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <ThemeProvider>
+          <DocumentOpenerProvider>
+            <MarkdownBody>{"[Beispiel](https://example.com)"}</MarkdownBody>
+          </DocumentOpenerProvider>
+        </ThemeProvider>
+      </QueryClientProvider>,
+    );
+
+    expect(html).not.toContain('aria-label="Öffnen"');
+    expect(html).not.toMatch(/aria-label="Im (Finder|Explorer) zeigen"/);
+    expect(html).toContain('href="https://example.com"');
   });
 });

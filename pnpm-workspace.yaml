@@ -9,6 +9,7 @@ packages:
   # Keep this smoke fixture installable as a local plugin example without
   # forcing PRs to commit pnpm-lock.yaml for a new workspace importer.
   - "!packages/plugins/examples/plugin-orchestration-smoke-example"
+  - scripts/document-opener
   - server
   - ui
   - cli

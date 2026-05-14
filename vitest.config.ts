@@ -13,6 +13,7 @@ export default defineConfig({
       "packages/adapters/gemini-local",
       "packages/adapters/opencode-local",
       "packages/adapters/pi-local",
+      "scripts/document-opener",
       "server",
       "ui",
       "cli",

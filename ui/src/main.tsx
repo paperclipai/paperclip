@@ -13,6 +13,7 @@ import { SidebarProvider } from "./context/SidebarContext";
 import { DialogProvider } from "./context/DialogContext";
 import { EditorAutocompleteProvider } from "./context/EditorAutocompleteContext";
 import { ToastProvider } from "./context/ToastContext";
+import { DocumentOpenerProvider } from "./context/DocumentOpenerContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { initPluginBridge } from "./plugins/bridge-init";
@@ -50,21 +51,23 @@ createRoot(document.getElementById("root")!).render(
           <CompanyProvider>
             <EditorAutocompleteProvider>
               <ToastProvider>
-                <LiveUpdatesProvider>
-                  <TooltipProvider>
-                    <CompanyAwareBreadcrumbProvider>
-                      <SidebarProvider>
-                        <PanelProvider>
-                          <PluginLauncherProvider>
-                            <DialogProvider>
-                              <App />
-                            </DialogProvider>
-                          </PluginLauncherProvider>
-                        </PanelProvider>
-                      </SidebarProvider>
-                    </CompanyAwareBreadcrumbProvider>
-                  </TooltipProvider>
-                </LiveUpdatesProvider>
+                <DocumentOpenerProvider>
+                  <LiveUpdatesProvider>
+                    <TooltipProvider>
+                      <CompanyAwareBreadcrumbProvider>
+                        <SidebarProvider>
+                          <PanelProvider>
+                            <PluginLauncherProvider>
+                              <DialogProvider>
+                                <App />
+                              </DialogProvider>
+                            </PluginLauncherProvider>
+                          </PanelProvider>
+                        </SidebarProvider>
+                      </CompanyAwareBreadcrumbProvider>
+                    </TooltipProvider>
+                  </LiveUpdatesProvider>
+                </DocumentOpenerProvider>
               </ToastProvider>
             </EditorAutocompleteProvider>
           </CompanyProvider>

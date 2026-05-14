@@ -12,6 +12,8 @@ import { queryKeys } from "../lib/queryKeys";
 import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../lib/issue-reference";
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
 import { StatusIcon } from "./StatusIcon";
+import { isLocalFileHref } from "../lib/local-document";
+import { LocalDocumentLink } from "./LocalDocumentLink";
 
 interface MarkdownBodyProps {
   children: string;
@@ -126,7 +128,9 @@ function extractMermaidSource(children: ReactNode): string | null {
 }
 
 function safeMarkdownUrlTransform(url: string): string {
-  return parseMentionChipHref(url) ? url : defaultUrlTransform(url);
+  if (parseMentionChipHref(url)) return url;
+  if (isLocalFileHref(url)) return url;
+  return defaultUrlTransform(url);
 }
 
 type MarkdownAstNode = {
@@ -606,6 +610,10 @@ export function MarkdownBody({
           </a>
         );
       }
+      if (href && isLocalFileHref(href)) {
+        return <LocalDocumentLink href={href}>{linkChildren}</LocalDocumentLink>;
+      }
+
       const isGitHubLink = isGitHubUrl(href);
       const isExternal = isExternalHttpUrl(href);
       const leadingIcon = isGitHubLink ? (

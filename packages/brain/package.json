@@ -1,0 +1,39 @@
+{
+  "name": "@paperclipai/brain",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    "./indexer": "./src/indexer/index.ts",
+    "./mcp-server": "./src/mcp-server/index.ts",
+    "./db/schema": "./src/db/schema/index.ts"
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "generate": "tsc -p tsconfig.json && drizzle-kit generate",
+    "migrate": "tsx src/db/migrate.ts",
+    "start:indexer": "node dist/indexer/index.js",
+    "start:mcp": "node dist/mcp-server/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "chokidar": "^4.0.0",
+    "drizzle-orm": "^0.38.4",
+    "gpt-tokenizer": "^2.8.0",
+    "gray-matter": "^4.0.3",
+    "postgres": "^3.4.5",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "drizzle-kit": "^0.31.9",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

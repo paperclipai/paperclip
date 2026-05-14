@@ -186,7 +186,7 @@ export function useToastActions() {
   return context;
 }
 
-export function useOptionalToastActions() {
+export function useOptionalToastActions(): ToastActionsContextValue | null {
   return useContext(ToastActionsContext);
 }
 
