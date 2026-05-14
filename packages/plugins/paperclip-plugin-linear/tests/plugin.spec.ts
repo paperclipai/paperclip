@@ -1265,6 +1265,7 @@ describe("paperclip-plugin-linear", () => {
         },
         headers: {},
         rawBody: "",
+        requestId: "test-webhook-req",
       });
 
       expect(harness.activity.some((a) => a.message === "issue.synced_from_linear")).toBe(true);
@@ -1327,6 +1328,7 @@ describe("paperclip-plugin-linear", () => {
         },
         headers: {},
         rawBody: "",
+        requestId: "test-webhook-req",
       });
 
       expect(attachmentLinkURL).toHaveBeenCalledOnce();
@@ -1360,6 +1362,7 @@ describe("paperclip-plugin-linear", () => {
         },
         headers: {},
         rawBody: "",
+        requestId: "test-webhook-req",
       });
 
       // Second call — link now exists so should be skipped
@@ -1385,6 +1388,7 @@ describe("paperclip-plugin-linear", () => {
         },
         headers: {},
         rawBody: "",
+        requestId: "test-webhook-req",
       });
 
       // createLink should NOT have been called again
@@ -1459,6 +1463,7 @@ describe("paperclip-plugin-linear", () => {
         },
         headers: {},
         rawBody: "",
+        requestId: "test-webhook-req",
       });
 
       // No new mirror should have been created. createLink stays untouched.
@@ -1503,6 +1508,7 @@ describe("paperclip-plugin-linear", () => {
         parsedBody: commentPayload,
         headers: {},
         rawBody: "",
+        requestId: "test-webhook-req",
       });
 
       // Second delivery — Linear retried (or our retry layer fired again).
@@ -1512,6 +1518,7 @@ describe("paperclip-plugin-linear", () => {
         parsedBody: commentPayload,
         headers: {},
         rawBody: "",
+        requestId: "test-webhook-req",
       });
 
       const comments = await harness.ctx.issues.listComments(paperclipIssue.id, "comp-1");
@@ -1519,6 +1526,11 @@ describe("paperclip-plugin-linear", () => {
       expect(bridged).toHaveLength(1);
       // Sentinel must be present so future webhook deliveries can detect it.
       expect(bridged[0]!.body).toContain("<!-- linear-comment-id: lin-comment-uuid-42 -->");
+
+      // vi.clearAllMocks() in beforeEach clears call history but not
+      // implementations, so the mockResolvedValue above would leak into
+      // subsequent tests and short-circuit their sync.getLinkByLinear lookups.
+      syncModule.getLinkByLinear.mockResolvedValue(null);
     });
   });
 
@@ -1597,6 +1609,7 @@ describe("paperclip-plugin-linear", () => {
         },
         headers: {},
         rawBody: "",
+        requestId: "test-webhook-req",
       });
 
       expect(createSpy).toHaveBeenCalledOnce();
@@ -1637,6 +1650,7 @@ describe("paperclip-plugin-linear", () => {
         },
         headers: {},
         rawBody: "",
+        requestId: "test-webhook-req",
       });
 
       expect(createSpy).toHaveBeenCalledOnce();
@@ -1668,6 +1682,7 @@ describe("paperclip-plugin-linear", () => {
         },
         headers: {},
         rawBody: "",
+        requestId: "test-webhook-req",
       });
 
       expect(createSpy).toHaveBeenCalledOnce();
