@@ -2883,6 +2883,8 @@ export function issueService(db: Db) {
           isNotNull(activityLog.runId),
         ),
       )
+      .orderBy(desc(activityLog.createdAt))
+      .limit(ISSUE_COMMENT_RUN_LOG_DERIVATION_RUN_SCAN_LIMIT)
       .then((rows) => Array.from(new Set(rows.map((row) => row.runId).filter((value): value is string => !!value))));
 
     const runLinkPredicate =
@@ -2915,8 +2917,17 @@ export function issueService(db: Db) {
       .limit(ISSUE_COMMENT_RUN_LOG_DERIVATION_RUN_SCAN_LIMIT);
 
     const runs = candidateRuns.filter((run) => {
+      const finishedAtMs = toTimestampMs(run.finishedAt);
+      const startedAtMs = toTimestampMs(run.startedAt);
       const createdAtMs = toTimestampMs(run.createdAt);
-      return createdAtMs !== null && createdAtMs >= minCommentCreatedAtMs && createdAtMs <= maxRunCreatedAtMs;
+      const lowerBoundMs = finishedAtMs ?? createdAtMs;
+      const upperBoundMs = startedAtMs ?? createdAtMs;
+      return (
+        lowerBoundMs !== null
+        && upperBoundMs !== null
+        && lowerBoundMs >= minCommentCreatedAtMs
+        && upperBoundMs <= maxRunCreatedAtMs
+      );
     });
 
     if (runs.length === 0) return comments;
