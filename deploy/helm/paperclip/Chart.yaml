@@ -1,0 +1,16 @@
+apiVersion: v2
+name: paperclip
+description: Self-hosted Paperclip AI — company orchestration platform with a single-replica StatefulSet, embedded Postgres, and PVC-backed state.
+type: application
+version: 0.1.0
+appVersion: "v2026.416.0"
+keywords:
+  - paperclip
+  - ai
+  - orchestration
+home: https://github.com/paperclipai/paperclip
+sources:
+  - https://github.com/paperclipai/paperclip
+maintainers:
+  - name: Nuno Ferro
+    email: mail@nunoferro.com
