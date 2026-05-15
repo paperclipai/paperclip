@@ -1623,12 +1623,12 @@ function ConfigurationTab({
   const taskAssignLocked = agent.role === "ceo" || canCreateAgents;
   const taskAssignHint =
     taskAssignSource === "ceo_role"
-      ? t("agent.permissions.ceoHint", "Enabled automatically for CEO agents.")
+      ? t("agent.permissionsLabels.ceoHint", "Enabled automatically for CEO agents.")
       : taskAssignSource === "agent_creator"
-        ? t("agent.permissions.creatorHint", "Enabled automatically while this agent can create new agents.")
+        ? t("agent.permissionsLabels.creatorHint", "Enabled automatically while this agent can create new agents.")
         : taskAssignSource === "explicit_grant"
-          ? t("agent.permissions.explicitGrantHint", "Enabled via explicit company permission grant.")
-          : t("agent.permissions.disabledHint", "Disabled unless explicitly granted.");
+          ? t("agent.permissionsLabels.explicitGrantHint", "Enabled via explicit company permission grant.")
+          : t("agent.permissionsLabels.disabledHint", "Disabled unless explicitly granted.");
 
   return (
     <div className="space-y-6">
@@ -1652,9 +1652,9 @@ function ConfigurationTab({
         <div className="border border-border rounded-lg p-4 space-y-4">
           <div className="flex items-center justify-between gap-4 text-sm">
             <div className="space-y-1">
-              <div>{t("agent.permissions.canCreateAgents", "Can create new agents")}</div>
+              <div>{t("agent.permissionsLabels.canCreateAgents", "Can create new agents")}</div>
               <p className="text-xs text-muted-foreground">
-                {t("agent.permissions.canCreateAgentsDesc", "Lets this agent create or hire agents and implicitly assign tasks.")}
+                {t("agent.permissionsLabels.canCreateAgentsDesc", "Lets this agent create or hire agents and implicitly assign tasks.")}
               </p>
             </div>
             <ToggleSwitch
@@ -1670,7 +1670,7 @@ function ConfigurationTab({
           </div>
           <div className="flex items-center justify-between gap-4 text-sm">
             <div className="space-y-1">
-              <div>{t("agent.permissions.canAssignTasks", "Can assign tasks")}</div>
+              <div>{t("agent.permissionsLabels.canAssignTasks", "Can assign tasks")}</div>
               <p className="text-xs text-muted-foreground">
                 {taskAssignHint}
               </p>
