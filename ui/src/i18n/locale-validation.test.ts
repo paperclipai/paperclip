@@ -6,13 +6,13 @@ import { validateLocaleMessages } from "./locale-validation";
 
 describe("locale validation", () => {
   it("resolves English messages with key and default fallbacks", () => {
-    expect(t("app.noCompanies.title")).toBe(en.app.noCompanies.title);
+    expect(t("account.language")).toBe(en.account.language);
     expect(t("app.missing", { defaultValue: "Fallback" })).toBe("Fallback");
     expect(t("app.missing")).toBe("app.missing");
   });
 
   it("accepts registered locale files", () => {
-    expect(Object.keys(localeMessages)).toContain("en");
+    expect(Object.keys(localeMessages).sort()).toEqual(["en"]);
     for (const [locale, messages] of Object.entries(localeMessages)) {
       expect(validateLocaleMessages(messages), locale).toEqual([]);
     }
@@ -21,18 +21,15 @@ describe("locale validation", () => {
   it("rejects missing and extra nested keys", () => {
     expect(
       validateLocaleMessages({
-        app: {
-          noCompanies: {
-            title: en.app.noCompanies.title,
-            description: en.app.noCompanies.description,
-            unexpected: "Unexpected",
-          },
+        account: {
+          language: en.account.language,
+          unexpected: "Unexpected",
         },
       }),
     ).toEqual(
       expect.arrayContaining([
-        "app.noCompanies.newCompany is missing",
-        "app.noCompanies.unexpected is not defined in English",
+        expect.stringContaining("is missing"),
+        "account.unexpected is not defined in English",
       ]),
     );
   });
@@ -40,14 +37,11 @@ describe("locale validation", () => {
   it("rejects non-string leaves", () => {
     expect(
       validateLocaleMessages({
-        app: {
-          noCompanies: {
-            ...en.app.noCompanies,
-            title: ["Create your first company"],
-          },
+        account: {
+          language: ["Language"],
         },
       }),
-    ).toEqual(expect.arrayContaining(["app.noCompanies.title must be a string"]));
+    ).toEqual(expect.arrayContaining(["account.language must be a string"]));
   });
 
   it("requires interpolation placeholders to match English", () => {
@@ -74,7 +68,7 @@ describe("locale validation", () => {
       validateLocaleMessages(
         {
           script: "<script>alert(1)</script>",
-          handler: '<span ONCLICK="alert(1)">Create</span>',
+          handler: '<span onclick="alert(1)">Create</span>',
           js: "javascript:alert(1)",
           data: "data:text/html,hello",
           url: "https://example.test",

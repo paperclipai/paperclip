@@ -15,6 +15,7 @@ import {
   Terminal,
   Cpu,
 } from "lucide-react";
+import { t } from "@/i18n";
 import { OpenCodeLogoIcon } from "@/components/OpenCodeLogoIcon";
 import { HermesIcon } from "@/components/HermesIcon";
 
@@ -78,6 +79,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Local Gemini agent",
     icon: Gem,
   },
+  kimi_local: {
+    label: "Kimi",
+    description: "Moonshot AI Kimi model via API",
+    icon: Sparkles,
+  },
   opencode_local: {
     label: "OpenCode",
     description: "Local multi-provider agent",
@@ -96,11 +102,6 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
   cursor: {
     label: "Cursor",
     description: "Local Cursor agent",
-    icon: MousePointer2,
-  },
-  cursor_cloud: {
-    label: "Cursor Cloud",
-    description: "Managed remote Cursor agent",
     icon: MousePointer2,
   },
   openclaw_gateway: {
@@ -141,7 +142,10 @@ function humanizeType(type: string): string {
 }
 
 export function getAdapterLabel(type: string): string {
-  const base = adapterDisplayMap[type]?.label ?? humanizeType(type);
+  const fallback = adapterDisplayMap[type]?.label ?? humanizeType(type);
+  const key = `adapters.adapterDisplayRegistry.label.${type}`;
+  const translated = t(key);
+  const base = translated === key ? fallback : translated;
   return withSuffix(base, getTypeSuffix(type));
 }
 
@@ -155,15 +159,32 @@ export function getAdapterLabels(): Record<string, string> {
 
 export function getAdapterDisplay(type: string): AdapterDisplayInfo {
   const known = adapterDisplayMap[type];
-  if (known) return known;
+  if (known) {
+    return {
+      ...known,
+      description: getAdapterDescription(type, known.description),
+      disabledLabel: known.disabledLabel
+        ? t("adapters.adapterDisplayRegistry.disabledLabel." + type)
+        : undefined,
+    };
+  }
 
   const suffix = getTypeSuffix(type);
   const label = withSuffix(humanizeType(type), suffix);
   return {
     label,
-    description: suffix ? `External ${suffix} adapter` : "External adapter",
+    description: suffix
+      ? t("adapters.adapterDisplayRegistry.externalSuffix", { suffix })
+      : t("adapters.adapterDisplayRegistry.external"),
     icon: Cpu,
   };
+}
+
+function getAdapterDescription(_type: string, fallback: string): string {
+  const key = `adapters.adapterDisplayRegistry.description.${_type}`;
+  const translated = t(key);
+  // i18next returns the key itself when missing; fall back to the static string.
+  return translated === key ? fallback : translated;
 }
 
 export function isKnownAdapterType(type: string): boolean {
