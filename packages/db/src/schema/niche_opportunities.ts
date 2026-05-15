@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, real, timestamp, index, jsonb, boolean } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, real, timestamp, index, unique, jsonb, boolean } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 
 export const nicheOpportunities = pgTable(
@@ -25,6 +25,11 @@ export const nicheOpportunities = pgTable(
   (table) => ({
     companyStatusIdx: index("niche_opp_company_status_idx").on(table.companyId, table.status),
     discoveredAtIdx: index("niche_opp_discovered_at_idx").on(table.discoveredAt),
+    companyCategoryKeywordUq: unique("niche_opp_company_category_keyword_uq").on(
+      table.companyId,
+      table.categoryPath,
+      table.headKeyword,
+    ),
   }),
 );
 

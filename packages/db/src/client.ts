@@ -377,7 +377,9 @@ async function migrationStatementAlreadyApplied(
   sql: ReturnType<typeof postgres>,
   statement: string,
 ): Promise<boolean> {
-  const normalized = statement.replace(/\s+/g, " ").trim();
+  // Strip SQL line comments before normalizing so that rollback-comment blocks
+  // at the top of a hand-written migration don't prevent pattern matching.
+  const normalized = statement.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").trim();
 
   const createTableMatch = normalized.match(/^CREATE TABLE(?: IF NOT EXISTS)? "([^"]+)"/i);
   if (createTableMatch) {
