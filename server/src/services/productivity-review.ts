@@ -809,7 +809,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         continue;
       }
       const sourceAgent = await getAgent(candidate.assigneeAgentId);
-      if (!sourceAgent || sourceAgent.companyId !== candidate.companyId) {
+      if (!sourceAgent || sourceAgent.companyId !== candidate.companyId || !isAgentInvokable(sourceAgent)) {
         result.skipped += 1;
         continue;
       }

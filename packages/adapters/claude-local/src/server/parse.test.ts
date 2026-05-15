@@ -63,6 +63,17 @@ describe("isClaudeTransientUpstreamError", () => {
     ).toBe(true);
   });
 
+  it("does not classify org monthly usage limits as transient", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        parsed: {
+          is_error: true,
+          result: "You've hit your org's monthly usage limit",
+        },
+      }),
+    ).toBe(false);
+  });
+
   it("does not classify login/auth failures as transient", () => {
     expect(
       isClaudeTransientUpstreamError({
