@@ -37,10 +37,8 @@ export function buildCodexExecArgs(
 ): BuildCodexExecArgsResult {
   const record = asRecord(config);
   const model = asString(record.model, "").trim();
-  const modelReasoningEffort = asString(
-    record.modelReasoningEffort,
-    asString(record.reasoningEffort, ""),
-  ).trim();
+  const rawEffort = asString(record.modelReasoningEffort, asString(record.reasoningEffort, "")).trim();
+  const modelReasoningEffort = rawEffort === "auto" ? "" : rawEffort || "medium";
   const search = asBoolean(record.search, false);
   const fastModeRequested = asBoolean(record.fastMode, false);
   const fastModeApplied = fastModeRequested && isCodexLocalFastModeSupported(model);
