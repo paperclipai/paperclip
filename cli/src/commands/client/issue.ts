@@ -36,6 +36,7 @@ interface IssueCreateOptions extends BaseClientOptions {
   status?: string;
   priority?: string;
   assigneeAgentId?: string;
+  assigneeUserId?: string;
   projectId?: string;
   goalId?: string;
   parentId?: string;
@@ -49,6 +50,7 @@ interface IssueUpdateOptions extends BaseClientOptions {
   status?: string;
   priority?: string;
   assigneeAgentId?: string;
+  assigneeUserId?: string;
   projectId?: string;
   goalId?: string;
   parentId?: string;
@@ -62,6 +64,12 @@ interface IssueCommentOptions extends BaseClientOptions {
   body: string;
   reopen?: boolean;
   resume?: boolean;
+}
+
+interface IssueCommentListOptions extends BaseClientOptions {
+  order?: string;
+  limit?: string;
+  after?: string;
 }
 
 interface IssueCheckoutOptions extends BaseClientOptions {
@@ -162,6 +170,7 @@ export function registerIssueCommands(program: Command): void {
       .option("--status <status>", "Issue status")
       .option("--priority <priority>", "Issue priority")
       .option("--assignee-agent-id <id>", "Assignee agent ID")
+      .option("--assignee-user-id <id>", "Assignee user ID")
       .option("--project-id <id>", "Project ID")
       .option("--goal-id <id>", "Goal ID")
       .option("--parent-id <id>", "Parent issue ID")
@@ -176,6 +185,7 @@ export function registerIssueCommands(program: Command): void {
             status: opts.status,
             priority: opts.priority,
             assigneeAgentId: opts.assigneeAgentId,
+            assigneeUserId: opts.assigneeUserId,
             projectId: opts.projectId,
             goalId: opts.goalId,
             parentId: opts.parentId,
@@ -201,7 +211,8 @@ export function registerIssueCommands(program: Command): void {
       .option("--description <text>", "Issue description")
       .option("--status <status>", "Issue status")
       .option("--priority <priority>", "Issue priority")
-      .option("--assignee-agent-id <id>", "Assignee agent ID")
+      .option("--assignee-agent-id <id|null>", "Assignee agent ID (or literal 'null' to clear)")
+      .option("--assignee-user-id <id|null>", "Assignee user ID (or literal 'null' to clear)")
       .option("--project-id <id>", "Project ID")
       .option("--goal-id <id>", "Goal ID")
       .option("--parent-id <id>", "Parent issue ID")
@@ -217,7 +228,8 @@ export function registerIssueCommands(program: Command): void {
             description: opts.description,
             status: opts.status,
             priority: opts.priority,
-            assigneeAgentId: opts.assigneeAgentId,
+            assigneeAgentId: parseNullableId(opts.assigneeAgentId),
+            assigneeUserId: parseNullableId(opts.assigneeUserId),
             projectId: opts.projectId,
             goalId: opts.goalId,
             parentId: opts.parentId,
@@ -379,6 +391,56 @@ export function registerIssueCommands(program: Command): void {
         }
       }),
   );
+
+  addCommonClientOptions(
+    issue
+      .command("comment:list")
+      .description("List comments for an issue")
+      .argument("<issueId>", "Issue ID")
+      .option("--order <order>", "Sort order: asc or desc")
+      .option("--limit <n>", "Maximum number of comments (1-500)")
+      .option("--after <commentId>", "Anchor pagination after this comment ID")
+      .action(async (issueId: string, opts: IssueCommentListOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const params = new URLSearchParams();
+          if (opts.order) params.set("order", opts.order);
+          if (opts.limit) params.set("limit", opts.limit);
+          if (opts.after) params.set("after", opts.after);
+          const query = params.toString();
+          const path = `/api/issues/${issueId}/comments${query ? `?${query}` : ""}`;
+          const comments = (await ctx.api.get<IssueComment[]>(path)) ?? [];
+          printOutput(comments, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    issue
+      .command("comment:get")
+      .description("Get a single comment by ID")
+      .argument("<issueId>", "Issue ID")
+      .argument("<commentId>", "Comment ID")
+      .action(async (issueId: string, commentId: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const comment = await ctx.api.get<IssueComment>(
+            `/api/issues/${issueId}/comments/${commentId}`,
+          );
+          printOutput(comment, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+}
+
+function parseNullableId(value: string | undefined): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value.trim().toLowerCase() === "null") return null;
+  return value;
 }
 
 function parseCsv(value: string | undefined): string[] {
