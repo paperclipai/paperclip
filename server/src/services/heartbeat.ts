@@ -8134,41 +8134,75 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const recoveryAgentNameKey = normalizeAgentNameKey(recoveryAgent?.name);
 
     const promotionResult = await db.transaction(async (tx) => {
-      if (contextIssueId) {
-        await tx.execute(
-          sql`select id from issues where company_id = ${run.companyId} and id = ${contextIssueId} for update`,
-        );
-      } else {
-        await tx.execute(
-          sql`select id from issues where company_id = ${run.companyId} and execution_run_id = ${run.id} for update`,
-        );
-      }
+      // Lock the context issue (if any) AND every issue that still references this run.
+      //
+      // A single run can hold execution locks on multiple issues: the caller's context
+      // issue (set via svc.checkout) plus any additional issues stamped by
+      // enqueueWakeup's "legacy run" fallback when the run was the only queued/running
+      // run matching their contextSnapshot.issueId. Historically this function only
+      // resolved and cleared the lock on *one* issue (rows[0]), leaving the others
+      // with an executionRunId pointing at a finalized run. Subsequent checkouts from
+      // the assigned agent then failed with 409 and the issue stayed blocked forever.
+      // `order by id` makes row-lock acquisition deterministic across concurrent
+      // finalizations, which keeps deadlock risk independent of PostgreSQL's plan
+      // choice when multiple issues match.
+      await tx.execute(
+        contextIssueId
+          ? sql`
+              select id from issues
+              where company_id = ${run.companyId}
+                and (id = ${contextIssueId} or execution_run_id = ${run.id})
+              order by id
+              for update
+            `
+          : sql`
+              select id from issues
+              where company_id = ${run.companyId}
+                and execution_run_id = ${run.id}
+              order by id
+              for update
+            `,
+      );
 
-      let issue = await tx
+      const candidateIssues = await tx
         .select()
         .from(issues)
         .where(
           and(
             eq(issues.companyId, run.companyId),
-            contextIssueId ? eq(issues.id, contextIssueId) : eq(issues.executionRunId, run.id),
+            contextIssueId
+              ? or(eq(issues.id, contextIssueId), eq(issues.executionRunId, run.id))
+              : eq(issues.executionRunId, run.id),
           ),
         )
-        .then((rows) => rows[0] ?? null);
+        .orderBy(asc(issues.id));
+
+      // Clear every orphaned execution lock that still points at this (finalizing)
+      // run. Equivalent to a per-row guarded loop over `candidateIssues` (the rows
+      // are already held under FOR UPDATE from the lock query above), but issued
+      // as a single statement so it scales with N orphans without N round-trips.
+      await tx
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)),
+        );
+
+      // Deferred-wake promotion is bound to a single primary issue: the run's context
+      // issue when present, otherwise the first candidate we found (preserves the
+      // legacy rows[0] selection for runs that were not tied to a specific issue).
+      let issue =
+        (contextIssueId
+          ? candidateIssues.find((candidate) => candidate.id === contextIssueId)
+          : candidateIssues[0]) ?? null;
 
       if (!issue) return null;
       if (issue.executionRunId && issue.executionRunId !== run.id) return null;
-
-      if (issue.executionRunId === run.id) {
-        await tx
-          .update(issues)
-          .set({
-            executionRunId: null,
-            executionAgentNameKey: null,
-            executionLockedAt: null,
-            updatedAt: new Date(),
-          })
-          .where(eq(issues.id, issue.id));
-      }
 
       while (true) {
         const deferred = await tx
