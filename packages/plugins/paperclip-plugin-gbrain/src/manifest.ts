@@ -31,10 +31,25 @@ const manifest: PaperclipPluginManifestV1 = {
         default: DEFAULT_GBRAIN_MCP_URL,
         description: "MCP Streamable-HTTP endpoint for gbrain.",
       },
+      hindsightApiUrl: {
+        type: "string",
+        default: "http://hindsight-api.hindsight.svc.cluster.local:8888",
+        description: "Hindsight API base URL for the fact-promotion bridge.",
+      },
       autoRetain: {
         type: "boolean",
         default: true,
         description: "Append a timeline entry on every successful agent run.",
+      },
+      promoteFactsToPages: {
+        type: "boolean",
+        default: true,
+        description: "Materialize hindsight memory_units as fact-<uuid> pages (wave 2).",
+      },
+      factPromotionDelaySec: {
+        type: "integer",
+        default: 180,
+        description: "Seconds to wait after retain before querying hindsight for memory_units.",
       },
     },
   },

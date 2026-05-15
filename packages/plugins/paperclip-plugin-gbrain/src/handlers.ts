@@ -30,14 +30,14 @@ export interface HandleRunFinishedInput {
   lookupAgentName(agentId: string): Promise<string | null>;
 }
 
-export async function handleRunFinished(input: HandleRunFinishedInput): Promise<void> {
+export async function handleRunFinished(input: HandleRunFinishedInput): Promise<HandleRunFinishedResult> {
   const { event, client, logger, autoRetain, lookupIssueIdentifier, lookupAgentName } =
     input;
-  if (!autoRetain) return;
+  if (!autoRetain) return { ok: false };
 
   const p = event.payload;
   const status = typeof p.status === "string" ? p.status : null;
-  if (status !== "succeeded") return;
+  if (status !== "succeeded") return { ok: false };
 
   const runId = typeof p.runId === "string" ? p.runId : null;
   const agentId = typeof p.agentId === "string" ? p.agentId : null;
@@ -55,7 +55,7 @@ export async function handleRunFinished(input: HandleRunFinishedInput): Promise<
       issueId,
       hasOutput: Boolean(output),
     });
-    return;
+    return { ok: false };
   }
 
   try {
@@ -63,14 +63,14 @@ export async function handleRunFinished(input: HandleRunFinishedInput): Promise<
     const issuePageSlug = issueSlug(identifier);
     if (!issuePageSlug || !identifier) {
       logger.info("gbrain retain skip: issue identifier unresolved", { issueId });
-      return;
+      return { ok: false };
     }
 
     const agentName = await lookupAgentName(agentId);
     const agentPageSlug = agentSlug(agentName);
     if (!agentPageSlug || !agentName) {
       logger.info("gbrain retain skip: agent name unresolved", { agentId });
-      return;
+      return { ok: false };
     }
 
     await ensureIssuePage(client, {
@@ -95,11 +95,17 @@ export async function handleRunFinished(input: HandleRunFinishedInput): Promise<
       issueSlug: issuePageSlug,
       agentSlug: agentPageSlug,
     });
+    return { ok: true, runId, agentId, issuePageSlug, agentPageSlug };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     // Embed the error in the message string — meta fields named `error`
     // are getting dropped by the SDK log pipeline somewhere, so without
     // this inline form the actual failure cause is invisible in logs.
     logger.warn(`gbrain retain failed (non-fatal): ${msg}`, { runId });
+    return { ok: false };
   }
 }
+
+export type HandleRunFinishedResult =
+  | { ok: false }
+  | { ok: true; runId: string; agentId: string; issuePageSlug: string; agentPageSlug: string };

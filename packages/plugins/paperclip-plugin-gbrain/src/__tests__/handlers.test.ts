@@ -104,7 +104,7 @@ describe("handleRunFinished", () => {
         lookupIssueIdentifier: vi.fn(async () => "BLO-1"),
         lookupAgentName: vi.fn(async () => "CTO"),
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ ok: false });
     expect(logger.warn).toHaveBeenCalled();
   });
 
