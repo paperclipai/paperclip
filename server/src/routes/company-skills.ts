@@ -84,6 +84,12 @@ export function companySkillRoutes(db: Db) {
   router.get("/companies/:companyId/skills", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    const q = asString(req.query.q as string | undefined);
+    if (q !== null) {
+      const result = await svc.searchSkills(companyId, q);
+      res.json(result);
+      return;
+    }
     const result = await svc.list(companyId);
     res.json(result);
   });
