@@ -76,6 +76,39 @@ export interface GetPrResult {
   reviewDecision: string | null;
 }
 
+export interface PrMutationGuardParams {
+  repository: string;
+  prNumber: number;
+  expectedHeadSha: string;
+  expectedBaseSha: string;
+}
+
+export interface UpdatePrBodyParams extends PrMutationGuardParams {
+  body: string;
+  expectedCurrentBody?: string;
+}
+
+export interface ConvertPrToDraftParams extends PrMutationGuardParams {}
+export interface MarkPrReadyForReviewParams extends PrMutationGuardParams {}
+
+export interface RepairPrHeadParams extends PrMutationGuardParams {
+  targetHeadSha: string;
+  sourceRepository?: string;
+  force?: boolean;
+}
+
+export interface PrMutationResult {
+  repository: string;
+  prNumber: number;
+  htmlUrl: string;
+  headSha: string;
+  baseSha: string;
+  draft: boolean;
+  mutation: string;
+  verified: boolean;
+  changed: boolean;
+}
+
 const GET_PR_QUERY = /* GraphQL */ `
   query ($owner: String!, $repo: String!, $number: Int!) {
     repository(owner: $owner, name: $repo) {
@@ -114,6 +147,38 @@ const GET_PR_QUERY = /* GraphQL */ `
   }
 `;
 
+const PR_ID_QUERY = /* GraphQL */ `
+  query ($owner: String!, $repo: String!, $number: Int!) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $number) {
+        id
+      }
+    }
+  }
+`;
+
+const CONVERT_TO_DRAFT_MUTATION = /* GraphQL */ `
+  mutation ($prId: ID!) {
+    convertPullRequestToDraft(input: { pullRequestId: $prId }) {
+      pullRequest {
+        id
+        isDraft
+      }
+    }
+  }
+`;
+
+const MARK_READY_MUTATION = /* GraphQL */ `
+  mutation ($prId: ID!) {
+    markPullRequestReadyForReview(input: { pullRequestId: $prId }) {
+      pullRequest {
+        id
+        isDraft
+      }
+    }
+  }
+`;
+
 interface PrGraphqlResponse {
   repository: {
     pullRequest: {
@@ -140,6 +205,23 @@ interface PrGraphqlResponse {
       };
     };
   };
+}
+
+interface PrIdResponse {
+  repository: { pullRequest: { id: string } | null } | null;
+}
+
+interface PullRequestSnapshot {
+  repository: string;
+  prNumber: number;
+  htmlUrl: string;
+  state: string;
+  draft: boolean;
+  headSha: string;
+  baseSha: string;
+  headRef: string;
+  headRepository: string;
+  body: string;
 }
 
 export async function getPr(
@@ -184,6 +266,150 @@ export async function getPr(
   return { content: `PR #${p.prNumber}: ${pr.state} (${pr.mergeStateStatus})`, data: result };
 }
 
+export async function updatePrBody(
+  client: GitHubClient,
+  params: unknown,
+  _runCtx: ToolRunContext,
+): Promise<ToolResult> {
+  const p = parseUpdatePrBody(params);
+  const before = await readGuardedPr(client, p);
+  if (p.expectedCurrentBody !== undefined && before.body !== p.expectedCurrentBody) {
+    throw new RefusalError("expected_body_mismatch", `PR #${p.prNumber} body changed before update`);
+  }
+
+  await githubCall(
+    () =>
+      client.rest.pulls.update({
+        owner: client.owner,
+        repo: client.name,
+        pull_number: p.prNumber,
+        body: p.body,
+      }),
+    "update pull request body",
+  );
+
+  const after = await readPrSnapshot(client, p.prNumber);
+  verifyReadback(client, p, after);
+  if (after.body !== p.body) {
+    throw new RefusalError("github_api_failed", `PR #${p.prNumber} body readback did not match requested body`);
+  }
+
+  return {
+    content: `PR #${p.prNumber} body updated`,
+    data: buildMutationResult("update_body", before, after),
+  };
+}
+
+export async function convertPrToDraft(
+  client: GitHubClient,
+  params: unknown,
+  _runCtx: ToolRunContext,
+): Promise<ToolResult> {
+  const p = parseConvertPrToDraft(params);
+  const before = await readGuardedPr(client, p);
+
+  if (!before.draft) {
+    const prId = await readPrId(client, p.prNumber);
+    await githubCall(
+      () => client.graphql(CONVERT_TO_DRAFT_MUTATION, { prId }),
+      "convert pull request to draft",
+    );
+  }
+
+  const after = await readPrSnapshot(client, p.prNumber);
+  verifyReadback(client, p, after);
+  if (!after.draft) {
+    throw new RefusalError("github_api_failed", `PR #${p.prNumber} draft readback did not match requested state`);
+  }
+
+  return {
+    content: `PR #${p.prNumber} is draft`,
+    data: buildMutationResult("convert_to_draft", before, after),
+  };
+}
+
+export async function markPrReadyForReview(
+  client: GitHubClient,
+  params: unknown,
+  _runCtx: ToolRunContext,
+): Promise<ToolResult> {
+  const p = parseMarkPrReadyForReview(params);
+  const before = await readGuardedPr(client, p);
+
+  if (before.draft) {
+    const prId = await readPrId(client, p.prNumber);
+    await githubCall(
+      () => client.graphql(MARK_READY_MUTATION, { prId }),
+      "mark pull request ready for review",
+    );
+  }
+
+  const after = await readPrSnapshot(client, p.prNumber);
+  verifyReadback(client, p, after);
+  if (after.draft) {
+    throw new RefusalError("github_api_failed", `PR #${p.prNumber} draft readback did not match requested state`);
+  }
+
+  return {
+    content: `PR #${p.prNumber} is ready for review`,
+    data: buildMutationResult("mark_ready_for_review", before, after),
+  };
+}
+
+export async function repairPrHead(
+  client: GitHubClient,
+  params: unknown,
+  _runCtx: ToolRunContext,
+): Promise<ToolResult> {
+  const p = parseRepairPrHead(params);
+  const before = await readGuardedPr(client, p);
+  const configuredRepository = getConfiguredRepository(client);
+  if (!sameRepository(before.headRepository, configuredRepository)) {
+    throw new RefusalError(
+      "unauthorized_head_branch",
+      `PR #${p.prNumber} head repository ${before.headRepository} is not ${configuredRepository}`,
+    );
+  }
+
+  const sourceRepository = p.sourceRepository ?? configuredRepository;
+  if (!sameRepository(sourceRepository, configuredRepository)) {
+    throw new RefusalError(
+      "authorization_failed",
+      `sourceRepository ${sourceRepository} is not the configured repository ${configuredRepository}`,
+    );
+  }
+  const source = splitRepositoryName(sourceRepository);
+  await githubCall(
+    () =>
+      client.rest.git.getCommit({
+        owner: source.owner,
+        repo: source.name,
+        commit_sha: p.targetHeadSha,
+      }),
+    "verify target commit",
+  );
+
+  await githubCall(
+    () =>
+      client.rest.git.updateRef({
+        owner: client.owner,
+        repo: client.name,
+        ref: toHeadsRef(before.headRef),
+        sha: p.targetHeadSha,
+        force: p.force ?? false,
+      }),
+    "update pull request head branch",
+  );
+
+  const after = await readPrSnapshot(client, p.prNumber);
+  verifyReadback(client, { ...p, expectedHeadSha: p.targetHeadSha }, after);
+
+  return {
+    content: `PR #${p.prNumber} head repaired`,
+    data: buildMutationResult("repair_head", before, after),
+  };
+}
+
 function ensureIssueRef(body: string, issueId: string): string {
   if (ISSUE_REF_PATTERN.test(body)) return body;
   return `${body}\n\nFixes #${issueId}`;
@@ -213,4 +439,253 @@ function parseGetPr(params: unknown): { prNumber: number } {
   const p = params as Record<string, unknown>;
   if (typeof p.prNumber !== "number") throw new Error("prNumber required");
   return { prNumber: p.prNumber };
+}
+
+function parseUpdatePrBody(params: unknown): UpdatePrBodyParams {
+  const p = parseGuardParams(params, "updatePrBody");
+  const raw = params as Record<string, unknown>;
+  if (typeof raw.body !== "string") throw new Error("body required");
+  if (raw.expectedCurrentBody !== undefined && typeof raw.expectedCurrentBody !== "string") {
+    throw new Error("expectedCurrentBody must be a string");
+  }
+  return {
+    ...p,
+    body: raw.body,
+    expectedCurrentBody:
+      typeof raw.expectedCurrentBody === "string" ? raw.expectedCurrentBody : undefined,
+  };
+}
+
+function parseConvertPrToDraft(params: unknown): ConvertPrToDraftParams {
+  return parseGuardParams(params, "convertPrToDraft");
+}
+
+function parseMarkPrReadyForReview(params: unknown): MarkPrReadyForReviewParams {
+  return parseGuardParams(params, "markPrReadyForReview");
+}
+
+function parseRepairPrHead(params: unknown): RepairPrHeadParams {
+  const p = parseGuardParams(params, "repairPrHead");
+  const raw = params as Record<string, unknown>;
+  return {
+    ...p,
+    targetHeadSha: readSha(raw, "targetHeadSha"),
+    sourceRepository: readOptionalRepository(raw, "sourceRepository"),
+    force: typeof raw.force === "boolean" ? raw.force : undefined,
+  };
+}
+
+function parseGuardParams(params: unknown, toolName: string): PrMutationGuardParams {
+  if (typeof params !== "object" || params === null) {
+    throw new Error(`${toolName}: params must be an object`);
+  }
+  const p = params as Record<string, unknown>;
+  return {
+    repository: readRepository(p, "repository"),
+    prNumber: readPositiveInteger(p, "prNumber"),
+    expectedHeadSha: readSha(p, "expectedHeadSha"),
+    expectedBaseSha: readSha(p, "expectedBaseSha"),
+  };
+}
+
+async function readGuardedPr(
+  client: GitHubClient,
+  p: PrMutationGuardParams,
+): Promise<PullRequestSnapshot> {
+  assertConfiguredRepository(client, p.repository);
+  const snapshot = await readPrSnapshot(client, p.prNumber);
+  verifyReadback(client, p, snapshot);
+  if (snapshot.state !== "open") {
+    throw new RefusalError("pr_not_open", `PR #${p.prNumber} state=${snapshot.state}`);
+  }
+  return snapshot;
+}
+
+async function readPrSnapshot(client: GitHubClient, prNumber: number): Promise<PullRequestSnapshot> {
+  const { data } = await githubCall(
+    () =>
+      client.rest.pulls.get({
+        owner: client.owner,
+        repo: client.name,
+        pull_number: prNumber,
+      }),
+    "read pull request",
+  );
+  const headRepository = data.head.repo?.full_name ?? "";
+  return {
+    repository: getConfiguredRepository(client),
+    prNumber: data.number,
+    htmlUrl: data.html_url,
+    state: data.state,
+    draft: data.draft ?? false,
+    headSha: data.head.sha,
+    baseSha: data.base.sha,
+    headRef: data.head.ref,
+    headRepository,
+    body: data.body ?? "",
+  };
+}
+
+async function readPrId(client: GitHubClient, prNumber: number): Promise<string> {
+  const resp = await githubCall(
+    () =>
+      client.graphql<PrIdResponse>(PR_ID_QUERY, {
+        owner: client.owner,
+        repo: client.name,
+        number: prNumber,
+      }),
+    "read pull request id",
+  );
+  const prId = resp.repository?.pullRequest?.id;
+  if (!prId) {
+    throw new RefusalError("github_api_failed", `GitHub returned no pull request id for PR #${prNumber}`);
+  }
+  return prId;
+}
+
+function verifyReadback(
+  client: GitHubClient,
+  p: PrMutationGuardParams,
+  snapshot: PullRequestSnapshot,
+): void {
+  assertConfiguredRepository(client, p.repository);
+  if (!sameSha(snapshot.headSha, p.expectedHeadSha)) {
+    throw new RefusalError(
+      "expected_head_mismatch",
+      `PR #${p.prNumber} expected head ${p.expectedHeadSha}, found ${snapshot.headSha}`,
+    );
+  }
+  if (!sameSha(snapshot.baseSha, p.expectedBaseSha)) {
+    throw new RefusalError(
+      "expected_base_mismatch",
+      `PR #${p.prNumber} expected base ${p.expectedBaseSha}, found ${snapshot.baseSha}`,
+    );
+  }
+}
+
+function buildMutationResult(
+  mutation: string,
+  before: PullRequestSnapshot,
+  after: PullRequestSnapshot,
+): PrMutationResult {
+  return {
+    repository: after.repository,
+    prNumber: after.prNumber,
+    htmlUrl: after.htmlUrl,
+    headSha: after.headSha,
+    baseSha: after.baseSha,
+    draft: after.draft,
+    mutation,
+    verified: true,
+    changed:
+      before.headSha !== after.headSha ||
+      before.baseSha !== after.baseSha ||
+      before.draft !== after.draft ||
+      before.body !== after.body,
+  };
+}
+
+async function githubCall<T>(operation: () => Promise<T>, action: string): Promise<T> {
+  try {
+    return await operation();
+  } catch (err) {
+    if (err instanceof RefusalError) throw err;
+    throw mapGitHubError(err, action);
+  }
+}
+
+function mapGitHubError(err: unknown, action: string): RefusalError {
+  const status = readStatus(err);
+  const message = readErrorMessage(err);
+  const lower = message.toLowerCase();
+  const code =
+    lower.includes("protected") || lower.includes("branch protection") || lower.includes("ruleset")
+      ? "branch_protected"
+      : status === 401 || status === 403
+        ? "authorization_failed"
+        : "github_api_failed";
+  const statusText = status === undefined ? "" : ` (${status})`;
+  return new RefusalError(code, `${action} failed${statusText}: ${message}`);
+}
+
+function readStatus(err: unknown): number | undefined {
+  const status = typeof err === "object" && err !== null ? (err as { status?: unknown }).status : undefined;
+  return typeof status === "number" ? status : undefined;
+}
+
+function readErrorMessage(err: unknown): string {
+  if (err instanceof Error && err.message.trim()) return err.message;
+  if (typeof err === "object" && err !== null) {
+    const responseMessage = (err as { response?: { data?: { message?: unknown } } }).response?.data?.message;
+    if (typeof responseMessage === "string" && responseMessage.trim()) return responseMessage;
+  }
+  return String(err);
+}
+
+function assertConfiguredRepository(client: GitHubClient, repository: string): void {
+  const configured = getConfiguredRepository(client);
+  if (!sameRepository(repository, configured)) {
+    throw new RefusalError("authorization_failed", `repository ${repository} is not configured repository ${configured}`);
+  }
+}
+
+function getConfiguredRepository(client: GitHubClient): string {
+  return `${client.owner}/${client.name}`;
+}
+
+function splitRepositoryName(repository: string): { owner: string; name: string } {
+  const [owner, name] = repository.split("/");
+  return { owner: owner!, name: name! };
+}
+
+function toHeadsRef(headRef: string): string {
+  if (
+    !headRef ||
+    headRef.startsWith("/") ||
+    headRef.endsWith("/") ||
+    headRef.startsWith("refs/") ||
+    headRef.includes("..") ||
+    headRef.includes("\\") ||
+    headRef.endsWith(".lock")
+  ) {
+    throw new RefusalError("authorization_failed", `unsafe pull request head ref: ${headRef}`);
+  }
+  return `heads/${headRef}`;
+}
+
+function readRepository(p: Record<string, unknown>, key: string): string {
+  const value = p[key];
+  if (typeof value !== "string" || !/^[^/\s]+\/[^/\s]+$/.test(value.trim())) {
+    throw new Error(`${key} required in owner/name form`);
+  }
+  return value.trim();
+}
+
+function readOptionalRepository(p: Record<string, unknown>, key: string): string | undefined {
+  if (p[key] === undefined) return undefined;
+  return readRepository(p, key);
+}
+
+function readPositiveInteger(p: Record<string, unknown>, key: string): number {
+  const value = p[key];
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    throw new Error(`${key} required`);
+  }
+  return value;
+}
+
+function readSha(p: Record<string, unknown>, key: string): string {
+  const value = p[key];
+  if (typeof value !== "string" || !/^[0-9a-f]{40}$/i.test(value.trim())) {
+    throw new Error(`${key} must be a full 40-character git SHA`);
+  }
+  return value.trim();
+}
+
+function sameRepository(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+function sameSha(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
 }

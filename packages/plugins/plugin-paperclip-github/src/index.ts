@@ -3,7 +3,22 @@ export { default as worker } from "./worker.js";
 export type { ResolvedConfig, RawConfig } from "./config.js";
 export { resolveConfig, parseRepo, ConfigError } from "./config.js";
 export { RefusalError } from "./audit.js";
-export { openPr, getPr, type OpenPrParams, type OpenPrResult, type GetPrResult } from "./tools/pr.js";
+export {
+  openPr,
+  getPr,
+  updatePrBody,
+  convertPrToDraft,
+  markPrReadyForReview,
+  repairPrHead,
+  type OpenPrParams,
+  type OpenPrResult,
+  type GetPrResult,
+  type UpdatePrBodyParams,
+  type ConvertPrToDraftParams,
+  type MarkPrReadyForReviewParams,
+  type RepairPrHeadParams,
+  type PrMutationResult,
+} from "./tools/pr.js";
 export {
   getCheckRuns,
   createCheckRun,

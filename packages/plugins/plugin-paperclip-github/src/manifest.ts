@@ -15,6 +15,10 @@ export const TOOL = {
   CREATE_CHECK_RUN: "github_create_check_run",
   ENQUEUE_MERGE: "github_enqueue_merge",
   LIST_ISSUES: "github_list_issues",
+  UPDATE_PR_BODY: "github_update_pr_body",
+  CONVERT_PR_TO_DRAFT: "github_convert_pr_to_draft",
+  MARK_PR_READY_FOR_REVIEW: "github_mark_pr_ready_for_review",
+  REPAIR_PR_HEAD: "github_repair_pr_head",
 } as const;
 
 const REPO_DESCRIPTION =
@@ -135,8 +139,76 @@ const manifest: PaperclipPluginManifestV1 = {
         },
       },
     },
+    {
+      name: TOOL.UPDATE_PR_BODY,
+      displayName: "Update Pull Request Body",
+      description:
+        "Update an existing PR body after verifying repository, PR number, current head SHA, current base SHA, and optional current body readback.",
+      parametersSchema: {
+        type: "object",
+        properties: {
+          repository: { type: "string", description: REPO_DESCRIPTION },
+          prNumber: { type: "number" },
+          expectedHeadSha: { type: "string", description: "Full current 40-character PR head SHA" },
+          expectedBaseSha: { type: "string", description: "Full current 40-character PR base SHA" },
+          body: { type: "string" },
+          expectedCurrentBody: { type: "string" },
+        },
+        required: ["repository", "prNumber", "expectedHeadSha", "expectedBaseSha", "body"],
+      },
+    },
+    {
+      name: TOOL.CONVERT_PR_TO_DRAFT,
+      displayName: "Convert Pull Request To Draft",
+      description:
+        "Convert an existing PR to draft after verifying repository, PR number, current head SHA, and current base SHA.",
+      parametersSchema: {
+        type: "object",
+        properties: mutationGuardProperties(),
+        required: ["repository", "prNumber", "expectedHeadSha", "expectedBaseSha"],
+      },
+    },
+    {
+      name: TOOL.MARK_PR_READY_FOR_REVIEW,
+      displayName: "Mark Pull Request Ready For Review",
+      description:
+        "Mark an existing PR ready for review after verifying repository, PR number, current head SHA, and current base SHA.",
+      parametersSchema: {
+        type: "object",
+        properties: mutationGuardProperties(),
+        required: ["repository", "prNumber", "expectedHeadSha", "expectedBaseSha"],
+      },
+    },
+    {
+      name: TOOL.REPAIR_PR_HEAD,
+      displayName: "Repair Pull Request Head",
+      description:
+        "Publish or repair an existing PR head branch after verifying current head/base SHAs, authorized source repository, target commit existence, and readback.",
+      parametersSchema: {
+        type: "object",
+        properties: {
+          ...mutationGuardProperties(),
+          targetHeadSha: { type: "string", description: "Full 40-character target commit SHA" },
+          sourceRepository: {
+            type: "string",
+            description: "Authorized source repository containing targetHeadSha. Defaults to configured repository.",
+          },
+          force: { type: "boolean", default: false },
+        },
+        required: ["repository", "prNumber", "expectedHeadSha", "expectedBaseSha", "targetHeadSha"],
+      },
+    },
   ],
 };
 
 export const __REPO_DESCRIPTION = REPO_DESCRIPTION; // exported for tests
 export default manifest;
+
+function mutationGuardProperties() {
+  return {
+    repository: { type: "string", description: REPO_DESCRIPTION },
+    prNumber: { type: "number" },
+    expectedHeadSha: { type: "string", description: "Full current 40-character PR head SHA" },
+    expectedBaseSha: { type: "string", description: "Full current 40-character PR base SHA" },
+  } as const;
+}

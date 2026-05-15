@@ -1,5 +1,12 @@
 import { describe, it, expect, vi } from "vitest";
-import { openPr, getPr } from "../src/tools/pr.js";
+import {
+  openPr,
+  getPr,
+  updatePrBody,
+  convertPrToDraft,
+  markPrReadyForReview,
+  repairPrHead,
+} from "../src/tools/pr.js";
 import { RefusalError } from "../src/audit.js";
 import type { GitHubClient } from "../src/auth.js";
 import type { ResolvedConfig } from "../src/config.js";
@@ -15,6 +22,9 @@ const cfg: ResolvedConfig = {
 
 const runCtx = { agentId: "a", runId: "r", companyId: "c", projectId: "p" };
 const env = { activity: { log: vi.fn() }, logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never, toolName: "test" };
+const headSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const baseSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const targetSha = "cccccccccccccccccccccccccccccccccccccccc";
 
 function makeFakeClient(overrides: Record<string, unknown> = {}): GitHubClient {
   return {
@@ -32,6 +42,87 @@ function makeFakeClient(overrides: Record<string, unknown> = {}): GitHubClient {
       ...overrides,
     } as never,
     graphql: vi.fn() as never,
+  };
+}
+
+interface FakePrState {
+  body?: string;
+  draft?: boolean;
+  headSha?: string;
+  baseSha?: string;
+  headRef?: string;
+  headRepository?: string;
+  state?: string;
+}
+
+function makePrMutationClient(initial: FakePrState = {}): GitHubClient {
+  const state = {
+    body: initial.body ?? "old body",
+    draft: initial.draft ?? false,
+    headSha: initial.headSha ?? headSha,
+    baseSha: initial.baseSha ?? baseSha,
+    headRef: initial.headRef ?? "codex/com-168",
+    headRepository: initial.headRepository ?? "owner/repo",
+    state: initial.state ?? "open",
+  };
+  const prData = () => ({
+    number: 42,
+    html_url: "https://github.com/owner/repo/pull/42",
+    state: state.state,
+    draft: state.draft,
+    body: state.body,
+    head: {
+      sha: state.headSha,
+      ref: state.headRef,
+      repo: { full_name: state.headRepository },
+    },
+    base: { sha: state.baseSha },
+  });
+  const graphql = vi.fn().mockImplementation(async (query: string) => {
+    if (query.includes("pullRequest(number:")) {
+      return { repository: { pullRequest: { id: "PR_GID_42" } } };
+    }
+    if (query.includes("convertPullRequestToDraft")) {
+      state.draft = true;
+      return { convertPullRequestToDraft: { pullRequest: { id: "PR_GID_42", isDraft: true } } };
+    }
+    if (query.includes("markPullRequestReadyForReview")) {
+      state.draft = false;
+      return { markPullRequestReadyForReview: { pullRequest: { id: "PR_GID_42", isDraft: false } } };
+    }
+    throw new Error(`unexpected graphql query: ${query.slice(0, 50)}`);
+  });
+
+  return {
+    owner: "owner",
+    name: "repo",
+    rest: {
+      pulls: {
+        get: vi.fn().mockImplementation(async () => ({ data: prData() })),
+        update: vi.fn().mockImplementation(async ({ body }: { body: string }) => {
+          state.body = body;
+          return { data: prData() };
+        }),
+      },
+      git: {
+        getCommit: vi.fn().mockResolvedValue({ data: { sha: targetSha } }),
+        updateRef: vi.fn().mockImplementation(async ({ sha }: { sha: string }) => {
+          state.headSha = sha;
+          return { data: { object: { sha } } };
+        }),
+      },
+    } as never,
+    graphql: graphql as never,
+  };
+}
+
+function mutationGuard(extra: Record<string, unknown> = {}) {
+  return {
+    repository: "owner/repo",
+    prNumber: 42,
+    expectedHeadSha: headSha,
+    expectedBaseSha: baseSha,
+    ...extra,
   };
 }
 
@@ -168,6 +259,84 @@ describe("getPr", () => {
     const client: GitHubClient = { owner: "o", name: "r", rest: {} as never, graphql: graphql as never };
     const result = await getPr(client, { prNumber: 1 }, runCtx);
     expect((result.data as { mergeable: boolean | null }).mergeable).toBeNull();
+  });
+});
+
+describe("PR mutation tools", () => {
+  it("updates an existing PR body only after head/base guard and readback", async () => {
+    const client = makePrMutationClient({ body: "old body" });
+    const result = await updatePrBody(
+      client,
+      mutationGuard({ body: "new body", expectedCurrentBody: "old body" }),
+      runCtx,
+    );
+    expect(result.error).toBeUndefined();
+    expect((result.data as { mutation: string; verified: boolean; changed: boolean }).mutation).toBe("update_body");
+    expect((result.data as { verified: boolean }).verified).toBe(true);
+    expect((client.rest as never as { pulls: { update: ReturnType<typeof vi.fn> } }).pulls.update).toHaveBeenCalledWith(
+      expect.objectContaining({ pull_number: 42, body: "new body" }),
+    );
+  });
+
+  it("refuses mutation when expected head does not match readback", async () => {
+    const client = makePrMutationClient({ headSha: targetSha });
+    await expect(
+      updatePrBody(client, mutationGuard({ body: "new body" }), runCtx),
+    ).rejects.toThrow(/expected_head_mismatch/);
+  });
+
+  it("converts a PR to draft with GraphQL mutation and readback", async () => {
+    const client = makePrMutationClient({ draft: false });
+    const result = await convertPrToDraft(client, mutationGuard(), runCtx);
+    expect(result.error).toBeUndefined();
+    expect((result.data as { draft: boolean; mutation: string }).draft).toBe(true);
+    expect((result.data as { mutation: string }).mutation).toBe("convert_to_draft");
+    expect(client.graphql).toHaveBeenCalledWith(expect.stringContaining("convertPullRequestToDraft"), {
+      prId: "PR_GID_42",
+    });
+  });
+
+  it("marks a draft PR ready for review with GraphQL mutation and readback", async () => {
+    const client = makePrMutationClient({ draft: true });
+    const result = await markPrReadyForReview(client, mutationGuard(), runCtx);
+    expect(result.error).toBeUndefined();
+    expect((result.data as { draft: boolean; mutation: string }).draft).toBe(false);
+    expect((result.data as { mutation: string }).mutation).toBe("mark_ready_for_review");
+    expect(client.graphql).toHaveBeenCalledWith(expect.stringContaining("markPullRequestReadyForReview"), {
+      prId: "PR_GID_42",
+    });
+  });
+
+  it("repairs an existing PR head branch with target commit verification and readback", async () => {
+    const client = makePrMutationClient();
+    const result = await repairPrHead(client, mutationGuard({ targetHeadSha: targetSha }), runCtx);
+    expect(result.error).toBeUndefined();
+    expect((result.data as { headSha: string; mutation: string }).headSha).toBe(targetSha);
+    expect((result.data as { mutation: string }).mutation).toBe("repair_head");
+    const git = (client.rest as never as { git: { getCommit: ReturnType<typeof vi.fn>; updateRef: ReturnType<typeof vi.fn> } }).git;
+    expect(git.getCommit).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: "owner", repo: "repo", commit_sha: targetSha }),
+    );
+    expect(git.updateRef).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: "heads/codex/com-168", sha: targetSha, force: false }),
+    );
+  });
+
+  it("refuses head repair for a forked or unauthorized head branch", async () => {
+    const client = makePrMutationClient({ headRepository: "someone/repo" });
+    await expect(
+      repairPrHead(client, mutationGuard({ targetHeadSha: targetSha }), runCtx),
+    ).rejects.toThrow(/unauthorized_head_branch/);
+  });
+
+  it("maps branch protection failures separately from generic GitHub API failures", async () => {
+    const client = makePrMutationClient();
+    (client.rest as never as { git: { updateRef: ReturnType<typeof vi.fn> } }).git.updateRef.mockRejectedValueOnce(
+      Object.assign(new Error("Protected branch update failed"), { status: 422 }),
+    );
+    await expect(
+      repairPrHead(client, mutationGuard({ targetHeadSha: targetSha }), runCtx),
+    ).rejects.toThrow(/branch_protected/);
   });
 });
 
