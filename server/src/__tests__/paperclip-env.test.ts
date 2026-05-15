@@ -40,15 +40,15 @@ describe("buildPaperclipEnv", () => {
     expect(env.PAPERCLIP_API_URL).toBe("http://203.0.113.42:3102");
   });
 
-  it("falls back to PAPERCLIP_API_URL when no runtime URL is configured", () => {
+  it("uses the local listen URL instead of public PAPERCLIP_API_URL when no runtime URL is configured", () => {
     delete process.env.PAPERCLIP_RUNTIME_API_URL;
-    process.env.PAPERCLIP_API_URL = "http://localhost:4100";
+    process.env.PAPERCLIP_API_URL = "http://43.133.38.151:3101";
     process.env.PAPERCLIP_LISTEN_HOST = "127.0.0.1";
     process.env.PAPERCLIP_LISTEN_PORT = "3101";
 
     const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
 
-    expect(env.PAPERCLIP_API_URL).toBe("http://localhost:4100");
+    expect(env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3101");
   });
 
   it("uses runtime listen host/port when explicit URL is not set", () => {

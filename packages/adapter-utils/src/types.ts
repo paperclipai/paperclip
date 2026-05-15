@@ -9,6 +9,7 @@ export interface AdapterAgent {
   id: string;
   companyId: string;
   name: string;
+  role?: string | null;
   adapterType: string | null;
   adapterConfig: unknown;
 }

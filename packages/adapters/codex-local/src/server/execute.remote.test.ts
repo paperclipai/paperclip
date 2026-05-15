@@ -74,8 +74,12 @@ import { execute } from "./execute.js";
 
 describe("codex remote execution", () => {
   const cleanupDirs: string[] = [];
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
 
   afterEach(async () => {
+    if (originalPlatform) {
+      Object.defineProperty(process, "platform", originalPlatform);
+    }
     vi.clearAllMocks();
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
@@ -418,5 +422,130 @@ describe("codex remote execution", () => {
     ]);
     expect(call?.[3].env.CODEX_HOME).toBe(`${managedRemoteWorkspace}/.paperclip-runtime/codex/home`);
     expect(call?.[3].remoteExecution?.remoteCwd).toBe(managedRemoteWorkspace);
+  });
+
+  it("uses work-mode wall-time defaults and a Linux systemd scope for local Codex runs", async () => {
+    Object.defineProperty(process, "platform", {
+      configurable: true,
+      value: "linux",
+    });
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-local-run-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const codexHomeDir = path.join(rootDir, "codex-home");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(codexHomeDir, { recursive: true });
+    await writeFile(path.join(codexHomeDir, "auth.json"), "{}", "utf8");
+
+    await execute({
+      runId: "run-validation",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "CodexCoder",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "codex",
+        env: {
+          CODEX_HOME: codexHomeDir,
+        },
+      },
+      context: {
+        paperclipIssue: {
+          id: "issue-1",
+          title: "Validate the build",
+          workMode: "validation",
+        },
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(runChildProcess).toHaveBeenCalledTimes(1);
+    const call = runChildProcess.mock.calls[0] as unknown as
+      | [
+          string,
+          string,
+          string[],
+          {
+            timeoutSec: number;
+            graceSec: number;
+            localCgroupScope?: { unitName: string } | null;
+            remoteExecution?: { remoteCwd: string } | null;
+          },
+        ]
+      | undefined;
+    expect(call?.[3].timeoutSec).toBe(45 * 60);
+    expect(call?.[3].graceSec).toBe(5);
+    expect(call?.[3].localCgroupScope).toEqual({ unitName: "codex-run-validation" });
+    expect(call?.[3].remoteExecution).toBeNull();
+  });
+
+  it("uses the build verification wall-time default from the Codex agent lane", async () => {
+    Object.defineProperty(process, "platform", {
+      configurable: true,
+      value: "linux",
+    });
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-build-run-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const codexHomeDir = path.join(rootDir, "codex-home");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(codexHomeDir, { recursive: true });
+    await writeFile(path.join(codexHomeDir, "auth.json"), "{}", "utf8");
+
+    await execute({
+      runId: "run-build",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Build Verifier",
+        role: "build_verification",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "codex",
+        env: {
+          CODEX_HOME: codexHomeDir,
+        },
+      },
+      context: {
+        paperclipIssue: {
+          id: "issue-1",
+          title: "Verify the build",
+          workMode: "standard",
+        },
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(runChildProcess).toHaveBeenCalledTimes(1);
+    const call = runChildProcess.mock.calls[0] as unknown as
+      | [string, string, string[], { timeoutSec: number; graceSec: number }]
+      | undefined;
+    expect(call?.[3].timeoutSec).toBe(60 * 60);
+    expect(call?.[3].graceSec).toBe(5);
   });
 });
