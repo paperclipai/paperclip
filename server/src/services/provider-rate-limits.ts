@@ -889,7 +889,7 @@ export function providerRateLimitService(db: Db) {
           eq(issueRelations.companyId, block.companyId),
           eq(issueRelations.type, "blocks"),
           inArray(issueRelations.relatedIssueId, memberIssueIds),
-          sql`${issues.status} <> 'done'`,
+          sql`${issues.status} not in ('done', 'cancelled')`,
         ))
       : [];
     const unresolvedBlockersByIssueId = new Map<string, string[]>();
