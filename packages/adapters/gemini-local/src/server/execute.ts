@@ -241,6 +241,97 @@ async function ensureGeminiChatsShared(
   }
 }
 
+/**
+ * Truncate a large Gemini session file to keep it lean and prevent performance issues.
+ * Backs up the original to `chats/archives/` and preserves the mission + recent history.
+ */
+async function truncateGeminiSession(
+  onLog: AdapterExecutionContext["onLog"],
+  companyId: string,
+  sessionId: string,
+  thresholdBytes: number = 10 * 1024 * 1024, // 10MB
+): Promise<void> {
+  const sharedDir = path.join(os.homedir(), ".gemini", "companies", companyId, "chats");
+  const sessionFile = path.join(sharedDir, `${sessionId}.jsonl`);
+
+  try {
+    const stats = await fs.stat(sessionFile);
+    if (stats.size < thresholdBytes) return;
+
+    await onLog(
+      "stdout",
+      `[paperclip] Session ${sessionId} is large (${(stats.size / 1024 / 1024).toFixed(1)}MB); truncating for performance.\n`,
+    );
+
+    const content = await fs.readFile(sessionFile, "utf8");
+    const lines = content.split("\n").filter((l) => l.trim().length > 0);
+    if (lines.length < 100) return;
+
+    const header = lines[0];
+    let firstMission: string | null = null;
+    for (let i = 1; i < lines.length; i++) {
+      try {
+        const event = JSON.parse(lines[i]);
+        if (event.type === "user") {
+          firstMission = lines[i];
+          break;
+        }
+      } catch {
+        // Ignore parse errors on individual lines
+      }
+    }
+
+    const tailCount = 50;
+    const lastEvents = lines.slice(-tailCount);
+    
+    // Check if firstMission is already in lastEvents to avoid duplication
+    const missionId = firstMission ? JSON.parse(firstMission).id : null;
+    const filteredLastEvents = missionId 
+      ? lastEvents.filter(line => {
+          try { return JSON.parse(line).id !== missionId; } catch { return true; }
+        })
+      : lastEvents;
+
+    const systemMessage = JSON.stringify({
+      id: `truncation-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      type: "system",
+      content: [{ text: "[SYSTEM] Session truncated for performance. Previous history archived." }],
+    });
+
+    const truncatedLines = [
+      header,
+      firstMission,
+      systemMessage,
+      ...filteredLastEvents,
+    ].filter(Boolean);
+
+    const truncatedContent = truncatedLines.join("\n") + "\n";
+
+    // Backup
+    const archiveDir = path.join(sharedDir, "archives");
+    await fs.mkdir(archiveDir, { recursive: true });
+    const archiveFile = path.join(archiveDir, `${sessionId}.${Date.now()}.jsonl.bak`);
+    await fs.copyFile(sessionFile, archiveFile);
+
+    // Atomic swap
+    const tmpFile = `${sessionFile}.tmp`;
+    await fs.writeFile(tmpFile, truncatedContent, "utf8");
+    await fs.rename(tmpFile, sessionFile);
+
+    await onLog(
+      "stdout",
+      `[paperclip] Truncated session ${sessionId} to ${truncatedLines.length} events (${(truncatedContent.length / 1024).toFixed(1)}KB). Archive: ${path.basename(archiveFile)}\n`,
+    );
+  } catch (err) {
+    if (err instanceof Error && (err as any).code === "ENOENT") return;
+    await onLog(
+      "stderr",
+      `[paperclip] Warning: failed to truncate session ${sessionId}: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+  }
+}
+
 async function buildGeminiSkillsDir(
   config: Record<string, unknown>,
 ): Promise<string> {
@@ -500,6 +591,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
     adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
   const sessionId = canResumeSession ? runtimeSessionId : null;
+  if (sessionId) {
+    await truncateGeminiSession(onLog, agent.companyId, sessionId);
+  }
   if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
     await onLog(
       "stdout",
