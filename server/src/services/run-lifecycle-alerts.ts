@@ -59,22 +59,26 @@ export class RunLifecycleAlertService {
   /**
    * Check activity log for failed cleanup or termination events in the last N minutes
    */
-  async checkRecentFailures(lookbackMinutes = 5): Promise<RunLifecycleAlert[]> {
+  async checkRecentFailures(lookbackMinutes = 5, companyId?: string): Promise<RunLifecycleAlert[]> {
     const since = new Date(Date.now() - lookbackMinutes * 60 * 1000);
     const alerts: RunLifecycleAlert[] = [];
+
+    const conditions = [
+      inArray(activityLog.action, [
+        "run.cleanup.failed",
+        "run.process.termination_failed",
+      ]),
+      gte(activityLog.createdAt, since),
+    ];
+
+    if (companyId) {
+      conditions.push(eq(activityLog.companyId, companyId));
+    }
 
     const failureEvents = await this.db
       .select()
       .from(activityLog)
-      .where(
-        and(
-          inArray(activityLog.action, [
-            "run.cleanup.failed",
-            "run.process.termination_failed",
-          ]),
-          gte(activityLog.createdAt, since),
-        ),
-      )
+      .where(and(...conditions))
       .orderBy(desc(activityLog.createdAt))
       .limit(100);
 
@@ -101,20 +105,26 @@ export class RunLifecycleAlertService {
    * Check for termination hangs by looking for termination_triggered events
    * that don't have a corresponding terminated/termination_failed event
    */
-  async checkTerminationHangs(): Promise<RunLifecycleAlert[]> {
+  async checkTerminationHangs(companyId?: string): Promise<RunLifecycleAlert[]> {
     const hangThreshold = new Date(Date.now() - this.thresholds.terminationHangThresholdMs);
+    const lowerBound = new Date(Date.now() - 24 * 60 * 60 * 1000); // Last 24 hours
     const alerts: RunLifecycleAlert[] = [];
 
-    // Find termination_triggered events older than threshold
+    const conditions = [
+      eq(activityLog.action, "run.process.termination_triggered"),
+      sql`${activityLog.createdAt} < ${hangThreshold}`,
+      sql`${activityLog.createdAt} >= ${lowerBound}`,
+    ];
+
+    if (companyId) {
+      conditions.push(eq(activityLog.companyId, companyId));
+    }
+
+    // Find termination_triggered events older than threshold within last 24h
     const triggeredEvents = await this.db
       .select()
       .from(activityLog)
-      .where(
-        and(
-          eq(activityLog.action, "run.process.termination_triggered"),
-          sql`${activityLog.createdAt} < ${hangThreshold}`,
-        ),
-      )
+      .where(and(...conditions))
       .orderBy(desc(activityLog.createdAt))
       .limit(100);
 
@@ -157,21 +167,25 @@ export class RunLifecycleAlertService {
    * Detect zombie runs: runs marked as "running" or "queued" that haven't had
    * output or activity in more than the zombie threshold
    */
-  async detectZombieRuns(): Promise<RunLifecycleAlert[]> {
+  async detectZombieRuns(companyId?: string): Promise<RunLifecycleAlert[]> {
     const zombieThreshold = new Date(
       Date.now() - this.thresholds.zombieRunAgeHours * 60 * 60 * 1000,
     );
     const alerts: RunLifecycleAlert[] = [];
 
+    const conditions = [
+      inArray(heartbeatRuns.status, ["running", "queued"]),
+      sql`${heartbeatRuns.lastOutputAt} < ${zombieThreshold}`,
+    ];
+
+    if (companyId) {
+      conditions.push(eq(heartbeatRuns.companyId, companyId));
+    }
+
     const suspectedZombies = await this.db
       .select()
       .from(heartbeatRuns)
-      .where(
-        and(
-          inArray(heartbeatRuns.status, ["running", "queued"]),
-          sql`${heartbeatRuns.lastOutputAt} < ${zombieThreshold}`,
-        ),
-      )
+      .where(and(...conditions))
       .orderBy(desc(heartbeatRuns.lastOutputAt))
       .limit(100);
 
@@ -205,11 +219,11 @@ export class RunLifecycleAlertService {
   /**
    * Run all checks and emit alerts
    */
-  async checkAll(): Promise<RunLifecycleAlert[]> {
+  async checkAll(companyId?: string): Promise<RunLifecycleAlert[]> {
     const [failures, hangs, zombies] = await Promise.all([
-      this.checkRecentFailures(),
-      this.checkTerminationHangs(),
-      this.detectZombieRuns(),
+      this.checkRecentFailures(5, companyId),
+      this.checkTerminationHangs(companyId),
+      this.detectZombieRuns(companyId),
     ]);
 
     const allAlerts = [...failures, ...hangs, ...zombies];

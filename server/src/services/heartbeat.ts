@@ -2196,6 +2196,8 @@ async function terminateHeartbeatRunProcess(input: {
         graceMs: input.graceMs,
         reason: input.reason,
       },
+    }).catch(() => {
+      // Don't let logging errors prevent process termination
     });
   }
 

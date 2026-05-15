@@ -58,7 +58,13 @@ export default function runMetricsRoutes(db: Db) {
             inArray(heartbeatRuns.status, ["running", "queued"]),
           ),
         )
-        .groupBy(sql`age_bracket`);
+        .groupBy(sql`
+          case
+            when ${heartbeatRuns.lastOutputAt} >= ${zombieThreshold1h} then 'active'
+            when ${heartbeatRuns.lastOutputAt} >= ${zombieThreshold4h} then '1-4h'
+            else '4h+'
+          end
+        `);
 
       // Failed cleanup attempts in time range
       const failedCleanups = await db
@@ -107,7 +113,7 @@ export default function runMetricsRoutes(db: Db) {
             sql`${heartbeatRuns.finishedAt} is not null`,
           ),
         )
-        .orderBy(sql`duration_ms`);
+        .orderBy(sql`"durationMs"`);
 
       const durations = completedRuns.map((r: { durationMs: number | null }) => r.durationMs).filter((d: number | null): d is number => d != null && d > 0);
       const percentiles = {
@@ -148,10 +154,7 @@ export default function runMetricsRoutes(db: Db) {
       assertCompanyAccess(req, companyId);
 
       const alertService = createRunLifecycleAlertService(db);
-      const alerts = await alertService.checkAll();
-
-      // Filter to this company
-      const companyAlerts = alerts.filter((alert) => alert.companyId === companyId);
+      const alerts = await alertService.checkAll(companyId);
 
       res.json({
         alerts: companyAlerts,
@@ -177,7 +180,7 @@ export default function runMetricsRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
 
-      const limit = Number(req.query.limit) || 100;
+      const limit = Math.min(Number(req.query.limit) || 100, 1000);
       const runId = req.query.runId as string | undefined;
       const eventTypes = req.query.eventTypes as string | undefined;
 
