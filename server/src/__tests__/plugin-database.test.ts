@@ -48,6 +48,15 @@ describe("plugin database SQL validation", () => {
     ).not.toThrow();
   });
 
+  it("allows create index statements on fully qualified namespace tables", () => {
+    expect(() =>
+      validatePluginMigrationStatement(
+        "CREATE INDEX IF NOT EXISTS plugin_test_rows_issue_idx ON plugin_test.rows (issue_id)",
+        "plugin_test",
+      )
+    ).not.toThrow();
+  });
+
   it("rejects migrations that create public objects", () => {
     expect(() =>
       validatePluginMigrationStatement(
@@ -137,7 +146,8 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
   }, 20_000);
 
   afterEach(async () => {
-    for (const pluginKey of ["paperclip.dbtest", "paperclip.escape", "paperclip.refresh", multiMigrationPluginKey]) {
+
+    for (const pluginKey of ["paperclip.dbtest", "paperclip.escape", "paperclip.indexed", multiMigrationPluginKey]) {
       const namespace = derivePluginDatabaseNamespace(pluginKey);
       await db.execute(sql.raw(`DROP SCHEMA IF EXISTS "${namespace}" CASCADE`));
     }
@@ -303,6 +313,39 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
       .from(pluginMigrations)
       .where(and(eq(pluginMigrations.pluginId, pluginId), eq(pluginMigrations.status, "applied")));
     expect(migrations).toHaveLength(1);
+  });
+
+  it("applies multi-statement migrations that alter a table and create an index", async () => {
+    const pluginManifest = manifest("paperclip.indexed");
+    const namespace = derivePluginDatabaseNamespace(pluginManifest.id);
+    const packageRoot = await createPluginPackage(
+      pluginManifest,
+      `
+      CREATE TABLE ${namespace}.mission_rows (
+        id uuid PRIMARY KEY,
+        issue_id uuid NOT NULL REFERENCES public.issues(id),
+        label text NOT NULL
+      );
+
+      ALTER TABLE ${namespace}.mission_rows
+        ADD COLUMN IF NOT EXISTS testing text;
+
+      CREATE INDEX IF NOT EXISTS mission_rows_testing_idx
+        ON ${namespace}.mission_rows (testing)
+        WHERE testing IS NOT NULL;
+      `,
+    );
+    const pluginId = await installPluginRecord(pluginManifest);
+
+    await expect(
+      pluginDatabaseService(db).applyMigrations(pluginId, pluginManifest, packageRoot),
+    ).resolves.not.toThrow();
+
+    const [migration] = await db
+      .select()
+      .from(pluginMigrations)
+      .where(eq(pluginMigrations.pluginId, pluginId));
+    expect(migration?.status).toBe("applied");
   });
 
   it("rejects runtime writes to public core tables", async () => {
