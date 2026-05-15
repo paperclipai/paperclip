@@ -1990,7 +1990,17 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       const toolDeclarations = manifest.tools ?? [];
       if (toolDeclarations.length > 0) {
-        toolDispatcher.registerPluginTools(pluginKey, manifest);
+        // Pass the DB UUID so registered tools carry pluginDbId. The
+        // dispatcher uses pluginDbId at runtime to call
+        // `workerManager.isRunning(dbId)`. Omitting it makes the registry
+        // fall back to pluginKey, but `workerManager` keys workers by DB
+        // UUID — dispatch then 502s "worker not running" even though the
+        // worker is alive (manifests as: cron jobs work, tools/execute
+        // doesn't). The dispatcher's own lifecycle-event listener does
+        // pass plugin.id, so this only bites when loader-direct registration
+        // runs AFTER startup `dispatcher.initialize()` and overwrites the
+        // correct entries.
+        toolDispatcher.registerPluginTools(pluginKey, manifest, pluginId);
         registered.tools = toolDeclarations.length;
 
         log.info(
