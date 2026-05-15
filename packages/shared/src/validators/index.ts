@@ -6,6 +6,7 @@ export {
   instanceExperimentalSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
+  pluginCgroupLimitsSchema,
   type InstanceExperimentalSettings,
   type PatchInstanceExperimentalSettings,
   type IssueGraphLivenessAutoRecoveryRequest,

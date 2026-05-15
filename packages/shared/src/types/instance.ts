@@ -26,12 +26,23 @@ export interface InstanceGeneralSettings {
   backupRetention: BackupRetentionPolicy;
 }
 
+export interface PluginCgroupLimits {
+  memoryHighBytes?: number;
+  memoryMaxBytes?: number;
+  cpuWeight?: number;
+  pidsMax?: number;
+}
+
 export interface InstanceExperimentalSettings {
   enableEnvironments: boolean;
   enableIsolatedWorkspaces: boolean;
   autoRestartDevServerWhenIdle: boolean;
   enableIssueGraphLivenessAutoRecovery: boolean;
   issueGraphLivenessAutoRecoveryLookbackHours: number;
+  pluginCgroupDefaults: PluginCgroupLimits;
+  pluginCgroupOverrides: Record<string, PluginCgroupLimits>;
+  /** Runtime-only: true when the host has cgroupsv2 delegation active. Never sent in PATCH. */
+  pluginCgroupActive?: boolean;
 }
 
 export interface InstanceSettings {

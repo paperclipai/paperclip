@@ -30,6 +30,7 @@ export type {
   BackupRetentionPolicy,
   IssueGraphLivenessAutoRecoveryPreview,
   IssueGraphLivenessAutoRecoveryPreviewItem,
+  PluginCgroupLimits,
 } from "./instance.js";
 export {
   DAILY_RETENTION_PRESETS,

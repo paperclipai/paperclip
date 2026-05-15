@@ -2564,6 +2564,8 @@ export function pluginRoutes(
       pendingRequests: number;
       lastCrashAt: number | null;
       nextRestartAt: number | null;
+      cgroupEnforced: boolean;
+      cgroupError?: string;
     } | null = null;
 
     // Try bridgeDeps first (primary source for worker manager), fallback to webhookDeps
@@ -2581,6 +2583,8 @@ export function pluginRoutes(
           pendingRequests: diag.pendingRequests,
           lastCrashAt: diag.lastCrashAt,
           nextRestartAt: diag.nextRestartAt,
+          cgroupEnforced: diag.cgroupEnforced,
+          cgroupError: diag.cgroupError,
         };
       }
     }
