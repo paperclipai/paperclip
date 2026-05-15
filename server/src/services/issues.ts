@@ -3223,6 +3223,40 @@ export function issueService(db: Db) {
           }),
         );
 
+        // Anti-dupe alerting: systemd_alert deduplication
+        // Один открытый тикет per unit+service fingerprint
+        if (values.originKind === "systemd_alert" && values.originFingerprint) {
+          const existing = await tx
+            .select()
+            .from(issues)
+            .where(
+              and(
+                eq(issues.companyId, companyId),
+                eq(issues.originKind, "systemd_alert"),
+                eq(issues.originFingerprint, values.originFingerprint),
+                isNull(issues.hiddenAt),
+                inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]),
+              ),
+            )
+            .then((rows) => rows[0] ?? null);
+
+          if (existing) {
+            // Add comment to existing issue about recurrence
+            const commentBody = `⚠️ **Alert recurred at ${new Date().toISOString()}**\n\n${values.description || "No additional details provided."}`;
+            await tx.insert(issueComments).values({
+              companyId,
+              issueId: existing.id,
+              authorAgentId: values.createdByAgentId ?? null,
+              authorUserId: values.createdByUserId ?? null,
+              body: commentBody,
+            });
+
+            // Return existing issue instead of creating duplicate
+            const [enriched] = await withIssueLabels(tx, [existing]);
+            return enriched;
+          }
+        }
+
         const [issue] = await tx.insert(issues).values(values).returning();
         if (inputLabelIds) {
           await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
