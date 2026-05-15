@@ -136,6 +136,12 @@ function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
   return null;
 }
 
+/**
+ * Maximum number of cumulative failed runs before escalating a stranded issue to `blocked`.
+ * Used inside recoveryService — see hasExceededMaxRecoveryAttempts below.
+ */
+const MAX_STRANDED_RECOVERY_ATTEMPTS = 3;
+
 function didAutomaticRecoveryFail(
   latestRun: LatestIssueRun,
   expectedRetryReason: "assignment_recovery" | "issue_continuation_needed",
@@ -1751,7 +1757,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     previousStatus: "todo" | "in_progress";
     latestRun: LatestIssueRun;
   }) {
-    const updated = await issuesSvc.update(input.issue.id, { status: "blocked" });
+    const updated = await issuesSvc.update(input.issue.id, {
+      status: "blocked",
+      blockedReason: "Recovery exhausted: no eligible recovery path found. Manual review required — see issue comments for failure details.",
+    });
     if (!updated) return null;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
@@ -2114,6 +2123,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               "Paperclip automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
               `but it still has no live execution path.${failureSummary ?? ""} ` +
               "Moving it to `blocked` so it is visible for intervention.",
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        // Cumulative attempt guard: even if the single-run check above didn't flag
+        // this as a failed recovery (because Phase 3 prune reset the issue and the
+        // latest run doesn't carry retryReason), the issue_recovery_actions table
+        // tracks how many times we've re-dispatched this issue. Cap it.
+        if (await hasExceededMaxRecoveryAttempts(recoveryActionsSvc, issue.companyId, issue.id)) {
+          logger.info(
+            { issueId: issue.id, identifier: issue.identifier, attemptCount: (await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id))?.attemptCount },
+            "Stranded assignment recovery: issue has exceeded max recovery attempts, escalating to blocked",
+          );
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "todo",
+            latestRun,
+            comment:
+              "Paperclip has re-dispatched this assigned `todo` issue multiple times, " +
+              "but it keeps returning without a live execution path. " +
+              "Moving it to `blocked` to break the reconcile-re-dispatch loop.",
           });
           if (updated) {
             result.escalated += 1;
