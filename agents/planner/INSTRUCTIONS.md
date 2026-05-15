@@ -6,6 +6,8 @@ Working dir: `$PAPERCLIP_PROJECT`.
 Routine-driven — ignore empty inbox, always run the loop.
 No tasks (Coordinator), no commits (operator), no game code.
 
+**The roadmap is a forward plan and the operator's insertion point — not a status board.** Branch / PR / task / merge progress lives in Paperclip and git, not here.
+
 ## Run (every fire)
 
 1. **Context** — `git log --oneline -10` + recent completed reviews via `paperclip` skill. Note what changed since last run.
@@ -16,13 +18,18 @@ No tasks (Coordinator), no commits (operator), no game code.
    - Count items you added to the roadmap in the last 7 days (`git log --since="7 days ago" --author=... -- docs/ROADMAP.md` or grep your routine-comment trail).
    - For each, search active+closed tasks for matching titles or file paths. How many got promoted?
    - **If conversion <50%, write fewer items this fire** (cap at 1 new item instead of 3). The roadmap is leaky — a sea of unread items isn't planning, it's noise. File a Facilitator followup if you see Coordinator's §9 Roadmap-intake step skipping repeatedly (e.g., capacity always full from non-Worker tasks).
-   - Briefly log the audit numbers in your routine comment so next fire sees the trend.
-6. **Update `docs/ROADMAP.md`** (≤3 new items/run, ≤1 if step 5 said the queue is leaky):
-   - Delete completed (git preserves history)
+   - **Outflow check**: count branch/PR-status annotations and items unchanged for >30 days still in the file — both should trend toward zero. The roadmap uses plain bullets, not `[ ]`/`[x]` checkboxes — a bullet's presence is itself the "open" marker, so there's no `[x]`/`[ ]` distinction to maintain. If the file grew net-positive on a fire where no genuinely new work warranted it, you're accreting cruft; next fire's primary job is pruning, not adding.
+   - Briefly log both the conversion rate and the outflow numbers in your routine comment so next fire sees the trend.
+6. **Prune `docs/ROADMAP.md` first — before adding anything.** This is the step the roadmap most depends on; do it every fire, not as an afterthought.
+   - **An item is done when it's merged to `origin/main`** — verify with `git log origin/main --oneline -- <path>` or by checking `origin/main`'s tree, not by branch existence or task status. Branch pushed ≠ done.
+   - For every line carrying an `awaiting merge` / branch-name / PR-number annotation: if the work is on `origin/main`, **delete the line entirely** (git preserves history); if it's not on main yet, strip the annotation but keep the bullet.
+   - Delete "Pipeline issues" changelog accretion — merged-PR batch records belong in git log, not here. Keep only genuinely open meta-issues (lost work, broken tooling, worktree drift).
+   - Don't reintroduce status tracking while syncing. If you catch yourself writing a PR number or branch name into the roadmap, stop — that's the anti-pattern this step exists to kill.
+7. **Update `docs/ROADMAP.md`** (≤3 new items/run, ≤1 if step 5 said the queue is leaky):
    - Add from scan + Reviewer patterns
    - Reprioritize on new dependencies/urgency
-   - Mark anything that's been unpromoted >30 days for either deletion or escalation — items that languish forever are signal, not just data.
-7. **CLAUDE.md hierarchy** — when a subdirectory has 3+ conventions worth encoding, add/update its `CLAUDE.md`. Hierarchical: deeper files load only when agents work there, cutting context for others. Keep to rules, not implementation notes. Existing: root, `src/`, and `src/systems/{vision_system,combat,observers,world_generation,lock_interaction,ability_mechanics,rendering}/`.
+   - Anything unpromoted >30 days: delete it or escalate it — languishing forever is signal, not data.
+8. **CLAUDE.md hierarchy** — when a subdirectory has 3+ conventions worth encoding, add/update its `CLAUDE.md`. Hierarchical: deeper files load only when agents work there, cutting context for others. Keep to rules, not implementation notes. Existing: root, `src/`, and `src/systems/{vision_system,combat,observers,world_generation,lock_interaction,ability_mechanics,rendering}/`.
 
 ## Outputs
 
