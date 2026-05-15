@@ -14,8 +14,33 @@ export class GbrainCallError extends Error {
 interface JsonRpcResponse {
   jsonrpc: "2.0";
   id: number;
-  result?: { content?: Array<{ type: string; text?: string }> } | unknown;
+  result?:
+    | {
+        content?: Array<{ type: string; text?: string }>;
+        isError?: boolean;
+      }
+    | unknown;
   error?: { code: number; message: string };
+}
+
+/**
+ * The gbrain MCP server (supergateway-wrapped) requires both
+ * application/json and text/event-stream in the Accept header, and chooses
+ * SSE for its response. Parse the SSE envelope by extracting the JSON
+ * payload from the first `data:` line. If the body is already JSON
+ * (no `event:` prefix), use it as-is.
+ */
+function parseMcpResponseBody(text: string): JsonRpcResponse {
+  const trimmed = text.trimStart();
+  if (trimmed.startsWith("{")) {
+    return JSON.parse(trimmed) as JsonRpcResponse;
+  }
+  for (const line of trimmed.split(/\r?\n/)) {
+    if (line.startsWith("data:")) {
+      return JSON.parse(line.slice(5).trim()) as JsonRpcResponse;
+    }
+  }
+  throw new Error(`unexpected MCP response body: ${text.slice(0, 120)}`);
 }
 
 export class GbrainClient {
@@ -56,7 +81,8 @@ export class GbrainClient {
         throw new GbrainCallError(`HTTP ${resp.status} from ${this.url}`);
       }
 
-      const json = (await resp.json()) as JsonRpcResponse;
+      const bodyText = await resp.text();
+      const json = parseMcpResponseBody(bodyText);
       if (json.error) {
         throw new GbrainCallError(
           `JSON-RPC error ${json.error.code}: ${json.error.message}`,
@@ -64,8 +90,15 @@ export class GbrainClient {
       }
 
       const result = json.result as
-        | { content?: Array<{ type: string; text?: string }> }
+        | { content?: Array<{ type: string; text?: string }>; isError?: boolean }
         | undefined;
+      // Tool-level error (e.g. get_page on a missing slug returns
+      // result.isError=true with the error detail in content[0].text).
+      // Surface that as a null return so callers can treat "not found"
+      // as "no value" rather than treating the error envelope as data.
+      if (result?.isError === true) {
+        return null as T;
+      }
       const text = result?.content?.[0]?.text;
       if (typeof text === "string") {
         try {

@@ -112,4 +112,39 @@ describe("GbrainClient", () => {
     const out = await client.call("get_image", {});
     expect(out).toEqual({ content: [{ type: "image", data: "..." }] });
   });
+
+  it("parses SSE-wrapped JSON-RPC responses", async () => {
+    const sse =
+      `event: message\n` +
+      `data: ${JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { content: [{ type: "text", text: "{\"slug\":\"issue/X\"}" }] },
+      })}\n\n`;
+    fetchMock.mockResolvedValueOnce(
+      new Response(sse, { headers: { "content-type": "text/event-stream" } }),
+    );
+
+    const out = await client.call("get_page", { slug: "issue/X" });
+    expect(out).toEqual({ slug: "issue/X" });
+  });
+
+  it("returns null when result.isError is true (e.g. tool-level not-found)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            content: [{ type: "text", text: "{\"error\":\"page_not_found\"}" }],
+            isError: true,
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    const out = await client.call("get_page", { slug: "issue/missing" });
+    expect(out).toBeNull();
+  });
 });

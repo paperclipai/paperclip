@@ -4,7 +4,7 @@ export const PLUGIN_ID = "kkroo.gbrain";
 export const PLUGIN_VERSION = "0.1.0";
 
 export const DEFAULT_GBRAIN_MCP_URL =
-  "http://gbrain-mcp.paperclip.svc.cluster.local:3131/gbrain";
+  "http://gbrain-mcp-internal.paperclip.svc.cluster.local:3131/gbrain";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
