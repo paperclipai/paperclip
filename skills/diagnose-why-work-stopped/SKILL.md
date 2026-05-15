@@ -1,5 +1,6 @@
 ---
 name: diagnose-why-work-stopped
+required: false
 description: >
   How to handle "why did this work stop / why is this looping?" assignments.
   Forensics first on the named tree, surface the exact stop-point, frame the

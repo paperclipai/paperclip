@@ -1,5 +1,6 @@
 ---
 name: paperclip-create-plugin
+required: false
 description: >
   Create and develop external Paperclip plugins with the CLI-first workflow.
   Use when scaffolding a new plugin, working on a local plugin against a running
