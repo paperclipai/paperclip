@@ -33,6 +33,32 @@ export async function paperclipPost<T>(path: string, body: unknown): Promise<T> 
   return res.json() as Promise<T>;
 }
 
+export async function paperclipPut<T>(path: string, body: unknown): Promise<T> {
+  const url = `${PAPERCLIP_API_URL}${path}`;
+  const res = await fetch(url, {
+    method: "PUT",
+    headers: paperclipHeaders(),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Paperclip API ${res.status} for PUT ${path}: ${text}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+export async function paperclipDelete(path: string): Promise<void> {
+  const url = `${PAPERCLIP_API_URL}${path}`;
+  const res = await fetch(url, {
+    method: "DELETE",
+    headers: paperclipHeaders(),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Paperclip API ${res.status} for DELETE ${path}: ${text}`);
+  }
+}
+
 export function isPaperclipConfigured(): boolean {
   return !!(PAPERCLIP_API_URL && CHASE_API_KEY && COMPANY_ID);
 }

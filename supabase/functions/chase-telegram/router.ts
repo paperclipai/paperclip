@@ -217,7 +217,7 @@ async function showTaskPreview(
   const cleanedTitle = cleanTaskTitle(params.title, params.assigneeName);
   const cleanedDescription = cleanTaskDescription(params.description);
 
-  setPendingTask(chatId, {
+  await setPendingTask(chatId, {
     title: cleanedTitle,
     description: cleanedDescription,
     assigneeName: params.assigneeName,
@@ -277,7 +277,7 @@ export function routeQuery(
         // Cancel
         if (/^(?:no|nope|nah|cancel(?:\s+it)?|stop|never\s+mind|forget(?:\s+it)?|dismiss|not\s+now|ignore|back)\b/i.test(trimmed)) {
           return respond(async () => {
-            clearPendingTask(chatId);
+            await clearPendingTask(chatId);
             return { text: "Cancelled. Let me know if you need anything else." };
           });
         }
@@ -288,7 +288,7 @@ export function routeQuery(
           if (!pending) return { text: "No pending task." };
           const resolved = await resolveAgentByName(trimmed);
           if (resolved) {
-            setPendingTask(chatId, {
+            await setPendingTask(chatId, {
               ...pending,
               assigneeName: resolved.display,
               awaitingAssign: false,
@@ -327,7 +327,7 @@ export function routeQuery(
       // Cancel phrases
       if (/^(?:no|nope|nah|cancel(?:\s+it)?|stop|never\s+mind|forget(?:\s+it)?|dismiss|not\s+now|ignore|back)\b/i.test(trimmed)) {
         return respond(async () => {
-          clearPendingTask(chatId);
+          await clearPendingTask(chatId);
           return { text: "Cancelled. Let me know if you need anything else." };
         });
       }
@@ -540,7 +540,7 @@ export function routeQuery(
       if (!issue) {
         return { text: `I couldn't find issue ${identifier}. Please check the identifier and try again.` };
       }
-      setPendingTask(chatId, {
+      await setPendingTask(chatId, {
         title: `${actionName} ${issue.identifier}`,
         description: `${actionName} ${issue.identifier} - ${issue.title}. Requested by Jeff via Telegram.`,
         sourceMessage: trimmed,
@@ -672,7 +672,7 @@ export function routeQuery(
   if (newTaskMatch && chatId) {
     const desc = newTaskMatch[1]!.trim();
     return respond(async () => {
-      setPendingTask(chatId, {
+      await setPendingTask(chatId, {
         title: desc,
         description: desc,
         sourceMessage: trimmed,

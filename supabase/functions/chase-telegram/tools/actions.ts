@@ -148,7 +148,7 @@ export async function handleCreateIssue(params: {
 
   // Clear the pending task only after successful creation
   if (params.chatId) {
-    clearPendingTask(params.chatId);
+    await clearPendingTask(params.chatId);
   }
 
   // Enriched source/authorization note

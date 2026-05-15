@@ -602,7 +602,7 @@ Deno.test({
     assertStringIncludes(result.text, "YES");
     teardownMockFetch();
     const { clearPendingTask } = await import("./lib/pending-tasks.ts");
-    clearPendingTask(12345);
+    await clearPendingTask(12345);
   },
   sanitizeResources: false,
   sanitizeOps: false,
@@ -1235,7 +1235,7 @@ Deno.test({
     assertStringIncludes(result.text, "YES");
     teardownMockFetch();
     const { clearPendingTask } = await import("./lib/pending-tasks.ts");
-    clearPendingTask(12345);
+    await clearPendingTask(12345);
   },
   sanitizeResources: false,
   sanitizeOps: false,
@@ -1252,19 +1252,17 @@ Deno.test({
     assertStringIncludes(result.text, "Christie");
     teardownMockFetch();
     const { clearPendingTask } = await import("./lib/pending-tasks.ts");
-    clearPendingTask(12345);
+    await clearPendingTask(12345);
   },
   sanitizeResources: false,
   sanitizeOps: false,
 });
 
-// ── CRE-551: Pending task confirmation behavior ──
-
 Deno.test({
   name: "routeQuery: non-confirmation message while pending reminds about pending task instead of routing",
   async fn() {
     const { setPendingTask } = await import("./lib/pending-tasks.ts");
-    setPendingTask(99051, {
+    await setPendingTask(99051, {
       title: "Test task",
       description: "Test description",
       sourceMessage: "create a test task",
@@ -1277,7 +1275,7 @@ Deno.test({
     assertStringIncludes(text, "pending task");
     assertStringIncludes(text, "YES");
     const { clearPendingTask } = await import("./lib/pending-tasks.ts");
-    clearPendingTask(99051);
+    await clearPendingTask(99051);
   },
   sanitizeResources: false,
   sanitizeOps: false,
@@ -1288,7 +1286,7 @@ Deno.test({
   async fn() {
     // First, set up a pending task
     const { setPendingTask } = await import("./lib/pending-tasks.ts");
-    setPendingTask(99050, {
+    await setPendingTask(99050, {
       title: "Test task",
       description: "Test description",
       sourceMessage: "create a test task",
@@ -1301,7 +1299,7 @@ Deno.test({
     assertStringIncludes(text, "YES");
     // Clean up
     const { clearPendingTask } = await import("./lib/pending-tasks.ts");
-    clearPendingTask(99050);
+    await clearPendingTask(99050);
   },
   sanitizeResources: false,
   sanitizeOps: false,

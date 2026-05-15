@@ -5,6 +5,7 @@ import { isPaperclipConfigured } from "./lib/api.ts";
 import { escapeHtml } from "./lib/html.ts";
 import { formatNotification, isAiConfigured, aiProvider } from "./lib/llm.ts";
 import { routeQuery, routeVenue, routeLocation } from "./router.ts";
+import { refreshFromStorage } from "./lib/pending-tasks.ts";
 import { CHASE_TELEGRAM_BUILD_SHA, CHASE_TELEGRAM_BUILD_TIME } from "./build.ts";
 
 // ─── Build Information ────────────────────────────────────────────────
@@ -73,6 +74,9 @@ export async function handleWebhook(update: TelegramUpdate): Promise<Response> {
   }
 
   const text = msg.text;
+
+  // Load any persisted pending state into the in-memory cache before routing
+  await refreshFromStorage(chatId);
 
   const { handler, requiresAi } = routeQuery(text, firstName, chatId);
 
