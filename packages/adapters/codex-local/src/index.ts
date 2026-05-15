@@ -33,6 +33,7 @@ export function isCodexLocalFastModeSupported(model: string | null | undefined):
 }
 
 export const models = [
+  { id: "gpt-5.5", label: "gpt-5.5" },
   { id: "gpt-5.4", label: "gpt-5.4" },
   { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
   { id: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark" },
@@ -49,10 +50,10 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
     label: "Cheap",
-    description: "Use the lowest-cost known Codex local model lane without changing the primary model.",
+    description: "Use the governed Codex local validation lane without changing the primary model.",
     adapterConfig: {
-      model: "gpt-5.3-codex-spark",
-      modelReasoningEffort: "low",
+      model: "gpt-5.5",
+      modelReasoningEffort: "xhigh",
     },
     source: "adapter_default",
   },

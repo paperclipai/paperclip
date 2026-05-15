@@ -28,7 +28,7 @@ describe("buildCodexExecArgs", () => {
 
   it("enables Codex fast mode overrides for manual models", () => {
     const result = buildCodexExecArgs({
-      model: "gpt-5.5",
+      model: "custom-manual-model",
       fastMode: true,
     });
 
@@ -39,11 +39,29 @@ describe("buildCodexExecArgs", () => {
       "exec",
       "--json",
       "--model",
-      "gpt-5.5",
+      "custom-manual-model",
       "-c",
       'service_tier="fast"',
       "-c",
       "features.fast_mode=true",
+      "-",
+    ]);
+  });
+
+  it("passes governed Codex cheap-lane model and reasoning effort", () => {
+    const result = buildCodexExecArgs({
+      model: "gpt-5.5",
+      modelReasoningEffort: "xhigh",
+    });
+
+    expect(result.model).toBe("gpt-5.5");
+    expect(result.args).toEqual([
+      "exec",
+      "--json",
+      "--model",
+      "gpt-5.5",
+      "-c",
+      'model_reasoning_effort="xhigh"',
       "-",
     ]);
   });
