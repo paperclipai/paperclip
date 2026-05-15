@@ -1,4 +1,4 @@
-import type { PauseReason, ProjectStatus } from "../constants.js";
+import type { IssueStatus, PauseReason, ProjectStatus } from "../constants.js";
 import type {
   ProjectExecutionWorkspacePolicy,
   ProjectWorkspaceRuntimeConfig,
@@ -64,6 +64,8 @@ export interface ProjectManagedByPlugin {
   updatedAt: Date;
 }
 
+export type ProjectIssueStatusSummary = Partial<Record<IssueStatus, number>>;
+
 export interface Project {
   id: string;
   companyId: string;
@@ -86,6 +88,7 @@ export interface Project {
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;
   managedByPlugin?: ProjectManagedByPlugin | null;
+  issueStatusSummary?: ProjectIssueStatusSummary;
   archivedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
