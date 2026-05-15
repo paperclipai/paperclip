@@ -1,0 +1,54 @@
+import { describe, it, expect } from "vitest";
+import { issueSlug, agentSlug, factSlug, PAGE_TYPES } from "../identity.js";
+
+describe("issueSlug", () => {
+  it("formats identifier as issue/<identifier>", () => {
+    expect(issueSlug("BLO-3220")).toBe("issue/BLO-3220");
+    expect(issueSlug("PCL-1490")).toBe("issue/PCL-1490");
+  });
+
+  it("returns null when identifier is missing", () => {
+    expect(issueSlug(null)).toBeNull();
+    expect(issueSlug(undefined)).toBeNull();
+    expect(issueSlug("")).toBeNull();
+  });
+
+  it("trims surrounding whitespace", () => {
+    expect(issueSlug("  BLO-3220 ")).toBe("issue/BLO-3220");
+  });
+});
+
+describe("agentSlug", () => {
+  it("lowercases and strips non-alphanumeric", () => {
+    expect(agentSlug("CTO")).toBe("agent/cto");
+    expect(agentSlug("MulticastEngineer")).toBe("agent/multicastengineer");
+    expect(agentSlug("Release Engineer")).toBe("agent/releaseengineer");
+  });
+
+  it("collapses runs of separators", () => {
+    expect(agentSlug("QA   Engineer")).toBe("agent/qaengineer");
+    expect(agentSlug("Foo-Bar_Baz.Qux")).toBe("agent/foobarbazqux");
+  });
+
+  it("returns null when name is empty after normalization", () => {
+    expect(agentSlug("   ")).toBeNull();
+    expect(agentSlug("")).toBeNull();
+    expect(agentSlug(null)).toBeNull();
+  });
+});
+
+describe("factSlug", () => {
+  it("formats uuid as fact/<uuid>", () => {
+    expect(factSlug("11111111-2222-3333-4444-555555555555")).toBe(
+      "fact/11111111-2222-3333-4444-555555555555",
+    );
+  });
+});
+
+describe("PAGE_TYPES", () => {
+  it("exports stable type constants", () => {
+    expect(PAGE_TYPES.ISSUE).toBe("issue");
+    expect(PAGE_TYPES.AGENT).toBe("agent");
+    expect(PAGE_TYPES.FACT).toBe("fact");
+  });
+});

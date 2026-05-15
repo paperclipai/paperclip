@@ -269,6 +269,13 @@ export async function installKkrooLocalPlugins(ctx: BootstrapContext): Promise<v
     displayName: "ccrotate",
   });
 
+  // gbrain: bundled in-image (no npm publish), always install from local path.
+  await installLocalPluginIfAbsent(ctx, {
+    pluginKey: "kkroo.gbrain",
+    absPath: resolve(process.cwd(), "packages/plugins/paperclip-plugin-gbrain"),
+    displayName: "gbrain",
+  });
+
   // Linear: bundled in-image. Must run before autoConfigureLinearFromEnv so
   // there's a plugin to configure.
   await installLocalPluginIfAbsent(ctx, {
