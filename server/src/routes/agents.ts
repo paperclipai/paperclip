@@ -1826,6 +1826,49 @@ export function agentRoutes(
     res.json(await buildAgentDetail(agent));
   });
 
+  router.post("/agents/:id/preflight", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+
+    const adapterType = typeof agent.adapterType === "string" ? agent.adapterType.trim() : "";
+    const adapterConfig = asRecord(agent.adapterConfig) ?? {};
+    const model = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
+
+    if (!adapterType) {
+      res.status(200).json({
+        ok: false,
+        agentId: agent.id,
+        identifier: { name: agent.name, urlKey: agent.urlKey },
+        adapterType: null,
+        model: model || null,
+        check: {
+          available: false,
+          code: "adapter_unknown",
+          reason: "Agent has no adapterType configured.",
+          supportedModels: [],
+        },
+        mode: "shape_only",
+      });
+      return;
+    }
+
+    const check = resolveAdapterModelAvailability(adapterType, model, agent.companyId);
+    res.status(200).json({
+      ok: check.available,
+      agentId: agent.id,
+      identifier: { name: agent.name, urlKey: agent.urlKey },
+      adapterType,
+      model: model || null,
+      check,
+      mode: "shape_only",
+    });
+  });
+
   router.get("/agents/:id/configuration", async (req, res) => {
     const id = req.params.id as string;
     const agent = await svc.getById(id);
@@ -3072,6 +3115,29 @@ export function agentRoutes(
     });
 
     res.status(202).json(run);
+  });
+
+  router.post("/agents/:id/preflight", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    const adapterType = agent.adapterType || null;
+    const model = typeof agent.adapterConfig?.model === "string" ? agent.adapterConfig.model : "";
+    const check = adapterType
+      ? resolveAdapterModelAvailability(adapterType, model, agent.companyId)
+      : { available: false as const, code: "adapter_unknown" as const, reason: "No adapter configured", supportedModels: [] };
+    res.json({
+      ok: check.available,
+      agentId: agent.id,
+      adapterType,
+      model: model || null,
+      mode: "shape_only",
+      check,
+    });
   });
 
   router.post("/agents/:id/claude-login", async (req, res) => {

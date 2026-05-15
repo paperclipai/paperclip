@@ -21,6 +21,29 @@ interface AgentListOptions extends BaseClientOptions {
   companyId?: string;
 }
 
+interface AgentPreflightOptions extends BaseClientOptions {
+  agentId?: string;
+}
+
+type AgentPreflightCheck =
+  | { available: true }
+  | {
+      available: false;
+      code: "unsupported_model" | "unbound_account" | "adapter_unknown";
+      reason: string;
+      supportedModels: string[];
+    };
+
+interface AgentPreflightResponse {
+  ok: boolean;
+  agentId: string;
+  identifier: { name: string; urlKey: string };
+  adapterType: string | null;
+  model: string | null;
+  check: AgentPreflightCheck;
+  mode: "shape_only";
+}
+
 interface AgentLocalCliOptions extends BaseClientOptions {
   companyId?: string;
   keyName?: string;
@@ -217,6 +240,45 @@ export function registerAgentCommands(program: Command): void {
 
   addCommonClientOptions(
     agent
+      .command("preflight")
+      .description(
+        "Shape-only adapter/model compat check for an agent. Exits 0 if the agent's declared (adapter, model) is supported; 1 with structured JSON error otherwise.",
+      )
+      .requiredOption("-a, --agent-id <id>", "Agent ID")
+      .action(async (opts: AgentPreflightOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const agentId = opts.agentId?.trim();
+          if (!agentId) {
+            throw new Error("Agent ID is required. Pass --agent-id.");
+          }
+          const result = await ctx.api.post<AgentPreflightResponse>(
+            `/api/agents/${encodeURIComponent(agentId)}/preflight`,
+            {},
+          );
+          if (!result) {
+            throw new Error("Preflight endpoint returned no body");
+          }
+
+          if (ctx.json || !result.ok) {
+            console.log(JSON.stringify(result, null, 2));
+          } else {
+            console.log(
+              `OK ${result.identifier.name} (${result.agentId}) adapter=${result.adapterType} model=${result.model} mode=${result.mode}`,
+            );
+          }
+
+          if (!result.ok) {
+            process.exit(1);
+          }
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
       .command("local-cli")
       .description(
         "Create an agent API key, install local Paperclip skills for Codex/Claude, and print shell exports",
@@ -311,5 +373,63 @@ export function registerAgentCommands(program: Command): void {
         }
       }),
     { includeCompany: false },
+  );
+
+  interface AgentPreflightOptions extends BaseClientOptions {
+    agentId: string;
+  }
+
+  addCommonClientOptions(
+    agent
+      .command("preflight")
+      .description("Run a shape-only preflight check for an agent (adapter + model compat)")
+      .requiredOption("--agent-id <id>", "Agent ID")
+      .action(async (opts: AgentPreflightOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const result = await ctx.api.post<{
+            ok: boolean;
+            agentId: string;
+            adapterType: string | null;
+            model: string | null;
+            mode: string;
+            check: { available: boolean; code?: string; reason?: string; supportedModels?: string[] };
+          }>(`/api/agents/${encodeURIComponent(opts.agentId)}/preflight`, {});
+
+          if (ctx.json) {
+            printOutput(result, { json: true });
+            process.exit(result?.ok ? 0 : 1);
+            return;
+          }
+
+          if (!result) {
+            console.error("No response from preflight endpoint");
+            process.exit(1);
+            return;
+          }
+
+          if (result.ok) {
+            console.log(`✓ preflight passed`);
+            console.log(`  agent:   ${result.agentId}`);
+            console.log(`  adapter: ${result.adapterType ?? "(none)"}`);
+            console.log(`  model:   ${result.model ?? "(none)"}`);
+            console.log(`  mode:    ${result.mode}`);
+            process.exit(0);
+          } else {
+            console.error(`✗ preflight failed`);
+            console.error(`  agent:   ${result.agentId}`);
+            console.error(`  adapter: ${result.adapterType ?? "(none)"}`);
+            console.error(`  model:   ${result.model ?? "(none)"}`);
+            if (result.check.code) console.error(`  code:    ${result.check.code}`);
+            if (result.check.reason) console.error(`  reason:  ${result.check.reason}`);
+            if (result.check.supportedModels?.length) {
+              console.error(`  supported: ${result.check.supportedModels.join(", ")}`);
+            }
+            process.exit(1);
+          }
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
   );
 }
