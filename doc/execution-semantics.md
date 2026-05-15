@@ -270,7 +270,7 @@ When a monitor-triggered run inspects an issue in `in_review`, it must finish by
 - a re-armed monitor with a new `nextCheckAt` when the assignee still owns the external wait
 - a real blocker or explicit recovery action when the assignee cannot represent the external review path as a healthy monitor/review wait
 
-A queued continuation cancelled with `issue_continuation_waiting_on_review` is only a waiting-state guard. It records that executor work should not restart while the issue is waiting on review or approval. That cancellation is not stranded-work evidence by itself; recovery should only treat the issue as stranded when no valid review participant, pending interaction or approval, human owner, active run, queued wake, re-armed monitor, blocker path, or explicit recovery action remains.
+A queued continuation cancelled with `issue_continuation_waiting_on_review` is only a waiting-state guard. It records that executor work should not restart while the issue is waiting on review or approval. That cancellation is not stranded-work evidence by itself; see the `in_review` recovery rule in Section 8.3 for when recovery should treat the issue as stranded.
 
 Because `serviceName` and `notes` remain visible in issue activity and wake context, operators should keep them short and non-secret. Put enough context for the assignee to know what to inspect, but do not include signed URLs, bearer tokens, customer secrets, tenant-private identifiers, or provider links with embedded credentials.
 
@@ -329,6 +329,23 @@ Recovery rule:
 - if that continuation wake also finishes and the issue is still stranded, Paperclip moves the issue to `blocked` and opens or updates an explicit recovery action when a bounded owner/action is known; the visible comment is evidence, not the recovery path by itself
 
 This is an active-work continuity recovery.
+
+### 8.3 Stranded assigned `in_review`
+
+Example:
+
+- issue is assigned to an agent
+- status is `in_review`
+- a monitor-triggered run or queued continuation stops on a review-wait guard
+- no valid review participant, pending interaction or approval, human owner, active run, queued wake, re-armed monitor, blocker path, or explicit recovery action remains
+
+Recovery rule:
+
+- `issue_continuation_waiting_on_review` is not stranded-work evidence by itself
+- Paperclip should preserve the review wait when one of the valid review/monitor/blocker/recovery paths still exists
+- Paperclip should surface explicit recovery only when the issue has no remaining path that owns the review wait
+
+This is review-wait recovery, not implementation-work continuation.
 
 ## 9. Startup and Periodic Reconciliation
 
