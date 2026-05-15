@@ -462,6 +462,50 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("named unblock owner/action");
   });
 
+  it("preserves Chinese, Japanese, and Hindi issue and comment text in scoped wake prompts", () => {
+    const title = "验证中文任务";
+    const commentBody = [
+      "请用中文回复。",
+      "日本語: 次の手順を書いてください。",
+      "हिन्दी: कृपया स्थिति बताएं।",
+    ].join("\n");
+    const payload = {
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-9452",
+        title,
+        status: "in_progress",
+        workMode: "standard",
+      },
+      commentIds: ["comment-1"],
+      latestCommentId: "comment-1",
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [
+        {
+          id: "comment-1",
+          body: commentBody,
+          author: { type: "user", id: "board-user-1" },
+          createdAt: "2026-05-15T16:30:00.000Z",
+        },
+      ],
+      fallbackFetchNeeded: false,
+    };
+
+    const serialized = stringifyPaperclipWakePayload(payload);
+    expect(serialized).toContain(title);
+    expect(serialized).toContain("日本語");
+    expect(serialized).toContain("हिन्दी");
+    expect(JSON.parse(serialized ?? "{}")).toMatchObject({
+      issue: { title },
+      comments: [{ body: commentBody }],
+    });
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain(`- issue: PAP-9452 ${title}`);
+    expect(prompt).toContain(commentBody);
+  });
+
   it("renders planning-mode directives for assignment and comment wakes", () => {
     const assignmentPrompt = renderPaperclipWakePrompt({
       reason: "issue_assigned",

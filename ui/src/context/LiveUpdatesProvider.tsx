@@ -408,6 +408,12 @@ async function hydrateVisibleIssueComment(
 }
 
 const ISSUE_TOAST_ACTIONS = new Set(["issue.created", "issue.updated", "issue.comment_added"]);
+const ISSUE_DOCUMENT_ACTIVITY_ACTIONS = new Set([
+  "issue.document_created",
+  "issue.document_updated",
+  "issue.document_restored",
+  "issue.document_deleted",
+]);
 const AGENT_TOAST_STATUSES = new Set(["error"]);
 const RUN_TOAST_STATUSES = new Set(["failed", "timed_out", "cancelled"]);
 
@@ -684,6 +690,17 @@ function invalidateActivityQueries(
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref), ...invalidationOptions });
         if (action === "issue.comment_added") {
           queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref), ...invalidationOptions });
+        }
+        if (action && ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action)) {
+          const documentKey = readString(details?.key);
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(ref), ...invalidationOptions });
+          if (documentKey) {
+            queryClient.invalidateQueries({ queryKey: queryKeys.issues.document(ref, documentKey), ...invalidationOptions });
+            queryClient.invalidateQueries({ queryKey: queryKeys.issues.documentRevisions(ref, documentKey), ...invalidationOptions });
+          } else {
+            queryClient.invalidateQueries({ queryKey: ["issues", "document", ref], ...invalidationOptions });
+            queryClient.invalidateQueries({ queryKey: ["issues", "document-revisions", ref], ...invalidationOptions });
+          }
         }
         if (action?.startsWith("issue.thread_interaction_")) {
           queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref), ...invalidationOptions });

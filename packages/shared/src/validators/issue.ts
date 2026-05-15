@@ -28,6 +28,69 @@ import {
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
 
+export const issueBlockedInboxStateSchema = z.enum([
+  "needs_attention",
+  "awaiting_decision",
+  "external_wait",
+  "recovery_open",
+  "missing_disposition",
+]);
+
+export const issueBlockedInboxSeveritySchema = z.enum(["critical", "high", "medium", "low"]);
+
+export const issueBlockedInboxReasonSchema = z.enum([
+  "blocked_by_unassigned_issue",
+  "blocked_by_assigned_backlog_issue",
+  "blocked_by_uninvokable_assignee",
+  "blocked_by_cancelled_issue",
+  "blocked_chain_stalled",
+  "invalid_review_participant",
+  "in_review_without_action_path",
+  "missing_successful_run_disposition",
+  "pending_board_decision",
+  "pending_user_decision",
+  "external_owner_action",
+  "open_recovery_issue",
+]);
+
+export const issueBlockedInboxIssueRefSchema = z.object({
+  id: z.string().uuid(),
+  identifier: z.string().nullable(),
+  title: z.string(),
+  status: z.enum(ISSUE_STATUSES),
+  priority: z.enum(ISSUE_PRIORITIES),
+  assigneeAgentId: z.string().uuid().nullable(),
+  assigneeUserId: z.string().nullable(),
+}).strict();
+
+export const issueBlockedInboxAttentionSchema = z.object({
+  kind: z.literal("blocked"),
+  state: issueBlockedInboxStateSchema,
+  reason: issueBlockedInboxReasonSchema,
+  severity: issueBlockedInboxSeveritySchema,
+  stoppedSinceAt: z.string().datetime().nullable(),
+  owner: z.object({
+    type: z.enum(["agent", "user", "board", "external", "unknown"]),
+    agentId: z.string().uuid().nullable(),
+    userId: z.string().nullable(),
+    label: z.string().nullable(),
+  }).strict(),
+  action: z.object({
+    label: z.string().trim().min(1),
+    detail: z.string().nullable(),
+  }).strict(),
+  sourceIssue: issueBlockedInboxIssueRefSchema.nullable(),
+  leafIssue: issueBlockedInboxIssueRefSchema.nullable(),
+  recoveryIssue: issueBlockedInboxIssueRefSchema.nullable(),
+  approvalId: z.string().uuid().nullable(),
+  interactionId: z.string().uuid().nullable(),
+  sampleIssueIdentifier: z.string().nullable(),
+  redaction: z.object({
+    externalDetailsRedacted: z.boolean(),
+    secretFieldsOmitted: z.literal(true),
+  }).strict(),
+}).strict();
+
 export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
   "inherit",
   "shared_workspace",
