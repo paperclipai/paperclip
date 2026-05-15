@@ -47,12 +47,14 @@ describe("wrapTool", () => {
     const wrapped = wrapTool(
       { activity: ctx.activity, logger: ctx.logger as never },
       "refusing_tool",
-      async () => ({ error: "no" }) satisfies ToolResult,
+      async () => ({ error: "authorization_failed: token abc123 failed" }) satisfies ToolResult,
     );
     const result = await wrapped({}, runCtx);
-    expect(result.error).toBe("no");
+    expect(result.error).toBe("authorization_failed: token abc123 failed");
     expect(ctx.logCalls).toHaveLength(1);
     expect((ctx.logCalls[0]?.metadata as { refusal?: boolean } | undefined)?.refusal).toBe(true);
+    expect((ctx.logCalls[0]?.metadata as { code?: string } | undefined)?.code).toBe("authorization_failed");
+    expect(ctx.logCalls[0]?.message).toBe("refusing_tool: refused");
   });
 
   it("converts thrown RefusalError into ToolResult { error } with stable code", async () => {
@@ -69,6 +71,7 @@ describe("wrapTool", () => {
     expect(result.content).toBeUndefined();
     expect(ctx.logCalls).toHaveLength(1);
     expect((ctx.logCalls[0]?.metadata as { code?: string } | undefined)?.code).toBe("evidence_too_thin");
+    expect((ctx.logCalls[0]?.metadata as { reason?: string } | undefined)?.reason).toBeUndefined();
   });
 
   it("converts an unexpected throw into a generic error result", async () => {

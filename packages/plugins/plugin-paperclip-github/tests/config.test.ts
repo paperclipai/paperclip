@@ -13,6 +13,14 @@ describe("parseRepo", () => {
     expect(() => parseRepo("no-slash")).toThrow(ConfigError);
   });
 
+  it("rejects extra path segments", () => {
+    expect(() => parseRepo("owner/repo/extra")).toThrow(ConfigError);
+  });
+
+  it("rejects unsafe path characters", () => {
+    expect(() => parseRepo("owner/repo?x=1")).toThrow(ConfigError);
+  });
+
   it("rejects empty name", () => {
     expect(() => parseRepo("owner/")).toThrow(ConfigError);
   });
