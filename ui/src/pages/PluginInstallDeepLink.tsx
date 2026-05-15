@@ -40,7 +40,7 @@ export function PluginInstallDeepLink() {
       plugin = parsed.plugin;
       version = parsed.version;
     }
-  } else if (directPlugin) {
+  } else if (directPlugin && NPM_PKG_RE.test(directPlugin)) {
     plugin = directPlugin;
     version = directVersion;
   }

@@ -114,6 +114,10 @@ function configWithSecretsProvider(provider: PaperclipConfig["secrets"]["provide
         forcePathStyle: false,
       },
     },
+    attribution: {
+      commit: true,
+      pr: true,
+    },
     secrets: {
       provider,
       strictMode: true,
