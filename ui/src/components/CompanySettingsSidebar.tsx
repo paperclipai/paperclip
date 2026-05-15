@@ -1,5 +1,17 @@
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, CloudUpload, KeyRound, MailPlus, MonitorCog, Puzzle, Settings, SlidersHorizontal, Users } from "lucide-react";
+import {
+  ArchiveRestore,
+  ChevronLeft,
+  CloudUpload,
+  KeyRound,
+  MailPlus,
+  MonitorCog,
+  Puzzle,
+  Settings,
+  SlidersHorizontal,
+  Users,
+} from "lucide-react";
+import { accessApi } from "@/api/access";
 import { sidebarBadgesApi } from "@/api/sidebarBadges";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { ApiError } from "@/api/client";
@@ -17,6 +29,11 @@ export function CompanySettingsSidebar() {
     slotTypes: ["companySettingsPage"],
     companyId: selectedCompanyId,
     enabled: !!selectedCompanyId,
+  });
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
   });
   const { data: badges } = useQuery({
     queryKey: selectedCompanyId
@@ -41,6 +58,7 @@ export function CompanySettingsSidebar() {
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
   const showCloudUpstream = experimentalSettings?.enableCloudSync === true;
+  const canManageDataRecovery = boardAccess?.source === "local_implicit" || boardAccess?.isInstanceAdmin;
 
   return (
     <aside className="w-full h-full min-h-0 border-r border-border bg-background flex flex-col">
@@ -100,6 +118,14 @@ export function CompanySettingsSidebar() {
             ))}
           <SidebarNavItem to="/company/settings/invites" label="Invites" icon={MailPlus} end />
           <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
+          {canManageDataRecovery ? (
+            <SidebarNavItem
+              to={`/instance/settings/data-recovery?companyId=${encodeURIComponent(selectedCompanyId ?? "")}`}
+              label="Data Recovery"
+              icon={ArchiveRestore}
+              end
+            />
+          ) : null}
         </div>
       </nav>
     </aside>
