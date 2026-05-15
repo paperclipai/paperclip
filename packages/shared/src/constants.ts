@@ -151,6 +151,42 @@ export const ISSUE_WORK_MODES = ["standard", "planning"] as const;
 export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
 export const MAX_ISSUE_REQUEST_DEPTH = 1024;
 
+export const ISSUE_ESTIMATE_SIZES = ["XS", "S", "M", "L", "XL"] as const;
+export type IssueEstimateSize = (typeof ISSUE_ESTIMATE_SIZES)[number];
+
+export const ISSUE_ESTIMATE_RISKS = ["low", "medium", "high"] as const;
+export type IssueEstimateRisk = (typeof ISSUE_ESTIMATE_RISKS)[number];
+
+export const ISSUE_PHASES = [
+  "triage",
+  "planning",
+  "implementation",
+  "verification",
+  "review",
+  "delivery",
+] as const;
+export type IssuePhase = (typeof ISSUE_PHASES)[number];
+
+export const ISSUE_PROGRESS_STATES = [
+  "not_started",
+  "active",
+  "waiting",
+  "verifying",
+  "reviewing",
+  "complete",
+  "cancelled",
+] as const;
+export type IssueProgressState = (typeof ISSUE_PROGRESS_STATES)[number];
+
+export const ISSUE_PROGRESS_SOURCES = [
+  "status",
+  "phase",
+  "evidence",
+  "blocker",
+  "execution_health",
+] as const;
+export type IssueProgressSource = (typeof ISSUE_PROGRESS_SOURCES)[number];
+
 export const ISSUE_COMMENT_AUTHOR_TYPES = ["user", "agent", "system"] as const;
 export type IssueCommentAuthorType = (typeof ISSUE_COMMENT_AUTHOR_TYPES)[number];
 
@@ -380,6 +416,7 @@ export const ROUTINE_RUN_STATUSES = [
   "received",
   "coalesced",
   "skipped",
+  "maintenance_held",
   "issue_created",
   "completed",
   "failed",

@@ -35,6 +35,8 @@ import type {
   IssueBlockerAttention,
   IssueBlockedInboxAttention,
   IssueBlockedInboxIssueRef,
+  IssuePhase,
+  IssueProgressSummary,
   IssueProductivityReview,
   IssueProductivityReviewTrigger,
   IssueRelationIssueSummary,
@@ -369,6 +371,78 @@ function appendAcceptanceCriteriaToDescription(description: string | null | unde
   const base = description?.trim() ?? "";
   const criteriaMarkdown = ["## Acceptance Criteria", "", ...criteria.map((item) => `- ${item}`)].join("\n");
   return base ? `${base}\n\n${criteriaMarkdown}` : criteriaMarkdown;
+}
+
+function normalizeAcceptanceCriteria(acceptanceCriteria: string[] | undefined) {
+  const criteria = (acceptanceCriteria ?? []).map((item) => item.trim()).filter(Boolean);
+  return criteria.length > 0 ? criteria : undefined;
+}
+
+export function deriveIssueProgressSummary(issue: {
+  status: string;
+  phase?: string | null;
+}): IssueProgressSummary {
+  if (issue.status === "done") {
+    return {
+      phase: (issue.phase ?? null) as IssuePhase | null,
+      state: "complete",
+      percent: 100,
+      reason: "Issue is done.",
+      source: "status",
+    };
+  }
+  if (issue.status === "cancelled") {
+    return {
+      phase: (issue.phase ?? null) as IssuePhase | null,
+      state: "cancelled",
+      percent: null,
+      reason: "Issue is cancelled.",
+      source: "status",
+    };
+  }
+  if (issue.status === "blocked") {
+    return {
+      phase: (issue.phase ?? null) as IssuePhase | null,
+      state: "waiting",
+      percent: null,
+      reason: "Issue is blocked.",
+      source: "blocker",
+    };
+  }
+  if (issue.status === "in_review") {
+    return {
+      phase: (issue.phase ?? "review") as IssuePhase | null,
+      state: "reviewing",
+      percent: null,
+      reason: "Issue is in review.",
+      source: issue.phase ? "phase" : "status",
+    };
+  }
+  if (issue.phase === "verification") {
+    return {
+      phase: "verification",
+      state: "verifying",
+      percent: null,
+      reason: "Issue phase is verification.",
+      source: "phase",
+    };
+  }
+  if (issue.status === "in_progress" || issue.phase === "implementation") {
+    return {
+      phase: (issue.phase ?? "implementation") as IssuePhase | null,
+      state: "active",
+      percent: null,
+      reason: issue.phase ? "Issue phase is active." : "Issue is in progress.",
+      source: issue.phase ? "phase" : "status",
+    };
+  }
+  return {
+    phase: (issue.phase ?? null) as IssuePhase | null,
+    state: "not_started",
+    percent: 0,
+    reason: "Issue has not started.",
+    source: issue.phase ? "phase" : "status",
+  };
 }
 
 function createIssueDependencyReadiness(issueId: string): IssueDependencyReadiness {
@@ -1554,6 +1628,12 @@ const issueListSelect = {
       )
     END
   `,
+  successCriteria: issues.successCriteria,
+  minimumVerification: issues.minimumVerification,
+  expectedOutput: issues.expectedOutput,
+  outOfScope: issues.outOfScope,
+  estimate: issues.estimate,
+  phase: issues.phase,
   status: issues.status,
   workMode: issues.workMode,
   priority: issues.priority,
@@ -3581,6 +3661,7 @@ export function issueService(db: Db) {
           ) ?? row.updatedAt;
           return {
             ...row,
+            progress: deriveIssueProgressSummary(row),
             ...(includeBlockedBy ? { blockedBy: blockedByMap.get(row.id) ?? [] } : {}),
             lastActivityAt,
             ...(blockerAttentionByIssueId.has(row.id) ? { blockerAttention: blockerAttentionByIssueId.get(row.id) } : {}),
@@ -3603,6 +3684,7 @@ export function issueService(db: Db) {
         ) ?? row.updatedAt;
         return {
           ...row,
+          progress: deriveIssueProgressSummary(row),
           ...(includeBlockedBy ? { blockedBy: blockedByMap.get(row.id) ?? [] } : {}),
           lastActivityAt,
           ...(blockerAttentionByIssueId.has(row.id) ? { blockerAttention: blockerAttentionByIssueId.get(row.id) } : {}),
@@ -3975,15 +4057,19 @@ export function issueService(db: Db) {
         actorUserId,
         ...issueData
       } = data;
+      const normalizedAcceptanceCriteria = normalizeAcceptanceCriteria(acceptanceCriteria);
       const child = await issueService(db).create(parent.companyId, {
         ...issueData,
+        ...(issueData.successCriteria === undefined && normalizedAcceptanceCriteria
+          ? { successCriteria: normalizedAcceptanceCriteria }
+          : {}),
         parentId: parent.id,
         projectId: issueData.projectId ?? parent.projectId,
         goalId: issueData.goalId ?? parent.goalId,
         requestDepth: clampIssueRequestDepth(
           Math.max(clampIssueRequestDepth(parent.requestDepth) + 1, issueData.requestDepth ?? 0),
         ),
-        description: appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria),
+        description: appendAcceptanceCriteriaToDescription(issueData.description, normalizedAcceptanceCriteria),
         inheritExecutionWorkspaceFromIssueId: parent.id,
       });
 

@@ -1278,6 +1278,12 @@ export interface PluginIssuesClient {
     inheritExecutionWorkspaceFromIssueId?: string;
     title: string;
     description?: string;
+    successCriteria?: Issue["successCriteria"];
+    minimumVerification?: Issue["minimumVerification"];
+    expectedOutput?: Issue["expectedOutput"];
+    outOfScope?: Issue["outOfScope"];
+    estimate?: Issue["estimate"];
+    phase?: Issue["phase"];
     status?: Issue["status"];
     priority?: Issue["priority"];
     assigneeAgentId?: string;
@@ -1302,6 +1308,12 @@ export interface PluginIssuesClient {
       Issue,
       | "title"
       | "description"
+      | "successCriteria"
+      | "minimumVerification"
+      | "expectedOutput"
+      | "outOfScope"
+      | "estimate"
+      | "phase"
       | "status"
       | "priority"
       | "assigneeAgentId"

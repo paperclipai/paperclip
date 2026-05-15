@@ -29,10 +29,14 @@ import type {
   CompanyPortabilitySkillManifestEntry,
   CompanySkill,
   AgentEnvConfig,
+  IssueEstimate,
   RoutineVariable,
 } from "@paperclipai/shared";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  ISSUE_ESTIMATE_RISKS,
+  ISSUE_ESTIMATE_SIZES,
+  ISSUE_PHASES,
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
   PROJECT_STATUSES,
@@ -658,6 +662,14 @@ function readStringArray(value: unknown): string[] | null {
   return entries.length === value.length ? entries : null;
 }
 
+function asStringList(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const items = value
+    .map((entry) => asString(entry))
+    .filter((entry): entry is string => Boolean(entry));
+  return items;
+}
+
 function derivePortableCommentAuthorType(value: Record<string, unknown>) {
   const explicit = issueCommentAuthorTypeSchema.safeParse(value.authorType);
   if (explicit.success) return explicit.data;
@@ -736,6 +748,44 @@ function applyImportAdapterRunDefaults(
     appendCodexImportArg(next, "--skip-git-repo-check");
   }
   return next;
+}
+
+function normalizePortableIssueEstimate(value: unknown): IssueEstimate | null {
+  if (!isPlainRecord(value)) return null;
+  const size = asString(value.size);
+  const risk = asString(value.risk);
+  const expectedHeartbeatCount = asInteger(value.expectedHeartbeatCount);
+  const effectiveParallelism = asInteger(value.effectiveParallelism);
+  const range = isPlainRecord(value.expectedHeartbeatRange) ? value.expectedHeartbeatRange : null;
+  const rangeMin = range ? asInteger(range.min) : null;
+  const rangeMax = range ? asInteger(range.max) : null;
+  const estimate: IssueEstimate = {
+    size: size && ISSUE_ESTIMATE_SIZES.includes(size as any) ? size as IssueEstimate["size"] : null,
+  };
+  if (expectedHeartbeatCount !== null && expectedHeartbeatCount >= 1 && expectedHeartbeatCount <= 100) {
+    estimate.expectedHeartbeatCount = expectedHeartbeatCount;
+  }
+  if (rangeMin !== null && rangeMax !== null && rangeMin >= 1 && rangeMax <= 100 && rangeMin <= rangeMax) {
+    estimate.expectedHeartbeatRange = { min: rangeMin, max: rangeMax };
+  }
+  if (risk && ISSUE_ESTIMATE_RISKS.includes(risk as any)) {
+    estimate.risk = risk as IssueEstimate["risk"];
+  }
+  if (effectiveParallelism !== null && effectiveParallelism >= 1 && effectiveParallelism <= 20) {
+    estimate.effectiveParallelism = effectiveParallelism;
+  }
+  const notes = asString(value.notes);
+  if (notes) {
+    estimate.notes = notes;
+  }
+  return estimate.size !== null
+    || estimate.expectedHeartbeatCount !== undefined
+    || estimate.expectedHeartbeatRange !== undefined
+    || estimate.risk !== undefined
+    || estimate.effectiveParallelism !== undefined
+    || estimate.notes !== undefined
+    ? estimate
+    : null;
 }
 
 function normalizeRoutineTriggerExtension(value: unknown): CompanyPortabilityIssueRoutineTriggerManifestEntry | null {
@@ -1806,12 +1856,12 @@ function isEmptyArray(value: unknown): boolean {
   return Array.isArray(value) && value.length === 0;
 }
 
-function stripEmptyValues(value: unknown, opts?: { preserveEmptyStrings?: boolean }): unknown {
+function stripEmptyValues(value: unknown, opts?: { preserveEmptyStrings?: boolean; preserveEmptyArrays?: boolean }): unknown {
   if (Array.isArray(value)) {
     const next = value
       .map((entry) => stripEmptyValues(entry, opts))
       .filter((entry) => entry !== undefined);
-    return next.length > 0 ? next : undefined;
+    return next.length > 0 || opts?.preserveEmptyArrays ? next : undefined;
   }
   if (isPlainRecord(value)) {
     const next: Record<string, unknown> = {};
@@ -1826,7 +1876,7 @@ function stripEmptyValues(value: unknown, opts?: { preserveEmptyStrings?: boolea
     value === undefined ||
     value === null ||
     (!opts?.preserveEmptyStrings && value === "") ||
-    isEmptyArray(value) ||
+    (!opts?.preserveEmptyArrays && isEmptyArray(value)) ||
     isEmptyObject(value)
   ) {
     return undefined;
@@ -2270,7 +2320,7 @@ function parseYamlFile(raw: string): Record<string, unknown> {
   return parseYamlFrontmatter(raw);
 }
 
-function buildYamlFile(value: Record<string, unknown>, opts?: { preserveEmptyStrings?: boolean }) {
+function buildYamlFile(value: Record<string, unknown>, opts?: { preserveEmptyStrings?: boolean; preserveEmptyArrays?: boolean }) {
   const cleaned = stripEmptyValues(value, opts);
   if (!isPlainRecord(cleaned)) return "{}\n";
   return renderYamlBlock(cleaned, 0).join("\n") + "\n";
@@ -2764,6 +2814,14 @@ function buildManifestFromPackageFiles(
       projectWorkspaceKey: asString(extension.projectWorkspaceKey),
       assigneeAgentSlug: asString(frontmatter.assignee),
       description: taskDoc.body || asString(frontmatter.description),
+      successCriteria: asStringList(extension.successCriteria),
+      minimumVerification: asStringList(extension.minimumVerification),
+      expectedOutput: asString(extension.expectedOutput),
+      outOfScope: asStringList(extension.outOfScope),
+      estimate: normalizePortableIssueEstimate(extension.estimate),
+      phase: ISSUE_PHASES.includes(asString(extension.phase) as any)
+        ? asString(extension.phase) as typeof ISSUE_PHASES[number]
+        : null,
       recurring,
       routine: routineExtension,
       legacyRecurrence,
@@ -3489,6 +3547,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       );
       const extension = stripEmptyValues({
         identifier: issue.identifier,
+        successCriteria: issue.successCriteria,
+        minimumVerification: issue.minimumVerification,
+        expectedOutput: issue.expectedOutput,
+        outOfScope: issue.outOfScope,
+        estimate: issue.estimate,
+        phase: issue.phase,
         status: issue.status,
         priority: issue.priority,
         labelIds: issue.labelIds ?? undefined,
@@ -3510,7 +3574,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 : new Date(comment.createdAt).toISOString(),
             }))
           : undefined,
-      });
+      }, { preserveEmptyArrays: true });
       paperclipTasksOut[taskSlug] = isPlainRecord(extension) ? extension : {};
     }
 
@@ -3587,7 +3651,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         tasks: Object.keys(paperclipTasks).length > 0 ? paperclipTasks : undefined,
         routines: Object.keys(paperclipRoutines).length > 0 ? paperclipRoutines : undefined,
       },
-      { preserveEmptyStrings: true },
+      { preserveEmptyStrings: true, preserveEmptyArrays: true },
     );
 
     let finalFiles = filterExportFiles(files, input.selectedFiles, paperclipExtensionPath);
@@ -4614,6 +4678,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           projectWorkspaceId,
           title: manifestIssue.title,
           description,
+          successCriteria: manifestIssue.successCriteria,
+          minimumVerification: manifestIssue.minimumVerification,
+          expectedOutput: manifestIssue.expectedOutput,
+          outOfScope: manifestIssue.outOfScope,
+          estimate: manifestIssue.estimate,
+          phase: manifestIssue.phase,
           assigneeAgentId,
           status: issueStatus,
           priority: manifestIssue.priority && ISSUE_PRIORITIES.includes(manifestIssue.priority as any)

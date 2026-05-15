@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import type { IssueEstimate } from "@paperclipai/shared";
 import {
   type AnyPgColumn,
   pgTable,
@@ -29,6 +30,12 @@ export const issues = pgTable(
     parentId: uuid("parent_id").references((): AnyPgColumn => issues.id),
     title: text("title").notNull(),
     description: text("description"),
+    successCriteria: jsonb("success_criteria").$type<string[] | null>(),
+    minimumVerification: jsonb("minimum_verification").$type<string[] | null>(),
+    expectedOutput: text("expected_output"),
+    outOfScope: jsonb("out_of_scope").$type<string[] | null>(),
+    estimate: jsonb("estimate").$type<IssueEstimate | null>(),
+    phase: text("phase"),
     status: text("status").notNull().default("backlog"),
     workMode: text("work_mode").notNull().default("standard"),
     priority: text("priority").notNull().default("medium"),
@@ -70,6 +77,7 @@ export const issues = pgTable(
   },
   (table) => ({
     companyStatusIdx: index("issues_company_status_idx").on(table.companyId, table.status),
+    companyPhaseIdx: index("issues_company_phase_idx").on(table.companyId, table.phase),
     assigneeStatusIdx: index("issues_company_assignee_status_idx").on(
       table.companyId,
       table.assigneeAgentId,
