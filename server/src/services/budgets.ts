@@ -841,10 +841,8 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
               reason: `Provider rate limit (${block.limitKind})${block.resetsAt ? ` — resets at ${block.resetsAt.toISOString()}` : ""}`,
             };
           }
-          const resolved = await providerRateLimits.resolveBlock(block.id, "system");
-          if (resolved) {
-            await providerRateLimits.releaseAndResumeForBlock(resolved);
-          }
+          // Block window has passed — resolve lazily via releaseDueBlocks in tickTimers,
+          // not here, to avoid write side-effects inside concurrent read-path calls.
         }
       }
 

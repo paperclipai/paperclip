@@ -23,7 +23,7 @@ export function providerRateLimitRoutes(db: Db) {
     const actor = getActorInfo(req);
     const resolvedBy = actor.actorType === "user" ? `manual:${actor.actorId}` : "manual";
 
-    const block = await svc.getActiveBlock(blockId);
+    const block = await svc.getBlock(blockId);
     if (!block || block.companyId !== companyId) {
       throw notFound("Rate limit block not found");
     }
@@ -32,21 +32,24 @@ export function providerRateLimitRoutes(db: Db) {
       resetsAt: block.resetsAt,
     });
     if (stillBlocked) {
+      await svc.upsertBlock({
+        companyId: block.companyId,
+        adapterType: block.adapterType,
+        limitKind: block.limitKind,
+        modelFamily: block.modelFamily,
+        message: block.message,
+        resetsAt: block.resetsAt,
+      });
       res.json({ released: false, reason: "limit_still_active" });
       return;
     }
 
-    const resolved = await svc.resolveBlock(block.id, resolvedBy);
-    if (!resolved) {
+    const resolvedBlock = await svc.resolveBlock(block.id, resolvedBy);
+    if (!resolvedBlock) {
       throw notFound("Rate limit block not found");
     }
-    const release = await svc.releaseAndResumeForBlock(resolved);
-    res.json({
-      released: true,
-      resumedAgentIds: release.resumedAgentIds,
-      unblockedIssueIds: release.unblockedIssueIds,
-      retiredRecoveryIssueIds: release.retiredRecoveryIssueIds,
-    });
+    const release = await svc.releaseAndResumeForBlock(resolvedBlock);
+    res.json({ released: true, ...release });
   });
 
   return router;
