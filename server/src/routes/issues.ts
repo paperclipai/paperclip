@@ -103,6 +103,7 @@ import {
   normalizeIssueAttachmentMaxBytes,
   normalizeContentType,
   SVG_CONTENT_TYPE,
+  ATTACHMENT_INLINE_MAX_BYTES,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
@@ -2839,15 +2840,19 @@ export function issueRoutes(
           a.contentType === "text/markdown" ||
           a.contentType === "application/json" ||
           a.contentType === "text/csv";
-        const isSmall = (a.byteSize ?? 0) <= 65_536;
+        const isSmall = a.byteSize != null && a.byteSize <= ATTACHMENT_INLINE_MAX_BYTES;
         let inlineContent: string | null = null;
         if (isInlineable && isSmall) {
-          const obj = await storage.getObject(a.companyId, a.objectKey);
-          const chunks: Buffer[] = [];
-          for await (const chunk of obj.stream) {
-            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+          try {
+            const obj = await storage.getObject(a.companyId, a.objectKey);
+            const chunks: Buffer[] = [];
+            for await (const chunk of obj.stream) {
+              chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+            }
+            inlineContent = Buffer.concat(chunks).toString("utf-8");
+          } catch {
+            // storage error — omit inlineContent rather than failing the whole response
           }
-          inlineContent = Buffer.concat(chunks).toString("utf-8");
         }
         return {
           id: a.id,
