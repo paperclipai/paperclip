@@ -217,6 +217,24 @@ export const runRetryUi = {
   manualInterventionPhrase: "需要人工介入",
 } as const;
 
+/** Local dev: banner from GET /api/health devServer (trusted deployment only) */
+export const devRestartBanner = {
+  title: "需要重启开发服务",
+  autoRestartOn: "自动重启已开启",
+  reasonBackendChanges: "自本次进程启动以来，后端相关文件已有变更",
+  reasonPendingMigrations: "存在尚未应用的数据库迁移，需重新启动后才会生效",
+  reasonBackendAndMigrations: "后端相关文件已变更，且存在待应用的迁移",
+  updatedAt: (when: string) => ` · 更新于 ${when}`,
+  changedFiles: (listed: string, moreCount: number) =>
+    moreCount > 0 ? `变更：${listed}（另有 ${moreCount} 项）` : `变更：${listed}`,
+  pendingMigrations: (listed: string, moreCount: number) =>
+    moreCount > 0 ? `待处理迁移：${listed}（另有 ${moreCount} 项）` : `待处理迁移：${listed}`,
+  waitingForRuns: (n: number) =>
+    n === 1 ? "等待 1 个进行中的运行结束…" : `等待 ${n} 个进行中的运行结束…`,
+  autoRestartWhenIdle: "实例空闲后将自动重启",
+  manualRestartBeforeCmd: "确认当前工作可安全打断后，请重启",
+} as const;
+
 // ——— Navigation & common pages ———
 
 export const nav = {
