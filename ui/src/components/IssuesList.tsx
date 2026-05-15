@@ -1,4 +1,5 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
 import { useDialogActions } from "../context/DialogContext";
@@ -88,15 +89,6 @@ function findIssuesScrollContainer(element: HTMLElement | null): HTMLElement | n
   return null;
 }
 const boardIssueStatuses = ISSUE_STATUSES;
-const issueStatusLabels: Record<IssueStatus, string> = {
-  backlog: "Backlog",
-  todo: "Todo",
-  in_progress: "In progress",
-  in_review: "In review",
-  done: "Done",
-  blocked: "Blocked",
-  cancelled: "Cancelled",
-};
 const progressSegmentClasses: Record<IssueStatus, string> = {
   backlog: "bg-muted-foreground/40",
   todo: "bg-blue-500",
@@ -387,6 +379,7 @@ function IssueSearchInput({
   value: string;
   onDebouncedChange?: (search: string) => void;
 }) {
+  const { t } = useTranslation();
   const [draftValue, setDraftValue] = useState(value);
   const lastCommittedValueRef = useRef(value);
 
@@ -433,9 +426,9 @@ function IssueSearchInput({
             e.currentTarget.blur();
           }
         }}
-        placeholder="Search issues..."
+        placeholder={t("issuesList.searchIssuesPlaceholder")}
         className="pl-7 text-xs sm:text-sm"
-        aria-label="Search issues"
+        aria-label={t("issuesList.searchIssuesAria")}
         data-page-search-target="true"
       />
     </div>
@@ -451,6 +444,7 @@ function SubIssueProgressSummaryStrip({
   issueLinkState?: unknown;
   parentIssueIdForCostSummary?: string;
 }) {
+  const { t } = useTranslation();
   const target = summary.target;
   const targetIssue = target?.issue ?? null;
   const targetPathId = targetIssue?.identifier ?? targetIssue?.id ?? "";
@@ -480,35 +474,34 @@ function SubIssueProgressSummaryStrip({
         <div className="min-w-0 flex-1 space-y-2">
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
             <span className="font-medium text-foreground">
-              {summary.doneCount}/{summary.totalCount} done
+              {t("issuesList.doneCount", { done: summary.doneCount, total: summary.totalCount })}
             </span>
             <span className="text-muted-foreground">
-              {summary.inProgressCount} in progress
+              {t("issuesList.inProgressCount", { count: summary.inProgressCount })}
             </span>
             <span className="text-muted-foreground">
-              {summary.blockedCount} blocked
+              {t("issuesList.blockedCount", { count: summary.blockedCount })}
             </span>
             {showCostSummary && (
               <>
                 <span
                   className="text-muted-foreground tabular-nums"
-                  title={`${costSummary.runCount.toLocaleString()} run${
-                    costSummary.runCount === 1 ? "" : "s"
-                  } across ${costSummary.issueCount} sub-issue${
-                    costSummary.issueCount === 1 ? "" : "s"
-                  }`}
+                  title={t("issuesList.labelRunCount", {
+                    count: costSummary.runCount,
+                    issueCount: costSummary.issueCount,
+                  })}
                 >
-                  {formatTokens(totalTokens)} tokens
+                  {formatTokens(totalTokens)} {t("issuesList.tokens")}
                 </span>
                 <span className="text-muted-foreground tabular-nums">
-                  {formatDurationMs(costSummary.runtimeMs)} runtime
+                  {formatDurationMs(costSummary.runtimeMs)} {t("issuesList.runtime")}
                 </span>
               </>
             )}
           </div>
           <div
             role="progressbar"
-            aria-label="Sub-issues completion progress"
+            aria-label={t("issuesList.subIssuesCompletionProgress")}
             aria-valuemin={0}
             aria-valuenow={summary.doneCount}
             aria-valuemax={summary.totalCount}
@@ -519,7 +512,7 @@ function SubIssueProgressSummaryStrip({
                 key={status}
                 className={cn("h-full", progressSegmentClasses[status])}
                 style={{ width: `${(count / summary.totalCount) * 100}%` }}
-                title={`${issueStatusLabels[status]}: ${count}`}
+                title={t(`issuesList.statusLabels.${status}`, { count })}
                 aria-hidden="true"
               />
             ))}
@@ -530,7 +523,7 @@ function SubIssueProgressSummaryStrip({
           {target && targetIssue ? (
             <>
               <div className="text-xs font-medium text-muted-foreground">
-                {target.kind === "next" ? "Next up" : "Waiting on blockers"}
+                {target.kind === "next" ? t("issuesList.nextUp") : t("issuesList.waitingOnBlockers")}
               </div>
               <Link
                 to={createIssueDetailPath(targetPathId)}
@@ -545,11 +538,11 @@ function SubIssueProgressSummaryStrip({
               </Link>
             </>
           ) : summary.totalCount === 0 ? (
-            <div className="text-sm font-medium text-foreground">No active sub-issues</div>
+            <div className="text-sm font-medium text-foreground">{t("issuesList.noActiveSubIssues")}</div>
           ) : summary.doneCount === summary.totalCount ? (
-            <div className="text-sm font-medium text-foreground">All sub-issues done</div>
+            <div className="text-sm font-medium text-foreground">{t("issuesList.allSubIssuesDone")}</div>
           ) : (
-            <div className="text-sm font-medium text-foreground">No actionable sub-issues</div>
+            <div className="text-sm font-medium text-foreground">{t("issuesList.noActionableSubIssues")}</div>
           )}
         </div>
       </div>
@@ -587,6 +580,7 @@ export function IssuesList({
   onUpdateIssue,
 }: IssuesListProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
   const { data: session } = useQuery({
@@ -1234,8 +1228,8 @@ export function IssuesList({
     viewState.groupBy,
   ]);
 
-  const createActionLabel = createIssueLabel ? `Create ${createIssueLabel}` : "Create Issue";
-  const createButtonLabel = createIssueLabel ? `New ${createIssueLabel}` : "New Issue";
+  const createActionLabel = createIssueLabel ? t("issuesList.createLabel", { label: createIssueLabel }) : t("issuesList.createIssue");
+  const createButtonLabel = createIssueLabel ? t("issuesList.newLabel", { label: createIssueLabel }) : t("issuesList.newIssue");
   const openCreateIssueDialog = useCallback((group?: { key: string; items: Issue[] }) => {
     openNewIssue(newIssueDefaults(group));
   }, [newIssueDefaults, openNewIssue]);
@@ -1298,14 +1292,14 @@ export function IssuesList({
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "list" })}
-              title="List view"
+              title={t("issuesList.listView")}
             >
               <List className="h-3.5 w-3.5" />
             </button>
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "board" })}
-              title="Board view"
+              title={t("issuesList.boardView")}
             >
               <Columns3 className="h-3.5 w-3.5" />
             </button>
@@ -1318,7 +1312,7 @@ export function IssuesList({
               size="icon"
               className={cn("hidden h-8 w-8 shrink-0 sm:inline-flex", viewState.nestingEnabled && "bg-accent")}
               onClick={() => updateView({ nestingEnabled: !viewState.nestingEnabled })}
-              title={viewState.nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
+              title={viewState.nestingEnabled ? t("issuesList.disableNesting") : t("issuesList.enableNesting")}
             >
               <ListTree className="h-3.5 w-3.5" />
             </Button>
@@ -1329,7 +1323,7 @@ export function IssuesList({
             visibleColumnSet={visibleIssueColumnSet}
             onToggleColumn={toggleIssueColumn}
             onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-            title="Choose which issue columns stay visible"
+            title={t("issuesList.chooseColumns")}
             iconOnly
           />
 
@@ -1351,19 +1345,19 @@ export function IssuesList({
           {viewState.viewMode === "list" && (
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Sort">
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title={t("issuesList.sort")}>
                   <ArrowUpDown className="h-3.5 w-3.5" />
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="end" className="w-48 p-0">
                 <div className="p-2 space-y-0.5">
                   {([
-                    ["workflow", "Workflow"],
-                    ["status", "Status"],
-                    ["priority", "Priority"],
-                    ["title", "Title"],
-                    ["created", "Created"],
-                    ["updated", "Updated"],
+                    ["workflow", t("issuesList.sortOptions.workflow")],
+                    ["status", t("issuesList.sortOptions.status")],
+                    ["priority", t("issuesList.sortOptions.priority")],
+                    ["title", t("issuesList.sortOptions.title")],
+                    ["created", t("issuesList.sortOptions.created")],
+                    ["updated", t("issuesList.sortOptions.updated")],
                   ] as const).map(([field, label]) => (
                     <button
                       key={field}
@@ -1395,20 +1389,20 @@ export function IssuesList({
           {viewState.viewMode === "list" && (
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Group">
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title={t("issuesList.group")}>
                   <Layers className="h-3.5 w-3.5" />
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="end" className="w-44 p-0">
                 <div className="p-2 space-y-0.5">
                   {([
-                    ["status", "Status"],
-                    ["priority", "Priority"],
-                    ["assignee", "Assignee"],
-                    ["project", "Project"],
-                    ["workspace", "Workspace"],
-                    ["parent", "Parent Issue"],
-                    ["none", "None"],
+                    ["status", t("issuesList.groupOptions.status")],
+                    ["priority", t("issuesList.groupOptions.priority")],
+                    ["assignee", t("issuesList.groupOptions.assignee")],
+                    ["project", t("issuesList.groupOptions.project")],
+                    ["workspace", t("issuesList.groupOptions.workspace")],
+                    ["parent", t("issuesList.groupOptions.parentIssue")],
+                    ["none", t("issuesList.groupOptions.none")],
                   ] as const).map(([value, label]) => (
                     <button
                       key={value}
@@ -1432,18 +1426,18 @@ export function IssuesList({
       {error && <p className="text-sm text-destructive">{error.message}</p>}
       {!searchWithinLoadedIssues && normalizedIssueSearch.length > 0 && searchedIssues.length === ISSUE_SEARCH_RESULT_LIMIT && (
         <p className="text-xs text-muted-foreground">
-          Showing up to {ISSUE_SEARCH_RESULT_LIMIT} matches. Refine the search to narrow further.
+          {t("issuesList.showingUpToMatches", { limit: ISSUE_SEARCH_RESULT_LIMIT })}
         </p>
       )}
       {boardColumnLimitReached && (
         <p className="text-xs text-muted-foreground">
-          Some board columns are showing up to {ISSUE_BOARD_COLUMN_RESULT_LIMIT} issues. Refine filters or search to reveal the rest.
+          {t("issuesList.boardColumnLimit", { limit: ISSUE_BOARD_COLUMN_RESULT_LIMIT })}
         </p>
       )}
       {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
-          message="No issues match the current filters or search."
+          message={t("issuesList.noIssuesMatch")}
           action={createActionLabel}
           onAction={() => openCreateIssueDialog()}
         />
@@ -1489,8 +1483,8 @@ export function IssuesList({
                     variant="ghost"
                     size="icon-xs"
                     className="-mr-2 text-muted-foreground"
-                    title={`New issue in ${group.label}`}
-                    aria-label={`New issue in ${group.label}`}
+                    title={t("issuesList.newIssueIn", { group: group.label })}
+                    aria-label={t("issuesList.newIssueIn", { group: group.label })}
                     onClick={() => openCreateIssueDialog(group)}
                   >
                     <Plus className="h-3 w-3" />
@@ -1547,14 +1541,14 @@ export function IssuesList({
                       if (!blockerIssue) return null;
                       const label = blockerIssue.identifier ?? blockerIssue.id.slice(0, 8);
                       const blockerStep = checklistMeta?.stepNumberByIssueId.get(blockerId);
-                      const blockerStepSuffix = blockerStep ? ` \u00b7 step ${blockerStep}` : "";
-                      return { blockerId, chipLabel: `blocked by ${label}${blockerStepSuffix}` };
+                      const blockerStepSuffix = blockerStep ? ` · ${t("issuesList.step")} ${blockerStep}` : "";
+                      return { blockerId, chipLabel: `${t("issuesList.blockedBy", { label })}${blockerStepSuffix}` };
                     })
                     .filter((chip): chip is { blockerId: string; chipLabel: string } => chip !== null);
                   const firstVisibleBlockerChip = visibleBlockerChips[0] ?? null;
                   const additionalVisibleBlockerCount = Math.max(visibleBlockerChips.length - 1, 0);
                   const additionalVisibleBlockerLabel = additionalVisibleBlockerCount > 0
-                    ? ` ... and ${additionalVisibleBlockerCount} more`
+                    ? t("issuesList.andMore", { count: additionalVisibleBlockerCount })
                     : "";
                   const firstVisibleBlockerDisplayLabel = firstVisibleBlockerChip
                     ? `${firstVisibleBlockerChip.chipLabel}${additionalVisibleBlockerLabel}`
@@ -1611,18 +1605,18 @@ export function IssuesList({
                           <>
                             {hasChildren && !isExpanded ? (
                               <span className="ml-1.5 text-xs text-muted-foreground">
-                                ({totalDescendants} sub-task{totalDescendants !== 1 ? "s" : ""})
+                                {t("issuesList.subTaskCount", { count: totalDescendants })}
                               </span>
                             ) : null}
                             {issueBadge ? (
                               issueBadge === "Paused" ? (
                                 <span
                                   className={cn("ml-1.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium", statusBadge.paused)}
-                                  aria-label="Paused"
-                                  title="Paused"
+                                  aria-label={t("issuesList.paused")}
+                                  title={t("issuesList.paused")}
                                 >
                                   <CircleSlash2 className="h-3 w-3" />
-                                  Paused
+                                  {t("issuesList.paused")}
                                 </span>
                               ) : (
                                 <span className="ml-1.5 inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
@@ -1633,11 +1627,11 @@ export function IssuesList({
                             {isSuccessfulRunHandoffRequired(issue) ? (
                               <span
                                 className="ml-1.5 inline-flex items-center gap-1 rounded-full border border-amber-400/45 bg-amber-50/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
-                                aria-label="Needs next step"
-                                title="This issue needs a next step"
+                                aria-label={t("issuesList.needsNextStep")}
+                                title={t("issuesList.needsNextStepTitle")}
                               >
                                 <CircleDot className="h-3 w-3" />
-                                Needs next step
+                                {t("issuesList.needsNextStep")}
                               </span>
                             ) : null}
                           </>
@@ -1725,12 +1719,12 @@ export function IssuesList({
                                           className="min-w-0"
                                         />
                                       ) : (
-                                        <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                                          <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
-                                            <User className="h-3.5 w-3.5" />
+                                          <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                                            <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
+                                              <User className="h-3.5 w-3.5" />
+                                            </span>
+                                            {t("issuesList.assignee")}
                                           </span>
-                                          Assignee
-                                        </span>
                                       )}
                                     </button>
                                   </PopoverTrigger>

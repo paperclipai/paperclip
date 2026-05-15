@@ -1,10 +1,11 @@
 {
-  "current_file_idx": 4,
+  "current_file_idx": 5,
   "completed_files": [
     1,
     2,
     3,
-    4
+    4,
+    5
   ],
   "failed_files": [],
   "current_retry": 0,
