@@ -49,6 +49,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueApprovals,
+  issueAttachments,
   issueComments,
   issuePlanDecompositions,
   issueRecoveryActions,
@@ -56,6 +57,7 @@ import {
   issueThreadInteractions,
   issues,
   issueWorkProducts,
+  assets as assetsTable,
   projects,
   projectWorkspaces,
   routineRevisions,
@@ -4410,6 +4412,25 @@ export async function buildPaperclipWakePayload(input: {
       : null);
   if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
 
+  const attachmentRows = issueId
+    ? await input.db
+        .select({
+          id: issueAttachments.id,
+          filename: assetsTable.originalFilename,
+          contentType: assetsTable.contentType,
+          byteSize: assetsTable.byteSize,
+        })
+        .from(issueAttachments)
+        .innerJoin(assetsTable, eq(assetsTable.id, issueAttachments.assetId))
+        .where(
+          and(
+            eq(issueAttachments.issueId, issueId),
+            eq(issueAttachments.companyId, input.companyId),
+          ),
+        )
+        .orderBy(asc(issueAttachments.createdAt))
+    : [];
+
   const commentRows =
     commentIds.length === 0
       ? []
@@ -4662,6 +4683,13 @@ export async function buildPaperclipWakePayload(input: {
           updatedAt: safeContinuationSummary.updatedAt.toISOString(),
         }
       : null,
+    attachments: attachmentRows.map((a) => ({
+      id: a.id,
+      filename: a.filename,
+      contentType: a.contentType,
+      byteSize: a.byteSize,
+      contentPath: `/api/attachments/${a.id}/content`,
+    })),
     commentIds,
     latestCommentId: commentIds[commentIds.length - 1] ?? null,
     comments,
