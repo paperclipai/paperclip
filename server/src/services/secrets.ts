@@ -56,6 +56,11 @@ import { isSecretProviderClientError } from "../secrets/types.js";
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SENSITIVE_ENV_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
+// Runtime-injected Paperclip env keys that the heartbeat path overwrites per run.
+// Strict secrets mode must not demand secret refs for these — they're internal
+// auth tokens, not upstream provider keys, and the UI may resend a stored
+// plaintext value when the user edits unrelated fields (e.g. adapter switch).
+const RUNTIME_INJECTED_ENV_KEYS: ReadonlySet<string> = new Set(["PAPERCLIP_API_KEY"]);
 const REDACTED_SENTINEL = "***REDACTED***";
 const COMING_SOON_SECRET_PROVIDERS: ReadonlySet<SecretProvider> = new Set([
   "gcp_secret_manager",
@@ -599,7 +604,12 @@ export function secretService(db: Db) {
 
       const binding = canonicalizeBinding(parsed.data as EnvBinding);
       if (binding.type === "plain") {
-        if (opts?.strictMode && isSensitiveEnvKey(key) && binding.value.trim().length > 0) {
+        if (
+          opts?.strictMode &&
+          isSensitiveEnvKey(key) &&
+          !RUNTIME_INJECTED_ENV_KEYS.has(key) &&
+          binding.value.trim().length > 0
+        ) {
           throw unprocessable(
             `Strict secret mode requires secret references for sensitive key: ${key}`,
           );

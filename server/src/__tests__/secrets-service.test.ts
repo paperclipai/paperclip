@@ -94,6 +94,26 @@ describeEmbeddedPostgres("secretService", () => {
     ).rejects.toThrow(/same company/i);
   });
 
+  it("allows plain PAPERCLIP_API_KEY in strict mode (runtime-injected, not an upstream secret)", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+
+    const normalized = await svc.normalizeEnvBindingsForPersistence(
+      companyId,
+      { PAPERCLIP_API_KEY: { type: "plain", value: "stale-runtime-jwt" } },
+      { strictMode: true },
+    );
+    expect(normalized.PAPERCLIP_API_KEY).toEqual({ type: "plain", value: "stale-runtime-jwt" });
+
+    await expect(
+      svc.normalizeEnvBindingsForPersistence(
+        companyId,
+        { OPENAI_API_KEY: { type: "plain", value: "sk-real-upstream-key" } },
+        { strictMode: true },
+      ),
+    ).rejects.toThrow(/Strict secret mode requires secret references/i);
+  });
+
   it("prevents duplicate bindings for a target config path", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
