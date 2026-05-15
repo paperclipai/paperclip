@@ -307,26 +307,39 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   }
 
   async function getRefreshCommentState(companyId: string, reviewIssueId: string) {
-    return db
-      .select({
-        count: sql<number>`count(*)::int`,
-        latestCreatedAt: sql<Date | null>`max(${issueComments.createdAt})`,
-      })
-      .from(issueComments)
-      .where(
-        and(
-          eq(issueComments.companyId, companyId),
-          eq(issueComments.issueId, reviewIssueId),
-          sql`${issueComments.body} like ${`${PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX}%`}`,
+    const [aggregate, latest] = await Promise.all([
+      db
+        .select({
+          count: sql<number>`count(*)::int`,
+          latestCreatedAt: sql<Date | null>`max(${issueComments.createdAt})`,
+        })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.companyId, companyId),
+            eq(issueComments.issueId, reviewIssueId),
+            sql`${issueComments.body} like ${`${PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX}%`}`,
+          ),
         ),
-      )
-      .then((rows) => {
-        const row = rows[0];
-        return {
-          count: Number(row?.count ?? 0),
-          latestCreatedAt: coerceDate(row?.latestCreatedAt),
-        };
-      });
+      db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.companyId, companyId),
+            eq(issueComments.issueId, reviewIssueId),
+            sql`${issueComments.body} like ${`${PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX}%`}`,
+          ),
+        )
+        .orderBy(desc(issueComments.createdAt))
+        .limit(1),
+    ]);
+    const row = aggregate[0];
+    return {
+      count: Number(row?.count ?? 0),
+      latestCreatedAt: coerceDate(row?.latestCreatedAt),
+      latestBody: latest[0]?.body ?? null,
+    };
   }
 
   async function addRefreshComment(
@@ -647,7 +660,11 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       ) {
         return { kind: "existing" as const, reviewIssueId: existing.id };
       }
-      await addRefreshComment(existing.id, buildRefreshComment(evidence, opts.prefix), evidence.generatedAt);
+      const refreshBody = buildRefreshComment(evidence, opts.prefix);
+      if (refreshState.latestBody === refreshBody) {
+        return { kind: "unchanged" as const, reviewIssueId: existing.id };
+      }
+      await addRefreshComment(existing.id, refreshBody, evidence.generatedAt);
       await logActivity(db, {
         companyId: evidence.sourceIssue.companyId,
         actorType: "system",
@@ -785,6 +802,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       scanned: candidates.length,
       created: 0,
       updated: 0,
+      unchanged: 0,
       existing: 0,
       snoozed: 0,
       creationCapped: 0,
@@ -827,6 +845,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         const outcome = await createOrUpdateReview(evidence, { prefix, thresholds });
         if (outcome.kind === "created") result.created += 1;
         else if (outcome.kind === "updated") result.updated += 1;
+        else if (outcome.kind === "unchanged") result.unchanged += 1;
         else if (outcome.kind === "creation_capped") result.creationCapped += 1;
         else result.existing += 1;
         if (outcome.reviewIssueId) result.reviewIssueIds.push(outcome.reviewIssueId);
