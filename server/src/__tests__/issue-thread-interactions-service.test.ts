@@ -701,6 +701,75 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("A decline reason is required for this confirmation");
   });
 
+  it("rejects a second pending request_confirmation on the same issue with a canonical unblock tuple", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Confirm a request",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_review",
+      priority: "medium",
+      assigneeUserId: "local-board",
+    });
+
+    const first = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Approve revision one?",
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    await expect(interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Approve revision two?",
+      },
+    }, {
+      userId: "local-board",
+    })).rejects.toMatchObject({
+      status: 409,
+      details: expect.objectContaining({
+        issueId,
+        interactionId: first.id,
+        interactionKind: "request_confirmation",
+        interactionStatus: "pending",
+        pendingInteractionCount: 1,
+        unblockOwnerType: "user",
+        unblockAction: "resolve_pending_request_confirmation",
+      }),
+    });
+  });
+
   it("returns agent-authored request confirmations to the creating agent when a board user accepts", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();

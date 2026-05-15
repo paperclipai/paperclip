@@ -367,6 +367,22 @@ async function assertRequestConfirmationTargetIsCurrent(db: Db | any, args: {
   }
 }
 
+async function listPendingRequestConfirmationRows(
+  db: Db | any,
+  args: { companyId: string; issueId: string },
+) {
+  return db
+    .select()
+    .from(issueThreadInteractions)
+    .where(and(
+      eq(issueThreadInteractions.companyId, args.companyId),
+      eq(issueThreadInteractions.issueId, args.issueId),
+      eq(issueThreadInteractions.kind, "request_confirmation"),
+      eq(issueThreadInteractions.status, "pending"),
+    ))
+    .orderBy(asc(issueThreadInteractions.createdAt), asc(issueThreadInteractions.id));
+}
+
 async function expireStaleRequestConfirmationTarget(db: Db | any, args: {
   row: IssueThreadInteractionRow;
   actor: InteractionActor;
@@ -679,6 +695,31 @@ export function issueThreadInteractionService(db: Db) {
           issueId: issue.id,
           target: data.payload.target ?? null,
         });
+
+        const pendingRows = await listPendingRequestConfirmationRows(db, {
+          companyId: issue.companyId,
+          issueId: issue.id,
+        });
+        const stillPending: IssueThreadInteractionRow[] = [];
+        for (const row of pendingRows) {
+          const expired = await expireStaleRequestConfirmationTarget(db, {
+            row,
+            actor,
+          });
+          if (!expired) stillPending.push(row);
+        }
+        if (stillPending.length > 0) {
+          const canonical = stillPending[stillPending.length - 1];
+          throw conflict("Issue already has a canonical pending request_confirmation interaction", {
+            issueId: issue.id,
+            interactionId: canonical?.id ?? null,
+            interactionKind: "request_confirmation",
+            interactionStatus: "pending",
+            pendingInteractionCount: stillPending.length,
+            unblockOwnerType: "user",
+            unblockAction: "resolve_pending_request_confirmation",
+          });
+        }
       }
 
       let created: IssueThreadInteractionRow;

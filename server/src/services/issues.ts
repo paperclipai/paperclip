@@ -29,6 +29,7 @@ import {
 } from "@paperclipai/db";
 import type {
   IssueCommentAuthorType,
+  IssueCanonicalUnblockTuple,
   IssueCommentMetadata,
   IssueCommentPresentation,
   IssueBlockerAttention,
@@ -45,6 +46,7 @@ import {
   issueCommentPresentationSchema,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
+  requestConfirmationPayloadSchema,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { parseObject } from "../adapters/utils.js";
@@ -950,6 +952,76 @@ function summarizeIssueRelationRow(row: IssueRelationSummaryRow): IssueRelationI
     assigneeAgentId: row.assigneeAgentId,
     assigneeUserId: row.assigneeUserId,
   };
+}
+
+async function canonicalUnblockTuplesByIssueId(
+  companyId: string,
+  issueIds: string[],
+  dbOrTx: DbReader = db,
+): Promise<Map<string, IssueCanonicalUnblockTuple>> {
+  const uniqueIssueIds = [...new Set(issueIds.filter(Boolean))];
+  const tuplesByIssueId = new Map<string, IssueCanonicalUnblockTuple>();
+  if (uniqueIssueIds.length === 0) return tuplesByIssueId;
+
+  const rows = await dbOrTx
+    .select({
+      issueId: issueThreadInteractions.issueId,
+      interactionId: issueThreadInteractions.id,
+      continuationPolicy: issueThreadInteractions.continuationPolicy,
+      payload: issueThreadInteractions.payload,
+      createdAt: issueThreadInteractions.createdAt,
+    })
+    .from(issueThreadInteractions)
+    .where(
+      and(
+        eq(issueThreadInteractions.companyId, companyId),
+        eq(issueThreadInteractions.kind, "request_confirmation"),
+        eq(issueThreadInteractions.status, "pending"),
+        inArray(issueThreadInteractions.issueId, uniqueIssueIds),
+      ),
+    )
+    .orderBy(desc(issueThreadInteractions.createdAt), desc(issueThreadInteractions.id));
+
+  const grouped = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const list = grouped.get(row.issueId) ?? [];
+    list.push(row);
+    grouped.set(row.issueId, list);
+  }
+
+  for (const [issueId, interactionRows] of grouped.entries()) {
+    const canonical = interactionRows[0];
+    if (!canonical) continue;
+    const payload = requestConfirmationPayloadSchema.safeParse(canonical.payload);
+    const target = payload.success ? payload.data.target ?? null : null;
+    tuplesByIssueId.set(issueId, {
+      kind: "request_confirmation",
+      interactionId: canonical.interactionId,
+      interactionStatus: "pending",
+      continuationPolicy: canonical.continuationPolicy as IssueCanonicalUnblockTuple["continuationPolicy"],
+      unblockOwnerType: "user",
+      unblockAction: "resolve_pending_request_confirmation",
+      pendingInteractionCount: interactionRows.length,
+      targetIssueId: target?.type === "issue_document" ? (target.issueId ?? issueId) : null,
+      targetDocumentId: target?.type === "issue_document" ? target.documentId : null,
+      targetDocumentKey: target?.type === "issue_document" ? target.key : null,
+      targetRevisionId: target?.type === "issue_document" ? target.revisionId : null,
+    });
+  }
+
+  return tuplesByIssueId;
+}
+
+function attachCanonicalUnblockTuples(
+  summaries: IssueRelationIssueSummary[],
+  tuplesByIssueId: Map<string, IssueCanonicalUnblockTuple>,
+) {
+  for (const summary of summaries) {
+    summary.canonicalUnblockTuple = tuplesByIssueId.get(summary.id) ?? null;
+    if (summary.terminalBlockers && summary.terminalBlockers.length > 0) {
+      attachCanonicalUnblockTuples(summary.terminalBlockers, tuplesByIssueId);
+    }
+  }
 }
 
 async function terminalExplicitBlockersByRoot(
@@ -2187,9 +2259,14 @@ export function issueService(db: Db) {
       empty.get(row.currentIssueId)?.blocks.push(summarizeIssueRelationRow(row));
     }
 
-    const terminalByRoot = await terminalExplicitBlockersByRoot(
+    const directBlockedBy = [...empty.values()].flatMap((relations) => relations.blockedBy);
+    const terminalByRoot = await terminalExplicitBlockersByRoot(companyId, directBlockedBy, dbOrTx);
+    const tuplesByIssueId = await canonicalUnblockTuplesByIssueId(
       companyId,
-      [...empty.values()].flatMap((relations) => relations.blockedBy),
+      [
+        ...directBlockedBy.map((relation) => relation.id),
+        ...[...terminalByRoot.values()].flatMap((relations) => relations.map((relation) => relation.id)),
+      ],
       dbOrTx,
     );
 
@@ -2201,6 +2278,7 @@ export function issueService(db: Db) {
           blocker.terminalBlockers = terminalBlockers;
         }
       }
+      attachCanonicalUnblockTuples(relations.blockedBy, tuplesByIssueId);
       relations.blocks.sort((a, b) => a.title.localeCompare(b.title));
     }
 
