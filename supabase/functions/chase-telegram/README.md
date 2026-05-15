@@ -44,12 +44,13 @@ Telegram message → routeQuery(text) → regex dispatch (fast path)
 | `tools/paperclip.ts` | Paperclip query tools (blocked, approvals, agents, detail, search, overview, agentIssues) |
 | `tools/actions.ts` | Agent action tools (createIssue) |
 | `tools/aviation.ts` | Aviation weather tools (METAR, TAF) |
+| `tools/places.ts` | Location-aware search tools (cinemas, restaurants, hotels) |
 
 ### Routing Pipeline
 
 1. **Slash commands** — `/overview`, `/blocked`, `/detail`, `/metar`, etc. (fastest path, no AI)
 2. **Natural language patterns** — Regex-based routing for common phrases like "what is X working on?", "have X do Y"
-3. **LLM intent classifier** — For unmatched queries, uses DeepSeek/Claude to classify intent (greeting, paperclip_query, agent_action, aviation_weather, web_search, chat)
+3. **LLM intent classifier** — For unmatched queries, uses DeepSeek/Claude to classify intent (greeting, paperclip_query, agent_action, aviation_weather, location_search, web_search, chat)
 4. **AI chat fallback** — Free-text conversation using Chase's system prompt
 
 ### Supported NL Queries
@@ -67,6 +68,11 @@ Telegram message → routeQuery(text) → regex dispatch (fast path)
 | "weather at KJFK" | NL METAR query (no slash needed) |
 | "TAF for KLAX" | NL TAF query (no slash needed) |
 | "forecast at KDFW" | NL TAF query |
+| "movies near downtown Austin" | Find cinemas near a location |
+| "restaurants in Brooklyn" | Find restaurants near a location |
+| "hotels near Soho London" | Find hotels near a location |
+| "where to eat in Paris" | Find restaurants near a location |
+| "places to stay near Eiffel Tower" | Find hotels near a location |
 | "hello", "hi" | Warm greeting (no API call) |
 
 ## Environment Variables
@@ -153,6 +159,9 @@ curl -X POST https://api.telegram.org/bot<BOT_TOKEN>/setWebhook \
 | `/search <query>` | Search issues |
 | `/metar <ICAO>` | Current METAR weather report (e.g. `/metar KJFK`) |
 | `/taf <ICAO>` | TAF weather forecast (e.g. `/taf KJFK`) |
+| `/movies <location>` | Find cinemas near a location (e.g. `/movies downtown Austin`) |
+| `/restaurants <location>` | Find restaurants near a location (e.g. `/restaurants Brooklyn`) |
+| `/hotels <location>` | Find hotels near a location (e.g. `/hotels Soho London`) |
 | Free text | Natural language routing to queries |
 
 ## API Endpoints

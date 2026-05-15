@@ -1,3 +1,30 @@
+export interface TelegramLocation {
+  latitude: number;
+  longitude: number;
+  live_period?: number;
+  heading?: number;
+}
+
+export interface TelegramVenue {
+  location: TelegramLocation;
+  title: string;
+  address: string;
+  foursquare_id?: string;
+  foursquare_type?: string;
+  google_place_id?: string;
+  google_place_type?: string;
+}
+
+export interface StoredLocation {
+  latitude: number;
+  longitude: number;
+  updatedAt: number;
+  venueTitle?: string;
+  venueAddress?: string;
+}
+
+export type LocationSource = "manual" | "venue" | "live";
+
 export interface TelegramUpdate {
   update_id: number;
   message?: {
@@ -5,6 +32,8 @@ export interface TelegramUpdate {
     from?: { id: number; first_name?: string; username?: string };
     chat: { id: number; type: string };
     text?: string;
+    location?: TelegramLocation;
+    venue?: TelegramVenue;
     date: number;
   };
 }
@@ -68,6 +97,7 @@ export type Intent =
   | "paperclip_query"
   | "agent_action"
   | "aviation_weather"
+  | "location_search"
   | "web_search"
   | "chat"
   | "unknown";

@@ -573,7 +573,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       }
 
-      const silentThresholdSec = asNumber(config.silentThresholdSec, 300);
+      const silentThresholdSec = asNumber(config.silentThresholdSec, 600);
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         cwd,
         env: preparedRuntimeConfig.env,
@@ -605,7 +605,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           signal: attempt.proc.signal,
           timedOut: true,
           errorMessage: attempt.proc.silentTimedOut
-            ? `Silent timeout: no output for ${asNumber(config.silentThresholdSec, 300)}s (total timeout: ${timeoutSec}s)`
+            ? `Silent timeout: no output for ${asNumber(config.silentThresholdSec, 600)}s (total timeout: ${timeoutSec}s)`
             : `Timed out after ${timeoutSec}s`,
           clearSession: clearSessionOnMissingSession,
         };

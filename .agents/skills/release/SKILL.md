@@ -233,6 +233,56 @@ If `latest` is bad after stable publish:
 
 Then fix forward with a new stable release.
 
+## Release Monitoring
+
+After publishing (or on a recurring schedule), run the release monitor to verify registry health:
+
+```bash
+# Quick health summary
+pnpm release:monitor
+
+# Full check with dist-tag integrity and recent release history
+pnpm release:monitor -- --check-dist-tags --recent 5
+
+# Cron-friendly: silent mode, JSON output, only emit on warnings/errors
+pnpm release:monitor:cron
+
+# Example cron entry (every 6 hours):
+# 0 */6 * * * cd /opt/paperclip && pnpm release:monitor:cron
+```
+
+The monitor checks:
+- every release-enabled package exists on npm
+- `latest` dist-tag does not point to a canary version
+- all packages agree on the same canary version (detects partial publishes)
+- recent release version history
+
+Exit codes: 0 = ok, 1 = warning, 2 = error. JSON output via `--format json`.
+
+### GitHub Release Alerting (Telegram)
+
+`scripts/release-monitor/check-and-alert.mjs` checks GitHub for new releases and sends Telegram alerts:
+
+```bash
+# Prerequisites: set these env vars
+export TELEGRAM_BOT_TOKEN=your_bot_token
+export TELEGRAM_CHAT_ID=your_chat_id
+
+# Manual run
+pnpm release:monitor:alerts
+
+# Cron (every 6 hours):
+# 0 */6 * * * cd /opt/paperclip && pnpm release:monitor:alerts
+```
+
+The script maintains a state file (`.release-monitor-state.json`) to track the last alerted release. On each run it:
+1. Fetches the latest GitHub release via API
+2. Compares with recorded state — no alert if already notified
+3. Sends an HTML-formatted Telegram message with release notes for new releases
+4. Updates the state file
+
+Passing a valid `GITHUB_TOKEN` raises the API rate limit from 60/hr to 5000/hr.
+
 ## Output
 
 When the skill completes, provide:

@@ -4,7 +4,7 @@ import { sendTelegram, isBotConfigured } from "./lib/telegram.ts";
 import { isPaperclipConfigured } from "./lib/api.ts";
 import { escapeHtml } from "./lib/html.ts";
 import { formatNotification, isAiConfigured, aiProvider } from "./lib/llm.ts";
-import { routeQuery } from "./router.ts";
+import { routeQuery, routeLocation, routeVenue } from "./router.ts";
 
 // ─── Environment ──────────────────────────────────────────────────────
 
@@ -19,7 +19,7 @@ const CHASE_API_KEY = Deno.env.get("CHASE_PAPERCLIP_API_KEY") ?? "";
 
 // ─── HTTP Helpers ─────────────────────────────────────────────────────
 
-function respondJson(body: unknown, status = 200): Response {
+export function respondJson(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "Content-Type": "application/json" },
@@ -28,9 +28,9 @@ function respondJson(body: unknown, status = 200): Response {
 
 // ─── Webhook Handler ──────────────────────────────────────────────────
 
-async function handleWebhook(update: TelegramUpdate): Promise<Response> {
+export async function handleWebhook(update: TelegramUpdate): Promise<Response> {
   const msg = update.message;
-  if (!msg?.text || !msg.from) {
+  if (!msg?.from) {
     return respondJson({ ok: true, reason: "non-message update ignored" });
   }
 
@@ -40,10 +40,36 @@ async function handleWebhook(update: TelegramUpdate): Promise<Response> {
   }
 
   const chatId = msg.chat.id;
-  const text = msg.text;
   const firstName = msg.from?.first_name;
 
-  const { handler, requiresAi } = routeQuery(text, firstName);
+  // Handle venue messages (shared place with location)
+  if (msg.venue) {
+    const { location, title, address } = msg.venue;
+    const { latitude, longitude } = location;
+    const handler = routeVenue(chatId, latitude, longitude, title, address, firstName);
+    const result = await handler();
+    await sendTelegram(chatId, result.text);
+    return respondJson({ ok: true });
+  }
+
+  // Handle location messages (user shared their location)
+  if (msg.location) {
+    const { latitude, longitude } = msg.location;
+    const handler = routeLocation(chatId, latitude, longitude, msg.text, firstName);
+    const result = await handler();
+    if (result.text) {
+      await sendTelegram(chatId, result.text);
+    }
+    return respondJson({ ok: true });
+  }
+
+  if (!msg.text) {
+    return respondJson({ ok: true, reason: "non-text message ignored" });
+  }
+
+  const text = msg.text;
+
+  const { handler, requiresAi } = routeQuery(text, firstName, chatId);
 
   if (requiresAi) {
     await sendTelegram(chatId, "One moment, looking that up...");
@@ -67,7 +93,7 @@ async function handleWebhook(update: TelegramUpdate): Promise<Response> {
 
 // ─── Notification Endpoint (Paperclip → Telegram alerts) ──────────────
 
-async function handleNotify(request: Request): Promise<Response> {
+export async function handleNotify(request: Request): Promise<Response> {
   try {
     const auth = request.headers.get("authorization") ?? "";
     if (!auth.startsWith("Bearer ") || auth.slice(7) !== CHASE_API_KEY) {
@@ -118,7 +144,7 @@ async function handleNotify(request: Request): Promise<Response> {
 
 // ─── Webhook Setup Endpoint ───────────────────────────────────────────
 
-async function handleSetupWebhook(request: Request): Promise<Response> {
+export async function handleSetupWebhook(request: Request): Promise<Response> {
   const auth = request.headers.get("authorization") ?? "";
   if (!auth.startsWith("Bearer ") || auth.slice(7) !== WEBHOOK_SECRET) {
     return respondJson({ error: "Unauthorized" }, 401);
@@ -154,7 +180,7 @@ async function handleSetupWebhook(request: Request): Promise<Response> {
 
 // ─── Health Check ─────────────────────────────────────────────────────
 
-function handleHealth(): Response {
+export function handleHealth(): Response {
   const ok = isBotConfigured() && isPaperclipConfigured();
   return respondJson({
     status: ok ? "healthy" : "unhealthy",
@@ -167,7 +193,7 @@ function handleHealth(): Response {
 
 // ─── Server ───────────────────────────────────────────────────────────
 
-serve(async (request: Request) => {
+export async function handleRequest(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname
     .replace(/^\/functions\/v1\/chase-telegram(?:\/)?/, "/")
@@ -192,4 +218,8 @@ serve(async (request: Request) => {
   }
 
   return respondJson({ error: "Not found", pathname: url.pathname, path, method }, 404);
-});
+}
+
+if (import.meta.main) {
+  serve(handleRequest);
+}

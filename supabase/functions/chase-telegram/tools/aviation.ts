@@ -25,6 +25,54 @@ async function fetchAviationWeather(
 
 export const WEATHER_DISCLAIMER = "\n\n<i>Not for flight planning. Source: NOAA Aviation Weather Center (aviationweather.gov). Data may be delayed — always consult official briefings for flight decisions.</i>";
 
+const CHECKWX_BASE = "https://api.checkwx.com";
+const CHECKWX_API_KEY = Deno.env.get("CHECKWX_API_KEY") ?? "";
+
+export async function handleNotamQuery(station: string): Promise<QueryResult> {
+  try {
+    if (!CHECKWX_API_KEY) {
+      const msg = "NOTAM queries require a <code>CHECKWX_API_KEY</code> environment variable. Ask Christie to set one up (free tier available at checkwx.com).";
+      console.warn("NOTAM query blocked: CHECKWX_API_KEY not configured");
+      return { text: msg };
+    }
+    const url = `${CHECKWX_BASE}/notam/${encodeURIComponent(station.toUpperCase())}`;
+    const res = await fetch(url, {
+      headers: { "X-API-Key": CHECKWX_API_KEY },
+    });
+    if (!res.ok) {
+      throw new Error(`CheckWX API returned ${res.status}`);
+    }
+    const body = await res.json();
+    const notams: Array<{ notam_id: string; body: string }> = body.data ?? [];
+    if (notams.length === 0) {
+      return {
+        text: `No NOTAMs found for <code>${escapeHtml(station.toUpperCase())}</code>.`,
+      };
+    }
+    const maxNotams = 5;
+    const entries = notams.slice(0, maxNotams).map((n) => `<code>${escapeHtml(n.body)}</code>`).join("\n\n");
+    const total = notams.length;
+    const summary = total > maxNotams
+      ? `\n\n<i>…and ${total - maxNotams} more (${total} total)</i>`
+      : "";
+    return {
+      text: [
+        `<b>NOTAMs for ${escapeHtml(station.toUpperCase())}</b>`,
+        "",
+        entries,
+        summary,
+        WEATHER_DISCLAIMER,
+      ].join("\n"),
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`NOTAM query for ${station} failed: ${message}`);
+    return {
+      text: `Unable to fetch NOTAMs for <code>${escapeHtml(station)}</code>: ${escapeHtml(message)}`,
+    };
+  }
+}
+
 export async function handleMetarQuery(station: string): Promise<QueryResult> {
   try {
     const raw = await fetchAviationWeather("metar", station);
