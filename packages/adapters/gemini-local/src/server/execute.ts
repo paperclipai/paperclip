@@ -156,6 +156,73 @@ async function ensureGeminiSkillsInjected(
   }
 }
 
+/**
+ * Ensure that Gemini chat sessions are shared across agents within the same company.
+ * This works by symlinking `~/.gemini/tmp/${agentId}/chats` to a shared company-scoped directory.
+ */
+async function ensureGeminiChatsShared(
+  onLog: AdapterExecutionContext["onLog"],
+  companyId: string,
+  agentId: string,
+): Promise<void> {
+  const sharedDir = path.join(os.homedir(), ".gemini", "companies", companyId, "chats");
+  const agentTmpDir = path.join(os.homedir(), ".gemini", "tmp", agentId);
+  const agentChatsDir = path.join(agentTmpDir, "chats");
+
+  try {
+    await fs.mkdir(sharedDir, { recursive: true });
+    await fs.mkdir(agentTmpDir, { recursive: true });
+
+    let shouldLink = true;
+    try {
+      const stats = await fs.lstat(agentChatsDir);
+      if (stats.isSymbolicLink()) {
+        const target = await fs.readlink(agentChatsDir);
+        if (path.resolve(target) === path.resolve(sharedDir)) {
+          shouldLink = false;
+        } else {
+          await fs.unlink(agentChatsDir);
+        }
+      } else if (stats.isDirectory()) {
+        // Move existing chats to shared dir
+        const entries = await fs.readdir(agentChatsDir);
+        if (entries.length > 0) {
+          await onLog(
+            "stdout",
+            `[paperclip] Migrating existing Gemini chats from agent ${agentId} to shared company storage.\n`,
+          );
+          for (const entry of entries) {
+            const src = path.join(agentChatsDir, entry);
+            const dest = path.join(sharedDir, entry);
+            try {
+              // Copy then remove to be safe across possible (though unlikely) filesystem boundaries
+              await fs.cp(src, dest, { recursive: true });
+            } catch (copyErr) {
+              await onLog(
+                "stderr",
+                `[paperclip] Warning: failed to copy chat entry ${entry}: ${copyErr instanceof Error ? copyErr.message : String(copyErr)}\n`,
+              );
+            }
+          }
+        }
+        await fs.rm(agentChatsDir, { recursive: true, force: true });
+      }
+    } catch (err) {
+      // Doesn't exist, fine
+    }
+
+    if (shouldLink) {
+      await fs.symlink(sharedDir, agentChatsDir);
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await onLog(
+      "stdout",
+      `[paperclip] Warning: failed to set up shared Gemini chat storage: ${message}\n`,
+    );
+  }
+}
+
 async function buildGeminiSkillsDir(
   config: Record<string, unknown>,
 ): Promise<string> {
@@ -209,6 +276,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const desiredGeminiSkillNames = resolvePaperclipDesiredSkillNames(config, geminiSkillEntries);
   if (!executionTargetIsRemote) {
     await ensureGeminiSkillsInjected(onLog, geminiSkillEntries, desiredGeminiSkillNames);
+    await ensureGeminiChatsShared(onLog, agent.companyId, agent.id);
   }
 
   const envConfig = parseObject(config.env);
