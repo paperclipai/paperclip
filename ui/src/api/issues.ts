@@ -12,6 +12,7 @@ import type {
   IssueComment,
   IssueDocument,
   IssueLabel,
+  IssueRecoveryAction,
   IssueRetryNowResponse,
   IssueThreadInteraction,
   IssueTreeControlPreview,
@@ -27,10 +28,16 @@ export type IssueUpdateResponse = Issue & {
   comment?: IssueComment | null;
 };
 
+export type ResolveRecoveryActionResponse = {
+  issue: Issue;
+  recoveryAction: IssueRecoveryAction;
+};
+
 export const issuesApi = {
   list: (
     companyId: string,
     filters?: {
+      attention?: "blocked";
       status?: string;
       projectId?: string;
       parentId?: string;
@@ -49,12 +56,14 @@ export const issuesApi = {
       descendantOf?: string;
       includeRoutineExecutions?: boolean;
       includeBlockedBy?: boolean;
+      includeBlockedInboxAttention?: boolean;
       q?: string;
       limit?: number;
       offset?: number;
     },
   ) => {
     const params = new URLSearchParams();
+    if (filters?.attention) params.set("attention", filters.attention);
     if (filters?.status) params.set("status", filters.status);
     if (filters?.projectId) params.set("projectId", filters.projectId);
     if (filters?.parentId) params.set("parentId", filters.parentId);
@@ -73,11 +82,34 @@ export const issuesApi = {
     if (filters?.descendantOf) params.set("descendantOf", filters.descendantOf);
     if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
     if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
+    if (filters?.includeBlockedInboxAttention) params.set("includeBlockedInboxAttention", "true");
     if (filters?.q) params.set("q", filters.q);
     if (filters?.limit) params.set("limit", String(filters.limit));
     if (filters?.offset !== undefined) params.set("offset", String(filters.offset));
     const qs = params.toString();
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
+  },
+  count: (
+    companyId: string,
+    filters: {
+      attention: "blocked";
+      status?: string;
+      assigneeAgentId?: string;
+      assigneeUserId?: string;
+      projectId?: string;
+      labelId?: string;
+      q?: string;
+    },
+  ) => {
+    const params = new URLSearchParams();
+    params.set("attention", filters.attention);
+    if (filters.status) params.set("status", filters.status);
+    if (filters.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
+    if (filters.assigneeUserId) params.set("assigneeUserId", filters.assigneeUserId);
+    if (filters.projectId) params.set("projectId", filters.projectId);
+    if (filters.labelId) params.set("labelId", filters.labelId);
+    if (filters.q) params.set("q", filters.q);
+    return api.get<{ count: number }>(`/companies/${companyId}/issues/count?${params.toString()}`);
   },
   listLabels: (companyId: string) => api.get<IssueLabel[]>(`/companies/${companyId}/labels`),
   createLabel: (companyId: string, data: { name: string; color: string }) =>
@@ -94,6 +126,15 @@ export const issuesApi = {
     api.post<Issue>(`/companies/${companyId}/issues`, data),
   update: (id: string, data: Record<string, unknown>) =>
     api.patch<IssueUpdateResponse>(`/issues/${id}`, data),
+  resolveRecoveryAction: (
+    id: string,
+    data: {
+      actionId?: string;
+      outcome: "restored" | "false_positive" | "blocked" | "cancelled";
+      sourceIssueStatus: "done" | "in_review" | "blocked";
+      resolutionNote?: string | null;
+    },
+  ) => api.post<ResolveRecoveryActionResponse>(`/issues/${id}/recovery-actions/resolve`, data),
   previewTreeControl: (id: string, data: PreviewIssueTreeControl) =>
     api.post<IssueTreeControlPreview>(`/issues/${id}/tree-control/preview`, data),
   createTreeHold: (id: string, data: CreateIssueTreeHold) =>

@@ -8,9 +8,15 @@ export const label = "OpenCode (local)";
 // (linux-x64, linux-x64-musl, linux-x64-baseline, linux-x64-baseline-musl) in
 // parallel even though only one matches the sandbox; on bandwidth-constrained
 // sandboxes (e.g. Cloudflare) that exceeded the 240s install budget. The
-// official installer fetches a single arch-specific binary and adds
-// `$HOME/.opencode/bin` to PATH via `~/.bashrc`, which sandbox `sh -lc`
-// invocations source.
+// official installer fetches a single arch-specific binary into
+// `$HOME/.opencode/bin` and tries to add it to PATH via `~/.bashrc`. That
+// rc-file path is only sourced by interactive/login shells, so non-login
+// `sh -c` probe invocations (used by the runtime PATH check) cannot find the
+// binary. We fix that by symlinking the installed binary into a directory on
+// the non-login `sh -c` PATH: prefer `/usr/local/bin` (universally on the
+// default PATH on Linux distros) when root or passwordless sudo is available,
+// otherwise fall back to `$HOME/.local/bin` (which is on the default PATH on
+// the exe.dev sandbox image and most modern home-managed Linux images).
 //
 // Security tradeoff: this is `curl | bash` without a SHA-256 verification of
 // the install script. We accept this because:
@@ -25,7 +31,18 @@ export const label = "OpenCode (local)";
 // shell) and `curl -fsSL` give us fail-fast behavior on HTTP errors. If
 // OpenCode starts publishing a stable checksum/signature, switch to fetching
 // a versioned tarball + verifying the digest before exec.
-export const SANDBOX_INSTALL_COMMAND = "curl -fsSL https://opencode.ai/install | bash";
+export const SANDBOX_INSTALL_COMMAND =
+  'curl -fsSL https://opencode.ai/install | bash && ' +
+  'if [ -x "$HOME/.opencode/bin/opencode" ]; then ' +
+  'if [ "$(id -u)" -eq 0 ]; then ' +
+  'ln -sf "$HOME/.opencode/bin/opencode" /usr/local/bin/opencode; ' +
+  'elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then ' +
+  'sudo ln -sf "$HOME/.opencode/bin/opencode" /usr/local/bin/opencode; ' +
+  'else ' +
+  'mkdir -p "$HOME/.local/bin" && ' +
+  'ln -sf "$HOME/.opencode/bin/opencode" "$HOME/.local/bin/opencode"; ' +
+  'fi; ' +
+  'fi';
 
 export const DEFAULT_OPENCODE_LOCAL_MODEL = "openai/gpt-5.2-codex";
 

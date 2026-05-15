@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -57,5 +58,27 @@ describe("workspace restore merge", () => {
     await expect(
       readFile(path.join(targetDir, "manual-qa", "environment-matrix", "ssh", "codex_local.md"), "utf8"),
     ).resolves.toBe("ssh codex\n");
+  });
+
+  it("ignores non-file entries when capturing snapshots", async () => {
+    if (process.platform === "win32") return;
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-merge-"));
+    cleanupDirs.push(rootDir);
+    const socketPath = path.join(rootDir, "runtime.sock");
+    const server = net.createServer();
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(socketPath, resolve);
+      });
+
+      const snapshot = await captureDirectorySnapshot(rootDir, { exclude: [] });
+
+      expect(snapshot.entries.has("runtime.sock")).toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });

@@ -1,5 +1,11 @@
 import path from "node:path";
-import { Command } from "commander";
+import { existsSync } from "node:fs";
+import { Command, Option } from "commander";
+import {
+  scaffoldPluginProject,
+  shellQuote,
+  type ScaffoldPluginOptions,
+} from "../../../../packages/plugins/create-paperclip-plugin/src/index.js";
 import pc from "picocolors";
 import {
   addCommonClientOptions,
@@ -39,28 +45,101 @@ interface PluginInstallOptions extends BaseClientOptions {
   version?: string;
 }
 
+interface PluginInstallRequest {
+  packageName: string;
+  version?: string;
+  isLocalPath: boolean;
+}
+
 interface PluginUninstallOptions extends BaseClientOptions {
   force?: boolean;
+}
+
+interface PluginInitOptions extends BaseClientOptions {
+  output?: string;
+  template?: ScaffoldPluginOptions["template"];
+  category?: ScaffoldPluginOptions["category"];
+  displayName?: string;
+  description?: string;
+  author?: string;
+  sdkPath?: string;
+}
+
+interface PluginInitResult {
+  outputDir: string;
+  nextCommands: string[];
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
+function expandHomePath(packageArg: string): string {
+  if (!packageArg.startsWith("~")) return packageArg;
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+  return path.resolve(home, packageArg.slice(1).replace(/^[\\/]/, ""));
+}
+
+function hasLocalPathSyntax(packageArg: string): boolean {
+  return (
+    path.isAbsolute(packageArg) ||
+    packageArg.startsWith("./") ||
+    packageArg.startsWith("../") ||
+    packageArg.startsWith("~") ||
+    packageArg.startsWith(".\\") ||
+    packageArg.startsWith("..\\")
+  );
+}
+
+function isExistingRelativePath(
+  packageArg: string,
+  cwd: string,
+  pathExists: (targetPath: string) => boolean,
+): boolean {
+  if (packageArg.trim() === "") return false;
+  if (hasLocalPathSyntax(packageArg)) return false;
+  return pathExists(path.resolve(cwd, packageArg));
+}
+
 /**
  * Resolve a local path argument to an absolute path so the server can find the
  * plugin on disk regardless of where the user ran the CLI.
  */
-function resolvePackageArg(packageArg: string, isLocal: boolean): string {
+function resolvePackageArg(packageArg: string, isLocal: boolean, cwd = process.cwd()): string {
   if (!isLocal) return packageArg;
-  // Already absolute
   if (path.isAbsolute(packageArg)) return packageArg;
-  // Expand leading ~ to home directory
-  if (packageArg.startsWith("~")) {
-    const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
-    return path.resolve(home, packageArg.slice(1).replace(/^[\\/]/, ""));
+  if (packageArg.startsWith("~")) return expandHomePath(packageArg);
+  return path.resolve(cwd, packageArg);
+}
+
+export function buildPluginInstallRequest(
+  packageArg: string,
+  opts: Pick<PluginInstallOptions, "local" | "version"> = {},
+  deps: { cwd?: string; existsSync?: (targetPath: string) => boolean } = {},
+): PluginInstallRequest {
+  const cwd = deps.cwd ?? process.cwd();
+  const pathExists = deps.existsSync ?? existsSync;
+  const isLocal =
+    opts.local ||
+    hasLocalPathSyntax(packageArg) ||
+    (opts.version ? false : isExistingRelativePath(packageArg, cwd, pathExists));
+
+  if (isLocal && opts.version) {
+    throw new Error("--version is only supported for npm package installs, not local plugin paths.");
   }
-  return path.resolve(process.cwd(), packageArg);
+
+  return {
+    packageName: resolvePackageArg(packageArg, Boolean(isLocal), cwd),
+    version: opts.version,
+    isLocalPath: Boolean(isLocal),
+  };
+}
+
+export function renderLocalPluginInstallHint(packagePath: string): string {
+  return [
+    pc.dim("Local plugin installs run trusted local code from your machine."),
+    pc.dim(`Keep ${pc.cyan("pnpm dev")} running in ${packagePath}; Paperclip watches rebuilt dist output and reloads the plugin worker.`),
+  ].join("\n");
 }
 
 function formatPlugin(p: PluginRecord): string {
@@ -87,12 +166,101 @@ function formatPlugin(p: PluginRecord): string {
   return parts.join("  ");
 }
 
+function packageToDirName(pluginName: string): string {
+  return pluginName.replace(/^@[^/]+\//, "");
+}
+
+export function buildPluginInitScaffoldOptions(
+  packageName: string,
+  opts: PluginInitOptions,
+  cwd = process.cwd(),
+): ScaffoldPluginOptions {
+  const outputRoot = path.resolve(cwd, opts.output ?? ".");
+  const outputDir = path.resolve(outputRoot, packageToDirName(packageName));
+
+  return {
+    pluginName: packageName,
+    outputDir,
+    template: opts.template,
+    category: opts.category,
+    displayName: opts.displayName,
+    description: opts.description,
+    author: opts.author,
+    sdkPath: opts.sdkPath,
+  };
+}
+
+export function buildPluginInitNextCommands(outputDir: string): string[] {
+  const quotedOutputDir = shellQuote(outputDir);
+  return [
+    `cd ${quotedOutputDir}`,
+    "pnpm install",
+    "pnpm dev",
+    `paperclipai plugin install ${quotedOutputDir}`,
+  ];
+}
+
+export function renderPluginInitSuccess(result: PluginInitResult): string {
+  return [
+    pc.green(`✓ Created plugin scaffold at ${result.outputDir}`),
+    "",
+    "Next commands:",
+    ...result.nextCommands.map((command) => `  ${pc.cyan(command)}`),
+  ].join("\n");
+}
+
+export function runPluginInitCommand(packageName: string, opts: PluginInitOptions): PluginInitResult {
+  const scaffoldOptions = buildPluginInitScaffoldOptions(packageName, opts);
+  const outputDir = scaffoldPluginProject(scaffoldOptions);
+  return {
+    outputDir,
+    nextCommands: buildPluginInitNextCommands(outputDir),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Command registration
 // ---------------------------------------------------------------------------
 
 export function registerPluginCommands(program: Command): void {
   const plugin = program.command("plugin").description("Plugin lifecycle management");
+
+  // -------------------------------------------------------------------------
+  // plugin init <package-name>
+  // -------------------------------------------------------------------------
+  addCommonClientOptions(
+    plugin
+      .command("init <packageName>")
+      .description("Scaffold a local Paperclip plugin project")
+      .option("--output <dir>", "Directory to create the plugin folder in")
+      .addOption(
+        new Option("--template <template>", "Starter template")
+          .choices(["default", "connector", "workspace", "environment"])
+          .default("default"),
+      )
+      .addOption(
+        new Option("--category <category>", "Manifest category")
+          .choices(["connector", "workspace", "automation", "ui", "environment"]),
+      )
+      .option("--display-name <name>", "Manifest display name")
+      .option("--description <description>", "Manifest description")
+      .option("--author <author>", "Manifest author")
+      .option("--sdk-path <path>", "Local @paperclipai/plugin-sdk package path")
+      .action((packageName: string, opts: PluginInitOptions) => {
+        try {
+          const result = runPluginInitCommand(packageName, opts);
+
+          if (opts.json) {
+            printOutput(result, { json: true });
+            return;
+          }
+
+          console.log(renderPluginInitSuccess(result));
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
 
   // -------------------------------------------------------------------------
   // plugin list
@@ -147,31 +315,19 @@ export function registerPluginCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts);
 
-          // Auto-detect local paths: starts with . or / or ~ or is an absolute path
-          const isLocal =
-            opts.local ||
-            packageArg.startsWith("./") ||
-            packageArg.startsWith("../") ||
-            packageArg.startsWith("/") ||
-            packageArg.startsWith("~");
-
-          const resolvedPackage = resolvePackageArg(packageArg, isLocal);
+          const installRequest = buildPluginInstallRequest(packageArg, opts);
 
           if (!ctx.json) {
             console.log(
               pc.dim(
-                isLocal
-                  ? `Installing plugin from local path: ${resolvedPackage}`
-                  : `Installing plugin: ${resolvedPackage}${opts.version ? `@${opts.version}` : ""}`,
+                installRequest.isLocalPath
+                  ? `Installing plugin from local path: ${installRequest.packageName}`
+                  : `Installing plugin: ${installRequest.packageName}${opts.version ? `@${opts.version}` : ""}`,
               ),
             );
           }
 
-          const installedPlugin = await ctx.api.post<PluginRecord>("/api/plugins/install", {
-            packageName: resolvedPackage,
-            version: opts.version,
-            isLocalPath: isLocal,
-          });
+          const installedPlugin = await ctx.api.post<PluginRecord>("/api/plugins/install", installRequest);
 
           if (ctx.json) {
             printOutput(installedPlugin, { json: true });
@@ -191,6 +347,10 @@ export function registerPluginCommands(program: Command): void {
 
           if (installedPlugin.lastError) {
             console.log(pc.red(`  Warning: ${installedPlugin.lastError}`));
+          }
+
+          if (installRequest.isLocalPath) {
+            console.log(renderLocalPluginInstallHint(installRequest.packageName));
           }
         } catch (err) {
           handleCommandError(err);
