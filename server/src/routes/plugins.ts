@@ -67,6 +67,10 @@ import {
 } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
 import {
+  extractSecretRefsFromConfig,
+  PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
+} from "../services/plugin-secrets-handler.js";
+import {
   findLocalFolderDeclaration,
   getStoredLocalFolders,
   inspectPluginLocalFolder,
@@ -1924,6 +1928,11 @@ export function pluginRoutes(
         });
         return;
       }
+    }
+
+    const secretRefs = extractSecretRefsFromConfig(body.configJson, schema);
+    if (secretRefs.size > 0) {
+      throw unprocessable(PLUGIN_SECRET_REFS_DISABLED_MESSAGE);
     }
 
     try {
