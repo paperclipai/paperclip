@@ -15,6 +15,9 @@ export const TOOL = {
   CREATE_CHECK_RUN: "github_create_check_run",
   ENQUEUE_MERGE: "github_enqueue_merge",
   LIST_ISSUES: "github_list_issues",
+  CREATE_ISSUE: "github_create_issue",
+  UPDATE_ISSUE: "github_update_issue",
+  LABEL_ISSUE: "github_label_issue",
   UPDATE_PR_BODY: "github_update_pr_body",
   CONVERT_PR_TO_DRAFT: "github_convert_pr_to_draft",
   MARK_PR_READY_FOR_REVIEW: "github_mark_pr_ready_for_review",
@@ -23,6 +26,15 @@ export const TOOL = {
 
 const REPO_DESCRIPTION =
   "GitHub repository in `owner/name` form. Comes from plugin instance config; do not pass per-call.";
+
+const issueNumber = { type: "number" } as const;
+const labelArray = { type: "array", items: { type: "string" } } as const;
+
+export const ISSUE_TOOL_SCHEMA = {
+  CREATE: { type: "object", properties: { title: { type: "string" }, body: { type: "string" }, labels: labelArray }, required: ["title", "body"] },
+  UPDATE: { type: "object", properties: { issueNumber, title: { type: "string" }, body: { type: "string" }, state: { type: "string", enum: ["open", "closed"] } }, required: ["issueNumber"] },
+  LABEL: { type: "object", properties: { issueNumber, labels: labelArray }, required: ["issueNumber", "labels"] },
+} as const;
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -138,6 +150,27 @@ const manifest: PaperclipPluginManifestV1 = {
           perPage: { type: "number", default: 30, maximum: 100 },
         },
       },
+    },
+    {
+      name: TOOL.CREATE_ISSUE,
+      displayName: "Create Issue",
+      description:
+        "Create a GitHub issue in the configured repository, optionally with labels, then read it back for audit.",
+      parametersSchema: ISSUE_TOOL_SCHEMA.CREATE,
+    },
+    {
+      name: TOOL.UPDATE_ISSUE,
+      displayName: "Update Issue",
+      description:
+        "Update an existing GitHub issue title, body, or state in the configured repository, then read it back for audit.",
+      parametersSchema: ISSUE_TOOL_SCHEMA.UPDATE,
+    },
+    {
+      name: TOOL.LABEL_ISSUE,
+      displayName: "Label Issue",
+      description:
+        "Apply labels to an existing GitHub issue in the configured repository, then read it back to prove labels are present.",
+      parametersSchema: ISSUE_TOOL_SCHEMA.LABEL,
     },
     {
       name: TOOL.UPDATE_PR_BODY,
