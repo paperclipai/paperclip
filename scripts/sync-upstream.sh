@@ -271,7 +271,7 @@ push_branch_to_forks() {
     remotes+=("$PUBLIC_REMOTE")
   fi
 
-  for candidate in "${remotes[@]}"; do
+  for candidate in "${remotes[@]+"${remotes[@]}"}"; do
     [[ -n "$candidate" ]] || continue
     if [[ ",${pushed_remotes}," == *",${candidate},"* ]]; then
       continue
