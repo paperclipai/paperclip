@@ -1,0 +1,49 @@
+name: Deploy Chase Telegram
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref (branch, tag, or SHA) to deploy from
+        required: false
+        default: master
+        type: string
+      no-verify-jwt:
+        description: Skip JWT verification
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: supabase-deploy-chase-telegram-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || 'master' }}
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Deploy chase-telegram function
+        run: |
+          VERIFY_JWT_FLAG=""
+          if [ "${{ github.event.inputs.no-verify-jwt }}" = "true" ]; then
+            VERIFY_JWT_FLAG="--no-verify-jwt"
+          fi
+          supabase functions deploy chase-telegram \
+            --project-ref tujyntcurpxvxgokcsaz \
+            $VERIFY_JWT_FLAG
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}

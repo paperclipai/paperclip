@@ -1,0 +1,85 @@
+name: Deploy Supabase Functions
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - supabase/functions/**
+  workflow_dispatch:
+    inputs:
+      function:
+        description: Specific function to deploy (leave empty for all)
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: supabase-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: supabase
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Link Supabase project
+        run: supabase link --project-ref "${{ secrets.SUPABASE_PROJECT_REF }}"
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+
+      - name: Deploy functions
+        run: |
+          if [ -n "${{ inputs.function }}" ]; then
+            supabase functions deploy "${{ inputs.function }}" --no-verify-jwt
+          else
+            for func in supabase/functions/*/; do
+              name="$(basename "$func")"
+              echo "Deploying: $name"
+              supabase functions deploy "$name" --no-verify-jwt
+            done
+          fi
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+
+      - name: Set required secrets
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+        run: |
+          supabase secrets set \
+            TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+            PAPERCLIP_API_URL="${{ secrets.PAPERCLIP_API_URL }}" \
+            CHASE_PAPERCLIP_API_KEY="${{ secrets.CHASE_PAPERCLIP_API_KEY }}" \
+            PAPERCLIP_COMPANY_ID="${{ secrets.PAPERCLIP_COMPANY_ID }}"
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+
+      - name: Set optional secrets
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+        continue-on-error: true
+        run: |
+          if [ -n "${{ secrets.ALLOWED_TELEGRAM_USER_IDS }}" ]; then
+            supabase secrets set ALLOWED_TELEGRAM_USER_IDS="${{ secrets.ALLOWED_TELEGRAM_USER_IDS }}"
+          fi
+          if [ -n "${{ secrets.WEBHOOK_SETUP_SECRET }}" ]; then
+            supabase secrets set WEBHOOK_SETUP_SECRET="${{ secrets.WEBHOOK_SETUP_SECRET }}"
+          fi
+          if [ -n "${{ secrets.DEEPSEEK_API_KEY }}" ]; then
+            supabase secrets set DEEPSEEK_API_KEY="${{ secrets.DEEPSEEK_API_KEY }}"
+          fi
+          if [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+            supabase secrets set ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}"
+          fi
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}

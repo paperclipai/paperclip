@@ -1,0 +1,18 @@
+[project]
+ref_id = "tujyntcurpxvxgokcsaz"
+name = "AvvA App V2.0"
+
+[api]
+enabled = true
+
+[auth]
+enabled = true
+
+[edge_functions]
+enabled = true
+
+[analytics]
+enabled = false
+
+[functions.chase-telegram]
+verify_jwt = false
