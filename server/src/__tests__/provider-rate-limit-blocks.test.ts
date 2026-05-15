@@ -16,6 +16,14 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import {
+  seedAgent,
+  seedBlock,
+  seedBlockMember,
+  seedCompany,
+  seedHeartbeatRun,
+  seedIssue,
+} from "./helpers/provider-rate-limit-fixtures.js";
 
 const mockFetchAllQuotaWindows = vi.hoisted(() => vi.fn());
 
@@ -52,19 +60,8 @@ describeEmbeddedPostgres("provider rate-limit block release", () => {
     await tempDb?.cleanup();
   });
 
-  async function seedCompany() {
-    const companyId = randomUUID();
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    return companyId;
-  }
-
   it("keeps a due block active when quota verification still reports the window blocked", async () => {
-    const companyId = await seedCompany();
+    const companyId = await seedCompany(db);
     const svc = providerRateLimitService(db);
     await svc.upsertBlock({
       companyId,
@@ -102,12 +99,11 @@ describeEmbeddedPostgres("provider rate-limit block release", () => {
   });
 
   it("retires provider-limit recovery blockers and restores source issue liveness on release even when agents were already unpaused", async () => {
-    const companyId = await seedCompany();
-    const developerId = randomUUID();
-    const reviewerId = randomUUID();
+    const companyId = await seedCompany(db);
     const sourceIssueId = randomUUID();
     const recoveryIssueId = randomUUID();
     const strandedRunId = randomUUID();
+
     const block = await providerRateLimitService(db).upsertBlock({
       companyId,
       adapterType: "claude_local",
@@ -117,37 +113,11 @@ describeEmbeddedPostgres("provider rate-limit block release", () => {
       resetsAt: new Date("2026-05-13T07:00:00.000Z"),
     });
 
-    await db.insert(agents).values([
-      {
-        id: developerId,
-        companyId,
-        name: "Developer",
-        role: "engineer",
-        status: "idle",
-        adapterType: "claude_local",
-        adapterConfig: { model: "claude-sonnet-4-6" },
-        runtimeConfig: { heartbeat: { wakeOnDemand: true } },
-        permissions: {},
-      },
-      {
-        id: reviewerId,
-        companyId,
-        name: "Reviewer",
-        role: "engineer",
-        status: "idle",
-        adapterType: "claude_local",
-        adapterConfig: { model: "claude-sonnet-4-6" },
-        runtimeConfig: { heartbeat: { wakeOnDemand: true } },
-        permissions: {},
-      },
-    ]);
-    await db.insert(heartbeatRuns).values({
+    const developerId = await seedAgent(db, companyId, { name: "Developer" });
+    const reviewerId = await seedAgent(db, companyId, { name: "Reviewer" });
+
+    await seedHeartbeatRun(db, companyId, developerId, {
       id: strandedRunId,
-      companyId,
-      agentId: developerId,
-      invocationSource: "assignment",
-      triggerDetail: "system",
-      status: "failed",
       errorCode: "claude_hard_limit",
       error: "You've hit your limit",
       contextSnapshot: { issueId: sourceIssueId, wakeReason: "issue_assigned" },
@@ -193,10 +163,8 @@ describeEmbeddedPostgres("provider rate-limit block release", () => {
   });
 
   it("repairs stale provider-limit recovery blockers left behind by previously resolved blocks", async () => {
-    const companyId = await seedCompany();
-    const developerId = randomUUID();
+    const companyId = await seedCompany(db);
     const sourceIssueId = randomUUID();
-    const strandedRunId = randomUUID();
     const svc = providerRateLimitService(db);
     const block = await svc.upsertBlock({
       companyId,
@@ -208,35 +176,17 @@ describeEmbeddedPostgres("provider rate-limit block release", () => {
     });
     await svc.resolveBlock(block.id, "system");
 
-    await db.insert(agents).values({
-      id: developerId,
-      companyId,
-      name: "Developer",
-      role: "engineer",
-      status: "idle",
-      adapterType: "claude_local",
-      adapterConfig: { model: "claude-sonnet-4-6" },
-      runtimeConfig: { heartbeat: { wakeOnDemand: true } },
-      permissions: {},
-    });
-    await db.insert(heartbeatRuns).values({
-      id: strandedRunId,
-      companyId,
-      agentId: developerId,
-      invocationSource: "assignment",
-      triggerDetail: "system",
-      status: "failed",
+    const developerId = await seedAgent(db, companyId, { name: "Developer" });
+    const strandedRunId = await seedHeartbeatRun(db, companyId, developerId, {
       errorCode: "provider_rate_limit",
       error: "You've hit your limit",
       contextSnapshot: { issueId: sourceIssueId, wakeReason: "issue_assigned" },
       finishedAt: new Date("2026-05-11T04:00:00.000Z"),
     });
-    await db.insert(issues).values({
+    await seedIssue(db, companyId, {
       id: sourceIssueId,
-      companyId,
       title: "Source work",
       status: "blocked",
-      priority: "high",
       assigneeAgentId: developerId,
       executionRunId: strandedRunId,
     });
@@ -250,60 +200,33 @@ describeEmbeddedPostgres("provider rate-limit block release", () => {
   it("does not unblock agent-assigned issues when released provider members have no issue id", async () => {
     const svc = providerRateLimitService(db);
     const now = new Date("2026-05-06T07:32:00.000Z");
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-    const issueId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `P${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "Claude",
-      role: "engineer",
+    const companyId = await seedCompany(db);
+    const agentId = await seedAgent(db, companyId, {
       status: "paused",
       pauseReason: "provider_rate_limit",
       pausedAt: new Date(now.getTime() - 60_000),
-      adapterType: "claude_local",
-      adapterConfig: { model: "claude-sonnet-4-6" },
-      runtimeConfig: {},
-      permissions: {},
     });
-
-    const [block] = await db
-      .insert(providerRateLimitBlocks)
-      .values({
-        companyId,
-        adapterType: "claude_local",
-        limitKind: "five_hour",
-        modelFamily: null,
-        resetsAt: new Date(now.getTime() - 1_000),
-        createdAt: new Date(now.getTime() - 60_000),
-        updatedAt: now,
-      })
-      .returning();
-    await db.insert(providerRateLimitBlockMembers).values({
-      blockId: block!.id,
-      companyId,
-      agentId,
-      issueId: null,
-      originalAgentStatus: "running",
-      releaseStatus: "pending",
-    });
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
+    const issueId = await seedIssue(db, companyId, {
       title: "Budget-blocked issue",
       status: "blocked",
       assigneeAgentId: agentId,
       updatedAt: now,
     });
 
-    await svc.releaseAndResumeForBlock(block!);
+    const block = await seedBlock(db, companyId, {
+      resetsAt: new Date(now.getTime() - 1_000),
+      createdAt: new Date(now.getTime() - 60_000),
+      updatedAt: now,
+    });
+    await seedBlockMember(db, {
+      blockId: block.id,
+      companyId,
+      agentId,
+      issueId: null,
+      originalAgentStatus: "running",
+    });
+
+    await svc.releaseAndResumeForBlock(block);
 
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(issue?.status).toBe("blocked");
@@ -314,54 +237,31 @@ describeEmbeddedPostgres("provider rate-limit block release", () => {
   it("releases only a changed-scope provider pause and keeps the original provider block active", async () => {
     const svc = providerRateLimitService(db);
     const now = new Date("2026-05-06T08:00:00.000Z");
-    const companyId = randomUUID();
-    const releasedAgentId = randomUUID();
-    const stillBlockedAgentId = randomUUID();
-    const issueId = randomUUID();
+    const companyId = await seedCompany(db);
     const blockId = randomUUID();
 
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `P${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
+    const releasedAgentId = await seedAgent(db, companyId, {
+      name: "Codex",
+      status: "paused",
+      pauseReason: "provider_rate_limit",
+      pausedAt: new Date(now.getTime() - 60_000),
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.3-codex" },
     });
-    await db.insert(agents).values([
-      {
-        id: releasedAgentId,
-        companyId,
-        name: "Codex",
-        role: "engineer",
-        status: "paused",
-        pauseReason: "provider_rate_limit",
-        pausedAt: new Date(now.getTime() - 60_000),
-        adapterType: "codex_local",
-        adapterConfig: { model: "gpt-5.3-codex" },
-        runtimeConfig: {},
-        permissions: {},
-      },
-      {
-        id: stillBlockedAgentId,
-        companyId,
-        name: "Claude",
-        role: "engineer",
-        status: "paused",
-        pauseReason: "provider_rate_limit",
-        pausedAt: new Date(now.getTime() - 60_000),
-        adapterType: "claude_local",
-        adapterConfig: { model: "claude-opus-4-7" },
-        runtimeConfig: {},
-        permissions: {},
-      },
-    ]);
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
+    const stillBlockedAgentId = await seedAgent(db, companyId, {
+      name: "Claude",
+      status: "paused",
+      pauseReason: "provider_rate_limit",
+      pausedAt: new Date(now.getTime() - 60_000),
+      adapterConfig: { model: "claude-opus-4-7" },
+    });
+    const issueId = await seedIssue(db, companyId, {
       title: "Continue after switching provider",
       status: "blocked",
       assigneeAgentId: releasedAgentId,
       updatedAt: now,
     });
+
     await db.insert(providerRateLimitBlocks).values({
       id: blockId,
       companyId,
@@ -370,23 +270,8 @@ describeEmbeddedPostgres("provider rate-limit block release", () => {
       modelFamily: "claude-opus",
       message: "Opus quota exhausted",
     });
-    await db.insert(providerRateLimitBlockMembers).values([
-      {
-        blockId,
-        companyId,
-        agentId: releasedAgentId,
-        issueId,
-        originalAgentStatus: "running",
-        releaseStatus: "pending",
-      },
-      {
-        blockId,
-        companyId,
-        agentId: stillBlockedAgentId,
-        originalAgentStatus: "running",
-        releaseStatus: "pending",
-      },
-    ]);
+    await seedBlockMember(db, { blockId, companyId, agentId: releasedAgentId, issueId, originalAgentStatus: "running" });
+    await seedBlockMember(db, { blockId, companyId, agentId: stillBlockedAgentId, originalAgentStatus: "running" });
 
     const result = await svc.reconcileAgentProviderLimitPause(releasedAgentId);
 
@@ -410,42 +295,27 @@ describeEmbeddedPostgres("provider rate-limit block release", () => {
 
   it("uses the issue model profile when reconciling model-family provider pauses", async () => {
     const svc = providerRateLimitService(db);
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-    const issueId = randomUUID();
+    const companyId = await seedCompany(db);
     const blockId = randomUUID();
 
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `P${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "Claude",
-      role: "engineer",
+    const agentId = await seedAgent(db, companyId, {
       status: "paused",
       pauseReason: "provider_rate_limit",
       pausedAt: new Date(),
-      adapterType: "claude_local",
       adapterConfig: { model: "claude-opus-4-7" },
       runtimeConfig: {
         modelProfiles: {
           cheap: { adapterConfig: { model: "claude-sonnet-4-6" } },
         },
       },
-      permissions: {},
     });
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
+    const issueId = await seedIssue(db, companyId, {
       title: "Cheap lane",
       status: "blocked",
       assigneeAgentId: agentId,
       assigneeAdapterOverrides: { modelProfile: "cheap" },
     });
+
     await db.insert(providerRateLimitBlocks).values({
       id: blockId,
       companyId,
@@ -454,14 +324,7 @@ describeEmbeddedPostgres("provider rate-limit block release", () => {
       modelFamily: "claude-opus",
       message: "Opus quota exhausted",
     });
-    await db.insert(providerRateLimitBlockMembers).values({
-      blockId,
-      companyId,
-      agentId,
-      issueId,
-      originalAgentStatus: "running",
-      releaseStatus: "pending",
-    });
+    await seedBlockMember(db, { blockId, companyId, agentId, issueId, originalAgentStatus: "running" });
 
     const result = await svc.reconcileAgentProviderLimitPause(agentId);
 
@@ -475,37 +338,20 @@ describeEmbeddedPostgres("provider rate-limit block release", () => {
 
   it("keeps Sonnet paused under a generic Claude provider block and never crosses providers", async () => {
     const svc = providerRateLimitService(db);
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-    const issueId = randomUUID();
+    const companyId = await seedCompany(db);
     const blockId = randomUUID();
 
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `P${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "Claude",
-      role: "engineer",
+    const agentId = await seedAgent(db, companyId, {
       status: "paused",
       pauseReason: "provider_rate_limit",
       pausedAt: new Date(),
-      adapterType: "claude_local",
-      adapterConfig: { model: "claude-sonnet-4-6" },
-      runtimeConfig: {},
-      permissions: {},
     });
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
+    const issueId = await seedIssue(db, companyId, {
       title: "Generic Claude lane",
       status: "blocked",
       assigneeAgentId: agentId,
     });
+
     await db.insert(providerRateLimitBlocks).values({
       id: blockId,
       companyId,
@@ -514,14 +360,7 @@ describeEmbeddedPostgres("provider rate-limit block release", () => {
       modelFamily: null,
       message: "Claude quota exhausted",
     });
-    await db.insert(providerRateLimitBlockMembers).values({
-      blockId,
-      companyId,
-      agentId,
-      issueId,
-      originalAgentStatus: "running",
-      releaseStatus: "pending",
-    });
+    await seedBlockMember(db, { blockId, companyId, agentId, issueId, originalAgentStatus: "running" });
 
     await expect(svc.reconcileAgentProviderLimitPause(agentId))
       .resolves.toMatchObject({ released: false, issueIds: [] });
@@ -532,3 +371,4 @@ describeEmbeddedPostgres("provider rate-limit block release", () => {
     expect(agent?.pauseReason).toBe("provider_rate_limit");
   });
 });
+

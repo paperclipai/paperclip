@@ -13,14 +13,10 @@ import {
 import { fetchAllQuotaWindows } from "./quota-windows.js";
 import { MODEL_PROFILE_KEYS, type ModelProfileKey, type ProviderQuotaResult, type QuotaWindow } from "@paperclipai/shared";
 import { listAdapterModelProfiles } from "../adapters/index.js";
+import { parseObject } from "../adapters/utils.js";
+import { withAdvisoryLock, noUnresolvedBlockersSubquery } from "./db-utils.js";
 
 type BlockRow = typeof providerRateLimitBlocks.$inferSelect;
-
-function parseObject(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
-}
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -126,7 +122,7 @@ export function providerRateLimitService(db: Db) {
     ].join(":");
 
     const result = await db.transaction(async (tx) => {
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${blockScopeKey}, 0))`);
+      await withAdvisoryLock(tx, blockScopeKey);
 
       const scopeFilter = and(
         eq(providerRateLimitBlocks.companyId, input.companyId),
@@ -463,6 +459,22 @@ export function providerRateLimitService(db: Db) {
     return { checked: candidates.length, recoveredIssues, wakeupsQueued, wakeupsSkipped };
   }
 
+  function buildAgentScopeFilter(
+    companyId: string,
+    adapterType: string,
+    modelFamily: string | null,
+    ...extraConditions: (ReturnType<typeof and> | ReturnType<typeof eq> | undefined)[]
+  ) {
+    const baseFilter = and(
+      eq(agents.companyId, companyId),
+      eq(agents.adapterType, adapterType),
+      ...extraConditions.filter(Boolean),
+    );
+    return modelFamily
+      ? and(baseFilter, sql`lower(${agents.adapterConfig}->>'model') LIKE lower(${modelFamily + "%"})`)
+      : baseFilter;
+  }
+
   async function pauseAgentsForBlock(
     companyId: string,
     adapterType: string,
@@ -474,18 +486,10 @@ export function providerRateLimitService(db: Db) {
     },
   ) {
     const now = new Date();
-    const baseFilter = and(
-      eq(agents.companyId, companyId),
-      eq(agents.adapterType, adapterType),
+    const filter = buildAgentScopeFilter(
+      companyId, adapterType, modelFamily,
       inArray(agents.status, ["active", "idle", "running", "error"]),
     );
-
-    const filter = modelFamily
-      ? and(
-          baseFilter,
-          sql`lower(${agents.adapterConfig}->>'model') LIKE lower(${modelFamily + "%"})`,
-        )
-      : baseFilter;
 
     const candidates = await db
       .select({
@@ -551,19 +555,11 @@ export function providerRateLimitService(db: Db) {
     modelFamily: string | null,
   ) {
     const now = new Date();
-    const baseFilter = and(
-      eq(agents.companyId, companyId),
-      eq(agents.adapterType, adapterType),
+    const filter = buildAgentScopeFilter(
+      companyId, adapterType, modelFamily,
       eq(agents.status, "paused"),
       eq(agents.pauseReason, "provider_rate_limit"),
     );
-
-    const filter = modelFamily
-      ? and(
-          baseFilter,
-          sql`lower(${agents.adapterConfig}->>'model') LIKE lower(${modelFamily + "%"})`,
-        )
-      : baseFilter;
 
     return db
       .update(agents)
@@ -577,17 +573,7 @@ export function providerRateLimitService(db: Db) {
     adapterType: string,
     modelFamily: string | null,
   ) {
-    const baseFilter = and(
-      eq(agents.companyId, companyId),
-      eq(agents.adapterType, adapterType),
-    );
-
-    const filter = modelFamily
-      ? and(
-          baseFilter,
-          sql`lower(${agents.adapterConfig}->>'model') LIKE lower(${modelFamily + "%"})`,
-        )
-      : baseFilter;
+    const filter = buildAgentScopeFilter(companyId, adapterType, modelFamily);
 
     return db
       .select({ id: agents.id })
@@ -617,6 +603,105 @@ export function providerRateLimitService(db: Db) {
     }
   }
 
+  async function queueWakeupRequest(params: {
+    block: BlockRow;
+    agent: typeof agents.$inferSelect;
+    issueId: string | null;
+    now: Date;
+    reason: string;
+    runStatus: "scheduled_retry" | "queued";
+    idempotencyKey: string;
+    scheduledAt?: Date;
+    activityAction: string;
+  }) {
+    const existing = await db
+      .select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId, status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, params.block.companyId),
+          eq(agentWakeupRequests.agentId, params.agent.id),
+          eq(agentWakeupRequests.idempotencyKey, params.idempotencyKey),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (existing) return { queued: false, wakeupRequestId: existing.id, reason: "duplicate" };
+
+    const blockPayload = {
+      blockId: params.block.id,
+      adapterType: params.block.adapterType,
+      limitKind: params.block.limitKind,
+      modelFamily: params.block.modelFamily,
+      ...(params.issueId ? { issueId: params.issueId } : {}),
+      ...(params.scheduledAt ? { scheduledRetryAt: params.scheduledAt.toISOString() } : {}),
+    };
+
+    const wakeupRequest = await db
+      .insert(agentWakeupRequests)
+      .values({
+        companyId: params.block.companyId,
+        agentId: params.agent.id,
+        source: "automation",
+        triggerDetail: "system",
+        reason: params.reason,
+        payload: blockPayload,
+        status: "queued",
+        requestedByActorType: "system",
+        requestedByActorId: "provider_rate_limit_service",
+        idempotencyKey: params.idempotencyKey,
+        requestedAt: params.now,
+        updatedAt: params.now,
+      })
+      .returning()
+      .then((rows) => rows[0]);
+
+    const run = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: params.block.companyId,
+        agentId: params.agent.id,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: params.runStatus,
+        wakeupRequestId: wakeupRequest.id,
+        contextSnapshot: {
+          source: params.reason,
+          reason: params.reason,
+          wakeReason: params.reason,
+          ...blockPayload,
+        },
+        ...(params.scheduledAt ? {
+          scheduledRetryAt: params.scheduledAt,
+          scheduledRetryAttempt: 1,
+          scheduledRetryReason: params.reason,
+        } : {}),
+        updatedAt: params.now,
+      })
+      .returning()
+      .then((rows) => rows[0]);
+
+    await db
+      .update(agentWakeupRequests)
+      .set({ runId: run.id, updatedAt: params.now })
+      .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+    await writeActivity({
+      companyId: params.block.companyId,
+      action: params.activityAction,
+      entityId: params.block.id,
+      agentId: params.agent.id,
+      runId: run.id,
+      details: {
+        wakeupRequestId: wakeupRequest.id,
+        idempotencyKey: params.idempotencyKey,
+        ...(params.scheduledAt ? { scheduledAt: params.scheduledAt.toISOString() } : {}),
+        ...(params.issueId ? { issueId: params.issueId } : {}),
+      },
+    });
+
+    return { queued: true, wakeupRequestId: wakeupRequest.id, runId: run.id, reason: "queued" };
+  }
+
   async function queueProviderResetWakeup(input: {
     block: BlockRow;
     agent: typeof agents.$inferSelect;
@@ -626,93 +711,14 @@ export function providerRateLimitService(db: Db) {
     const idempotencyKey = input.issueId
       ? `provider_rate_limit_reset:${input.block.id}:${input.issueId}:${input.agent.id}`
       : `provider_rate_limit_reset:${input.block.id}:${input.agent.id}`;
-    const existing = await db
-      .select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId, status: agentWakeupRequests.status })
-      .from(agentWakeupRequests)
-      .where(
-        and(
-          eq(agentWakeupRequests.companyId, input.block.companyId),
-          eq(agentWakeupRequests.agentId, input.agent.id),
-          eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
-        ),
-      )
-      .then((rows) => rows[0] ?? null);
-    if (existing) return { queued: false, wakeupRequestId: existing.id, reason: "duplicate" };
-
-    const scheduledAt = jitteredWakeTime(input.block.id, input.agent.id, input.now, input.issueId);
-    const wakeupRequest = await db
-      .insert(agentWakeupRequests)
-      .values({
-        companyId: input.block.companyId,
-        agentId: input.agent.id,
-        source: "automation",
-        triggerDetail: "system",
-        reason: "provider_rate_limit_reset",
-        payload: {
-          blockId: input.block.id,
-          adapterType: input.block.adapterType,
-          limitKind: input.block.limitKind,
-          modelFamily: input.block.modelFamily,
-          ...(input.issueId ? { issueId: input.issueId } : {}),
-          scheduledRetryAt: scheduledAt.toISOString(),
-        },
-        status: "queued",
-        requestedByActorType: "system",
-        requestedByActorId: "provider_rate_limit_service",
-        idempotencyKey,
-        requestedAt: input.now,
-        updatedAt: input.now,
-      })
-      .returning()
-      .then((rows) => rows[0]);
-
-    const run = await db
-      .insert(heartbeatRuns)
-      .values({
-        companyId: input.block.companyId,
-        agentId: input.agent.id,
-        invocationSource: "automation",
-        triggerDetail: "system",
-        status: "scheduled_retry",
-        wakeupRequestId: wakeupRequest.id,
-        contextSnapshot: {
-          source: "provider_rate_limit_reset",
-          reason: "provider_rate_limit_reset",
-          wakeReason: "provider_rate_limit_reset",
-          blockId: input.block.id,
-          adapterType: input.block.adapterType,
-          limitKind: input.block.limitKind,
-          modelFamily: input.block.modelFamily,
-          ...(input.issueId ? { issueId: input.issueId } : {}),
-        },
-        scheduledRetryAt: scheduledAt,
-        scheduledRetryAttempt: 1,
-        scheduledRetryReason: "provider_rate_limit_reset",
-        updatedAt: input.now,
-      })
-      .returning()
-      .then((rows) => rows[0]);
-
-    await db
-      .update(agentWakeupRequests)
-      .set({ runId: run.id, updatedAt: input.now })
-      .where(eq(agentWakeupRequests.id, wakeupRequest.id));
-
-    await writeActivity({
-      companyId: input.block.companyId,
-      action: "provider_rate_limit.wakeup_queued",
-      entityId: input.block.id,
-      agentId: input.agent.id,
-      runId: run.id,
-      details: {
-        wakeupRequestId: wakeupRequest.id,
-        idempotencyKey,
-        scheduledAt: scheduledAt.toISOString(),
-        issueId: input.issueId,
-      },
+    return queueWakeupRequest({
+      ...input,
+      reason: "provider_rate_limit_reset",
+      runStatus: "scheduled_retry",
+      idempotencyKey,
+      scheduledAt: jitteredWakeTime(input.block.id, input.agent.id, input.now, input.issueId),
+      activityAction: "provider_rate_limit.wakeup_queued",
     });
-
-    return { queued: true, wakeupRequestId: wakeupRequest.id, reason: "queued" };
   }
 
   async function recordSkippedProviderResetWakeup(input: {
@@ -773,87 +779,13 @@ export function providerRateLimitService(db: Db) {
     now: Date;
   }) {
     const idempotencyKey = `provider_rate_limit_scope_changed:${input.block.id}:${input.issueId}:${input.agent.id}`;
-    const existing = await db
-      .select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId })
-      .from(agentWakeupRequests)
-      .where(
-        and(
-          eq(agentWakeupRequests.companyId, input.block.companyId),
-          eq(agentWakeupRequests.agentId, input.agent.id),
-          eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
-        ),
-      )
-      .then((rows) => rows[0] ?? null);
-    if (existing) return { queued: false, wakeupRequestId: existing.id, runId: existing.runId, reason: "duplicate" };
-
-    const wakeupRequest = await db
-      .insert(agentWakeupRequests)
-      .values({
-        companyId: input.block.companyId,
-        agentId: input.agent.id,
-        source: "automation",
-        triggerDetail: "system",
-        reason: "provider_rate_limit_scope_changed",
-        payload: {
-          blockId: input.block.id,
-          adapterType: input.block.adapterType,
-          limitKind: input.block.limitKind,
-          modelFamily: input.block.modelFamily,
-          issueId: input.issueId,
-        },
-        status: "queued",
-        requestedByActorType: "system",
-        requestedByActorId: "provider_rate_limit_service",
-        idempotencyKey,
-        requestedAt: input.now,
-        updatedAt: input.now,
-      })
-      .returning()
-      .then((rows) => rows[0]);
-
-    const run = await db
-      .insert(heartbeatRuns)
-      .values({
-        companyId: input.block.companyId,
-        agentId: input.agent.id,
-        invocationSource: "automation",
-        triggerDetail: "system",
-        status: "queued",
-        wakeupRequestId: wakeupRequest.id,
-        contextSnapshot: {
-          source: "provider_rate_limit_scope_changed",
-          reason: "provider_rate_limit_scope_changed",
-          wakeReason: "provider_rate_limit_scope_changed",
-          blockId: input.block.id,
-          adapterType: input.block.adapterType,
-          limitKind: input.block.limitKind,
-          modelFamily: input.block.modelFamily,
-          issueId: input.issueId,
-        },
-        updatedAt: input.now,
-      })
-      .returning()
-      .then((rows) => rows[0]);
-
-    await db
-      .update(agentWakeupRequests)
-      .set({ runId: run.id, updatedAt: input.now })
-      .where(eq(agentWakeupRequests.id, wakeupRequest.id));
-
-    await writeActivity({
-      companyId: input.block.companyId,
-      action: "provider_rate_limit.scope_changed_wakeup_queued",
-      entityId: input.block.id,
-      agentId: input.agent.id,
-      runId: run.id,
-      details: {
-        issueId: input.issueId,
-        wakeupRequestId: wakeupRequest.id,
-        idempotencyKey,
-      },
+    return queueWakeupRequest({
+      ...input,
+      reason: "provider_rate_limit_scope_changed",
+      runStatus: "queued",
+      idempotencyKey,
+      activityAction: "provider_rate_limit.scope_changed_wakeup_queued",
     });
-
-    return { queued: true, wakeupRequestId: wakeupRequest.id, runId: run.id, reason: "queued" };
   }
 
   async function memberRowsForRelease(block: BlockRow) {
@@ -884,6 +816,54 @@ export function providerRateLimitService(db: Db) {
     }));
   }
 
+  async function updateMemberRelease(
+    memberId: string,
+    releaseStatus: string,
+    releaseReason: string,
+    now: Date,
+    wakeupRequestId?: string,
+  ) {
+    await db
+      .update(providerRateLimitBlockMembers)
+      .set({ releaseStatus, releaseReason, ...(wakeupRequestId ? { wakeupRequestId } : {}), updatedAt: now })
+      .where(eq(providerRateLimitBlockMembers.id, memberId));
+  }
+
+  async function recordSkipActivity(
+    block: BlockRow,
+    agentId: string,
+    reason: string,
+    details?: Record<string, unknown>,
+  ) {
+    await writeActivity({
+      companyId: block.companyId,
+      action: "provider_rate_limit.wakeup_skipped",
+      entityId: block.id,
+      agentId,
+      details: { reason, ...details },
+    });
+  }
+
+  function classifyAgentForRelease(agent: typeof agents.$inferSelect): {
+    releaseStatus: string;
+    releaseReason: string;
+    shouldResume: boolean;
+  } {
+    if (agent.status === "paused" && agent.pauseReason === "provider_rate_limit") {
+      return { releaseStatus: "resumed", releaseReason: "provider_pause_released", shouldResume: true };
+    }
+    if (agent.status === "paused") {
+      return { releaseStatus: "skipped", releaseReason: agent.pauseReason ? `paused:${agent.pauseReason}` : "paused", shouldResume: false };
+    }
+    if (agent.status === "terminated" || agent.status === "pending_approval") {
+      return { releaseStatus: "skipped", releaseReason: `agent_${agent.status}`, shouldResume: false };
+    }
+    if (agent.status === "running") {
+      return { releaseStatus: "skipped", releaseReason: "agent_running", shouldResume: false };
+    }
+    return { releaseStatus: "ready", releaseReason: "agent_already_invokable", shouldResume: false };
+  }
+
   async function releaseAndResumeForBlock(block: BlockRow) {
     const now = new Date();
     const members = await memberRowsForRelease(block);
@@ -895,30 +875,22 @@ export function providerRateLimitService(db: Db) {
     const memberIssueIds = [...new Set(members.map((member) => member.issueId).filter(Boolean) as string[])];
     const issueRows = memberIssueIds.length > 0
       ? await db
-        .select({
-          id: issues.id,
-          assigneeAgentId: issues.assigneeAgentId,
-        })
+        .select({ id: issues.id, assigneeAgentId: issues.assigneeAgentId })
         .from(issues)
         .where(and(eq(issues.companyId, block.companyId), inArray(issues.id, memberIssueIds)))
       : [];
     const issueById = new Map(issueRows.map((issue) => [issue.id, issue]));
     const unresolvedBlockerRows = memberIssueIds.length > 0
       ? await db
-        .select({
-          issueId: issueRelations.relatedIssueId,
-          blockerIssueId: issueRelations.issueId,
-        })
+        .select({ issueId: issueRelations.relatedIssueId, blockerIssueId: issueRelations.issueId })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.issueId, issues.id))
-        .where(
-          and(
-            eq(issueRelations.companyId, block.companyId),
-            eq(issueRelations.type, "blocks"),
-            inArray(issueRelations.relatedIssueId, memberIssueIds),
-            sql`${issues.status} <> 'done'`,
-          ),
-        )
+        .where(and(
+          eq(issueRelations.companyId, block.companyId),
+          eq(issueRelations.type, "blocks"),
+          inArray(issueRelations.relatedIssueId, memberIssueIds),
+          sql`${issues.status} <> 'done'`,
+        ))
       : [];
     const unresolvedBlockersByIssueId = new Map<string, string[]>();
     for (const row of unresolvedBlockerRows) {
@@ -926,217 +898,95 @@ export function providerRateLimitService(db: Db) {
       current.push(row.blockerIssueId);
       unresolvedBlockersByIssueId.set(row.issueId, current);
     }
+
     const queuedIssueIds = new Set<string>();
     const promotableIssueIds = new Set<string>();
-
     let resumed = 0;
     let wakeupsQueued = 0;
     let wakeupsSkipped = 0;
+
     for (const member of members) {
       const agent = agentById.get(member.agentId);
       if (!agent) {
         wakeupsSkipped += 1;
-        await db
-          .update(providerRateLimitBlockMembers)
-          .set({ releaseStatus: "skipped", releaseReason: "agent_missing", updatedAt: now })
-          .where(eq(providerRateLimitBlockMembers.id, member.id));
+        await updateMemberRelease(member.id, "skipped", "agent_missing", now);
         continue;
       }
 
-      let releaseStatus = "skipped";
-      let releaseReason = "agent_not_invokable";
+      const classification = classifyAgentForRelease(agent);
+      let { releaseStatus, releaseReason } = classification;
       let currentAgent = agent;
-      if (agent.status === "paused" && agent.pauseReason === "provider_rate_limit") {
+
+      if (classification.shouldResume) {
         const [updatedAgent] = await db
           .update(agents)
           .set({ status: "idle", pauseReason: null, pausedAt: null, updatedAt: now })
-          .where(
-            and(
-              eq(agents.id, agent.id),
-              eq(agents.companyId, block.companyId),
-              eq(agents.status, "paused"),
-              eq(agents.pauseReason, "provider_rate_limit"),
-            ),
-          )
+          .where(and(
+            eq(agents.id, agent.id),
+            eq(agents.companyId, block.companyId),
+            eq(agents.status, "paused"),
+            eq(agents.pauseReason, "provider_rate_limit"),
+          ))
           .returning();
         if (updatedAgent) {
           currentAgent = updatedAgent;
           resumed += 1;
-          releaseStatus = "resumed";
-          releaseReason = "provider_pause_released";
+        } else {
+          releaseStatus = "skipped";
+          releaseReason = "agent_not_invokable";
         }
-      } else if (agent.status === "paused") {
-        releaseStatus = "skipped";
-        releaseReason = agent.pauseReason ? `paused:${agent.pauseReason}` : "paused";
-      } else if (agent.status === "terminated" || agent.status === "pending_approval") {
-        releaseStatus = "skipped";
-        releaseReason = `agent_${agent.status}`;
-      } else if (agent.status === "running") {
-        releaseStatus = "skipped";
-        releaseReason = "agent_running";
-      } else {
-        releaseStatus = "ready";
-        releaseReason = "agent_already_invokable";
       }
 
-      if (releaseStatus === "resumed" || releaseStatus === "ready") {
-        const memberIssueId = member.issueId;
-        if (memberIssueId) {
-          const issue = issueById.get(memberIssueId);
-          if (!issue) {
-            wakeupsSkipped += 1;
-            await db
-              .update(providerRateLimitBlockMembers)
-              .set({
-                releaseStatus: "skipped",
-                releaseReason: "issue_missing",
-                updatedAt: now,
-              })
-              .where(eq(providerRateLimitBlockMembers.id, member.id));
-            await writeActivity({
-              companyId: block.companyId,
-              action: "provider_rate_limit.wakeup_skipped",
-              entityId: block.id,
-              agentId: agent.id,
-              details: {
-                reason: "issue_missing",
-                issueId: memberIssueId,
-              },
-            });
-            continue;
-          }
+      if (releaseStatus !== "resumed" && releaseStatus !== "ready") {
+        wakeupsSkipped += 1;
+        await updateMemberRelease(member.id, releaseStatus, releaseReason, now);
+        await recordSkipActivity(block, agent.id, releaseReason);
+        continue;
+      }
 
-          if (issue.assigneeAgentId !== agent.id) {
-            wakeupsSkipped += 1;
-            await db
-              .update(providerRateLimitBlockMembers)
-              .set({
-                releaseStatus,
-                releaseReason: "issue_assignee_mismatch",
-                updatedAt: now,
-              })
-              .where(eq(providerRateLimitBlockMembers.id, member.id));
-            await writeActivity({
-              companyId: block.companyId,
-              action: "provider_rate_limit.wakeup_skipped",
-              entityId: block.id,
-              agentId: agent.id,
-              details: {
-                reason: "issue_assignee_mismatch",
-                issueId: memberIssueId,
-                currentAssigneeAgentId: issue.assigneeAgentId,
-              },
-            });
-            continue;
-          }
-
-          const unresolvedBlockerIssueIds = unresolvedBlockersByIssueId.get(memberIssueId) ?? [];
-          if (unresolvedBlockerIssueIds.length > 0) {
-            wakeupsSkipped += 1;
-            const wakeupRequestId = await recordSkippedProviderResetWakeup({
-              block,
-              agent,
-              issueId: memberIssueId,
-              reason: "issue_dependencies_blocked",
-              unresolvedBlockerIssueIds,
-              now,
-            });
-            await db
-              .update(providerRateLimitBlockMembers)
-              .set({
-                releaseStatus,
-                releaseReason: "issue_dependencies_blocked",
-                wakeupRequestId,
-                updatedAt: now,
-              })
-              .where(eq(providerRateLimitBlockMembers.id, member.id));
-            await writeActivity({
-              companyId: block.companyId,
-              action: "provider_rate_limit.wakeup_skipped",
-              entityId: block.id,
-              agentId: agent.id,
-              details: {
-                reason: "issue_dependencies_blocked",
-                issueId: memberIssueId,
-                unresolvedBlockerIssueIds,
-                wakeupRequestId,
-              },
-            });
-            continue;
-          }
-
-          if (queuedIssueIds.has(memberIssueId)) {
-            wakeupsSkipped += 1;
-            await db
-              .update(providerRateLimitBlockMembers)
-              .set({
-                releaseStatus,
-                releaseReason: "issue_reset_already_queued",
-                updatedAt: now,
-              })
-              .where(eq(providerRateLimitBlockMembers.id, member.id));
-            await writeActivity({
-              companyId: block.companyId,
-              action: "provider_rate_limit.wakeup_skipped",
-              entityId: block.id,
-              agentId: agent.id,
-              details: {
-                reason: "issue_reset_already_queued",
-                issueId: memberIssueId,
-              },
-            });
-            continue;
-          }
-          queuedIssueIds.add(memberIssueId);
-        }
-
-        const wakeup = await queueProviderResetWakeup({
-          block,
-          agent: currentAgent,
-          issueId: member.issueId ?? null,
-          now,
-        });
-        if (wakeup.queued) {
-          wakeupsQueued += 1;
-        } else {
+      const memberIssueId = member.issueId;
+      if (memberIssueId) {
+        const issue = issueById.get(memberIssueId);
+        if (!issue) {
           wakeupsSkipped += 1;
-          await writeActivity({
-            companyId: block.companyId,
-            action: "provider_rate_limit.wakeup_skipped",
-            entityId: block.id,
-            agentId: agent.id,
-            details: {
-              reason: wakeup.reason,
-              wakeupRequestId: wakeup.wakeupRequestId,
-            },
-          });
+          await updateMemberRelease(member.id, "skipped", "issue_missing", now);
+          await recordSkipActivity(block, agent.id, "issue_missing", { issueId: memberIssueId });
+          continue;
         }
-        if (member.issueId && (wakeup.queued || wakeup.reason === "duplicate")) {
-          promotableIssueIds.add(member.issueId);
+        if (issue.assigneeAgentId !== agent.id) {
+          wakeupsSkipped += 1;
+          await updateMemberRelease(member.id, releaseStatus, "issue_assignee_mismatch", now);
+          await recordSkipActivity(block, agent.id, "issue_assignee_mismatch", { issueId: memberIssueId, currentAssigneeAgentId: issue.assigneeAgentId });
+          continue;
         }
-        await db
-          .update(providerRateLimitBlockMembers)
-          .set({
-            releaseStatus,
-            releaseReason,
-            wakeupRequestId: wakeup.wakeupRequestId,
-            updatedAt: now,
-          })
-          .where(eq(providerRateLimitBlockMembers.id, member.id));
+        const unresolvedBlockerIssueIds = unresolvedBlockersByIssueId.get(memberIssueId) ?? [];
+        if (unresolvedBlockerIssueIds.length > 0) {
+          wakeupsSkipped += 1;
+          const wakeupRequestId = await recordSkippedProviderResetWakeup({ block, agent, issueId: memberIssueId, reason: "issue_dependencies_blocked", unresolvedBlockerIssueIds, now });
+          await updateMemberRelease(member.id, releaseStatus, "issue_dependencies_blocked", now, wakeupRequestId);
+          await recordSkipActivity(block, agent.id, "issue_dependencies_blocked", { issueId: memberIssueId, unresolvedBlockerIssueIds, wakeupRequestId });
+          continue;
+        }
+        if (queuedIssueIds.has(memberIssueId)) {
+          wakeupsSkipped += 1;
+          await updateMemberRelease(member.id, releaseStatus, "issue_reset_already_queued", now);
+          await recordSkipActivity(block, agent.id, "issue_reset_already_queued", { issueId: memberIssueId });
+          continue;
+        }
+        queuedIssueIds.add(memberIssueId);
+      }
+
+      const wakeup = await queueProviderResetWakeup({ block, agent: currentAgent, issueId: member.issueId ?? null, now });
+      if (wakeup.queued) {
+        wakeupsQueued += 1;
       } else {
         wakeupsSkipped += 1;
-        await db
-          .update(providerRateLimitBlockMembers)
-          .set({ releaseStatus, releaseReason, updatedAt: now })
-          .where(eq(providerRateLimitBlockMembers.id, member.id));
-        await writeActivity({
-          companyId: block.companyId,
-          action: "provider_rate_limit.wakeup_skipped",
-          entityId: block.id,
-          agentId: agent.id,
-          details: { reason: releaseReason },
-        });
+        await recordSkipActivity(block, agent.id, wakeup.reason, { wakeupRequestId: wakeup.wakeupRequestId });
       }
+      if (member.issueId && (wakeup.queued || wakeup.reason === "duplicate")) {
+        promotableIssueIds.add(member.issueId);
+      }
+      await updateMemberRelease(member.id, releaseStatus, releaseReason, now, wakeup.wakeupRequestId);
     }
 
     const issueIdsToPromote = [...promotableIssueIds];
@@ -1144,23 +994,12 @@ export function providerRateLimitService(db: Db) {
       await db
         .update(issues)
         .set({ status: "in_progress", updatedAt: now })
-        .where(
-          and(
-            eq(issues.companyId, block.companyId),
-            eq(issues.status, "blocked"),
-            inArray(issues.id, issueIdsToPromote),
-            sql`not exists (
-              select 1
-              from ${issueRelations}
-              join ${issues} as blocker_issues
-                on blocker_issues.id = ${issueRelations.issueId}
-              where ${issueRelations.companyId} = ${block.companyId}
-                and ${issueRelations.type} = 'blocks'
-                and ${issueRelations.relatedIssueId} = ${issues.id}
-                and blocker_issues.status <> 'done'
-            )`,
-          ),
-        );
+        .where(and(
+          eq(issues.companyId, block.companyId),
+          eq(issues.status, "blocked"),
+          inArray(issues.id, issueIdsToPromote),
+          noUnresolvedBlockersSubquery(block.companyId),
+        ));
     }
 
     await writeActivity({
@@ -1249,16 +1088,7 @@ export function providerRateLimitService(db: Db) {
             eq(issues.assigneeAgentId, agent.id),
             eq(issues.status, "blocked"),
             inArray(issues.id, memberIssueIds),
-            sql`not exists (
-              select 1
-              from ${issueRelations}
-              join ${issues} as blocker_issues
-                on blocker_issues.id = ${issueRelations.issueId}
-              where ${issueRelations.companyId} = ${agent.companyId}
-                and ${issueRelations.type} = 'blocks'
-                and ${issueRelations.relatedIssueId} = ${issues.id}
-                and blocker_issues.status <> 'done'
-            )`,
+            noUnresolvedBlockersSubquery(agent.companyId),
           ),
         )
       : [];
