@@ -4,7 +4,12 @@ import { sendTelegram, isBotConfigured } from "./lib/telegram.ts";
 import { isPaperclipConfigured } from "./lib/api.ts";
 import { escapeHtml } from "./lib/html.ts";
 import { formatNotification, isAiConfigured, aiProvider } from "./lib/llm.ts";
-import { routeQuery, routeLocation, routeVenue } from "./router.ts";
+import { routeQuery } from "./router.ts";
+import { CHASE_TELEGRAM_BUILD_SHA, CHASE_TELEGRAM_BUILD_TIME } from "./build.ts";
+
+// ─── Build Information ────────────────────────────────────────────────
+console.log(`CHASE_TELEGRAM_BUILD_SHA=${CHASE_TELEGRAM_BUILD_SHA}`);
+console.log(`CHASE_TELEGRAM_BUILD_TIME=${CHASE_TELEGRAM_BUILD_TIME}`);
 
 // ─── Environment ──────────────────────────────────────────────────────
 
@@ -188,6 +193,10 @@ export function handleHealth(): Response {
     paperclipConfigured: isPaperclipConfigured(),
     aiConfigured: isAiConfigured(),
     aiProvider: aiProvider(),
+    build: {
+      sha: CHASE_TELEGRAM_BUILD_SHA,
+      time: CHASE_TELEGRAM_BUILD_TIME,
+    },
   }, ok ? 200 : 503);
 }
 
