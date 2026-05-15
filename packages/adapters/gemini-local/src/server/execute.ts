@@ -191,24 +191,42 @@ async function ensureGeminiChatsShared(
             "stdout",
             `[paperclip] Migrating existing Gemini chats from agent ${agentId} to shared company storage.\n`,
           );
+          let migrationFailed = false;
           for (const entry of entries) {
             const src = path.join(agentChatsDir, entry);
             const dest = path.join(sharedDir, entry);
             try {
-              // Copy then remove to be safe across possible (though unlikely) filesystem boundaries
+              // Copy to shared storage
               await fs.cp(src, dest, { recursive: true });
             } catch (copyErr) {
+              migrationFailed = true;
               await onLog(
                 "stderr",
                 `[paperclip] Warning: failed to copy chat entry ${entry}: ${copyErr instanceof Error ? copyErr.message : String(copyErr)}\n`,
               );
             }
           }
+
+          if (migrationFailed) {
+            await onLog(
+              "stderr",
+              `[paperclip] Warning: migration of some chats failed; skipping removal of original directory to prevent data loss. Cross-agent handoff may be unreliable for this agent until resolved.\n`,
+            );
+            shouldLink = false;
+          } else {
+            await fs.rm(agentChatsDir, { recursive: true, force: true });
+          }
+        } else {
+          // Empty directory, just remove it to make way for the symlink
+          await fs.rm(agentChatsDir, { recursive: true, force: true });
         }
-        await fs.rm(agentChatsDir, { recursive: true, force: true });
       }
     } catch (err) {
-      // Doesn't exist, fine
+      if (err instanceof Error && (err as any).code === "ENOENT") {
+        // Doesn't exist, fine
+      } else {
+        throw err;
+      }
     }
 
     if (shouldLink) {

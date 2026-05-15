@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -40,6 +40,7 @@ describe("gemini shared chats", () => {
   afterEach(async () => {
     process.env.HOME = previousHome;
     await fs.rm(root, { recursive: true, force: true });
+    vi.restoreAllMocks();
   });
 
   it("sets up shared company chat storage and migrates existing chats", async () => {
@@ -109,5 +110,40 @@ describe("gemini shared chats", () => {
     const agentChatsDir = path.join(root, ".gemini", "tmp", agentId, "chats");
     const agentFiles = await fs.readdir(agentChatsDir);
     expect(agentFiles).toContain("existing.jsonl");
+  });
+
+  it("does not remove agent directory if migration fails", async () => {
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "gemini");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeGeminiCommand(commandPath);
+
+    const agentId = "agent-3";
+    const companyId = "company-3";
+    const agentTmpDir = path.join(root, ".gemini", "tmp", agentId);
+    const agentChatsDir = path.join(agentTmpDir, "chats");
+
+    // 1. Pre-create chats
+    await fs.mkdir(agentChatsDir, { recursive: true });
+    await fs.writeFile(path.join(agentChatsDir, "chat-1.jsonl"), "data");
+
+    // 2. Mock fs.cp to fail
+    vi.spyOn(fs, "cp").mockRejectedValue(new Error("Copy failed"));
+
+    // 3. Execute
+    await execute({
+      runId: "run-3",
+      agent: { id: agentId, companyId, name: "G", adapterType: "gemini_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: commandPath, cwd: workspace },
+      context: {},
+      authToken: "t",
+      onLog: async () => {},
+    });
+
+    // 4. Verify agent directory STILL EXISTS and is a directory (not a symlink)
+    const stats = await fs.lstat(agentChatsDir);
+    expect(stats.isDirectory()).toBe(true);
+    expect(stats.isSymbolicLink()).toBe(false);
   });
 });
