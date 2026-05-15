@@ -23,7 +23,7 @@ async function fetchAviationWeather(
   return trimmed;
 }
 
-export const WEATHER_DISCLAIMER = "\n\n<i>Source: NOAA Aviation Weather Center (aviationweather.gov). Data may be delayed — always consult official briefings for flight decisions.</i>";
+export const WEATHER_DISCLAIMER = "\n\n<i>Not for flight planning. Source: NOAA Aviation Weather Center (aviationweather.gov). Data may be delayed — always consult official briefings for flight decisions.</i>";
 
 export async function handleMetarQuery(station: string): Promise<QueryResult> {
   try {

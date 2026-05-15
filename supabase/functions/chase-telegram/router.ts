@@ -209,10 +209,10 @@ export function routeQuery(
     // fall through
   }
 
-  // ── Agent action: "have|tell|ask|get X to do Y" → create issue ──
-  // Requires "to" after the agent name and excludes non-agent words
+  // ── Agent action: "have X do Y" / "tell|ask X to do Y" → create issue ──
+  // "have" uses bare infinitive; "tell/ask/get" may use "to". Excludes non-agent words.
   const createIssueMatch = trimmed.match(
-    /(?:have|tell|ask|get)\s+(?!me|us|them|him|her|about)\s*(\w+(?:\s+\w+)?)\s+to\s+(.+)/i,
+    /(?:have|tell|ask|get)\s+(?!me|us|them|him|her|it|you|a|an|the|about|what|when|where|why|how)\s*(\w+(?:\s+\w+)?)(?:\s+to\s+|\s+)(.+)/i,
   );
   if (createIssueMatch) {
     const agentName = createIssueMatch[1]!;
@@ -292,6 +292,6 @@ export function routeQuery(
           break;
       }
     }
-    return generateReply(trimmed);
+    return { text: await generateReply(trimmed) };
   });
 }

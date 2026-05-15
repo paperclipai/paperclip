@@ -76,8 +76,18 @@ Deno.test("routeQuery: NL what is X working on (requiresAi=false)", () => {
   assertEquals(result.requiresAi, false);
 });
 
-Deno.test("routeQuery: NL create issue (requiresAi=false)", () => {
+Deno.test("routeQuery: NL 'have Christie send a report' → create issue (requiresAi=false)", () => {
   const result = routeQuery("have Christie send a report");
+  assertEquals(result.requiresAi, false);
+});
+
+Deno.test("routeQuery: NL 'tell Christie to send a report' → create issue (requiresAi=false)", () => {
+  const result = routeQuery("tell Christie to send a report");
+  assertEquals(result.requiresAi, false);
+});
+
+Deno.test("routeQuery: NL 'ask Quinn to review CRE-306' → create issue (requiresAi=false)", () => {
+  const result = routeQuery("ask Quinn to review CRE-306");
   assertEquals(result.requiresAi, false);
 });
 

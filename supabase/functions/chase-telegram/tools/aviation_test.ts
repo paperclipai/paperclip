@@ -1,6 +1,10 @@
 import { assertEquals, assertStringIncludes } from "std/testing/asserts.ts";
 import { WEATHER_DISCLAIMER } from "./aviation.ts";
 
+Deno.test("WEATHER_DISCLAIMER includes 'not for flight planning'", () => {
+  assertStringIncludes(WEATHER_DISCLAIMER, "Not for flight planning");
+});
+
 Deno.test("WEATHER_DISCLAIMER includes NOAA source attribution", () => {
   assertStringIncludes(WEATHER_DISCLAIMER, "NOAA Aviation Weather Center");
 });
