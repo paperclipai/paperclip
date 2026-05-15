@@ -1,0 +1,16 @@
+{
+  "current_file_idx": 0,
+  "completed_files": [],
+  "failed_files": [],
+  "current_retry": 0,
+  "max_retries": 2,
+  "status": "ci_check",
+  "started_at": "2026-05-16T06:37:09",
+  "phase3_complete": false,
+  "current_file": {
+    "id": 1,
+    "path": "ui/src/pages/Dashboard.tsx",
+    "strings": 14,
+    "tier": 1
+  }
+}
