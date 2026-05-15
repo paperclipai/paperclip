@@ -519,7 +519,7 @@ export function agentRoutes(
     ]);
 
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...(options?.restricted ? redactForRestrictedAgentView(agent) : redactAgentReadableConfig(agent)),
       chainOfCommand,
       access: accessState,
     };
@@ -1279,6 +1279,14 @@ export function agentRoutes(
     };
   }
 
+  function redactAgentReadableConfig<T extends { adapterConfig: unknown; runtimeConfig: unknown }>(agent: T) {
+    return {
+      ...agent,
+      adapterConfig: redactEventPayload(asRecord(agent.adapterConfig) ?? {}),
+      runtimeConfig: redactEventPayload(asRecord(agent.runtimeConfig) ?? {}),
+    };
+  }
+
   function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
     return {
@@ -1614,7 +1622,7 @@ export function agentRoutes(
     const result = await svc.list(companyId);
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
-      res.json(result);
+      res.json(result.map((agent) => redactAgentReadableConfig(agent)));
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
@@ -2698,7 +2706,7 @@ export function agentRoutes(
       details: summarizeAgentUpdateDetails(patchData),
     });
 
-    res.json(agent);
+    res.json(redactAgentReadableConfig(agent));
   });
 
   router.post("/agents/:id/pause", async (req, res) => {

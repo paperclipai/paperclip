@@ -3,7 +3,7 @@ import { redactCommandText } from "@paperclipai/adapter-utils";
 const SECRET_KEY_PATTERN = [
   String.raw`api[-_]?key`,
   String.raw`access[-_]?token`,
-  String.raw`token`,
+  String.raw`(?:^|[-_])token(?:$|[-_])`,
   String.raw`auth(?:_?token)?`,
   String.raw`authorization`,
   String.raw`bearer`,

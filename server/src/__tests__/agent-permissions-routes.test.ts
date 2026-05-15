@@ -425,6 +425,84 @@ describe.sequential("agent permission routes", () => {
     ]);
   });
 
+  it("redacts secret-like config values on privileged agent detail reads", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterConfig: {
+        env: {
+          GH_TOKEN: "ghp_should-not-leak-in-agent-detail",
+          SAFE_LABEL: "visible",
+        },
+        model: "gpt-test",
+      },
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: {
+            adapterConfig: {
+              env: {
+                GITHUB_TOKEN: "github-token-should-not-leak",
+                SAFE_LABEL: "runtime-visible",
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "admin-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(res.body)).not.toContain("should-not-leak");
+    expect(res.body.adapterConfig.env.GH_TOKEN).toBe("***REDACTED***");
+    expect(res.body.adapterConfig.env.SAFE_LABEL).toBe("visible");
+    expect(res.body.adapterConfig.model).toBe("gpt-test");
+    expect(res.body.runtimeConfig.modelProfiles.cheap.adapterConfig.env.GITHUB_TOKEN).toBe("***REDACTED***");
+    expect(res.body.runtimeConfig.modelProfiles.cheap.adapterConfig.env.SAFE_LABEL).toBe("runtime-visible");
+  });
+
+  it("redacts secret-like config values on privileged company agent list reads", async () => {
+    mockAgentService.list.mockResolvedValue([{
+      ...baseAgent,
+      adapterConfig: {
+        env: {
+          GH_TOKEN: "ghp_should-not-leak-in-agent-list",
+          SAFE_LABEL: "visible",
+        },
+      },
+      runtimeConfig: {
+        env: {
+          GITHUB_TOKEN: "github-token-should-not-leak",
+          SAFE_LABEL: "runtime-visible",
+        },
+      },
+    }]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "admin-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/${companyId}/agents`));
+
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(res.body)).not.toContain("should-not-leak");
+    expect(res.body[0].adapterConfig.env.GH_TOKEN).toBe("***REDACTED***");
+    expect(res.body[0].adapterConfig.env.SAFE_LABEL).toBe("visible");
+    expect(res.body[0].runtimeConfig.env.GITHUB_TOKEN).toBe("***REDACTED***");
+    expect(res.body[0].runtimeConfig.env.SAFE_LABEL).toBe("runtime-visible");
+  });
+
   it("blocks agent updates for authenticated company members without agent admin permission", async () => {
     mockAccessService.canUser.mockResolvedValue(false);
 
