@@ -70,8 +70,7 @@ async function withDeadlockRetry<T>(fn: () => Promise<T>): Promise<T> {
     try {
       return await fn();
     } catch (err) {
-      const cause = (err as any)?.cause;
-      if (cause?.code === POSTGRES_DEADLOCK_CODE) {
+      if ((err as any)?.code === POSTGRES_DEADLOCK_CODE) {
         lastError = err;
         await new Promise((resolve) => setTimeout(resolve, 10 * (attempt + 1)));
         continue;
