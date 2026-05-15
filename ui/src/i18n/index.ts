@@ -1,11 +1,15 @@
-import { DEFAULT_LOCALE, localeMessages, type SupportedLocale } from "./locales";
+import { useState, useEffect } from "react";
+import { DEFAULT_LOCALE, localeMessages } from "./locales";
 
 let currentLocale: string = DEFAULT_LOCALE;
+
+const LOCALE_CHANGE_EVENT = "paperclip:localechange";
 
 export function setLocale(locale: string) {
   if (locale in localeMessages) {
     currentLocale = locale;
     localStorage.setItem("paperclip.language", locale);
+    window.dispatchEvent(new Event(LOCALE_CHANGE_EVENT));
   }
 }
 
@@ -61,7 +65,15 @@ export function t(key: string, options: TranslationOptions = {}) {
 }
 
 export function useTranslation() {
-  return { t, locale: currentLocale, setLocale, getAvailableLocales };
+  const [locale, setLocaleState] = useState(currentLocale);
+
+  useEffect(() => {
+    const handler = () => setLocaleState(currentLocale);
+    window.addEventListener(LOCALE_CHANGE_EVENT, handler);
+    return () => window.removeEventListener(LOCALE_CHANGE_EVENT, handler);
+  }, []);
+
+  return { t, locale, setLocale, getAvailableLocales };
 }
 
 // Initialize locale from storage or browser

@@ -173,8 +173,7 @@ async function main() {
     await syncLanguage(langCode, googleLangCode, flatEn, orderedEn);
   }
 
-  generateResourcesTs(allLangs);
-
+  console.log(`📝 Available locales: ${allLangs.join(", ")}`);
   console.log("\n🎉 Sync complete!");
   console.log(`   Languages: ${allLangs.join(", ")}`);
 }
