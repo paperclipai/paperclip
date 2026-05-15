@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode, type Ref } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
@@ -192,25 +193,36 @@ const LEAF_WORK_CONTROL_MODE_HELP_TEXT: Partial<Record<IssueTreeControlMode, str
   pause: "Pause active execution on this issue until an explicit resume.",
   resume: "Release the active pause hold so this issue can continue.",
 };
-function issueTreeControlLabel(mode: IssueTreeControlMode, scope: "leaf" | "subtree") {
+function resolveTreeControlLabel(mode: IssueTreeControlMode, scope: "leaf" | "subtree"): string {
   return scope === "leaf"
     ? LEAF_WORK_CONTROL_MODE_LABEL[mode] ?? TREE_CONTROL_MODE_LABEL[mode]
     : TREE_CONTROL_MODE_LABEL[mode];
 }
-
-function issueTreeControlHelpText(mode: IssueTreeControlMode, scope: "leaf" | "subtree") {
+function resolveTreeControlHelpText(mode: IssueTreeControlMode, scope: "leaf" | "subtree"): string {
   return scope === "leaf"
     ? LEAF_WORK_CONTROL_MODE_HELP_TEXT[mode] ?? TREE_CONTROL_MODE_HELP_TEXT[mode]
     : TREE_CONTROL_MODE_HELP_TEXT[mode];
 }
+function issueTreeControlLabel(t: ReturnType<typeof import("react-i18next").useTranslation>["t"], mode: IssueTreeControlMode, scope: "leaf" | "subtree") {
+  const key = scope === "leaf"
+    ? `issue.treeControlLeaf${mode.charAt(0).toUpperCase() + mode.slice(1)}Label`
+    : `issue.treeControl${mode.charAt(0).toUpperCase() + mode.slice(1)}Label`;
+  return t(key, resolveTreeControlLabel(mode, scope));
+}
+function issueTreeControlHelpText(t: ReturnType<typeof import("react-i18next").useTranslation>["t"], mode: IssueTreeControlMode, scope: "leaf" | "subtree") {
+  const key = scope === "leaf"
+    ? `issue.treeControlLeaf${mode.charAt(0).toUpperCase() + mode.slice(1)}Help`
+    : `issue.treeControl${mode.charAt(0).toUpperCase() + mode.slice(1)}Help`;
+  return t(key, resolveTreeControlHelpText(mode, scope));
+}
 
-function treeControlPreviewErrorCopy(error: unknown): string {
+function treeControlPreviewErrorCopy(t: ReturnType<typeof import("react-i18next").useTranslation>["t"], error: unknown): string {
   if (error instanceof ApiError) {
-    if (error.status === 403) return "Only board users can preview subtree controls.";
-    if (error.status === 409) return "Preview is stale because subtree hold state changed. Retry to refresh.";
-    if (error.status === 422) return "This subtree action is currently invalid for the selected issues.";
+    if (error.status === 403) return t("issue.treeControlPreviewOnlyBoard", "Only board users can preview subtree controls.");
+    if (error.status === 409) return t("issue.treeControlPreviewStale", "Preview is stale because subtree hold state changed. Retry to refresh.");
+    if (error.status === 422) return t("issue.treeControlPreviewInvalid", "This subtree action is currently invalid for the selected issues.");
   }
-  return error instanceof Error ? error.message : "Unable to load preview.";
+  return error instanceof Error ? error.message : t("issue.treeControlPreviewUnable", "Unable to load preview.");
 }
 
 export function canBoardResolveRecoveryAction(
@@ -369,17 +381,18 @@ function mergeOptimisticFeedbackVote(
 }
 
 function ActorIdentity({ evt, agentMap, userProfileMap }: { evt: ActivityEvent; agentMap: Map<string, Agent>; userProfileMap?: Map<string, import("../lib/company-members").CompanyUserProfile> }) {
+  const { t } = useTranslation();
   const id = evt.actorId;
   if (evt.actorType === "agent") {
     const agent = agentMap.get(id);
     return <Identity name={agent?.name ?? id.slice(0, 8)} size="sm" />;
   }
-  if (evt.actorType === "system") return <Identity name="System" size="sm" />;
+  if (evt.actorType === "system") return <Identity name={t("common.system", "System")} size="sm" />;
   if (evt.actorType === "user") {
     const profile = userProfileMap?.get(id);
-    return <Identity name={profile?.label ?? "Board"} avatarUrl={profile?.image} size="sm" />;
+    return <Identity name={profile?.label ?? t("nav.dashboard", "Board")} avatarUrl={profile?.image} size="sm" />;
   }
-  return <Identity name={id || "Unknown"} size="sm" />;
+  return <Identity name={id || t("common.unknown", "Unknown")} size="sm" />;
 }
 
 function IssueSectionSkeleton({
@@ -534,6 +547,7 @@ function InboxMobileToolbar({
   onProperties,
   onHide,
 }: InboxMobileToolbarProps) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -552,7 +566,7 @@ function InboxMobileToolbar({
             navigate(backHref);
           }
         }}
-        aria-label="Back to inbox"
+        aria-label={t("issue.backToInbox", "Back to inbox")}
       >
         <ArrowLeft className="h-5 w-5" />
       </Button>
@@ -564,7 +578,7 @@ function InboxMobileToolbar({
             size="icon-sm"
             onClick={onArchive}
             disabled={archivePending}
-            aria-label="Archive from inbox"
+            aria-label={t("issue.archiveFromInbox", "Archive from inbox")}
           >
             <Archive className="h-5 w-5" />
           </Button>
@@ -572,7 +586,7 @@ function InboxMobileToolbar({
 
         <Popover open={menuOpen} onOpenChange={setMenuOpen}>
           <PopoverTrigger asChild>
-            <Button variant="ghost" size="icon-sm" aria-label="More actions">
+            <Button variant="ghost" size="icon-sm" aria-label={t("issue.moreActions", "More actions")}>
               <MoreVertical className="h-5 w-5" />
             </Button>
           </PopoverTrigger>
@@ -582,14 +596,14 @@ function InboxMobileToolbar({
               onClick={() => { onCopy(); setMenuOpen(false); }}
             >
               <Copy className="h-3 w-3" />
-              Copy as markdown
+              {t("issue.copyAsMarkdownAction", "Copy as markdown")}
             </button>
             <button
               className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
               onClick={() => { onProperties(); setMenuOpen(false); }}
             >
               <SlidersHorizontal className="h-3 w-3" />
-              Properties
+              {t("issue.properties", "Properties")}
             </button>
             {issueIdProp && (
               <button
@@ -597,7 +611,7 @@ function InboxMobileToolbar({
                 onClick={() => { onHide(); setMenuOpen(false); }}
               >
                 <EyeOff className="h-3 w-3" />
-                Hide this issue
+                {t("issue.hideThisIssue", "Hide this issue")}
               </button>
             )}
           </PopoverContent>
@@ -736,6 +750,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onResumeFromBacklog,
   resumeFromBacklogPending,
 }: IssueDetailChatTabProps) {
+  const { t } = useTranslation();
   const { data: activity } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
@@ -882,7 +897,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             disabled={commentsLoadingOlder}
             onClick={onLoadOlderComments}
           >
-            {commentsLoadingOlder ? "Loading earlier comments..." : "Load earlier comments"}
+            {commentsLoadingOlder ? t("issue.loadingEarlierComments", "Loading earlier comments...") : t("issue.loadEarlierComments", "Load earlier comments")}
           </Button>
         </div>
       ) : null}
@@ -928,8 +943,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         interruptingQueuedRunId={interruptingQueuedRunId}
         stoppingRunId={pausingWorkRunId}
         onStopRun={onPauseWorkRun}
-        stopRunLabel="Pause work"
-        stoppingRunLabel="Pausing..."
+        stopRunLabel={t("issue.pauseWork", "Pause work")}
+        stoppingRunLabel={t("common.applying", "Pausing...")}
         stopRunVariant="pause"
         onAcceptInteraction={onAcceptInteraction}
         onRejectInteraction={onRejectInteraction}
@@ -988,6 +1003,7 @@ function IssueDetailActivityTab({
   checkingMonitorNow,
   handoffFocusSignal = 0,
 }: IssueDetailActivityTabProps) {
+  const { t } = useTranslation();
   const { data: activity, isLoading: activityLoading } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
@@ -1099,13 +1115,13 @@ function IssueDetailActivityTab({
     <>
       {shouldShowCostSummary && (
         <div className="mb-3 px-3 py-2 rounded-lg border border-border">
-          <div className="text-sm font-medium text-muted-foreground mb-1">Cost Summary</div>
+          <div className="text-sm font-medium text-muted-foreground mb-1">{t("issue.costSummary", "Cost Summary")}</div>
           {!issueCostSummary.hasCost && !issueCostSummary.hasTokens && !hasIssueTreeCost ? (
-            <div className="text-xs text-muted-foreground">No cost data yet.</div>
+            <div className="text-xs text-muted-foreground">{t("issue.noCostData", "No cost data yet.")}</div>
           ) : (
             <div className="space-y-1 text-xs text-muted-foreground tabular-nums">
               <div className="flex flex-wrap gap-3">
-                <span className="font-medium text-foreground">This issue</span>
+                <span className="font-medium text-foreground">{t("issue.thisIssue", "This issue")}</span>
                 {issueCostSummary.hasCost ? (
                   <span className="font-medium text-foreground">
                     ${issueCostSummary.cost.toFixed(4)}
@@ -1113,26 +1129,26 @@ function IssueDetailActivityTab({
                 ) : null}
                 {issueCostSummary.hasTokens ? (
                   <span>
-                    Tokens {formatTokens(issueCostSummary.totalTokens)}
+                    {t("issue.tokens", "Tokens")} {formatTokens(issueCostSummary.totalTokens)}
                     {issueCostSummary.cached > 0
-                      ? ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)}, cached ${formatTokens(issueCostSummary.cached)})`
-                      : ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)})`}
+                      ? ` (${t("issue.tokenIn", "in")} ${formatTokens(issueCostSummary.input)}, ${t("issue.tokenOut", "out")} ${formatTokens(issueCostSummary.output)}, ${t("issue.tokenCached", "cached")} ${formatTokens(issueCostSummary.cached)})`
+                      : ` (${t("issue.tokenIn", "in")} ${formatTokens(issueCostSummary.input)}, ${t("issue.tokenOut", "out")} ${formatTokens(issueCostSummary.output)})`}
                   </span>
                 ) : null}
                 {issueCostSummary.hasRuntime ? (
                   <span>
-                    Runtime {formatDurationMs(issueCostSummary.runtimeMs)}
-                    {` (${issueCostSummary.runCount} run${issueCostSummary.runCount === 1 ? "" : "s"})`}
+                    {t("issue.runtime", "Runtime")} {formatDurationMs(issueCostSummary.runtimeMs)}
+                    {` (${issueCostSummary.runCount} ${issueCostSummary.runCount === 1 ? t("issue.run", "run") : t("issue.runs", "runs")})`}
                   </span>
                 ) : null}
                 {!issueCostSummary.hasCost && !issueCostSummary.hasTokens && !issueCostSummary.hasRuntime ? (
-                  <span>No direct cost data.</span>
+                  <span>{t("issue.noDirectCostData", "No direct cost data.")}</span>
                 ) : null}
               </div>
               {hasIssueTreeCost && issueTreeCostSummary ? (
                 <div className="flex flex-wrap gap-3">
                   <span className="font-medium text-foreground">
-                    Including sub-issues {(issueTreeCostSummary.costCents / 100).toLocaleString(undefined, {
+                    {t("issue.includingSubIssues", "Including sub-issues")} {(issueTreeCostSummary.costCents / 100).toLocaleString(undefined, {
                       style: "currency",
                       currency: "USD",
                       minimumFractionDigits: 4,
@@ -1140,18 +1156,18 @@ function IssueDetailActivityTab({
                     })}
                   </span>
                   <span>
-                    Tokens {formatTokens(issueTreeCostTokens)}
+                    {t("issue.tokens", "Tokens")} {formatTokens(issueTreeCostTokens)}
                     {issueTreeCostSummary.cachedInputTokens > 0
-                      ? ` (in ${formatTokens(issueTreeCostSummary.inputTokens)}, out ${formatTokens(issueTreeCostSummary.outputTokens)}, cached ${formatTokens(issueTreeCostSummary.cachedInputTokens)})`
-                      : ` (in ${formatTokens(issueTreeCostSummary.inputTokens)}, out ${formatTokens(issueTreeCostSummary.outputTokens)})`}
+                      ? ` (${t("issue.tokenIn", "in")} ${formatTokens(issueTreeCostSummary.inputTokens)}, ${t("issue.tokenOut", "out")} ${formatTokens(issueTreeCostSummary.outputTokens)}, ${t("issue.tokenCached", "cached")} ${formatTokens(issueTreeCostSummary.cachedInputTokens)})`
+                      : ` (${t("issue.tokenIn", "in")} ${formatTokens(issueTreeCostSummary.inputTokens)}, ${t("issue.tokenOut", "out")} ${formatTokens(issueTreeCostSummary.outputTokens)})`}
                   </span>
                   {issueTreeCostSummary.runCount > 0 ? (
                     <span>
-                      Runtime {formatDurationMs(issueTreeCostSummary.runtimeMs)}
-                      {` (${issueTreeCostSummary.runCount} run${issueTreeCostSummary.runCount === 1 ? "" : "s"})`}
+                      {t("issue.runtime", "Runtime")} {formatDurationMs(issueTreeCostSummary.runtimeMs)}
+                      {` (${issueTreeCostSummary.runCount} ${issueTreeCostSummary.runCount === 1 ? t("issue.run", "run") : t("issue.runs", "runs")})`}
                     </span>
                   ) : null}
-                  <span>{issueTreeCostSummary.issueCount} issue{issueTreeCostSummary.issueCount === 1 ? "" : "s"}</span>
+                  <span>{issueTreeCostSummary.issueCount} {issueTreeCostSummary.issueCount === 1 ? t("issue.issue", "issue") : t("issue.issues", "issues")}</span>
                 </div>
               ) : null}
             </div>
@@ -1220,6 +1236,7 @@ function IssueDetailActivityTab({
 }
 
 export function IssueDetail() {
+  const { t } = useTranslation();
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
@@ -1578,7 +1595,7 @@ export function IssueDetail() {
       options.push({ id: `agent:${agent.id}`, label: agent.name });
     }
     if (currentUserId) {
-      options.push({ id: `user:${currentUserId}`, label: "Me" });
+      options.push({ id: `user:${currentUserId}`, label: t("common.me", "Me") });
     }
     return options;
   }, [agents, companyMembers?.users, currentUserId]);
@@ -1754,8 +1771,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.list(context.selectedCompanyId), context.previousList);
       }
       pushToast({
-        title: "Issue update failed",
-        body: err instanceof Error ? err.message : "Unable to save issue changes",
+        title: t("issue.issueUpdateFailedToast", "Issue update failed"),
+        body: err instanceof Error ? err.message : t("issue.unableToSaveChangesToast", "Unable to save issue changes"),
         tone: "error",
       });
     },
@@ -1782,8 +1799,8 @@ export function IssueDetail() {
     },
     onError: (err) => {
       pushToast({
-        title: "Recovery resolution failed",
-        body: err instanceof Error ? err.message : "Unable to resolve recovery action",
+        title: t("issue.recoveryResolutionFailedToast", "Recovery resolution failed"),
+        body: err instanceof Error ? err.message : t("issue.unableToResolveRecoveryToast", "Unable to resolve recovery action"),
         tone: "error",
       });
     },
@@ -1823,23 +1840,23 @@ export function IssueDetail() {
       return { kind: "create" as const, hold: created.hold, preview: created.preview };
     },
     onSuccess: async (result) => {
-      const modeLabel = issueTreeControlLabel(result.hold.mode, treeControlScope);
+      const modeLabel = issueTreeControlLabel(t, result.hold.mode, treeControlScope);
       const cancelCount = result.preview?.totals.activeRuns ?? 0;
       pushToast({
         title: result.kind === "release"
-          ? treeControlScope === "leaf" ? "Work resumed" : "Subtree resumed"
+          ? treeControlScope === "leaf" ? t("issue.workResumedToast", "Work resumed") : t("issue.subtreeResumedToast", "Subtree resumed")
           : result.hold.mode === "pause"
-            ? treeControlScope === "leaf" ? "Work paused" : "Subtree paused"
-            : `${modeLabel} applied`,
+            ? treeControlScope === "leaf" ? t("issue.workPausedToast", "Work paused") : t("issue.subtreePausedToast", "Subtree paused")
+            : `${t("issue.subtreeControlAppliedToast", "Subtree control applied")}`,
         body: result.kind === "release"
-          ? (result.hold.releaseReason?.trim() || (treeControlScope === "leaf" ? "Active issue pause released." : "Active subtree pause released."))
+          ? (result.hold.releaseReason?.trim() || (treeControlScope === "leaf" ? t("issue.workPausedHeldToast", "Active issue pause released.") : t("issue.subtreeControlAppliedToast", "Active subtree pause released.")))
           : result.hold.mode === "pause"
             ? treeControlScope === "leaf"
-              ? `Work paused. ${cancelCount} run${cancelCount === 1 ? "" : "s"} cancelled.`
-              : `Subtree paused. ${cancelCount} run${cancelCount === 1 ? "" : "s"} cancelled.`
+              ? `${t("issue.workPausedToast", "Work paused")}. ${cancelCount} ${cancelCount === 1 ? t("issue.run", "run") : t("issue.runs", "runs")} ${t("issue.complete", "cancelled")}.`
+              : `${t("issue.subtreePausedToast", "Subtree paused")}. ${cancelCount} ${cancelCount === 1 ? t("issue.run", "run") : t("issue.runs", "runs")} ${t("issue.complete", "cancelled")}.`
             : result.hold.reason?.trim()
               ? result.hold.reason
-              : "Subtree control applied.",
+              : t("issue.subtreeControlAppliedToast", "Subtree control applied."),
       });
       setTreeControlOpen(false);
       setTreeControlReason("");
@@ -1869,8 +1886,8 @@ export function IssueDetail() {
     },
     onError: (err) => {
       pushToast({
-        title: "Unable to apply subtree control",
-        body: err instanceof Error ? err.message : "Please try again.",
+        title: t("issue.cancelSubtreeToastTitle", "Unable to apply subtree control"),
+        body: err instanceof Error ? err.message : t("issue.pleaseTryAgainToast", "Please try again."),
         tone: "error",
       });
     },
@@ -1888,10 +1905,10 @@ export function IssueDetail() {
     onSuccess: async (result) => {
       const cancelCount = result.preview?.totals.activeRuns ?? 0;
       pushToast({
-        title: "Work paused",
+        title: t("issue.workPausedToast", "Work paused"),
         body: cancelCount > 0
-          ? `Work paused. ${cancelCount} run${cancelCount === 1 ? "" : "s"} cancelled.`
-          : "Work paused. This issue is held until resume.",
+          ? `${t("issue.workPausedToast", "Work paused")}. ${cancelCount} ${cancelCount === 1 ? t("issue.run", "run") : t("issue.runs", "runs")} ${t("issue.complete", "cancelled")}.`
+          : t("issue.workPausedHeldToast", "Work paused. This issue is held until resume."),
         tone: "success",
       });
       await Promise.all([
@@ -1908,8 +1925,8 @@ export function IssueDetail() {
     },
     onError: (err) => {
       pushToast({
-        title: "Unable to pause work",
-        body: err instanceof Error ? err.message : "Please try again.",
+        title: t("issue.unableToPauseWorkToast", "Unable to pause work"),
+        body: err instanceof Error ? err.message : t("issue.pleaseTryAgainToast", "Please try again."),
         tone: "error",
       });
     },
@@ -1928,8 +1945,8 @@ export function IssueDetail() {
     },
     onError: (err) => {
       pushToast({
-        title: "Issue update failed",
-        body: err instanceof Error ? err.message : "Unable to save sub-issue changes",
+        title: t("issue.issueUpdateFailedToast", "Issue update failed"),
+        body: err instanceof Error ? err.message : t("issue.unableToSaveSubIssueChangesToast", "Unable to save sub-issue changes"),
         tone: "error",
       });
     },
@@ -1945,14 +1962,14 @@ export function IssueDetail() {
       invalidateIssueRunState();
       invalidateIssueCollections();
       pushToast({
-        title: "Monitor check queued",
+        title: t("issue.monitorCheckQueuedToast", "Monitor check queued"),
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Monitor check failed",
-        body: err instanceof Error ? err.message : "Unable to trigger the monitor right now",
+        title: t("issue.monitorCheckFailedToast", "Monitor check failed"),
+        body: err instanceof Error ? err.message : t("issue.unableToTriggerMonitorToast", "Unable to trigger the monitor right now"),
         tone: "error",
       });
     },
@@ -1977,14 +1994,14 @@ export function IssueDetail() {
         queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(resolvedCompanyId) });
       }
       pushToast({
-        title: variables.action === "approve" ? "Approval approved" : "Approval rejected",
+        title: variables.action === "approve" ? t("issue.approvalApprovedToast", "Approval approved") : t("issue.approvalRejectedToast", "Approval rejected"),
         tone: "success",
       });
     },
     onError: (err, variables) => {
       pushToast({
-        title: variables.action === "approve" ? "Approval failed" : "Rejection failed",
-        body: err instanceof Error ? err.message : "Unable to update approval",
+        title: variables.action === "approve" ? t("issue.approvalFailedToast", "Approval failed") : t("issue.rejectionFailedToast", "Rejection failed"),
+        body: err instanceof Error ? err.message : t("issue.unableToUpdateApprovalToast", "Unable to update approval"),
         tone: "error",
       });
     },
@@ -2079,8 +2096,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
       }
       pushToast({
-        title: "Comment failed",
-        body: err instanceof Error ? err.message : "Unable to post comment",
+        title: t("issue.commentFailedToast", "Comment failed"),
+        body: err instanceof Error ? err.message : t("issue.unableToPostCommentToast", "Unable to post comment"),
         tone: "error",
       });
     },
@@ -2117,17 +2134,17 @@ export function IssueDetail() {
         : 0;
       pushToast({
         title: interaction.kind === "request_confirmation"
-          ? "Request confirmed"
+          ? t("issue.requestConfirmedToast", "Request confirmed")
           : skippedCount > 0
-          ? `Accepted ${createdCount} draft${createdCount === 1 ? "" : "s"} and skipped ${skippedCount}`
-          : "Suggested tasks accepted",
+          ? `${t("issue.acceptFailedToast", "Accepted")} ${createdCount} ${createdCount === 1 ? t("issue.subIssue", "draft") : t("issue.issues", "drafts")} ${t("issue.runtime", "and skipped")} ${skippedCount}`
+          : t("issue.suggestionRejectedToast", "Suggested tasks accepted"),
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Accept failed",
-        body: err instanceof Error ? err.message : "Unable to accept the suggested tasks",
+        title: t("issue.acceptFailedToast", "Accept failed"),
+        body: err instanceof Error ? err.message : t("issue.unableToAcceptTasksToast", "Unable to accept the suggested tasks"),
         tone: "error",
       });
     },
@@ -2140,14 +2157,14 @@ export function IssueDetail() {
       invalidateIssueDetail();
       invalidateIssueCollections();
       pushToast({
-        title: interaction.kind === "request_confirmation" ? "Request declined" : "Suggestion rejected",
+        title: interaction.kind === "request_confirmation" ? t("issue.requestDeclinedToast", "Request declined") : t("issue.suggestionRejectedToast", "Suggestion rejected"),
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Reject failed",
-        body: err instanceof Error ? err.message : "Unable to reject the suggested tasks",
+        title: t("issue.rejectFailedToast", "Reject failed"),
+        body: err instanceof Error ? err.message : t("issue.unableToRejectTasksToast", "Unable to reject the suggested tasks"),
         tone: "error",
       });
     },
@@ -2165,14 +2182,14 @@ export function IssueDetail() {
       invalidateIssueDetail();
       invalidateIssueCollections();
       pushToast({
-        title: "Answers submitted",
+        title: t("issue.answersSubmittedToast", "Answers submitted"),
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Submit failed",
-        body: err instanceof Error ? err.message : "Unable to submit answers",
+        title: t("issue.submitFailedToast", "Submit failed"),
+        body: err instanceof Error ? err.message : t("issue.unableToSubmitAnswersToast", "Unable to submit answers"),
         tone: "error",
       });
     },
@@ -2186,14 +2203,14 @@ export function IssueDetail() {
       invalidateIssueDetail();
       invalidateIssueCollections();
       pushToast({
-        title: "Question cancelled",
+        title: t("issue.cancelFailedToast", "Question cancelled"),
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Cancel failed",
-        body: err instanceof Error ? err.message : "Unable to cancel the question",
+        title: t("issue.cancelFailedToast", "Cancel failed"),
+        body: err instanceof Error ? err.message : t("issue.unableToCancelQuestionToast", "Unable to cancel the question"),
         tone: "error",
       });
     },
@@ -2306,8 +2323,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
       }
       pushToast({
-        title: "Comment failed",
-        body: err instanceof Error ? err.message : "Unable to post comment",
+        title: t("issue.commentFailedToast", "Comment failed"),
+        body: err instanceof Error ? err.message : t("issue.unableToPostCommentToast", "Unable to post comment"),
         tone: "error",
       });
     },
@@ -2387,8 +2404,8 @@ export function IssueDetail() {
       invalidateIssueDetail();
       invalidateIssueRunState();
       pushToast({
-        title: "Interrupt requested",
-        body: "The active run is stopping so queued comments can continue next.",
+        title: t("issue.interruptRequestedToast", "Interrupt requested"),
+        body: t("issue.activeRunStoppingToast", "The active run is stopping so queued comments can continue next."),
         tone: "success",
       });
     },
@@ -2403,8 +2420,8 @@ export function IssueDetail() {
         setLocallyQueuedCommentRunIds(context.previousLocalQueuedCommentRunIds);
       }
       pushToast({
-        title: "Interrupt failed",
-        body: err instanceof Error ? err.message : "Unable to interrupt the active run",
+        title: t("issue.interruptFailedToast", "Interrupt failed"),
+        body: err instanceof Error ? err.message : t("issue.unableToInterruptRunToast", "Unable to interrupt the active run"),
         tone: "error",
       });
     },
@@ -2425,15 +2442,15 @@ export function IssueDetail() {
       invalidateIssueThreadLazily();
       invalidateIssueCollections();
       pushToast({
-        title: "Queued comment canceled",
-        body: "The queued message was restored to the composer.",
+        title: t("issue.queuedCommentCanceledToast", "Queued comment canceled"),
+        body: t("issue.queuedMessageRestoredToast", "The queued message was restored to the composer."),
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Cancel failed",
-        body: err instanceof Error ? err.message : "Unable to cancel the queued comment",
+        title: t("issue.cancelFailedToast", "Cancel failed"),
+        body: err instanceof Error ? err.message : t("issue.unableToCancelCommentToast", "Unable to cancel the queued comment"),
         tone: "error",
       });
     },
@@ -2451,8 +2468,8 @@ export function IssueDetail() {
       if (cancelledCommentBody) {
         restoreQueuedCommentDraft(cancelledCommentBody);
         pushToast({
-          title: "Queued comment canceled",
-          body: "The queued message was restored to the composer.",
+          title: t("issue.queuedCommentCanceledToast", "Queued comment canceled"),
+          body: t("issue.queuedMessageRestoredToast", "The queued message was restored to the composer."),
           tone: "success",
         });
       }
@@ -2507,11 +2524,11 @@ export function IssueDetail() {
         title:
           variables.sharingPreferenceAtSubmit === "prompt"
             ? variables.allowSharing
-              ? "Feedback saved. Future votes will share"
-              : "Feedback saved. Future votes will stay local"
+              ? t("issue.feedbackSavedShareToast", "Feedback saved. Future votes will share")
+              : t("issue.feedbackSavedLocalToast", "Feedback saved. Future votes will stay local")
             : variables.allowSharing
-              ? "Feedback saved and sharing enabled"
-              : "Feedback saved",
+              ? t("issue.feedbackSavedSharingToast", "Feedback saved and sharing enabled")
+              : t("issue.feedbackSavedToast", "Feedback saved"),
         tone: "success",
       });
     },
@@ -2520,8 +2537,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.feedbackVotes(issueId!), context.previousVotes);
       }
       pushToast({
-        title: "Failed to save feedback",
-        body: err instanceof Error ? err.message : "Unknown error",
+        title: t("issue.failedToSaveFeedbackToast", "Failed to save feedback"),
+        body: err instanceof Error ? err.message : t("common.error", "Unknown error"),
         tone: "error",
       });
     },
@@ -2538,7 +2555,7 @@ export function IssueDetail() {
       invalidateIssueDetail();
     },
     onError: (err) => {
-      setAttachmentError(err instanceof Error ? err.message : "Upload failed");
+      setAttachmentError(err instanceof Error ? err.message : t("issue.uploadFailedToast", "Upload failed"));
     },
   });
 
@@ -2563,7 +2580,7 @@ export function IssueDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(issueId!) });
     },
     onError: (err) => {
-      setAttachmentError(err instanceof Error ? err.message : "Document import failed");
+      setAttachmentError(err instanceof Error ? err.message : t("issue.documentImportFailedToast", "Document import failed"));
     },
   });
 
@@ -2575,7 +2592,7 @@ export function IssueDetail() {
       invalidateIssueDetail();
     },
     onError: (err) => {
-      setAttachmentError(err instanceof Error ? err.message : "Delete failed");
+      setAttachmentError(err instanceof Error ? err.message : t("issue.deleteFailedToast", "Delete failed"));
     },
   });
 
@@ -2584,12 +2601,12 @@ export function IssueDetail() {
     onSuccess: () => {
       invalidateIssueCollections();
       navigate(sourceBreadcrumb.href.startsWith("/inbox") ? sourceBreadcrumb.href : "/inbox", { replace: true });
-      pushToast({ title: "Issue archived from inbox", tone: "success" });
+      pushToast({ title: t("issue.issueArchivedToast", "Issue archived from inbox"), tone: "success" });
     },
     onError: (err) => {
       pushToast({
-        title: "Archive failed",
-        body: err instanceof Error ? err.message : "Unable to archive this issue from the inbox",
+        title: t("issue.archiveFailedToast", "Archive failed"),
+        body: err instanceof Error ? err.message : t("issue.unableToArchiveIssueToast", "Unable to archive this issue from the inbox"),
         tone: "error",
       });
     },
@@ -4021,26 +4038,26 @@ export function IssueDetail() {
       <Dialog open={treeControlOpen} onOpenChange={setTreeControlOpen}>
         <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[560px]">
           <DialogHeader className="border-b border-border/60 px-6 pb-4 pr-12 pt-6">
-            <DialogTitle>{issueTreeControlLabel(treeControlMode, treeControlScope)}</DialogTitle>
+            <DialogTitle>{issueTreeControlLabel(t, treeControlMode, treeControlScope)}</DialogTitle>
             <DialogDescription>
-              {issueTreeControlHelpText(treeControlMode, treeControlScope)}
+              {issueTreeControlHelpText(t, treeControlMode, treeControlScope)}
             </DialogDescription>
           </DialogHeader>
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-6 py-4">
             {treeControlMode === "cancel" ? (
               <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
-                Cancelling a subtree is destructive. Non-terminal issues will be marked cancelled, and running or queued work will be interrupted where possible.
+                {t("issue.cancelWarning", "Cancelling a subtree is destructive. Non-terminal issues will be marked cancelled, and running or queued work will be interrupted where possible.")}
               </div>
             ) : null}
 
             <div className="space-y-1.5">
               <label className="text-xs text-muted-foreground">
-                Reason (optional)
+                {t("issue.reasonOptional", "Reason (optional)")}
               </label>
               <Textarea
                 value={treeControlReason}
                 onChange={(event) => setTreeControlReason(event.target.value)}
-                placeholder="Explain why this subtree control is being applied..."
+                placeholder={t("issue.explainSubtreeControl", "Explain why this subtree control is being applied...")}
                 className="min-h-[88px]"
               />
             </div>
@@ -4101,7 +4118,7 @@ export function IssueDetail() {
                 </div>
               ) : treeControlPreviewError ? (
                 <div className="space-y-2">
-                  <p className="text-xs text-destructive">{treeControlPreviewErrorCopy(treeControlPreviewError)}</p>
+                  <p className="text-xs text-destructive">{treeControlPreviewErrorCopy(t, treeControlPreviewError)}</p>
                   <Button
                     variant="outline"
                     size="sm"
@@ -4109,7 +4126,7 @@ export function IssueDetail() {
                       void refetchTreeControlPreview();
                     }}
                   >
-                    Retry preview
+                    {t("issue.retryPreview", "Retry preview")}
                   </Button>
                 </div>
               ) : treeControlPreview ? (

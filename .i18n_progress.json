@@ -1,8 +1,9 @@
 {
-  "current_file_idx": 2,
+  "current_file_idx": 3,
   "completed_files": [
     1,
-    2
+    2,
+    3
   ],
   "failed_files": [],
   "current_retry": 0,
