@@ -4,8 +4,8 @@ Status: Proposed
 Date: 2026-03-14
 Audience: Product and engineering
 Related:
-- `doc/plans/2026-03-13-company-import-export-v2.md`
-- `doc/plans/2026-03-14-adapter-skill-sync-rollout.md`
+- `doc/plans/2026-03-13-公司导入导出第二版 company-import-export-v2.md`
+- `doc/plans/2026-03-14-适配器技能同步推出 adapter-skill-sync-rollout.md`
 - `docs/公司/01 公司规范 companies-spec.md`
 - `ui/src/pages/AgentDetail.tsx`
 

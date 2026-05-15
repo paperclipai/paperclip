@@ -4,8 +4,8 @@
 
 Paperclip already treats budgets as a core control-plane responsibility:
 
-- `doc/SPEC.md` gives the Board authority to set budgets, pause agents, pause work, and override any budget.
-- `doc/SPEC-implementation.md` says V1 must support monthly UTC budget windows, soft alerts, and hard auto-pause.
+- `doc/03 规范 SPEC.md` gives the Board authority to set budgets, pause agents, pause work, and override any budget.
+- `doc/04 实现规格 SPEC-implementation.md` says V1 must support monthly UTC budget windows, soft alerts, and hard auto-pause.
 - the current code only partially implements that intent.
 
 Today the system has narrow money-budget behavior:

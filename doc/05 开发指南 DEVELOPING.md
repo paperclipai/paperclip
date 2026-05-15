@@ -1,12 +1,12 @@
 # 开发指南（Developing）
 
-> **路径（path）**：`doc/DEVELOPING.md`。命令、端口、环境变量、JSON 与路径示例保持英文，便于复制执行。
+> **路径（path）**：`doc/05 开发指南 DEVELOPING.md`。命令、端口、环境变量、JSON 与路径示例保持英文，便于复制执行。
 
 本地开发可**完全不手工安装 PostgreSQL** 而完整运行本项目。
 
 ## 部署模式（Deployment Modes）
 
-模式定义与预期 CLI 行为见 `doc/DEPLOYMENT-MODES.md`。
+模式定义与预期 CLI 行为见 `doc/07 部署模式 DEPLOYMENT-MODES.md`。
 
 当前实现状态：
 
@@ -26,6 +26,8 @@
 - 推送到 `master` 会用 `pnpm install --lockfile-only --no-frozen-lockfile` 重新生成 `pnpm-lock.yaml`，必要时提交回去，再用 `--frozen-lockfile` 跑校验。  
 
 ## 启动开发（Start Dev）
+
+本地模式 **A/B/C**（嵌入库、容器库、全容器）统一检查清单与 3100 追查：**[`doc/23 本地开发部署模式检查清单.md`](23%20本地开发部署模式检查清单.md)**。
 
 在仓库根目录：
 
@@ -166,7 +168,7 @@ docker run --name paperclip \
 docker compose -f docker/docker-compose.quickstart.yml up --build
 ```
 
-API key 与环境变量持久化等见 `doc/DOCKER.md`（`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` 等）。
+API key 与环境变量持久化等见 `doc/08 容器部署 DOCKER.md`（`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` 等）。
 
 ## 不可信 PR 评审用 Docker（Docker For Untrusted PR Review）
 
@@ -556,7 +558,7 @@ pnpm paperclipai issue list
 pnpm paperclipai dashboard get
 ```
 
-完整命令表见 `doc/CLI.md`。
+完整命令表见 `doc/09 命令行 CLI.md`。
 
 ## OpenClaw 邀请入驻端点（OpenClaw Invite Onboarding Endpoints）
 

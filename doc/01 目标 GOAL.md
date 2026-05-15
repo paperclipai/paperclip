@@ -1,6 +1,6 @@
 # Paperclip 目标（GOAL）
 
-> **路径（path）**：`doc/GOAL.md` — 与 `AGENTS.md` 中的阅读顺序一致。下文中英文专名首次出现时附中文释义。
+> **路径（path）**：`doc/01 目标 GOAL.md` — 与 `AGENTS.md` 中的阅读顺序一致。下文中英文专名首次出现时附中文释义。
 
 **Paperclip 是自主经济（autonomous economy）的基础设施。** 我们要搭建的是「自主 AI 公司」赖以运行的底座；目标是让基于 Paperclip 的公司 collectively（总体上）产出的经济规模，足以与全球最大经济体的 GDP 相抗衡。我们的每一个决策都应服务于：让自主公司更强、更可治理、更可扩展、更落实处。
 

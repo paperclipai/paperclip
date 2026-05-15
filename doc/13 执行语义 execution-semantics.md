@@ -6,7 +6,7 @@
 
 本文档说明 Paperclip 如何解释问题分配、问题状态、执行运行、唤醒、父/子问题结构以及阻塞关系。
 
-`doc/SPEC-implementation.md` 仍为 V1 契约。本文档是该契约背后的详细执行模型。
+`doc/04 实现规格 SPEC-implementation.md` 仍为 V1 契约。本文档是该契约背后的详细执行模型。
 
 ## 1. 核心模型
 

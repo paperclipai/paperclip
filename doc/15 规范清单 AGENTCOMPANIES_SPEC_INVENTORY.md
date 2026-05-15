@@ -15,12 +15,12 @@
 | 文件 | 角色 |
 |---|---|
 | `docs/公司/01 公司规范 companies-spec.md` | **规范性文档** — 定义了以 Markdown 为核心的包格式（COMPANY.md、TEAM.md、AGENTS.md、PROJECT.md、TASK.md、SKILL.md）、保留文件、前置元数据（frontmatter）模式以及供应商扩展约定（`.paperclip.yaml`）。 |
-| `doc/plans/2026-03-13-company-import-export-v2.md` | Markdown 核心包模型切换的实现计划 — 阶段划分、API 变更、UI 方案和发布策略。 |
-| `doc/SPEC-implementation.md` | V1 实现契约；引用了可移植性系统和 `.paperclip.yaml` 伴随文件格式。 |
+| `doc/plans/2026-03-13-公司导入导出第二版 company-import-export-v2.md` | Markdown 核心包模型切换的实现计划 — 阶段划分、API 变更、UI 方案和发布策略。 |
+| `doc/04 实现规格 SPEC-implementation.md` | V1 实现契约；引用了可移植性系统和 `.paperclip.yaml` 伴随文件格式。 |
 | `docs/规格说明/02 cliphub计划 cliphub-plan.md` | 早期的蓝图包计划；部分已被 Markdown 核心规范取代（在 v2 计划中有说明）。 |
-| `doc/plans/2026-02-16-module-system.md` | 模块系统计划；JSON 专属的公司模板部分已被 Markdown 核心模型取代。 |
-| `doc/plans/2026-03-14-skills-ui-product-plan.md` | 技能 UI 计划；引用了可移植技能文件和 `.paperclip.yaml`。 |
-| `doc/plans/2026-03-14-adapter-skill-sync-rollout.md` | 适配器技能同步发布计划；与 v2 导入/导出计划配套。 |
+| `doc/plans/2026-02-16-模块系统 module-system.md` | 模块系统计划；JSON 专属的公司模板部分已被 Markdown 核心模型取代。 |
+| `doc/plans/2026-03-14-技能UI产品计划 skills-ui-product-plan.md` | 技能 UI 计划；引用了可移植技能文件和 `.paperclip.yaml`。 |
+| `doc/plans/2026-03-14-适配器技能同步推出 adapter-skill-sync-rollout.md` | 适配器技能同步发布计划；与 v2 导入/导出计划配套。 |
 
 ## 2. 共享类型与校验器
 

@@ -140,6 +140,6 @@ Board 身份必须由真实的数据库用户主体（DB user principal）表示
 ## 10. 与其他文档的关系
 
 - 实现计划：`doc/plans/deployment-auth-mode-consolidation.md`
-- V1 合约：`doc/SPEC-implementation.md`
-- 操作者工作流：`doc/DEVELOPING.md` 和 `doc/CLI.md`
-- 邀请/加入状态图：`doc/spec/invite-flow.md`
+- V1 合约：`doc/04 实现规格 SPEC-implementation.md`
+- 操作者工作流：`doc/05 开发指南 DEVELOPING.md` 和 `doc/09 命令行 CLI.md`
+- 邀请/加入状态图：`doc/spec/邀请流程 invite-flow.md`

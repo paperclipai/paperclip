@@ -295,7 +295,7 @@ Files:
 
 - `scripts/docker-onboard-smoke.sh`
 - optionally `scripts/lib/docker-onboard-smoke.sh` or similar helper
-- `doc/DOCKER.md`
+- `doc/08 容器部署 DOCKER.md`
 - `doc/RELEASING.md`
 
 Tasks:

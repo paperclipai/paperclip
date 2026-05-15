@@ -188,10 +188,10 @@ This change is a clean cut:
 
 - update UI labels/help text around mode and exposure guidance.
 - update docs:
-  - `doc/DEPLOYMENT-MODES.md`
-  - `doc/DEVELOPING.md`
-  - `doc/CLI.md`
-  - `doc/SPEC-implementation.md`
+  - `doc/07 部署模式 DEPLOYMENT-MODES.md`
+  - `doc/05 开发指南 DEVELOPING.md`
+  - `doc/09 命令行 CLI.md`
+  - `doc/04 实现规格 SPEC-implementation.md`
 
 ## Test Plan
 

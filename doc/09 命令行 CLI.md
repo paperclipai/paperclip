@@ -27,7 +27,7 @@ pnpm paperclipai run --instance dev
 
 ## 部署模式（Deployment Modes）
 
-模式分类和设计意图见 `doc/DEPLOYMENT-MODES.md`。
+模式分类和设计意图见 `doc/07 部署模式 DEPLOYMENT-MODES.md`。
 
 当前 CLI 行为：
 
@@ -37,7 +37,7 @@ pnpm paperclipai run --instance dev
 - 运行时可通过 `PAPERCLIP_DEPLOYMENT_MODE` 覆盖模式
 - `paperclipai run` 和 `paperclipai doctor` 仍然不暴露直接的低级 `--mode` 标志
 
-规范行为见 `doc/DEPLOYMENT-MODES.md`。
+规范行为见 `doc/07 部署模式 DEPLOYMENT-MODES.md`。
 
 允许 authenticated/private 主机名（例如自定义 Tailscale DNS）：
 

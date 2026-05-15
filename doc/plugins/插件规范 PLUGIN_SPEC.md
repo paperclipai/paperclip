@@ -3,9 +3,9 @@
 Status: proposed complete spec for the post-V1 plugin system
 
 This document is the complete specification for Paperclip's plugin and extension architecture.
-It expands the brief plugin notes in [doc/SPEC.md](../SPEC.md) and should be read alongside the comparative analysis in [doc/plugins/ideas-from-opencode.md](./ideas-from-opencode.md).
+It expands the brief plugin notes in [doc/03 规范 SPEC.md](../03%20规范%20SPEC.md) and should be read alongside the comparative analysis in [doc/plugins/OpenCode思路借鉴 ideas-from-opencode.md](./OpenCode思路借鉴%20ideas-from-opencode.md).
 
-This is not part of the V1 implementation contract in [doc/SPEC-implementation.md](../SPEC-implementation.md).
+This is not part of the V1 implementation contract in [doc/04 实现规格 SPEC-implementation.md](../04%20实现规格%20SPEC-implementation.md).
 It is the full target architecture for the plugin system that should follow V1.
 
 ## Current implementation caveats

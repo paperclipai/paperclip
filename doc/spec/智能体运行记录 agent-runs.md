@@ -9,7 +9,7 @@ Scope: Agent execution runtime, adapter protocol, wakeup orchestration, and live
 
 This spec defines how Paperclip actually runs agents while staying runtime-agnostic.
 
-- `doc/SPEC-implementation.md` remains the V1 baseline contract.
+- `doc/04 实现规格 SPEC-implementation.md` remains the V1 baseline contract.
 - This document adds concrete subsystem detail for agent execution, including local CLI adapters, runtime state persistence, wakeup scheduling, and browser live updates.
 - If this doc conflicts with current runtime behavior in code, this doc is the target behavior for upcoming implementation.
 

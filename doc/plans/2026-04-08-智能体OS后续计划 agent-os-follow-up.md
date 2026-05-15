@@ -2,7 +2,7 @@
 
 Date: 2026-04-08
 Related issue: `PAP-1229`
-Companion analysis: `doc/plans/2026-04-08-agent-os-technical-report.md`
+Companion analysis: `doc/plans/2026-04-08-智能体OS技术报告 agent-os-technical-report.md`
 
 ## Goal
 

@@ -272,7 +272,7 @@ Recommended precedence:
 3. imported VS Code tasks from the linked workspace
 4. advanced raw runtime fallback
 
-This matches the existing direction in `doc/plans/2026-03-10-workspace-strategy-and-git-worktrees.md`.
+This matches the existing direction in `doc/plans/2026-03-10-工作区策略与Git工作树 workspace-strategy-git-worktrees.md`.
 
 ## Implementation Plan
 
@@ -379,4 +379,4 @@ The main UX change should be:
 ## External References
 
 - VS Code tasks documentation: https://code.visualstudio.com/docs/debugtest/tasks
-- Existing Paperclip workspace plan: `doc/plans/2026-03-10-workspace-strategy-and-git-worktrees.md`
+- Existing Paperclip workspace plan: `doc/plans/2026-03-10-工作区策略与Git工作树 workspace-strategy-git-worktrees.md`

@@ -22,11 +22,11 @@ We need a regression framework that can answer:
 
 This plan is based on:
 
-- `doc/GOAL.md`
-- `doc/PRODUCT.md`
-- `doc/SPEC-implementation.md`
+- `doc/01 目标 GOAL.md`
+- `doc/02 产品定义 PRODUCT.md`
+- `doc/04 实现规格 SPEC-implementation.md`
 - `docs/01 智能体运行指南 agents-runtime.md`
-- `doc/plans/2026-03-13-TOKEN-OPTIMIZATION-PLAN.md`
+- `doc/plans/2026-03-13-令牌优化计划 TOKEN-OPTIMIZATION-PLAN.md`
 - Discussion #449: <https://github.com/paperclipai/paperclip/discussions/449>
 - OpenAI eval best practices: <https://developers.openai.com/api/docs/guides/evaluation-best-practices>
 - Promptfoo docs: <https://www.promptfoo.dev/docs/configuration/test-cases/> and <https://www.promptfoo.dev/docs/providers/custom-api/>

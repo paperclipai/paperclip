@@ -1,6 +1,6 @@
 # Paperclip — 产品定义（Product Definition）
 
-> **路径（path）**：`doc/PRODUCT.md`。API 路径、模式名、枚举值保持英文原文。
+> **路径（path）**：`doc/02 产品定义 PRODUCT.md`。API 路径、模式名、枚举值保持英文原文。
 
 ## 它是什么（What It Is）
 
@@ -93,11 +93,11 @@ Paperclip 必须支持的两种运行时模式：
 - `local_trusted`（默认）：单机本地、受信任部署，无登录摩擦  
 - `authenticated`：需要登录；支持 private（私网）与 public（公网）**曝光策略（exposure）**  
 
-模式定义与 CLI 预期见 `doc/DEPLOYMENT-MODES.md`。
+模式定义与 CLI 预期见 `doc/07 部署模式 DEPLOYMENT-MODES.md`。
 
 ## 延伸阅读（Further Detail）
 
-完整技术规格见 [`SPEC.md`](./SPEC.md)；任务/工单数据模型见 [`TASKS.md`](./TASKS.md)。
+完整技术规格见 [`03 规范 SPEC.md`](./03%20规范%20SPEC.md)；任务/工单数据模型见 [`11 任务管理 TASKS.md`](./11%20任务管理%20TASKS.md)。
 
 ---
 

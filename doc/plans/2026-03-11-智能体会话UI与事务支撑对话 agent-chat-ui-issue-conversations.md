@@ -320,7 +320,7 @@ The most defensible first build is:
 
 ## References
 
-- V1 communication model: `doc/SPEC-implementation.md`
+- V1 communication model: `doc/04 实现规格 SPEC-implementation.md`
 - Current issue/comment/run UI: `ui/src/pages/IssueDetail.tsx`, `ui/src/components/CommentThread.tsx`, `ui/src/components/LiveRunWidget.tsx`
 - Session persistence and task key derivation: `server/src/services/heartbeat.ts`, `packages/db/src/schema/agent_task_sessions.ts`
 - OpenClaw session routing: `packages/adapters/openclaw-gateway/README.md`

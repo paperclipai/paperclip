@@ -2,7 +2,7 @@
 
 ## Role of This Document
 
-This document translates [workspace-product-model-and-work-product.md](/Users/dotta/paperclip-subissues/doc/plans/workspace-product-model-and-work-product.md) into an implementation-ready engineering plan.
+This document translates [工作区产品模型与工作产物 workspace-product-model.md](./工作区产品模型与工作产物%20workspace-product-model.md) into an implementation-ready engineering plan.
 
 It is intentionally concrete:
 

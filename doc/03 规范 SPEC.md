@@ -381,7 +381,7 @@ Paperclip 附带默认 Agent 模板：
 | -------- | ------------------------------------------------------------ |
 | 前端     | React + Vite                                                 |
 | 后端     | TypeScript + Express（REST API，非 tRPC——需要非 TS 客户端）    |
-| 数据库   | PostgreSQL（详见 [doc/DATABASE.md](./doc/DATABASE.md)——开发环境使用嵌入式 PGlite，生产环境使用 Docker 或托管 Supabase） |
+| 数据库   | PostgreSQL（详见 [doc/06 数据库 DATABASE.md](../06%20数据库%20DATABASE.md)——开发环境使用嵌入式 PGlite，生产环境使用 Docker 或托管 Supabase） |
 | 认证     | [Better Auth](https://www.better-auth.com/)                  |
 
 ### 并发模型：原子任务签出
@@ -448,7 +448,7 @@ Paperclip 管理任务关联的工作制品（Work Artifact）：问题文档（
 
 1. **组织架构图** — 带有每个 Agent 实时状态指示器（运行中/空闲/暂停/错误）的组织树。Agent 活动的实时动态流。
 2. **任务看板** — 任务管理。看板和列表视图。按团队、Agent、项目、状态筛选。
-3. **仪表盘** — 高层级指标：Agent 数量、活跃任务、成本、目标进度、消耗率。来自 GOAL.md 的"一览"视图。
+3. **仪表盘** — 高层级指标：Agent 数量、活跃任务、成本、目标进度、消耗率。来自 `doc/01 目标 GOAL.md` 的"一览"视图。
 4. **Agent 详情** — 单个 Agent 的深入视图：其任务、活动、成本、配置、状态历史。
 5. **项目/倡议视图** — 针对里程碑和目标的进度跟踪。
 6. **成本仪表盘** — 各层级（Agent、任务、项目、公司）的支出可视化。

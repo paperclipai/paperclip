@@ -1,6 +1,6 @@
 # 任务管理 MCP 接口
 
-Paperclip 任务管理系统的函数契约（Function Contract）。定义了代理（Agent）和外部工具通过 MCP 可用的操作。底层数据模型参见 [TASKS.md](./TASKS.md)。
+Paperclip 任务管理系统的函数契约（Function Contract）。定义了代理（Agent）和外部工具通过 MCP 可用的操作。底层数据模型参见 [11 任务管理 TASKS.md](./11%20任务管理%20TASKS.md)。
 
 所有操作返回 JSON。ID 为 UUID。时间戳为 ISO 8601 格式。问题标识符（如 `ENG-123`）在任何需要问题 `id` 的地方均可使用。
 

@@ -1,6 +1,6 @@
 # 数据库（Database）
 
-> **路径（path）**：`doc/DATABASE.md`。连接串、命令与 JSON 保持可执行英文原文。
+> **路径（path）**：`doc/06 数据库 DATABASE.md`。连接串、命令与 JSON 保持可执行英文原文。
 
 Paperclip 通过 [Drizzle ORM](https://orm.drizzle.team/) 使用 PostgreSQL。数据库有三种跑法，从简到生产依次为：
 
@@ -43,7 +43,7 @@ pnpm issue-references:backfill -- --company <company-id>
 
 该模式适合本地开发与一键安装。
 
-Docker 说明：Docker quickstart 镜像默认也用嵌入式 PostgreSQL。持久化 `/paperclip` 以在容器重启间保留 DB 状态（见 `doc/DOCKER.md`）。
+Docker 说明：Docker quickstart 镜像默认也用嵌入式 PostgreSQL。持久化 `/paperclip` 以在容器重启间保留 DB 状态（见 `doc/08 容器部署 DOCKER.md`）。
 
 ## 2. 本地 PostgreSQL（Docker）
 
@@ -151,7 +151,7 @@ DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@...5432/postgres \
 
 ## 备份（Backups）
 
-Paperclip 支持自动与手动**逻辑备份**（logical database backups）。备份包含非系统 schema（如 `public`）、Drizzle 迁移日志以及插件拥有的 schema。当前 `paperclipai db:backup` / `pnpm db:backup` 命令与保留策略见 `doc/DEVELOPING.md`。
+Paperclip 支持自动与手动**逻辑备份**（logical database backups）。备份包含非系统 schema（如 `public`）、Drizzle 迁移日志以及插件拥有的 schema。当前 `paperclipai db:backup` / `pnpm db:backup` 命令与保留策略见 `doc/05 开发指南 DEVELOPING.md`。
 
 数据库备份**不包含**非数据库实例文件：本地上传、工作区文件或本地加密 secrets 的 master key 等。需要完整实例灾备时，请**另行**备份这些路径。
 
@@ -198,4 +198,4 @@ pnpm paperclipai secrets migrate-inline-env --company-id <company-id> --apply
 pnpm secrets:migrate-inline-env --apply
 ```
 
-托管 AWS provider 的补充说明见 [`SECRETS-AWS-PROVIDER.md`](./SECRETS-AWS-PROVIDER.md)。
+托管 AWS provider 的补充说明见 [`17 AWS密钥管理 SECRETS-AWS-PROVIDER.md`](./17%20AWS密钥管理%20SECRETS-AWS-PROVIDER.md)。

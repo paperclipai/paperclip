@@ -301,4 +301,4 @@ npx paperclipai@canary onboard
 
 - [doc/RELEASING.md](RELEASING.md)
 - [doc/PUBLISHING.md](PUBLISHING.md)
-- [doc/plans/2026-03-17-release-automation-and-versioning.md](plans/2026-03-17-release-automation-and-versioning.md)
+- [doc/plans/2026-03-17-发布自动化与版本号 release-automation-versioning.md](plans/2026-03-17-发布自动化与版本号 release-automation-versioning.md)

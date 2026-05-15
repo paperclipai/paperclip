@@ -12,9 +12,9 @@ Define a Paperclip memory service and surface API that can sit above multiple me
 
 This plan is based on the external landscape summarized in `doc/memory-landscape.md`, the AWS AgentCore comparison captured in [PAP-1274](/PAP/issues/PAP-1274), and the current Paperclip architecture in:
 
-- `doc/SPEC-implementation.md`
-- `doc/plugins/PLUGIN_SPEC.md`
-- `doc/plugins/PLUGIN_AUTHORING_GUIDE.md`
+- `doc/04 实现规格 SPEC-implementation.md`
+- `doc/plugins/插件规范 PLUGIN_SPEC.md`
+- `doc/plugins/插件编写指南 PLUGIN_AUTHORING_GUIDE.md`
 - `packages/plugins/sdk/src/types.ts`
 
 ## Recommendation In One Sentence

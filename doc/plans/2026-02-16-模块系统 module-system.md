@@ -1,6 +1,6 @@
 # Paperclip Module System
 
-> Supersession note: the company-template/package-format direction in this document is no longer current. For the current markdown-first company import/export plan, see `doc/plans/2026-03-13-company-import-export-v2.md` and `docs/公司/01 公司规范 companies-spec.md`.
+> Supersession note: the company-template/package-format direction in this document is no longer current. For the current markdown-first company import/export plan, see `doc/plans/2026-03-13-公司导入导出第二版 company-import-export-v2.md` and `docs/公司/01 公司规范 companies-spec.md`.
 
 ## Overview
 

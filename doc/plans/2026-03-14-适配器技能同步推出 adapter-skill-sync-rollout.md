@@ -5,8 +5,8 @@ Date: 2026-03-14
 Audience: Product and engineering
 Related:
 
-- `doc/plans/2026-03-14-skills-ui-product-plan.md`
-- `doc/plans/2026-03-13-company-import-export-v2.md`
+- `doc/plans/2026-03-14-技能UI产品计划 skills-ui-product-plan.md`
+- `doc/plans/2026-03-13-公司导入导出第二版 company-import-export-v2.md`
 - `docs/公司/01 公司规范 companies-spec.md`
 
 ## 1. Purpose
