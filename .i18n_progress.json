@@ -1,6 +1,9 @@
 {
-  "current_file_idx": 1,
-  "completed_files": [1],
+  "current_file_idx": 2,
+  "completed_files": [
+    1,
+    2
+  ],
   "failed_files": [],
   "current_retry": 0,
   "max_retries": 2,
