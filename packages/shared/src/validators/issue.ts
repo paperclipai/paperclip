@@ -429,6 +429,40 @@ function withCreateIssueStatusDefault<T extends z.ZodRawShape>(schema: z.ZodObje
   }, schema);
 }
 
+export const SYSTEM_RESERVED_ORIGIN_KINDS = [
+  "routine_execution",
+  "harness_liveness_escalation",
+  "stale_active_run_evaluation",
+  "issue_productivity_review",
+  "stranded_issue_recovery",
+  "blocker_attention_open_recovery",
+] as const;
+
+export type SystemReservedOriginKind = typeof SYSTEM_RESERVED_ORIGIN_KINDS[number];
+
+const SYSTEM_RESERVED_ORIGIN_KIND_SET: ReadonlySet<string> = new Set(SYSTEM_RESERVED_ORIGIN_KINDS);
+
+export function isSystemReservedOriginKind(value: string): boolean {
+  if (SYSTEM_RESERVED_ORIGIN_KIND_SET.has(value)) return true;
+  // Plugin operation origins are reserved for internal plugin orchestration.
+  // External callers may use namespaced values like "plugin:foo" but not the
+  // operation-level forms reserved for the orchestrator.
+  if (/^plugin:[^:]+:operation(?::.+)?$/.test(value)) return true;
+  return false;
+}
+
+function applyOriginKindReservationGuard<Schema extends z.ZodTypeAny>(schema: Schema): Schema {
+  return schema.superRefine((value: { originKind?: string | null }, ctx) => {
+    if (typeof value.originKind === "string" && isSystemReservedOriginKind(value.originKind)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `originKind "${value.originKind}" is reserved for internal use; external callers must use a namespaced value (e.g. "linear", "sentry", "plugin:<id>")`,
+        path: ["originKind"],
+      });
+    }
+  }) as unknown as Schema;
+}
+
 const createIssueBaseSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   projectWorkspaceId: z.string().uuid().optional().nullable(),
@@ -471,6 +505,9 @@ const createIssueBaseSchema = z.object({
     agentId: z.string().uuid(),
     instructions: multilineTextSchema.optional().nullable(),
   }).strict().optional().nullable(),
+  originKind: z.string().trim().min(1).max(120).optional(),
+  originId: z.string().trim().min(1).max(500).optional().nullable(),
+  originFingerprint: z.string().trim().min(1).max(120).optional(),
 });
 
 function requireBlockedStatusForUnblockDescriptor(
@@ -501,18 +538,22 @@ const onboardingFirstTaskMarkerSchema = {
   onboardingFirstTask: z.boolean().optional(),
 };
 
-export const createIssueInputSchema = createIssueBaseSchema.extend({
-  status: createIssueBaseSchema.shape.status.optional(),
-  ...createIssueDuplicateGuardSchema,
-  ...onboardingFirstTaskMarkerSchema,
-});
-
-export const createIssueSchema = withCreateIssueStatusDefault(
+export const createIssueInputSchema = applyOriginKindReservationGuard(
   createIssueBaseSchema.extend({
+    status: createIssueBaseSchema.shape.status.optional(),
     ...createIssueDuplicateGuardSchema,
     ...onboardingFirstTaskMarkerSchema,
   }),
-).superRefine(requireBlockedStatusForUnblockDescriptor);
+);
+
+export const createIssueSchema = applyOriginKindReservationGuard(
+  withCreateIssueStatusDefault(
+    createIssueBaseSchema.extend({
+      ...createIssueDuplicateGuardSchema,
+      ...onboardingFirstTaskMarkerSchema,
+    }),
+  ).superRefine(requireBlockedStatusForUnblockDescriptor),
+);
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
 
@@ -523,16 +564,18 @@ export const upsertIssueWatchdogSchema = z.object({
 
 export type UpsertIssueWatchdog = z.infer<typeof upsertIssueWatchdogSchema>;
 
-export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema
-  .omit({
-    parentId: true,
-    inheritExecutionWorkspaceFromIssueId: true,
-    watchdogDiscovery: true,
-  })
-  .extend({
-    acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
-    blockParentUntilDone: z.boolean().optional().default(false),
-  })).superRefine(requireBlockedStatusForUnblockDescriptor);
+export const createChildIssueSchema = applyOriginKindReservationGuard(
+  withCreateIssueStatusDefault(createIssueBaseSchema
+    .omit({
+      parentId: true,
+      inheritExecutionWorkspaceFromIssueId: true,
+      watchdogDiscovery: true,
+    })
+    .extend({
+      acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
+      blockParentUntilDone: z.boolean().optional().default(false),
+    })).superRefine(requireBlockedStatusForUnblockDescriptor),
+);
 
 export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
 
@@ -554,6 +597,9 @@ export const updateIssueSchema = createIssueBaseSchema.omit({
   createdByUserId: true,
   responsibleUserId: true,
   watchdog: true,
+  originKind: true,
+  originId: true,
+  originFingerprint: true,
 }).partial().extend({
   requestDepth: issueRequestDepthInputSchema.optional(),
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
