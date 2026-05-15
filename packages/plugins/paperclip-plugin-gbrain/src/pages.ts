@@ -4,6 +4,28 @@ export interface GbrainCallable {
   call<T = unknown>(tool: string, args: Record<string, unknown>): Promise<T>;
 }
 
+// gbrain `put_page` accepts { slug, content } where content is markdown
+// with YAML frontmatter. Type / title / tags must be embedded in the
+// frontmatter, not passed as separate parameters.
+function frontmatterContent(
+  type: string,
+  title: string,
+  body: string,
+  extra: Record<string, string | string[]> = {},
+): string {
+  const lines = [`---`, `type: ${type}`, `title: ${JSON.stringify(title)}`];
+  for (const [k, v] of Object.entries(extra)) {
+    if (Array.isArray(v)) {
+      lines.push(`${k}:`);
+      for (const item of v) lines.push(`  - ${item}`);
+    } else {
+      lines.push(`${k}: ${JSON.stringify(v)}`);
+    }
+  }
+  lines.push(`---`, body || "");
+  return lines.join("\n") + "\n";
+}
+
 export async function ensureIssuePage(
   client: GbrainCallable,
   input: {
@@ -18,12 +40,13 @@ export async function ensureIssuePage(
   }
   const existing = await client.call("get_page", { slug });
   if (existing) return;
-  await client.call("put_page", {
-    slug,
-    type: PAGE_TYPES.ISSUE,
-    title: input.title ?? input.identifier ?? slug,
-    content: input.description ?? "",
-  });
+  const content = frontmatterContent(
+    PAGE_TYPES.ISSUE,
+    input.title ?? input.identifier ?? slug,
+    input.description ?? "",
+    { identifier: input.identifier ?? "" },
+  );
+  await client.call("put_page", { slug, content });
 }
 
 export async function ensureAgentPage(
@@ -36,12 +59,14 @@ export async function ensureAgentPage(
   }
   const existing = await client.call("get_page", { slug });
   if (existing) return;
-  await client.call("put_page", {
-    slug,
-    type: PAGE_TYPES.AGENT,
-    title: input.agentName ?? slug,
-    content: `Agent ${input.agentName ?? "(unnamed)"} (id ${input.agentId})`,
-  });
+  const name = input.agentName ?? slug;
+  const content = frontmatterContent(
+    PAGE_TYPES.AGENT,
+    name,
+    `Agent ${name} (id ${input.agentId})`,
+    { agent_id: input.agentId },
+  );
+  await client.call("put_page", { slug, content });
 }
 
 export async function addWorkedOnLink(
@@ -49,8 +74,8 @@ export async function addWorkedOnLink(
   input: { agentSlug: string; issueSlug: string },
 ): Promise<void> {
   await client.call("add_link", {
-    from_slug: input.agentSlug,
-    to_slug: input.issueSlug,
+    from: input.agentSlug,
+    to: input.issueSlug,
     link_type: "worked_on",
   });
 }
@@ -67,16 +92,12 @@ export async function addRunTimelineEntry(
     finishedAt: string;
   },
 ): Promise<void> {
+  const summary = `Run ${input.runId.slice(0, 8)} by ${input.agentId.slice(0, 8)} — ${input.outcome}`;
   await client.call("add_timeline_entry", {
     slug: input.issueSlug,
-    body: input.body,
-    occurred_at: input.finishedAt,
-    metadata: {
-      agentId: input.agentId,
-      runId: input.runId,
-      companyId: input.companyId,
-      outcome: input.outcome,
-      source: "paperclip-plugin-gbrain",
-    },
+    date: input.finishedAt,
+    summary,
+    detail: input.body,
+    source: "paperclip-plugin-gbrain",
   });
 }

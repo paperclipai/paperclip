@@ -2,9 +2,9 @@ import { describe, it, expect } from "vitest";
 import { issueSlug, agentSlug, factSlug, PAGE_TYPES } from "../identity.js";
 
 describe("issueSlug", () => {
-  it("formats identifier as issue/<identifier>", () => {
-    expect(issueSlug("BLO-3220")).toBe("issue/BLO-3220");
-    expect(issueSlug("PCL-1490")).toBe("issue/PCL-1490");
+  it("formats identifier as issue-<lowercased-identifier>", () => {
+    expect(issueSlug("BLO-3220")).toBe("issue-blo-3220");
+    expect(issueSlug("PCL-1490")).toBe("issue-pcl-1490");
   });
 
   it("returns null when identifier is missing", () => {
@@ -13,21 +13,21 @@ describe("issueSlug", () => {
     expect(issueSlug("")).toBeNull();
   });
 
-  it("trims surrounding whitespace", () => {
-    expect(issueSlug("  BLO-3220 ")).toBe("issue/BLO-3220");
+  it("trims surrounding whitespace and normalizes", () => {
+    expect(issueSlug("  BLO-3220 ")).toBe("issue-blo-3220");
   });
 });
 
 describe("agentSlug", () => {
-  it("lowercases and strips non-alphanumeric", () => {
-    expect(agentSlug("CTO")).toBe("agent/cto");
-    expect(agentSlug("MulticastEngineer")).toBe("agent/multicastengineer");
-    expect(agentSlug("Release Engineer")).toBe("agent/releaseengineer");
+  it("lowercases and joins with hyphens", () => {
+    expect(agentSlug("CTO")).toBe("agent-cto");
+    expect(agentSlug("MulticastEngineer")).toBe("agent-multicastengineer");
+    expect(agentSlug("Release Engineer")).toBe("agent-release-engineer");
   });
 
   it("collapses runs of separators", () => {
-    expect(agentSlug("QA   Engineer")).toBe("agent/qaengineer");
-    expect(agentSlug("Foo-Bar_Baz.Qux")).toBe("agent/foobarbazqux");
+    expect(agentSlug("QA   Engineer")).toBe("agent-qa-engineer");
+    expect(agentSlug("Foo-Bar_Baz.Qux")).toBe("agent-foo-bar-baz-qux");
   });
 
   it("returns null when name is empty after normalization", () => {
@@ -38,9 +38,9 @@ describe("agentSlug", () => {
 });
 
 describe("factSlug", () => {
-  it("formats uuid as fact/<uuid>", () => {
+  it("formats uuid as fact-<uuid>", () => {
     expect(factSlug("11111111-2222-3333-4444-555555555555")).toBe(
-      "fact/11111111-2222-3333-4444-555555555555",
+      "fact-11111111-2222-3333-4444-555555555555",
     );
   });
 });

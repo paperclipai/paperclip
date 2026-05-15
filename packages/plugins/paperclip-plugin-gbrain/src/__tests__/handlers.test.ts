@@ -52,10 +52,12 @@ describe("handleRunFinished", () => {
     ]);
     const lastCall = calls[calls.length - 1][1];
     expect(lastCall).toMatchObject({
-      slug: "issue/BLO-1",
-      body: "agent did X, Y, Z",
-      metadata: { agentId: "a-1", runId: "r-1", companyId: "c-1", outcome: "succeeded" },
+      slug: "issue-blo-1",
+      detail: "agent did X, Y, Z",
+      date: "2026-05-15T12:00:00Z",
+      source: "paperclip-plugin-gbrain",
     });
+    expect(typeof lastCall.summary).toBe("string");
   });
 
   it("no-ops when autoRetain is false", async () => {
