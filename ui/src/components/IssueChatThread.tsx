@@ -29,6 +29,7 @@ import {
   type ReactNode,
 } from "react";
 import { Link, useLocation } from "@/lib/router";
+import { useTranslation } from "react-i18next";
 import type {
   Agent,
   FeedbackDataSharingPreference,
@@ -425,34 +426,37 @@ class IssueChatErrorBoundary extends Component<IssueChatErrorBoundaryProps, Issu
 }
 
 function IssueAssigneePausedNotice({ agent }: { agent: Agent | null }) {
+  const { t } = useTranslation();
   if (!agent || agent.status !== "paused") return null;
 
   const pauseDetail =
     agent.pauseReason === "budget"
-      ? "It was paused by a budget hard stop."
+      ? t("issueChat.pausedByBudget")
       : agent.pauseReason === "system"
-        ? "It was paused by the system."
-        : "It was paused manually.";
+        ? t("issueChat.pausedBySystem")
+        : t("issueChat.pausedManually");
 
   return (
     <div className="mb-3 rounded-md border border-orange-300/70 bg-orange-50/90 px-3 py-2.5 text-sm text-orange-950 shadow-sm dark:border-orange-500/40 dark:bg-orange-500/10 dark:text-orange-100">
       <div className="flex items-start gap-2">
         <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-orange-600 dark:text-orange-300" />
         <p className="min-w-0 leading-5">
-          <span className="font-medium">{agent.name}</span> is paused. New runs will not start until the agent is resumed. {pauseDetail}
+          <span className="font-medium">{agent.name}</span>{" "}
+          {t("issueChat.isPaused", { name: agent.name })}{" "}
+          {pauseDetail}
         </p>
       </div>
     </div>
   );
 }
 
-function fallbackAuthorLabel(message: ThreadMessage) {
+function fallbackAuthorLabel(message: ThreadMessage, t: (key: string) => string) {
   const custom = message.metadata?.custom as Record<string, unknown> | undefined;
   if (typeof custom?.["authorName"] === "string") return custom["authorName"];
   if (typeof custom?.["runAgentName"] === "string") return custom["runAgentName"];
-  if (message.role === "assistant") return "Agent";
-  if (message.role === "user") return "You";
-  return "System";
+  if (message.role === "assistant") return t("issueChat.agent");
+  if (message.role === "user") return t("issueChat.you");
+  return t("issueChat.system");
 }
 
 function fallbackTextParts(message: ThreadMessage) {
@@ -486,15 +490,16 @@ function IssueChatFallbackThread({
   emptyMessage: string;
   variant: "full" | "embedded";
 }) {
+  const { t } = useTranslation();
   return (
     <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
       <div className="rounded-xl border border-amber-300/60 bg-amber-50/80 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/20 dark:text-amber-200">
         <div className="flex items-start gap-2">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="space-y-1">
-            <p className="font-medium">Chat renderer hit an internal state error.</p>
+            <p className="font-medium">{t("issueChat.chatRendererError")}</p>
             <p className="text-xs opacity-80">
-              Showing a safe fallback transcript instead of crashing the issues page.
+              {t("issueChat.chatRendererFallback")}
             </p>
           </div>
         </div>
@@ -516,7 +521,7 @@ function IssueChatFallbackThread({
             return (
               <div key={message.id} className="rounded-xl border border-border/60 bg-card/70 px-4 py-3">
                 <div className="mb-2 flex items-center gap-2 text-sm">
-                  <span className="font-medium text-foreground">{fallbackAuthorLabel(message)}</span>
+                  <span className="font-medium text-foreground">{fallbackAuthorLabel(message, t)}</span>
                   {message.createdAt ? (
                     <span className="text-[11px] text-muted-foreground">
                       {commentDateLabel(message.createdAt)}
@@ -527,7 +532,7 @@ function IssueChatFallbackThread({
                   {lines.length > 0 ? lines.map((line, index) => (
                     <MarkdownBody key={`${message.id}:fallback:${index}`}>{line}</MarkdownBody>
                   )) : (
-                    <p className="text-sm text-muted-foreground">No message content.</p>
+                    <p className="text-sm text-muted-foreground">{t("issueChat.noMessageContent")}</p>
                   )}
                 </div>
               </div>
@@ -682,8 +687,8 @@ export function SuccessfulRunHandoffCommentCallout({
   );
 }
 
-function humanizeValue(value: string | null) {
-  if (!value) return "None";
+function humanizeValue(value: string | null, t: (key: string) => string) {
+  if (!value) return t("issueChat.none");
   return value.replace(/_/g, " ");
 }
 
@@ -692,14 +697,15 @@ function formatTimelineAssigneeLabel(
   agentMap?: Map<string, Agent>,
   currentUserId?: string | null,
   userLabelMap?: ReadonlyMap<string, string> | null,
+  t?: (key: string) => string,
 ) {
   if (assignee.agentId) {
     return agentMap?.get(assignee.agentId)?.name ?? assignee.agentId.slice(0, 8);
   }
   if (assignee.userId) {
-    return formatAssigneeUserLabel(assignee.userId, currentUserId, userLabelMap) ?? "Board";
+    return formatAssigneeUserLabel(assignee.userId, currentUserId, userLabelMap) ?? (t ? t("issueChat.board") : "Board");
   }
-  return "Unassigned";
+  return t ? t("issueChat.unassigned") : "Unassigned";
 }
 
 function initialsForName(name: string) {
@@ -747,10 +753,10 @@ export function resolveIssueChatHumanAuthor(args: {
   };
 }
 
-function formatRunStatusLabel(status: string) {
+function formatRunStatusLabel(status: string, t: (key: string) => string) {
   switch (status) {
     case "timed_out":
-      return "timed out";
+      return t("issueChat.timedOut");
     default:
       return status.replace(/_/g, " ");
   }
@@ -1026,6 +1032,7 @@ function IssueChatRollingToolPart({ toolParts }: { toolParts: ToolCallMessagePar
 }
 
 function CopyablePreBlock({ children, className }: { children: string; className?: string }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   return (
     <div className="group/pre relative">
@@ -1036,8 +1043,8 @@ function CopyablePreBlock({ children, className }: { children: string; className
           "absolute right-1.5 top-1.5 inline-flex h-6 w-6 items-center justify-center rounded-md bg-background/80 text-muted-foreground opacity-0 backdrop-blur-sm transition-opacity hover:text-foreground group-hover/pre:opacity-100",
           copied && "opacity-100",
         )}
-        title="Copy"
-        aria-label="Copy"
+        title={t("issueChat.copy")}
+        aria-label={t("issueChat.copy")}
         onClick={() => {
           void navigator.clipboard.writeText(children).then(() => {
             setCopied(true);
@@ -1072,6 +1079,7 @@ function IssueChatToolPart({
   result?: unknown;
   isError?: boolean;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const rawArgsText = argsText ?? "";
   const parsedArgs = args ?? parseToolPayload(rawArgsText);
@@ -1123,7 +1131,7 @@ function IssueChatToolPart({
             {nonIntentDetails.length > 0 ? (
               <div>
                 <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
-                  Input
+                  {t("issueChat.input")}
                 </div>
                 <dl className="space-y-1.5">
                   {nonIntentDetails.map((detail) => (
@@ -1141,7 +1149,7 @@ function IssueChatToolPart({
             ) : rawArgsText ? (
               <div>
                 <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
-                  Input
+                  {t("issueChat.input")}
                 </div>
                 <CopyablePreBlock className="overflow-x-auto rounded-md bg-accent/30 p-2 text-[11px] leading-4 text-foreground/70">{rawArgsText}</CopyablePreBlock>
               </div>
@@ -1149,7 +1157,7 @@ function IssueChatToolPart({
             {result !== undefined ? (
               <div>
                 <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
-                  Result
+                  {t("issueChat.result")}
                 </div>
                 <CopyablePreBlock className="overflow-x-auto rounded-md bg-accent/30 p-2 text-[11px] leading-4 text-foreground/70">{resultText}</CopyablePreBlock>
               </div>
@@ -1265,6 +1273,7 @@ function IssueChatUserMessage({
   message: ThreadMessage;
   isInterruptingQueuedRun: boolean;
 }) {
+  const { t } = useTranslation();
   const {
     onInterruptQueued,
     onCancelQueued,
@@ -1279,7 +1288,7 @@ function IssueChatUserMessage({
   const queued = custom.queueState === "queued" || custom.clientStatus === "queued";
   const followUpRequested = custom.followUpRequested === true;
   const queueReason = typeof custom.queueReason === "string" ? custom.queueReason : null;
-  const queueBadgeLabel = queueReason === "hold" ? "\u23f8 Deferred wake" : "Queued";
+  const queueBadgeLabel = queueReason === "hold" ? t("issueChat.deferredWake") : t("issueChat.queued");
   const pending = custom.clientStatus === "pending";
   const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
   const [copied, setCopied] = useState(false);
@@ -1305,7 +1314,7 @@ function IssueChatUserMessage({
         <span className="text-sm font-medium text-foreground">{resolvedAuthorName}</span>
         {followUpRequested ? (
           <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
-            Follow-up
+            {t("issueChat.followUp")}
           </Badge>
         ) : null}
       </div>
@@ -1331,7 +1340,7 @@ function IssueChatUserMessage({
                 disabled={isInterruptingQueuedRun}
                 onClick={() => void onInterruptQueued(queueTargetRunId)}
               >
-                {isInterruptingQueuedRun ? "Interrupting..." : "Interrupt"}
+                {isInterruptingQueuedRun ? t("issueChat.interrupting") : t("issueChat.interrupt")}
               </Button>
             ) : null}
             {onCancelQueued ? (
@@ -1341,7 +1350,7 @@ function IssueChatUserMessage({
                 className="h-6 border-amber-300 px-2 text-[11px] text-amber-900 hover:bg-amber-100/80 hover:text-amber-950 dark:border-amber-500/40 dark:text-amber-100 dark:hover:bg-amber-500/10"
                 onClick={() => onCancelQueued(commentId)}
               >
-                Cancel
+                {t("issueChat.cancel")}
               </Button>
             ) : null}
           </div>
@@ -1353,7 +1362,7 @@ function IssueChatUserMessage({
 
       {pending ? (
         <div className={cn("mt-1 flex px-1 text-[11px] text-muted-foreground", isCurrentUser ? "justify-end" : "justify-start")}>
-          Sending...
+          {t("issueChat.sending")}
         </div>
       ) : (
         <div
@@ -1378,8 +1387,8 @@ function IssueChatUserMessage({
           <button
             type="button"
             className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
-            title="Copy message"
-            aria-label="Copy message"
+            title={t("issueChat.copyMessage")}
+            aria-label={t("issueChat.copyMessage")}
             onClick={() => {
               const text = message.content
                 .filter((p): p is { type: "text"; text: string } => p.type === "text")
@@ -1428,6 +1437,7 @@ function IssueChatAssistantMessage({
   isRunActive: boolean;
   isStoppingRun: boolean;
 }) {
+  const { t } = useTranslation();
   const {
     feedbackDataSharingPreference,
     feedbackTermsUrl,
@@ -2358,6 +2368,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
     onSubmitInteractionAnswers,
     onCancelInteraction,
   } = useContext(IssueChatCtx);
+  const { t } = useTranslation();
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
   const runId = typeof custom.runId === "string" ? custom.runId : null;
@@ -2429,7 +2440,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
         <div className={cn("flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-xs", isCurrentUser && "justify-end")}>
           <span className="font-medium text-foreground">{actorName}</span>
           <span className="text-muted-foreground">
-            {custom.followUpRequested === true ? "requested follow-up" : "updated this task"}
+            {custom.followUpRequested === true ? t("issueChat.requestedFollowUp") : t("issueChat.updatedThisTask")}
           </span>
           <a
             href={anchorId ? `#${anchorId}` : undefined}
@@ -2442,25 +2453,25 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
         {statusChange ? (
           <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
             <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Status
+              {t("issueChat.status")}
             </span>
-            <span className="text-muted-foreground">{humanizeValue(statusChange.from)}</span>
+            <span className="text-muted-foreground">{humanizeValue(statusChange.from, t)}</span>
             <ArrowRight className="h-3 w-3 text-muted-foreground" />
-            <span className="font-medium text-foreground">{humanizeValue(statusChange.to)}</span>
+            <span className="font-medium text-foreground">{humanizeValue(statusChange.to, t)}</span>
           </div>
         ) : null}
 
         {assigneeChange ? (
           <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
             <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Assignee
+              {t("issueChat.assignee")}
             </span>
             <span className="text-muted-foreground">
-              {formatTimelineAssigneeLabel(assigneeChange.from, agentMap, currentUserId, userLabelMap)}
+              {formatTimelineAssigneeLabel(assigneeChange.from, agentMap, currentUserId, userLabelMap, t)}
             </span>
             <ArrowRight className="h-3 w-3 text-muted-foreground" />
             <span className="font-medium text-foreground">
-              {formatTimelineAssigneeLabel(assigneeChange.to, agentMap, currentUserId, userLabelMap)}
+              {formatTimelineAssigneeLabel(assigneeChange.to, agentMap, currentUserId, userLabelMap, t)}
             </span>
           </div>
         ) : null}
@@ -2468,7 +2479,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
         {workspaceChange ? (
           <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
             <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Workspace
+              {t("issueChat.workspace")}
             </span>
             <span className="text-muted-foreground">
               {formatTimelineWorkspaceLabel(workspaceChange.from)}
@@ -2529,7 +2540,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
               <Link to={`/agents/${runAgentId}`} className="font-medium text-foreground transition-colors hover:underline">
                 {displayedRunAgentName}
               </Link>
-              <span className="text-muted-foreground">run</span>
+              <span className="text-muted-foreground">{t("issueChat.run")}</span>
               <Link
                 to={`/agents/${runAgentId}/runs/${runId}`}
                 className="inline-flex items-center rounded-md border border-border bg-accent/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
@@ -2537,7 +2548,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
                 {runId.slice(0, 8)}
               </Link>
               <span className={cn("font-medium", runStatusClass(runStatus))}>
-                {formatRunStatusLabel(runStatus)}
+                {formatRunStatusLabel(runStatus, t)}
               </span>
               <a
                 href={anchorId ? `#${anchorId}` : undefined}
