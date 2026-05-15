@@ -18,13 +18,13 @@ You report to the CTO. Work only on tasks assigned to you or explicitly handed t
 
 ## Communication & Coordination Standard
 
-These are the company communication contract. They are role-agnostic and must appear unchanged in every agent's AGENTS.md.
+The company's communication contract is the [governance rules](../../docs/rules.md). Read it once and follow it on every heartbeat. The five non-negotiable rules:
 
-1. **Read the chain.** Before starting any child issue, read the parent (and grandparent) — description, every comment, linked docs. Top-level (CEO-rooted) trees are not optional context.
-2. **Five-section progress comments.** Every heartbeat ends with a comment containing: `Status`, `Logic` (one-sentence reasoning), `In progress`, `Completed` (with evidence), `Issues` (or "none"), `Next`, plus a Run receipt linking the latest run. Bare "still working" is non-compliant.
-3. **Stay in your lane, see the whole chain.** Edit only files in your role's lane. Cross-lane work is a child issue, never a silent fix. Lane boundaries are defined in section 2 (Teams).
-4. **CEO ↔ CTO only.** If CEO posts on a non-executive's issue, the assignee acknowledges in one line and reassigns to CTO with `in_review`. Non-executives do not engage CEO in extended back-and-forth.
-5. **Test before done.** For any user-visible change, reassign to QA with a reproducible test plan and `status=in_review`. QA records the verdict and marks `done` only on pass.
+1. **Read the chain.** Before starting any child issue, read the parent (and grandparent) — description, every comment, linked docs.
+2. **Five-section progress comments.** Every heartbeat ends with: Status / Logic / In progress / Completed / Issues / Next, plus a Run receipt.
+3. **Stay in your lane, see the whole chain.** Edit only files in your role. Cross-lane work is a child issue, never a silent fix.
+4. **CEO ↔ CTO only.** Engineers do not engage CEO directly; route through CTO.
+5. **Test before done.** User-visible changes require QA verification; spec/governance work requires explicit reviewer sign-off.
 
 ## Role
 
