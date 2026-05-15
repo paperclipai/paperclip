@@ -22,6 +22,12 @@ auditable, refusal-aware tool. Each call:
 | `github_create_check_run` | Build Verifier | Publish evidence as a check run; refuses thin (`<200 char`) details |
 | `github_enqueue_merge` | Merge Director | Add to merge queue; refuses on failing checks, draft, or unapproved review |
 | `github_list_issues` | Delivery Lead | List intake tasks; excludes PRs |
+| `github_update_pr` | Merge Director / Delivery Lead | Update PR title, body, or base branch with expected head/base guards and readback |
+| `github_close_pr` | Merge Director / Delivery Lead | Close stale or superseded PRs only after writing a reasoned audit comment |
+| `github_update_pr_body` | Merge Director / Delivery Lead | Update PR body with expected head/base guards and readback |
+| `github_convert_pr_to_draft` | Merge Director / Delivery Lead | Convert an open PR to draft with expected head/base guards |
+| `github_mark_pr_ready_for_review` | Merge Director / Delivery Lead | Mark a draft PR ready for review with expected head/base guards |
+| `github_repair_pr_head` | Workspace Operator / Merge Director | Repair an authorized same-repo PR head branch with target commit verification |
 
 ## Refusal rules (in code, not in prose)
 
@@ -35,6 +41,9 @@ auditable, refusal-aware tool. Each call:
 | Can't enqueue with failing checks | `github_enqueue_merge` | `failing_checks` |
 | Can't enqueue with `CHANGES_REQUESTED` | `github_enqueue_merge` | `review_not_approved` |
 | PR body must reference an issue | `github_open_pr` | (auto-appends `Fixes #<issueId>`) |
+| PR mutations must match current head/base SHAs | `github_update_pr`, `github_close_pr`, `github_update_pr_body`, draft/ready/head repair tools | `expected_head_mismatch`, `expected_base_mismatch` |
+| Close PR must include an explicit reason and write a PR comment trail | `github_close_pr` | `reason required` / upstream comment failure |
+| Head repair must stay inside the configured repository | `github_repair_pr_head` | `unauthorized_head_branch` |
 
 These are the compliance company's hard rules — see
 `doc/company-packages/compliance-first-ai-company/README.md` Rules section

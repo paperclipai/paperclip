@@ -178,13 +178,14 @@ const manifest: PaperclipPluginManifestV1 = {
       name: TOOL.UPDATE_PR,
       displayName: "Update Pull Request",
       description:
-        "Update an existing PR title and/or body after verifying repository, PR number, current head SHA, current base SHA, and optional current title/body readback.",
+        "Update an existing PR title, body, and/or base branch after verifying repository, PR number, current head SHA, current base SHA, and optional current title/body readback.",
       parametersSchema: {
         type: "object",
         properties: {
           ...mutationGuardProperties(),
           title: { type: "string" },
           body: { type: "string" },
+          base: { type: "string", description: "New base branch name. Raw refs are rejected." },
           expectedCurrentTitle: { type: "string" },
           expectedCurrentBody: { type: "string" },
         },
@@ -195,11 +196,15 @@ const manifest: PaperclipPluginManifestV1 = {
       name: TOOL.CLOSE_PR,
       displayName: "Close Pull Request",
       description:
-        "Close an existing PR after verifying repository, PR number, current head SHA, current base SHA, and state readback.",
+        "Close an existing PR after verifying repository, PR number, current head SHA, current base SHA, writing an audit comment with reason/run metadata, and state readback.",
       parametersSchema: {
         type: "object",
-        properties: mutationGuardProperties(),
-        required: ["repository", "prNumber", "expectedHeadSha", "expectedBaseSha"],
+        properties: {
+          ...mutationGuardProperties(),
+          reason: { type: "string", description: "Explicit disposal reason recorded in the PR comment trail." },
+          commentBody: { type: "string", description: "Optional additional operator-readable close note." },
+        },
+        required: ["repository", "prNumber", "expectedHeadSha", "expectedBaseSha", "reason"],
       },
     },
     {

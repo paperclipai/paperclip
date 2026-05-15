@@ -39,6 +39,8 @@ describe("wrapTool", () => {
     expect(result.content).toBe("ok");
     expect(ctx.logCalls).toHaveLength(1);
     expect(ctx.logCalls[0]?.companyId).toBe("company-1");
+    expect((ctx.logCalls[0]?.metadata as { agentId?: string; runId?: string } | undefined)?.agentId).toBe("agent-1");
+    expect((ctx.logCalls[0]?.metadata as { agentId?: string; runId?: string } | undefined)?.runId).toBe("run-1");
     expect((ctx.logCalls[0]?.metadata as { summary?: { prNumber?: number } } | undefined)?.summary?.prNumber).toBe(42);
   });
 

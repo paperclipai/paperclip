@@ -228,8 +228,8 @@ function registerTools(ctx: PluginContext): void {
     TOOL.CLOSE_PR,
     {
       displayName: "Close Pull Request",
-      description: "Close an existing PR with expected head/base guards and readback.",
-      parametersSchema: prMutationGuardSchema,
+      description: "Close an existing PR with expected head/base guards, audit comment, and readback.",
+      parametersSchema: closePrSchema,
     },
     wrap(TOOL.CLOSE_PR, async (params, runCtx) => {
       const s = requireState();
@@ -377,10 +377,21 @@ const updatePrSchema = {
     ...prMutationGuardProperties,
     title: { type: "string" },
     body: { type: "string" },
+    base: { type: "string" },
     expectedCurrentTitle: { type: "string" },
     expectedCurrentBody: { type: "string" },
   },
   required: ["repository", "prNumber", "expectedHeadSha", "expectedBaseSha"],
+} as const;
+
+const closePrSchema = {
+  type: "object",
+  properties: {
+    ...prMutationGuardProperties,
+    reason: { type: "string" },
+    commentBody: { type: "string" },
+  },
+  required: ["repository", "prNumber", "expectedHeadSha", "expectedBaseSha", "reason"],
 } as const;
 
 const repairPrHeadSchema = {

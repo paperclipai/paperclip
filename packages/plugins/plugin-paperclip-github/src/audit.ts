@@ -49,6 +49,7 @@ export function wrapTool(
         await safeLog(ctx, runCtx.companyId, `${toolName}: refused`, {
           toolName,
           agentId: runCtx.agentId,
+          runId: runCtx.runId,
           refusal: true,
           code: codeFromToolError(result.error),
         });
@@ -57,6 +58,7 @@ export function wrapTool(
         await safeLog(ctx, runCtx.companyId, `${toolName}: ok`, {
           toolName,
           agentId: runCtx.agentId,
+          runId: runCtx.runId,
           ...(typeof result.data === "object" && result.data !== null
             ? { summary: pickSummaryFields(result.data as Record<string, unknown>) }
             : {}),
@@ -75,6 +77,7 @@ export function wrapTool(
       await safeLog(ctx, runCtx.companyId, `${toolName}: error — ${code}`, {
         toolName,
         agentId: runCtx.agentId,
+        runId: runCtx.runId,
         code,
       });
       return { error: errorString };
