@@ -1258,9 +1258,18 @@ export const storybookDashboardSummary: DashboardSummary = {
     done: 36,
   },
   costs: {
+    source: "connected",
     monthSpendCents: 67_500,
     monthBudgetCents: 250_000,
     monthUtilizationPercent: 27,
+  },
+  runHealth: {
+    windowDays: 14,
+    succeededRuns: 84,
+    failedRuns: 6,
+    otherRuns: 4,
+    totalRuns: 94,
+    failedRate: 6.38,
   },
   pendingApprovals: 2,
   budgets: {

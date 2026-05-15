@@ -96,6 +96,15 @@ export function dashboardService(db: Db) {
         );
 
       const monthSpendCents = Number(monthSpend);
+
+      const lifetimeCostRow = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(costEvents)
+        .where(eq(costEvents.companyId, companyId))
+        .limit(1);
+      const costSource: "connected" | "not_configured" =
+        Number(lifetimeCostRow[0]?.count ?? 0) > 0 ? "connected" : "not_configured";
+
       const runActivityDayExpr = sql<string>`to_char(${heartbeatRuns.createdAt} at time zone 'UTC', 'YYYY-MM-DD')`;
       const runActivityRows = await db
         .select({
@@ -134,6 +143,21 @@ export function dashboardService(db: Db) {
           : 0;
       const budgetOverview = await budgets.overview(companyId);
 
+      const runHealthTotals = Array.from(runActivity.values()).reduce(
+        (acc, bucket) => {
+          acc.succeeded += bucket.succeeded;
+          acc.failed += bucket.failed;
+          acc.other += bucket.other;
+          acc.total += bucket.total;
+          return acc;
+        },
+        { succeeded: 0, failed: 0, other: 0, total: 0 },
+      );
+      const failedRate =
+        runHealthTotals.total > 0
+          ? Number(((runHealthTotals.failed / runHealthTotals.total) * 100).toFixed(2))
+          : 0;
+
       return {
         companyId,
         agents: {
@@ -144,9 +168,18 @@ export function dashboardService(db: Db) {
         },
         tasks: taskCounts,
         costs: {
+          source: costSource,
           monthSpendCents,
           monthBudgetCents: company.budgetMonthlyCents,
           monthUtilizationPercent: Number(utilization.toFixed(2)),
+        },
+        runHealth: {
+          windowDays: DASHBOARD_RUN_ACTIVITY_DAYS,
+          succeededRuns: runHealthTotals.succeeded,
+          failedRuns: runHealthTotals.failed,
+          otherRuns: runHealthTotals.other,
+          totalRuns: runHealthTotals.total,
+          failedRate,
         },
         pendingApprovals,
         budgets: {

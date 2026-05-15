@@ -290,9 +290,18 @@ const dashboard: DashboardSummary = {
     done: 0,
   },
   costs: {
+    source: "connected",
     monthSpendCents: 900,
     monthBudgetCents: 1000,
     monthUtilizationPercent: 90,
+  },
+  runHealth: {
+    windowDays: 14,
+    succeededRuns: 0,
+    failedRuns: 0,
+    otherRuns: 0,
+    totalRuns: 0,
+    failedRate: 0,
   },
   pendingApprovals: 1,
   budgets: {

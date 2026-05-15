@@ -265,14 +265,26 @@ export function Dashboard() {
             />
             <MetricCard
               icon={DollarSign}
-              value={formatCents(data.costs.monthSpendCents)}
+              value={
+                data.costs.source === "not_configured"
+                  ? "Unknown"
+                  : formatCents(data.costs.monthSpendCents)
+              }
               label="Month Spend"
               to="/costs"
               description={
                 <span>
-                  {data.costs.monthBudgetCents > 0
-                    ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
-                    : "Unlimited budget"}
+                  {data.costs.source === "not_configured"
+                    ? "Cost source not connected"
+                    : data.costs.monthBudgetCents > 0
+                      ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
+                      : "Unlimited budget"}
+                  {data.runHealth.totalRuns > 0 && (
+                    <>
+                      {" · "}
+                      {data.runHealth.failedRuns} failed runs ({data.runHealth.failedRate}%) in {data.runHealth.windowDays}d
+                    </>
+                  )}
                 </span>
               }
             />

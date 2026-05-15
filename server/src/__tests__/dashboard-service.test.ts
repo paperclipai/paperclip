@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, costEvents, createDb, heartbeatRuns } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -47,6 +47,7 @@ describeEmbeddedPostgres("dashboard service", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -165,5 +166,62 @@ describeEmbeddedPostgres("dashboard service", () => {
       other: 1,
       total: 3,
     });
+
+    expect(summary.costs.source).toBe("not_configured");
+    expect(summary.costs.monthSpendCents).toBe(0);
+    expect(summary.runHealth).toMatchObject({
+      windowDays: 14,
+      succeededRuns: 105,
+      failedRuns: 2,
+      otherRuns: 1,
+      totalRuns: 108,
+    });
+    expect(summary.runHealth.failedRate).toBeCloseTo((2 / 108) * 100, 2);
+  });
+
+  it("flips cost source to connected when any cost event exists", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const beforeSummary = await dashboardService(db).summary(companyId);
+    expect(beforeSummary.costs.source).toBe("not_configured");
+
+    await db.insert(costEvents).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      provider: "anthropic",
+      biller: "anthropic",
+      billingType: "metered",
+      model: "claude-test",
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      costCents: 12,
+      occurredAt: utcDay(-40),
+    });
+
+    const afterSummary = await dashboardService(db).summary(companyId);
+    expect(afterSummary.costs.source).toBe("connected");
+    expect(afterSummary.costs.monthSpendCents).toBe(0);
   });
 });

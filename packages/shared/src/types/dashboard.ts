@@ -6,6 +6,17 @@ export interface DashboardRunActivityDay {
   total: number;
 }
 
+export type DashboardCostSource = "connected" | "not_configured";
+
+export interface DashboardRunHealth {
+  windowDays: number;
+  succeededRuns: number;
+  failedRuns: number;
+  otherRuns: number;
+  totalRuns: number;
+  failedRate: number;
+}
+
 export interface DashboardSummary {
   companyId: string;
   agents: {
@@ -21,10 +32,12 @@ export interface DashboardSummary {
     done: number;
   };
   costs: {
+    source: DashboardCostSource;
     monthSpendCents: number;
     monthBudgetCents: number;
     monthUtilizationPercent: number;
   };
+  runHealth: DashboardRunHealth;
   pendingApprovals: number;
   budgets: {
     activeIncidents: number;
