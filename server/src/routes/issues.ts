@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, desc, eq, inArray, notInArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -96,6 +96,7 @@ import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { environmentService } from "../services/environments.js";
 import { redactSensitiveText } from "../redaction.js";
+import { isTextEnglish } from "../services/issue-english-enforcement.js";
 import {
   createCompanySearchRateLimiter,
   type CompanySearchRateLimiter,
@@ -1512,11 +1513,30 @@ export function issueRoutes(
       listSuccessfulRunHandoffStates(db, companyId, issueIds),
       recoveryActionsSvc.listActiveForIssues(companyId, issueIds),
     ]);
-    res.json(result.map((issue) => ({
+    const includeTotal = req.query.includeTotal === "true" || req.query.includeTotal === "1";
+    const mapped = result.map((issue) => ({
       ...issue,
       successfulRunHandoff: handoffStates.get(issue.id) ?? null,
       activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
-    })));
+    }));
+
+    if (includeTotal) {
+      const statusFilter = req.query.status as string | undefined;
+      const countConditions = [eq(issueRows.companyId, companyId), isNull(issueRows.hiddenAt)];
+      if (statusFilter) {
+        const statuses = statusFilter.split(",").map((s) => s.trim());
+        countConditions.push(
+          statuses.length === 1 ? eq(issueRows.status, statuses[0]) : inArray(issueRows.status, statuses),
+        );
+      }
+      const [totalRow] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(issueRows)
+        .where(and(...countConditions));
+      res.json({ data: mapped, total: totalRow?.count ?? 0 });
+    } else {
+      res.json(mapped);
+    }
   });
 
   router.get("/companies/:companyId/issues/count", async (req, res) => {
@@ -2894,7 +2914,10 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    // Allow comment-only PATCH on in_review issues from non-assignee agents (execution policy guards stage advancement)
+    const isCommentOnlyOnInReview = existing.status === "in_review" && req.actor.type === "agent"
+      && req.body.comment !== undefined && Object.keys(req.body).length === 1;
+    if (!isCommentOnlyOnInReview && !(await assertAgentIssueMutationAllowed(req, res, existing))) return;
 
     const actor = getActorInfo(req);
     const isClosed = isClosedIssueStatus(existing.status);
@@ -2917,6 +2940,10 @@ export function issueRoutes(
       hiddenAt: hiddenAtRaw,
       ...updateFields
     } = req.body;
+    if (commentBody && !isTextEnglish(commentBody)) {
+      res.status(400).json({ error: "Status update rejected: comment body must be written in English. Non-English text was detected." });
+      return;
+    }
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
     if (resumeRequested === true && !commentBody) {
@@ -4469,11 +4496,17 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    // Allow agents to comment on in_review issues (execution policy guards stage advancement)
+    const isInReviewAgentComment = issue.status === "in_review" && req.actor.type === "agent";
+    if (!isInReviewAgentComment && !(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
     })) return;
+    if (!isTextEnglish(req.body.body)) {
+      res.status(400).json({ error: "Status update rejected: comment body must be written in English. Non-English text was detected." });
+      return;
+    }
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
     if (closedExecutionWorkspace) {
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);

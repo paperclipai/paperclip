@@ -19,6 +19,7 @@ const dialogState = vi.hoisted(() => ({
 
 const mockIssuesApi = vi.hoisted(() => ({
   list: vi.fn(),
+  listWithTotal: vi.fn(),
   listLabels: vi.fn(),
 }));
 
@@ -269,6 +270,7 @@ describe("IssuesList", () => {
     dialogState.openNewIssue.mockReset();
     mockKanbanBoard.mockReset();
     mockIssuesApi.list.mockReset();
+    mockIssuesApi.listWithTotal.mockReset();
     mockIssuesApi.listLabels.mockReset();
     mockAuthApi.getSession.mockReset();
     mockAccessApi.listMembers.mockReset();
@@ -277,6 +279,7 @@ describe("IssuesList", () => {
     mockExecutionWorkspacesApi.listSummaries.mockReset();
     mockInstanceSettingsApi.getExperimental.mockReset();
     mockIssuesApi.list.mockResolvedValue([]);
+    mockIssuesApi.listWithTotal.mockResolvedValue({ data: [], total: 0 });
     mockIssuesApi.listLabels.mockResolvedValue([]);
     mockAuthApi.getSession.mockResolvedValue({ user: null, session: null });
     mockAccessApi.listMembers.mockResolvedValue({ members: [], access: {} });
@@ -966,10 +969,10 @@ describe("IssuesList", () => {
       status: "done",
     });
 
-    mockIssuesApi.list.mockImplementation((_companyId, filters) => {
-      if (filters?.status === "backlog") return Promise.resolve([backlogIssue]);
-      if (filters?.status === "done") return Promise.resolve([doneIssue]);
-      return Promise.resolve([]);
+    mockIssuesApi.listWithTotal.mockImplementation((_companyId, filters) => {
+      if (filters?.status === "backlog") return Promise.resolve({ data: [backlogIssue], total: 1 });
+      if (filters?.status === "done") return Promise.resolve({ data: [doneIssue], total: 1 });
+      return Promise.resolve({ data: [], total: 0 });
     });
 
     const { root } = renderWithQueryClient(
@@ -985,12 +988,12 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      expect(mockIssuesApi.listWithTotal).toHaveBeenCalledWith("company-1", expect.objectContaining({
         status: "backlog",
         limit: 200,
         includeRoutineExecutions: true,
       }));
-      expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      expect(mockIssuesApi.listWithTotal).toHaveBeenCalledWith("company-1", expect.objectContaining({
         status: "done",
         limit: 200,
         includeRoutineExecutions: true,
@@ -1026,9 +1029,9 @@ describe("IssuesList", () => {
       }),
     );
 
-    mockIssuesApi.list.mockImplementation((_companyId, filters) => {
-      if (filters?.status === "backlog") return Promise.resolve(cappedBacklogIssues);
-      return Promise.resolve([]);
+    mockIssuesApi.listWithTotal.mockImplementation((_companyId, filters) => {
+      if (filters?.status === "backlog") return Promise.resolve({ data: cappedBacklogIssues, total: 420 });
+      return Promise.resolve({ data: [], total: 0 });
     });
 
     const { root } = renderWithQueryClient(

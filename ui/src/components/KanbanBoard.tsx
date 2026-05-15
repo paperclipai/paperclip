@@ -48,6 +48,7 @@ interface KanbanBoardProps {
   agents?: Agent[];
   liveIssueIds?: Set<string>;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
+  columnTotals?: Record<string, number>;
 }
 
 /* ── Droppable Column ── */
@@ -57,11 +58,13 @@ function KanbanColumn({
   issues,
   agents,
   liveIssueIds,
+  total,
 }: {
   status: string;
   issues: Issue[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
+  total?: number;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
 
@@ -77,7 +80,7 @@ function KanbanColumn({
               {statusLabel(status)}
             </span>
             <span className="text-xs text-muted-foreground/60 ml-auto tabular-nums">
-              {issues.length}
+              {total ?? issues.length}
             </span>
           </>
         )}
@@ -204,6 +207,7 @@ export function KanbanBoard({
   agents,
   liveIssueIds,
   onUpdateIssue,
+  columnTotals,
 }: KanbanBoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
 
@@ -280,6 +284,7 @@ export function KanbanBoard({
             issues={columnIssues[status] ?? []}
             agents={agents}
             liveIssueIds={liveIssueIds}
+            total={columnTotals?.[status]}
           />
         ))}
       </div>
