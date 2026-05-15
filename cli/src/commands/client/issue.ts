@@ -1,11 +1,14 @@
 import { Command } from "commander";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import {
   addIssueCommentSchema,
   checkoutIssueSchema,
   createIssueSchema,
   type FeedbackTrace,
+  type IssueDocument,
+  type IssueDocumentSummary,
   updateIssueSchema,
+  upsertIssueDocumentSchema,
   type Issue,
   type IssueComment,
 } from "@paperclipai/shared";
@@ -67,6 +70,19 @@ interface IssueCommentOptions extends BaseClientOptions {
 interface IssueCheckoutOptions extends BaseClientOptions {
   agentId: string;
   expectedStatuses?: string;
+}
+
+interface IssueDocumentPutOptions extends BaseClientOptions {
+  body?: string;
+  bodyFile?: string;
+  title?: string;
+  format?: string;
+  baseRevisionId?: string;
+  changeSummary?: string;
+}
+
+interface IssueDocumentListOptions extends BaseClientOptions {
+  includeSystem?: boolean;
 }
 
 interface IssueFeedbackOptions extends BaseClientOptions {
@@ -379,6 +395,113 @@ export function registerIssueCommands(program: Command): void {
         }
       }),
   );
+
+  const document = issue.command("document").description("Issue document operations");
+
+  addCommonClientOptions(
+    document
+      .command("list")
+      .description("List documents on an issue")
+      .argument("<issueId>", "Issue ID or identifier")
+      .option("--include-system", "Include system-managed documents")
+      .action(async (issueId: string, opts: IssueDocumentListOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const path =
+            `/api/issues/${issueId}/documents` +
+            (opts.includeSystem ? "?includeSystem=true" : "");
+          const docs = (await ctx.api.get<IssueDocumentSummary[]>(path)) ?? [];
+          if (ctx.json) {
+            printOutput(docs, { json: true });
+            return;
+          }
+          if (docs.length === 0) {
+            printOutput([], { json: false });
+            return;
+          }
+          for (const doc of docs) {
+            console.log(
+              formatInlineRecord({
+                key: doc.key,
+                id: doc.id,
+                title: doc.title,
+                format: doc.format,
+                revision: doc.latestRevisionNumber,
+                updatedAt: doc.updatedAt instanceof Date ? doc.updatedAt.toISOString() : String(doc.updatedAt),
+              }),
+            );
+          }
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    document
+      .command("get")
+      .description("Get an issue document by key")
+      .argument("<issueId>", "Issue ID or identifier")
+      .argument("<key>", "Document key (e.g. plan)")
+      .action(async (issueId: string, key: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const doc = await ctx.api.get<IssueDocument>(`/api/issues/${issueId}/documents/${key}`);
+          printOutput(doc, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    document
+      .command("put")
+      .description("Create or update an issue document by key")
+      .argument("<issueId>", "Issue ID or identifier")
+      .argument("<key>", "Document key (e.g. plan)")
+      .option("--body <markdown>", "Document body (mutually exclusive with --body-file)")
+      .option("--body-file <path>", "Path to a file containing the document body")
+      .option("--title <title>", "Document title")
+      .option("--format <format>", "Document format", "markdown")
+      .option("--base-revision-id <id>", "Base revision ID for optimistic concurrency")
+      .option("--change-summary <text>", "Short summary of this change")
+      .action(async (issueId: string, key: string, opts: IssueDocumentPutOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const body = await resolveDocumentBody(opts);
+          const payload = upsertIssueDocumentSchema.parse({
+            title: opts.title,
+            format: opts.format ?? "markdown",
+            body,
+            changeSummary: opts.changeSummary,
+            baseRevisionId: opts.baseRevisionId,
+          });
+          const doc = await ctx.api.put<IssueDocument>(
+            `/api/issues/${issueId}/documents/${key}`,
+            payload,
+          );
+          printOutput(doc, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+}
+
+async function resolveDocumentBody(opts: IssueDocumentPutOptions): Promise<string> {
+  const hasBody = typeof opts.body === "string";
+  const hasBodyFile = typeof opts.bodyFile === "string" && opts.bodyFile.trim().length > 0;
+  if (hasBody && hasBodyFile) {
+    throw new Error("Pass either --body or --body-file, not both.");
+  }
+  if (!hasBody && !hasBodyFile) {
+    throw new Error("Document body is required. Pass --body <markdown> or --body-file <path>.");
+  }
+  if (hasBodyFile) {
+    return readFile(opts.bodyFile!, "utf8");
+  }
+  return opts.body ?? "";
 }
 
 function parseCsv(value: string | undefined): string[] {

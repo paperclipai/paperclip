@@ -81,6 +81,13 @@ export class PaperclipApiClient {
     }, opts);
   }
 
+  put<T>(path: string, body?: unknown, opts?: RequestOptions): Promise<T | null> {
+    return this.request<T>(path, {
+      method: "PUT",
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }, opts);
+  }
+
   delete<T>(path: string, opts?: RequestOptions): Promise<T | null> {
     return this.request<T>(path, { method: "DELETE" }, opts);
   }

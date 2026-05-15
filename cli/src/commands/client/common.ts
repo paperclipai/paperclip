@@ -73,9 +73,12 @@ export function resolveCommandContext(
     );
   }
 
+  const runId = process.env.PAPERCLIP_RUN_ID?.trim() || undefined;
+
   const api = new PaperclipApiClient({
     apiBase,
     apiKey,
+    runId,
     recoverAuth: explicitApiKey || !canAttemptInteractiveBoardAuth()
       ? undefined
       : async ({ error }) => {
