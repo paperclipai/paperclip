@@ -79,7 +79,7 @@ Use comments incrementally:
 
 Read enough ancestor/comment context to understand _why_ the task exists and what changed. Do not reflexively reload the whole thread on every heartbeat.
 
-**Attachments:** Check `attachments[]` in the heartbeat-context response. Every attachment includes `id`, `filename`, `contentType`, `byteSize`, `contentPath`, and `createdAt` regardless of type.
+**Attachments:** `attachments[]` appears in both `PAPERCLIP_WAKE_PAYLOAD_JSON` and in the heartbeat-context API response. Every entry includes `id`, `filename`, `contentType`, `byteSize`, and `contentPath` regardless of file type. The heartbeat-context response also includes `createdAt` and, for small text files, `inlineContent`.
 - If an attachment has `inlineContent`, use it directly — it is the full UTF-8 text of the file.
 - If `inlineContent` is absent but `contentType` is text-like (e.g. file exceeds the inline limit), fetch the full text with `GET {contentPath}` — this route is in the sandbox bridge allowlist.
 - Images and PDFs: `contentPath` exists but the content is binary; reference the file by `filename` and note it is attached.
