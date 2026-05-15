@@ -4024,6 +4024,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ? "agent.run.cancelled"
               : null;
     if (!eventType) return;
+    const ctx =
+      typeof run.contextSnapshot === "object" && run.contextSnapshot !== null
+        ? (run.contextSnapshot as Record<string, unknown>)
+        : {};
+    const paperclipIssue =
+      typeof ctx.paperclipIssue === "object" && ctx.paperclipIssue !== null
+        ? (ctx.paperclipIssue as Record<string, unknown>)
+        : null;
     publishPluginDomainEvent({
       eventId: randomUUID(),
       eventType,
@@ -4041,9 +4049,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         triggerDetail: run.triggerDetail,
         error: run.error ?? null,
         errorCode: run.errorCode ?? null,
-        issueId: typeof run.contextSnapshot === "object" && run.contextSnapshot !== null
-          ? (run.contextSnapshot as Record<string, unknown>).issueId ?? null
-          : null,
+        issueId: ctx.issueId ?? null,
+        issueTitle: typeof paperclipIssue?.title === "string" ? paperclipIssue.title : null,
+        issueDescription:
+          typeof paperclipIssue?.description === "string" ? paperclipIssue.description : null,
+        output: run.stdoutExcerpt ?? null,
+        result: run.resultJson ?? null,
         startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
         finishedAt: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
       },
