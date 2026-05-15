@@ -132,7 +132,7 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
   },
   atomic_agent_http: {
     label: "Atomic Agent",
-    description: "Local atomic-agent operator (llama.cpp, HTTP)",
+    description: "Local Atomic HTTP agent",
     icon: Bot,
     visualRank: 35,
   },

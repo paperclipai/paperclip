@@ -19,8 +19,8 @@ export function AtomicAgentHttpConfigFields({
   return (
     <>
       <Field
-        label="atomic-agent serve URL"
-        hint="Root URL of `atomic-agent serve` (no /v1 suffix). Example: http://127.0.0.1:8787"
+        label="API base URL"
+        hint="Atomic Chat or atomic-agent serve (no /v1 suffix). Examples: http://127.0.0.1:1337 or http://127.0.0.1:8787"
       >
         <DraftInput
           value={
@@ -35,7 +35,7 @@ export function AtomicAgentHttpConfigFields({
           }
           immediate
           className={inputClass}
-          placeholder="http://127.0.0.1:8787"
+          placeholder="http://127.0.0.1:1337"
         />
       </Field>
       <Field label="Model id" hint={help.model}>
@@ -57,7 +57,7 @@ export function AtomicAgentHttpConfigFields({
       </Field>
       <Field
         label="HTTP API key"
-        hint="Only if you started serve with --api-key. Stored in adapter config."
+        hint="Only if your Atomic serve endpoint requires --api-key. Stored in adapter config."
       >
         <DraftInput
           value={
@@ -73,7 +73,7 @@ export function AtomicAgentHttpConfigFields({
           immediate
           className={inputClass}
           type="password"
-          placeholder="Bearer token for atomic-agent serve"
+          placeholder="Optional Bearer token"
         />
       </Field>
     </>

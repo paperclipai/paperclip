@@ -5,7 +5,7 @@ import { buildAtomicAgentHttpConfig } from "./build-config";
 
 export const atomicAgentHttpUIAdapter: UIAdapterModule = {
   type: "atomic_agent_http",
-  label: "Atomic Agent (HTTP)",
+  label: "Local Atomic agent",
   parseStdoutLine: parseAtomicAgentHttpStdoutLine,
   ConfigFields: AtomicAgentHttpConfigFields,
   buildAdapterConfig: buildAtomicAgentHttpConfig,
