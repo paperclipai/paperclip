@@ -86,6 +86,10 @@ Telegram message → routeQuery(text) → regex dispatch (fast path)
 
 ### Supabase
 
+> **Note:** Deploy via GitHub Actions push trigger (May 15, 2026).
+
+### Supabase
+
 ```bash
 # 1. Install Supabase CLI
 # 2. Link your project
