@@ -77,6 +77,26 @@ env:
   # Example: `[{name: NODE_OPTIONS, value: --max-old-space-size=3072}]`.
   extra: []
 
+# -- Additional pod-level volumes. Used to mount Secrets/ConfigMaps that
+# plugins read from disk (e.g. paperclip-plugin-gbrain reads OAuth client
+# credentials from `/etc/paperclip-plugin-gbrain/clients.json`).
+# Example:
+#   extraVolumes:
+#     - name: gbrain-oauth-secrets
+#       secret:
+#         secretName: paperclip-plugin-gbrain-oauth-secrets
+#         defaultMode: 0444
+extraVolumes: []
+
+# -- Additional volumeMounts for the main `paperclip` container. Pair with
+# `extraVolumes`; each entry must reference a name declared there.
+# Example:
+#   extraVolumeMounts:
+#     - name: gbrain-oauth-secrets
+#       mountPath: /etc/paperclip-plugin-gbrain
+#       readOnly: true
+extraVolumeMounts: []
+
 # -- Secret containing `agentJwtSecret` and optional `masterKey` seed.
 secret:
   # -- Name of a pre-existing Secret to read credentials from. Leave empty to let the chart render a Secret with an auto-generated `agentJwtSecret` on first install. **Set this under GitOps** — the templated Secret uses `randAlphaNum`, which re-rolls on every render, keeping the app perpetually OutOfSync and thrashing pods under `selfHeal`. Create the Secret with `kubectl create secret generic <name> --from-literal=agentJwtSecret=$(openssl rand -hex 32)` and point `existingSecret` at it.
