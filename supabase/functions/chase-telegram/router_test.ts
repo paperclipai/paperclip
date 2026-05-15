@@ -106,6 +106,25 @@ Deno.test("routeQuery: unrecognized text uses LLM (requiresAi=true)", () => {
   assertEquals(result.requiresAi, true);
 });
 
+Deno.test("routeQuery: 'who are you' identity question (requiresAi=false)", () => {
+  const result = routeQuery("who are you");
+  assertEquals(result.requiresAi, false);
+});
+
+Deno.test("routeQuery: 'what are you' identity question (requiresAi=false)", () => {
+  const result = routeQuery("what are you");
+  assertEquals(result.requiresAi, false);
+});
+
+Deno.test("routeQuery: 'who is chase' identity question (requiresAi=false)", () => {
+  const result = routeQuery("who is chase");
+  assertEquals(result.requiresAi, false);
+});
+
+Deno.test("routeQuery: bare number routes to detail (requiresAi=false)", () => {
+  const result = routeQuery("230");
+  assertEquals(result.requiresAi, false);
+});
 Deno.test("routeQuery: greeting with name passes firstName", async () => {
   const result = routeQuery("hello", "Alice");
   assertEquals(result.requiresAi, false);

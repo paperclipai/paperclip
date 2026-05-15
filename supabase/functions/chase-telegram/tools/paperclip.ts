@@ -27,7 +27,7 @@ export async function handleBlockedQuery(): Promise<QueryResult> {
       "",
       ...lines,
       "",
-      `<i>Use /detail ISSUE-123 to learn more about a specific issue.</i>`,
+      `<i>Use /detail 230 or /detail CRE-230 to learn more about a specific issue.</i>`,
     ].join("\n"),
   };
 }

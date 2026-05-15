@@ -19,6 +19,7 @@ import {
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { isTextEnglish } from "../services/issue-english-enforcement.js";
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
   return {
@@ -339,6 +340,10 @@ export function approvalRoutes(
       return;
     }
     assertCompanyAccess(req, approval.companyId);
+    if (!isTextEnglish(req.body.body)) {
+      res.status(400).json({ error: "Status update rejected: comment body must be written in English. Non-English text was detected." });
+      return;
+    }
     const actor = getActorInfo(req);
     const comment = await svc.addComment(id, req.body.body, {
       agentId: actor.agentId ?? undefined,

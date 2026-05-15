@@ -59,6 +59,11 @@ export async function handleHelp(): Promise<QueryResult> {
   };
 }
 
+async function handleIdentityQuery(): Promise<QueryResult> {
+  return {
+    text: "I'm Chase, your Telegram assistant for Paperclip. I can look up issues, check blocked work, manage approvals, and more. Try <code>/help</code> to see what I can do.",
+  };
+}
 async function handleStart(): Promise<QueryResult> {
   return {
     text: [
@@ -107,6 +112,15 @@ export function routeQuery(
   if (/^chase[,!?.]?$/i.test(trimmed)) return respond(() => handleGreeting(firstName));
   if (/\b(good\s*(morning|afternoon|evening)|howdy)\b/i.test(trimmed)) return respond(() => handleGreeting(firstName));
 
+  // ── Identity questions (fast path) ──
+  if (/^(?:who|what)(?:'s| is| are)\s+(?:you|chase|this\s+bot)/i.test(trimmed)) {
+    return respond(handleIdentityQuery);
+  }
+
+  // ── Bare number → issue detail (fast path) ──
+  if (/^\d+$/.test(trimmed)) {
+    return respond(() => handleDetailQuery(trimmed));
+  }
   // ── Natural language Paperclip queries ──
   if (/what.*blocked|show.*blocked|blocked.*issues?|(?:is\s+)?(?:anything|something)\s+(?:stuck|blocked|waiting)|stuck|waiting.?on/i.test(trimmed)) {
     return respond(handleBlockedQuery);

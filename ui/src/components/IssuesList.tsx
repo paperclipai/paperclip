@@ -697,7 +697,7 @@ export function IssuesList({
         enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
       ],
       queryFn: () =>
-        issuesApi.list(selectedCompanyId!, {
+        issuesApi.listWithTotal(selectedCompanyId!, {
           ...searchFilters,
           ...(normalizedIssueSearch.length > 0 ? { q: normalizedIssueSearch } : {}),
           projectId,
@@ -706,9 +706,22 @@ export function IssuesList({
           ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
         }),
       enabled: !!selectedCompanyId && viewState.viewMode === "board" && !searchWithinLoadedIssues,
-      placeholderData: (previousData: Issue[] | undefined) => previousData,
+      placeholderData: (previousData: { data: Issue[]; total: number } | undefined) => previousData,
     })),
   });
+
+  const columnTotals = useMemo(() => {
+    const totals: Record<string, number> = {};
+    const statuses = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+    for (let i = 0; i < statuses.length; i++) {
+      const query = boardIssueQueries[i];
+      if (query.data) {
+        totals[statuses[i]] = query.data.total;
+      }
+    }
+    return totals;
+  }, [boardIssueQueries]);
+
   const { data: executionWorkspaces = [] } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.executionWorkspaces.summaryList(selectedCompanyId)
@@ -910,7 +923,7 @@ export function IssuesList({
     let isPending = false;
     for (const query of boardIssueQueries) {
       isPending ||= query.isPending;
-      for (const issue of query.data ?? []) {
+      for (const issue of query.data?.data ?? []) {
         merged.set(issue.id, issue);
       }
     }
@@ -921,7 +934,7 @@ export function IssuesList({
     () =>
       viewState.viewMode === "board" &&
       !searchWithinLoadedIssues &&
-      boardIssueQueries.some((query) => (query.data?.length ?? 0) === ISSUE_BOARD_COLUMN_RESULT_LIMIT),
+      boardIssueQueries.some((query) => (query.data?.data.length ?? 0) === ISSUE_BOARD_COLUMN_RESULT_LIMIT),
     [boardIssueQueries, searchWithinLoadedIssues, viewState.viewMode],
   );
 
@@ -1455,6 +1468,7 @@ export function IssuesList({
           agents={agents}
           liveIssueIds={liveIssueIds}
           onUpdateIssue={onUpdateIssue}
+          columnTotals={columnTotals}
         />
       ) : (
         <>

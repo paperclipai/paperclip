@@ -15,6 +15,7 @@ export interface RunProcessResult {
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;
+  silentTimedOut?: boolean;
   stdout: string;
   stderr: string;
   pid: number | null;
@@ -1904,6 +1905,7 @@ export async function runChildProcess(
     env: Record<string, string>;
     timeoutSec: number;
     graceSec: number;
+    silentThresholdSec?: number;
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onLogError?: (err: unknown, runId: string, message: string) => void;
     onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
@@ -1960,6 +1962,7 @@ export async function runChildProcess(
         runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId });
 
         let timedOut = false;
+        let silentTimedOut = false;
         let stdout = "";
         let stderr = "";
         let logChain: Promise<void> = Promise.resolve();
@@ -1969,6 +1972,24 @@ export async function runChildProcess(
         let terminalCleanupKillTimer: NodeJS.Timeout | null = null;
         let terminalResultStdoutScanOffset = 0;
         let terminalResultStderrScanOffset = 0;
+        let silentTimer: NodeJS.Timeout | null = null;
+
+        const scheduleSilentTimeout = () => {
+          if (silentTimer) clearTimeout(silentTimer);
+          silentTimer = null;
+          if (opts.silentThresholdSec == null || opts.silentThresholdSec <= 0 || timedOut) return;
+          silentTimer = setTimeout(() => {
+            if (timedOut) return;
+            timedOut = true;
+            silentTimedOut = true;
+            if (timeout) clearTimeout(timeout);
+            clearTerminalCleanupTimers();
+            signalRunningProcess({ child, processGroupId }, "SIGTERM");
+            setTimeout(() => {
+              signalRunningProcess({ child, processGroupId }, "SIGKILL");
+            }, Math.max(1, opts.graceSec) * 1000);
+          }, opts.silentThresholdSec * 1000);
+        };
 
         const clearTerminalCleanupTimers = () => {
           if (terminalCleanupTimer) clearTimeout(terminalCleanupTimer);
@@ -2024,12 +2045,15 @@ export async function runChildProcess(
               }, opts.timeoutSec * 1000)
             : null;
 
+        scheduleSilentTimeout();
+
         child.stdout?.on("data", (chunk: unknown) => {
           const readable = child.stdout;
           if (!readable) return;
           readable.pause();
           const text = String(chunk);
           stdout = appendWithCap(stdout, text);
+          scheduleSilentTimeout();
           maybeArmTerminalResultCleanup();
           logChain = logChain
             .then(() => opts.onLog("stdout", text))
@@ -2067,6 +2091,7 @@ export async function runChildProcess(
 
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);
+          if (silentTimer) clearTimeout(silentTimer);
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
           void target.cleanup?.();
@@ -2085,6 +2110,7 @@ export async function runChildProcess(
 
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
           if (timeout) clearTimeout(timeout);
+          if (silentTimer) clearTimeout(silentTimer);
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
           void logChain.finally(() => {
@@ -2095,6 +2121,7 @@ export async function runChildProcess(
                 exitCode: code,
                 signal,
                 timedOut,
+                silentTimedOut,
                 stdout,
                 stderr,
                 pid: child.pid ?? null,

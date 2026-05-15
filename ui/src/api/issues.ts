@@ -89,6 +89,30 @@ export const issuesApi = {
     const qs = params.toString();
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
   },
+  listWithTotal: (
+    companyId: string,
+    filters?: {
+      status?: string;
+      projectId?: string;
+      participantAgentId?: string;
+      workspaceId?: string;
+      includeRoutineExecutions?: boolean;
+      q?: string;
+      limit?: number;
+    },
+  ) => {
+    const params = new URLSearchParams();
+    if (filters?.status) params.set("status", filters.status);
+    if (filters?.projectId) params.set("projectId", filters.projectId);
+    if (filters?.participantAgentId) params.set("participantAgentId", filters.participantAgentId);
+    if (filters?.workspaceId) params.set("workspaceId", filters.workspaceId);
+    if (filters?.limit) params.set("limit", String(filters.limit));
+    if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
+    if (filters?.q) params.set("q", filters.q);
+    params.set("includeTotal", "true");
+    const qs = params.toString();
+    return api.get<{ data: Issue[]; total: number }>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
+  },
   count: (
     companyId: string,
     filters: {
