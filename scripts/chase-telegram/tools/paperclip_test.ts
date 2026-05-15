@@ -188,7 +188,7 @@ Deno.test({
     mockFetch(/status=blocked/, () => mockJsonResponse(SAMPLE_ISSUES.filter((i) => i.status === "blocked")));
     const result = await handleOverviewQuery();
     assertStringIncludes(result.text, "Company Overview");
-    assertStringIncludes(result.text, "Agents: 6");
+    assertStringIncludes(result.text, "Agents: 7");
     assertStringIncludes(result.text, "Blocked issues: 1");
     teardownMockFetch();
   },

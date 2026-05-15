@@ -4,6 +4,8 @@ export interface PendingTask {
   assigneeName?: string;
   sourceMessage: string;
   createdAt: number;
+  awaitingAssign?: boolean;
+  originalDraftTitle?: string;
 }
 
 const tasks = new Map<number, PendingTask>();

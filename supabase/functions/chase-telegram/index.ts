@@ -4,7 +4,7 @@ import { sendTelegram, isBotConfigured } from "./lib/telegram.ts";
 import { isPaperclipConfigured } from "./lib/api.ts";
 import { escapeHtml } from "./lib/html.ts";
 import { formatNotification, isAiConfigured, aiProvider } from "./lib/llm.ts";
-import { routeQuery } from "./router.ts";
+import { routeQuery, routeVenue, routeLocation } from "./router.ts";
 import { CHASE_TELEGRAM_BUILD_SHA, CHASE_TELEGRAM_BUILD_TIME } from "./build.ts";
 
 // ─── Build Information ────────────────────────────────────────────────

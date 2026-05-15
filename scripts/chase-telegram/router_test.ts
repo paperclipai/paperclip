@@ -592,6 +592,8 @@ Deno.test({
 Deno.test({
   name: "routeQuery 'have X do Y' shows task preview with confirmation",
   async fn() {
+    const { clearPendingTask } = await import("./lib/pending-tasks.ts");
+    clearPendingTask(12345);
     setupMockFetch();
     mockFetch(/agents/, () => mockJsonResponse(SAMPLE_AGENTS));
     const { handler } = routeQuery("have Christie send a report", undefined, 12345);
@@ -600,6 +602,7 @@ Deno.test({
     assertStringIncludes(result.text, "Christie");
     assertStringIncludes(result.text, "a report");
     assertStringIncludes(result.text, "YES");
+    clearPendingTask(12345);
     teardownMockFetch();
   },
   sanitizeResources: false,
@@ -1224,6 +1227,8 @@ Deno.test({
 Deno.test({
   name: "routeQuery: 'Can you have Miles delete that last task?' handler returns task preview with Miles assignee",
   async fn() {
+    const { clearPendingTask } = await import("./lib/pending-tasks.ts");
+    clearPendingTask(12345);
     setupMockFetch();
     mockFetch(/agents/, () => mockJsonResponse(SAMPLE_AGENTS));
     const { handler } = routeQuery("Can you have Miles delete that last task?", undefined, 12345);
@@ -1232,6 +1237,7 @@ Deno.test({
     assertStringIncludes(result.text, "Miles");
     assertStringIncludes(result.text, "that last task");
     assertStringIncludes(result.text, "YES");
+    clearPendingTask(12345);
     teardownMockFetch();
   },
   sanitizeResources: false,
@@ -1241,12 +1247,15 @@ Deno.test({
 Deno.test({
   name: "routeQuery: 'Can you have Christie send a report' shows preview with Christie",
   async fn() {
+    const { clearPendingTask } = await import("./lib/pending-tasks.ts");
+    clearPendingTask(12345);
     setupMockFetch();
     mockFetch(/agents/, () => mockJsonResponse(SAMPLE_AGENTS));
     const { handler } = routeQuery("Can you have Christie send a report", undefined, 12345);
     const result = await handler();
     assertStringIncludes(result.text, "I can create that task");
     assertStringIncludes(result.text, "Christie");
+    clearPendingTask(12345);
     teardownMockFetch();
   },
   sanitizeResources: false,
@@ -1254,6 +1263,29 @@ Deno.test({
 });
 
 // ── CRE-551: Pending task confirmation behavior ──
+
+Deno.test({
+  name: "routeQuery: non-confirmation message while pending reminds about pending task instead of routing",
+  async fn() {
+    const { setPendingTask } = await import("./lib/pending-tasks.ts");
+    setPendingTask(99051, {
+      title: "Test task",
+      description: "Test description",
+      sourceMessage: "create a test task",
+      createdAt: Date.now(),
+    });
+    // A query that would normally route to /blocked must instead remind about pending task
+    const result = routeQuery("what is blocked?", undefined, 99051);
+    assertEquals(result.requiresAi, false);
+    const text = await result.handler().then(r => r.text);
+    assertStringIncludes(text, "pending task");
+    assertStringIncludes(text, "YES");
+    const { clearPendingTask } = await import("./lib/pending-tasks.ts");
+    clearPendingTask(99051);
+  },
+  sanitizeResources: false,
+  sanitizeOps: false,
+});
 
 Deno.test({
   name: "routeQuery: vague acknowledgment while pending asks for clearer confirmation",

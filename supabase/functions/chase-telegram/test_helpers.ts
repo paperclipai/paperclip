@@ -61,6 +61,7 @@ export const SAMPLE_AGENTS: PaperclipAgent[] = [
   { id: "agent-jeff", name: "Jeff", role: "CEO", title: "Chief Executive Officer" },
   { id: "agent-hunter", name: "Hunter", role: "CTO", title: "Chief Technology Officer" },
   { id: "agent-christie", name: "Christie", role: "Chief of Staff", title: "Chief of Staff" },
+  { id: "agent-miles", name: "Miles", role: "CEO", title: "Chief Executive Officer" },
   { id: "agent-quinn", name: "Quinn", role: "QA Director", title: "Quality Director" },
   { id: "agent-hayes", name: "Hayes", role: "Engineering", title: "Founding Engineer" },
   { id: "agent-chase", name: "Chase", role: "Operations", title: "Operations Assistant" },

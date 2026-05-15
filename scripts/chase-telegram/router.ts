@@ -18,8 +18,9 @@ import {
   handleAgentIssuesQuery,
 } from "./tools/paperclip.ts";
 import { resolveAgentByName, handleCreateIssue } from "./tools/actions.ts";
+import { cleanTaskTitle, cleanTaskDescription } from "./tools/cleanup.ts";
 import { setPendingTask, getPendingTask, clearPendingTask } from "./lib/pending-tasks.ts";
-import { formatTaskPreview } from "./tools/preview.ts";
+import { formatTaskPreview, formatAssigneePrompt } from "./tools/preview.ts";
 import { handleMetarQuery, handleTafQuery, handleNotamQuery } from "./tools/aviation.ts";
 import {
   handleMoviesNearby,
@@ -203,25 +204,34 @@ async function showTaskPreview(
 ): Promise<QueryResult> {
   let assigneeDisplay: string | undefined;
   if (params.assigneeName) {
-    const resolved = await resolveAgentByName(params.assigneeName);
-    if (resolved) {
-      assigneeDisplay = resolved.display;
+    if (params.assigneeName === "UNASSIGNED") {
+      assigneeDisplay = "Unassigned";
+    } else {
+      const resolved = await resolveAgentByName(params.assigneeName);
+      if (resolved) {
+        assigneeDisplay = resolved.display;
+      }
     }
   }
 
+  const cleanedTitle = cleanTaskTitle(params.title, params.assigneeName);
+  const cleanedDescription = cleanTaskDescription(params.description);
+
   setPendingTask(chatId, {
-    title: params.title,
-    description: params.description,
+    title: cleanedTitle,
+    description: cleanedDescription,
     assigneeName: params.assigneeName,
     sourceMessage: params.sourceMessage,
     createdAt: Date.now(),
+    originalDraftTitle:
+      cleanedTitle !== params.title ? params.title : undefined,
   });
 
   return {
     text: formatTaskPreview({
-      title: params.title,
+      title: cleanedTitle,
       assigneeDisplay,
-      description: params.description,
+      description: cleanedDescription,
     }),
   };
 }
@@ -247,6 +257,65 @@ export function routeQuery(
         }));
       }
 
+      // ── Awaiting assignee: user must name an agent or say UNASSIGNED ──
+      if (pending.awaitingAssign) {
+        if (/^UNASSIGNED$/i.test(trimmed)) {
+          const cleanedTitle = cleanTaskTitle(pending.title, "UNASSIGNED");
+          const cleanedDescription = cleanTaskDescription(pending.description);
+          setPendingTask(chatId, {
+            ...pending,
+            assigneeName: "UNASSIGNED",
+            title: cleanedTitle,
+            description: cleanedDescription,
+            awaitingAssign: false,
+          });
+          return respond(async () => ({
+            text: formatTaskPreview({
+              title: cleanedTitle,
+              assigneeDisplay: "Unassigned",
+              description: cleanedDescription,
+            }),
+          }));
+        }
+
+        // Cancel
+        if (/^(?:no|nope|nah|cancel(?:\s+it)?|stop|never\s+mind|forget(?:\s+it)?|dismiss|not\s+now|ignore|back)\b/i.test(trimmed)) {
+          return respond(async () => {
+            clearPendingTask(chatId);
+            return { text: "Cancelled. Let me know if you need anything else." };
+          });
+        }
+
+        // Try resolving as an agent name
+        return respond(async () => {
+          const pending = getPendingTask(chatId);
+          if (!pending) return { text: "No pending task." };
+          const resolved = await resolveAgentByName(trimmed);
+          if (resolved) {
+            const cleanedTitle = cleanTaskTitle(pending.title, resolved.display);
+            const cleanedDescription = cleanTaskDescription(pending.description);
+            setPendingTask(chatId, {
+              ...pending,
+              assigneeName: resolved.display,
+              title: cleanedTitle,
+              description: cleanedDescription,
+              awaitingAssign: false,
+            });
+            return {
+              text: formatTaskPreview({
+                title: cleanedTitle,
+                assigneeDisplay: resolved.display,
+                description: cleanedDescription,
+              }),
+            };
+          }
+          return {
+            text: "I didn't understand that. Reply with an agent name (e.g. <b>Hunter</b>), or reply <b>UNASSIGNED</b> to create the task without an assignee.",
+          };
+        });
+      }
+
+      // ── Standard confirmation check ──
       // Explicit confirmation phrases
       if (/^(?:yes|yeah|yep|create(?:\s+it)?|approved|go\s+ahead|do\s+it|proceed|confirm)\b/i.test(trimmed)) {
         return respond(async () => {
@@ -258,6 +327,7 @@ export function routeQuery(
             sourceMessage: pending.sourceMessage,
             confirmationMessage: trimmed,
             chatId,
+            originalDraftTitle: pending.originalDraftTitle,
           });
           return result;
         });
@@ -277,6 +347,11 @@ export function routeQuery(
           text: "I need a clear confirmation. Reply <b>YES</b> to create the task, or <b>CANCEL</b> to cancel it.",
         }));
       }
+
+      // Catch-all: anything else while pending — don't fall through to normal routing
+      return respond(async () => ({
+        text: "You have a pending task that needs your decision first. Reply <b>YES</b> to create it, or <b>CANCEL</b> to cancel it.",
+      }));
     }
   }
 
@@ -518,7 +593,7 @@ export function routeQuery(
   // "have" uses bare infinitive; "tell/ask/get" may use "to". Excludes non-agent words.
   // ANCHORED to start of string to avoid matching "have" as an auxiliary verb in questions.
   const createIssueMatch = trimmed.match(
-    /^(?:have|tell|ask|get)\s+(?!me|us|them|him|her|it|you|a|an|the|about|what|when|where|why|how)\s*(\w+(?:\s+\w+)?)(?:\s+to\s+|\s+)(.+)/i,
+    /^(?:have|tell|ask|get)\s+(?!me|us|them|him|her|it|you|a|an|the|about|what|when|where|why|how)\s*(\w+)(?:\s+to\s+|\s+)(.+)/i,
   );
   if (createIssueMatch && chatId) {
     const agentName = createIssueMatch[1]!;
@@ -533,19 +608,24 @@ export function routeQuery(
     );
   }
 
-  // ── "Create an issue" / "New task" patterns (preview with confirmation) ──
+  // ── "Create an issue" / "New task" patterns (require assignee) ──
   const newTaskMatch = trimmed.match(
     /(?:create|new|make|open|add)\s+(?:an?\s+)?(?:issue|task|ticket)\s+(?:for|about|to)?\s*(.+)/i,
   );
   if (newTaskMatch && chatId) {
     const desc = newTaskMatch[1]!.trim();
-    return respond(() =>
-      showTaskPreview({
+    return respond(async () => {
+      setPendingTask(chatId, {
         title: desc,
         description: desc,
         sourceMessage: trimmed,
-      }, chatId)
-    );
+        createdAt: Date.now(),
+        awaitingAssign: true,
+      });
+      return {
+        text: formatAssigneePrompt({ title: desc, description: desc }),
+      };
+    });
   }
 
   // ── NL places queries (no AI required) ──
@@ -610,15 +690,22 @@ export function routeQuery(
             const locCtx = chatId ? getLocationContextString(chatId) : null;
             return { text: await generateReply(trimmed, locCtx ?? undefined) };
           }
+          if (!agentName) {
+            return { text: "I'd be happy to create that task, but I need to know who it's for.\n\nTry something like:\n<code>Have [agent name] [task description]</code>\n\nFor example: \"Have Hunter review the PR\" or \"Ask Christie to update the docs.\"" };
+          }
+          const rawTitle = action
+            ? `${agentName ? agentName + ": " : ""}${action}`
+            : trimmed;
           if (!chatId) {
             return handleCreateIssue({
-              title: action ? `${agentName ? agentName + ": " : ""}${action}` : trimmed,
-              description: action ?? trimmed,
+              title: cleanTaskTitle(rawTitle, agentName),
+              description: cleanTaskDescription(action ?? trimmed),
               assigneeName: agentName,
+              originalDraftTitle: cleanTaskTitle(rawTitle, agentName) !== rawTitle ? rawTitle : undefined,
             });
           }
           return showTaskPreview({
-            title: action ? `${agentName ? agentName + ": " : ""}${action}` : trimmed,
+            title: rawTitle,
             description: action ?? trimmed,
             assigneeName: agentName,
             sourceMessage: trimmed,

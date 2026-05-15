@@ -18,8 +18,9 @@ import {
   handleAgentIssuesQuery,
 } from "./tools/paperclip.ts";
 import { resolveAgentByName, handleCreateIssue } from "./tools/actions.ts";
+import { cleanTaskTitle, cleanTaskDescription } from "./tools/cleanup.ts";
 import { setPendingTask, getPendingTask, clearPendingTask } from "./lib/pending-tasks.ts";
-import { formatTaskPreview } from "./tools/preview.ts";
+import { formatTaskPreview, formatAssigneePrompt } from "./tools/preview.ts";
 import { handleMetarQuery, handleTafQuery, handleNotamQuery } from "./tools/aviation.ts";
 import {
   handleMoviesNearby,
@@ -74,10 +75,8 @@ export function routeLocation(
 ): () => Promise<QueryResult> {
   const existing = getUserLocation(chatId);
 
-  // Always store/update the location
   setUserLocation(chatId, lat, lon, existing ? "live" : "manual");
 
-  // If there's a text query, use it to determine what to search
   if (text) {
     const q = text.toLowerCase();
     if (/restaurant|food|eat|dinner|lunch|breakfast/i.test(q)) {
@@ -97,7 +96,6 @@ export function routeLocation(
     if (hotelsCmd) return () => handlePlacesNearby(lat, lon, "hotel");
   }
 
-  // No text query: acknowledge on first share, silently update on subsequent
   if (existing) {
     return () => Promise.resolve({
       text: "",
@@ -206,25 +204,34 @@ async function showTaskPreview(
 ): Promise<QueryResult> {
   let assigneeDisplay: string | undefined;
   if (params.assigneeName) {
-    const resolved = await resolveAgentByName(params.assigneeName);
-    if (resolved) {
-      assigneeDisplay = resolved.display;
+    if (params.assigneeName === "UNASSIGNED") {
+      assigneeDisplay = "Unassigned";
+    } else {
+      const resolved = await resolveAgentByName(params.assigneeName);
+      if (resolved) {
+        assigneeDisplay = resolved.display;
+      }
     }
   }
 
+  const cleanedTitle = cleanTaskTitle(params.title, params.assigneeName);
+  const cleanedDescription = cleanTaskDescription(params.description);
+
   setPendingTask(chatId, {
-    title: params.title,
-    description: params.description,
+    title: cleanedTitle,
+    description: cleanedDescription,
     assigneeName: params.assigneeName,
     sourceMessage: params.sourceMessage,
     createdAt: Date.now(),
+    originalDraftTitle:
+      cleanedTitle !== params.title ? params.title : undefined,
   });
 
   return {
     text: formatTaskPreview({
-      title: params.title,
+      title: cleanedTitle,
       assigneeDisplay,
-      description: params.description,
+      description: cleanedDescription,
     }),
   };
 }
@@ -250,6 +257,55 @@ export function routeQuery(
         }));
       }
 
+      // ── Awaiting assignee: user must name an agent or say UNASSIGNED ──
+      if (pending.awaitingAssign) {
+        if (/^UNASSIGNED$/i.test(trimmed)) {
+          setPendingTask(chatId, {
+            ...pending,
+            assigneeName: "UNASSIGNED",
+            awaitingAssign: false,
+          });
+          return respond(async () => ({
+            text: formatTaskPreview({
+              title: pending.title,
+              assigneeDisplay: "Unassigned",
+              description: pending.description,
+            }),
+          }));
+        }
+
+        // Cancel
+        if (/^(?:no|nope|nah|cancel(?:\s+it)?|stop|never\s+mind|forget(?:\s+it)?|dismiss|not\s+now|ignore|back)\b/i.test(trimmed)) {
+          return respond(async () => {
+            clearPendingTask(chatId);
+            return { text: "Cancelled. Let me know if you need anything else." };
+          });
+        }
+
+        // Try resolving as an agent name
+        return respond(async () => {
+          const pending = getPendingTask(chatId);
+          if (!pending) return { text: "No pending task." };
+          const resolved = await resolveAgentByName(trimmed);
+          if (resolved) {
+            setPendingTask(chatId, {
+              ...pending,
+              assigneeName: resolved.display,
+              awaitingAssign: false,
+            });
+            return { text: formatTaskPreview({
+              title: pending.title,
+              assigneeDisplay: resolved.display,
+              description: pending.description,
+            }) };
+          }
+          return {
+            text: "I didn't understand that. Reply with an agent name (e.g. <b>Hunter</b>), or reply <b>UNASSIGNED</b> to create the task without an assignee.",
+          };
+        });
+      }
+
+      // ── Standard confirmation check ──
       // Explicit confirmation phrases
       if (/^(?:yes|yeah|yep|create(?:\s+it)?|approved|go\s+ahead|do\s+it|proceed|confirm)\b/i.test(trimmed)) {
         return respond(async () => {
@@ -261,6 +317,7 @@ export function routeQuery(
             sourceMessage: pending.sourceMessage,
             confirmationMessage: trimmed,
             chatId,
+            originalDraftTitle: pending.originalDraftTitle,
           });
           return result;
         });
@@ -280,6 +337,11 @@ export function routeQuery(
           text: "I need a clear confirmation. Reply <b>YES</b> to create the task, or <b>CANCEL</b> to cancel it.",
         }));
       }
+
+      // Catch-all: anything else while pending — don't fall through to normal routing
+      return respond(async () => ({
+        text: "You have a pending task that needs your decision first. Reply <b>YES</b> to create it, or <b>CANCEL</b> to cancel it.",
+      }));
     }
   }
 
@@ -307,6 +369,9 @@ export function routeQuery(
   const notamMatch = trimmed.match(/^\/notam\s+([A-Za-z0-9]{3,4})\b/i);
   if (notamMatch) return respond(() => handleNotamQuery(notamMatch[1]!.toUpperCase()));
 
+  const webSearchMatch = trimmed.match(/^\/websearch\s+(.+)/i);
+  if (webSearchMatch) return respond(() => handleWebSearch(webSearchMatch[1]!.trim()));
+
   const moviesMatch = trimmed.match(/^\/movies\s+(.+)/i);
   if (moviesMatch) return respond(() => handleMoviesNearby(moviesMatch[1]!.trim()));
 
@@ -316,8 +381,54 @@ export function routeQuery(
   const hotelsMatch = trimmed.match(/^\/hotels\s+(.+)/i);
   if (hotelsMatch) return respond(() => handleHotelsNearby(hotelsMatch[1]!.trim()));
 
-  const webSearchMatch = trimmed.match(/^\/websearch\s+(.+)/i);
-  if (webSearchMatch) return respond(() => handleWebSearch(webSearchMatch[1]!.trim()));
+  // ── /mylocation command ──
+  if (/^\/mylocation\b/i.test(trimmed)) {
+    return respond(async () => {
+      const loc = chatId ? getUserLocation(chatId) : undefined;
+      if (!loc) {
+        return {
+          text: "I don't know your location yet. Share it with me using Telegram's attachment/location feature and I'll remember it!",
+        };
+      }
+      return {
+        text: [
+          `<b>Your current location:</b>`,
+          `Coordinates: ${formatLocationDisplay(loc)}`,
+          loc.venueTitle ? `Venue: ${escapeHtml(loc.venueTitle)}${loc.venueAddress ? ` — ${escapeHtml(loc.venueAddress)}` : ""}` : null,
+          "",
+          "Want me to find nearby restaurants, movies, or hotels? Just ask!",
+        ].filter(Boolean).join("\n"),
+      };
+    });
+  }
+
+  // ── "near me" patterns (use stored location if available) ──
+  const nearMeMatch = trimmed.match(
+    /(?:restaurants?|food|eat|dinner|lunch|breakfast|movies?|cinemas?|theat(?:er|re)s?|hotels?|accommodation|lodging|stay|places?\s+to\s+eat|places?\s+to\s+stay)\s+(?:near|around)\s+me/i,
+  );
+  if (nearMeMatch) {
+    const loc = chatId ? getUserLocation(chatId) : undefined;
+    if (loc) {
+      return respond(async () => {
+        const q = trimmed.toLowerCase();
+        if (/restaurant|food|eat|dinner|lunch|breakfast/i.test(q)) {
+          return handlePlacesNearby(loc.latitude, loc.longitude, "restaurant");
+        }
+        if (/movie|cinema|theat(?:er|re)/i.test(q)) {
+          return handlePlacesNearby(loc.latitude, loc.longitude, "cinema");
+        }
+        if (/hotel|accommodation|lodging|stay/i.test(q)) {
+          return handlePlacesNearby(loc.latitude, loc.longitude, "hotel");
+        }
+        return handlePlacesNearby(loc.latitude, loc.longitude, "restaurant");
+      });
+    }
+    return respondAi(async () => {
+      return {
+        text: "To find places near your current location, please share your location using Telegram's attachment/location feature.",
+      };
+    });
+  }
 
   // ── Greetings (no API call) ──
   if (/^(hello|hi|hey|yo|sup|good\s*(morning|afternoon|evening)|what'?s\s*up|howdy)\b/i.test(trimmed)) {
@@ -472,7 +583,7 @@ export function routeQuery(
   // "have" uses bare infinitive; "tell/ask/get" may use "to". Excludes non-agent words.
   // ANCHORED to start of string to avoid matching "have" as an auxiliary verb in questions.
   const createIssueMatch = trimmed.match(
-    /^(?:have|tell|ask|get)\s+(?!me|us|them|him|her|it|you|a|an|the|about|what|when|where|why|how)\s*(\w+(?:\s+\w+)?)(?:\s+to\s+|\s+)(.+)/i,
+    /^(?:have|tell|ask|get)\s+(?!me|us|them|him|her|it|you|a|an|the|about|what|when|where|why|how)\s*(\w+)(?:\s+to\s+|\s+)(.+)/i,
   );
   if (createIssueMatch && chatId) {
     const agentName = createIssueMatch[1]!;
@@ -487,68 +598,24 @@ export function routeQuery(
     );
   }
 
-  // ── /mylocation command ──
-  if (/^\/mylocation\b/i.test(trimmed)) {
-    return respond(async () => {
-      const loc = chatId ? getUserLocation(chatId) : undefined;
-      if (!loc) {
-        return {
-          text: "I don't know your location yet. Share it with me using Telegram's attachment/location feature and I'll remember it!",
-        };
-      }
-      return {
-        text: [
-          `<b>Your current location:</b>`,
-          `Coordinates: ${formatLocationDisplay(loc)}`,
-          loc.venueTitle ? `Venue: ${escapeHtml(loc.venueTitle)}${loc.venueAddress ? ` — ${escapeHtml(loc.venueAddress)}` : ""}` : null,
-          "",
-          "Want me to find nearby restaurants, movies, or hotels? Just ask!",
-        ].filter(Boolean).join("\n"),
-      };
-    });
-  }
-
-  // ── "near me" patterns (use stored location if available) ──
-  const nearMeMatch = trimmed.match(
-    /(?:restaurants?|food|eat|dinner|lunch|breakfast|movies?|cinemas?|theat(?:er|re)s?|hotels?|accommodation|lodging|stay|places?\s+to\s+eat|places?\s+to\s+stay)\s+(?:near|around)\s+me/i,
-  );
-  if (nearMeMatch) {
-    const loc = chatId ? getUserLocation(chatId) : undefined;
-    if (loc) {
-      return respond(async () => {
-        const q = trimmed.toLowerCase();
-        if (/restaurant|food|eat|dinner|lunch|breakfast/i.test(q)) {
-          return handlePlacesNearby(loc.latitude, loc.longitude, "restaurant");
-        }
-        if (/movie|cinema|theat(?:er|re)/i.test(q)) {
-          return handlePlacesNearby(loc.latitude, loc.longitude, "cinema");
-        }
-        if (/hotel|accommodation|lodging|stay/i.test(q)) {
-          return handlePlacesNearby(loc.latitude, loc.longitude, "hotel");
-        }
-        return handlePlacesNearby(loc.latitude, loc.longitude, "restaurant");
-      });
-    }
-    return respondAi(async () => {
-      return {
-        text: "To find places near your current location, please share your location using Telegram's attachment/location feature.",
-      };
-    });
-  }
-
-  // ── "Create an issue" / "New task" patterns (preview with confirmation) ──
+  // ── "Create an issue" / "New task" patterns (require assignee) ──
   const newTaskMatch = trimmed.match(
     /(?:create|new|make|open|add)\s+(?:an?\s+)?(?:issue|task|ticket)\s+(?:for|about|to)?\s*(.+)/i,
   );
   if (newTaskMatch && chatId) {
     const desc = newTaskMatch[1]!.trim();
-    return respond(() =>
-      showTaskPreview({
+    return respond(async () => {
+      setPendingTask(chatId, {
         title: desc,
         description: desc,
         sourceMessage: trimmed,
-      }, chatId)
-    );
+        createdAt: Date.now(),
+        awaitingAssign: true,
+      });
+      return {
+        text: formatAssigneePrompt({ title: desc, description: desc }),
+      };
+    });
   }
 
   // ── NL places queries (no AI required) ──
@@ -613,15 +680,22 @@ export function routeQuery(
             const locCtx = chatId ? getLocationContextString(chatId) : null;
             return { text: await generateReply(trimmed, locCtx ?? undefined) };
           }
+          if (!agentName) {
+            return { text: "I'd be happy to create that task, but I need to know who it's for.\n\nTry something like:\n<code>Have [agent name] [task description]</code>\n\nFor example: \"Have Hunter review the PR\" or \"Ask Christie to update the docs.\"" };
+          }
+          const rawTitle = action
+            ? `${agentName ? agentName + ": " : ""}${action}`
+            : trimmed;
           if (!chatId) {
             return handleCreateIssue({
-              title: action ? `${agentName ? agentName + ": " : ""}${action}` : trimmed,
-              description: action ?? trimmed,
+              title: cleanTaskTitle(rawTitle, agentName),
+              description: cleanTaskDescription(action ?? trimmed),
               assigneeName: agentName,
+              originalDraftTitle: cleanTaskTitle(rawTitle, agentName) !== rawTitle ? rawTitle : undefined,
             });
           }
           return showTaskPreview({
-            title: action ? `${agentName ? agentName + ": " : ""}${action}` : trimmed,
+            title: rawTitle,
             description: action ?? trimmed,
             assigneeName: agentName,
             sourceMessage: trimmed,

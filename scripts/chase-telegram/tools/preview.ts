@@ -23,3 +23,22 @@ export function formatTaskPreview(params: {
   );
   return lines.join("\n");
 }
+
+export function formatAssigneePrompt(params: {
+  title: string;
+  description?: string;
+}): string {
+  const lines = [
+    "Who should own this task?",
+    "",
+    `<b>Title:</b> ${escapeHtml(params.title)}`,
+  ];
+  if (params.description) {
+    lines.push(`<b>Details:</b> ${escapeHtml(params.description)}`);
+  }
+  lines.push(
+    "",
+    "Reply with an agent name (e.g. <b>Hunter</b>), or reply <b>UNASSIGNED</b> to create it without an assignee.",
+  );
+  return lines.join("\n");
+}
