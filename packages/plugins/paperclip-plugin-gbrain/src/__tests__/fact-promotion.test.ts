@@ -3,12 +3,54 @@ import {
   promoteFactsForRun,
   makeHindsightFetch,
   deriveHindsightBankId,
+  extractDocumentId,
 } from "../fact-promotion.js";
 import type { GbrainCallable } from "../pages.js";
 
 describe("deriveHindsightBankId", () => {
   it("formats as paperclip::company::agent", () => {
     expect(deriveHindsightBankId("c-1", "a-1")).toBe("paperclip::c-1::a-1");
+  });
+});
+
+describe("extractDocumentId", () => {
+  it("prefers explicit document_id when present", () => {
+    expect(
+      extractDocumentId(
+        { id: "m", text: "", document_id: "r-explicit", chunk_id: "anything" },
+        "paperclip::c::a",
+      ),
+    ).toBe("r-explicit");
+  });
+
+  it("parses chunk_id of the form <bankId>_<docId>_<chunkIdx>", () => {
+    // Live shape observed in hindsight: chunk_id ends in `_<docId-uuid>_<int>`
+    expect(
+      extractDocumentId(
+        {
+          id: "m",
+          text: "",
+          chunk_id:
+            "paperclip::c-1::a-1_d8f49e4a-012f-40f2-b7ee-c8c92fc1526e_3",
+        },
+        "paperclip::c-1::a-1",
+      ),
+    ).toBe("d8f49e4a-012f-40f2-b7ee-c8c92fc1526e");
+  });
+
+  it("returns null when chunk_id doesn't start with bankId", () => {
+    expect(
+      extractDocumentId(
+        { id: "m", text: "", chunk_id: "different-bank_doc_0" },
+        "paperclip::c-1::a-1",
+      ),
+    ).toBeNull();
+  });
+
+  it("returns null when neither document_id nor chunk_id is present", () => {
+    expect(
+      extractDocumentId({ id: "m", text: "" }, "paperclip::c-1::a-1"),
+    ).toBeNull();
   });
 });
 
@@ -21,11 +63,30 @@ describe("promoteFactsForRun", () => {
         return { status: "ok" };
       }),
     };
+    // Live hindsight `/memories/list` returns `items`, not `results`, and
+    // omits `document_id` from the unit payload — exercise both: the
+    // first two units have chunk_id-encoded docId, the third uses an
+    // explicit document_id (for forward-compat).
     const hindsightFetch = vi.fn(async (_path: string) => ({
-      results: [
-        { id: "m-1", text: "fact A", document_id: "r-1", fact_type: "world" },
-        { id: "m-2", text: "fact B", document_id: "r-1", fact_type: "experience", context: "ctx" },
-        { id: "m-3", text: "from another run", document_id: "r-OTHER" },
+      items: [
+        {
+          id: "m-1",
+          text: "fact A",
+          chunk_id: "paperclip::c-1::a-1_r-1_0",
+          fact_type: "world",
+        },
+        {
+          id: "m-2",
+          text: "fact B",
+          chunk_id: "paperclip::c-1::a-1_r-1_1",
+          fact_type: "experience",
+          context: "ctx",
+        },
+        {
+          id: "m-3",
+          text: "from another run",
+          document_id: "r-OTHER",
+        },
       ],
     }));
 
@@ -64,7 +125,7 @@ describe("promoteFactsForRun", () => {
 
   it("URL-encodes the bank_id in the hindsight path", async () => {
     const client = { call: vi.fn().mockResolvedValue(null) };
-    const hindsightFetch = vi.fn(async () => ({ results: [] }));
+    const hindsightFetch = vi.fn(async () => ({ items: [] }));
     await promoteFactsForRun({
       client: client as unknown as GbrainCallable,
       hindsightFetch,
@@ -78,10 +139,28 @@ describe("promoteFactsForRun", () => {
     );
   });
 
+  it("accepts the legacy `results` envelope for forward compat", async () => {
+    const client = { call: vi.fn().mockResolvedValue({ status: "ok" }) };
+    const hindsightFetch = vi.fn(async () => ({
+      results: [
+        { id: "m-1", text: "fact A", document_id: "r-1", fact_type: "world" },
+      ],
+    }));
+    const result = await promoteFactsForRun({
+      client: client as unknown as GbrainCallable,
+      hindsightFetch,
+      bankId: "paperclip::c-1::a-1",
+      runId: "r-1",
+      issuePageSlug: "issue-x",
+      agentPageSlug: "agent-x",
+    });
+    expect(result).toEqual({ scanned: 1, matched: 1, promoted: 1 });
+  });
+
   it("no-ops when no memory_units match the runId", async () => {
     const client = { call: vi.fn() };
     const hindsightFetch = vi.fn(async () => ({
-      results: [{ id: "m-99", text: "other run", document_id: "r-OTHER" }],
+      items: [{ id: "m-99", text: "other run", document_id: "r-OTHER" }],
     }));
     const result = await promoteFactsForRun({
       client: client as unknown as GbrainCallable,

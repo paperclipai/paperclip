@@ -25,12 +25,42 @@ export interface HindsightMemoryUnit {
   id: string;
   text: string;
   context?: string | null;
+  // hindsight `/memories/list` omits `document_id` from the payload but
+  // encodes it inside `chunk_id` as `<bankId>_<documentId>_<chunkIndex>`.
+  // `document_id` is included for forward-compat when/if the API adds it.
   document_id?: string | null;
+  chunk_id?: string | null;
   fact_type?: string | null;
 }
 
+// hindsight `/v1/.../memories/list` returns `{items, total, limit, offset}`.
+// The plugin first shipped expecting `{results}` which produced silent
+// `scanned=0 matched=0 promoted=0`. We accept either to remain robust if
+// the API ever stabilises on a different shape.
 export interface HindsightMemoryListResponse {
-  results: HindsightMemoryUnit[];
+  items?: HindsightMemoryUnit[];
+  results?: HindsightMemoryUnit[];
+}
+
+// Recover the document_id (= paperclip runId) from a chunk_id of the
+// form `<bankId>_<docId>_<chunkIdx>` when the API doesn't populate
+// `document_id` directly. Returns null if the chunk_id doesn't start
+// with the bankId prefix.
+export function extractDocumentId(
+  unit: HindsightMemoryUnit,
+  bankId: string,
+): string | null {
+  if (unit.document_id) return unit.document_id;
+  const chunkId = unit.chunk_id ?? null;
+  if (!chunkId) return null;
+  const prefix = `${bankId}_`;
+  if (!chunkId.startsWith(prefix)) return null;
+  const tail = chunkId.slice(prefix.length);
+  // tail = `<docId>_<chunkIdx>` — split on the LAST `_` since
+  // chunkIdx is a small integer and docId is a UUID (no underscores).
+  const lastUnderscore = tail.lastIndexOf("_");
+  if (lastUnderscore < 0) return tail || null;
+  return tail.slice(0, lastUnderscore) || null;
 }
 
 export interface PromoteFactsInput {
@@ -73,8 +103,9 @@ export async function promoteFactsForRun(input: PromoteFactsInput): Promise<Prom
     `/v1/default/banks/${encoded}/memories/list?limit=100&offset=0`,
   )) as HindsightMemoryListResponse;
 
-  const all = list?.results ?? [];
-  const matched = all.filter((u) => u.document_id === runId);
+  // Hindsight returns `items`; older mocks may return `results`. Accept both.
+  const all = list?.items ?? list?.results ?? [];
+  const matched = all.filter((u) => extractDocumentId(u, bankId) === runId);
 
   let promoted = 0;
   for (const u of matched) {
