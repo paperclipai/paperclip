@@ -6895,6 +6895,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const config = parseObject(agent.adapterConfig);
     const requestedExecutionWorkspaceMode = resolveExecutionWorkspaceMode({
       projectPolicy: projectExecutionWorkspacePolicy,
+      issuePreference: isolatedWorkspacesEnabled
+        ? issueContext?.executionWorkspacePreference
+        : null,
       issueSettings: issueExecutionWorkspaceSettings,
       legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
     });
@@ -7021,6 +7024,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       : buildExecutionWorkspaceAdapterConfig({
           agentConfig: config,
           projectPolicy: projectExecutionWorkspacePolicy,
+          issuePreference: isolatedWorkspacesEnabled
+            ? issueContext?.executionWorkspacePreference
+            : null,
           issueSettings: issueExecutionWorkspaceSettings,
           mode: requestedExecutionWorkspaceMode,
           legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
