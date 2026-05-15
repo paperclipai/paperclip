@@ -1,5 +1,9 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
+  DEFAULT_ISSUE_CONSTITUTION_BODY,
+  DEFAULT_ISSUE_WORKFLOW_CLASS,
+} from "./issue-default-description.js";
+export {
   COMPANY_STATUSES,
   DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,

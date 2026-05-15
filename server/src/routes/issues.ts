@@ -13,6 +13,7 @@ import {
   projectWorkspaces,
 } from "@paperclipai/db";
 import {
+  DEFAULT_ISSUE_CONSTITUTION_BODY,
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
   cancelIssueThreadInteractionSchema,
@@ -162,6 +163,26 @@ function applyCreateIssueStatusDefault(req: Request, res: Response, next: () => 
       status: resolution.status,
     };
   }
+  next();
+}
+
+function applyCreateIssueDescriptionDefault(req: Request, res: Response, next: () => void) {
+  if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+    next();
+    return;
+  }
+
+  const shouldDefaultDescription =
+    req.actor.type === "board" && typeof (req.body as Record<string, unknown>).description === "undefined";
+  res.locals.createIssueDescriptionDefaulted = shouldDefaultDescription;
+
+  if (shouldDefaultDescription) {
+    req.body = {
+      ...req.body,
+      description: DEFAULT_ISSUE_CONSTITUTION_BODY,
+    };
+  }
+
   next();
 }
 
@@ -2556,7 +2577,12 @@ export function issueRoutes(
     res.json({ ok: true });
   });
 
-  router.post("/companies/:companyId/issues", applyCreateIssueStatusDefault, validate(createIssueSchema), async (req, res) => {
+  router.post(
+    "/companies/:companyId/issues",
+    applyCreateIssueStatusDefault,
+    applyCreateIssueDescriptionDefault,
+    validate(createIssueSchema),
+    async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
@@ -2596,6 +2622,7 @@ export function issueRoutes(
       details: {
         title: issue.title,
         identifier: issue.identifier,
+        descriptionDefaulted: res.locals.createIssueDescriptionDefaulted === true,
         ...buildCreateIssueActivityStatusDetails(issue, res),
         ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
         ...summarizeIssueReferenceActivityDetails({
@@ -2644,9 +2671,15 @@ export function issueRoutes(
       relatedWork: referenceSummary,
       referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
     });
-  });
+    },
+  );
 
-  router.post("/issues/:id/children", applyCreateIssueStatusDefault, validate(createChildIssueSchema), async (req, res) => {
+  router.post(
+    "/issues/:id/children",
+    applyCreateIssueStatusDefault,
+    applyCreateIssueDescriptionDefault,
+    validate(createChildIssueSchema),
+    async (req, res) => {
     const parentId = req.params.id as string;
     const parent = await svc.getById(parentId);
     if (!parent) {
@@ -2688,6 +2721,7 @@ export function issueRoutes(
         parentId: parent.id,
         identifier: issue.identifier,
         title: issue.title,
+        descriptionDefaulted: res.locals.createIssueDescriptionDefaulted === true,
         ...buildCreateIssueActivityStatusDetails(issue, res),
         inheritedExecutionWorkspaceFromIssueId: parent.id,
         ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
@@ -2730,7 +2764,8 @@ export function issueRoutes(
     });
 
     res.status(201).json(issue);
-  });
+    },
+  );
 
   router.post("/issues/:id/monitor/check-now", async (req, res) => {
     const id = req.params.id as string;

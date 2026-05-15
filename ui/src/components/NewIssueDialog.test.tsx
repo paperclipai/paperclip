@@ -4,6 +4,7 @@ import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { DEFAULT_ISSUE_CONSTITUTION_BODY } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NewIssueDialog } from "./NewIssueDialog";
 
@@ -582,6 +583,52 @@ describe("NewIssueDialog", () => {
         title: "Typed issue",
         description: "Typed description",
         workMode: "standard",
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
+  it("starts new issues with the shared constitution default description", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement | null;
+    expect(descriptionInput).not.toBeNull();
+    expect(descriptionInput?.value).toBe(DEFAULT_ISSUE_CONSTITUTION_BODY);
+
+    act(() => root.unmount());
+  });
+
+  it("submits an explicitly cleared description as an empty string", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const titleInput = container.querySelector('textarea[placeholder="Issue title"]') as HTMLTextAreaElement | null;
+    const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement | null;
+    expect(titleInput).not.toBeNull();
+    expect(descriptionInput).not.toBeNull();
+
+    await typeTextareaValue(titleInput!, "Typed issue");
+    await typeTextareaValue(descriptionInput!, "");
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Issue"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Typed issue",
+        description: "",
       }),
     );
 

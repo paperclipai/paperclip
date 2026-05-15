@@ -1,4 +1,5 @@
 import express from "express";
+import { DEFAULT_ISSUE_CONSTITUTION_BODY } from "@paperclipai/shared";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -90,7 +91,26 @@ vi.mock("../services/index.js", () => ({
   }),
 }));
 
-async function createApp() {
+function boardActor() {
+  return {
+    type: "board" as const,
+    userId: "local-board",
+    companyIds: ["company-1"],
+    source: "local_implicit" as const,
+    isInstanceAdmin: false,
+  };
+}
+
+function agentActor() {
+  return {
+    type: "agent" as const,
+    agentId: "33333333-3333-4333-8333-333333333333",
+    companyId: "company-1",
+    runId: "44444444-4444-4444-8444-444444444444",
+  };
+}
+
+async function createApp(actor = boardActor()) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -98,13 +118,7 @@ async function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = actor;
     next();
   });
   app.use("/api", issueRoutes({} as any, {} as any));
@@ -194,6 +208,7 @@ describe("assigned backlog creation contract", () => {
       expect.objectContaining({
         title: "Assigned executable work",
         assigneeAgentId,
+        description: DEFAULT_ISSUE_CONSTITUTION_BODY,
         status: "todo",
       }),
     );
@@ -214,10 +229,63 @@ describe("assigned backlog creation contract", () => {
       expect.objectContaining({
         action: "issue.created",
         details: expect.objectContaining({
+          descriptionDefaulted: true,
           status: "todo",
           statusDefaulted: true,
           statusDefaultReason: "assigned_omitted_status",
           assignmentWakeSkipped: false,
+        }),
+      }),
+    );
+  });
+
+  it("preserves an explicitly cleared description instead of re-defaulting it", async () => {
+    const res = await request(await createApp())
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Blank body by choice",
+        description: "",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Blank body by choice",
+        description: "",
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.created",
+        details: expect.objectContaining({
+          descriptionDefaulted: false,
+        }),
+      }),
+    );
+  });
+
+  it("does not inject the constitution body for agent-created issues", async () => {
+    const res = await request(await createApp(agentActor()))
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Agent-created issue",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.not.objectContaining({
+        description: DEFAULT_ISSUE_CONSTITUTION_BODY,
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.created",
+        details: expect.objectContaining({
+          descriptionDefaulted: false,
         }),
       }),
     );
