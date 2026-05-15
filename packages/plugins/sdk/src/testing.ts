@@ -909,6 +909,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             color: declaration.color ?? null,
             env: null,
             pauseReason: null,
+            pauseOrigin: null,
             pausedAt: null,
             executionWorkspacePolicy: null,
             codebase: {
@@ -1810,6 +1811,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             budgetMonthlyCents: declaration.budgetMonthlyCents ?? 0,
             spentMonthlyCents: 0,
             pauseReason: null,
+            pauseOrigin: null,
             pausedAt: null,
             permissions: { canCreateAgents: Boolean(declaration.permissions?.canCreateAgents) },
             lastHeartbeatAt: null,
@@ -1848,6 +1850,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
               budgetMonthlyCents: declaration.budgetMonthlyCents ?? 0,
               spentMonthlyCents: 0,
               pauseReason: null,
+              pauseOrigin: null,
               pausedAt: null,
               permissions: { canCreateAgents: Boolean(declaration.permissions?.canCreateAgents) },
               lastHeartbeatAt: null,

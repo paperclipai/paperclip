@@ -16,7 +16,13 @@ import {
   issues,
   issueComments,
 } from "@paperclipai/db";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
+import {
+  AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  canonicalAgentStatus,
+  isUuidLike,
+  normalizeAgentUrlKey,
+  pauseReasonOrigin,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
@@ -231,6 +237,9 @@ export function agentService(db: Db) {
   function normalizeAgentRow(row: typeof agents.$inferSelect) {
     return withUrlKey({
       ...row,
+      // One-release read alias: rewrite any lingering legacy `running` rows to
+      // the canonical `working` value (ZERA-579 / canonical run-state taxonomy).
+      status: canonicalAgentStatus(row.status),
       permissions: normalizeAgentPermissions(row.permissions, row.role),
     });
   }
@@ -445,6 +454,7 @@ export function agentService(db: Db) {
         .set({
           status: "paused",
           pauseReason: reason,
+          pauseOrigin: pauseReasonOrigin(reason),
           pausedAt: new Date(),
           updatedAt: new Date(),
         })
@@ -467,6 +477,7 @@ export function agentService(db: Db) {
         .set({
           status: "idle",
           pauseReason: null,
+          pauseOrigin: null,
           pausedAt: null,
           updatedAt: new Date(),
         })
@@ -485,6 +496,7 @@ export function agentService(db: Db) {
         .set({
           status: "terminated",
           pauseReason: null,
+          pauseOrigin: null,
           pausedAt: null,
           updatedAt: new Date(),
         })

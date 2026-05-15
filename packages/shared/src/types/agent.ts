@@ -2,6 +2,7 @@ import type {
   AgentAdapterType,
   ModelProfileKey,
   PauseReason,
+  PauseOrigin,
   AgentRole,
   AgentStatus,
 } from "../constants.js";
@@ -88,6 +89,11 @@ export interface Agent {
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
   pauseReason: PauseReason | null;
+  /**
+   * Discriminates an operator-initiated pause (taxonomy `paused`) from a
+   * platform safety-control halt (taxonomy `suspended`). Null when not paused.
+   */
+  pauseOrigin: PauseOrigin | null;
   pausedAt: Date | null;
   permissions: AgentPermissions;
   lastHeartbeatAt: Date | null;

@@ -119,6 +119,7 @@ function createAgent(): Agent {
     updatedAt: new Date("2026-04-02T00:00:00.000Z"),
     urlKey: "routine-agent",
     pauseReason: null,
+    pauseOrigin: null,
     pausedAt: null,
     permissions: { canCreateAgents: false },
   };

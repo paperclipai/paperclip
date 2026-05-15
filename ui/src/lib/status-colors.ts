@@ -42,9 +42,11 @@ export const issueStatusTextDefault = "text-muted-foreground";
 export const statusBadge: Record<string, string> = {
   // Agent statuses
   active: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+  working: "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300",
   running: "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300",
   scheduled_retry: "bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300",
   paused: "bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-300",
+  suspended: "bg-rose-100 text-rose-700 dark:bg-rose-900/50 dark:text-rose-300",
   idle: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300",
   archived: "bg-muted text-muted-foreground",
 
@@ -87,9 +89,11 @@ export const statusBadgeDefault = "bg-muted text-muted-foreground";
 // ---------------------------------------------------------------------------
 
 export const agentStatusDot: Record<string, string> = {
+  working: "bg-cyan-400 animate-pulse",
   running: "bg-cyan-400 animate-pulse",
   active: "bg-green-400",
   paused: "bg-yellow-400",
+  suspended: "bg-rose-400",
   idle: "bg-yellow-400",
   pending_approval: "bg-amber-400",
   error: "bg-red-400",

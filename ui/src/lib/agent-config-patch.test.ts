@@ -35,6 +35,7 @@ function makeAgent(): Agent {
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     pauseReason: null,
+    pauseOrigin: null,
     pausedAt: null,
     lastHeartbeatAt: null,
     createdAt: new Date("2026-01-01T00:00:00.000Z"),

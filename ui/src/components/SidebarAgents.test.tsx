@@ -117,6 +117,7 @@ function makeAgent(overrides: Partial<Agent>): Agent {
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     pauseReason: null,
+    pauseOrigin: null,
     pausedAt: null,
     permissions: { canCreateAgents: false },
     lastHeartbeatAt: null,
@@ -387,6 +388,7 @@ describe("SidebarAgents", () => {
       makeAgent({
         status: "paused",
         pauseReason: "budget",
+        pauseOrigin: null,
         pausedAt: new Date("2026-01-02T00:00:00Z"),
       }),
     ]);

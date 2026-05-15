@@ -218,10 +218,17 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         .set({
           status: "paused",
           pauseReason: "budget",
+          // Budget caps are a platform safety control → taxonomy `suspended`.
+          pauseOrigin: "platform",
           pausedAt: now,
           updatedAt: now,
         })
-        .where(and(eq(agents.id, policy.scopeId), inArray(agents.status, ["active", "idle", "running", "error"])));
+        .where(
+          and(
+            eq(agents.id, policy.scopeId),
+            inArray(agents.status, ["active", "idle", "working", "running", "error"]),
+          ),
+        );
       return;
     }
 
@@ -265,6 +272,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         .set({
           status: "idle",
           pauseReason: null,
+          pauseOrigin: null,
           pausedAt: null,
           updatedAt: now,
         })

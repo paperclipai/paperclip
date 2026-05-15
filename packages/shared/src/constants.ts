@@ -19,13 +19,55 @@ export type AuthBaseUrlMode = (typeof AUTH_BASE_URL_MODES)[number];
 export const AGENT_STATUSES = [
   "active",
   "paused",
+  "suspended",
   "idle",
+  "working",
   "running",
   "error",
   "pending_approval",
   "terminated",
 ] as const;
 export type AgentStatus = (typeof AGENT_STATUSES)[number];
+
+/**
+ * Legacy agent-status values mapped to their canonical replacement.
+ *
+ * `running` was renamed to `working` (ZERA-579 / canonical run-state taxonomy).
+ * The old value is retained in {@link AGENT_STATUSES} for one release so that
+ * pre-existing rows and in-flight clients keep validating; reads are normalized
+ * through {@link canonicalAgentStatus} and a data migration rewrites stored rows.
+ */
+export const AGENT_STATUS_LEGACY_ALIASES: Readonly<Record<string, AgentStatus>> = {
+  running: "working",
+} as const;
+
+/** Normalize a possibly-legacy agent status to its canonical taxonomy value. */
+export function canonicalAgentStatus(status: string): AgentStatus {
+  return (AGENT_STATUS_LEGACY_ALIASES[status] ?? status) as AgentStatus;
+}
+
+/**
+ * Pause origin discriminator. Separates operator-initiated pauses (`paused`
+ * in the taxonomy) from platform safety-control halts (`suspended`). The
+ * canonical signal is *who set the pause*, not the reason string itself.
+ */
+export const PAUSE_ORIGINS = ["operator", "platform"] as const;
+export type PauseOrigin = (typeof PAUSE_ORIGINS)[number];
+
+/**
+ * Map a {@link PauseReason} to its {@link PauseOrigin}. Operator action is
+ * `manual`; budget caps and system safety controls are platform-initiated.
+ */
+export function pauseReasonOrigin(reason: string | null | undefined): PauseOrigin {
+  return reason === "manual" || reason == null ? "operator" : "platform";
+}
+
+/**
+ * Liveness window for the orthogonal `dormant` flag in the run-state taxonomy.
+ * An agent that has not heartbeated within this window is reported as dormant
+ * (still counted in its primary state). 24h platform default.
+ */
+export const AGENT_DORMANT_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 
 export const AGENT_ADAPTER_TYPES = [
   "process",

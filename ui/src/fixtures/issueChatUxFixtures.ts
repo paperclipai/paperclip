@@ -37,6 +37,7 @@ function createAgent(
     createdAt: now,
     updatedAt: now,
     pauseReason: null,
+    pauseOrigin: null,
     pausedAt: null,
     permissions: { canCreateAgents: false },
   };

@@ -529,6 +529,7 @@ function buildAcpxAgent({
     budgetMonthlyCents: 100_000,
     spentMonthlyCents: 0,
     pauseReason: null,
+    pauseOrigin: null,
     pausedAt: null,
     permissions: { canCreateAgents: false },
     lastHeartbeatAt: null,
