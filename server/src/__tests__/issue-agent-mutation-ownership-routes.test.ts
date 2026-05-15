@@ -439,6 +439,7 @@ describe("agent issue mutation checkout ownership", () => {
         key: "plan",
         createdByAgentId: ownerAgentId,
         createdByRunId: ownerRunId,
+        lockedDocumentStrategy: "create_new_document",
       }),
     );
   });
