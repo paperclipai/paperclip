@@ -21,7 +21,13 @@ export interface Logger {
 
 export interface HandleRunFinishedInput {
   event: RunFinishedEventShape;
-  client: GbrainCallable;
+  /**
+   * Build a gbrain client scoped to the agent. When OAuth is wired, the
+   * returned client carries that agent's Bearer; without OAuth it's a
+   * plain anonymous client. Called once per `agent.run.finished` after
+   * the agentId is extracted from the payload.
+   */
+  makeClient: (agentId: string) => GbrainCallable;
   logger: Logger;
   autoRetain: boolean;
   /** Resolve human identifier (e.g. "BLO-3220") from issue UUID. */
@@ -31,7 +37,7 @@ export interface HandleRunFinishedInput {
 }
 
 export async function handleRunFinished(input: HandleRunFinishedInput): Promise<HandleRunFinishedResult> {
-  const { event, client, logger, autoRetain, lookupIssueIdentifier, lookupAgentName } =
+  const { event, makeClient, logger, autoRetain, lookupIssueIdentifier, lookupAgentName } =
     input;
   if (!autoRetain) return { ok: false };
 
@@ -72,6 +78,8 @@ export async function handleRunFinished(input: HandleRunFinishedInput): Promise<
       logger.info("gbrain retain skip: agent name unresolved", { agentId });
       return { ok: false };
     }
+
+    const client = makeClient(agentId);
 
     await ensureIssuePage(client, {
       identifier,

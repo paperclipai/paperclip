@@ -10,13 +10,24 @@ import {
   makeHindsightFetch,
   promoteFactsForRun,
 } from "./fact-promotion.js";
-import { DEFAULT_GBRAIN_MCP_URL } from "./manifest.js";
+import {
+  DEFAULT_GBRAIN_MCP_URL,
+  LEGACY_BRIDGE_GBRAIN_MCP_URL,
+  DEFAULT_GBRAIN_OAUTH_TOKEN_URL,
+  DEFAULT_GBRAIN_OAUTH_CLIENTS_PATH,
+} from "./manifest.js";
+import {
+  OAuthClientManager,
+  loadClientsFromFile,
+} from "./oauth-client-manager.js";
 
 const DEFAULT_HINDSIGHT_API_URL = "http://hindsight-api.hindsight.svc.cluster.local:8888";
 const DEFAULT_FACT_PROMOTION_DELAY_SEC = 180;
 
 interface GbrainConfig {
   gbrainMcpUrl?: string;
+  gbrainOauthTokenUrl?: string;
+  oauthClientsPath?: string;
   hindsightApiUrl?: string;
   autoRetain?: boolean;
   promoteFactsToPages?: boolean;
@@ -39,11 +50,59 @@ const plugin = definePlugin({
   async setup(ctx) {
     ctx.logger.info("gbrain plugin starting");
 
+    // Load the OAuth client map once at plugin startup. Falls back to
+    // anonymous (legacy bridge) calls when the file is absent. The
+    // file path comes from instance config so operators can move the
+    // mount around without rebuilding the plugin.
+    const bootConfig = await getConfig(ctx);
+    const clientsPath = bootConfig.oauthClientsPath ?? DEFAULT_GBRAIN_OAUTH_CLIENTS_PATH;
+    const tokenUrl = bootConfig.gbrainOauthTokenUrl ?? DEFAULT_GBRAIN_OAUTH_TOKEN_URL;
+    const clients = await loadClientsFromFile(clientsPath);
+
+    let oauth: OAuthClientManager | null = null;
+    if (clients) {
+      oauth = new OAuthClientManager({ tokenUrl, clients });
+      ctx.logger.info("gbrain OAuth client manager loaded", {
+        agentCount: oauth.agentCount(),
+        clientsPath,
+        tokenUrl,
+      });
+    } else {
+      ctx.logger.info("gbrain OAuth disabled — falling back to anonymous calls", {
+        clientsPath,
+      });
+    }
+
+    function buildClient(gbrainUrl: string, agentId: string): GbrainClient {
+      if (oauth && oauth.hasAgent(agentId)) {
+        return new GbrainClient({
+          url: gbrainUrl,
+          authProvider: () => oauth!.getToken(agentId),
+          onAuthFailure: () => oauth!.invalidate(agentId),
+        });
+      }
+      // No OAuth entry for this agent — fall back to anonymous.
+      // Helpful when adding a new agent before its OAuth client is seeded.
+      return new GbrainClient({ url: gbrainUrl });
+    }
+
+    // Pick the gbrain URL based on whether OAuth is available. The
+    // admin-ui endpoint requires Bearer auth (401 otherwise), so if
+    // OAuth isn't configured we have to use the legacy supergateway-
+    // bridge URL which accepts anonymous calls. An explicit
+    // `gbrainMcpUrl` in instance config always wins over this default.
+    const defaultGbrainUrl = oauth ? DEFAULT_GBRAIN_MCP_URL : LEGACY_BRIDGE_GBRAIN_MCP_URL;
+    if (!oauth) {
+      ctx.logger.info(
+        "gbrain plugin using legacy bridge URL — seed the OAuth clients file to switch to admin-ui",
+        { gbrainUrl: defaultGbrainUrl },
+      );
+    }
+
     ctx.events.on("agent.run.finished", async (event) => {
       const config = await getConfig(ctx);
-      const gbrainUrl = config.gbrainMcpUrl ?? DEFAULT_GBRAIN_MCP_URL;
+      const gbrainUrl = config.gbrainMcpUrl ?? defaultGbrainUrl;
       const hindsightUrl = config.hindsightApiUrl ?? DEFAULT_HINDSIGHT_API_URL;
-      const client = new GbrainClient({ url: gbrainUrl });
 
       const result = await handleRunFinished({
         event: {
@@ -51,7 +110,7 @@ const plugin = definePlugin({
           companyId: event.companyId,
           payload: event.payload as Record<string, unknown>,
         },
-        client,
+        makeClient: (agentId) => buildClient(gbrainUrl, agentId),
         logger: makeLogger(ctx),
         autoRetain: config.autoRetain !== false,
         lookupIssueIdentifier: async (issueId) => {
@@ -71,7 +130,7 @@ const plugin = definePlugin({
       ) {
         const delaySec = config.factPromotionDelaySec ?? DEFAULT_FACT_PROMOTION_DELAY_SEC;
         const bankId = deriveHindsightBankId(event.companyId, result.agentId);
-        const promoteClient = new GbrainClient({ url: gbrainUrl });
+        const promoteClient = buildClient(gbrainUrl, result.agentId);
         const hindsightFetch = makeHindsightFetch(hindsightUrl);
         // One-shot setTimeout. Durability tradeoff: if the pod restarts
         // within the delay window the per-fact pages for in-flight runs

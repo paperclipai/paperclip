@@ -147,4 +147,66 @@ describe("GbrainClient", () => {
     const out = await client.call("get_page", { slug: "issue/missing" });
     expect(out).toBeNull();
   });
+
+  it("attaches Authorization: Bearer when authProvider is set", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { content: [{ type: "text", text: "{}" }] },
+      }), { headers: { "content-type": "application/json" } }),
+    );
+    const authProvider = vi.fn(async () => "tok-abc");
+    const authed = new GbrainClient({
+      url: "http://gbrain.test/mcp",
+      fetch: fetchMock as unknown as typeof fetch,
+      authProvider,
+    });
+    await authed.call("put_page", {});
+    expect(authProvider).toHaveBeenCalledOnce();
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect((init.headers as Record<string, string>).authorization).toBe("Bearer tok-abc");
+  });
+
+  it("on 401 invokes onAuthFailure and retries once with a fresh token", async () => {
+    // First call returns 401, second returns success.
+    fetchMock
+      .mockResolvedValueOnce(new Response("unauthorized", { status: 401 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        result: { content: [{ type: "text", text: "{\"ok\":true}" }] },
+      }), { headers: { "content-type": "application/json" } }));
+
+    let tokenIdx = 0;
+    const tokens = ["stale-tok", "fresh-tok"];
+    const authProvider = vi.fn(async () => tokens[tokenIdx++]);
+    const onAuthFailure = vi.fn();
+
+    const authed = new GbrainClient({
+      url: "http://gbrain.test/mcp",
+      fetch: fetchMock as unknown as typeof fetch,
+      authProvider,
+      onAuthFailure,
+    });
+    const out = await authed.call("put_page", {});
+    expect(out).toEqual({ ok: true });
+    expect(authProvider).toHaveBeenCalledTimes(2);
+    expect(onAuthFailure).toHaveBeenCalledOnce();
+    // Verify the retry used the fresh token.
+    expect((fetchMock.mock.calls[0][1].headers as Record<string, string>).authorization).toBe("Bearer stale-tok");
+    expect((fetchMock.mock.calls[1][1].headers as Record<string, string>).authorization).toBe("Bearer fresh-tok");
+  });
+
+  it("does not retry a 401 a second time (gives up after one rotation)", async () => {
+    fetchMock.mockResolvedValue(new Response("unauthorized", { status: 401 }));
+    const authProvider = vi.fn(async () => "tok");
+    const authed = new GbrainClient({
+      url: "http://gbrain.test/mcp",
+      fetch: fetchMock as unknown as typeof fetch,
+      authProvider,
+    });
+    await expect(authed.call("put_page", {})).rejects.toBeInstanceOf(GbrainCallError);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });

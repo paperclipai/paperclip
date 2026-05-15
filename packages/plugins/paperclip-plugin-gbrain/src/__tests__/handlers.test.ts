@@ -34,7 +34,7 @@ describe("handleRunFinished", () => {
 
     await handleRunFinished({
       event: makeEvent(),
-      client,
+      makeClient: () => client,
       logger,
       autoRetain: true,
       lookupIssueIdentifier: vi.fn(async () => "BLO-1"),
@@ -64,7 +64,7 @@ describe("handleRunFinished", () => {
     const client = { call: vi.fn() };
     await handleRunFinished({
       event: makeEvent(),
-      client,
+      makeClient: () => client,
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       autoRetain: false,
       lookupIssueIdentifier: vi.fn(),
@@ -78,7 +78,7 @@ describe("handleRunFinished", () => {
     const evt = makeEvent({ payload: { runId: "r-1", agentId: "a-1", status: "failed" } });
     await handleRunFinished({
       event: evt,
-      client,
+      makeClient: () => client,
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       autoRetain: true,
       lookupIssueIdentifier: vi.fn(),
@@ -98,7 +98,7 @@ describe("handleRunFinished", () => {
     await expect(
       handleRunFinished({
         event: makeEvent(),
-        client,
+        makeClient: () => client,
         logger,
         autoRetain: true,
         lookupIssueIdentifier: vi.fn(async () => "BLO-1"),
@@ -113,7 +113,7 @@ describe("handleRunFinished", () => {
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     await handleRunFinished({
       event: makeEvent(),
-      client,
+      makeClient: () => client,
       logger,
       autoRetain: true,
       lookupIssueIdentifier: vi.fn(async () => null),

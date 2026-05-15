@@ -2,6 +2,20 @@ export interface GbrainClientOptions {
   url: string;
   fetch?: typeof fetch;
   timeoutMs?: number;
+  /**
+   * Returns a Bearer token to attach as `Authorization: Bearer <token>`.
+   * When omitted, calls are anonymous (legacy bridge path).
+   *
+   * If a call returns HTTP 401, the client invokes `onAuthFailure()`
+   * (if provided) to let the caller invalidate the cached token, then
+   * re-runs `authProvider()` once. A second 401 throws.
+   */
+  authProvider?: () => Promise<string>;
+  /**
+   * Called after a 401 so callers (e.g. OAuthClientManager) can drop
+   * their cached token before the retry.
+   */
+  onAuthFailure?: () => void;
 }
 
 export class GbrainCallError extends Error {
@@ -47,15 +61,27 @@ export class GbrainClient {
   private readonly url: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  private readonly authProvider?: () => Promise<string>;
+  private readonly onAuthFailure?: () => void;
   private nextId = 1;
 
   constructor(opts: GbrainClientOptions) {
     this.url = opts.url;
     this.fetchImpl = opts.fetch ?? fetch;
     this.timeoutMs = opts.timeoutMs ?? 15_000;
+    this.authProvider = opts.authProvider;
+    this.onAuthFailure = opts.onAuthFailure;
   }
 
   async call<T = unknown>(tool: string, args: Record<string, unknown>): Promise<T> {
+    return this.callWithRetry<T>(tool, args, /*retryOnAuth*/ true);
+  }
+
+  private async callWithRetry<T>(
+    tool: string,
+    args: Record<string, unknown>,
+    retryOnAuth: boolean,
+  ): Promise<T> {
     const id = this.nextId++;
     const body = {
       jsonrpc: "2.0" as const,
@@ -64,18 +90,30 @@ export class GbrainClient {
       params: { name: tool, arguments: args },
     };
 
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+    };
+    if (this.authProvider) {
+      const bearer = await this.authProvider();
+      headers.authorization = `Bearer ${bearer}`;
+    }
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
       const resp = await this.fetchImpl(this.url, {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          accept: "application/json, text/event-stream",
-        },
+        headers,
         body: JSON.stringify(body),
         signal: controller.signal,
       });
+
+      if (resp.status === 401 && retryOnAuth && this.authProvider) {
+        this.onAuthFailure?.();
+        clearTimeout(timer);
+        return this.callWithRetry<T>(tool, args, /*retryOnAuth*/ false);
+      }
 
       if (!resp.ok) {
         throw new GbrainCallError(`HTTP ${resp.status} from ${this.url}`);
