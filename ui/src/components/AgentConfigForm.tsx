@@ -858,7 +858,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     } else if (t === "opencode_local") {
                       nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
                     } else if (t === "atomic_agent_http") {
-                      nextValues.url = "http://127.0.0.1:8787";
+                      nextValues.url = "http://127.0.0.1:1337";
                     }
                     set!(nextValues);
                   } else {
