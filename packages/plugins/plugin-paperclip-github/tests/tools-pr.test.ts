@@ -225,7 +225,9 @@ describe("getPr", () => {
                       nodes: [
                         { __typename: "CheckRun", name: "quality / cargo-test", conclusion: "SUCCESS", status: "COMPLETED" },
                         { __typename: "CheckRun", name: "quality / cargo-clippy", conclusion: "FAILURE", status: "COMPLETED" },
+                        { __typename: "CheckRun", name: "quality / still-running", conclusion: null, status: "IN_PROGRESS" },
                         { __typename: "StatusContext", context: "windows-desktop-gate", state: "SUCCESS" },
+                        { __typename: "StatusContext", context: "pending-status", state: "PENDING" },
                       ],
                     },
                   },
@@ -244,6 +246,7 @@ describe("getPr", () => {
       state: string;
       passingChecks: string[];
       failingChecks: string[];
+      allChecks: string[];
       reviewDecision: string | null;
       mergeable: boolean | null;
     };
@@ -251,6 +254,7 @@ describe("getPr", () => {
     expect(data.mergeable).toBe(true);
     expect(data.passingChecks).toEqual(["quality / cargo-test", "windows-desktop-gate"]);
     expect(data.failingChecks).toEqual(["quality / cargo-clippy"]);
+    expect(data.allChecks).toEqual(["quality / cargo-test", "windows-desktop-gate", "quality / cargo-clippy"]);
     expect(data.reviewDecision).toBe("APPROVED");
   });
 
@@ -363,6 +367,7 @@ describe("PR mutation tools", () => {
     );
     expect(createComment.mock.calls[0]?.[0]?.body).toContain("Agent: a");
     expect(createComment.mock.calls[0]?.[0]?.body).toContain("Run: r");
+    expect(createComment.mock.calls[0]?.[0]?.body).not.toMatch(/\n{3,}/);
     expect((client.rest as never as { pulls: { update: ReturnType<typeof vi.fn> } }).pulls.update).toHaveBeenCalledWith(
       expect.objectContaining({ pull_number: 42, state: "closed" }),
     );

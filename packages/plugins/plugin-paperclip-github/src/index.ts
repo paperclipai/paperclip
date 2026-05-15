@@ -6,6 +6,8 @@ export { RefusalError } from "./audit.js";
 export {
   openPr,
   getPr,
+  updatePr,
+  closePr,
   updatePrBody,
   convertPrToDraft,
   markPrReadyForReview,
@@ -13,6 +15,8 @@ export {
   type OpenPrParams,
   type OpenPrResult,
   type GetPrResult,
+  type UpdatePrParams,
+  type ClosePrParams,
   type UpdatePrBodyParams,
   type ConvertPrToDraftParams,
   type MarkPrReadyForReviewParams,

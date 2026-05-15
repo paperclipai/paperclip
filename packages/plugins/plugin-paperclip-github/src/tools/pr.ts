@@ -70,7 +70,7 @@ export interface GetPrResult {
   mergeStateStatus: string;
   headSha: string;
   baseSha: string;
-  requiredChecks: string[];
+  allChecks: string[];
   failingChecks: string[];
   passingChecks: string[];
   reviewDecision: string | null;
@@ -265,9 +265,11 @@ export async function getPr(
 
   for (const ctxNode of rollup?.contexts.nodes ?? []) {
     if (ctxNode.__typename === "CheckRun") {
+      if (ctxNode.status !== "COMPLETED") continue;
       const ok = ctxNode.conclusion === "SUCCESS" || ctxNode.conclusion === "NEUTRAL" || ctxNode.conclusion === "SKIPPED";
       (ok ? passingChecks : failingChecks).push(ctxNode.name);
     } else {
+      if (ctxNode.state === "PENDING") continue;
       const ok = ctxNode.state === "SUCCESS";
       (ok ? passingChecks : failingChecks).push(ctxNode.context);
     }
@@ -280,7 +282,7 @@ export async function getPr(
     mergeStateStatus: pr.mergeStateStatus,
     headSha: pr.headRefOid,
     baseSha: pr.baseRefOid,
-    requiredChecks: passingChecks.concat(failingChecks),
+    allChecks: passingChecks.concat(failingChecks),
     passingChecks,
     failingChecks,
     reviewDecision: pr.reviewDecision,
@@ -762,15 +764,17 @@ function buildMutationResult(
 }
 
 function buildCloseComment(p: ClosePrParams, runCtx: ToolRunContext): string {
-  const body = p.commentBody === undefined ? "" : `\n\n${p.commentBody.trim()}`;
-  return [
+  const lines = [
     "Paperclip typed PR close",
     "",
     `Reason: ${p.reason.trim()}`,
     `Agent: ${runCtx.agentId}`,
     `Run: ${runCtx.runId}`,
-    body,
-  ].join("\n");
+  ];
+  if (p.commentBody !== undefined) {
+    lines.push("", p.commentBody.trim());
+  }
+  return lines.join("\n");
 }
 
 async function githubCall<T>(operation: () => Promise<T>, action: string): Promise<T> {
