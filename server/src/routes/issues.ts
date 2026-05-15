@@ -1284,7 +1284,8 @@ export function issueRoutes(
     if (!resolved.agent) {
       throw notFound("Agent not found");
     }
-    if (resolved.agent.status === "terminated" || resolved.agent.name.trim().startsWith("[DEPRECATED]")) {
+    const resolvedAgentName = typeof resolved.agent.name === "string" ? resolved.agent.name : "";
+    if (resolved.agent.status === "terminated" || resolvedAgentName.trim().startsWith("[DEPRECATED]")) {
       throw conflict("Agent is deprecated or terminated and cannot be assigned issues.");
     }
     return resolved.agent.id;
