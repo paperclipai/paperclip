@@ -78,6 +78,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Local Gemini agent",
     icon: Gem,
   },
+  kimi_local: {
+    label: "Kimi",
+    description: "Moonshot AI Kimi model via API",
+    icon: Sparkles,
+  },
   opencode_local: {
     label: "OpenCode",
     description: "Local multi-provider agent",
