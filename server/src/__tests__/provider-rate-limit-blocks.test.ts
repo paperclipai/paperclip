@@ -9,6 +9,7 @@ import {
   heartbeatRuns,
   issueRelations,
   issues,
+  providerRateLimitBlockMembers,
   providerRateLimitBlocks,
 } from "@paperclipai/db";
 import {
@@ -183,19 +184,7 @@ describeEmbeddedPostgres("provider rate-limit block release", () => {
 
     const result = await providerRateLimitService(db).releaseAndResumeForBlock(block);
 
-    expect(result.matchingAgents).toBe(2);
-    expect(result.retiredRecoveryIssueIds).toEqual([recoveryIssueId]);
-    expect(result.unblockedIssueIds).toContain(sourceIssueId);
-    const [recoveryIssue] = await db
-      .select({ status: issues.status })
-      .from(issues)
-      .where(eq(issues.id, recoveryIssueId));
-    expect(recoveryIssue?.status).toBe("cancelled");
-    const remainingRelations = await db
-      .select()
-      .from(issueRelations)
-      .where(and(eq(issueRelations.issueId, recoveryIssueId), eq(issueRelations.relatedIssueId, sourceIssueId)));
-    expect(remainingRelations).toHaveLength(0);
+    expect(result.affectedAgents).toBe(2);
     const wakeups = await db
       .select()
       .from(agentWakeupRequests)
@@ -206,9 +195,7 @@ describeEmbeddedPostgres("provider rate-limit block release", () => {
   it("repairs stale provider-limit recovery blockers left behind by previously resolved blocks", async () => {
     const companyId = await seedCompany();
     const developerId = randomUUID();
-    const reviewerId = randomUUID();
     const sourceIssueId = randomUUID();
-    const recoveryIssueId = randomUUID();
     const strandedRunId = randomUUID();
     const svc = providerRateLimitService(db);
     const block = await svc.upsertBlock({
@@ -221,30 +208,17 @@ describeEmbeddedPostgres("provider rate-limit block release", () => {
     });
     await svc.resolveBlock(block.id, "system");
 
-    await db.insert(agents).values([
-      {
-        id: developerId,
-        companyId,
-        name: "Developer",
-        role: "engineer",
-        status: "idle",
-        adapterType: "claude_local",
-        adapterConfig: { model: "claude-sonnet-4-6" },
-        runtimeConfig: { heartbeat: { wakeOnDemand: true } },
-        permissions: {},
-      },
-      {
-        id: reviewerId,
-        companyId,
-        name: "Reviewer",
-        role: "engineer",
-        status: "idle",
-        adapterType: "claude_local",
-        adapterConfig: { model: "claude-sonnet-4-6" },
-        runtimeConfig: { heartbeat: { wakeOnDemand: true } },
-        permissions: {},
-      },
-    ]);
+    await db.insert(agents).values({
+      id: developerId,
+      companyId,
+      name: "Developer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-sonnet-4-6" },
+      runtimeConfig: { heartbeat: { wakeOnDemand: true } },
+      permissions: {},
+    });
     await db.insert(heartbeatRuns).values({
       id: strandedRunId,
       companyId,
@@ -252,55 +226,25 @@ describeEmbeddedPostgres("provider rate-limit block release", () => {
       invocationSource: "assignment",
       triggerDetail: "system",
       status: "failed",
-      errorCode: "claude_hard_limit",
+      errorCode: "provider_rate_limit",
       error: "You've hit your limit",
       contextSnapshot: { issueId: sourceIssueId, wakeReason: "issue_assigned" },
       finishedAt: new Date("2026-05-11T04:00:00.000Z"),
     });
-    await db.insert(issues).values([
-      {
-        id: sourceIssueId,
-        companyId,
-        title: "Source work",
-        status: "in_progress",
-        priority: "high",
-        assigneeAgentId: developerId,
-      },
-      {
-        id: recoveryIssueId,
-        companyId,
-        title: "Recover stalled issue",
-        status: "blocked",
-        priority: "high",
-        assigneeAgentId: reviewerId,
-        parentId: sourceIssueId,
-        originKind: "stranded_issue_recovery",
-        originId: sourceIssueId,
-        originRunId: strandedRunId,
-      },
-    ]);
-    await db.insert(issueRelations).values({
+    await db.insert(issues).values({
+      id: sourceIssueId,
       companyId,
-      issueId: recoveryIssueId,
-      relatedIssueId: sourceIssueId,
-      type: "blocks",
+      title: "Source work",
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId: developerId,
+      executionRunId: strandedRunId,
     });
 
-    const result = await svc.cleanupReleasedProviderRecoveryBlockers(new Date("2026-05-13T09:05:00.000Z"));
+    const result = await svc.recoverLegacyResolvedBlocks(new Date("2026-05-13T09:05:00.000Z"));
 
     expect(result.checked).toBe(1);
-    expect(result.retiredRecoveryIssueIds).toEqual([recoveryIssueId]);
-    expect(result.unblockedIssueIds).toEqual([sourceIssueId]);
-    const [recoveryIssue] = await db
-      .select({ status: issues.status })
-      .from(issues)
-      .where(eq(issues.id, recoveryIssueId));
-    expect(recoveryIssue?.status).toBe("cancelled");
-    const remainingRelations = await db
-      .select()
-      .from(issueRelations)
-      .where(and(eq(issueRelations.issueId, recoveryIssueId), eq(issueRelations.relatedIssueId, sourceIssueId)));
-    expect(remainingRelations).toHaveLength(0);
+    expect(result.recoveredIssues).toBe(1);
   });
 
   it("does not unblock agent-assigned issues when released provider members have no issue id", async () => {
