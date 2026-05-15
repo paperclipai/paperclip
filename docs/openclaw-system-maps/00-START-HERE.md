@@ -1,6 +1,6 @@
 # 00-START-HERE
 
-> Human and agent front door for the HLT ecosystem documentation set.
+> Human and agent orientation index for the HLT ecosystem documentation set.
 
 ## What this doc set is for
 
@@ -15,7 +15,7 @@ Use this set to answer:
 - what to inspect first before making changes
 
 ## Read order
-1. `05-llms-ecosystem-master` or generated `llms.txt` for the cross-repo front door
+1. `05-llms-ecosystem-master` or generated `llms.txt` for the cross-repo orientation index
 2. `01-ecosystem-atlas-master`
 3. `02-content-media-publishing-atlas`
 4. `03-repo-runtime-ledger`

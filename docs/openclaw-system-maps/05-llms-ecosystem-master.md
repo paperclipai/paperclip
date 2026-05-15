@@ -1,6 +1,6 @@
 # HLT Ecosystem Index for Agents
 
-> Official cross-repo front door for AI agents working anywhere in the HLT ecosystem. Read this file first. It explains what repos exist, what they are for, where they live, what URLs they own, what core shapes and contracts matter, which systems are canonical, and how to navigate the ecosystem without acting like the current repo is the whole world.
+> Official cross-repo orientation index for AI agents working anywhere in the HLT ecosystem. Read this file first. It explains what repos exist, what they are for, where they live, what URLs they own, what core shapes and contracts matter, which systems are canonical, and how to navigate the ecosystem without acting like the current repo is the whole world.
 
 This file is intended to be copied or generated into every major repo as `llms.txt`.
 
@@ -50,7 +50,7 @@ Load these via MCP `get_entity` or `registry_artifact_body` before doing serious
 - `kb:registry-design-patterns` — how registry entities should be structured.
 - `kb:langfuse-tracing-hlt` — trace tag schema (includes mandatory `paperclip_run_id`).
 
-### Hubs (domain front doors — `traverse` to expand)
+### Hubs (graph context clusters — `traverse` to expand)
 - `hub:hub-research` — research lane (firecrawl, brave, tavily, perplexity, gpt-researcher).
 - `hub:hub-social` — 34 social channels + playbooks + schemas.
 - `hub:hub-email` — email marketing + Marketo.
@@ -144,7 +144,7 @@ That means the system should support workflows like:
 - agents should be encouraged to think critically, not mechanically
 - agents may use 50%, 80%, or 100% of a capability if that is the right fit
 - problems, drift, stale knowledge, and broken surfaces should be flagged rather than silently worked around
-- hubs and front doors are useful, but the system should not rely only on shallow hub navigation. Deep search, region finding, and graph traversal matter.
+- hubs and orientation indexes are useful, but the system should not rely only on shallow hub navigation. Deep search, region finding, and graph traversal matter.
 
 ### Business focus right now
 - test prep growth
@@ -269,7 +269,7 @@ Every working repo in the HLT ecosystem with a one-line identity + canonical pat
 
 ## Hub index (21 capability hubs)
 
-Hubs are domain front doors in the Katailyst registry. Each links to 20-30 skills + KBs + tools + playbooks for its domain. Use `traverse(ref: "hub:<code>", depth: 1)` after loading one to get the full toolkit.
+Hubs are graph context clusters in the Katailyst registry. Each links to 20-30 skills + KBs + tools + playbooks for its domain. Use `traverse(ref: "hub:<code>", depth: 1)` after loading one to get the full toolkit.
 
 - **[hub:hlt-brand-system-architecture]** — master map of the complete HLT brand system: Who/How/Products/Audiences/Templates/Channels/Bundles. Single reference for brand landscape + gaps.
 - **[hub:hub-analysis]** — decision-ready analysis + reporting: performance review, finance interpretation, content quality scoring, competitive comparison, synthesis of research into recommendations.
@@ -391,10 +391,10 @@ Every tool here resolves its credentials server-side via Katailyst vault (`auth_
 - `04-integration-schema-reference.md` — integration shapes. **Status: ⚠ needs audit.**
 - `05-llms-ecosystem-master.md` — THIS FILE. **Status: current.**
 - `_index.md`, `share-with-an-agent-v1.md`, `content-media-and-publishing-master-doc-v1.md`, `critical-paths-and-detail-levels-v1.md`, `katailyst-map-and-plan-correction-v1.md`, `system-map-master-doc-v1.md` — 6 top-level supporting docs, mixed freshness. **Status: ⚠ audit pending.**
-- `Core Maps/` — 26 working-copy detail maps (agents-and-runtime-fleet, content-factory-and-testing-strategy, contradictions-and-cleanup-cuts, drift-reports, front-doors, layer-map, repo-doc-hygiene-audit, taxonomy-map, etc.). **Status: ⚠ per-file audit pending; several flagged stale by operator.**
+- `Core Maps/` — 26 working-copy detail maps (agents-and-runtime-fleet, content-factory-and-testing-strategy, contradictions-and-cleanup-cuts, drift-reports, orientation-indexes, layer-map, repo-doc-hygiene-audit, taxonomy-map, etc.). **Status: ⚠ per-file audit pending; several flagged stale by operator.**
 - `Repo Maps/` — 10 per-repo maps (agent-hub, content-creator-studio, ecosystem-observatory, evidence-based-business, katailyst-engage, katailyst, masterypublishing, multimedia-mastery, sidecar-system, task-hub). **Status: mostly current; need cross-check against the 15-repo working set (Content-Creator-Studio is not in `~/hlt/*`; agent-hub = agent-canvas; etc.).**
 - `Historical/` — 2 legacy docs + Aliases subfolder. **Status: archive.**
-- `Archive/Old Core Maps/`, `Archive/Old Front Doors/` — fully archived. No updates needed.
+- `Archive/Old Core Maps/`, `Archive/Old Orientation Indexes/` — fully archived. No updates needed.
 - `Templates/` — template files for creating new maps.
 
 Per-file keep/merge/archive audit is a pending task; see the 2026-04-17/18 polish plan for the curation report.
