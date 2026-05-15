@@ -2833,13 +2833,31 @@ export function issueRoutes(
         : null,
       commentCursor,
       wakeComment: safeWakeComment,
-      attachments: attachments.map((a) => ({
-        id: a.id,
-        filename: a.originalFilename,
-        contentType: a.contentType,
-        byteSize: a.byteSize,
-        contentPath: withContentPath(a).contentPath,
-        createdAt: a.createdAt,
+      attachments: await Promise.all(attachments.map(async (a) => {
+        const isInlineable =
+          a.contentType === "text/plain" ||
+          a.contentType === "text/markdown" ||
+          a.contentType === "application/json" ||
+          a.contentType === "text/csv";
+        const isSmall = (a.byteSize ?? 0) <= 65_536;
+        let inlineContent: string | null = null;
+        if (isInlineable && isSmall) {
+          const obj = await storage.getObject(a.companyId, a.objectKey);
+          const chunks: Buffer[] = [];
+          for await (const chunk of obj.stream) {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+          }
+          inlineContent = Buffer.concat(chunks).toString("utf-8");
+        }
+        return {
+          id: a.id,
+          filename: a.originalFilename,
+          contentType: a.contentType,
+          byteSize: a.byteSize,
+          contentPath: withContentPath(a).contentPath,
+          createdAt: a.createdAt,
+          ...(inlineContent !== null ? { inlineContent } : {}),
+        };
       })),
       continuationSummary: safeContinuationSummary
         ? {

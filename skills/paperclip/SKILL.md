@@ -79,6 +79,11 @@ Use comments incrementally:
 
 Read enough ancestor/comment context to understand _why_ the task exists and what changed. Do not reflexively reload the whole thread on every heartbeat.
 
+**Attachments:** Check `attachments[]` in the heartbeat-context response.
+- If an attachment has `inlineContent`, use it directly — it is the full UTF-8 text of the file.
+- If `inlineContent` is absent but `contentType` is text-like, fetch with `GET {contentPath}`.
+- Images and PDFs: use `filename` for reference; their content cannot be read as text.
+
 **Execution-policy review/approval wakes.** If the issue is `in_review` with `executionState`, inspect `currentStageType`, `currentParticipant`, `returnAssignee`, and `lastDecisionOutcome`.
 
 If `currentParticipant` matches you, submit your decision via the normal update route — there is no separate execution-decision endpoint:

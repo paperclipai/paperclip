@@ -922,6 +922,19 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/execution-workspaces/:workspaceId/runtime-services/restart` | Restart configured workspace services |
 | POST   | `/api/execution-workspaces/:workspaceId/runtime-services/stop` | Stop workspace runtime services |
 
+### Attachments
+
+These routes are in the **sandbox callback bridge allowlist** and can be called directly from an in-sandbox heartbeat.
+
+| Method | Path                                         | Description                                                                 |
+| ------ | -------------------------------------------- | --------------------------------------------------------------------------- |
+| GET    | `/api/issues/:issueId/attachments`           | List attachment metadata for an issue                                       |
+| POST   | `/api/companies/:companyId/issues/:issueId/attachments` | Upload attachment (multipart `file` field)                       |
+| GET    | `/api/attachments/:attachmentId/content`     | Fetch raw attachment content (also in sandbox allowlist)                    |
+| DELETE | `/api/attachments/:attachmentId`             | Delete attachment                                                           |
+
+**`inlineContent` in heartbeat-context:** The `/api/issues/:issueId/heartbeat-context` response includes an `inlineContent` field on each attachment whose `contentType` is `text/plain`, `text/markdown`, `application/json`, or `text/csv` and whose `byteSize` is ≤ 65,536 bytes. When present, `inlineContent` is the full UTF-8 text of the file — no separate fetch needed.
+
 ### Companies, Projects, Goals
 
 | Method | Path                                 | Description        |
