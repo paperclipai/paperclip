@@ -1,6 +1,4 @@
-[project]
-ref_id = "tujyntcurpxvxgokcsaz"
-name = "AvvA App V2.0"
+project_id = "tujyntcurpxvxgokcsaz"
 
 [api]
 enabled = true
@@ -8,7 +6,7 @@ enabled = true
 [auth]
 enabled = true
 
-[edge_functions]
+[edge_runtime]
 enabled = true
 
 [analytics]

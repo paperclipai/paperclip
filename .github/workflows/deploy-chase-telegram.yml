@@ -34,7 +34,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.ref || 'master' }}
+          ref: ${{ github.event.inputs.ref }}
 
       - name: Setup Supabase CLI
         uses: supabase/setup-cli@v1
@@ -43,12 +43,8 @@ jobs:
 
       - name: Deploy chase-telegram function
         run: |
-          VERIFY_JWT_FLAG=""
-          if [ "${{ github.event.inputs.no-verify-jwt }}" = "true" ]; then
-            VERIFY_JWT_FLAG="--no-verify-jwt"
-          fi
           supabase functions deploy chase-telegram \
             --project-ref tujyntcurpxvxgokcsaz \
-            $VERIFY_JWT_FLAG
+            --no-verify-jwt
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
