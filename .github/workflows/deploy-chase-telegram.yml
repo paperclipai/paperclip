@@ -1,6 +1,11 @@
 name: Deploy Chase Telegram
 
 on:
+  push:
+    branches:
+      - master
+    paths:
+      - supabase/functions/chase-telegram/**
   workflow_dispatch:
     inputs:
       ref:
