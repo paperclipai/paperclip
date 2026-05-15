@@ -66,7 +66,9 @@ doc/.obsidian/
 docs/.obsidian/
 .mcp.json
 cookies.txt
-.codebuddy/
+# CodeBuddy：可提交项目默认 settings.json；本地覆盖与工作树目录不入库
+.codebuddy/settings.local.json
+.codebuddy/worktrees/
 .playwright-cli/
 .qwen/
 .qoder/

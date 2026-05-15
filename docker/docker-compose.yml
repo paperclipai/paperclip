@@ -1,3 +1,5 @@
+# 默认只启动 Postgres，供宿主机 `pnpm dev` 通过 DATABASE_URL 连接。
+# 需要「容器内跑完整回形针」时：`docker compose -f docker/docker-compose.yml --profile container-server up --build -d`
 services:
   db:
     image: postgres:17-alpine
@@ -16,6 +18,8 @@ services:
       - pgdata:/var/lib/postgresql/data
 
   server:
+    profiles:
+      - container-server
     build:
       context: ..
       dockerfile: Dockerfile
@@ -24,11 +28,13 @@ services:
     environment:
       DATABASE_URL: postgres://paperclip:paperclip@db:5432/paperclip
       PORT: "3100"
+      HOST: "0.0.0.0"
       SERVE_UI: "true"
-      PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
+      # Local-trusted board (no invite / Better Auth bootstrap). Do not expose publicly.
+      PAPERCLIP_DEPLOYMENT_MODE: "local_trusted"
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
+      PAPERCLIP_ALLOW_LOCAL_TRUSTED_LAN_BIND: "true"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
-      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
     volumes:
       - paperclip-data:/paperclip
     depends_on:
