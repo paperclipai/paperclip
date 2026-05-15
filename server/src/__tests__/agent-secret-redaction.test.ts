@@ -1,7 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { agentRoutes } from "../routes/agents.js";
+import { agentRoutes, stripRedactedEnvBindingsFromAdapterConfig } from "../routes/agents.js";
 import { errorHandler } from "../middleware/index.js";
 
 const agentId = "11111111-1111-4111-8111-111111111111";
@@ -290,5 +290,100 @@ describe("agent secret redaction in API responses", () => {
 
     expect(res.status).toBe(200);
     expect(res.body[0].adapterConfig).toEqual({ cwd: "/workspace" });
+  });
+});
+
+describe("stripRedactedEnvBindingsFromAdapterConfig — round-trip guard", () => {
+  // BLO-5xxx (2026-05-15): redactAgentSecrets() replaces every
+  // adapter_config.env value with "***" on GET responses. A naive UI/operator
+  // round-trip (read agent, edit, save) would persist the sentinel as the
+  // real value. That broke Staff Engineer's opencode_k8s pods — PATH was
+  // saved as "***", every spawn died with
+  //   `exec: "sh": executable file not found in $PATH`.
+  // The PATCH/POST routes pre-process the incoming adapterConfig through this
+  // helper, so a redacted view saved unchanged is effectively a no-op for
+  // those keys.
+
+  it("preserves the existing binding when the incoming value is the redacted sentinel string", () => {
+    const incoming = {
+      cwd: "/workspace",
+      env: {
+        OPENAI_API_KEY: "***",
+        ANTHROPIC_API_KEY: "***",
+        DATABASE_URL: "sk-newvalue-789",
+      },
+    };
+    const existing = {
+      env: {
+        OPENAI_API_KEY: "sk-secret-key-12345",
+        ANTHROPIC_API_KEY: "sk-ant-secret-67890",
+        DATABASE_URL: "postgres://user:pass@host/db",
+      },
+    };
+    const result = stripRedactedEnvBindingsFromAdapterConfig(incoming, existing);
+    expect(result).toEqual({
+      cwd: "/workspace",
+      env: {
+        OPENAI_API_KEY: "sk-secret-key-12345",
+        ANTHROPIC_API_KEY: "sk-ant-secret-67890",
+        DATABASE_URL: "sk-newvalue-789",
+      },
+    });
+  });
+
+  it("preserves the existing binding for the canonical sentinel object form {type:'plain', value:'***'}", () => {
+    // envBindingSchema also accepts the canonical shape; both must be guarded.
+    // This is the exact shape we found persisted in the live DB.
+    const incoming = {
+      env: {
+        OPENAI_API_KEY: { type: "plain", value: "***" },
+        DATABASE_URL: { type: "plain", value: "sk-newvalue-789" },
+      },
+    };
+    const existing = {
+      env: {
+        OPENAI_API_KEY: "sk-secret-key-12345",
+      },
+    };
+    const result = stripRedactedEnvBindingsFromAdapterConfig(incoming, existing);
+    expect(result.env).toEqual({
+      OPENAI_API_KEY: "sk-secret-key-12345",
+      DATABASE_URL: { type: "plain", value: "sk-newvalue-789" },
+    });
+  });
+
+  it("drops the env entry when the sentinel comes in for a key with no prior binding (create flow)", () => {
+    const incoming = {
+      env: {
+        OPENAI_API_KEY: "***",
+        DATABASE_URL: "sk-real-value",
+      },
+    };
+    const result = stripRedactedEnvBindingsFromAdapterConfig(incoming, null);
+    expect(result.env).toEqual({ DATABASE_URL: "sk-real-value" });
+  });
+
+  it("only treats the exact sentinel as the sentinel — '***value' is a real value", () => {
+    const incoming = { env: { OPENAI_API_KEY: "***actual_pseudo_redacted_prefix" } };
+    const result = stripRedactedEnvBindingsFromAdapterConfig(incoming, null);
+    expect(result.env).toEqual({ OPENAI_API_KEY: "***actual_pseudo_redacted_prefix" });
+  });
+
+  it("passes through configs that have no env field unchanged", () => {
+    const incoming = { cwd: "/workspace", timeoutSec: 30 };
+    const result = stripRedactedEnvBindingsFromAdapterConfig(incoming, null);
+    expect(result).toBe(incoming);
+  });
+
+  it("preserves secret_ref bindings (only plain '***' is the sentinel)", () => {
+    const incoming = {
+      env: {
+        OPENAI_API_KEY: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111" },
+      },
+    };
+    const result = stripRedactedEnvBindingsFromAdapterConfig(incoming, null);
+    expect(result.env).toEqual({
+      OPENAI_API_KEY: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111" },
+    });
   });
 });
