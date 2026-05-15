@@ -43,6 +43,9 @@ const mockAgentService = vi.hoisted(() => ({
   list: vi.fn(),
   create: vi.fn(),
   activatePendingApproval: vi.fn(),
+  pause: vi.fn(),
+  resume: vi.fn(),
+  terminate: vi.fn(),
   update: vi.fn(),
   updatePermissions: vi.fn(),
   getChainOfCommand: vi.fn(),
@@ -72,6 +75,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   resetRuntimeSession: vi.fn(),
   getRun: vi.fn(),
   cancelRun: vi.fn(),
+  cancelActiveForAgent: vi.fn(),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({
@@ -297,6 +301,9 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.list.mockReset();
     mockAgentService.create.mockReset();
     mockAgentService.activatePendingApproval.mockReset();
+    mockAgentService.pause.mockReset();
+    mockAgentService.resume.mockReset();
+    mockAgentService.terminate.mockReset();
     mockAgentService.update.mockReset();
     mockAgentService.updatePermissions.mockReset();
     mockAgentService.getChainOfCommand.mockReset();
@@ -314,6 +321,7 @@ describe.sequential("agent permission routes", () => {
     mockHeartbeatService.resetRuntimeSession.mockReset();
     mockHeartbeatService.getRun.mockReset();
     mockHeartbeatService.cancelRun.mockReset();
+    mockHeartbeatService.cancelActiveForAgent.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
     mockIssueService.list.mockReset();
     mockSecretService.normalizeAdapterConfigForPersistence.mockReset();
@@ -339,6 +347,9 @@ describe.sequential("agent permission routes", () => {
       agent: baseAgent,
       activated: false,
     });
+    mockAgentService.pause.mockResolvedValue(baseAgent);
+    mockAgentService.resume.mockResolvedValue(baseAgent);
+    mockAgentService.terminate.mockResolvedValue(baseAgent);
     mockAgentService.update.mockResolvedValue(baseAgent);
     mockAgentService.updatePermissions.mockResolvedValue(baseAgent);
     mockAccessService.canUser.mockResolvedValue(true);
@@ -359,6 +370,7 @@ describe.sequential("agent permission routes", () => {
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(async (_companyId, requested) => requested);
     mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
+    mockHeartbeatService.cancelActiveForAgent.mockResolvedValue(undefined);
     mockAgentInstructionsService.materializeManagedBundle.mockImplementation(
       async (agent: Record<string, unknown>, files: Record<string, string>) => ({
         bundle: null,
@@ -501,6 +513,62 @@ describe.sequential("agent permission routes", () => {
     expect(res.body[0].adapterConfig.env.SAFE_LABEL).toBe("visible");
     expect(res.body[0].runtimeConfig.env.GITHUB_TOKEN).toBe("***REDACTED***");
     expect(res.body[0].runtimeConfig.env.SAFE_LABEL).toBe("runtime-visible");
+  });
+
+  it.each([
+    { route: "pause", serviceMethod: "pause" },
+    { route: "resume", serviceMethod: "resume" },
+    { route: "terminate", serviceMethod: "terminate" },
+    { route: "approve", serviceMethod: "activatePendingApproval" },
+  ] as const)("redacts secret-like config values on privileged agent $route responses", async ({ route, serviceMethod }) => {
+    const agentWithSecrets = {
+      ...baseAgent,
+      status: route === "approve" ? "idle" : baseAgent.status,
+      adapterConfig: {
+        env: {
+          GH_TOKEN: `ghp_should-not-leak-agent-${route}`,
+          SAFE_LABEL: "visible",
+        },
+      },
+      runtimeConfig: {
+        env: {
+          GITHUB_TOKEN: `github-token-should-not-leak-agent-${route}`,
+          SAFE_LABEL: "runtime-visible",
+        },
+      },
+    };
+
+    if (route === "approve") {
+      mockAgentService.getById.mockResolvedValue({
+        ...agentWithSecrets,
+        status: "pending_approval",
+      });
+      mockAgentService.activatePendingApproval.mockResolvedValue({
+        agent: agentWithSecrets,
+        activated: true,
+      });
+    } else {
+      mockAgentService[serviceMethod].mockResolvedValue(agentWithSecrets);
+    }
+
+    const app = await createApp({
+      type: "board",
+      userId: "admin-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/${route}`)
+      .send({}));
+
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(res.body)).not.toContain("should-not-leak");
+    expect(res.body.adapterConfig.env.GH_TOKEN).toBe("***REDACTED***");
+    expect(res.body.adapterConfig.env.SAFE_LABEL).toBe("visible");
+    expect(res.body.runtimeConfig.env.GITHUB_TOKEN).toBe("***REDACTED***");
+    expect(res.body.runtimeConfig.env.SAFE_LABEL).toBe("runtime-visible");
   });
 
   it("blocks agent updates for authenticated company members without agent admin permission", async () => {

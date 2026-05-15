@@ -2732,7 +2732,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentReadableConfig(agent));
   });
 
   router.post("/agents/:id/resume", async (req, res) => {
@@ -2756,7 +2756,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentReadableConfig(agent));
   });
 
   router.post("/agents/:id/approve", async (req, res) => {
@@ -2791,7 +2791,7 @@ export function agentRoutes(
       details: { source: "agent_detail" },
     });
 
-    res.json(agent);
+    res.json(redactAgentReadableConfig(agent));
   });
 
   router.post("/agents/:id/terminate", async (req, res) => {
@@ -2817,7 +2817,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentReadableConfig(agent));
   });
 
   router.delete("/agents/:id", async (req, res) => {
