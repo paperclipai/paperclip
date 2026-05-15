@@ -980,7 +980,7 @@ async function canonicalUnblockTuplesByIssueId(
         inArray(issueThreadInteractions.issueId, uniqueIssueIds),
       ),
     )
-    .orderBy(desc(issueThreadInteractions.createdAt), desc(issueThreadInteractions.id));
+    .orderBy(asc(issueThreadInteractions.createdAt), asc(issueThreadInteractions.id));
 
   const grouped = new Map<string, typeof rows>();
   for (const row of rows) {

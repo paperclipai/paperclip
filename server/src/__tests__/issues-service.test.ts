@@ -2239,6 +2239,85 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ]);
   });
 
+  it("surfaces the oldest pending request_confirmation as canonical when legacy duplicates exist", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const blockedId = randomUUID();
+    const blockerId = randomUUID();
+    const firstInteractionId = randomUUID();
+    const secondInteractionId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        identifier: "PAP-21",
+        title: "Approval blocker",
+        status: "in_review",
+        priority: "high",
+        assigneeUserId: "local-board",
+      },
+      {
+        id: blockedId,
+        companyId,
+        identifier: "PAP-22",
+        title: "Blocked issue",
+        status: "blocked",
+        priority: "medium",
+      },
+    ]);
+    await svc.update(blockedId, { blockedByIssueIds: [blockerId] });
+    await db.insert(issueThreadInteractions).values([
+      {
+        id: firstInteractionId,
+        companyId,
+        issueId: blockerId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Approve this first plan?",
+        },
+        createdByUserId: "local-board",
+        createdAt: new Date("2026-05-15T11:00:00.000Z"),
+        updatedAt: new Date("2026-05-15T11:00:00.000Z"),
+      },
+      {
+        id: secondInteractionId,
+        companyId,
+        issueId: blockerId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Approve this second plan?",
+        },
+        createdByUserId: "local-board",
+        createdAt: new Date("2026-05-15T11:05:00.000Z"),
+        updatedAt: new Date("2026-05-15T11:05:00.000Z"),
+      },
+    ]);
+
+    const relations = await svc.getRelationSummaries(blockedId);
+
+    expect(relations.blockedBy).toEqual([
+      expect.objectContaining({
+        id: blockerId,
+        canonicalUnblockTuple: expect.objectContaining({
+          interactionId: firstInteractionId,
+          pendingInteractionCount: 2,
+        }),
+      }),
+    ]);
+  });
+
   it("rejects blocking cycles", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({

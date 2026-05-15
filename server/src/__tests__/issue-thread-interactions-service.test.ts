@@ -770,6 +770,85 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
+  it("reports the oldest pending request_confirmation as canonical when legacy duplicates already exist", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const firstId = randomUUID();
+    const secondId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Confirm a request",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_review",
+      priority: "medium",
+      assigneeUserId: "local-board",
+    });
+    await db.insert(issueThreadInteractions).values([
+      {
+        id: firstId,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        payload: { version: 1, prompt: "Approve revision one?" },
+        createdByUserId: "local-board",
+        createdAt: new Date("2026-05-15T11:00:00.000Z"),
+        updatedAt: new Date("2026-05-15T11:00:00.000Z"),
+      },
+      {
+        id: secondId,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        payload: { version: 1, prompt: "Approve revision two?" },
+        createdByUserId: "local-board",
+        createdAt: new Date("2026-05-15T11:05:00.000Z"),
+        updatedAt: new Date("2026-05-15T11:05:00.000Z"),
+      },
+    ]);
+
+    await expect(interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Approve revision three?",
+      },
+    }, {
+      userId: "local-board",
+    })).rejects.toMatchObject({
+      status: 409,
+      details: expect.objectContaining({
+        issueId,
+        interactionId: firstId,
+        pendingInteractionCount: 2,
+      }),
+    });
+  });
+
   it("returns agent-authored request confirmations to the creating agent when a board user accepts", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
