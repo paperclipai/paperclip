@@ -2996,9 +2996,27 @@ export function issueRoutes(
       nextAssigneeUserId === existing.createdByUserId;
 
     if (assigneeWillChange && !transition.workflowControlledAssignment) {
-      if (!isAgentReturningIssueToCreator) {
+      const isAgentReleasingForInReview =
+        req.actor.type === "agent" &&
+        !!req.actor.agentId &&
+        existing.assigneeAgentId === req.actor.agentId &&
+        updateFields.status === "in_review";
+      if (!isAgentReturningIssueToCreator && !isAgentReleasingForInReview) {
         await assertCanAssignTasks(req, existing.companyId);
       }
+    }
+
+    if (
+      updateFields.status === "in_review" &&
+      req.actor.type === "agent" &&
+      req.actor.agentId &&
+      nextAssigneeAgentId === req.actor.agentId
+    ) {
+      res.status(422).json({
+        error:
+          "Cannot transition to in_review while remaining the assignee. Set assigneeAgentId to a reviewer before moving to in_review.",
+      });
+      return;
     }
 
     let issue;

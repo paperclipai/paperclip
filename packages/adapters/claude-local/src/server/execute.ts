@@ -656,8 +656,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const taskContextNote = asString(context.paperclipTaskMarkdown, "").trim();
+  const hindsightMemoriesNote = asString(context.paperclipHindsightMemories, "").trim();
   const prompt = joinPromptSections([
     renderedBootstrapPrompt,
+    hindsightMemoriesNote ? `## Relevant Memories from Previous Runs\n\n${hindsightMemoriesNote}` : "",
     wakePrompt,
     sessionHandoffNote,
     taskContextNote,
