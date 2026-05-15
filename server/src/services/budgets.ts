@@ -290,6 +290,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         status: "active",
         pauseReason: null,
         pausedAt: null,
+        resumedAt: now,
         updatedAt: now,
       })
       .where(and(eq(companies.id, policy.scopeId), eq(companies.pauseReason, "budget")));

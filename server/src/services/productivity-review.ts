@@ -19,6 +19,8 @@ import {
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { RECOVERY_ORIGIN_KINDS } from "./recovery/origins.js";
+import { isCompanyWatchdogPaused } from "./recovery/pause-aware-guard.js";
+import { isWatchdogFamilyDescendant, WATCHDOG_FAMILY_ORIGIN_KINDS } from "./recovery/watchdog-family.js";
 
 export const PRODUCTIVITY_REVIEW_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.issueProductivityReview;
 export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 10;
@@ -30,6 +32,9 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS = 3;
 export const DEFAULT_PRODUCTIVITY_REVIEW_CREATION_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 3;
+export const DEFAULT_WATCHDOG_PER_AGENT_24H_CAP = 5;
+const WATCHDOG_CAP_WINDOW_MS = 24 * 60 * 60 * 1000;
+const WATCHDOG_ROLLUP_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.watchdogRollup;
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -94,6 +99,15 @@ type EnqueueWakeup = (
 
 function productivityReviewFingerprint(sourceIssueId: string) {
   return `productivity-review:${sourceIssueId}`;
+}
+
+function watchdogPerAgent24hCap() {
+  const raw = Number(process.env.WATCHDOG_PER_AGENT_24H_CAP ?? DEFAULT_WATCHDOG_PER_AGENT_24H_CAP);
+  return Math.max(1, Math.floor(Number.isFinite(raw) ? raw : DEFAULT_WATCHDOG_PER_AGENT_24H_CAP));
+}
+
+function watchdogRollupOriginId(agentId: string | null, familyKey: string) {
+  return `watchdog_rollup:${agentId ?? "unassigned"}:${familyKey}`;
 }
 
 function issueRunScopeSql(issueId: string) {
@@ -239,6 +253,81 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       depth += 1;
     }
     return false;
+  }
+
+  async function findOpenWatchdogRollup(companyId: string, originId: string) {
+    return db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, companyId),
+        eq(issues.originKind, WATCHDOG_ROLLUP_ORIGIN_KIND),
+        eq(issues.originId, originId),
+        isNull(issues.hiddenAt),
+        notInArray(issues.status, ["done", "cancelled"]),
+      ))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function ensureWatchdogRollup(input: {
+    sourceIssue: IssueRow;
+    ownerAgentId: string | null;
+    prefix: string;
+    generatedAt: Date;
+  }) {
+    const originId = watchdogRollupOriginId(input.ownerAgentId, input.sourceIssue.id);
+    const existing = await findOpenWatchdogRollup(input.sourceIssue.companyId, originId);
+    if (existing) return existing;
+    return issuesSvc.create(input.sourceIssue.companyId, {
+      title: "Review watchdog cascade brake",
+      description: [
+        "Paperclip suppressed additional productivity-review watchdog creation because this owner/family exceeded the 24h cascade cap.",
+        "",
+        `- Source family root: ${issueUiLink(input.sourceIssue, input.prefix)}`,
+        `- Trigger origin: \`${PRODUCTIVITY_REVIEW_ORIGIN_KIND}\``,
+        `- Owner agent: \`${input.ownerAgentId ?? "unassigned"}\``,
+        `- Cap: ${watchdogPerAgent24hCap()} watchdog issues in 24h`,
+        `- Generated at: ${input.generatedAt.toISOString()}`,
+        "",
+        "Inspect the family and resolve the underlying stuck recovery loop before closing this rollup.",
+      ].join("\n"),
+      status: "todo",
+      priority: "high",
+      parentId: input.sourceIssue.id,
+      projectId: input.sourceIssue.projectId,
+      goalId: input.sourceIssue.goalId,
+      billingCode: input.sourceIssue.billingCode,
+      assigneeAgentId: input.ownerAgentId,
+      assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides(),
+      originKind: WATCHDOG_ROLLUP_ORIGIN_KIND,
+      originId,
+      originFingerprint: originId,
+      requestDepth: clampIssueRequestDepth(input.sourceIssue.requestDepth + 1),
+    });
+  }
+
+  async function shouldBrakeWatchdogCascade(input: {
+    sourceIssue: IssueRow;
+    ownerAgentId: string | null;
+    prefix: string;
+    generatedAt: Date;
+  }) {
+    if (!input.ownerAgentId) return false;
+    const cutoff = new Date(input.generatedAt.getTime() - WATCHDOG_CAP_WINDOW_MS);
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, input.sourceIssue.companyId),
+        eq(issues.assigneeAgentId, input.ownerAgentId),
+        inArray(issues.originKind, [...WATCHDOG_FAMILY_ORIGIN_KINDS]),
+        isNull(issues.hiddenAt),
+        sql`${issues.createdAt} >= ${cutoff.toISOString()}::timestamptz`,
+        notInArray(issues.status, ["done", "cancelled"]),
+      ));
+    if (Number(row?.count ?? 0) < watchdogPerAgent24hCap()) return false;
+    await ensureWatchdogRollup(input);
+    return true;
   }
 
   async function findOpenProductivityReview(companyId: string, sourceIssueId: string) {
@@ -679,6 +768,14 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     }
 
     const ownerAgentId = await resolveReviewOwnerAgentId(evidence.sourceIssue, evidence.sourceAgent);
+    if (await shouldBrakeWatchdogCascade({
+      sourceIssue: evidence.sourceIssue,
+      ownerAgentId,
+      prefix: opts.prefix,
+      generatedAt: evidence.generatedAt,
+    })) {
+      return { kind: "creation_capped" as const, reviewIssueId: null };
+    }
     let review: Awaited<ReturnType<typeof issuesSvc.create>>;
     try {
       review = await issuesSvc.create(evidence.sourceIssue.companyId, {
@@ -796,11 +893,15 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
 
     const prefixCache = new Map<string, string>();
     for (const candidate of candidates) {
+      if (await isCompanyWatchdogPaused(db, candidate.companyId, now)) {
+        result.skipped += 1;
+        continue;
+      }
       if (!candidate.assigneeAgentId) {
         result.skipped += 1;
         continue;
       }
-      if (await isProductivityReviewDescendant(candidate)) {
+      if (await isProductivityReviewDescendant(candidate) || await isWatchdogFamilyDescendant(db, candidate)) {
         result.skipped += 1;
         continue;
       }

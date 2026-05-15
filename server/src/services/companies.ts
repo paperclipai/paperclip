@@ -41,6 +41,9 @@ export function companyService(db: Db) {
     name: companies.name,
     description: companies.description,
     status: companies.status,
+    pauseReason: companies.pauseReason,
+    pausedAt: companies.pausedAt,
+    resumedAt: companies.resumedAt,
     issuePrefix: companies.issuePrefix,
     issueCounter: companies.issueCounter,
     budgetMonthlyCents: companies.budgetMonthlyCents,
@@ -194,6 +197,14 @@ export function companyService(db: Db) {
         if (!existing) return null;
 
         const { logoAssetId, ...companyPatch } = data;
+        const nextCompanyPatch = { ...companyPatch };
+        if (
+          nextCompanyPatch.status === "active" &&
+          (existing.status === "paused" || existing.pausedAt) &&
+          nextCompanyPatch.pausedAt === null
+        ) {
+          nextCompanyPatch.resumedAt = new Date();
+        }
 
         if (logoAssetId !== undefined && logoAssetId !== null) {
           const nextLogoAsset = await tx
@@ -209,7 +220,7 @@ export function companyService(db: Db) {
 
         const updated = await tx
           .update(companies)
-          .set({ ...companyPatch, updatedAt: new Date() })
+          .set({ ...nextCompanyPatch, updatedAt: new Date() })
           .where(eq(companies.id, id))
           .returning()
           .then((rows) => rows[0] ?? null);
