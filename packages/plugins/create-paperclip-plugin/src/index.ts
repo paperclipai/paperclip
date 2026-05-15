@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -707,7 +706,7 @@ function parseArg(name: string): string | undefined {
 }
 
 /** CLI wrapper for `scaffoldPluginProject`. */
-function runCli() {
+export function runCli() {
   const pluginName = process.argv[2];
   if (!pluginName) {
     // eslint-disable-next-line no-console
@@ -732,8 +731,4 @@ function runCli() {
 
   // eslint-disable-next-line no-console
   console.log(`Created plugin scaffold at ${out}`);
-}
-
-if (import.meta.url === `file://${process.argv[1]}`) {
-  runCli();
 }

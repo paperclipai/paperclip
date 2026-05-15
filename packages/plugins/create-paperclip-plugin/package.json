@@ -13,7 +13,7 @@
   },
   "type": "module",
   "bin": {
-    "create-paperclip-plugin": "./dist/index.js"
+    "create-paperclip-plugin": "./dist/cli.js"
   },
   "exports": {
     ".": "./src/index.ts"
@@ -21,7 +21,7 @@
   "publishConfig": {
     "access": "public",
     "bin": {
-      "create-paperclip-plugin": "./dist/index.js"
+      "create-paperclip-plugin": "./dist/cli.js"
     },
     "exports": {
       ".": {
