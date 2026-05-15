@@ -85,6 +85,7 @@
   "issue": {
     "title": "Issues",
     "detail": "Issue Detail",
+    "newIssue": "New Issue",
     "properties": "Properties",
     "assignee": "Assignee",
     "priority": "Priority",

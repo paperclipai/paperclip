@@ -85,6 +85,7 @@
   "issue": {
     "title": "이슈",
     "detail": "이슈 상세",
+    "newIssue": "새 이슈",
     "properties": "속성",
     "assignee": "담당자",
     "priority": "우선순위",

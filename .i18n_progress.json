@@ -1,16 +1,11 @@
 {
-  "current_file_idx": 0,
-  "completed_files": [],
+  "current_file_idx": 1,
+  "completed_files": [1],
   "failed_files": [],
   "current_retry": 0,
   "max_retries": 2,
-  "status": "ci_check",
+  "status": "idle",
   "started_at": "2026-05-16T06:37:09",
   "phase3_complete": false,
-  "current_file": {
-    "id": 1,
-    "path": "ui/src/pages/Dashboard.tsx",
-    "strings": 14,
-    "tier": 1
-  }
+  "current_file": null
 }
