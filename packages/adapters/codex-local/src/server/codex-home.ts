@@ -74,6 +74,26 @@ async function ensureCopiedFile(target: string, source: string): Promise<void> {
   await fs.copyFile(source, target);
 }
 
+async function isApiKeyAuthJsonFile(target: string): Promise<boolean> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(target, "utf8");
+  } catch {
+    return false;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return false;
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+  const record = parsed as Record<string, unknown>;
+  return typeof record.OPENAI_API_KEY === "string" && record.OPENAI_API_KEY.trim().length > 0;
+}
+
 /**
  * Writes an `auth.json` containing only `OPENAI_API_KEY` so the codex CLI can
  * authenticate via API key. Overwrites any existing file or symlink at that
@@ -101,14 +121,14 @@ export async function prepareManagedCodexHome(
 
   await fs.mkdir(targetHome, { recursive: true });
 
-  // If a previous run wrote an apikey-mode auth.json (regular file) and this
+  // If a previous run wrote an api-key-mode auth.json (regular file) and this
   // run has no apiKey, remove it so the chatgpt-mode symlink can be restored.
-  // Without this cleanup, ensureSymlink bails on a non-symlink and Codex keeps
-  // authenticating with the stale key after it is removed from configuration.
+  // Preserve regular OAuth auth files written by `codex login --device-auth`;
+  // those are the recovery path for a stale shared refresh token.
   if (!apiKey && seedFromShared) {
     const authPath = path.join(targetHome, "auth.json");
     const existing = await fs.lstat(authPath).catch(() => null);
-    if (existing && !existing.isSymbolicLink()) {
+    if (existing && !existing.isSymbolicLink() && (await isApiKeyAuthJsonFile(authPath))) {
       await fs.rm(authPath, { force: true });
     }
   }
