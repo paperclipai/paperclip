@@ -103,6 +103,54 @@ import { recoveryService } from "../services/recovery/service.js";
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
 
+// Sentinel substituted into adapter_config.env values by redactAgentSecrets()
+// on the GET response. A naive UI/operator round-trip (read agent, edit, save)
+// posts the sentinel back as the literal env value; without a guard it lands
+// in the DB and breaks runs (BLO-5xxx: PATH=*** in opencode_k8s pods made
+// runc fail to find sh and every Staff Engineer run died as StartError).
+// Keep this in lockstep with the redactor.
+export const REDACTED_ENV_SENTINEL = "***";
+
+export function isRedactedEnvBinding(binding: unknown): boolean {
+  if (typeof binding === "string") return binding === REDACTED_ENV_SENTINEL;
+  if (binding && typeof binding === "object") {
+    const b = binding as { type?: unknown; value?: unknown };
+    return b.type === "plain" && b.value === REDACTED_ENV_SENTINEL;
+  }
+  return false;
+}
+
+export function stripRedactedEnvBindingsFromAdapterConfig(
+  incomingAdapterConfig: Record<string, unknown>,
+  existingAdapterConfig: Record<string, unknown> | null,
+): Record<string, unknown> {
+  const incomingEnv = incomingAdapterConfig.env;
+  if (!incomingEnv || typeof incomingEnv !== "object" || Array.isArray(incomingEnv)) {
+    return incomingAdapterConfig;
+  }
+  const existingEnv =
+    existingAdapterConfig
+    && typeof existingAdapterConfig.env === "object"
+    && existingAdapterConfig.env !== null
+    && !Array.isArray(existingAdapterConfig.env)
+      ? (existingAdapterConfig.env as Record<string, unknown>)
+      : {};
+  const cleaned: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(incomingEnv as Record<string, unknown>)) {
+    if (isRedactedEnvBinding(value)) {
+      // UI round-trip: the GET response masks env values to the sentinel,
+      // and a naive save sends them back. Preserve the prior binding if we
+      // have one; drop the key entirely otherwise.
+      if (Object.prototype.hasOwnProperty.call(existingEnv, key)) {
+        cleaned[key] = existingEnv[key];
+      }
+    } else {
+      cleaned[key] = value;
+    }
+  }
+  return { ...incomingAdapterConfig, env: cleaned };
+}
+
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
   if (!Number.isFinite(parsed)) return RUN_LOG_DEFAULT_LIMIT_BYTES;
@@ -1287,7 +1335,7 @@ export function agentRoutes(
       if (env) {
         const redactedEnv: Record<string, string> = {};
         for (const key of Object.keys(env)) {
-          redactedEnv[key] = "***";
+          redactedEnv[key] = REDACTED_ENV_SENTINEL;
         }
         result.adapterConfig = { ...config, env: redactedEnv } as T["adapterConfig"];
       }
@@ -1298,6 +1346,7 @@ export function agentRoutes(
     }
     return result;
   }
+
 
   function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
@@ -1985,7 +2034,10 @@ export function agentRoutes(
       ...hireInput
     } = req.body;
     hireInput.adapterType = assertKnownAdapterType(hireInput.adapterType);
-    const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
+    const rawHireAdapterConfig = stripRedactedEnvBindingsFromAdapterConfig(
+      (hireInput.adapterConfig ?? {}) as Record<string, unknown>,
+      null,
+    );
     assertNoNewAgentLegacyPromptTemplate(
       hireInput.adapterType,
       rawHireAdapterConfig,
@@ -2171,7 +2223,10 @@ export function agentRoutes(
       ...createInput
     } = req.body;
     createInput.adapterType = assertKnownAdapterType(createInput.adapterType);
-    const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
+    const rawCreateAdapterConfig = stripRedactedEnvBindingsFromAdapterConfig(
+      (createInput.adapterConfig ?? {}) as Record<string, unknown>,
+      null,
+    );
     assertNoNewAgentLegacyPromptTemplate(
       createInput.adapterType,
       rawCreateAdapterConfig,
@@ -2619,8 +2674,11 @@ export function agentRoutes(
       const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
       const changingAdapterType =
         typeof patchData.adapterType === "string" && patchData.adapterType !== existing.adapterType;
-      const requestedAdapterConfig = hasOwn(patchData, "adapterConfig")
+      const rawRequestedAdapterConfig = hasOwn(patchData, "adapterConfig")
         ? (asRecord(patchData.adapterConfig) ?? {})
+        : null;
+      const requestedAdapterConfig = rawRequestedAdapterConfig
+        ? stripRedactedEnvBindingsFromAdapterConfig(rawRequestedAdapterConfig, existingAdapterConfig)
         : null;
       if (
         requestedAdapterConfig
