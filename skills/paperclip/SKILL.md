@@ -84,6 +84,10 @@ Read enough ancestor/comment context to understand _why_ the task exists and wha
 - If `inlineContent` is absent but `contentType` is text-like (e.g. file exceeds the inline limit), fetch the full text with `GET {contentPath}` — this route is in the sandbox bridge allowlist.
 - Images and PDFs: `contentPath` exists but the content is binary; reference the file by `filename` and note it is attached.
 
+**Documents:** `documents[]` also appears in the heartbeat-context API response. These are user-created issue documents (markdown/text files the user uploaded or typed directly). Each entry has `key`, `title`, `format`, `body` (included inline when ≤ 64 KB), `latestRevisionId`, and `updatedAt`. The system `continuation-summary` document is excluded — it is already surfaced as `continuationSummary`.
+- Always check `documents[]` alongside `attachments[]` — users uploading `.txt` or `.md` files via the issue dialog will have their content appear here as documents, not as attachments.
+- If `body` is present, use it directly. If `body` is null (document exceeds the inline limit), fetch with `GET /api/issues/{id}/documents/{key}`.
+
 **Execution-policy review/approval wakes.** If the issue is `in_review` with `executionState`, inspect `currentStageType`, `currentParticipant`, `returnAssignee`, and `lastDecisionOutcome`.
 
 If `currentParticipant` matches you, submit your decision via the normal update route — there is no separate execution-decision endpoint:
