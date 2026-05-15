@@ -74,7 +74,7 @@ export function Goals() {
           {confirmDeleteGoal && (
             <div className="flex items-center gap-2 pt-2 border-t border-border">
               <span className="text-xs text-destructive flex-1">
-                „{confirmDeleteGoal.title}" und alle Subgoals löschen?
+                Delete "{confirmDeleteGoal.title}" and all sub-goals?
               </span>
               <Button
                 variant="ghost"
@@ -82,7 +82,7 @@ export function Goals() {
                 onClick={() => setConfirmDeleteGoal(null)}
                 disabled={deleteGoal.isPending}
               >
-                Abbrechen
+                Cancel
               </Button>
               <Button
                 variant="destructive"
@@ -90,7 +90,7 @@ export function Goals() {
                 onClick={() => deleteGoal.mutate(confirmDeleteGoal.id)}
                 disabled={deleteGoal.isPending}
               >
-                {deleteGoal.isPending ? "Wird gelöscht…" : "Löschen"}
+                {deleteGoal.isPending ? "Deleting..." : "Delete"}
               </Button>
             </div>
           )}

@@ -176,7 +176,7 @@ export function GoalDetail() {
               <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                 {childGoals.length > 0 && (
                   <span className="text-xs text-destructive">
-                    {childGoals.length} Subgoal{childGoals.length !== 1 ? "s" : ""} werden ebenfalls gelöscht.
+                    {childGoals.length} sub-goal{childGoals.length !== 1 ? "s" : ""} will also be deleted.
                   </span>
                 )}
                 <Button
@@ -185,7 +185,7 @@ export function GoalDetail() {
                   onClick={() => setConfirmDelete(false)}
                   disabled={deleteGoal.isPending}
                 >
-                  Abbrechen
+                  Cancel
                 </Button>
                 <Button
                   variant="destructive"
@@ -193,7 +193,7 @@ export function GoalDetail() {
                   onClick={() => deleteGoal.mutate()}
                   disabled={deleteGoal.isPending}
                 >
-                  {deleteGoal.isPending ? "Wird gelöscht…" : "Löschen"}
+                  {deleteGoal.isPending ? "Deleting..." : "Delete"}
                 </Button>
               </div>
             ) : (
@@ -202,7 +202,7 @@ export function GoalDetail() {
                 size="icon-xs"
                 className="hover:text-destructive"
                 onClick={() => setConfirmDelete(true)}
-                title="Goal löschen"
+                title="Delete goal"
               >
                 <Trash2 className="h-4 w-4" />
               </Button>
@@ -268,7 +268,7 @@ export function GoalDetail() {
               {confirmDeleteSubgoalId && (
                 <div className="flex items-center gap-2 pt-1">
                   <span className="text-xs text-destructive flex-1">
-                    Subgoal und alle seine Subgoals werden unwiderruflich gelöscht.
+                    This sub-goal and all of its sub-goals will be permanently deleted.
                   </span>
                   <Button
                     variant="ghost"
@@ -276,7 +276,7 @@ export function GoalDetail() {
                     onClick={() => setConfirmDeleteSubgoalId(null)}
                     disabled={deleteSubgoal.isPending}
                   >
-                    Abbrechen
+                    Cancel
                   </Button>
                   <Button
                     variant="destructive"
@@ -284,7 +284,7 @@ export function GoalDetail() {
                     onClick={() => deleteSubgoal.mutate(confirmDeleteSubgoalId)}
                     disabled={deleteSubgoal.isPending}
                   >
-                    {deleteSubgoal.isPending ? "Wird gelöscht…" : "Löschen"}
+                    {deleteSubgoal.isPending ? "Deleting..." : "Delete"}
                   </Button>
                 </div>
               )}

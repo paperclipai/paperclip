@@ -57,7 +57,7 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect, onDelet
             e.stopPropagation();
             onDelete(goal);
           }}
-          title="Goal löschen"
+          title="Delete goal"
         >
           <Trash2 className="h-3 w-3" />
         </button>
