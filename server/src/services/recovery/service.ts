@@ -142,6 +142,19 @@ function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
  */
 const MAX_STRANDED_RECOVERY_ATTEMPTS = 3;
 
+/**
+ * Check whether an issue has exceeded the maximum number of recovery attempts.
+ * Uses the issue_recovery_actions table to count cumulative re-dispatch attempts.
+ */
+async function hasExceededMaxRecoveryAttempts(
+  recoveryActionsSvc: ReturnType<typeof issueRecoveryActionService>,
+  companyId: string,
+  issueId: string,
+): Promise<boolean> {
+  const action = await recoveryActionsSvc.getActiveForIssue(companyId, issueId);
+  return (action?.attemptCount ?? 0) >= MAX_STRANDED_RECOVERY_ATTEMPTS;
+}
+
 function didAutomaticRecoveryFail(
   latestRun: LatestIssueRun,
   expectedRetryReason: "assignment_recovery" | "issue_continuation_needed",
