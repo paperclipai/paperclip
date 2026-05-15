@@ -117,6 +117,26 @@ describe("buildCodexExecArgs", () => {
   });
 });
 
+describe("resume commands", () => {
+  it("does not inject reasoning args on resume — default effort", () => {
+    const result = buildCodexExecArgs({ model: "gpt-5.5" }, { resumeSessionId: "session-123" });
+    expect(result.args).toEqual(["exec", "--json", "--model", "gpt-5.5", "resume", "session-123", "-"]);
+    expect(result.args.join(" ")).not.toContain("model_reasoning_effort");
+  });
+
+  it("does not inject reasoning args on resume — explicit effort", () => {
+    const result = buildCodexExecArgs({ model: "gpt-5.5", modelReasoningEffort: "high" }, { resumeSessionId: "session-123" });
+    expect(result.args.join(" ")).not.toContain("model_reasoning_effort");
+    expect(result.args).toContain("resume");
+  });
+
+  it("does not inject reasoning args on resume — no model", () => {
+    const result = buildCodexExecArgs({}, { resumeSessionId: "session-xyz" });
+    expect(result.args.join(" ")).not.toContain("model_reasoning_effort");
+    expect(result.args.slice(-3)).toEqual(["resume", "session-xyz", "-"]);
+  });
+});
+
 describe("model catalog", () => {
   it("includes gpt-5.5 as a known model", () => {
     expect(models.some((m) => m.id === "gpt-5.5")).toBe(true);
