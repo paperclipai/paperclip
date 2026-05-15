@@ -268,6 +268,17 @@ describe("truncateSkillDescription", () => {
     expect(descValue.length).toBeLessThanOrEqual(120);
   });
 
+  it("hard-slices at 120 chars when the first sentence has no word boundary within 120 chars", () => {
+    const longToken = "a".repeat(150);
+    const input = `---\nname: my-skill\ndescription: ${longToken}\n---\n\n# Body`;
+    const output = truncateSkillDescription(input);
+    const match = output.match(/^description:\s*(.+)$/m);
+    expect(match).not.toBeNull();
+    const descValue = match![1].replace(/^"(.*)"$/, "$1").trim();
+    expect(descValue).not.toBe("");
+    expect(descValue).toBe(longToken.slice(0, 120));
+  });
+
   it("unwraps quoted description values before truncating", () => {
     const input = `---\nname: my-skill\ndescription: "Does one thing. Then another."\n---\n# Body`;
     const output = truncateSkillDescription(input);
@@ -282,6 +293,13 @@ describe("truncateSkillDescription", () => {
     expect(match).not.toBeNull();
     const descValue = match![1].trim();
     expect(descValue.startsWith('"') && descValue.endsWith('"')).toBe(true);
+  });
+
+  it("unescapes YAML single-quoted apostrophes ('' -> ') before re-quoting", () => {
+    const input = `---\nname: my-skill\ndescription: 'It''s a skill that does things.'\n---\n# Body`;
+    const output = truncateSkillDescription(input);
+    expect(output).toContain("It's a skill");
+    expect(output).not.toContain("It''s");
   });
 
   it("passes block scalar descriptions (> |) through unchanged", () => {

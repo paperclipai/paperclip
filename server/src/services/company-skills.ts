@@ -164,11 +164,10 @@ export function truncateSkillDescription(content: string): string {
     (_match, prefix, rawValue) => {
       const stripped = rawValue.trim();
       let value: string;
-      if (
-        (stripped.startsWith('"') && stripped.endsWith('"')) ||
-        (stripped.startsWith("'") && stripped.endsWith("'"))
-      ) {
+      if (stripped.startsWith('"') && stripped.endsWith('"')) {
         value = stripped.slice(1, -1);
+      } else if (stripped.startsWith("'") && stripped.endsWith("'")) {
+        value = stripped.slice(1, -1).replace(/''/g, "'");
       } else if (stripped.startsWith(">") || stripped.startsWith("|")) {
         return `${prefix}${rawValue}`;
       } else {
@@ -181,7 +180,10 @@ export function truncateSkillDescription(content: string): string {
       const firstSentence = sentenceEnd >= 0 ? oneLine.slice(0, sentenceEnd + 1) : oneLine;
       const truncated =
         firstSentence.length > 120
-          ? firstSentence.slice(0, firstSentence.lastIndexOf(" ", 120) + 1).trimEnd()
+          ? (() => {
+              const boundary = firstSentence.lastIndexOf(" ", 120);
+              return (boundary > 0 ? firstSentence.slice(0, boundary) : firstSentence.slice(0, 120)).trimEnd();
+            })()
           : firstSentence;
 
       const needsQuotes =
@@ -2222,7 +2224,7 @@ export function companySkillService(db: Db) {
           await fs.writeFile(target, truncateSkillDescription(raw), "utf8");
         }
       } else {
-        await fs.symlink(src, target).catch(() => {});
+        await fs.symlink(src, target);
       }
     }
 
