@@ -21,7 +21,6 @@ describe("summarizeHeartbeatRunResultJson", () => {
       timeoutFired: true,
       nested: { ignored: true },
     });
-
     expect(summary).toEqual({
       summary: "a".repeat(500),
       result: "ok",
@@ -42,6 +41,110 @@ describe("summarizeHeartbeatRunResultJson", () => {
     expect(summarizeHeartbeatRunResultJson(["nope"] as unknown as Record<string, unknown>)).toBeNull();
     expect(summarizeHeartbeatRunResultJson({ nested: { only: "ignored" } })).toBeNull();
   });
+
+  it("counts errors with type field by category", () => {
+    const summary = summarizeHeartbeatRunResultJson({
+      summary: "done",
+      errors: [
+        { type: "rate_limit_error", message: "Rate limit reached" },
+        { type: "rate_limit_error", message: "Rate limit reached again" },
+        { type: "overloaded_error", message: "Overloaded" },
+      ],
+    });
+    expect(summary).not.toBeNull();
+    expect(summary!.error_category_counts).toEqual({
+      rate_limit_error: 2,
+      overloaded_error: 1,
+    });
+  });
+
+  it("counts string errors by classified category", () => {
+    const summary = summarizeHeartbeatRunResultJson({
+      summary: "done",
+      errors: [
+        "Rate limit exceeded for requests",
+        "Authentication required",
+        "Something unexpected happened",
+        "Timed out waiting for response",
+      ],
+    });
+    expect(summary).not.toBeNull();
+    expect(summary!.error_category_counts).toEqual({
+      rate_limit: 1,
+      authentication: 1,
+      unknown: 1,
+      timeout: 1,
+    });
+  });
+
+  it("includes errorFamily in category counts", () => {
+    const summary = summarizeHeartbeatRunResultJson({
+      summary: "done",
+      errorFamily: "transient_upstream",
+    });
+    expect(summary).not.toBeNull();
+    expect(summary!.error_category_counts).toEqual({
+      transient_upstream: 1,
+    });
+  });
+
+  it("combines errors array and errorFamily", () => {
+    const summary = summarizeHeartbeatRunResultJson({
+      summary: "done",
+      errors: [
+        { type: "rate_limit_error", message: "Rate limited" },
+        { type: "overloaded_error", message: "Overloaded" },
+      ],
+      errorFamily: "transient_upstream",
+    });
+    expect(summary).not.toBeNull();
+    expect(summary!.error_category_counts).toEqual({
+      rate_limit_error: 1,
+      overloaded_error: 1,
+      transient_upstream: 1,
+    });
+  });
+
+  it("uses category field as fallback for typed errors", () => {
+    const summary = summarizeHeartbeatRunResultJson({
+      summary: "done",
+      errors: [{ category: "api_error", message: "Something broke" }],
+    });
+    expect(summary).not.toBeNull();
+    expect(summary!.error_category_counts).toEqual({
+      api_error: 1,
+    });
+  });
+
+  it("omits error_category_counts when no errors or errorFamily", () => {
+    const summary = summarizeHeartbeatRunResultJson({
+      summary: "all good",
+    });
+    expect(summary).not.toBeNull();
+    expect(summary).not.toHaveProperty("error_category_counts");
+  });
+
+  it("skips empty string errors", () => {
+    const summary = summarizeHeartbeatRunResultJson({
+      summary: "done",
+      errors: ["", "   ", { type: "rate_limit_error", message: "limited" }],
+    });
+    expect(summary).not.toBeNull();
+    expect(summary!.error_category_counts).toEqual({
+      rate_limit_error: 1,
+    });
+  });
+
+  it("skips null and non-object/non-string error entries", () => {
+    const summary = summarizeHeartbeatRunResultJson({
+      summary: "done",
+      errors: [null, 42, true, { type: "permission_error", message: "Forbidden" }],
+    });
+    expect(summary).not.toBeNull();
+    expect(summary!.error_category_counts).toEqual({
+      permission_error: 1,
+    });
+  });
 });
 
 describe("buildHeartbeatRunIssueComment", () => {
@@ -49,7 +152,6 @@ describe("buildHeartbeatRunIssueComment", () => {
     const comment = buildHeartbeatRunIssueComment({
       summary: "## Summary\n\n- fixed deploy config\n- posted issue update",
     });
-
     expect(comment).toContain("## Summary");
     expect(comment).toContain("- fixed deploy config");
     expect(comment).not.toContain("Run summary");
@@ -71,13 +173,14 @@ describe("mergeHeartbeatRunResultJson", () => {
       { stdout: "raw stdout", stderr: "" },
       "## Summary\n\n1. first thing\n2. second thing",
     );
-
     expect(merged).toEqual({
       stdout: "raw stdout",
       stderr: "",
       summary: "## Summary\n\n1. first thing\n2. second thing",
     });
-    expect(buildHeartbeatRunIssueComment(merged)).toBe("## Summary\n\n1. first thing\n2. second thing");
+    expect(buildHeartbeatRunIssueComment(merged)).toBe(
+      "## Summary\n\n1. first thing\n2. second thing",
+    );
   });
 
   it("creates a result payload when only a summary exists", () => {
@@ -90,9 +193,6 @@ describe("mergeHeartbeatRunResultJson", () => {
         { summary: "adapter result", stdout: "raw stdout" },
         "fallback summary",
       ),
-    ).toEqual({
-      summary: "adapter result",
-      stdout: "raw stdout",
-    });
+    ).toEqual({ summary: "adapter result", stdout: "raw stdout" });
   });
 });
