@@ -8,7 +8,7 @@ Official TypeScript SDK for Paperclip plugin authors.
 - **Bundlers:** `@paperclipai/plugin-sdk/bundlers` — esbuild/rollup presets
 - **Dev server:** `@paperclipai/plugin-sdk/dev-server` — static UI server + SSE reload
 
-Reference: `doc/plugins/PLUGIN_SPEC.md`
+Reference: `doc/plugins/插件规范 PLUGIN_SPEC.md`
 
 ## Package surface
 
@@ -102,7 +102,7 @@ runWorker(plugin, import.meta.url);
 
 **Context (`ctx`) in setup:** `config`, `localFolders`, `events`, `jobs`, `launchers`, `http`, `secrets`, `activity`, `state`, `entities`, `projects`, `companies`, `issues`, `agents`, `goals`, `data`, `actions`, `streams`, `tools`, `metrics`, `logger`, `manifest`. Worker-side host APIs are capability-gated; declare capabilities in the manifest.
 
-**Agents:** `ctx.agents.invoke(agentId, companyId, opts)` for one-shot invocation. `ctx.agents.sessions` for two-way chat: `create`, `list`, `sendMessage` (with streaming `onEvent` callback), `close`. See the [Plugin Authoring Guide](../../doc/plugins/PLUGIN_AUTHORING_GUIDE.md#agent-sessions-two-way-chat) for details.
+**Agents:** `ctx.agents.invoke(agentId, companyId, opts)` for one-shot invocation. `ctx.agents.sessions` for two-way chat: `create`, `list`, `sendMessage` (with streaming `onEvent` callback), `close`. See the [Plugin Authoring Guide](../../doc/plugins/插件编写指南 PLUGIN_AUTHORING_GUIDE.md#agent-sessions-two-way-chat) for details.
 
 **Jobs:** Declare in `manifest.jobs` with `jobKey`, `displayName`, `schedule` (cron). Register handler with `ctx.jobs.register(jobKey, fn)`. **Webhooks:** Declare in `manifest.webhooks` with `endpointKey`; handle in `onWebhook(input)`. **State:** `ctx.state.get/set/delete(scopeKey)`; scope kinds: `instance`, `company`, `project`, `project_workspace`, `agent`, `issue`, `goal`, `run`.
 
