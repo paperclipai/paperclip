@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
 import { activityApi } from "../api/activity";
 import { accessApi } from "../api/access";
@@ -24,6 +24,7 @@ import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle }
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { TrustCard } from "../components/TrustCard";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
@@ -38,6 +39,7 @@ export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
   const { openOnboarding } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const queryClient = useQueryClient();
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
   const seenActivityIdsRef = useRef<Set<string>>(new Set());
   const hydratedActivityRef = useRef(false);
@@ -291,6 +293,14 @@ export function Dashboard() {
             />
           </div>
 
+          <TrustCard
+            data={data}
+            isError={false}
+            onRetry={() => {
+              void queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId!) });
+            }}
+          />
+
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <ChartCard title="Run Activity" subtitle="Last 14 days">
               <RunActivityChart activity={data.runActivity} />
@@ -390,6 +400,16 @@ export function Dashboard() {
           </div>
 
         </>
+      )}
+
+      {!data && error && (
+        <TrustCard
+          data={undefined}
+          isError={true}
+          onRetry={() => {
+            void queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId!) });
+          }}
+        />
       )}
     </div>
   );
