@@ -687,6 +687,13 @@
       "when": 1778355326070,
       "tag": "0097_issue_recovery_actions",
       "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1778842800000,
+      "tag": "0098_activity_log_entity_id_idx",
+      "breakpoints": true
     }
   ]
 }
