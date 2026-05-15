@@ -8339,7 +8339,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         outcome = latestRun.status;
       } else if (adapterResult.timedOut) {
         outcome = "timed_out";
-      } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
+      } else if (
+        (((adapterResult.exitCode ?? 0) === 0) ||
+          (adapterResult.resultJson?.subtype === "success" &&
+            !adapterResult.resultJson?.is_error)) &&
+        !adapterResult.errorMessage
+      ) {
         if (adapterResult.silentFailure) {
           outcome = "failed";
           silentFailureMessage = `Agent exited cleanly but performed no work: ${adapterResult.silentFailure.reason}`;
