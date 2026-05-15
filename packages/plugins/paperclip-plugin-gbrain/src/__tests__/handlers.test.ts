@@ -54,7 +54,7 @@ describe("handleRunFinished", () => {
     expect(lastCall).toMatchObject({
       slug: "issue-blo-1",
       detail: "agent did X, Y, Z",
-      date: "2026-05-15T12:00:00Z",
+      date: "2026-05-15",
       source: "paperclip-plugin-gbrain",
     });
     expect(typeof lastCall.summary).toBe("string");

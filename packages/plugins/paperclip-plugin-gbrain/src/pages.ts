@@ -80,6 +80,16 @@ export async function addWorkedOnLink(
   });
 }
 
+/**
+ * gbrain `add_timeline_entry.date` must be `YYYY-MM-DD` — passing a full
+ * ISO timestamp (e.g. `2026-05-15T20:44:35.081Z`) returns
+ * `internal_error: Invalid date format`. Truncate to the date component.
+ */
+function toYmdDate(iso: string): string {
+  const m = iso.match(/^(\d{4}-\d{2}-\d{2})/);
+  return m ? m[1] : iso;
+}
+
 export async function addRunTimelineEntry(
   client: GbrainCallable,
   input: {
@@ -95,7 +105,7 @@ export async function addRunTimelineEntry(
   const summary = `Run ${input.runId.slice(0, 8)} by ${input.agentId.slice(0, 8)} — ${input.outcome}`;
   await client.call("add_timeline_entry", {
     slug: input.issueSlug,
-    date: input.finishedAt,
+    date: toYmdDate(input.finishedAt),
     summary,
     detail: input.body,
     source: "paperclip-plugin-gbrain",

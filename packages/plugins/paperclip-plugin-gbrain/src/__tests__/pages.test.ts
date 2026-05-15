@@ -115,7 +115,8 @@ describe("addRunTimelineEntry", () => {
     const [tool, args] = client.call.mock.calls[0];
     expect(tool).toBe("add_timeline_entry");
     expect(args.slug).toBe("issue-blo-1");
-    expect(args.date).toBe("2026-05-15T12:00:00Z");
+    // gbrain requires YYYY-MM-DD — full ISO must be truncated
+    expect(args.date).toBe("2026-05-15");
     expect(args.detail).toBe("agent output excerpt");
     expect(args.source).toBe("paperclip-plugin-gbrain");
     expect(typeof args.summary).toBe("string");
