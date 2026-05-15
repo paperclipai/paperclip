@@ -32,6 +32,9 @@ type EnqueueWakeup = (
 ) => Promise<unknown | null>;
 
 function weekOf(now: Date): number {
+  // Unix epoch started on a Thursday 1970-01-01, so this division naturally
+  // aligns week boundaries to Thursday 00:00:00 UTC — intentional for
+  // calendar-week idempotency windows.
   return Math.floor(now.getTime() / (7 * 24 * 60 * 60 * 1000));
 }
 

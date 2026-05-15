@@ -316,7 +316,7 @@ describeEmbeddedPostgres("stalledBlockerEscalationService.reconcileStalledBlocke
     await db
       .update(issues)
       .set({ updatedAt: stillStalledBefore })
-      .where(eq(issues.originKind, "default"));
+      .where(eq(issues.originKind, "manual"));
 
     const secondResult = await svc.reconcileStalledBlockerEscalations({ companyId, now: nextWeek });
     expect(secondResult.created).toBe(1);
