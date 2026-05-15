@@ -216,6 +216,69 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(evaluations[0]?.description).not.toContain("sk-test-secret-value");
   });
 
+  it("creates one rollup instead of another evaluation above the cascade cap", async () => {
+    const previousCap = process.env.WATCHDOG_PER_AGENT_24H_CAP;
+    process.env.WATCHDOG_PER_AGENT_24H_CAP = "2";
+    try {
+      const now = new Date("2026-04-22T20:00:00.000Z");
+      const { companyId, managerId, runId, issuePrefix } = await seedRunningRun({
+        now,
+        ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      });
+      await db.insert(issues).values([
+        {
+          id: randomUUID(),
+          companyId,
+          title: "Existing stale run evaluation",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: managerId,
+          issueNumber: 30,
+          identifier: `${issuePrefix}-30`,
+          originKind: "stale_active_run_evaluation",
+          originId: randomUUID(),
+          originFingerprint: "existing-stale-1",
+          createdAt: new Date(now.getTime() - 60_000),
+        },
+        {
+          id: randomUUID(),
+          companyId,
+          title: "Existing productivity review",
+          status: "todo",
+          priority: "high",
+          assigneeAgentId: managerId,
+          issueNumber: 31,
+          identifier: `${issuePrefix}-31`,
+          originKind: "issue_productivity_review",
+          originId: randomUUID(),
+          originFingerprint: "existing-productivity-1",
+          createdAt: new Date(now.getTime() - 30_000),
+        },
+      ]);
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+      expect(result.created).toBe(0);
+      expect(result.skipped).toBe(1);
+      const evaluations = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+      expect(evaluations.filter((issue) => issue.originId === runId)).toHaveLength(0);
+      const rollups = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "watchdog_rollup")));
+      expect(rollups).toHaveLength(1);
+      expect(rollups[0]?.assigneeAgentId).toBe(managerId);
+      expect(rollups[0]?.description).toContain("cascade cap");
+    } finally {
+      if (previousCap === undefined) delete process.env.WATCHDOG_PER_AGENT_24H_CAP;
+      else process.env.WATCHDOG_PER_AGENT_24H_CAP = previousCap;
+    }
+  });
+
   it("redacts sensitive values from actual run-log evidence", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const leakedJwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";

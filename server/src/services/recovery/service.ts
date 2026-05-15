@@ -58,6 +58,8 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { isCompanyWatchdogPaused } from "./pause-aware-guard.js";
+import { isWatchdogFamilyDescendant, WATCHDOG_FAMILY_ORIGIN_KINDS } from "./watchdog-family.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
@@ -67,7 +69,10 @@ export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
+const WATCHDOG_ROLLUP_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.watchdogRollup;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const DEFAULT_WATCHDOG_PER_AGENT_24H_CAP = 5;
+const WATCHDOG_CAP_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
@@ -334,6 +339,21 @@ function isUniqueLivenessRecoveryConflict(error: unknown) {
           maybe.message.includes("issues_active_liveness_recovery_incident_uq") ||
           maybe.message.includes("issues_active_liveness_recovery_leaf_uq")
         )
+    );
+}
+
+function watchdogRollupOriginId(input: { agentId: string | null; familyKey: string }) {
+  return `watchdog_rollup:${input.agentId ?? "unassigned"}:${input.familyKey}`;
+}
+
+function isUniqueWatchdogRollupConflict(error: unknown) {
+  const maybe = unwrapDatabaseConflictError(error);
+  if (!maybe) return false;
+  return maybe.code === "23505" &&
+    (
+      maybe.constraint === "issues_active_watchdog_rollup_uq" ||
+      maybe.constraint_name === "issues_active_watchdog_rollup_uq" ||
+      typeof maybe.message === "string" && maybe.message.includes("issues_active_watchdog_rollup_uq")
     );
 }
 
@@ -667,6 +687,105 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .from(companies)
       .where(eq(companies.id, companyId))
       .then((rows) => rows[0]?.issuePrefix ?? "PAP");
+  }
+
+  function watchdogPerAgent24hCap() {
+    return Math.max(
+      1,
+      Math.floor(asNumber(process.env.WATCHDOG_PER_AGENT_24H_CAP, DEFAULT_WATCHDOG_PER_AGENT_24H_CAP)),
+    );
+  }
+
+  async function findOpenWatchdogRollup(companyId: string, originId: string) {
+    return db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, companyId),
+        eq(issues.originKind, WATCHDOG_ROLLUP_ORIGIN_KIND),
+        eq(issues.originId, originId),
+        isNull(issues.hiddenAt),
+        notInArray(issues.status, ["done", "cancelled"]),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function ensureWatchdogRollup(input: {
+    companyId: string;
+    ownerAgentId: string | null;
+    sourceIssue: typeof issues.$inferSelect | null;
+    familyKey: string;
+    triggerOriginKind: string;
+    now: Date;
+  }) {
+    const originId = watchdogRollupOriginId({ agentId: input.ownerAgentId, familyKey: input.familyKey });
+    const existing = await findOpenWatchdogRollup(input.companyId, originId);
+    if (existing) return existing;
+    const prefix = await getCompanyIssuePrefix(input.companyId);
+    const sourceLine = input.sourceIssue
+      ? `- Source family root: ${issueUiLink(input.sourceIssue, prefix)}`
+      : `- Source family root: \`${input.familyKey}\``;
+    try {
+      return await issuesSvc.create(input.companyId, {
+        title: "Review watchdog cascade brake",
+        description: [
+          "Paperclip suppressed additional watchdog ticket creation because this owner/family exceeded the 24h cascade cap.",
+          "",
+          sourceLine,
+          `- Trigger origin: \`${input.triggerOriginKind}\``,
+          `- Owner agent: \`${input.ownerAgentId ?? "unassigned"}\``,
+          `- Cap: ${watchdogPerAgent24hCap()} watchdog issues in 24h`,
+          `- Generated at: ${input.now.toISOString()}`,
+          "",
+          "Inspect the family and resolve the underlying stuck recovery loop before closing this rollup.",
+        ].join("\n"),
+        status: "todo",
+        priority: "high",
+        parentId: input.sourceIssue && !["done", "cancelled"].includes(input.sourceIssue.status)
+          ? input.sourceIssue.id
+          : null,
+        projectId: input.sourceIssue?.projectId ?? null,
+        goalId: input.sourceIssue?.goalId ?? null,
+        billingCode: input.sourceIssue?.billingCode ?? null,
+        assigneeAgentId: input.ownerAgentId,
+        assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides(),
+        originKind: WATCHDOG_ROLLUP_ORIGIN_KIND,
+        originId,
+        originFingerprint: originId,
+      });
+    } catch (error) {
+      if (!isUniqueWatchdogRollupConflict(error)) throw error;
+      const raced = await findOpenWatchdogRollup(input.companyId, originId);
+      if (!raced) throw error;
+      return raced;
+    }
+  }
+
+  async function shouldBrakeWatchdogCascade(input: {
+    companyId: string;
+    ownerAgentId: string | null;
+    sourceIssue: typeof issues.$inferSelect | null;
+    familyKey: string;
+    triggerOriginKind: string;
+    now: Date;
+  }) {
+    if (!input.ownerAgentId) return false;
+    const cutoff = new Date(input.now.getTime() - WATCHDOG_CAP_WINDOW_MS);
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, input.companyId),
+        eq(issues.assigneeAgentId, input.ownerAgentId),
+        inArray(issues.originKind, [...WATCHDOG_FAMILY_ORIGIN_KINDS]),
+        isNull(issues.hiddenAt),
+        sql`${issues.createdAt} >= ${cutoff.toISOString()}::timestamptz`,
+        notInArray(issues.status, ["done", "cancelled"]),
+      ));
+    if (Number(row?.count ?? 0) < watchdogPerAgent24hCap()) return false;
+    await ensureWatchdogRollup(input);
+    return true;
   }
 
   function staleActiveRunOriginFingerprint(companyId: string, runId: string) {
@@ -1030,6 +1149,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const runningAgent = await getAgent(input.run.agentId);
     if (!runningAgent || runningAgent.companyId !== input.run.companyId) return { kind: "skipped" as const };
     const sourceIssue = await resolveStaleRunSourceIssue(input.run);
+    if (sourceIssue && await isWatchdogFamilyDescendant(db, sourceIssue)) return { kind: "skipped" as const };
     const prefix = await getCompanyIssuePrefix(input.run.companyId);
     const evidence = await collectStaleRunEvidence({
       run: input.run,
@@ -1070,6 +1190,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     const ownerAgentId = await resolveStaleRunOwnerAgentId({ run: input.run, runningAgent, sourceIssue });
+    if (await shouldBrakeWatchdogCascade({
+      companyId: input.run.companyId,
+      ownerAgentId,
+      sourceIssue,
+      familyKey: sourceIssue?.id ?? input.run.id,
+      triggerOriginKind: STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND,
+      now: input.now,
+    })) {
+      return { kind: "skipped" as const };
+    }
     const description = buildStaleRunEvaluationDescription({
       run: input.run,
       runningAgent,
@@ -1155,6 +1285,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   async function scanSilentActiveRuns(opts?: { now?: Date; companyId?: string }) {
     const now = opts?.now ?? new Date();
+    if (opts?.companyId && await isCompanyWatchdogPaused(db, opts.companyId, now)) {
+      return {
+        scanned: 0,
+        created: 0,
+        existing: 0,
+        escalated: 0,
+        snoozed: 0,
+        skipped: 0,
+        evaluationIssueIds: [] as string[],
+      };
+    }
     const suspicionBefore = new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS);
     const candidates = await db
       .select()
@@ -1180,6 +1321,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     };
 
     for (const run of candidates) {
+      if (await isCompanyWatchdogPaused(db, run.companyId, now)) {
+        result.skipped += 1;
+        continue;
+      }
       if (await latestActiveOutputQuietUntilDecision(run.companyId, run.id, now)) {
         result.snoozed += 1;
         continue;
@@ -1493,12 +1638,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) return null;
+    if (await isWatchdogFamilyDescendant(db, input.issue)) return null;
 
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
     if (existing) return existing;
 
     const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
     if (!ownerAgentId) return null;
+    if (await shouldBrakeWatchdogCascade({
+      companyId: input.issue.companyId,
+      ownerAgentId,
+      sourceIssue: input.issue,
+      familyKey: input.issue.id,
+      triggerOriginKind: STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
+      now: new Date(),
+    })) {
+      return null;
+    }
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
     const sourceAssignee = input.issue.assigneeAgentId ? await getAgent(input.issue.assigneeAgentId) : null;
@@ -1998,6 +2154,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     };
 
     for (const issue of candidates) {
+      if (await isCompanyWatchdogPaused(db, issue.companyId)) {
+        result.skipped += 1;
+        continue;
+      }
       const agentId = issue.assigneeAgentId;
       if (!agentId) {
         result.skipped += 1;
@@ -2016,6 +2176,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        result.skipped += 1;
+        continue;
+      }
+      if (await isWatchdogFamilyDescendant(db, issue) && !isStrandedIssueRecoveryIssue(issue)) {
         result.skipped += 1;
         continue;
       }
