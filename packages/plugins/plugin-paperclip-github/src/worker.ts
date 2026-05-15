@@ -8,7 +8,7 @@ import {
 import { resolveConfig, type ResolvedConfig } from "./config.js";
 import { createGitHubClient, type GitHubClient } from "./auth.js";
 import { wrapTool } from "./audit.js";
-import { TOOL } from "./manifest.js";
+import { ISSUE_TOOL_SCHEMA, TOOL } from "./manifest.js";
 import {
   openPr,
   getPr,
@@ -20,6 +20,7 @@ import {
 import { getCheckRuns, createCheckRun } from "./tools/checks.js";
 import { enqueueMerge } from "./tools/merge.js";
 import { listIssues } from "./tools/issues.js";
+import { createIssue, updateIssue, labelIssue } from "./tools/issue_mutations.js";
 
 /**
  * Worker entrypoint for the paperclip GitHub plugin.
@@ -166,6 +167,45 @@ function registerTools(ctx: PluginContext): void {
     wrap(TOOL.LIST_ISSUES, async (params, runCtx) => {
       const s = requireState();
       return listIssues(s.client, params, runCtx);
+    }),
+  );
+
+  ctx.tools.register(
+    TOOL.CREATE_ISSUE,
+    {
+      displayName: "Create Issue",
+      description: "Create a GitHub issue in the configured repository with readback.",
+      parametersSchema: ISSUE_TOOL_SCHEMA.CREATE,
+    },
+    wrap(TOOL.CREATE_ISSUE, async (params, runCtx) => {
+      const s = requireState();
+      return createIssue(s.client, params, runCtx);
+    }),
+  );
+
+  ctx.tools.register(
+    TOOL.UPDATE_ISSUE,
+    {
+      displayName: "Update Issue",
+      description: "Update a GitHub issue title, body, or state with readback.",
+      parametersSchema: ISSUE_TOOL_SCHEMA.UPDATE,
+    },
+    wrap(TOOL.UPDATE_ISSUE, async (params, runCtx) => {
+      const s = requireState();
+      return updateIssue(s.client, params, runCtx);
+    }),
+  );
+
+  ctx.tools.register(
+    TOOL.LABEL_ISSUE,
+    {
+      displayName: "Label Issue",
+      description: "Apply labels to a GitHub issue and verify label readback.",
+      parametersSchema: ISSUE_TOOL_SCHEMA.LABEL,
+    },
+    wrap(TOOL.LABEL_ISSUE, async (params, runCtx) => {
+      const s = requireState();
+      return labelIssue(s.client, params, runCtx);
     }),
   );
 
