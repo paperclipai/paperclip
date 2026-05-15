@@ -942,6 +942,7 @@ export function agentRoutes(
       input.constraintAdapterConfig
         ? { ...input.constraintAdapterConfig, ...normalizedAdapterConfig }
         : normalizedAdapterConfig,
+      input.companyId,
     );
     return normalizedAdapterConfig;
   }
@@ -1047,6 +1048,7 @@ export function agentRoutes(
   async function assertAdapterConfigConstraints(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
+    companyId: string,
   ) {
     if (adapterType === "opencode_local") {
       try {
@@ -1060,7 +1062,7 @@ export function agentRoutes(
     if (adapterType) {
       const model = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
       if (model) {
-        const compat = resolveAdapterModelAvailability(adapterType, model, "");
+        const compat = resolveAdapterModelAvailability(adapterType, model, companyId);
         if (!compat.available) {
           throw unprocessable(
             `Model "${model}" is not available for this account at field adapterConfig.model. Supported: ${compat.supportedModels.join(", ")}.`,

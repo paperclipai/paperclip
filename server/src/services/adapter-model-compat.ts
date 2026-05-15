@@ -23,7 +23,7 @@ function codexLocalSupportedModels(): string[] {
 /**
  * Resolves whether a given model is available for the adapter+account combination.
  *
- * v1: static allowlist for codex_local; permissive default for all other adapters.
+ * v1: static denylist for codex_local (unknown models pass through); permissive default for all other adapters.
  * companyId is reserved for per-account dynamic checks in future adapter implementations.
  */
 export function resolveAdapterModelAvailability(

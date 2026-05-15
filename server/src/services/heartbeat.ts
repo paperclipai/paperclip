@@ -4637,8 +4637,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
 
-    const adapterModel = typeof (parseObject(agent.adapterConfig) as Record<string, unknown>).model === "string"
-      ? ((parseObject(agent.adapterConfig) as Record<string, unknown>).model as string).trim()
+    const adapterConfigParsed = parseObject(agent.adapterConfig) as Record<string, unknown>;
+    const adapterModel = typeof adapterConfigParsed.model === "string"
+      ? (adapterConfigParsed.model as string).trim()
       : "";
     if (adapterModel && agent.adapterType) {
       const compat = resolveAdapterModelAvailability(agent.adapterType, adapterModel, run.companyId);
