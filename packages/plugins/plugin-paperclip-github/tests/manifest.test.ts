@@ -15,7 +15,7 @@ describe("plugin-paperclip-github manifest", () => {
     expect(caps.has("activity.log.write")).toBe(true);
   });
 
-  it("registers all six v0.1 tools by stable name", () => {
+  it("registers all v0.1 tools by stable name", () => {
     const toolNames = new Set((manifest.tools ?? []).map((t) => t.name));
     expect(toolNames).toEqual(
       new Set([
@@ -25,6 +25,10 @@ describe("plugin-paperclip-github manifest", () => {
         TOOL.CREATE_CHECK_RUN,
         TOOL.ENQUEUE_MERGE,
         TOOL.LIST_ISSUES,
+        TOOL.UPDATE_PR_BODY,
+        TOOL.CONVERT_PR_TO_DRAFT,
+        TOOL.MARK_PR_READY_FOR_REVIEW,
+        TOOL.REPAIR_PR_HEAD,
       ]),
     );
   });
