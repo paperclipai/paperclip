@@ -1,4 +1,5 @@
 import { memo, useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent, type DragEvent, type RefObject } from "react";
+import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { IssueWorkMode } from "@paperclipai/shared";
 import { pickTextColorForSolidBg } from "@/lib/color-contrast";
@@ -306,6 +307,8 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
 }) {
   const [draftValue, setDraftValue] = useState(value);
 
+  const { t } = useTranslation();
+
   useEffect(() => {
     setDraftValue(value);
   }, [value]);
@@ -313,7 +316,7 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
   return (
     <textarea
       className="w-full text-lg font-semibold bg-transparent outline-none resize-none overflow-hidden placeholder:text-muted-foreground/50"
-      placeholder="Issue title"
+      placeholder={t("newIssueDialog.issueTitlePlaceholder")}
       rows={1}
       value={draftValue}
       onChange={(e) => {
@@ -369,6 +372,8 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
 }) {
   const [draftValue, setDraftValue] = useState(value);
 
+  const { t } = useTranslation();
+
   useEffect(() => {
     setDraftValue(value);
   }, [value]);
@@ -381,7 +386,7 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
         setDraftValue(nextValue);
         onChange(nextValue);
       }}
-      placeholder="Add description..."
+      placeholder={t("newIssueDialog.addDescription")}
       bordered={false}
       mentions={mentions}
       contentClassName={cn("text-sm text-muted-foreground pb-12", expanded ? "min-h-[220px]" : "min-h-[120px]")}
@@ -405,6 +410,48 @@ export function NewIssueDialog() {
   const { companies, selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
+  const { t } = useTranslation();
+  const statusLabelKey = (value: string) => {
+    switch (value) {
+      case "backlog": return "newIssueDialog.statusBacklog";
+      case "todo": return "newIssueDialog.statusTodo";
+      case "in_progress": return "newIssueDialog.statusInProgress";
+      case "in_review": return "newIssueDialog.statusInReview";
+      case "done": return "newIssueDialog.statusDone";
+      default: return "newIssueDialog.statusTodo";
+    }
+  };
+  const statusDescKey = (value: string) => {
+    switch (value) {
+      case "backlog": return "newIssueDialog.statusBacklogDesc";
+      case "todo": return "newIssueDialog.statusTodoDesc";
+      default: return "";
+    }
+  };
+  const priorityLabelKey = (value: string) => {
+    switch (value) {
+      case "critical": return "newIssueDialog.priorityCritical";
+      case "high": return "newIssueDialog.priorityHigh";
+      case "medium": return "newIssueDialog.priorityMedium";
+      case "low": return "newIssueDialog.priorityLow";
+      default: return "";
+    }
+  };
+  const workModeLabelKey = (value: string) => {
+    switch (value) {
+      case "standard": return "newIssueDialog.workModeStandard";
+      case "planning": return "newIssueDialog.workModePlanning";
+      default: return "newIssueDialog.workModeStandard";
+    }
+  };
+  const execWorkspaceLabelKey = (value: string) => {
+    switch (value) {
+      case "shared_workspace": return "newIssueDialog.execWorkspaceProjectDefault";
+      case "isolated_workspace": return "newIssueDialog.execWorkspaceIsolated";
+      case "reuse_existing": return "newIssueDialog.execWorkspaceReuse";
+      default: return value;
+    }
+  };
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const titleRef = useRef("");
@@ -1095,12 +1142,12 @@ export function NewIssueDialog() {
     && !isUsingParentExecutionWorkspace;
   const assigneeOptionsTitle =
     assigneeAdapterType === "claude_local"
-      ? "Claude options"
+      ? t("newIssueDialog.agentOptionsClaude")
       : assigneeAdapterType === "codex_local"
-        ? "Codex options"
+        ? t("newIssueDialog.agentOptionsCodex")
         : assigneeAdapterType === "opencode_local"
-          ? "OpenCode options"
-        : "Agent options";
+          ? t("newIssueDialog.agentOptionsOpenCode")
+        : t("newIssueDialog.agentOptionsDefault");
   const thinkingEffortOptions =
     assigneeAdapterType === "codex_local"
       ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
@@ -1141,7 +1188,7 @@ export function NewIssueDialog() {
   const hasSavedDraft = Boolean(savedDraft?.title.trim() || savedDraft?.description.trim());
   const canDiscardDraft = hasDraft || hasSavedDraft;
   const createIssueErrorMessage =
-    createIssue.error instanceof Error ? createIssue.error.message : "Failed to create issue. Try again.";
+    createIssue.error instanceof Error ? createIssue.error.message : t("newIssueDialog.createError");
   const stagedDocuments = stagedFiles.filter((file) => file.kind === "document");
   const stagedAttachments = stagedFiles.filter((file) => file.kind === "attachment");
 
@@ -1289,7 +1336,7 @@ export function NewIssueDialog() {
               </PopoverContent>
             </Popover>
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>{isSubIssueMode ? "New sub-issue" : "New issue"}</span>
+            <span>{isSubIssueMode ? t("newIssueDialog.subIssueTitle") : t("newIssueDialog.title")}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -1331,17 +1378,17 @@ export function NewIssueDialog() {
           <div className="px-4 pb-2">
             <div className="overflow-x-auto overscroll-x-contain">
               <div className="inline-flex items-center gap-2 text-sm text-muted-foreground flex-wrap sm:flex-nowrap sm:min-w-max">
-              <span className="w-6 shrink-0 text-center">For</span>
+              <span className="w-6 shrink-0 text-center">{t("newIssueDialog.for")}</span>
               <InlineEntitySelector
                 ref={assigneeSelectorRef}
                 value={assigneeValue}
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeOptionIds}
-                placeholder="Assignee"
+                placeholder={t("newIssueDialog.assigneePlaceholder")}
                 disablePortal
-                noneLabel="No assignee"
-                searchPlaceholder="Search assignees..."
-                emptyMessage="No assignees found."
+                noneLabel={t("newIssueDialog.noneAssignee")}
+                searchPlaceholder={t("newIssueDialog.searchAssignees")}
+                emptyMessage={t("newIssueDialog.noAssignees")}
                 onChange={(value) => {
                   const nextAssignee = parseAssigneeValue(value);
                   if (nextAssignee.assigneeAgentId) {
@@ -1371,7 +1418,7 @@ export function NewIssueDialog() {
                       <span className="truncate">{option.label}</span>
                     )
                   ) : (
-                    <span className="text-muted-foreground">Assignee</span>
+                    <span className="text-muted-foreground">{t("newIssueDialog.assigneePlaceholder")}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -1387,17 +1434,17 @@ export function NewIssueDialog() {
                   );
                 }}
               />
-              <span>in</span>
+              <span>{t("newIssueDialog.in")}</span>
               <InlineEntitySelector
                 ref={projectSelectorRef}
                 value={projectId}
                 options={projectOptions}
                 recentOptionIds={recentProjectIds}
-                placeholder="Project"
+                placeholder={t("newIssueDialog.projectPlaceholder")}
                 disablePortal
-                noneLabel="No project"
-                searchPlaceholder="Search projects..."
-                emptyMessage="No projects found."
+                noneLabel={t("newIssueDialog.noneProject")}
+                searchPlaceholder={t("newIssueDialog.searchProjects")}
+                emptyMessage={t("newIssueDialog.noProjects")}
                 onChange={handleProjectChange}
                 onConfirm={() => {
                   descriptionEditorRef.current?.focus();
