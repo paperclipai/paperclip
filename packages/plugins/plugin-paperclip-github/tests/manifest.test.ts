@@ -28,6 +28,8 @@ describe("plugin-paperclip-github manifest", () => {
         TOOL.CREATE_ISSUE,
         TOOL.UPDATE_ISSUE,
         TOOL.LABEL_ISSUE,
+        TOOL.UPDATE_PR,
+        TOOL.CLOSE_PR,
         TOOL.UPDATE_PR_BODY,
         TOOL.CONVERT_PR_TO_DRAFT,
         TOOL.MARK_PR_READY_FOR_REVIEW,

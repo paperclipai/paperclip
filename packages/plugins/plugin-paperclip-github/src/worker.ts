@@ -12,6 +12,8 @@ import { ISSUE_TOOL_SCHEMA, TOOL } from "./manifest.js";
 import {
   openPr,
   getPr,
+  updatePr,
+  closePr,
   updatePrBody,
   convertPrToDraft,
   markPrReadyForReview,
@@ -210,6 +212,32 @@ function registerTools(ctx: PluginContext): void {
   );
 
   ctx.tools.register(
+    TOOL.UPDATE_PR,
+    {
+      displayName: "Update Pull Request",
+      description: "Update an existing PR title and/or body with expected head/base guards and readback.",
+      parametersSchema: updatePrSchema,
+    },
+    wrap(TOOL.UPDATE_PR, async (params, runCtx) => {
+      const s = requireState();
+      return updatePr(s.client, params, runCtx);
+    }),
+  );
+
+  ctx.tools.register(
+    TOOL.CLOSE_PR,
+    {
+      displayName: "Close Pull Request",
+      description: "Close an existing PR with expected head/base guards and readback.",
+      parametersSchema: prMutationGuardSchema,
+    },
+    wrap(TOOL.CLOSE_PR, async (params, runCtx) => {
+      const s = requireState();
+      return closePr(s.client, params, runCtx);
+    }),
+  );
+
+  ctx.tools.register(
     TOOL.UPDATE_PR_BODY,
     {
       displayName: "Update Pull Request Body",
@@ -341,6 +369,18 @@ const updatePrBodySchema = {
     expectedCurrentBody: { type: "string" },
   },
   required: ["repository", "prNumber", "expectedHeadSha", "expectedBaseSha", "body"],
+} as const;
+
+const updatePrSchema = {
+  type: "object",
+  properties: {
+    ...prMutationGuardProperties,
+    title: { type: "string" },
+    body: { type: "string" },
+    expectedCurrentTitle: { type: "string" },
+    expectedCurrentBody: { type: "string" },
+  },
+  required: ["repository", "prNumber", "expectedHeadSha", "expectedBaseSha"],
 } as const;
 
 const repairPrHeadSchema = {

@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from "vitest";
 import {
   openPr,
   getPr,
+  updatePr,
+  closePr,
   updatePrBody,
   convertPrToDraft,
   markPrReadyForReview,
@@ -46,6 +48,7 @@ function makeFakeClient(overrides: Record<string, unknown> = {}): GitHubClient {
 }
 
 interface FakePrState {
+  title?: string;
   body?: string;
   draft?: boolean;
   headSha?: string;
@@ -57,6 +60,7 @@ interface FakePrState {
 
 function makePrMutationClient(initial: FakePrState = {}): GitHubClient {
   const state = {
+    title: initial.title ?? "Old title",
     body: initial.body ?? "old body",
     draft: initial.draft ?? false,
     headSha: initial.headSha ?? headSha,
@@ -69,6 +73,7 @@ function makePrMutationClient(initial: FakePrState = {}): GitHubClient {
     number: 42,
     html_url: "https://github.com/owner/repo/pull/42",
     state: state.state,
+    title: state.title,
     draft: state.draft,
     body: state.body,
     head: {
@@ -99,8 +104,10 @@ function makePrMutationClient(initial: FakePrState = {}): GitHubClient {
     rest: {
       pulls: {
         get: vi.fn().mockImplementation(async () => ({ data: prData() })),
-        update: vi.fn().mockImplementation(async ({ body }: { body: string }) => {
-          state.body = body;
+        update: vi.fn().mockImplementation(async (params: { title?: string; body?: string; state?: string }) => {
+          if (params.title !== undefined) state.title = params.title;
+          if (params.body !== undefined) state.body = params.body;
+          if (params.state !== undefined) state.state = params.state;
           return { data: prData() };
         }),
       },
@@ -263,6 +270,66 @@ describe("getPr", () => {
 });
 
 describe("PR mutation tools", () => {
+  it("updates an existing PR title and body only after guard and readback", async () => {
+    const client = makePrMutationClient({ title: "Old title", body: "old body" });
+    const result = await updatePr(
+      client,
+      mutationGuard({
+        title: "New title",
+        body: "new body",
+        expectedCurrentTitle: "Old title",
+        expectedCurrentBody: "old body",
+      }),
+      runCtx,
+    );
+    expect(result.error).toBeUndefined();
+    const data = result.data as { mutation: string; verified: boolean; changed: boolean; title: string; state: string };
+    expect(data.mutation).toBe("update_pr");
+    expect(data.verified).toBe(true);
+    expect(data.changed).toBe(true);
+    expect(data.title).toBe("New title");
+    expect(data.state).toBe("open");
+    expect((client.rest as never as { pulls: { update: ReturnType<typeof vi.fn> } }).pulls.update).toHaveBeenCalledWith(
+      expect.objectContaining({ pull_number: 42, title: "New title", body: "new body" }),
+    );
+  });
+
+  it("refuses general PR update when title/body are omitted", async () => {
+    const client = makePrMutationClient();
+    await expect(updatePr(client, mutationGuard(), runCtx)).rejects.toThrow(/title or body required/);
+  });
+
+  it("refuses general PR update when expected body changed", async () => {
+    const client = makePrMutationClient({ body: "newer body" });
+    await expect(
+      updatePr(client, mutationGuard({ body: "replacement", expectedCurrentBody: "old body" }), runCtx),
+    ).rejects.toThrow(/expected_body_mismatch/);
+  });
+
+  it("closes an existing PR only after guard and readback", async () => {
+    const client = makePrMutationClient({ state: "open" });
+    const result = await closePr(client, mutationGuard(), runCtx);
+    expect(result.error).toBeUndefined();
+    const data = result.data as { mutation: string; verified: boolean; changed: boolean; state: string };
+    expect(data.mutation).toBe("close_pr");
+    expect(data.verified).toBe(true);
+    expect(data.changed).toBe(true);
+    expect(data.state).toBe("closed");
+    expect((client.rest as never as { pulls: { update: ReturnType<typeof vi.fn> } }).pulls.update).toHaveBeenCalledWith(
+      expect.objectContaining({ pull_number: 42, state: "closed" }),
+    );
+  });
+
+  it("refuses to close a PR whose expected base does not match readback", async () => {
+    const client = makePrMutationClient({ baseSha: targetSha });
+    await expect(closePr(client, mutationGuard(), runCtx)).rejects.toThrow(/expected_base_mismatch/);
+  });
+
+  it("refuses to close an already closed PR", async () => {
+    const client = makePrMutationClient({ state: "closed" });
+    await expect(closePr(client, mutationGuard(), runCtx)).rejects.toThrow(/pr_not_open/);
+  });
+
   it("updates an existing PR body only after head/base guard and readback", async () => {
     const client = makePrMutationClient({ body: "old body" });
     const result = await updatePrBody(

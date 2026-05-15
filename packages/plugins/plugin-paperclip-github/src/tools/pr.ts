@@ -88,6 +88,15 @@ export interface UpdatePrBodyParams extends PrMutationGuardParams {
   expectedCurrentBody?: string;
 }
 
+export interface UpdatePrParams extends PrMutationGuardParams {
+  title?: string;
+  body?: string;
+  expectedCurrentTitle?: string;
+  expectedCurrentBody?: string;
+}
+
+export interface ClosePrParams extends PrMutationGuardParams {}
+
 export interface ConvertPrToDraftParams extends PrMutationGuardParams {}
 export interface MarkPrReadyForReviewParams extends PrMutationGuardParams {}
 
@@ -103,6 +112,8 @@ export interface PrMutationResult {
   htmlUrl: string;
   headSha: string;
   baseSha: string;
+  state: string;
+  title: string;
   draft: boolean;
   mutation: string;
   verified: boolean;
@@ -216,6 +227,7 @@ interface PullRequestSnapshot {
   prNumber: number;
   htmlUrl: string;
   state: string;
+  title: string;
   draft: boolean;
   headSha: string;
   baseSha: string;
@@ -297,6 +309,78 @@ export async function updatePrBody(
   return {
     content: `PR #${p.prNumber} body updated`,
     data: buildMutationResult("update_body", before, after),
+  };
+}
+
+export async function updatePr(
+  client: GitHubClient,
+  params: unknown,
+  _runCtx: ToolRunContext,
+): Promise<ToolResult> {
+  const p = parseUpdatePr(params);
+  const before = await readGuardedPr(client, p);
+  if (p.expectedCurrentTitle !== undefined && before.title !== p.expectedCurrentTitle) {
+    throw new RefusalError("expected_title_mismatch", `PR #${p.prNumber} title changed before update`);
+  }
+  if (p.expectedCurrentBody !== undefined && before.body !== p.expectedCurrentBody) {
+    throw new RefusalError("expected_body_mismatch", `PR #${p.prNumber} body changed before update`);
+  }
+
+  await githubCall(
+    () =>
+      client.rest.pulls.update({
+        owner: client.owner,
+        repo: client.name,
+        pull_number: p.prNumber,
+        ...(p.title === undefined ? {} : { title: p.title }),
+        ...(p.body === undefined ? {} : { body: p.body }),
+      }),
+    "update pull request",
+  );
+
+  const after = await readPrSnapshot(client, p.prNumber);
+  verifyReadback(client, p, after);
+  if (p.title !== undefined && after.title !== p.title) {
+    throw new RefusalError("github_api_failed", `PR #${p.prNumber} title readback did not match requested title`);
+  }
+  if (p.body !== undefined && after.body !== p.body) {
+    throw new RefusalError("github_api_failed", `PR #${p.prNumber} body readback did not match requested body`);
+  }
+
+  return {
+    content: `PR #${p.prNumber} updated`,
+    data: buildMutationResult("update_pr", before, after),
+  };
+}
+
+export async function closePr(
+  client: GitHubClient,
+  params: unknown,
+  _runCtx: ToolRunContext,
+): Promise<ToolResult> {
+  const p = parseClosePr(params);
+  const before = await readGuardedPr(client, p);
+
+  await githubCall(
+    () =>
+      client.rest.pulls.update({
+        owner: client.owner,
+        repo: client.name,
+        pull_number: p.prNumber,
+        state: "closed",
+      }),
+    "close pull request",
+  );
+
+  const after = await readPrSnapshot(client, p.prNumber);
+  verifyReadback(client, p, after);
+  if (after.state !== "closed") {
+    throw new RefusalError("github_api_failed", `PR #${p.prNumber} state readback did not match closed`);
+  }
+
+  return {
+    content: `PR #${p.prNumber} closed`,
+    data: buildMutationResult("close_pr", before, after),
   };
 }
 
@@ -456,6 +540,27 @@ function parseUpdatePrBody(params: unknown): UpdatePrBodyParams {
   };
 }
 
+function parseUpdatePr(params: unknown): UpdatePrParams {
+  const p = parseGuardParams(params, "updatePr");
+  const raw = params as Record<string, unknown>;
+  const title = readOptionalNonEmptyString(raw, "title");
+  const body = readOptionalString(raw, "body");
+  if (title === undefined && body === undefined) {
+    throw new Error("title or body required");
+  }
+  return {
+    ...p,
+    title,
+    body,
+    expectedCurrentTitle: readOptionalString(raw, "expectedCurrentTitle"),
+    expectedCurrentBody: readOptionalString(raw, "expectedCurrentBody"),
+  };
+}
+
+function parseClosePr(params: unknown): ClosePrParams {
+  return parseGuardParams(params, "closePr");
+}
+
 function parseConvertPrToDraft(params: unknown): ConvertPrToDraftParams {
   return parseGuardParams(params, "convertPrToDraft");
 }
@@ -517,6 +622,7 @@ async function readPrSnapshot(client: GitHubClient, prNumber: number): Promise<P
     prNumber: data.number,
     htmlUrl: data.html_url,
     state: data.state,
+    title: data.title,
     draft: data.draft ?? false,
     headSha: data.head.sha,
     baseSha: data.base.sha,
@@ -574,12 +680,16 @@ function buildMutationResult(
     htmlUrl: after.htmlUrl,
     headSha: after.headSha,
     baseSha: after.baseSha,
+    state: after.state,
+    title: after.title,
     draft: after.draft,
     mutation,
     verified: true,
     changed:
       before.headSha !== after.headSha ||
       before.baseSha !== after.baseSha ||
+      before.state !== after.state ||
+      before.title !== after.title ||
       before.draft !== after.draft ||
       before.body !== after.body,
   };
@@ -664,6 +774,19 @@ function readRepository(p: Record<string, unknown>, key: string): string {
 function readOptionalRepository(p: Record<string, unknown>, key: string): string | undefined {
   if (p[key] === undefined) return undefined;
   return readRepository(p, key);
+}
+
+function readOptionalString(p: Record<string, unknown>, key: string): string | undefined {
+  const value = p[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw new Error(`${key} must be a string`);
+  return value;
+}
+
+function readOptionalNonEmptyString(p: Record<string, unknown>, key: string): string | undefined {
+  const value = readOptionalString(p, key);
+  if (value !== undefined && value.trim() === "") throw new Error(`${key} must not be empty`);
+  return value;
 }
 
 function readPositiveInteger(p: Record<string, unknown>, key: string): number {
