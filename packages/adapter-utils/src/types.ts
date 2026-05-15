@@ -489,6 +489,8 @@ export interface CreateConfigValues {
   envVars: string;
   envBindings: Record<string, unknown>;
   url: string;
+  /** Optional API key for adapters that speak HTTP to a local serve endpoint (e.g. atomic_agent_http). */
+  atomicAgentApiKey?: string;
   bootstrapPrompt: string;
   payloadTemplateJson?: string;
   workspaceStrategyType?: string;

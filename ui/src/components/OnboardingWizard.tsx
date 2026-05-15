@@ -25,7 +25,7 @@ import {
 } from "../lib/model-utils";
 import { getUIAdapter } from "../adapters";
 import { listUIAdapters } from "../adapters";
-import { isVisualAdapterChoice } from "../adapters/metadata";
+import { compareAdapterVisualOrder, isVisualAdapterChoice } from "../adapters/metadata";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { getAdapterDisplay } from "../adapters/adapter-display-registry";
@@ -215,9 +215,11 @@ export function OnboardingWizard() {
       )
       .map((a) => ({ ...getAdapterDisplay(a.type), type: a.type }));
 
+    const more = all.filter((a) => !a.recommended);
+    more.sort((a, b) => compareAdapterVisualOrder(a.type, b.type));
     return {
       recommendedAdapters: all.filter((a) => a.recommended),
-      moreAdapters: all.filter((a) => !a.recommended),
+      moreAdapters: more,
     };
   }, [disabledTypes]);
   const COMMAND_PLACEHOLDERS: Record<string, string> = {
@@ -823,6 +825,11 @@ export function OnboardingWizard() {
                                 setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
                                 return;
                               }
+                              if (nextType === "atomic_agent_http") {
+                                setUrl("http://127.0.0.1:8787");
+                                setModel("");
+                                return;
+                              }
                               setModel("");
                             }}
                           >
@@ -1061,19 +1068,24 @@ export function OnboardingWizard() {
                   )}
 
                   {(adapterType === "http" ||
-                    adapterType === "openclaw_gateway") && (
+                    adapterType === "openclaw_gateway" ||
+                    adapterType === "atomic_agent_http") && (
                     <div>
                       <label className="text-xs text-muted-foreground mb-1 block">
                         {adapterType === "openclaw_gateway"
                           ? "Gateway URL"
-                          : "Webhook URL"}
+                          : adapterType === "atomic_agent_http"
+                            ? "atomic-agent serve URL"
+                            : "Webhook URL"}
                       </label>
                       <input
                         className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                         placeholder={
                           adapterType === "openclaw_gateway"
                             ? "ws://127.0.0.1:18789"
-                            : "https://..."
+                            : adapterType === "atomic_agent_http"
+                              ? "http://127.0.0.1:8787"
+                              : "https://..."
                         }
                         value={url}
                         onChange={(e) => setUrl(e.target.value)}

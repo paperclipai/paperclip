@@ -51,6 +51,8 @@ export interface AdapterDisplayInfo {
   disabledLabel?: string;
   experimental?: boolean;
   hideFromVisualSelection?: boolean;
+  /** Lower values appear earlier in visual pickers (e.g. “More Agent Adapter Types”). */
+  visualRank?: number;
 }
 
 const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
@@ -77,31 +79,37 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     label: "Gemini CLI",
     description: "Local Gemini agent",
     icon: Gem,
+    visualRank: 20,
   },
   opencode_local: {
     label: "OpenCode",
     description: "Local multi-provider agent",
     icon: OpenCodeLogoIcon,
+    visualRank: 40,
   },
   hermes_local: {
     label: "Hermes Agent",
     description: "Local Hermes CLI agent",
     icon: HermesIcon,
+    visualRank: 30,
   },
   pi_local: {
     label: "Pi",
     description: "Local Pi agent",
     icon: Terminal,
+    visualRank: 50,
   },
   cursor: {
     label: "Cursor",
     description: "Local Cursor agent",
     icon: MousePointer2,
+    visualRank: 60,
   },
   cursor_cloud: {
     label: "Cursor Cloud",
     description: "Managed remote Cursor agent",
     icon: MousePointer2,
+    visualRank: 10,
   },
   openclaw_gateway: {
     label: "OpenClaw Gateway",
@@ -121,6 +129,12 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Internal HTTP adapter",
     icon: Cpu,
     comingSoon: true,
+  },
+  atomic_agent_http: {
+    label: "Atomic Agent",
+    description: "Local atomic-agent operator (llama.cpp, HTTP)",
+    icon: Bot,
+    visualRank: 35,
   },
 };
 

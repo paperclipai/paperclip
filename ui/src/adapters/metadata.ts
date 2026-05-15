@@ -53,6 +53,16 @@ export function isVisualAdapterChoice(type: string): boolean {
   return !getAdapterDisplay(type).hideFromVisualSelection;
 }
 
+const DEFAULT_ADAPTER_VISUAL_RANK = 1000;
+
+/** Sort key for card pickers and adapter-type dropdowns. */
+export function compareAdapterVisualOrder(typeA: string, typeB: string): number {
+  const rankA = getAdapterDisplay(typeA).visualRank ?? DEFAULT_ADAPTER_VISUAL_RANK;
+  const rankB = getAdapterDisplay(typeB).visualRank ?? DEFAULT_ADAPTER_VISUAL_RANK;
+  if (rankA !== rankB) return rankA - rankB;
+  return getAdapterLabel(typeA).localeCompare(getAdapterLabel(typeB));
+}
+
 /**
  * Build option metadata for a list of adapters (for dropdowns).
  * `labelFor` callback allows callers to override labels; defaults to display registry.
@@ -62,13 +72,15 @@ export function listAdapterOptions(
   adapters: UIAdapterModule[] = listUIAdapters(),
 ): AdapterOptionMetadata[] {
   const getLabel = labelFor ?? getAdapterLabel;
-  return adapters.map((adapter) => ({
-    value: adapter.type,
-    label: getLabel(adapter.type),
-    comingSoon: !!getAdapterDisplay(adapter.type).comingSoon,
-    hidden: isAdapterTypeHidden(adapter.type),
-    experimental: !!getAdapterDisplay(adapter.type).experimental,
-  }));
+  return adapters
+    .map((adapter) => ({
+      value: adapter.type,
+      label: getLabel(adapter.type),
+      comingSoon: !!getAdapterDisplay(adapter.type).comingSoon,
+      hidden: isAdapterTypeHidden(adapter.type),
+      experimental: !!getAdapterDisplay(adapter.type).experimental,
+    }))
+    .sort((a, b) => compareAdapterVisualOrder(a.value, b.value));
 }
 
 /**

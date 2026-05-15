@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  compareAdapterVisualOrder,
   isEnabledAdapterType,
   isValidAdapterType,
   isVisualAdapterChoice,
@@ -35,6 +36,12 @@ describe("adapter metadata", () => {
   it("keeps intentionally withheld built-in adapters marked as coming soon", () => {
     expect(isEnabledAdapterType("process")).toBe(false);
     expect(isEnabledAdapterType("http")).toBe(false);
+  });
+
+  it("orders atomic_agent_http immediately after hermes_local in visual pickers", () => {
+    expect(compareAdapterVisualOrder("hermes_local", "atomic_agent_http")).toBeLessThan(0);
+    expect(compareAdapterVisualOrder("atomic_agent_http", "opencode_local")).toBeLessThan(0);
+    expect(compareAdapterVisualOrder("gemini_local", "hermes_local")).toBeLessThan(0);
   });
 
   it("keeps ACPX selectable from explicit configuration but out of visual pickers", () => {

@@ -14,4 +14,5 @@ export const BUILTIN_ADAPTER_TYPES = new Set([
   "hermes_local",
   "process",
   "http",
+  "atomic_agent_http",
 ]);
