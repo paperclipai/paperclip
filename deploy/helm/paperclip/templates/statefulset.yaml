@@ -378,12 +378,16 @@ spec:
                   "linear": {
                     "type": "http",
                     "url": "http://linear-mcp-server.paperclip.svc.cluster.local:8000/mcp"
+                  },
+                  "gbrain": {
+                    "type": "http",
+                    "url": "http://gbrain-mcp-internal.paperclip.svc.cluster.local:3131/gbrain"
                   }
                 }
               }
               EOF
                 chown 1000:1000 "${MCP_FILE}" 2>/dev/null || true
-                echo "seed: wrote ${MCP_FILE} with paperclip + prometheus + tempo + kubernetes-readonly + github + linear MCP servers"
+                echo "seed: wrote ${MCP_FILE} with paperclip + prometheus + tempo + kubernetes-readonly + github + linear + gbrain MCP servers"
               else
                 echo "seed: skipping mcp.json — bridge stdio.js not found at ${MCP_BRIDGE_JS}"
               fi
