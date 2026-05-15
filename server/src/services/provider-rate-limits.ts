@@ -389,7 +389,7 @@ export function providerRateLimitService(db: Db) {
             where ${issueRelations.companyId} = ${issues.companyId}
               and ${issueRelations.type} = 'blocks'
               and ${issueRelations.relatedIssueId} = ${issues.id}
-              and blocker_issues.status <> 'done'
+              and blocker_issues.status not in ('done', 'cancelled')
           )`,
           sql`not exists (
             select 1

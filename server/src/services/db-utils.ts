@@ -34,6 +34,6 @@ export function noUnresolvedBlockersSubquery(companyId: string): SQL {
     where ${issueRelations.companyId} = ${companyId}
       and ${issueRelations.type} = 'blocks'
       and ${issueRelations.relatedIssueId} = ${issues.id}
-      and blocker_issues.status <> 'done'
+      and blocker_issues.status not in ('done', 'cancelled')
   )`;
 }
