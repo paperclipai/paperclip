@@ -1,5 +1,5 @@
 import type { QueryResult } from "./types.ts";
-import { escapeHtml } from "./lib/html.ts";
+import { escapeHtml, issueLink } from "./lib/html.ts";
 import { classifyIntent, generateReply } from "./lib/llm.ts";
 import {
   setUserLocation,
@@ -17,7 +17,7 @@ import {
   handleOverviewQuery,
   handleAgentIssuesQuery,
 } from "./tools/paperclip.ts";
-import { resolveAgentByName, handleCreateIssue } from "./tools/actions.ts";
+import { resolveAgentByName, handleCreateIssue, lookupIssue, formatActionName } from "./tools/actions.ts";
 import { cleanTaskTitle, cleanTaskDescription } from "./tools/cleanup.ts";
 import { setPendingTask, getPendingTask, clearPendingTask } from "./lib/pending-tasks.ts";
 import { formatTaskPreview, formatAssigneePrompt } from "./tools/preview.ts";
@@ -309,7 +309,6 @@ export function routeQuery(
       // Explicit confirmation phrases
       if (/^(?:yes|yeah|yep|create(?:\s+it)?|approved|go\s+ahead|do\s+it|proceed|confirm)\b/i.test(trimmed)) {
         return respond(async () => {
-          clearPendingTask(chatId);
           const result = await handleCreateIssue({
             title: pending.title,
             description: pending.description,
@@ -318,6 +317,8 @@ export function routeQuery(
             confirmationMessage: trimmed,
             chatId,
             originalDraftTitle: pending.originalDraftTitle,
+            sourceIssueId: pending.sourceIssueId,
+            sourceIssueIdentifier: pending.sourceIssueIdentifier,
           });
           return result;
         });
@@ -511,9 +512,69 @@ export function routeQuery(
     return respond(() => handleAgentIssuesQuery(progressMatch[1]!));
   }
 
+  // Strip leading conversational filler words for task-related patterns
+  const fillerStripped = trimmed.replace(
+    /^(?:yeah\s*,?\s*|yes\s*,?\s*|yep\s*,?\s*|okay\s*,?\s*|ok\s*,?\s*|sure\s*,?\s*|sure\s+thing\s*,?\s*|please\s*,?\s*|so\s*,?\s*)\s*/i,
+    "",
+  );
+
+  // ── Destructive/state-changing action on a specific issue ──
+  // Patterns: "Can you delete CRE-549?", "Delete CRE-549", "Mark CRE-549 done", etc.
+  // After matching, Chase looks up the issue, reports status, and asks who should handle it.
+  const destructiveActionPattern =
+    /^(?:(?:can\s+you\s*|please\s*))?(?:delete|close|cancel|remove|archive|mark\s+done)\s+(?:task\s+|issue\s+)?(CRE[-\s]?\d+|\d+)\b/i;
+  const destructiveActionMatch = trimmed.match(destructiveActionPattern) || fillerStripped.match(destructiveActionPattern);
+  if (destructiveActionMatch && chatId) {
+    const rawAction = destructiveActionMatch[0].toLowerCase();
+    const rawIdentifier = destructiveActionMatch[2] ?? destructiveActionMatch[1]!;
+    const identifier = rawIdentifier.toUpperCase().replace(/\s+/, "-");
+    let action = "delete";
+    if (/close/.test(rawAction)) action = "close";
+    else if (/cancel/.test(rawAction)) action = "cancel";
+    else if (/remove/.test(rawAction)) action = "remove";
+    else if (/archive/.test(rawAction)) action = "archive";
+    else if (/mark\s+done/.test(rawAction)) action = "mark_done";
+    return respond(async () => {
+      const issue = await lookupIssue(identifier).catch(() => null);
+      const actionName = formatActionName(action);
+      if (!issue) {
+        return { text: `I couldn't find issue ${identifier}. Please check the identifier and try again.` };
+      }
+      setPendingTask(chatId, {
+        title: `${actionName} ${issue.identifier}`,
+        description: `${actionName} ${issue.identifier} - ${issue.title}. Requested by Jeff via Telegram.`,
+        sourceMessage: trimmed,
+        createdAt: Date.now(),
+        awaitingAssign: true,
+        destructiveAction: action,
+        sourceIssueId: issue.id,
+        sourceIssueIdentifier: issue.identifier,
+      });
+      return {
+        text: [
+          `I can help with that. Here\u2019s what I found:`,
+          ``,
+          `<b>${issueLink(issue.identifier)} \u2014 ${escapeHtml(issue.title)}</b>`,
+          `Status: <code>${issue.status}</code> | Priority: <code>${issue.priority}</code>`,
+          ``,
+          `<b>Proposed action:</b> ${actionName} ${issue.identifier}`,
+          `<b>Reason:</b> Jeff requested via Telegram.`,
+          ``,
+          `Reply with an agent name (e.g. <b>Miles</b>), or <b>CANCEL</b> to cancel.`,
+        ].join("\n"),
+      };
+    });
+  }
+
   // ── "Can you have X do Y" — indirect task delegation (preview with confirmation) ──
   // Must come BEFORE the capability check since it starts with "Can you have..."
-  const canYouHaveMatch = trimmed.match(
+  // Also check filler-stripped version for "Yeah can you have..."
+  const canYouHaveText = trimmed.match(/^can\s+you\s+(?:have|ask|tell|get)\s/i)
+    ? trimmed
+    : fillerStripped.match(/^can\s+you\s+(?:have|ask|tell|get)\s/i)
+    ? fillerStripped
+    : null;
+  const canYouHaveMatch = (canYouHaveText || trimmed).match(
     /^can\s+you\s+(?:have|ask|tell|get)\s+(\w+)(?:\s+to\s+|\s+)(.+)/i,
   );
   if (canYouHaveMatch && chatId) {
@@ -582,7 +643,13 @@ export function routeQuery(
   // ── Agent action: "have X do Y" / "tell|ask X to do Y" → preview with confirmation ──
   // "have" uses bare infinitive; "tell/ask/get" may use "to". Excludes non-agent words.
   // ANCHORED to start of string to avoid matching "have" as an auxiliary verb in questions.
-  const createIssueMatch = trimmed.match(
+  // Check both original and filler-stripped text for leading filler support.
+  const createIssueText = /^(?:have|tell|ask|get)\s/i.test(trimmed)
+    ? trimmed
+    : /^(?:have|tell|ask|get)\s/i.test(fillerStripped)
+    ? fillerStripped
+    : null;
+  const createIssueMatch = (createIssueText || trimmed).match(
     /^(?:have|tell|ask|get)\s+(?!me|us|them|him|her|it|you|a|an|the|about|what|when|where|why|how)\s*(\w+)(?:\s+to\s+|\s+)(.+)/i,
   );
   if (createIssueMatch && chatId) {

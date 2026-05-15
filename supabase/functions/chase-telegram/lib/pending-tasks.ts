@@ -1,3 +1,5 @@
+export type PendingActionType = "create_issue" | "destructive_action";
+
 export interface PendingTask {
   title: string;
   description: string;
@@ -6,6 +8,9 @@ export interface PendingTask {
   createdAt: number;
   awaitingAssign?: boolean;
   originalDraftTitle?: string;
+  sourceIssueId?: string;
+  sourceIssueIdentifier?: string;
+  destructiveAction?: string;
 }
 
 const tasks = new Map<number, PendingTask>();

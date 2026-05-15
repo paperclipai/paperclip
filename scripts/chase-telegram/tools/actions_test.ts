@@ -192,3 +192,99 @@ Deno.test({
   sanitizeResources: false,
   sanitizeOps: false,
 });
+
+Deno.test({
+  name: "handleCreateIssue returns permission error on 403 from API",
+  async fn() {
+    setupMockFetch();
+    const { handleCreateIssue } = await import("./actions.ts");
+    mockFetch(/agents/, () => mockJsonResponse(SAMPLE_AGENTS));
+    mockFetch(
+      /\/api\/companies\/.*\/issues$/,
+      () => new Response(
+        JSON.stringify({ error: "Missing permission: tasks:assign" }),
+        { status: 403, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    const result = await handleCreateIssue({
+      title: "Hunter: review PR",
+      description: "review PR",
+      assigneeName: "Hunter",
+      sourceMessage: "Can you have Hunter review PR?",
+      confirmationMessage: "Yes",
+      chatId: 12345,
+    });
+
+    assertStringIncludes(result.text, "unable to create tasks");
+    assertStringIncludes(result.text, "tasks:assign");
+    teardownMockFetch();
+  },
+  sanitizeResources: false,
+  sanitizeOps: false,
+});
+
+Deno.test({
+  name: "handleCreateIssue succeeds even when audit comment fails",
+  async fn() {
+    setupMockFetch();
+    const { handleCreateIssue } = await import("./actions.ts");
+    mockFetch(/agents/, () => mockJsonResponse(SAMPLE_AGENTS));
+    mockFetch(/\/api\/companies\/.*\/issues$/, () => mockJsonResponse({
+      id: "audit-fail-issue",
+      identifier: "CRE-510",
+      title: "Test audit failure",
+      status: "todo",
+      priority: "medium",
+    }));
+    // Comment POST returns 500
+    mockFetch(
+      /\/comments/,
+      () => new Response("Server error", { status: 500 }),
+    );
+
+    const result = await handleCreateIssue({
+      title: "Hunter: test audit failure",
+      description: "test audit failure",
+      assigneeName: "Hunter",
+      sourceMessage: "Test audit failure",
+      confirmationMessage: "Yes",
+      chatId: 12345,
+    });
+
+    // Issue creation should still succeed despite audit comment failure
+    assertStringIncludes(result.text, "Issue Created");
+    assertStringIncludes(result.text, "CRE-510");
+    teardownMockFetch();
+  },
+  sanitizeResources: false,
+  sanitizeOps: false,
+});
+
+Deno.test({
+  name: "handleCreateIssue returns permission error for 403 even without chatId (LLM path)",
+  async fn() {
+    setupMockFetch();
+    const { handleCreateIssue } = await import("./actions.ts");
+    mockFetch(/agents/, () => mockJsonResponse(SAMPLE_AGENTS));
+    mockFetch(
+      /\/api\/companies\/.*\/issues$/,
+      () => new Response(
+        JSON.stringify({ error: "Missing permission: tasks:assign" }),
+        { status: 403, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    const result = await handleCreateIssue({
+      title: "Hunter: review PR",
+      description: "review PR",
+      assigneeName: "Hunter",
+    });
+
+    assertStringIncludes(result.text, "unable to create tasks");
+    assertStringIncludes(result.text, "tasks:assign");
+    teardownMockFetch();
+  },
+  sanitizeResources: false,
+  sanitizeOps: false,
+});
