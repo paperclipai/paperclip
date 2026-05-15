@@ -8,6 +8,7 @@ import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  DEFAULT_TIMER_HEARTBEAT_ELIGIBLE_AGENT_ROLES,
 } from "../types/instance.js";
 import { feedbackDataSharingPreferenceSchema } from "./feedback.js";
 
@@ -46,6 +47,11 @@ export const instanceExperimentalSettingsSchema = z.object({
     .min(MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS)
     .max(MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS)
     .default(DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS),
+  timerHeartbeatEligibleAgentRoles: z
+    .array(z.string().min(1))
+    .default(() => [...DEFAULT_TIMER_HEARTBEAT_ELIGIBLE_AGENT_ROLES]),
+  defaultTimerHeartbeatIntervalSec: z.number().int().min(30).max(24 * 60 * 60).default(300),
+  enableTimerHeartbeatByDefaultForEligibleRoles: z.boolean().default(true),
 }).strict();
 
 export const patchInstanceExperimentalSettingsSchema = instanceExperimentalSettingsSchema.partial();

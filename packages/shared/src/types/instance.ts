@@ -19,6 +19,9 @@ export const DEFAULT_BACKUP_RETENTION: BackupRetentionPolicy = {
   monthlyMonths: 1,
 };
 
+/** Default roles allowed to use scheduler timer heartbeats when settings row has no list yet. */
+export const DEFAULT_TIMER_HEARTBEAT_ELIGIBLE_AGENT_ROLES = ["ceo", "cto"] as const;
+
 export interface InstanceGeneralSettings {
   censorUsernameInLogs: boolean;
   keyboardShortcuts: boolean;
@@ -32,6 +35,12 @@ export interface InstanceExperimentalSettings {
   autoRestartDevServerWhenIdle: boolean;
   enableIssueGraphLivenessAutoRecovery: boolean;
   issueGraphLivenessAutoRecoveryLookbackHours: number;
+  /** Agent `role` values that may use timed (scheduler) heartbeats; others only wake on assignment/demand. */
+  timerHeartbeatEligibleAgentRoles: string[];
+  /** Default `heartbeat.intervalSec` for new/imported agents in eligible roles when unset. Min 30 elsewhere. */
+  defaultTimerHeartbeatIntervalSec: number;
+  /** When true, new/imported eligible agents get `heartbeat.enabled` unless explicitly set. */
+  enableTimerHeartbeatByDefaultForEligibleRoles: boolean;
 }
 
 export interface InstanceSettings {

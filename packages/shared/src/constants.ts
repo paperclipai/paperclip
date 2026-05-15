@@ -78,7 +78,14 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   general: "General",
 };
 
-export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
+/** Default `heartbeat.maxConcurrentRuns` when unset (clamped by `AGENT_MAX_CONCURRENT_RUNS_CAP`). */
+export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 1;
+/** Default interval (seconds) for CEO/CTO timer heartbeats when unset or invalid. */
+export const AGENT_DEFAULT_TIMER_HEARTBEAT_INTERVAL_SEC = 300;
+/** Hard ceiling for `heartbeat.maxConcurrentRuns` (per-agent concurrent runs). */
+export const AGENT_MAX_CONCURRENT_RUNS_CAP = 1;
+/** Max distinct agents that may each have ≥1 running heartbeat run in one company at the same time. */
+export const COMPANY_MAX_CONCURRENT_ACTIVE_AGENTS = 4;
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
 
 export const MODEL_PROFILE_KEYS = ["cheap"] as const;
@@ -635,7 +642,7 @@ export const PERMISSION_KEYS = [
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 
 // ---------------------------------------------------------------------------
-// Plugin System — see doc/plugins/PLUGIN_SPEC.md for the full specification
+// Plugin System — see doc/plugins/插件规范 PLUGIN_SPEC.md for the full specification
 // ---------------------------------------------------------------------------
 
 /**
