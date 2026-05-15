@@ -408,7 +408,17 @@ describe("SidebarAgents", () => {
     expect(mockAgentsApi.resume).not.toHaveBeenCalled();
   });
 
-  it("renders expand controls outside the navigation link for parent agents", async () => {
+  it("renders the action dropdown for agents that report to another agent", async () => {
+    // Earlier versions of SidebarAgents rendered a tree (parent rows
+    // with per-row Collapse/Expand controls outside the NavLink, and a
+    // recursive SidebarAgentTreeList for children). The current
+    // component flat-lists agents and drops per-agent expand controls
+    // entirely — those collapse/expand controls now live only on
+    // SidebarSection (see SidebarSection.test.tsx). What still matters
+    // is that an agent with reportsTo set is rendered as a normal row
+    // with its own action dropdown, so this test now guards just that
+    // surface (the prop drilling case is gone, but the rendering of
+    // reportsTo agents shouldn't regress).
     mockAgentsApi.list.mockResolvedValue([
       makeAgent({ id: "agent-1", name: "CEO", urlKey: "ceo" }),
       makeAgent({ id: "agent-2", name: "Engineer", urlKey: "engineer", reportsTo: "agent-1" }),
@@ -425,23 +435,6 @@ describe("SidebarAgents", () => {
     });
     await flushReact();
 
-    const expandButton = document.body.querySelector(
-      'button[aria-label="Collapse CEO"], button[aria-label="Expand CEO"]',
-    );
-    expect(expandButton).not.toBeNull();
-    expect(expandButton?.className).toContain("cursor-pointer");
-
-    const ceoLink = document.body.querySelector('a[href="/agents/ceo"]');
-    expect(ceoLink).not.toBeNull();
-
-    if (expandButton && ceoLink) {
-      // Expand control button must precede the navigation link in DOM order.
-      const relation = expandButton.compareDocumentPosition(ceoLink);
-      expect(relation & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    }
-
-    // The dropdown action path must work for nested (child) tree rows too —
-    // this guards the prop drilling through the recursive SidebarAgentTreeList.
     await openAgentMenu("Open actions for Engineer");
     const childPauseItem = Array.from(
       document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'),
