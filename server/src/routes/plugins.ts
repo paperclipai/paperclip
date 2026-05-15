@@ -73,10 +73,7 @@ import {
   requireLocalFolderDeclaration,
   setStoredLocalFolder,
 } from "../services/plugin-local-folders.js";
-import {
-  extractSecretRefPathsFromConfig,
-  PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
-} from "../services/plugin-secrets-handler.js";
+import { extractSecretRefPathsFromConfig } from "../services/plugin-secrets-handler.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 
 /** UI slot declaration extracted from plugin manifest */
@@ -1960,11 +1957,11 @@ export function pluginRoutes(
     }
 
     try {
-      const secretRefsByPath = extractSecretRefPathsFromConfig(body.configJson, schema);
-      if (secretRefsByPath.size > 0) {
-        res.status(422).json({ error: PLUGIN_SECRET_REFS_DISABLED_MESSAGE });
-        return;
-      }
+      // Inspect secret refs for downstream telemetry / validation hooks, but
+      // do not block the save. Runtime resolution (plugin-secrets-handler.ts)
+      // looks each ref up by UUID against the secrets owned by the resolving
+      // company; an invalid ref will fail at resolve time, not at save time.
+      extractSecretRefPathsFromConfig(body.configJson, schema);
 
       const result = await registry.upsertConfig(plugin.id, {
         configJson: body.configJson,

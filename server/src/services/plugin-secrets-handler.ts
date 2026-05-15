@@ -39,6 +39,7 @@ import {
   isUuidSecretRef,
   readConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
+import { secretService } from "./secrets.js";
 
 export const PLUGIN_SECRET_REFS_DISABLED_MESSAGE =
   "Plugin secret references are disabled until company-scoped plugin config lands";
@@ -199,10 +200,12 @@ function createRateLimiter(maxAttempts: number, windowMs: number) {
 export function createPluginSecretsHandler(
   options: PluginSecretsHandlerOptions,
 ): PluginSecretsService {
-  const { pluginId } = options;
+  const { pluginId, db } = options;
 
   // Rate limit: max 30 resolution attempts per plugin per minute
   const rateLimiter = createRateLimiter(30, 60_000);
+
+  const secrets = secretService(db);
 
   return {
     async resolve(params: PluginSecretsResolveParams): Promise<string> {
@@ -230,9 +233,25 @@ export function createPluginSecretsHandler(
         throw invalidSecretRef(trimmedRef);
       }
 
-      // Fail closed until plugin config and worker runtime both carry an
-      // explicit company scope for secret bindings and resolution.
-      throw new Error(PLUGIN_SECRET_REFS_DISABLED_MESSAGE);
+      // ---------------------------------------------------------------
+      // 2. Resolve via the company-scoped secretService
+      //
+      // The secret record itself carries `companyId`, so we look it up
+      // there instead of plumbing companyId through buildHostServices
+      // and the entire plugin host-client factory. Multi-tenant
+      // correctness is preserved: each secret only resolves under its
+      // own owning company.
+      //
+      // The capability gate (`secrets.read-ref` in the plugin manifest)
+      // is still enforced upstream by host-client-factory before this
+      // handler is invoked.
+      // ---------------------------------------------------------------
+      const secret = await secrets.getById(trimmedRef);
+      if (!secret) {
+        throw invalidSecretRef(trimmedRef);
+      }
+
+      return await secrets.resolveSecretValue(secret.companyId, trimmedRef, "latest");
     },
   };
 }

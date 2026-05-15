@@ -335,7 +335,7 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(mockLifecycle.unload).toHaveBeenCalledWith(pluginId, true);
   }, 20_000);
 
-  it("rejects plugin config saves that contain secret refs even for instance admins", async () => {
+  it("accepts plugin config saves that contain secret refs (runtime resolves them)", async () => {
     readyPlugin();
 
     const { app } = await createApp({
@@ -354,9 +354,11 @@ describe.sequential("plugin install and upgrade authz", () => {
         },
       });
 
-    expect(res.status).toBe(422);
-    expect(res.body.error).toMatch(/secret references are disabled/i);
-    expect(mockRegistry.upsertConfig).not.toHaveBeenCalled();
+    // Secret-ref validity is checked at runtime by plugin-secrets-handler,
+    // not at save time. Saves succeed; an invalid ref would fail at
+    // ctx.secrets.resolve() in the plugin worker.
+    expect(res.status).toBe(200);
+    expect(mockRegistry.upsertConfig).toHaveBeenCalled();
   }, 20_000);
 
   it("allows instance admins to upgrade plugins", async () => {
