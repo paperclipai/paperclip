@@ -414,6 +414,57 @@ describe("runChildProcess", () => {
       }
     }
   });
+
+  it("removes runId from runningProcesses after terminal result even when a subprocess holds the pipe open (POE-513 regression)", async () => {
+    // On Windows there is no process-group kill, so orphan subprocesses that
+    // inherit the parent's stdout pipe keep the write-end open and delay the
+    // Node 'close' event indefinitely. The fix destroys stdout/stderr after
+    // SIGKILL to force the 'close' event regardless of OS.
+    const runId = randomUUID();
+    let descendantPid: number | null = null;
+
+    const result = await runChildProcess(
+      runId,
+      process.execPath,
+      [
+        "-e",
+        [
+          "const { spawn } = require('node:child_process');",
+          // Child inherits stdout — keeps the pipe write-end open after parent exits.
+          "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 3000)'], { stdio: ['ignore', 'inherit', 'ignore'], detached: false });",
+          "process.stdout.write(`descendant:${child.pid}\\n`);",
+          "process.stdout.write(`${JSON.stringify({ type: 'result', result: 'done' })}\\n`);",
+          // Parent exits quickly; child stays alive and keeps the pipe open.
+          "setTimeout(() => process.exit(0), 25);",
+        ].join(" "),
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 0,
+        graceSec: 1,
+        onLog: async () => {},
+        terminalResultCleanup: {
+          graceMs: 100,
+          hasTerminalResult: ({ stdout }) => stdout.includes('"type":"result"'),
+        },
+      },
+    );
+
+    expect(result.timedOut).toBe(false);
+    expect(result.stdout).toContain('"type":"result"');
+    // Core assertion: the handle must be gone from the in-memory Map after resolution.
+    expect(runningProcesses.has(runId)).toBe(false);
+
+    descendantPid = Number.parseInt(result.stdout.match(/descendant:(\d+)/)?.[1] ?? "", 10);
+    if (Number.isInteger(descendantPid) && descendantPid > 0) {
+      try {
+        process.kill(descendantPid, "SIGKILL");
+      } catch {
+        // Already gone — fine.
+      }
+    }
+  });
 });
 
 describe("renderPaperclipWakePrompt", () => {
