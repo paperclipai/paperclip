@@ -957,7 +957,7 @@ function summarizeIssueRelationRow(row: IssueRelationSummaryRow): IssueRelationI
 async function canonicalUnblockTuplesByIssueId(
   companyId: string,
   issueIds: string[],
-  dbOrTx: DbReader = db,
+  dbOrTx: DbReader,
 ): Promise<Map<string, IssueCanonicalUnblockTuple>> {
   const uniqueIssueIds = [...new Set(issueIds.filter(Boolean))];
   const tuplesByIssueId = new Map<string, IssueCanonicalUnblockTuple>();
