@@ -96,9 +96,10 @@ export async function handleRunFinished(input: HandleRunFinishedInput): Promise<
       agentSlug: agentPageSlug,
     });
   } catch (err) {
-    logger.warn("gbrain retain failed (non-fatal)", {
-      runId,
-      error: err instanceof Error ? err.message : String(err),
-    });
+    const msg = err instanceof Error ? err.message : String(err);
+    // Embed the error in the message string — meta fields named `error`
+    // are getting dropped by the SDK log pipeline somewhere, so without
+    // this inline form the actual failure cause is invisible in logs.
+    logger.warn(`gbrain retain failed (non-fatal): ${msg}`, { runId });
   }
 }
