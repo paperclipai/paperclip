@@ -3117,29 +3117,6 @@ export function agentRoutes(
     res.status(202).json(run);
   });
 
-  router.post("/agents/:id/preflight", async (req, res) => {
-    assertBoard(req);
-    const id = req.params.id as string;
-    const agent = await svc.getById(id);
-    if (!agent) {
-      res.status(404).json({ error: "Agent not found" });
-      return;
-    }
-    const adapterType = agent.adapterType || null;
-    const model = typeof agent.adapterConfig?.model === "string" ? agent.adapterConfig.model : "";
-    const check = adapterType
-      ? resolveAdapterModelAvailability(adapterType, model, agent.companyId)
-      : { available: false as const, code: "adapter_unknown" as const, reason: "No adapter configured", supportedModels: [] };
-    res.json({
-      ok: check.available,
-      agentId: agent.id,
-      adapterType,
-      model: model || null,
-      mode: "shape_only",
-      check,
-    });
-  });
-
   router.post("/agents/:id/claude-login", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
