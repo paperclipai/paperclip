@@ -1757,9 +1757,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     previousStatus: "todo" | "in_progress";
     latestRun: LatestIssueRun;
   }) {
+    // Preserve existing blocker relations so the attention/blocker system
+    // can trace why this issue is blocked (AGE-14132).
+    const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedReason: "Recovery exhausted: no eligible recovery path found. Manual review required — see issue comments for failure details.",
+      blockedByIssueIds: blockerIds,
     });
     if (!updated) return null;
 
