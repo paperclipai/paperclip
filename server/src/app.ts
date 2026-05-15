@@ -2,7 +2,9 @@ import express, { Router, type Request as ExpressRequest } from "express";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import { asc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { agents as agentRows, companies, issues as issueRows } from "@paperclipai/db/schema/index";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
@@ -40,6 +42,9 @@ import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
+import { mobileRoutes } from "./routes/mobile.js";
+import { normalizeAgentStatus, normalizeIssueStatus } from "./mobile/status.js";
+import type { MobileAgentRow, MobileIssueRow } from "./mobile/types.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -103,6 +108,76 @@ export function shouldEnablePrivateHostnameGuard(opts: {
     opts.deploymentExposure === "private" &&
     (opts.deploymentMode === "local_trusted" || opts.deploymentMode === "authenticated")
   );
+}
+
+const toIsoOrNull = (value: Date | string | null | undefined): string | null => {
+  if (!value) return null;
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+};
+
+async function getFirstCompanyId(db: Db): Promise<string | null> {
+  const [company] = await db
+    .select({ id: companies.id })
+    .from(companies)
+    .orderBy(asc(companies.createdAt))
+    .limit(1);
+
+  return company?.id ?? null;
+}
+
+async function loadMobileIssues(db: Db): Promise<MobileIssueRow[]> {
+  const companyId = await getFirstCompanyId(db);
+  if (!companyId) return [];
+
+  const rows = await db
+    .select({
+      id: issueRows.id,
+      title: issueRows.title,
+      status: issueRows.status,
+      priority: issueRows.priority,
+      assigneeName: agentRows.name,
+      updatedAt: issueRows.updatedAt,
+    })
+    .from(issueRows)
+    .leftJoin(agentRows, eq(issueRows.assigneeAgentId, agentRows.id))
+    .where(eq(issueRows.companyId, companyId))
+    .orderBy(asc(issueRows.updatedAt));
+
+  return rows.map((row) => ({
+    id: row.id,
+    title: row.title,
+    status: normalizeIssueStatus(row.status),
+    priority: row.priority ?? null,
+    assigneeName: row.assigneeName ?? null,
+    updatedAt: toIsoOrNull(row.updatedAt) ?? new Date(0).toISOString(),
+    risk: null,
+  }));
+}
+
+async function loadMobileAgents(db: Db): Promise<MobileAgentRow[]> {
+  const companyId = await getFirstCompanyId(db);
+  if (!companyId) return [];
+
+  const rows = await db
+    .select({
+      id: agentRows.id,
+      name: agentRows.name,
+      role: agentRows.role,
+      status: agentRows.status,
+      lastActivityAt: agentRows.lastHeartbeatAt,
+    })
+    .from(agentRows)
+    .where(eq(agentRows.companyId, companyId))
+    .orderBy(asc(agentRows.name));
+
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    role: row.role,
+    status: normalizeAgentStatus(row.status),
+    lastActivityAt: toIsoOrNull(row.lastActivityAt),
+    usageSummary: null,
+  }));
 }
 
 export async function createApp(
@@ -285,6 +360,15 @@ export async function createApp(
     ),
   );
   api.use(adapterRoutes());
+  api.use(
+    "/mobile",
+    mobileRoutes({
+      mobileToken: process.env.MOBILE_APP_TOKEN,
+      telegramUrl: process.env.MOBILE_TELEGRAM_URL,
+      loadIssues: () => loadMobileIssues(db),
+      loadAgents: () => loadMobileAgents(db),
+    }),
+  );
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,
