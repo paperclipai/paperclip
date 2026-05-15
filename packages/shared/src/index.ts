@@ -616,6 +616,14 @@ export type {
   ProviderQuotaResult,
 } from "./types/index.js";
 export { COMPANY_SEARCH_SCOPES } from "./types/index.js";
+export type {
+  NicheOpportunityStatus,
+  NicheOpportunityTier,
+  NicheOpportunity,
+  NicheOpportunityListResponse,
+  NicheOpportunityReviewRequest,
+  NicheOpportunityReviewResponse,
+} from "./types/niche-opportunities.js";
 export {
   ISSUE_REFERENCE_IDENTIFIER_RE,
   buildIssueReferenceHref,

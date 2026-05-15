@@ -409,3 +409,11 @@ export type {
   PluginDatabaseNamespaceMode,
   PluginDatabaseNamespaceStatus,
 } from "./plugin.js";
+export type {
+  NicheOpportunityStatus,
+  NicheOpportunityTier,
+  NicheOpportunity,
+  NicheOpportunityListResponse,
+  NicheOpportunityReviewRequest,
+  NicheOpportunityReviewResponse,
+} from "./niche-opportunities.js";

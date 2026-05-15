@@ -401,6 +401,20 @@ async function migrationStatementAlreadyApplied(
     return constraintExists(sql, addConstraintMatch[2]);
   }
 
+  const createTypeMatch = normalized.match(/^CREATE TYPE (?:"[^"]*"\.)?"([^"]+)"/i);
+  if (createTypeMatch) {
+    const rows = await sql<{ exists: boolean }[]>`
+      SELECT EXISTS (
+        SELECT 1
+        FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE n.nspname = 'public'
+          AND t.typname = ${createTypeMatch[1]}
+      ) AS exists
+    `;
+    return rows[0]?.exists ?? false;
+  }
+
   // If we cannot reason about a statement safely, require manual migration.
   return false;
 }
