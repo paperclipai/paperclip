@@ -202,6 +202,9 @@ export function OnboardingWizard() {
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
   const isLocalAdapter = adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt;
+  const isAtomicAgentHttp = adapterType === "atomic_agent_http";
+  const needsAdapterEnvironmentProbe = isLocalAdapter || isAtomicAgentHttp;
+  const showAdapterModelField = isLocalAdapter || isAtomicAgentHttp;
 
   // Build adapter grids dynamically from the UI registry + display metadata.
   // External/plugin adapters automatically appear with generic defaults.
@@ -437,7 +440,14 @@ export function OnboardingWizard() {
         }
       }
 
-      if (isLocalAdapter) {
+      if (adapterType === "atomic_agent_http" && !url.trim()) {
+        setError(
+          "Enter your Atomic Chat API URL (e.g. http://127.0.0.1:1337).",
+        );
+        return;
+      }
+
+      if (needsAdapterEnvironmentProbe) {
         const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
         if (!result) return;
       }
@@ -826,8 +836,10 @@ export function OnboardingWizard() {
                                 return;
                               }
                               if (nextType === "atomic_agent_http") {
-                                setUrl("http://127.0.0.1:8787");
-                                setModel("");
+                                setUrl("http://127.0.0.1:1337");
+                                setModel("gemma-4-E4B-it-IQ4_XS");
+                                setAdapterEnvResult(null);
+                                setAdapterEnvError(null);
                                 return;
                               }
                               setModel("");
@@ -847,7 +859,37 @@ export function OnboardingWizard() {
                   </div>
 
                   {/* Conditional adapter fields */}
-                  {isLocalAdapter && (
+                  {isAtomicAgentHttp && (
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          Atomic Chat API URL
+                        </label>
+                        <input
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                          placeholder="http://127.0.0.1:1337"
+                          value={url}
+                          onChange={(e) => setUrl(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          Model id
+                        </label>
+                        <input
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                          placeholder="gemma-4-E4B-it-IQ4_XS"
+                          value={model}
+                          onChange={(e) => setModel(e.target.value)}
+                        />
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          Must match an id from <span className="font-mono">GET /v1/models</span> on your Chat server.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {showAdapterModelField && !isAtomicAgentHttp && (
                     <div className="space-y-3">
                       <div>
                         <label className="text-xs text-muted-foreground mb-1 block">
@@ -949,7 +991,7 @@ export function OnboardingWizard() {
                     </div>
                   )}
 
-                  {isLocalAdapter && (
+                  {needsAdapterEnvironmentProbe && (
                     <div className="space-y-2 rounded-md border border-border p-3">
                       <div className="flex items-center justify-between gap-2">
                         <div>
@@ -957,8 +999,9 @@ export function OnboardingWizard() {
                             Adapter environment check
                           </p>
                           <p className="text-[11px] text-muted-foreground">
-                            Runs a live probe that asks the adapter CLI to
-                            respond with hello.
+                            {isAtomicAgentHttp
+                              ? "Probes GET /v1/models on your Atomic Chat server."
+                              : "Runs a live probe that asks the adapter CLI to respond with hello."}
                           </p>
                         </div>
                         <Button
@@ -1068,14 +1111,13 @@ export function OnboardingWizard() {
                   )}
 
                   {(adapterType === "http" ||
-                    adapterType === "openclaw_gateway" ||
-                    adapterType === "atomic_agent_http") && (
+                    adapterType === "openclaw_gateway") && (
                     <div>
                       <label className="text-xs text-muted-foreground mb-1 block">
                         {adapterType === "openclaw_gateway"
                           ? "Gateway URL"
                           : adapterType === "atomic_agent_http"
-                            ? "atomic-agent serve URL"
+                            ? "Atomic Chat API URL"
                             : "Webhook URL"}
                       </label>
                       <input
@@ -1084,7 +1126,7 @@ export function OnboardingWizard() {
                           adapterType === "openclaw_gateway"
                             ? "ws://127.0.0.1:18789"
                             : adapterType === "atomic_agent_http"
-                              ? "http://127.0.0.1:8787"
+                              ? "http://127.0.0.1:1337"
                               : "https://..."
                         }
                         value={url}
@@ -1228,7 +1270,10 @@ export function OnboardingWizard() {
                     <Button
                       size="sm"
                       disabled={
-                        !agentName.trim() || loading || adapterEnvLoading
+                        !agentName.trim() ||
+                        loading ||
+                        adapterEnvLoading ||
+                        (isAtomicAgentHttp && !url.trim())
                       }
                       onClick={handleStep2Next}
                     >
