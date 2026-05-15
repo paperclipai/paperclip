@@ -14,10 +14,10 @@ pnpm dev
 
 首次启动时服务器会：
 
-1. 创建 `~/.paperclip/instances/default/db/` 目录存放数据  
-2. 确保 `paperclip` 数据库存在  
-3. 对空库自动执行 **migrations（迁移）**  
-4. 开始处理请求  
+1. 创建 `~/.paperclip/instances/default/db/` 目录存放数据
+2. 确保 `paperclip` 数据库存在
+3. 对空库自动执行 **migrations（迁移）**
+4. 开始处理请求
 
 数据持久化在 `~/.paperclip/instances/default/db/`，重启后仍在。若要清空本地开发数据，删除该目录即可。
 
@@ -80,9 +80,9 @@ pnpm dev
 
 ### 配置步骤
 
-1. 在 [database.new](https://database.new) 创建项目  
-2. 打开 **Project Settings > Database > Connection string**  
-3. 复制 URI，把密码占位符换成你的数据库密码  
+1. 在 [database.new](https://database.new) 创建项目
+2. 打开 **Project Settings > Database > Connection string**
+3. 复制 URI，把密码占位符换成你的数据库密码
 
 ### 连接串（connection string）
 
@@ -129,7 +129,7 @@ DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@...5432/postgres \
 
 - 数据库约 500 MB  
 - 约 200 并发连接  
-- 项目约 1 周无活动会暂停  
+- 项目约 1 周无活动会暂停
 
 当前细则见 [Supabase pricing](https://supabase.com/pricing)。
 
@@ -137,11 +137,13 @@ DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@...5432/postgres \
 
 由 `DATABASE_URL` 决定模式：
 
-| `DATABASE_URL` | 模式 |
-|---|---|
-| 未设置 | 嵌入式 PostgreSQL（`~/.paperclip/instances/default/db/`） |
-| `postgres://...localhost...` | 本地 Docker PostgreSQL |
-| `postgres://...supabase.com...` | 托管 Supabase |
+
+| `DATABASE_URL`                  | 模式                                                   |
+| ------------------------------- | ---------------------------------------------------- |
+| 未设置                             | 嵌入式 PostgreSQL（`~/.paperclip/instances/default/db/`） |
+| `postgres://...localhost...`    | 本地 Docker PostgreSQL                                 |
+| `postgres://...supabase.com...` | 托管 Supabase                                          |
+
 
 你的 Drizzle schema（`packages/db/src/schema/`）在各模式下保持一致。
 
@@ -160,7 +162,7 @@ Paperclip 支持自动与手动**逻辑备份**（logical database backups）。
 Paperclip 在下列表中存放秘钥元数据与版本：
 
 - `company_secrets`  
-- `company_secret_versions`  
+- `company_secret_versions`
 
 本地/默认安装下，激活的 provider 为 `local_encrypted`：
 
@@ -168,12 +170,12 @@ Paperclip 在下列表中存放秘钥元数据与版本：
 - 默认密钥文件：`~/.paperclip/instances/default/secrets/master.key`（缺失时可自动创建）。  
 - CLI 配置位置：`~/.paperclip/instances/default/config.json` 内 `secrets.localEncrypted.keyFilePath`。  
 - 备份/恢复需同时有数据库元数据与本地 master key 文件；单独任一都不足以恢复。  
-- 服务器会尽力强制密钥文件权限 `0600`；provider 健康检查会报告权限告警。  
+- 服务器会尽力强制密钥文件权限 `0600`；provider 健康检查会报告权限告警。
 
 可选覆盖：
 
 - `PAPERCLIP_SECRETS_MASTER_KEY`（32 字节密钥，base64 / hex / 原始 32 字符）  
-- `PAPERCLIP_SECRETS_MASTER_KEY_FILE`（自定义密钥文件路径）  
+- `PAPERCLIP_SECRETS_MASTER_KEY_FILE`（自定义密钥文件路径）
 
 阻止新的内联敏感环境值的 **strict mode（严格模式）**：
 
@@ -198,4 +200,4 @@ pnpm paperclipai secrets migrate-inline-env --company-id <company-id> --apply
 pnpm secrets:migrate-inline-env --apply
 ```
 
-托管 AWS provider 的补充说明见 [`17 AWS密钥管理 SECRETS-AWS-PROVIDER.md`](./17%20AWS密钥管理%20SECRETS-AWS-PROVIDER.md)。
+托管 AWS provider 的补充说明见 `[17 AWS密钥管理 SECRETS-AWS-PROVIDER.md](./17%20AWS密钥管理%20SECRETS-AWS-PROVIDER.md)`。

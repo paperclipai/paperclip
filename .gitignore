@@ -38,6 +38,9 @@ tmp/
 feedback-export-*
 diagnostics/
 
+# Adapter spawn debug snapshot (never source)
+**/.paperclip-debug-spawn.log
+
 # Editor / tool temp files
 *.tmp
 .vscode/

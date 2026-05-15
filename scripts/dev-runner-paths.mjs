@@ -23,6 +23,11 @@ export function shouldTrackDevServerPath(relativePath) {
   const segments = normalizedPath.split("/");
   const basename = segments.at(-1) ?? normalizedPath;
 
+  // Ephemeral spawn-debug log written under watched trees (e.g. server cwd); must not dirty dev restart banner.
+  if (basename === ".paperclip-debug-spawn.log") {
+    return false;
+  }
+
   if (nodeDiagnosticReportPattern.test(basename)) {
     return false;
   }
