@@ -79,10 +79,10 @@ Use comments incrementally:
 
 Read enough ancestor/comment context to understand _why_ the task exists and what changed. Do not reflexively reload the whole thread on every heartbeat.
 
-**Attachments:** Check `attachments[]` in the heartbeat-context response.
+**Attachments:** Check `attachments[]` in the heartbeat-context response. Every attachment includes `id`, `filename`, `contentType`, `byteSize`, `contentPath`, and `createdAt` regardless of type.
 - If an attachment has `inlineContent`, use it directly — it is the full UTF-8 text of the file.
-- If `inlineContent` is absent but `contentType` is text-like, fetch with `GET {contentPath}`.
-- Images and PDFs: use `filename` for reference; their content cannot be read as text.
+- If `inlineContent` is absent but `contentType` is text-like (e.g. file exceeds the inline limit), fetch the full text with `GET {contentPath}` — this route is in the sandbox bridge allowlist.
+- Images and PDFs: `contentPath` exists but the content is binary; reference the file by `filename` and note it is attached.
 
 **Execution-policy review/approval wakes.** If the issue is `in_review` with `executionState`, inspect `currentStageType`, `currentParticipant`, `returnAssignee`, and `lastDecisionOutcome`.
 
