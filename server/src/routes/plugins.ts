@@ -180,6 +180,14 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
     localPath: "packages/plugins/examples/plugin-orchestration-smoke-example",
     tag: "example",
   },
+  {
+    packageName: "@paperclipai/plugin-clarifier-example",
+    pluginKey: "paperclipai.plugin-clarifier-example",
+    displayName: "Clarifier (Example)",
+    description: "Tier-0 structural pre-filter that decides whether an issue is eligible for clarification — subscribes to comment, status, and run events and writes verdicts to a plugin-owned table for the LLM tier to consume.",
+    localPath: "packages/plugins/examples/plugin-clarifier-example",
+    tag: "example",
+  },
 ];
 
 function listBundledPluginExamples(): AvailablePluginExample[] {
