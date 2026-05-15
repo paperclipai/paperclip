@@ -266,6 +266,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     agentHome,
   });
 
+  /** Reduce background cron + hot-reload churn in headless runs; override via config.env. */
+  const applyDefaultCodebuddyHeadlessEnv = asBoolean(config.applyDefaultCodebuddyHeadlessEnv, true);
+  if (applyDefaultCodebuddyHeadlessEnv) {
+    const defaultHeadlessEnv: Record<string, string> = {
+      CODEBUDDY_DISABLE_CRON: "1",
+      CODEBUDDY_DISABLE_HOT_RELOAD: "1",
+    };
+    for (const [key, value] of Object.entries(defaultHeadlessEnv)) {
+      const userVal = envConfig[key];
+      if (typeof userVal === "string" && userVal.trim().length > 0) continue;
+      if (typeof env[key] === "string" && env[key].trim().length > 0) continue;
+      env[key] = value;
+    }
+  }
+
   // Apply user env config
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
@@ -373,7 +388,58 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   // ---- Execute ----
-  const proc = await runChildProcess(runId, command, args, {
+  // DEBUG: Log spawn details for troubleshooting STATUS_DLL_INIT_FAILED
+  const fs = await import("node:fs");
+  const logPath = path.join(process.cwd(), ".paperclip-debug-spawn.log");
+  const debugLog = {
+    timestamp: new Date().toISOString(),
+    runId,
+    command,
+    args,
+    cwd,
+    envKeys: Object.keys(env).filter(k => k === 'PATH' || k === 'SystemRoot' || k === 'WINDIR' || k === 'ComSpec' || k === 'PATHEXT' || k === 'TEMP' || k === 'TMP' || k.startsWith('CODEBUDDY_') || k.startsWith('PAPERCLIP_')),
+    pathVal: env.PATH?.slice(0, 500),
+    systemRoot: env.SystemRoot,
+    windir: env.WINDIR,
+    comspec: env.ComSpec,
+    pathext: env.PATHEXT,
+    nodeOptions: env.NODE_OPTIONS,
+    nodeVersion: process.version,
+  };
+  fs.writeFileSync(logPath, JSON.stringify(debugLog, null, 2) + "\n", "utf-8");
+  // END DEBUG
+
+  // Plan A: On Windows, bypass cmd.exe wrapping to avoid STATUS_DLL_INIT_FAILED
+  // caused by @lydell/node-pty/conpty.node failing in a non-console process tree.
+  // Instead of: spawn(cmd.exe, ["/d","/s","/c", "codebuddy.cmd ..."])
+  // We do:      spawn(node.exe, [entryScript, ...args])
+  // Falls back to cmd.exe wrapping if resolution fails at any step.
+  let spawnCommand = command;
+  let spawnArgs = args;
+  if (process.platform === "win32") {
+    const { execSync } = await import("node:child_process");
+    try {
+      const whichOut = execSync(`where ${command}`, { encoding: "utf8", timeout: 5000 })
+        .split("\n").map((s: string) => s.trim()).filter(Boolean);
+      const cmdPath = whichOut.find((p: string) => /\.cmd$/i.test(p));
+      if (cmdPath) {
+        const cmdDir = path.dirname(cmdPath);
+        const entryScript = path.join(cmdDir, "node_modules", "@tencent-ai", "codebuddy-code", "bin", "codebuddy");
+        const nodeOut = execSync("where node", { encoding: "utf8", timeout: 5000 })
+          .split("\n").map((s: string) => s.trim()).filter(Boolean);
+        const nodeBin = nodeOut[0];
+        if (nodeBin && fs.existsSync(entryScript)) {
+          spawnCommand = nodeBin;
+          spawnArgs = [entryScript, ...args];
+          await onLog("stdout", `[paperclip] Plan A: bypassing cmd.exe wrapper, spawning node directly\n`);
+        }
+      }
+    } catch {
+      // Fall back to default cmd.exe wrapping
+    }
+  }
+
+  const proc = await runChildProcess(runId, spawnCommand, spawnArgs, {
     cwd,
     env,
     stdin: prompt,

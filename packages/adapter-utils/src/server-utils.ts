@@ -58,7 +58,7 @@ function resolveProcessGroupId(child: ChildProcess) {
   return typeof child.pid === "number" && child.pid > 0 ? child.pid : null;
 }
 
-function killWindowsProcessTree(pid: number): void {
+export function killWindowsProcessTree(pid: number): void {
   try {
     execSync(`taskkill /F /T /PID ${pid}`, { stdio: "ignore", timeout: 10_000 });
   } catch {

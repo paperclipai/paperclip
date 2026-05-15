@@ -48,14 +48,15 @@ Adapter: codebuddy_local
 Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file injected via --system-prompt-file
-- model (string, optional): CodeBuddy model id (default: glm-5.1)
+- model (string, optional): adapter model id from the built-in list (default: **V-glm-5.1**). Prefix **V-**, **D-**, or **M-** selects the lane; execute strips it and passes \`--model custom-local:<base>\`
 - effort (string, optional): reasoning effort passed via --effort (low|medium|high)
 - promptTemplate (string, optional): run prompt template
 - maxTurnsPerRun (number, optional): max turns for one run (passed as --max-turns)
 - dangerouslySkipPermissions (boolean, optional, default true): pass -y to codebuddy
 - command (string, optional): defaults to "codebuddy"
 - extraArgs (string[], optional): additional CLI args
-- env (object, optional): KEY=VALUE environment variables
+- env (object, optional): KEY=VALUE environment variables. For **Volcengine (火山) billing**, set **CODEBUDDY_BASE_URL** to your Ark OpenAI-compatible endpoint and **CODEBUDDY_API_KEY** to the Volcengine key; default Tencent/CodeBuddy-only keys often yield **429** when quota is exhausted (see repo doc **CodeBuddy-火山引擎端点与配额.md**).
+- applyDefaultCodebuddyHeadlessEnv (boolean, optional, default true): when true, sets CODEBUDDY_DISABLE_CRON=1 and CODEBUDDY_DISABLE_HOT_RELOAD=1 unless already set in env or config.env (reduces headless background churn)
 
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
