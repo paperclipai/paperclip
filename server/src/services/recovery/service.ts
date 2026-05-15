@@ -60,26 +60,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
-
-const POSTGRES_DEADLOCK_CODE = "40P01";
-const MAX_DEADLOCK_RETRIES = 3;
-
-async function withDeadlockRetry<T>(fn: () => Promise<T>): Promise<T> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < MAX_DEADLOCK_RETRIES; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      if ((err as any)?.code === POSTGRES_DEADLOCK_CODE) {
-        lastError = err;
-        await new Promise((resolve) => setTimeout(resolve, 10 * (attempt + 1)));
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw lastError;
-}
+import { withDeadlockRetry } from "../db-utils.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
