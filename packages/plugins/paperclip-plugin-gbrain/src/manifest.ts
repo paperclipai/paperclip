@@ -17,6 +17,8 @@ const manifest: PaperclipPluginManifestV1 = {
   categories: ["automation", "connector"],
   capabilities: [
     "events.subscribe",
+    "issues.read",
+    "agents.read",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
