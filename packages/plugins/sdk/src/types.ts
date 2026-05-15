@@ -1442,8 +1442,8 @@ export interface AgentSessionEvent {
   sessionId: string;
   runId: string;
   seq: number;
-  /** The kind of event: "chunk" for output data, "status" for run state changes, "done" for end-of-stream, "error" for failures. */
-  eventType: "chunk" | "status" | "done" | "error";
+  /** The kind of event: "chunk" for output data, "assistant_message" for final assistant text, "status" for run state changes, "done" for end-of-stream, "error" for failures. */
+  eventType: "chunk" | "assistant_message" | "status" | "done" | "error";
   stream: "stdout" | "stderr" | "system" | null;
   message: string | null;
   payload: Record<string, unknown> | null;

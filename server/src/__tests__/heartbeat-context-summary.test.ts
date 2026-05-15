@@ -55,6 +55,17 @@ describe("buildPaperclipTaskMarkdown", () => {
     expect(acceptedConfirmation).not.toContain("Make the plan only.");
   });
 
+  it("renders plugin session prompts without a real issue or wake comment", () => {
+    const taskContext = buildPaperclipTaskMarkdown({
+      issue: null,
+      sessionPrompt: "@Jack please answer this Telegram message",
+    });
+
+    expect(taskContext).toContain("Latest session message:");
+    expect(taskContext).toContain("@Jack please answer this Telegram message");
+    expect(taskContext).toContain("Use this task context as the current assignment.");
+  });
+
   it("prefers ordinary comment planning guidance over stale accepted confirmation state", () => {
     const commentWake = buildPaperclipTaskMarkdown({
       issue: {
