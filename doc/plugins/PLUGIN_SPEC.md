@@ -773,6 +773,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `jobs.schedule`
 - `webhooks.receive`
 - `http.outbound`
+- `http.private-network` — permits `http.outbound` requests to loopback, private LAN, link-local, and other reserved address ranges.
 - `secrets.read-ref`
 
 ### Agent Tools
