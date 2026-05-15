@@ -46,10 +46,11 @@ export function wrapTool(
     try {
       const result = await fn(params, runCtx, env);
       if (result.error) {
-        await safeLog(ctx, runCtx.companyId, `${toolName}: refused — ${result.error}`, {
+        await safeLog(ctx, runCtx.companyId, `${toolName}: refused`, {
           toolName,
           agentId: runCtx.agentId,
           refusal: true,
+          code: codeFromToolError(result.error),
         });
         ctx.logger.warn(`tool refused: ${toolName}`, { error: result.error });
       } else {
@@ -75,11 +76,16 @@ export function wrapTool(
         toolName,
         agentId: runCtx.agentId,
         code,
-        reason,
       });
       return { error: errorString };
     }
   };
+}
+
+function codeFromToolError(error: string): string {
+  const separator = error.indexOf(":");
+  const code = separator > 0 ? error.slice(0, separator).trim() : error.trim();
+  return code || "tool_error";
 }
 
 async function safeLog(

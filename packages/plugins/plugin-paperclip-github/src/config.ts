@@ -44,11 +44,15 @@ export class ConfigError extends Error {
 
 export function parseRepo(repo: string): { owner: string; name: string } {
   const trimmed = repo.trim();
-  const slash = trimmed.indexOf("/");
-  if (slash <= 0 || slash === trimmed.length - 1) {
+  const parts = trimmed.split("/");
+  const [owner, name] = parts;
+  if (parts.length !== 2 || !owner || !name) {
     throw new ConfigError(`Invalid repo "${repo}": expected "owner/name"`);
   }
-  return { owner: trimmed.slice(0, slash), name: trimmed.slice(slash + 1) };
+  if (!isGitHubRepoSegment(owner) || !isGitHubRepoSegment(name)) {
+    throw new ConfigError(`Invalid repo "${repo}": expected safe GitHub owner/name`);
+  }
+  return { owner, name };
 }
 
 /**
@@ -68,7 +72,7 @@ export async function resolveConfig(
   if (!cfg.privateKeyPem) throw new ConfigError("privateKeyPem secret ref is required");
   if (!cfg.installationId) throw new ConfigError("installationId secret ref is required");
   if (!cfg.repo) throw new ConfigError("repo (owner/name) is required");
-  parseRepo(cfg.repo);
+  const repo = parseRepo(cfg.repo);
 
   const [appIdStr, privateKeyPem, installationIdStr] = await Promise.all([
     maybeResolve(cfg.appId, secretsResolve),
@@ -89,10 +93,14 @@ export async function resolveConfig(
     appId,
     privateKeyPem,
     installationId,
-    repo: cfg.repo,
+    repo: `${repo.owner}/${repo.name}`,
     defaultBranch: cfg.defaultBranch ?? "main",
     mergeQueueEnabled: cfg.mergeQueueEnabled ?? true,
   };
+}
+
+function isGitHubRepoSegment(segment: string): boolean {
+  return /^[A-Za-z0-9_.-]+$/.test(segment);
 }
 
 /**
