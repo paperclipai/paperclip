@@ -303,6 +303,70 @@ describeEmbeddedPostgres("provider rate-limit block release", () => {
     expect(remainingRelations).toHaveLength(0);
   });
 
+  it("does not unblock agent-assigned issues when released provider members have no issue id", async () => {
+    const svc = providerRateLimitService(db);
+    const now = new Date("2026-05-06T07:32:00.000Z");
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `P${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Claude",
+      role: "engineer",
+      status: "paused",
+      pauseReason: "provider_rate_limit",
+      pausedAt: new Date(now.getTime() - 60_000),
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-sonnet-4-6" },
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const [block] = await db
+      .insert(providerRateLimitBlocks)
+      .values({
+        companyId,
+        adapterType: "claude_local",
+        limitKind: "five_hour",
+        modelFamily: null,
+        resetsAt: new Date(now.getTime() - 1_000),
+        createdAt: new Date(now.getTime() - 60_000),
+        updatedAt: now,
+      })
+      .returning();
+    await db.insert(providerRateLimitBlockMembers).values({
+      blockId: block!.id,
+      companyId,
+      agentId,
+      issueId: null,
+      originalAgentStatus: "running",
+      releaseStatus: "pending",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Budget-blocked issue",
+      status: "blocked",
+      assigneeAgentId: agentId,
+      updatedAt: now,
+    });
+
+    await svc.releaseAndResumeForBlock(block!);
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue?.status).toBe("blocked");
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(agent?.status).toBe("idle");
+  });
+
   it("releases only a changed-scope provider pause and keeps the original provider block active", async () => {
     const svc = providerRateLimitService(db);
     const now = new Date("2026-05-06T08:00:00.000Z");
