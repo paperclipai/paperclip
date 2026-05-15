@@ -233,22 +233,14 @@ export function SidebarAccountMenu({
                   {t("account.language")}
                 </div>
                 <div className="flex flex-wrap gap-1.5">
-                  {[
-                    { code: "en", label: "English" },
-                    { code: "es", label: "Español" },
-                    { code: "pt", label: "Português" },
-                    { code: "de", label: "Deutsch" },
-                    { code: "fr", label: "Français" },
-                    { code: "ja", label: "日本語" },
-                    { code: "zh", label: "中文" },
-                  ].map((lang) => {
-                    const active = i18n.language?.startsWith(lang.code);
+                  {i18n.languages.map((code) => {
+                    const active = i18n.language?.startsWith(code);
                     return (
                       <button
-                        key={lang.code}
+                        key={code}
                         type="button"
                         onClick={() => {
-                          i18n.changeLanguage(lang.code);
+                          i18n.changeLanguage(code);
                           setOpen(false);
                         }}
                         className={cn(
@@ -258,7 +250,7 @@ export function SidebarAccountMenu({
                             : "bg-accent/50 text-foreground hover:bg-accent",
                         )}
                       >
-                        {lang.label}
+                        {code.toUpperCase()}
                       </button>
                     );
                   })}

@@ -151,8 +151,8 @@ export function getAdapterLabel(type: string): string {
 
 export function getAdapterLabels(): Record<string, string> {
   const suffixed: Record<string, string> = {};
-  for (const [type, info] of Object.entries(adapterDisplayMap)) {
-    suffixed[type] = withSuffix(info.label, getTypeSuffix(type));
+  for (const type of Object.keys(adapterDisplayMap)) {
+    suffixed[type] = getAdapterLabel(type);
   }
   return suffixed;
 }
@@ -164,7 +164,7 @@ export function getAdapterDisplay(type: string): AdapterDisplayInfo {
       ...known,
       description: getAdapterDescription(type, known.description),
       disabledLabel: known.disabledLabel
-        ? t("adapters.adapterDisplayRegistry.disabledLabel." + type)
+        ? getAdapterDescription("adapters.adapterDisplayRegistry.disabledLabel." + type, known.disabledLabel)
         : undefined,
     };
   }
