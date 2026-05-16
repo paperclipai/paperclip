@@ -9,6 +9,16 @@ import { assetService, logActivity } from "../services/index.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 const SVG_CONTENT_TYPE = "image/svg+xml";
+
+/** Re-decode multer's latin1-decoded filename as UTF-8 to fix non-ASCII names. */
+function fixMulterFilename(raw: string): string {
+  if (!raw) return raw;
+  try {
+    return Buffer.from(raw, "latin1").toString("utf8");
+  } catch {
+    return raw;
+  }
+}
 const ALLOWED_COMPANY_LOGO_CONTENT_TYPES = new Set([
   "image/png",
   "image/jpeg",
@@ -161,7 +171,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
     const stored = await storage.putFile({
       companyId,
       namespace: `assets/${namespaceSuffix}`,
-      originalFilename: file.originalname || null,
+      originalFilename: fixMulterFilename(file.originalname) || null,
       contentType,
       body: fileBody,
     });
@@ -259,7 +269,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
     const stored = await storage.putFile({
       companyId,
       namespace: "assets/companies",
-      originalFilename: file.originalname || null,
+      originalFilename: fixMulterFilename(file.originalname) || null,
       contentType,
       body: fileBody,
     });
