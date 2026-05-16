@@ -105,6 +105,7 @@ supabase secrets set TELEGRAM_BOT_TOKEN=<token>
 supabase secrets set PAPERCLIP_API_URL=<url>
 supabase secrets set CHASE_PAPERCLIP_API_KEY=<key>
 supabase secrets set PAPERCLIP_COMPANY_ID=<id>
+supabase secrets set CHASE_AGENT_ID=717b8295-e4a5-4baf-98e5-e8c7d92d509b
 supabase secrets set ALLOWED_TELEGRAM_USER_IDS=<ids>
 supabase secrets set WEBHOOK_SETUP_SECRET=<secret>
 supabase secrets set DEEPSEEK_API_KEY=<key>

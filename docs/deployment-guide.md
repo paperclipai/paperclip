@@ -42,6 +42,7 @@ For the `chase-telegram` function, the required runtime secrets are:
 | `PAPERCLIP_API_URL` | Yes | Paperclip API base URL |
 | `CHASE_PAPERCLIP_API_KEY` | Yes | Chase's Paperclip API key |
 | `PAPERCLIP_COMPANY_ID` | Yes | Company UUID for API queries |
+| `CHASE_AGENT_ID` | Yes | Chase — Dispatcher agent ID for Paperclip agent wakeup |
 | `ALLOWED_TELEGRAM_USER_IDS` | No | Comma-separated Telegram user IDs (empty = open) |
 | `WEBHOOK_SETUP_SECRET` | No | Secret for `/setup-webhook` auth |
 | `DEEPSEEK_API_KEY` | No | DeepSeek API key (primary AI provider) |

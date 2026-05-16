@@ -41,6 +41,12 @@ jobs:
         with:
           version: latest
 
+      - name: Set CHASE_AGENT_ID secret
+        run: |
+          supabase secrets set CHASE_AGENT_ID=717b8295-e4a5-4baf-98e5-e8c7d92d509b
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+
       - name: Deploy chase-telegram function
         run: |
           supabase functions deploy chase-telegram \
