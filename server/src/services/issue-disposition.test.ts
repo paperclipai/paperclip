@@ -144,17 +144,22 @@ describe("dispositionBodyEquivalent", () => {
 });
 
 describe("validateWorkerSelfAttest", () => {
+  const STAGE_REVIEW_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const STAGE_REVIEW_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const STAGE_APPROVAL_C = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const STAGE_APPROVAL_D = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+
   const baseInput = {
     dispositionValue: "done" as const,
     actor: { actorType: "agent" as const, agentId: AGENT_ID, userId: null, runId: RUN_ID },
     issueAssigneeAgentId: AGENT_ID,
     issueAssigneeUserId: null,
     approvedDecisionActors: [
-      { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "review" as const },
-      { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "approval" as const },
+      { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "review" as const, stageId: STAGE_REVIEW_A },
+      { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "approval" as const, stageId: STAGE_APPROVAL_C },
     ],
-    hasReviewStage: true,
-    hasApprovalStage: true,
+    requiredReviewStageIds: [STAGE_REVIEW_A],
+    requiredApprovalStageIds: [STAGE_APPROVAL_C],
   };
 
   it("allows a worker when distinct reviewer and approver decisions exist", () => {
@@ -165,26 +170,28 @@ describe("validateWorkerSelfAttest", () => {
     const result = validateWorkerSelfAttest({
       ...baseInput,
       approvedDecisionActors: [
-        { actorAgentId: AGENT_ID, actorUserId: null, stageType: "review" },
-        { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "approval" },
+        { actorAgentId: AGENT_ID, actorUserId: null, stageType: "review", stageId: STAGE_REVIEW_A },
+        { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "approval", stageId: STAGE_APPROVAL_C },
       ],
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected rejection");
     expect(result.missing).toBe("distinct_reviewer");
+    expect(result.stageId).toBe(STAGE_REVIEW_A);
   });
 
   it("rejects worker self-attest when only their own approval decision exists", () => {
     const result = validateWorkerSelfAttest({
       ...baseInput,
       approvedDecisionActors: [
-        { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "review" },
-        { actorAgentId: AGENT_ID, actorUserId: null, stageType: "approval" },
+        { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "review", stageId: STAGE_REVIEW_A },
+        { actorAgentId: AGENT_ID, actorUserId: null, stageType: "approval", stageId: STAGE_APPROVAL_C },
       ],
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected rejection");
     expect(result.missing).toBe("distinct_approval_owner");
+    expect(result.stageId).toBe(STAGE_APPROVAL_C);
   });
 
   it("skips check entirely for non-done dispositions", () => {
@@ -203,26 +210,96 @@ describe("validateWorkerSelfAttest", () => {
     }).ok).toBe(true);
   });
 
-  it("skips review check when no review stage exists", () => {
+  it("skips review check when no review stages are required", () => {
     expect(validateWorkerSelfAttest({
       ...baseInput,
-      hasReviewStage: false,
+      requiredReviewStageIds: [],
       approvedDecisionActors: [
-        { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "approval" },
+        { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "approval", stageId: STAGE_APPROVAL_C },
       ],
     }).ok).toBe(true);
   });
 
-  it("rejects when no approved approval decision exists at all but stage required", () => {
-    const result = validateWorkerSelfAttest({
+  it("defers to transition helper when no approved decision exists for a required stage", () => {
+    // Required stage has zero approved decisions — derivePreconditionFlags/
+    // transition helper owns that rejection (invalid_disposition_transition),
+    // so self-attest stays focused on actor-distinctness and passes here.
+    expect(validateWorkerSelfAttest({
       ...baseInput,
       approvedDecisionActors: [
-        { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "review" },
+        { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "review", stageId: STAGE_REVIEW_A },
+      ],
+    }).ok).toBe(true);
+  });
+
+  it("rejects when one of two required review stages is self-approved by the worker", () => {
+    // Stage A approved by distinct actor, Stage B self-approved by worker,
+    // approval stage approved by distinct actor. The previous (non-stage-precise)
+    // implementation passed this case because "some distinct reviewer existed
+    // in the review stage type". The fixed implementation must reject on
+    // Stage B specifically.
+    const result = validateWorkerSelfAttest({
+      ...baseInput,
+      requiredReviewStageIds: [STAGE_REVIEW_A, STAGE_REVIEW_B],
+      approvedDecisionActors: [
+        { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "review", stageId: STAGE_REVIEW_A },
+        { actorAgentId: AGENT_ID, actorUserId: null, stageType: "review", stageId: STAGE_REVIEW_B },
+        { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "approval", stageId: STAGE_APPROVAL_C },
+      ],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected rejection");
+    expect(result.missing).toBe("distinct_reviewer");
+    expect(result.stageId).toBe(STAGE_REVIEW_B);
+  });
+
+  it("rejects when one of two required approval stages is self-approved by the worker", () => {
+    const result = validateWorkerSelfAttest({
+      ...baseInput,
+      requiredApprovalStageIds: [STAGE_APPROVAL_C, STAGE_APPROVAL_D],
+      approvedDecisionActors: [
+        { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "review", stageId: STAGE_REVIEW_A },
+        { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "approval", stageId: STAGE_APPROVAL_C },
+        { actorAgentId: AGENT_ID, actorUserId: null, stageType: "approval", stageId: STAGE_APPROVAL_D },
       ],
     });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected rejection");
     expect(result.missing).toBe("distinct_approval_owner");
+    expect(result.stageId).toBe(STAGE_APPROVAL_D);
+  });
+
+  it("accepts a stage that has both a self-approval and a distinct-actor approval", () => {
+    // Same stage approved twice: once by the worker, once by a distinct actor.
+    // The distinct-actor approval satisfies the per-stage invariant.
+    expect(validateWorkerSelfAttest({
+      ...baseInput,
+      requiredReviewStageIds: [STAGE_REVIEW_A],
+      approvedDecisionActors: [
+        { actorAgentId: AGENT_ID, actorUserId: null, stageType: "review", stageId: STAGE_REVIEW_A },
+        { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "review", stageId: STAGE_REVIEW_A },
+        { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "approval", stageId: STAGE_APPROVAL_C },
+      ],
+    }).ok).toBe(true);
+  });
+
+  it("does not let a distinct-actor approval in stage A satisfy a self-approval in stage B", () => {
+    // This is the precise regression cited by QA: a single distinct reviewer
+    // anywhere in the "review" stage type can no longer rescue a self-approved
+    // sibling review stage.
+    const result = validateWorkerSelfAttest({
+      ...baseInput,
+      requiredReviewStageIds: [STAGE_REVIEW_A, STAGE_REVIEW_B],
+      approvedDecisionActors: [
+        { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "review", stageId: STAGE_REVIEW_A },
+        { actorAgentId: AGENT_ID, actorUserId: null, stageType: "review", stageId: STAGE_REVIEW_B },
+        { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "approval", stageId: STAGE_APPROVAL_C },
+      ],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected rejection");
+    expect(result.missing).toBe("distinct_reviewer");
+    expect(result.stageId).toBe(STAGE_REVIEW_B);
   });
 });
 

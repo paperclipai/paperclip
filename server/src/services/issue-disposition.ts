@@ -261,12 +261,32 @@ export interface WorkerSelfAttestInput {
   actor: DispositionWriterActor;
   issueAssigneeAgentId: string | null;
   issueAssigneeUserId: string | null;
-  approvedDecisionActors: Array<{ actorAgentId: string | null; actorUserId: string | null; stageType: string }>;
-  hasReviewStage: boolean;
-  hasApprovalStage: boolean;
+  approvedDecisionActors: Array<{
+    actorAgentId: string | null;
+    actorUserId: string | null;
+    stageType: string;
+    stageId: string;
+  }>;
+  /**
+   * Stage IDs for every required review stage. When the actor is the issue
+   * worker/assignee, each of these stages must have at least one approved
+   * decision (matched by stageId) from a non-worker actor.
+   */
+  requiredReviewStageIds: string[];
+  /** Same as `requiredReviewStageIds` but for approval-type stages. */
+  requiredApprovalStageIds: string[];
 }
 
-export function validateWorkerSelfAttest(input: WorkerSelfAttestInput): { ok: true } | { ok: false; missing: "distinct_reviewer" | "distinct_approval_owner"; message: string } {
+export type WorkerSelfAttestResult =
+  | { ok: true }
+  | {
+    ok: false;
+    missing: "distinct_reviewer" | "distinct_approval_owner";
+    message: string;
+    stageId: string;
+  };
+
+export function validateWorkerSelfAttest(input: WorkerSelfAttestInput): WorkerSelfAttestResult {
   if (input.dispositionValue !== "done") return { ok: true };
 
   const actorIsAssigneeAgent =
@@ -280,38 +300,42 @@ export function validateWorkerSelfAttest(input: WorkerSelfAttestInput): { ok: tr
 
   if (!actorIsAssigneeAgent && !actorIsAssigneeUser) return { ok: true };
 
-  if (input.hasReviewStage) {
-    const distinctReviewer = input.approvedDecisionActors.some((decision) =>
-      decision.stageType === "review"
-      && (
-        (decision.actorAgentId && decision.actorAgentId !== input.actor.agentId)
-        || (decision.actorUserId && decision.actorUserId !== input.actor.userId)
-      ),
+  const isDistinctActor = (decision: { actorAgentId: string | null; actorUserId: string | null }): boolean =>
+    (Boolean(decision.actorAgentId) && decision.actorAgentId !== input.actor.agentId)
+    || (Boolean(decision.actorUserId) && decision.actorUserId !== input.actor.userId);
+
+  for (const stageId of input.requiredReviewStageIds) {
+    const stageApprovals = input.approvedDecisionActors.filter(
+      (decision) => decision.stageType === "review" && decision.stageId === stageId,
     );
-    if (!distinctReviewer) {
+    // If a required review stage has no approved decision at all,
+    // derivePreconditionFlags will already flip hasApprovedReviewDecisions
+    // to false and the transition helper will reject. Skip here so the
+    // self-attest error code stays focused on actor-distinctness.
+    if (stageApprovals.length === 0) continue;
+    if (!stageApprovals.some(isDistinctActor)) {
       return {
         ok: false,
         missing: "distinct_reviewer",
         message:
-          "Disposition done requires an approved review decision from an actor distinct from the issue worker.",
+          "Disposition done requires each required review stage to have an approved decision from an actor distinct from the issue worker.",
+        stageId,
       };
     }
   }
 
-  if (input.hasApprovalStage) {
-    const distinctApprover = input.approvedDecisionActors.some((decision) =>
-      decision.stageType === "approval"
-      && (
-        (decision.actorAgentId && decision.actorAgentId !== input.actor.agentId)
-        || (decision.actorUserId && decision.actorUserId !== input.actor.userId)
-      ),
+  for (const stageId of input.requiredApprovalStageIds) {
+    const stageApprovals = input.approvedDecisionActors.filter(
+      (decision) => decision.stageType === "approval" && decision.stageId === stageId,
     );
-    if (!distinctApprover) {
+    if (stageApprovals.length === 0) continue;
+    if (!stageApprovals.some(isDistinctActor)) {
       return {
         ok: false,
         missing: "distinct_approval_owner",
         message:
-          "Disposition done requires an approved approval decision from an actor distinct from the issue worker.",
+          "Disposition done requires each required approval stage to have an approved decision from an actor distinct from the issue worker.",
+        stageId,
       };
     }
   }
@@ -607,14 +631,18 @@ export function issueDispositionService(db: Db) {
               actorAgentId: d.actorAgentId,
               actorUserId: d.actorUserId,
               stageType: d.stageType,
+              stageId: d.stageId,
             })),
-          hasReviewStage: (executionPolicy?.stages.some((s) => s.type === "review")) ?? false,
-          hasApprovalStage: (executionPolicy?.stages.some((s) => s.type === "approval")) ?? false,
+          requiredReviewStageIds:
+            executionPolicy?.stages.filter((s) => s.type === "review").map((s) => s.id) ?? [],
+          requiredApprovalStageIds:
+            executionPolicy?.stages.filter((s) => s.type === "approval").map((s) => s.id) ?? [],
         });
         if (!selfAttest.ok) {
           throw unprocessable(selfAttest.message, {
             code: DISPOSITION_ERROR_CODES.WORKER_SELF_ATTEST,
             missing: selfAttest.missing,
+            stageId: selfAttest.stageId,
           });
         }
 
