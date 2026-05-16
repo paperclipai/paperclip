@@ -36,6 +36,7 @@ const permissionLabels: Record<PermissionKey, string> = {
   "tasks:manage_active_checkouts": "Manage active task checkouts",
   "joins:approve": "Approve join requests",
   "environments:manage": "Manage environments",
+  "documents:manage": "Manage company documents",
 };
 
 function formatGrantSummary(member: CompanyMember) {
