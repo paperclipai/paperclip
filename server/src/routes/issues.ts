@@ -1444,6 +1444,7 @@ export function issueRoutes(
     const parsedOffset = rawOffset !== undefined && /^\d+$/.test(rawOffset)
       ? Number.parseInt(rawOffset, 10)
       : null;
+    const attention = req.query.attention as string | undefined;
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
@@ -1461,6 +1462,10 @@ export function issueRoutes(
       res.status(403).json({ error: "unreadForUserId=me requires board authentication" });
       return;
     }
+    if (attention !== undefined && attention !== "blocked") {
+      res.status(400).json({ error: "attention must be 'blocked' when provided" });
+      return;
+    }
     if (rawLimit !== undefined && (parsedLimit === null || !Number.isInteger(parsedLimit) || parsedLimit <= 0)) {
       res.status(400).json({ error: `limit must be a positive integer up to ${ISSUE_LIST_MAX_LIMIT}` });
       return;
@@ -1472,6 +1477,7 @@ export function issueRoutes(
     const offset = parsedOffset ?? 0;
 
     const result = await svc.list(companyId, {
+      attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       participantAgentId: req.query.participantAgentId as string | undefined,
@@ -1495,6 +1501,8 @@ export function issueRoutes(
       includePluginOperations:
         req.query.includePluginOperations === "true" || req.query.includePluginOperations === "1",
       includeBlockedBy: req.query.includeBlockedBy === "true" || req.query.includeBlockedBy === "1",
+      includeBlockedInboxAttention:
+        req.query.includeBlockedInboxAttention === "true" || req.query.includeBlockedInboxAttention === "1",
       q: req.query.q as string | undefined,
       limit,
       offset,
@@ -1509,6 +1517,47 @@ export function issueRoutes(
       successfulRunHandoff: handoffStates.get(issue.id) ?? null,
       activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
     })));
+  });
+
+  router.get("/companies/:companyId/issues/count", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const attention = req.query.attention as string | undefined;
+    if (attention !== "blocked") {
+      res.status(400).json({ error: "issues/count currently requires attention=blocked" });
+      return;
+    }
+    if (req.query.limit !== undefined || req.query.offset !== undefined) {
+      res.status(400).json({ error: "issues/count does not accept limit or offset" });
+      return;
+    }
+
+    const count = await svc.count(companyId, {
+      attention: "blocked",
+      status: req.query.status as string | undefined,
+      assigneeAgentId: req.query.assigneeAgentId as string | undefined,
+      participantAgentId: req.query.participantAgentId as string | undefined,
+      assigneeUserId: req.query.assigneeUserId as string | undefined,
+      projectId: req.query.projectId as string | undefined,
+      workspaceId: req.query.workspaceId as string | undefined,
+      executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
+      parentId: req.query.parentId as string | undefined,
+      descendantOf: req.query.descendantOf as string | undefined,
+      labelId: req.query.labelId as string | undefined,
+      originKind: req.query.originKind as string | undefined,
+      originKindPrefix: req.query.originKindPrefix as string | undefined,
+      originId: req.query.originId as string | undefined,
+      includeRoutineExecutions:
+        req.query.includeRoutineExecutions === "true" || req.query.includeRoutineExecutions === "1",
+      excludeRoutineExecutions:
+        req.query.excludeRoutineExecutions === "true" || req.query.excludeRoutineExecutions === "1",
+      includePluginOperations:
+        req.query.includePluginOperations === "true" || req.query.includePluginOperations === "1",
+      includeBlockedBy: true,
+      includeBlockedInboxAttention: true,
+      q: req.query.q as string | undefined,
+    });
+    res.json({ count });
   });
 
   router.get("/companies/:companyId/labels", async (req, res) => {
@@ -1983,8 +2032,11 @@ export function issueRoutes(
       createdByAgentId: actor.agentId ?? null,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
       createdByRunId: actor.runId ?? null,
+      lockedDocumentStrategy: req.actor.type === "agent" ? "create_new_document" : "conflict",
     });
     const doc = result.document;
+    const redirectedFromLockedDocument =
+      "redirectedFromLockedDocument" in result ? result.redirectedFromLockedDocument : null;
     await issueReferencesSvc.syncDocument(doc.id);
     const referenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
     const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(referenceSummaryBefore, referenceSummaryAfter);
@@ -2004,6 +2056,7 @@ export function issueRoutes(
         title: doc.title,
         format: doc.format,
         revisionNumber: doc.latestRevisionNumber,
+        redirectedFromLockedDocument,
         ...summarizeIssueReferenceActivityDetails({
           addedReferencedIssues: referenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
           removedReferencedIssues: referenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
@@ -2035,6 +2088,96 @@ export function issueRoutes(
     }
 
     res.status(result.created ? 201 : 200).json(doc);
+  });
+
+  router.post("/issues/:id/documents/:key/lock", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    if (!keyParsed.success) {
+      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const result = await documentsSvc.lockIssueDocument({
+      issueId: issue.id,
+      key: keyParsed.data,
+      lockedByAgentId: actor.agentId ?? null,
+      lockedByUserId: actor.actorType === "user" ? actor.actorId : null,
+    });
+
+    if (result.changed) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.document_locked",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          key: result.document.key,
+          documentId: result.document.id,
+          title: result.document.title,
+          lockedAt: result.document.lockedAt,
+        },
+      });
+    }
+
+    res.json(result.document);
+  });
+
+  router.post("/issues/:id/documents/:key/unlock", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    if (!keyParsed.success) {
+      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const result = await documentsSvc.unlockIssueDocument(issue.id, keyParsed.data);
+
+    if (result.changed) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.document_unlocked",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          key: result.document.key,
+          documentId: result.document.id,
+          title: result.document.title,
+        },
+      });
+    }
+
+    res.json(result.document);
   });
 
   router.get("/issues/:id/documents/:key/revisions", async (req, res) => {
