@@ -232,6 +232,16 @@ export {
 } from "./search.js";
 
 export {
+  documentKeySchema,
+  documentFormatSchema,
+  upsertCompanyDocumentSchema,
+  restoreCompanyDocumentRevisionSchema,
+  type DocumentKey,
+  type UpsertCompanyDocument,
+  type RestoreCompanyDocumentRevision,
+} from "./document.js";
+
+export {
   createIssueTreeHoldSchema,
   issueTreeControlModeSchema,
   issueTreeHoldReleasePolicySchema,
