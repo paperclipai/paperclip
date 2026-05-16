@@ -39,16 +39,22 @@ jobs:
         run: supabase link --project-ref "${{ secrets.SUPABASE_PROJECT_REF }}"
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        continue-on-error: true
 
       - name: Deploy functions
         run: |
+          PROJECT_REF="${{ secrets.SUPABASE_PROJECT_REF }}"
+          if [ -z "$PROJECT_REF" ]; then
+            PROJECT_REF="tujyntcurpxvxgokcsaz"
+          fi
+          REF_FLAG="--project-ref $PROJECT_REF"
           if [ -n "${{ inputs.function }}" ]; then
-            supabase functions deploy "${{ inputs.function }}" --no-verify-jwt
+            supabase functions deploy "${{ inputs.function }}" --no-verify-jwt $REF_FLAG
           else
             for func in supabase/functions/*/; do
               name="$(basename "$func")"
               echo "Deploying: $name"
-              supabase functions deploy "$name" --no-verify-jwt
+              supabase functions deploy "$name" --no-verify-jwt $REF_FLAG
             done
           fi
         env:
