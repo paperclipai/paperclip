@@ -30,6 +30,7 @@ const mockGoalService = vi.hoisted(() => ({
 const mockDocumentsService = vi.hoisted(() => ({
   getIssueDocumentPayload: vi.fn(),
   getIssueDocumentByKey: vi.fn(),
+  listIssueDocuments: vi.fn(async () => []),
 }));
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
@@ -210,6 +211,7 @@ describe.sequential("issue goal context routes", () => {
     mockIssueService.listAttachments.mockResolvedValue([]);
     mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({});
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue(null);
+    mockDocumentsService.listIssueDocuments.mockResolvedValue([]);
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
     mockDb.select.mockReturnValue({
       from: vi.fn(() => ({
