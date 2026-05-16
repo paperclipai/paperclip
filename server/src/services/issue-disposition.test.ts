@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { buildIssueDispositionIdempotencyKey, type IssueCommentMetadata } from "@paperclipai/shared";
+import {
+  buildIssueDispositionIdempotencyKey,
+  type IssueCommentMetadata,
+  type IssueCommentMetadataDispositionRow,
+} from "@paperclipai/shared";
 import {
   countDispositionRows,
+  derivePreconditionFlags,
   dispositionBodyEquivalent,
   extractDispositionRowFromMetadata,
   validateWorkerSelfAttest,
+  type DispositionDecisionRow,
 } from "./issue-disposition.js";
+import type { IssueExecutionPolicy } from "@paperclipai/shared";
 
 const ISSUE_ID = "11111111-1111-4111-8111-111111111111";
 const RUN_ID = "22222222-2222-4222-8222-222222222222";
@@ -208,5 +215,73 @@ describe("validateWorkerSelfAttest", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected rejection");
     expect(result.missing).toBe("distinct_approval_owner");
+  });
+});
+
+describe("derivePreconditionFlags multi-stage precision", () => {
+  const stageReviewA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const stageReviewB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const stageApprovalC = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
+  const twoReviewOneApprovalPolicy: IssueExecutionPolicy = {
+    mode: "normal",
+    commentRequired: true,
+    stages: [
+      { id: stageReviewA, type: "review", approvalsNeeded: 1, participants: [] },
+      { id: stageReviewB, type: "review", approvalsNeeded: 1, participants: [] },
+      { id: stageApprovalC, type: "approval", approvalsNeeded: 1, participants: [] },
+    ],
+  };
+
+  const dispositionRow = buildDispositionRow();
+  const baseDeps = {
+    parentId: null,
+    executionPolicy: twoReviewOneApprovalPolicy,
+    hasParentBlockerRelation: false,
+    hasFirstClassBlockerRelation: false,
+    hasPendingApproval: false,
+    hasPendingInteraction: false,
+    hasHumanAssignee: false,
+  };
+
+  it("requires an approved decision keyed on each stage's stageId", () => {
+    const decisionRows: DispositionDecisionRow[] = [
+      { stageId: stageReviewA, stageType: "review", outcome: "approved", actorAgentId: OTHER_AGENT_ID, actorUserId: null },
+      // No approved decision for stageReviewB. A single approved review must
+      // not be allowed to satisfy multiple review stages.
+      { stageId: stageApprovalC, stageType: "approval", outcome: "approved", actorAgentId: OTHER_AGENT_ID, actorUserId: null },
+    ];
+    const flags = derivePreconditionFlags(dispositionRow as IssueCommentMetadataDispositionRow, {
+      ...baseDeps,
+      decisionRows,
+    });
+    expect(flags.hasApprovedReviewDecisions).toBe(false);
+    expect(flags.hasApprovedApprovalDecisions).toBe(true);
+  });
+
+  it("accepts when every required stageId has its own approved decision", () => {
+    const decisionRows: DispositionDecisionRow[] = [
+      { stageId: stageReviewA, stageType: "review", outcome: "approved", actorAgentId: OTHER_AGENT_ID, actorUserId: null },
+      { stageId: stageReviewB, stageType: "review", outcome: "approved", actorAgentId: OTHER_AGENT_ID, actorUserId: null },
+      { stageId: stageApprovalC, stageType: "approval", outcome: "approved", actorAgentId: OTHER_AGENT_ID, actorUserId: null },
+    ];
+    const flags = derivePreconditionFlags(dispositionRow as IssueCommentMetadataDispositionRow, {
+      ...baseDeps,
+      decisionRows,
+    });
+    expect(flags.hasApprovedReviewDecisions).toBe(true);
+    expect(flags.hasApprovedApprovalDecisions).toBe(true);
+  });
+
+  it("does not let an approved approval decision satisfy a review stage", () => {
+    const decisionRows: DispositionDecisionRow[] = [
+      // Approved decision for an approval stage is irrelevant to the review gate.
+      { stageId: stageApprovalC, stageType: "approval", outcome: "approved", actorAgentId: OTHER_AGENT_ID, actorUserId: null },
+    ];
+    const flags = derivePreconditionFlags(dispositionRow as IssueCommentMetadataDispositionRow, {
+      ...baseDeps,
+      decisionRows,
+    });
+    expect(flags.hasApprovedReviewDecisions).toBe(false);
   });
 });

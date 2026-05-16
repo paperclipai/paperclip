@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  activityLog,
   issueComments,
   issueExecutionDecisions,
   issueRelations,
@@ -43,6 +45,13 @@ export interface ApplyCommentDispositionInput {
   metadata: IssueCommentMetadata;
   actor: DispositionWriterActor;
   createdAt?: Date | null;
+  /**
+   * Optional bag of extra activity detail fields to merge into the
+   * transactional `issue.disposition_applied` evidence record (e.g.
+   * issue identifier/title for downstream observability). Must not
+   * include raw transcripts or secrets.
+   */
+  evidenceDetailExtras?: Record<string, unknown> | null;
 }
 
 export interface AppliedCommentDispositionResult {
@@ -58,6 +67,8 @@ export interface AppliedCommentDispositionResult {
     sourceCommentId: string;
     actor: DispositionWriterActor;
     parentBlockerIntention: IssueDispositionTransitionIntention["parentBlockerIntention"] | null;
+    parentBlockerCleared: boolean;
+    parentBlockerReplacementDeferred: boolean;
     previousStatus: string;
     nextStatus: string;
   };
@@ -79,6 +90,17 @@ export type DispositionErrorCode = (typeof DISPOSITION_ERROR_CODES)[keyof typeof
 
 function isDispositionRow(row: { type: string }): row is IssueCommentMetadataDispositionRow {
   return row.type === "disposition";
+}
+
+/**
+ * Stable signed 32-bit hash of an input string. Used as one half of a
+ * Postgres advisory-lock key pair so concurrent writes targeting the same
+ * (issueId, idempotencyKey) tuple serialize at the database layer.
+ */
+function hashToInt32(value: string): number {
+  const digest = createHash("sha256").update(value).digest();
+  // Read first 4 bytes as a signed int32.
+  return digest.readInt32BE(0);
 }
 
 export function extractDispositionRowFromMetadata(
@@ -138,10 +160,18 @@ interface DerivedPreconditionFlags {
   hasCauseClassification: boolean;
 }
 
+export interface DispositionDecisionRow {
+  stageId: string;
+  stageType: string;
+  outcome: string;
+  actorAgentId: string | null;
+  actorUserId: string | null;
+}
+
 interface PreconditionDependencies {
   parentId: string | null;
   executionPolicy: IssueExecutionPolicy | null;
-  decisionRows: Array<{ stageType: string; outcome: string; actorAgentId: string | null; actorUserId: string | null }>;
+  decisionRows: DispositionDecisionRow[];
   hasParentBlockerRelation: boolean;
   hasFirstClassBlockerRelation: boolean;
   hasPendingApproval: boolean;
@@ -149,28 +179,37 @@ interface PreconditionDependencies {
   hasHumanAssignee: boolean;
 }
 
-function derivePreconditionFlags(
+export function derivePreconditionFlags(
   row: IssueCommentMetadataDispositionRow,
   deps: PreconditionDependencies,
 ): DerivedPreconditionFlags {
   const reviewStages = deps.executionPolicy?.stages.filter((stage) => stage.type === "review") ?? [];
   const approvalStages = deps.executionPolicy?.stages.filter((stage) => stage.type === "approval") ?? [];
 
-  const reviewDecisions = deps.decisionRows.filter((decision) => decision.stageType === "review");
-  const approvalDecisions = deps.decisionRows.filter((decision) => decision.stageType === "approval");
-
+  // Multi-stage gate semantics: each required review/approval stage must have
+  // its own approved decision keyed on stageId. A single approved decision
+  // cannot satisfy multiple stages.
   const allReviewStagesApproved =
     reviewStages.length === 0
       ? true
       : reviewStages.every((stage) =>
-        reviewDecisions.some((decision) => decision.outcome === "approved"
-          && (deps.executionPolicy?.stages.find((s) => s.id === stage.id)?.id === stage.id)),
+        deps.decisionRows.some(
+          (decision) =>
+            decision.stageType === "review"
+            && decision.stageId === stage.id
+            && decision.outcome === "approved",
+        ),
       );
   const allApprovalStagesApproved =
     approvalStages.length === 0
       ? true
-      : approvalStages.every(() =>
-        approvalDecisions.some((decision) => decision.outcome === "approved"),
+      : approvalStages.every((stage) =>
+        deps.decisionRows.some(
+          (decision) =>
+            decision.stageType === "approval"
+            && decision.stageId === stage.id
+            && decision.outcome === "approved",
+        ),
       );
 
   const hasReviewPath =
@@ -329,6 +368,14 @@ export function issueDispositionService(db: Db) {
       const validatedMetadata = issueCommentMetadataSchema.parse(input.metadata);
 
       return db.transaction(async (tx) => {
+        // Concurrency-safe idempotency: serialize concurrent attempts to write
+        // the same (issueId, idempotencyKey) tuple via two int4 advisory locks
+        // composed into pg_advisory_xact_lock(int4, int4). The lock is bound
+        // to this transaction and released automatically on commit/rollback.
+        const lockA = hashToInt32(input.issueId);
+        const lockB = hashToInt32(idempotencyKey);
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${lockA}, ${lockB})`);
+
         const issueRow = await tx
           .select()
           .from(issues)
@@ -404,6 +451,8 @@ export function issueDispositionService(db: Db) {
                 sourceCommentId: existing.id,
                 actor: input.actor,
                 parentBlockerIntention: null,
+                parentBlockerCleared: false,
+                parentBlockerReplacementDeferred: false,
                 previousStatus: issueRow.status,
                 nextStatus: issueRow.status,
               },
@@ -419,8 +468,9 @@ export function issueDispositionService(db: Db) {
         }
 
         const executionPolicy = normalizeIssueExecutionPolicy(issueRow.executionPolicy ?? null);
-        const decisionRows = await tx
+        const decisionRows: DispositionDecisionRow[] = await tx
           .select({
+            stageId: issueExecutionDecisions.stageId,
             stageType: issueExecutionDecisions.stageType,
             outcome: issueExecutionDecisions.outcome,
             actorAgentId: issueExecutionDecisions.actorAgentId,
@@ -580,21 +630,69 @@ export function issueDispositionService(db: Db) {
           await tx.update(issues).set({ updatedAt: new Date() }).where(eq(issues.id, input.issueId));
         }
 
-        if (
-          intention.parentBlockerIntention === "remove_from_parent_blockers"
-          || intention.parentBlockerIntention === "replace_with_canonical_issue"
+        let parentBlockerCleared = false;
+        let parentBlockerReplacementDeferred = false;
+        if (intention.parentBlockerIntention === "remove_from_parent_blockers") {
+          if (issueRow.parentId) {
+            const deleted = await tx
+              .delete(issueRelations)
+              .where(
+                and(
+                  eq(issueRelations.companyId, issueRow.companyId),
+                  eq(issueRelations.issueId, input.issueId),
+                  eq(issueRelations.relatedIssueId, issueRow.parentId),
+                  eq(issueRelations.type, "blocks"),
+                ),
+              )
+              .returning({ id: issueRelations.id });
+            parentBlockerCleared = deleted.length > 0;
+          }
+        } else if (
+          intention.parentBlockerIntention === "replace_with_canonical_issue"
           || intention.parentBlockerIntention === "replace_with_successor"
         ) {
-          await tx
-            .delete(issueRelations)
-            .where(
-              and(
-                eq(issueRelations.companyId, issueRow.companyId),
-                eq(issueRelations.issueId, input.issueId),
-                eq(issueRelations.type, "blocks"),
-              ),
-            );
+          // Replacement edges (canonical/successor) are out of scope for the
+          // 3C-B writer slice; defer to a follow-up. Mark the intention so the
+          // evidence chain makes the deferral explicit.
+          parentBlockerReplacementDeferred = true;
         }
+
+        const evidenceDetails: Record<string, unknown> = {
+          ...(input.evidenceDetailExtras ?? {}),
+          commentId: insertedComment.id,
+          identifier: issueRow.identifier ?? null,
+          disposition: {
+            value: row.value,
+            applied: true,
+            noop: false,
+            previousStatus,
+            nextStatus,
+            parentBlockerIntention: intention.parentBlockerIntention,
+            parentBlockerCleared,
+            parentBlockerReplacementDeferred,
+            sourceRunId,
+            sourceCommentId: insertedComment.id,
+            idempotencyKey,
+          },
+        };
+
+        // Transactional evidence row: commit/rollback together with the
+        // comment/issue/relation mutations so the audit chain is atomic.
+        await tx.insert(activityLog).values({
+          companyId: issueRow.companyId,
+          actorType: input.actor.actorType,
+          actorId:
+            input.actor.userId
+              ?? input.actor.agentId
+              ?? input.actor.runId
+              ?? "system",
+          action: "issue.disposition_applied",
+          entityType: "issue",
+          entityId: input.issueId,
+          agentId: input.actor.agentId ?? null,
+          runId: input.actor.runId ?? null,
+          details: evidenceDetails,
+        });
 
         return {
           comment: insertedComment as typeof issueComments.$inferSelect,
@@ -609,6 +707,8 @@ export function issueDispositionService(db: Db) {
             sourceCommentId: insertedComment.id,
             actor: input.actor,
             parentBlockerIntention: intention.parentBlockerIntention,
+            parentBlockerCleared,
+            parentBlockerReplacementDeferred,
             previousStatus,
             nextStatus,
           },

@@ -468,21 +468,39 @@ describeEmbeddedPostgres("issue disposition writer (integration)", () => {
     });
   });
 
-  it("removes this issue as a blocker on done (parent blocker linkage cleared per transition intention)", async () => {
+  it("removes only the parent-blocker edge on done; unrelated outgoing blocks edges are preserved", async () => {
     const seeded = await seed();
-    const dependentIssueId = randomUUID();
-    await db.insert(issues).values({
-      id: dependentIssueId,
-      companyId: seeded.companyId,
-      title: "Dependent task",
-      status: "blocked",
-    });
-    await db.insert(issueRelations).values({
-      companyId: seeded.companyId,
-      issueId: seeded.issueId,
-      relatedIssueId: dependentIssueId,
-      type: "blocks",
-    });
+    const parentIssueId = randomUUID();
+    const unrelatedDependentIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: parentIssueId,
+        companyId: seeded.companyId,
+        title: "Parent task",
+        status: "blocked",
+      },
+      {
+        id: unrelatedDependentIssueId,
+        companyId: seeded.companyId,
+        title: "Unrelated dependent",
+        status: "blocked",
+      },
+    ]);
+    await db.update(issues).set({ parentId: parentIssueId }).where(eq(issues.id, seeded.issueId));
+    await db.insert(issueRelations).values([
+      {
+        companyId: seeded.companyId,
+        issueId: seeded.issueId,
+        relatedIssueId: parentIssueId,
+        type: "blocks",
+      },
+      {
+        companyId: seeded.companyId,
+        issueId: seeded.issueId,
+        relatedIssueId: unrelatedDependentIssueId,
+        type: "blocks",
+      },
+    ]);
 
     const svc = issueDispositionService(db);
     const metadata = buildMetadataWithDispositionRow({ issueId: seeded.issueId, runId: seeded.workerRunId });
@@ -494,6 +512,8 @@ describeEmbeddedPostgres("issue disposition writer (integration)", () => {
       actor: { actorType: "agent", agentId: seeded.workerAgentId, runId: seeded.workerRunId },
     });
     expect(result.applied).toBe(true);
+    expect(result.evidence.parentBlockerCleared).toBe(true);
+    expect(result.evidence.parentBlockerReplacementDeferred).toBe(false);
 
     const remainingRelations = await db
       .select()
@@ -504,7 +524,9 @@ describeEmbeddedPostgres("issue disposition writer (integration)", () => {
           eq(issueRelations.issueId, seeded.issueId),
         ),
       );
-    expect(remainingRelations).toHaveLength(0);
+    // Only the unrelated blocker edge remains; the parent-edge was deleted.
+    expect(remainingRelations).toHaveLength(1);
+    expect(remainingRelations[0]?.relatedIssueId).toBe(unrelatedDependentIssueId);
   });
 
   it("rejects an idempotency key whose embedded issueId does not match the target issue", async () => {

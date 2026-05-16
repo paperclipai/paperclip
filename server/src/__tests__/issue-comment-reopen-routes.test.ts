@@ -72,6 +72,11 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
+const mockApplyCommentDisposition = vi.hoisted(() => vi.fn());
+const mockIssueDispositionService = vi.hoisted(() => ({
+  applyCommentDisposition: mockApplyCommentDisposition,
+}));
+const mockExtractDispositionRowFromMetadata = vi.hoisted(() => vi.fn(() => null));
 const mockIssueFinalDeliveryService = vi.hoisted(() => ({
   queueForCompletedIssue: vi.fn(async () => ({ status: "skipped", reason: "not_configured" })),
 }));
@@ -146,6 +151,9 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => mockHeartbeatService,
   instanceSettingsService: () => mockInstanceSettingsService,
   issueApprovalService: () => ({}),
+  issueDispositionService: () => mockIssueDispositionService,
+  extractDispositionRowFromMetadata: (...args: unknown[]) =>
+    mockExtractDispositionRowFromMetadata(...args),
   issueReferenceService: () => ({
     deleteDocumentSource: async () => undefined,
     diffIssueReferenceSummary: () => ({
@@ -262,6 +270,9 @@ describe.sequential("issue comment reopen routes", () => {
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockRoutineService.syncRunStatusForIssue.mockReset();
     mockIssueTreeControlService.getActivePauseHoldGate.mockReset();
+    mockApplyCommentDisposition.mockReset();
+    mockExtractDispositionRowFromMetadata.mockReset();
+    mockExtractDispositionRowFromMetadata.mockImplementation(() => null);
     mockTxInsertValues.mockReset();
     mockTxInsert.mockReset();
     mockDbSelect.mockReset();
@@ -1678,5 +1689,150 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
     ));
+  });
+
+  describe("disposition carrier", () => {
+    const ISSUE_ID = "11111111-1111-4111-8111-111111111111";
+    const RUN_ID = "55555555-5555-4555-8555-555555555555";
+    const dispositionRow = {
+      type: "disposition" as const,
+      value: "done" as const,
+      reason: "All done",
+      evidenceRefs: [],
+      idempotencyKey: `disposition:${ISSUE_ID}:${RUN_ID}:done`,
+    };
+    const dispositionMetadata = {
+      version: 1,
+      sourceRunId: RUN_ID,
+      sections: [{ rows: [dispositionRow] }],
+    };
+
+    function setupBaseStubs() {
+      mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+      mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+      mockExtractDispositionRowFromMetadata.mockImplementation(() => ({
+        row: dispositionRow,
+        sectionIndex: 0,
+        rowIndex: 0,
+      }));
+    }
+
+    it("delegates to the disposition writer and surfaces atomic evidence", async () => {
+      setupBaseStubs();
+      const appliedComment = {
+        id: "disposition-comment-1",
+        issueId: ISSUE_ID,
+        companyId: "company-1",
+        body: "Marking done",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        authorAgentId: "22222222-2222-4222-8222-222222222222",
+        authorUserId: null,
+      };
+      mockApplyCommentDisposition.mockResolvedValue({
+        comment: appliedComment,
+        applied: true,
+        noop: false,
+        dispositionValue: "done",
+        intention: { targetStatus: "done", parentBlockerIntention: "remove_from_parent_blockers" },
+        sourceRunId: RUN_ID,
+        idempotencyKey: dispositionRow.idempotencyKey,
+        evidence: {
+          sourceRunId: RUN_ID,
+          sourceCommentId: appliedComment.id,
+          actor: { actorType: "agent", agentId: "22222222-2222-4222-8222-222222222222", runId: RUN_ID },
+          parentBlockerIntention: "remove_from_parent_blockers",
+          parentBlockerCleared: true,
+          parentBlockerReplacementDeferred: false,
+          previousStatus: "in_progress",
+          nextStatus: "done",
+        },
+      });
+      (mockIssueService as unknown as { getComment?: ReturnType<typeof vi.fn> }).getComment =
+        vi.fn(async () => appliedComment);
+
+      const res = await request(await installActor(createApp(), agentActor()))
+        .post(`/api/issues/${ISSUE_ID}/comments`)
+        .send({
+          body: "Marking done",
+          metadata: dispositionMetadata,
+        });
+
+      expect(res.status).toBe(201);
+      expect(mockApplyCommentDisposition).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+
+      // The post-tx comment_added activity references the atomic evidence row.
+      const commentAddedCall = mockLogActivity.mock.calls.find(
+        ([, input]) => (input as { action: string }).action === "issue.comment_added",
+      );
+      expect(commentAddedCall).toBeTruthy();
+      const commentAddedDetails = (commentAddedCall?.[1] as { details: Record<string, unknown> }).details;
+      expect(commentAddedDetails.disposition).toMatchObject({
+        value: "done",
+        applied: true,
+        previousStatus: "in_progress",
+        nextStatus: "done",
+        parentBlockerCleared: true,
+        parentBlockerReplacementDeferred: false,
+        atomicEvidenceAction: "issue.disposition_applied",
+      });
+    });
+
+    it("rejects requests that combine a disposition row with reopen/resume/interrupt", async () => {
+      setupBaseStubs();
+      mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+
+      const res = await request(await installActor(createApp(), agentActor()))
+        .post(`/api/issues/${ISSUE_ID}/comments`)
+        .send({
+          body: "Marking done again",
+          resume: true,
+          metadata: dispositionMetadata,
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body).toMatchObject({
+        details: { code: "disposition_combines_with_lifecycle_flag" },
+      });
+      expect(mockApplyCommentDisposition).not.toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("surfaces HttpError details from the disposition writer back to the client", async () => {
+      setupBaseStubs();
+      const { HttpError } = await import("../errors.js");
+      mockApplyCommentDisposition.mockRejectedValue(
+        new HttpError(409, "duplicate idempotency", { code: "disposition_idempotency_conflict" }),
+      );
+
+      const res = await request(await installActor(createApp(), agentActor()))
+        .post(`/api/issues/${ISSUE_ID}/comments`)
+        .send({
+          body: "Marking done",
+          metadata: dispositionMetadata,
+        });
+
+      expect(res.status).toBe(409);
+      expect(res.body).toMatchObject({
+        error: "duplicate idempotency",
+        details: { code: "disposition_idempotency_conflict" },
+      });
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    });
+
+    it("falls through to the legacy comment path when no disposition row is present", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+      mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+      mockExtractDispositionRowFromMetadata.mockImplementation(() => null);
+
+      const res = await request(await installActor(createApp(), agentActor()))
+        .post(`/api/issues/${ISSUE_ID}/comments`)
+        .send({ body: "plain comment" });
+
+      expect(res.status).toBe(201);
+      expect(mockApplyCommentDisposition).not.toHaveBeenCalled();
+      expect(mockIssueService.addComment).toHaveBeenCalled();
+    });
   });
 });

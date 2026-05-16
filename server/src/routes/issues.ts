@@ -1117,6 +1117,13 @@ export function issueRoutes(
     const hasStructuredFields = input.presentation !== undefined || input.metadata !== undefined;
     if (!hasStructuredFields) return true;
     if (req.actor.type === "board") return true;
+    if (
+      req.actor.type === "agent"
+      && input.presentation === undefined
+      && isDispositionOnlyAgentMetadata(input.metadata)
+    ) {
+      return true;
+    }
     res.status(403).json({
       error: "Only board users may set structured comment presentation or metadata",
       details: {
@@ -1124,6 +1131,27 @@ export function issueRoutes(
       },
     });
     return false;
+  }
+
+  /**
+   * Phase 3C-B disposition carrier: agents are permitted to post comment
+   * metadata whose every row is a disposition row, since the disposition
+   * writer authoritatively validates the payload. Any other structured
+   * row type (key_value, issue_link, etc.) remains board-only.
+   */
+  function isDispositionOnlyAgentMetadata(metadata: unknown): boolean {
+    if (!metadata || typeof metadata !== "object") return false;
+    const m = metadata as { sections?: Array<{ rows?: Array<{ type?: string }> }> };
+    if (!Array.isArray(m.sections) || m.sections.length === 0) return false;
+    let dispositionRows = 0;
+    for (const section of m.sections) {
+      if (!Array.isArray(section?.rows) || section.rows.length === 0) return false;
+      for (const row of section.rows) {
+        if (row?.type !== "disposition") return false;
+        dispositionRows += 1;
+      }
+    }
+    return dispositionRows > 0;
   }
 
   async function assertExplicitResumeIntentAllowed(
@@ -4311,6 +4339,16 @@ export function issueRoutes(
     const reopenRequested = req.body.reopen === true;
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;
+    const dispositionMatchPreflight = extractDispositionRowFromMetadata(req.body.metadata ?? null);
+    if (dispositionMatchPreflight
+      && (reopenRequested || resumeRequested === true || interruptRequested)) {
+      res.status(422).json({
+        error:
+          "Disposition-carrying comments cannot also request reopen/resume/interrupt; the disposition transition drives status.",
+        details: { code: "disposition_combines_with_lifecycle_flag" },
+      });
+      return;
+    }
     if (resumeRequested === true && !(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
     if (resumeRequested !== true && reopenRequested === true && req.actor.type === "agent") {
       if (!(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
@@ -4396,7 +4434,7 @@ export function issueRoutes(
       }
     }
 
-    const dispositionMatch = extractDispositionRowFromMetadata(req.body.metadata ?? null);
+    const dispositionMatch = dispositionMatchPreflight;
     let comment: Awaited<ReturnType<typeof svc.addComment>>;
     let dispositionApplied: Awaited<ReturnType<typeof dispositionSvc.applyCommentDisposition>> | null = null;
     if (dispositionMatch) {
@@ -4412,6 +4450,9 @@ export function issueRoutes(
             agentId: actor.agentId ?? null,
             userId: actor.actorType === "user" ? actor.actorId ?? null : null,
             runId: actor.runId ?? null,
+          },
+          evidenceDetailExtras: {
+            issueTitle: currentIssue.title,
           },
         });
       } catch (err) {
@@ -4478,9 +4519,13 @@ export function issueRoutes(
               previousStatus: dispositionApplied.evidence.previousStatus,
               nextStatus: dispositionApplied.evidence.nextStatus,
               parentBlockerIntention: dispositionApplied.evidence.parentBlockerIntention,
+              parentBlockerCleared: dispositionApplied.evidence.parentBlockerCleared,
+              parentBlockerReplacementDeferred:
+                dispositionApplied.evidence.parentBlockerReplacementDeferred,
               sourceRunId: dispositionApplied.evidence.sourceRunId,
               sourceCommentId: dispositionApplied.evidence.sourceCommentId,
               idempotencyKey: dispositionApplied.idempotencyKey,
+              atomicEvidenceAction: "issue.disposition_applied",
             },
           }
           : {}),
