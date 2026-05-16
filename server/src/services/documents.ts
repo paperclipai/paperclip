@@ -1,6 +1,6 @@
 import { and, asc, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
+import { companyDocuments, documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
 import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 
@@ -104,6 +104,69 @@ const issueDocumentSelect = {
   createdAt: documents.createdAt,
   updatedAt: documents.updatedAt,
 };
+
+const companyDocumentSelect = {
+  id: documents.id,
+  companyId: documents.companyId,
+  key: companyDocuments.key,
+  title: documents.title,
+  format: documents.format,
+  latestBody: documents.latestBody,
+  latestRevisionId: documents.latestRevisionId,
+  latestRevisionNumber: documents.latestRevisionNumber,
+  createdByAgentId: documents.createdByAgentId,
+  createdByUserId: documents.createdByUserId,
+  updatedByAgentId: documents.updatedByAgentId,
+  updatedByUserId: documents.updatedByUserId,
+  lockedAt: documents.lockedAt,
+  lockedByAgentId: documents.lockedByAgentId,
+  lockedByUserId: documents.lockedByUserId,
+  createdAt: documents.createdAt,
+  updatedAt: documents.updatedAt,
+};
+
+function mapCompanyDocumentRow(
+  row: {
+    id: string;
+    companyId: string;
+    key: string;
+    title: string | null;
+    format: string;
+    latestBody: string;
+    latestRevisionId: string | null;
+    latestRevisionNumber: number;
+    createdByAgentId: string | null;
+    createdByUserId: string | null;
+    updatedByAgentId: string | null;
+    updatedByUserId: string | null;
+    lockedAt: Date | null;
+    lockedByAgentId: string | null;
+    lockedByUserId: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+  },
+  includeBody: boolean,
+) {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    key: row.key,
+    title: row.title,
+    format: row.format,
+    ...(includeBody ? { body: row.latestBody } : {}),
+    latestRevisionId: row.latestRevisionId ?? null,
+    latestRevisionNumber: row.latestRevisionNumber,
+    createdByAgentId: row.createdByAgentId,
+    createdByUserId: row.createdByUserId,
+    updatedByAgentId: row.updatedByAgentId,
+    updatedByUserId: row.updatedByUserId,
+    lockedAt: row.lockedAt,
+    lockedByAgentId: row.lockedByAgentId,
+    lockedByUserId: row.lockedByUserId,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
 
 export function documentService(db: Db) {
   const filterSystemDocuments = <T extends { key: string }>(rows: T[], includeSystem: boolean) =>
@@ -721,6 +784,582 @@ export function documentService(db: Db) {
         }
 
         await tx.delete(issueDocuments).where(eq(issueDocuments.documentId, existing.id));
+        await tx.delete(documents).where(eq(documents.id, existing.id));
+
+        return {
+          ...existing,
+          body: existing.latestBody,
+          latestRevisionId: existing.latestRevisionId ?? null,
+        };
+      });
+    },
+
+    listCompanyDocuments: async (companyId: string, options: { includeSystem?: boolean } = {}) => {
+      const rows = await db
+        .select(companyDocumentSelect)
+        .from(companyDocuments)
+        .innerJoin(documents, eq(companyDocuments.documentId, documents.id))
+        .where(eq(companyDocuments.companyId, companyId))
+        .orderBy(asc(companyDocuments.key), desc(documents.updatedAt));
+      return filterSystemDocuments(rows, options.includeSystem ?? false).map((row) =>
+        mapCompanyDocumentRow(row, true),
+      );
+    },
+
+    getCompanyDocumentByKey: async (companyId: string, rawKey: string) => {
+      const key = normalizeDocumentKey(rawKey);
+      const row = await db
+        .select(companyDocumentSelect)
+        .from(companyDocuments)
+        .innerJoin(documents, eq(companyDocuments.documentId, documents.id))
+        .where(and(eq(companyDocuments.companyId, companyId), eq(companyDocuments.key, key)))
+        .then((rows) => rows[0] ?? null);
+      return row ? mapCompanyDocumentRow(row, true) : null;
+    },
+
+    listCompanyDocumentRevisions: async (companyId: string, rawKey: string) => {
+      const key = normalizeDocumentKey(rawKey);
+      return db
+        .select({
+          id: documentRevisions.id,
+          companyId: documentRevisions.companyId,
+          documentId: documentRevisions.documentId,
+          key: companyDocuments.key,
+          revisionNumber: documentRevisions.revisionNumber,
+          title: documentRevisions.title,
+          format: documentRevisions.format,
+          body: documentRevisions.body,
+          changeSummary: documentRevisions.changeSummary,
+          createdByAgentId: documentRevisions.createdByAgentId,
+          createdByUserId: documentRevisions.createdByUserId,
+          createdAt: documentRevisions.createdAt,
+        })
+        .from(companyDocuments)
+        .innerJoin(documents, eq(companyDocuments.documentId, documents.id))
+        .innerJoin(documentRevisions, eq(documentRevisions.documentId, documents.id))
+        .where(and(eq(companyDocuments.companyId, companyId), eq(companyDocuments.key, key)))
+        .orderBy(desc(documentRevisions.revisionNumber));
+    },
+
+    upsertCompanyDocument: async (input: {
+      companyId: string;
+      key: string;
+      title?: string | null;
+      format: string;
+      body: string;
+      changeSummary?: string | null;
+      baseRevisionId?: string | null;
+      createdByAgentId?: string | null;
+      createdByUserId?: string | null;
+      createdByRunId?: string | null;
+      lockedDocumentStrategy?: "conflict" | "create_new_document";
+    }) => {
+      const key = normalizeDocumentKey(input.key);
+
+      const maxAttempts = input.lockedDocumentStrategy === "create_new_document" ? 3 : 1;
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        try {
+          return await db.transaction(async (tx) => {
+            const now = new Date();
+            const existing = await tx
+              .select({
+                id: documents.id,
+                companyId: documents.companyId,
+                key: companyDocuments.key,
+                title: documents.title,
+                format: documents.format,
+                latestBody: documents.latestBody,
+                latestRevisionId: documents.latestRevisionId,
+                latestRevisionNumber: documents.latestRevisionNumber,
+                createdByAgentId: documents.createdByAgentId,
+                createdByUserId: documents.createdByUserId,
+                updatedByAgentId: documents.updatedByAgentId,
+                updatedByUserId: documents.updatedByUserId,
+                lockedAt: documents.lockedAt,
+                lockedByAgentId: documents.lockedByAgentId,
+                lockedByUserId: documents.lockedByUserId,
+                createdAt: documents.createdAt,
+                updatedAt: documents.updatedAt,
+              })
+              .from(companyDocuments)
+              .innerJoin(documents, eq(companyDocuments.documentId, documents.id))
+              .where(and(eq(companyDocuments.companyId, input.companyId), eq(companyDocuments.key, key)))
+              .then((rows) => rows[0] ?? null);
+
+            if (existing) {
+              if (existing.lockedAt) {
+                if (input.lockedDocumentStrategy === "create_new_document") {
+                  const companyKeys = await tx
+                    .select({ key: companyDocuments.key })
+                    .from(companyDocuments)
+                    .where(eq(companyDocuments.companyId, input.companyId));
+                  const fallbackKey = nextAvailableDocumentKey(key, companyKeys.map((row) => row.key));
+
+                  const [document] = await tx
+                    .insert(documents)
+                    .values({
+                      companyId: input.companyId,
+                      title: input.title ?? null,
+                      format: input.format,
+                      latestBody: input.body,
+                      latestRevisionId: null,
+                      latestRevisionNumber: 1,
+                      createdByAgentId: input.createdByAgentId ?? null,
+                      createdByUserId: input.createdByUserId ?? null,
+                      updatedByAgentId: input.createdByAgentId ?? null,
+                      updatedByUserId: input.createdByUserId ?? null,
+                      lockedAt: null,
+                      lockedByAgentId: null,
+                      lockedByUserId: null,
+                      createdAt: now,
+                      updatedAt: now,
+                    })
+                    .returning();
+
+                  const [revision] = await tx
+                    .insert(documentRevisions)
+                    .values({
+                      companyId: input.companyId,
+                      documentId: document.id,
+                      revisionNumber: 1,
+                      title: input.title ?? null,
+                      format: input.format,
+                      body: input.body,
+                      changeSummary: input.changeSummary ?? null,
+                      createdByAgentId: input.createdByAgentId ?? null,
+                      createdByUserId: input.createdByUserId ?? null,
+                      createdByRunId: input.createdByRunId ?? null,
+                      createdAt: now,
+                    })
+                    .returning();
+
+                  await tx
+                    .update(documents)
+                    .set({ latestRevisionId: revision.id })
+                    .where(eq(documents.id, document.id));
+
+                  await tx.insert(companyDocuments).values({
+                    companyId: input.companyId,
+                    documentId: document.id,
+                    key: fallbackKey,
+                    createdAt: now,
+                    updatedAt: now,
+                  });
+
+                  return {
+                    created: true as const,
+                    redirectedFromLockedDocument: {
+                      id: existing.id,
+                      key: existing.key,
+                    },
+                    document: {
+                      id: document.id,
+                      companyId: input.companyId,
+                      key: fallbackKey,
+                      title: document.title,
+                      format: document.format,
+                      body: document.latestBody,
+                      latestRevisionId: revision.id,
+                      latestRevisionNumber: 1,
+                      createdByAgentId: document.createdByAgentId,
+                      createdByUserId: document.createdByUserId,
+                      updatedByAgentId: document.updatedByAgentId,
+                      updatedByUserId: document.updatedByUserId,
+                      lockedAt: null,
+                      lockedByAgentId: null,
+                      lockedByUserId: null,
+                      createdAt: document.createdAt,
+                      updatedAt: document.updatedAt,
+                    },
+                  };
+                }
+
+                throw conflict("Document is locked", {
+                  key: existing.key,
+                  documentId: existing.id,
+                  lockedAt: existing.lockedAt,
+                });
+              }
+
+              if (!input.baseRevisionId) {
+                throw conflict("Document update requires baseRevisionId", {
+                  currentRevisionId: existing.latestRevisionId,
+                });
+              }
+              if (input.baseRevisionId !== existing.latestRevisionId) {
+                throw conflict("Document was updated by someone else", {
+                  currentRevisionId: existing.latestRevisionId,
+                });
+              }
+
+              const nextRevisionNumber = existing.latestRevisionNumber + 1;
+              const [revision] = await tx
+                .insert(documentRevisions)
+                .values({
+                  companyId: input.companyId,
+                  documentId: existing.id,
+                  revisionNumber: nextRevisionNumber,
+                  title: input.title ?? null,
+                  format: input.format,
+                  body: input.body,
+                  changeSummary: input.changeSummary ?? null,
+                  createdByAgentId: input.createdByAgentId ?? null,
+                  createdByUserId: input.createdByUserId ?? null,
+                  createdByRunId: input.createdByRunId ?? null,
+                  createdAt: now,
+                })
+                .returning();
+
+              await tx
+                .update(documents)
+                .set({
+                  title: input.title ?? null,
+                  format: input.format,
+                  latestBody: input.body,
+                  latestRevisionId: revision.id,
+                  latestRevisionNumber: nextRevisionNumber,
+                  updatedByAgentId: input.createdByAgentId ?? null,
+                  updatedByUserId: input.createdByUserId ?? null,
+                  updatedAt: now,
+                })
+                .where(eq(documents.id, existing.id));
+
+              await tx
+                .update(companyDocuments)
+                .set({ updatedAt: now })
+                .where(eq(companyDocuments.documentId, existing.id));
+
+              return {
+                created: false as const,
+                document: {
+                  ...existing,
+                  title: input.title ?? null,
+                  format: input.format,
+                  body: input.body,
+                  latestRevisionId: revision.id,
+                  latestRevisionNumber: nextRevisionNumber,
+                  updatedByAgentId: input.createdByAgentId ?? null,
+                  updatedByUserId: input.createdByUserId ?? null,
+                  lockedAt: existing.lockedAt,
+                  lockedByAgentId: existing.lockedByAgentId,
+                  lockedByUserId: existing.lockedByUserId,
+                  updatedAt: now,
+                },
+              };
+            }
+
+            if (input.baseRevisionId) {
+              throw conflict("Document does not exist yet", { key });
+            }
+
+            const [document] = await tx
+              .insert(documents)
+              .values({
+                companyId: input.companyId,
+                title: input.title ?? null,
+                format: input.format,
+                latestBody: input.body,
+                latestRevisionId: null,
+                latestRevisionNumber: 1,
+                createdByAgentId: input.createdByAgentId ?? null,
+                createdByUserId: input.createdByUserId ?? null,
+                updatedByAgentId: input.createdByAgentId ?? null,
+                updatedByUserId: input.createdByUserId ?? null,
+                lockedAt: null,
+                lockedByAgentId: null,
+                lockedByUserId: null,
+                createdAt: now,
+                updatedAt: now,
+              })
+              .returning();
+
+            const [revision] = await tx
+              .insert(documentRevisions)
+              .values({
+                companyId: input.companyId,
+                documentId: document.id,
+                revisionNumber: 1,
+                title: input.title ?? null,
+                format: input.format,
+                body: input.body,
+                changeSummary: input.changeSummary ?? null,
+                createdByAgentId: input.createdByAgentId ?? null,
+                createdByUserId: input.createdByUserId ?? null,
+                createdByRunId: input.createdByRunId ?? null,
+                createdAt: now,
+              })
+              .returning();
+
+            await tx
+              .update(documents)
+              .set({ latestRevisionId: revision.id })
+              .where(eq(documents.id, document.id));
+
+            await tx.insert(companyDocuments).values({
+              companyId: input.companyId,
+              documentId: document.id,
+              key,
+              createdAt: now,
+              updatedAt: now,
+            });
+
+            return {
+              created: true as const,
+              document: {
+                id: document.id,
+                companyId: input.companyId,
+                key,
+                title: document.title,
+                format: document.format,
+                body: document.latestBody,
+                latestRevisionId: revision.id,
+                latestRevisionNumber: 1,
+                createdByAgentId: document.createdByAgentId,
+                createdByUserId: document.createdByUserId,
+                updatedByAgentId: document.updatedByAgentId,
+                updatedByUserId: document.updatedByUserId,
+                lockedAt: document.lockedAt,
+                lockedByAgentId: document.lockedByAgentId,
+                lockedByUserId: document.lockedByUserId,
+                createdAt: document.createdAt,
+                updatedAt: document.updatedAt,
+              },
+            };
+          });
+        } catch (error) {
+          if (isUniqueViolation(error)) {
+            if (input.lockedDocumentStrategy === "create_new_document" && attempt < maxAttempts - 1) {
+              continue;
+            }
+            throw conflict("Document key already exists on this company", { key });
+          }
+          throw error;
+        }
+      }
+
+      throw conflict("Unable to choose a new document key for locked document", { key });
+    },
+
+    restoreCompanyDocumentRevision: async (input: {
+      companyId: string;
+      key: string;
+      revisionId: string;
+      createdByAgentId?: string | null;
+      createdByUserId?: string | null;
+    }) => {
+      const key = normalizeDocumentKey(input.key);
+      return db.transaction(async (tx) => {
+        const existing = await tx
+          .select(companyDocumentSelect)
+          .from(companyDocuments)
+          .innerJoin(documents, eq(companyDocuments.documentId, documents.id))
+          .where(and(eq(companyDocuments.companyId, input.companyId), eq(companyDocuments.key, key)))
+          .then((rows) => rows[0] ?? null);
+
+        if (!existing) throw notFound("Document not found");
+        if (existing.lockedAt) {
+          throw conflict("Document is locked", {
+            key: existing.key,
+            documentId: existing.id,
+            lockedAt: existing.lockedAt,
+          });
+        }
+
+        const revision = await tx
+          .select({
+            id: documentRevisions.id,
+            companyId: documentRevisions.companyId,
+            documentId: documentRevisions.documentId,
+            revisionNumber: documentRevisions.revisionNumber,
+            title: documentRevisions.title,
+            format: documentRevisions.format,
+            body: documentRevisions.body,
+          })
+          .from(documentRevisions)
+          .where(and(eq(documentRevisions.id, input.revisionId), eq(documentRevisions.documentId, existing.id)))
+          .then((rows) => rows[0] ?? null);
+
+        if (!revision) throw notFound("Document revision not found");
+        if (existing.latestRevisionId === revision.id) {
+          throw conflict("Selected revision is already the latest revision", {
+            currentRevisionId: existing.latestRevisionId,
+          });
+        }
+
+        const now = new Date();
+        const nextRevisionNumber = existing.latestRevisionNumber + 1;
+        const [restoredRevision] = await tx
+          .insert(documentRevisions)
+          .values({
+            companyId: existing.companyId,
+            documentId: existing.id,
+            revisionNumber: nextRevisionNumber,
+            title: revision.title ?? null,
+            format: revision.format,
+            body: revision.body,
+            changeSummary: `Restored from revision ${revision.revisionNumber}`,
+            createdByAgentId: input.createdByAgentId ?? null,
+            createdByUserId: input.createdByUserId ?? null,
+            createdAt: now,
+          })
+          .returning();
+
+        await tx
+          .update(documents)
+          .set({
+            title: revision.title ?? null,
+            format: revision.format,
+            latestBody: revision.body,
+            latestRevisionId: restoredRevision.id,
+            latestRevisionNumber: nextRevisionNumber,
+            updatedByAgentId: input.createdByAgentId ?? null,
+            updatedByUserId: input.createdByUserId ?? null,
+            updatedAt: now,
+          })
+          .where(eq(documents.id, existing.id));
+
+        await tx
+          .update(companyDocuments)
+          .set({ updatedAt: now })
+          .where(eq(companyDocuments.documentId, existing.id));
+
+        return {
+          restoredFromRevisionId: revision.id,
+          restoredFromRevisionNumber: revision.revisionNumber,
+          document: {
+            ...existing,
+            title: revision.title ?? null,
+            format: revision.format,
+            body: revision.body,
+            latestRevisionId: restoredRevision.id,
+            latestRevisionNumber: nextRevisionNumber,
+            updatedByAgentId: input.createdByAgentId ?? null,
+            updatedByUserId: input.createdByUserId ?? null,
+            updatedAt: now,
+          },
+        };
+      });
+    },
+
+    lockCompanyDocument: async (input: {
+      companyId: string;
+      key: string;
+      lockedByAgentId?: string | null;
+      lockedByUserId?: string | null;
+    }) => {
+      const key = normalizeDocumentKey(input.key);
+      return db.transaction(async (tx) => {
+        const existing = await tx
+          .select(companyDocumentSelect)
+          .from(companyDocuments)
+          .innerJoin(documents, eq(companyDocuments.documentId, documents.id))
+          .where(and(eq(companyDocuments.companyId, input.companyId), eq(companyDocuments.key, key)))
+          .then((rows) => rows[0] ?? null);
+
+        if (!existing) throw notFound("Document not found");
+        if (existing.lockedAt) {
+          return {
+            changed: false as const,
+            document: mapCompanyDocumentRow(existing, true),
+          };
+        }
+
+        const now = new Date();
+        await tx
+          .update(documents)
+          .set({
+            lockedAt: now,
+            lockedByAgentId: input.lockedByAgentId ?? null,
+            lockedByUserId: input.lockedByUserId ?? null,
+            updatedAt: now,
+          })
+          .where(eq(documents.id, existing.id));
+
+        await tx
+          .update(companyDocuments)
+          .set({ updatedAt: now })
+          .where(eq(companyDocuments.documentId, existing.id));
+
+        return {
+          changed: true as const,
+          document: {
+            ...mapCompanyDocumentRow(existing, true),
+            lockedAt: now,
+            lockedByAgentId: input.lockedByAgentId ?? null,
+            lockedByUserId: input.lockedByUserId ?? null,
+            updatedAt: now,
+          },
+        };
+      });
+    },
+
+    unlockCompanyDocument: async (companyId: string, rawKey: string) => {
+      const key = normalizeDocumentKey(rawKey);
+      return db.transaction(async (tx) => {
+        const existing = await tx
+          .select(companyDocumentSelect)
+          .from(companyDocuments)
+          .innerJoin(documents, eq(companyDocuments.documentId, documents.id))
+          .where(and(eq(companyDocuments.companyId, companyId), eq(companyDocuments.key, key)))
+          .then((rows) => rows[0] ?? null);
+
+        if (!existing) throw notFound("Document not found");
+        if (!existing.lockedAt) {
+          return {
+            changed: false as const,
+            document: mapCompanyDocumentRow(existing, true),
+          };
+        }
+
+        const now = new Date();
+        await tx
+          .update(documents)
+          .set({
+            lockedAt: null,
+            lockedByAgentId: null,
+            lockedByUserId: null,
+            updatedAt: now,
+          })
+          .where(eq(documents.id, existing.id));
+
+        await tx
+          .update(companyDocuments)
+          .set({ updatedAt: now })
+          .where(eq(companyDocuments.documentId, existing.id));
+
+        return {
+          changed: true as const,
+          document: {
+            ...mapCompanyDocumentRow(existing, true),
+            lockedAt: null,
+            lockedByAgentId: null,
+            lockedByUserId: null,
+            updatedAt: now,
+          },
+        };
+      });
+    },
+
+    deleteCompanyDocument: async (companyId: string, rawKey: string) => {
+      const key = normalizeDocumentKey(rawKey);
+      return db.transaction(async (tx) => {
+        const existing = await tx
+          .select(companyDocumentSelect)
+          .from(companyDocuments)
+          .innerJoin(documents, eq(companyDocuments.documentId, documents.id))
+          .where(and(eq(companyDocuments.companyId, companyId), eq(companyDocuments.key, key)))
+          .then((rows) => rows[0] ?? null);
+
+        if (!existing) return null;
+        if (existing.lockedAt) {
+          throw conflict("Document is locked", {
+            key: existing.key,
+            documentId: existing.id,
+            lockedAt: existing.lockedAt,
+          });
+        }
+
+        await tx.delete(companyDocuments).where(eq(companyDocuments.documentId, existing.id));
         await tx.delete(documents).where(eq(documents.id, existing.id));
 
         return {

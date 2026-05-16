@@ -29,6 +29,7 @@ import { Costs } from "./pages/Costs";
 import { Activity } from "./pages/Activity";
 import { Inbox } from "./pages/Inbox";
 import { CompanySettings } from "./pages/CompanySettings";
+import { CompanyDocuments } from "./pages/CompanyDocuments";
 import { CompanyEnvironments } from "./pages/CompanyEnvironments";
 import { CompanyAccess } from "./pages/CompanyAccess";
 import { CompanyInvites } from "./pages/CompanyInvites";
@@ -68,6 +69,8 @@ function boardRoutes() {
       <Route path="onboarding" element={<OnboardingRoutePage />} />
       <Route path="companies" element={<Companies />} />
       <Route path="company/settings" element={<CompanySettings />} />
+      <Route path="company/documents" element={<CompanyDocuments />} />
+      <Route path="companies/:companyId/documents" element={<CompanyDocuments />} />
       <Route path="company/settings/environments" element={<CompanyEnvironments />} />
       <Route path="company/settings/access" element={<CompanyAccess />} />
       <Route path="company/settings/invites" element={<CompanyInvites />} />
