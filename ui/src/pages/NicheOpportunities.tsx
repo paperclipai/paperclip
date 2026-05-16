@@ -56,6 +56,10 @@ function parseMetadata(raw: string | null): NdaMetadata | null {
   }
 }
 
+function verdictFromComposite(score: number): "Publish" | "Consider" | "Avoid" {
+  return score >= 60 ? "Publish" : score >= 35 ? "Consider" : "Avoid";
+}
+
 function computeCriteriaScores(meta: NdaMetadata): CriteriaScores | null {
   const sc = meta.scoring;
   if (!sc) return null;
@@ -168,16 +172,19 @@ function OpportunityRow({
               {opp.tier}
             </span>
             <span className="text-sm font-medium truncate">{opp.headKeyword}</span>
-            {criteria && (
-              <span
-                className={cn(
-                  "inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-bold",
-                  VERDICT_STYLE[criteria.verdict],
-                )}
-              >
-                {criteria.verdict}
-              </span>
-            )}
+            {(() => {
+              const v = criteria ? criteria.verdict : verdictFromComposite(opp.compositeScore);
+              return (
+                <span
+                  className={cn(
+                    "inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-bold",
+                    VERDICT_STYLE[v],
+                  )}
+                >
+                  {v}
+                </span>
+              );
+            })()}
             <span
               className={cn(
                 "ml-auto rounded-full px-2 py-0.5 text-[10px] font-medium shrink-0",
@@ -245,7 +252,7 @@ function OpportunityRow({
       {expanded && (
         <div className="border-t border-border px-4 pb-4 pt-3 space-y-4">
           {/* Criteria Scores */}
-          {criteria && (
+          {criteria ? (
             <div className="space-y-2">
               <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                 Scoring Criteria
@@ -273,6 +280,29 @@ function OpportunityRow({
                     : criteria.verdict === "Consider"
                       ? "(350–599)"
                       : "(<350)"}
+                </span>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Composite Score
+              </p>
+              <ScoreBar score={opp.compositeScore} label="Composite Score" />
+              <div className="flex items-center gap-2 pt-1">
+                <span className="w-36 text-xs text-muted-foreground shrink-0">Verdict</span>
+                <span
+                  className={cn(
+                    "rounded border px-2 py-0.5 text-[10px] font-bold",
+                    VERDICT_STYLE[verdictFromComposite(opp.compositeScore)],
+                  )}
+                >
+                  {verdictFromComposite(opp.compositeScore)}{" "}
+                  {verdictFromComposite(opp.compositeScore) === "Publish"
+                    ? "(≥ 60)"
+                    : verdictFromComposite(opp.compositeScore) === "Consider"
+                      ? "(35–59)"
+                      : "(< 35)"}
                 </span>
               </div>
             </div>
