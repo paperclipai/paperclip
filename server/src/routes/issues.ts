@@ -1631,6 +1631,7 @@ export function issueRoutes(
     const currentExecutionWorkspacePromise = issue.executionWorkspaceId
       ? executionWorkspacesSvc.getById(issue.executionWorkspaceId)
       : Promise.resolve(null);
+    const executionProvenanceReadinessPromise = svc.getExecutionProvenanceReadiness(issue.id);
     const [
       { project, goal },
       ancestors,
@@ -1643,6 +1644,7 @@ export function issueRoutes(
       attachments,
       continuationSummary,
       currentExecutionWorkspace,
+      executionProvenanceReadiness,
       activeRecoveryAction,
     ] =
       await Promise.all([
@@ -1657,6 +1659,7 @@ export function issueRoutes(
         svc.listAttachments(issue.id),
         documentsSvc.getIssueDocumentByKey(issue.id, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
         currentExecutionWorkspacePromise,
+        executionProvenanceReadinessPromise,
         recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
       ]);
     const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
@@ -1689,6 +1692,8 @@ export function issueRoutes(
         blocks: relationsWithRecoveryActions.blocks,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
+        executionProvenance: issue.executionProvenance ?? null,
+        executionProvenanceReadiness,
         originKind: issue.originKind,
         originId: issue.originId,
         updatedAt: issue.updatedAt,
@@ -1761,6 +1766,7 @@ export function issueRoutes(
       blockerAttention,
       productivityReview,
       referenceSummary,
+      executionProvenanceReadiness,
       successfulRunHandoffStates,
       scheduledRetry,
       activeRecoveryAction,
@@ -1773,6 +1779,7 @@ export function issueRoutes(
       svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
       svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
       issueReferencesSvc.listIssueReferenceSummary(issue.id),
+      svc.getExecutionProvenanceReadiness(issue.id),
       listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id]),
       svc.getCurrentScheduledRetry(issue.id),
       recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
@@ -1806,6 +1813,7 @@ export function issueRoutes(
       blocks: relationsWithRecoveryActions.blocks,
       relatedWork: referenceSummary,
       referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+      executionProvenanceReadiness,
       ...documentPayload,
       project: project ?? null,
       goal: goal ?? null,

@@ -604,6 +604,56 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("renders execution provenance recovery details when a handoff is not ready", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        executionWorkspaceId: "workspace-review",
+        executionProvenance: {
+          handoffRole: "review",
+          sourceIssueId: "issue-source",
+          sourceExecutionWorkspaceId: "workspace-source",
+          branchName: "feature/pap-2",
+          baseRef: "main",
+          capturedAt: "2026-04-06T12:05:00.000Z",
+        },
+        executionProvenanceReadiness: {
+          ready: false,
+          code: "workspace_mismatch",
+          message: "This issue is bound to a different workspace than the implementation it is supposed to judge.",
+          expected: {
+            sourceIssueId: "issue-source",
+            sourceIssueIdentifier: "PAP-2",
+            sourceIssueTitle: "Implementation issue",
+            sourceExecutionWorkspaceId: "workspace-source",
+            branchName: "feature/pap-2",
+            baseRef: "main",
+          },
+          actual: {
+            executionWorkspaceId: "workspace-review",
+            branchName: "feature/pap-7-review",
+            cwd: "/tmp/pap-7-review",
+            status: "active",
+          },
+          recoverySteps: [
+            "Rebind the issue with `inheritExecutionWorkspaceFromIssueId=issue-source` to restore the source workspace.",
+          ],
+        },
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Code Change");
+    expect(container.textContent).toContain("Needs recovery");
+    expect(container.textContent).toContain("PAP-2");
+    expect(container.textContent).toContain("Implementation issue");
+    expect(container.textContent).toContain("workspace-review");
+    expect(container.textContent).toContain("inheritExecutionWorkspaceFromIssueId=issue-source");
+
+    act(() => root.unmount());
+  });
+
   it("does not show a service link for the main shared workspace", async () => {
     mockProjectsApi.list.mockResolvedValue([createProject()]);
     const serviceUrl = "http://127.0.0.1:62475";

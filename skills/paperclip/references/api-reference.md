@@ -243,6 +243,50 @@ Interpretation:
 
 There is **no separate execution-decision endpoint**. Review and approval decisions are submitted through `PATCH /api/issues/:issueId`, and Paperclip records the decision row automatically.
 
+### Same-Code-Change Handoff Fields On An Issue
+
+When an issue must stay on the same branch/workspace as another issue, the issue detail and heartbeat-context responses can include `executionProvenance` plus an evaluated `executionProvenanceReadiness` object:
+
+```json
+{
+  "executionProvenance": {
+    "handoffRole": "review",
+    "sourceIssueId": "issue-implementation",
+    "sourceExecutionWorkspaceId": "workspace-implementation",
+    "branchName": "feature/pap-2018",
+    "baseRef": "main",
+    "capturedAt": "2026-04-24T12:00:00.000Z"
+  },
+  "executionProvenanceReadiness": {
+    "ready": true,
+    "code": "ready",
+    "message": "This handoff is bound to the expected implementation workspace and compare target.",
+    "expected": {
+      "sourceIssueId": "issue-implementation",
+      "sourceIssueIdentifier": "PAP-2018",
+      "sourceIssueTitle": "Implementation issue",
+      "sourceExecutionWorkspaceId": "workspace-implementation",
+      "branchName": "feature/pap-2018",
+      "baseRef": "main"
+    },
+    "actual": {
+      "executionWorkspaceId": "workspace-implementation",
+      "branchName": "feature/pap-2018",
+      "cwd": "/tmp/pap-2018",
+      "status": "active"
+    },
+    "recoverySteps": []
+  }
+}
+```
+
+Interpretation:
+
+- `handoffRole` identifies whether the same code change is a `follow_up`, `review`, `qa`, or `release` handoff
+- `expected` describes the source issue and workspace the handoff is supposed to use
+- `actual` describes the workspace currently attached to the issue
+- `ready: false` means the handoff should be rebound with `inheritExecutionWorkspaceFromIssueId` before review/QA/release proceeds
+
 ---
 
 ## Worked Example: IC Heartbeat
@@ -783,9 +827,9 @@ Terminal states: `done`, `cancelled`
 | ------ | ---------------------------------- | ---------------------------------------------------------------------------------------- |
 | GET    | `/api/companies/:companyId/issues` | List issues, sorted by priority. Filters: `?status=`, `?assigneeAgentId=`, `?assigneeUserId=`, `?projectId=`, `?labelId=`, `?q=` (full-text search across title, identifier, description, comments) |
 | GET    | `/api/issues/:issueId`             | Issue details + ancestors                                                                |
-| GET    | `/api/issues/:issueId/heartbeat-context` | Compact context for heartbeat: issue state, ancestor summaries, comment cursor  |
-| POST   | `/api/companies/:companyId/issues` | Create issue (supports `blockedByIssueIds: string[]` for dependencies)                   |
-| PATCH  | `/api/issues/:issueId`             | Update issue (optional `comment` field; `blockedByIssueIds` replaces blocker set)        |
+| GET    | `/api/issues/:issueId/heartbeat-context` | Compact context for heartbeat: issue state, ancestor summaries, comment cursor, current execution workspace, and same-code-change readiness |
+| POST   | `/api/companies/:companyId/issues` | Create issue (supports `blockedByIssueIds: string[]`; use `inheritExecutionWorkspaceFromIssueId` plus `executionProvenance.handoffRole` for same-code-change handoffs) |
+| PATCH  | `/api/issues/:issueId`             | Update issue (optional `comment` field; `blockedByIssueIds` replaces blocker set; same-code-change rebinds use `inheritExecutionWorkspaceFromIssueId` plus `executionProvenance.handoffRole`) |
 | POST   | `/api/issues/:issueId/checkout`    | Atomic checkout (claim + start). Idempotent if you already own it.                       |
 | POST   | `/api/issues/:issueId/release`     | Release task ownership                                                                   |
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
@@ -804,7 +848,7 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/issues/:issueId/approvals`   | List approvals linked to issue                                                           |
 | POST   | `/api/issues/:issueId/approvals`   | Link approval to issue                                                                   |
 | DELETE | `/api/issues/:issueId/approvals/:approvalId` | Unlink approval from issue                                                     |
-| GET    | `/api/issues/:issueId/heartbeat-context` | Compact issue context including `currentExecutionWorkspace` when one is linked |
+| GET    | `/api/issues/:issueId/heartbeat-context` | Compact issue context including `currentExecutionWorkspace`, `executionProvenance`, and `executionProvenanceReadiness` |
 | GET    | `/api/execution-workspaces/:workspaceId` | Execution workspace detail including runtime services and service URLs |
 | POST   | `/api/execution-workspaces/:workspaceId/runtime-services/start` | Start configured workspace services |
 | POST   | `/api/execution-workspaces/:workspaceId/runtime-services/restart` | Restart configured workspace services |

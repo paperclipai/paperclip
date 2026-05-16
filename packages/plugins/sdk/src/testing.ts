@@ -14,6 +14,7 @@ import type {
   Routine,
   RoutineRun,
   Issue,
+  IssueExecutionProvenanceInput,
   IssueComment,
   IssueThreadInteraction,
   CreateIssueThreadInteraction,
@@ -569,6 +570,43 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       return originKind as PluginIssueOriginKind;
     }
     throw new Error(`Plugin may only use originKind values under ${defaultPluginOriginKind}`);
+  }
+
+  function normalizeCapturedExecutionProvenance(
+    value: IssueExecutionProvenanceInput | Issue["executionProvenance"] | null | undefined,
+  ): Issue["executionProvenance"] | null | undefined {
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    if (!value.sourceIssueId || !value.sourceExecutionWorkspaceId || !value.capturedAt) return undefined;
+    return {
+      handoffRole: value.handoffRole,
+      sourceIssueId: value.sourceIssueId,
+      sourceExecutionWorkspaceId: value.sourceExecutionWorkspaceId,
+      branchName: value.branchName ?? null,
+      baseRef: value.baseRef ?? null,
+      capturedAt: value.capturedAt,
+    };
+  }
+
+  function captureExecutionProvenanceFromIssue(
+    sourceIssue: Issue | null | undefined,
+    handoffRole: IssueExecutionProvenanceInput["handoffRole"] | null | undefined,
+  ): Issue["executionProvenance"] | null {
+    if (!sourceIssue || !sourceIssue.executionWorkspaceId || !handoffRole) return null;
+    return {
+      handoffRole,
+      sourceIssueId: sourceIssue.id,
+      sourceExecutionWorkspaceId: sourceIssue.executionWorkspaceId,
+      branchName:
+        sourceIssue.currentExecutionWorkspace?.branchName
+        ?? sourceIssue.executionProvenance?.branchName
+        ?? null,
+      baseRef:
+        sourceIssue.currentExecutionWorkspace?.baseRef
+        ?? sourceIssue.executionProvenance?.baseRef
+        ?? null,
+      capturedAt: new Date().toISOString(),
+    };
   }
 
   const ctx: PluginContext = {
@@ -1388,11 +1426,25 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             ? pluginOperationIssueOriginKind(manifest.id)
             : input.originKind,
         );
+        const workspaceSourceIssueId = input.inheritExecutionWorkspaceFromIssueId ?? input.parentId ?? null;
+        const workspaceSource = workspaceSourceIssueId ? issues.get(workspaceSourceIssueId) ?? null : null;
+        const hasExplicitExecutionWorkspaceOverride =
+          input.executionWorkspaceId !== undefined
+          || input.executionWorkspacePreference !== undefined
+          || input.executionWorkspaceSettings !== undefined;
+        const normalizedExecutionProvenance = normalizeCapturedExecutionProvenance(input.executionProvenance);
+        const capturedExecutionProvenance =
+          normalizedExecutionProvenance !== undefined
+            ? normalizedExecutionProvenance
+            : captureExecutionProvenanceFromIssue(
+                workspaceSource,
+                input.executionProvenance?.handoffRole,
+              );
         const record: Issue = {
           id: randomUUID(),
           companyId: input.companyId,
           projectId: input.projectId ?? null,
-          projectWorkspaceId: null,
+          projectWorkspaceId: workspaceSource?.projectWorkspaceId ?? null,
           goalId: input.goalId ?? null,
           parentId: input.parentId ?? null,
           title: input.title,
@@ -1416,9 +1468,16 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           requestDepth: input.requestDepth ?? 0,
           billingCode: input.billingCode ?? null,
           assigneeAdapterOverrides: input.assigneeAdapterOverrides ?? null,
-          executionWorkspaceId: input.executionWorkspaceId ?? null,
-          executionWorkspacePreference: input.executionWorkspacePreference ?? null,
-          executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
+          executionProvenance: capturedExecutionProvenance ?? null,
+          executionWorkspaceId:
+            input.executionWorkspaceId
+            ?? (!hasExplicitExecutionWorkspaceOverride ? workspaceSource?.executionWorkspaceId ?? null : null),
+          executionWorkspacePreference:
+            input.executionWorkspacePreference
+            ?? (!hasExplicitExecutionWorkspaceOverride && workspaceSource?.executionWorkspaceId ? "reuse_existing" : null),
+          executionWorkspaceSettings:
+            input.executionWorkspaceSettings
+            ?? (!hasExplicitExecutionWorkspaceOverride ? workspaceSource?.executionWorkspaceSettings ?? null : null),
           startedAt: null,
           completedAt: null,
           cancelledAt: null,
@@ -1434,13 +1493,52 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         requireCapability(manifest, capabilitySet, "issues.update");
         const record = issues.get(issueId);
         if (!isInCompany(record, companyId)) throw new Error(`Issue not found: ${issueId}`);
-        const { blockedByIssueIds: nextBlockedByIssueIds, ...issuePatch } = patch;
+        const {
+          blockedByIssueIds: nextBlockedByIssueIds,
+          executionProvenance: nextExecutionProvenance,
+          inheritExecutionWorkspaceFromIssueId,
+          ...issuePatch
+        } = patch;
         if (issuePatch.originKind !== undefined) {
           issuePatch.originKind = normalizePluginOriginKind(issuePatch.originKind);
         }
+        const workspaceSourceIssueId =
+          inheritExecutionWorkspaceFromIssueId
+          ?? record.executionProvenance?.sourceIssueId
+          ?? record.parentId
+          ?? null;
+        const workspaceSource = workspaceSourceIssueId ? issues.get(workspaceSourceIssueId) ?? null : null;
+        const hasExplicitExecutionWorkspaceOverride =
+          patch.executionWorkspaceId !== undefined
+          || patch.executionWorkspacePreference !== undefined
+          || patch.executionWorkspaceSettings !== undefined;
+        const normalizedExecutionProvenance = normalizeCapturedExecutionProvenance(nextExecutionProvenance);
+        const capturedExecutionProvenance =
+          normalizedExecutionProvenance !== undefined
+            ? normalizedExecutionProvenance
+            : nextExecutionProvenance === null
+              ? null
+              : captureExecutionProvenanceFromIssue(
+                  workspaceSource,
+                  nextExecutionProvenance?.handoffRole ?? record.executionProvenance?.handoffRole,
+                ) ?? record.executionProvenance ?? null;
         const updated: Issue = {
           ...record,
           ...issuePatch,
+          projectWorkspaceId:
+            record.projectWorkspaceId
+            ?? workspaceSource?.projectWorkspaceId
+            ?? null,
+          executionWorkspaceId:
+            patch.executionWorkspaceId
+            ?? (!hasExplicitExecutionWorkspaceOverride ? workspaceSource?.executionWorkspaceId ?? record.executionWorkspaceId ?? null : record.executionWorkspaceId ?? null),
+          executionWorkspacePreference:
+            patch.executionWorkspacePreference
+            ?? (!hasExplicitExecutionWorkspaceOverride && workspaceSource?.executionWorkspaceId ? "reuse_existing" : record.executionWorkspacePreference ?? null),
+          executionWorkspaceSettings:
+            patch.executionWorkspaceSettings
+            ?? (!hasExplicitExecutionWorkspaceOverride ? workspaceSource?.executionWorkspaceSettings ?? record.executionWorkspaceSettings ?? null : record.executionWorkspaceSettings ?? null),
+          executionProvenance: capturedExecutionProvenance,
           updatedAt: new Date(),
         };
         issues.set(issueId, updated);

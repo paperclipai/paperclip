@@ -2034,6 +2034,355 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
+  it("captures execution provenance for same-code-change follow-up handoffs", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+    });
+
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "operator_branch",
+      strategyType: "git_worktree",
+      name: "Implementation branch",
+      status: "active",
+      providerType: "git_worktree",
+      branchName: "feature/source",
+      baseRef: "main",
+    });
+
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Source issue",
+      status: "in_progress",
+      priority: "medium",
+      executionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "operator_branch",
+      },
+    });
+
+    const followUp = await svc.create(companyId, {
+      projectId,
+      title: "Follow-up issue",
+      inheritExecutionWorkspaceFromIssueId: sourceIssueId,
+      executionProvenance: { handoffRole: "follow_up" },
+    });
+
+    expect(followUp.executionWorkspaceId).toBe(executionWorkspaceId);
+    expect(followUp.executionProvenance).toMatchObject({
+      handoffRole: "follow_up",
+      sourceIssueId,
+      sourceExecutionWorkspaceId: executionWorkspaceId,
+      branchName: "feature/source",
+      baseRef: "main",
+    });
+    expect(typeof followUp.executionProvenance?.capturedAt).toBe("string");
+  });
+
+  it("rejects review handoff updates that move the issue off the captured workspace", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const sourceExecutionWorkspaceId = randomUUID();
+    const alternateExecutionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+    });
+
+    await db.insert(executionWorkspaces).values([
+      {
+        id: sourceExecutionWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "Implementation branch",
+        status: "active",
+        providerType: "git_worktree",
+        branchName: "feature/source",
+        baseRef: "main",
+      },
+      {
+        id: alternateExecutionWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "Alternate branch",
+        status: "active",
+        providerType: "git_worktree",
+        branchName: "feature/alternate",
+        baseRef: "main",
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Source issue",
+      status: "in_progress",
+      priority: "medium",
+      executionWorkspaceId: sourceExecutionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+      },
+    });
+
+    const reviewIssue = await svc.create(companyId, {
+      projectId,
+      title: "Review issue",
+      inheritExecutionWorkspaceFromIssueId: sourceIssueId,
+      executionProvenance: { handoffRole: "review" },
+    });
+
+    await expect(
+      svc.update(reviewIssue.id, {
+        executionWorkspaceId: alternateExecutionWorkspaceId,
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: { mode: "isolated_workspace" },
+      }),
+    ).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("marks review handoffs not ready when the source issue moves to a different workspace", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const sourceExecutionWorkspaceId = randomUUID();
+    const replacementExecutionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+    });
+
+    await db.insert(executionWorkspaces).values([
+      {
+        id: sourceExecutionWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "Implementation branch",
+        status: "active",
+        providerType: "git_worktree",
+        branchName: "feature/source",
+        baseRef: "main",
+      },
+      {
+        id: replacementExecutionWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "Replacement branch",
+        status: "active",
+        providerType: "git_worktree",
+        branchName: "feature/rebased",
+        baseRef: "main",
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Source issue",
+      status: "in_progress",
+      priority: "medium",
+      executionWorkspaceId: sourceExecutionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+      },
+    });
+
+    const reviewIssue = await svc.create(companyId, {
+      projectId,
+      title: "Review issue",
+      inheritExecutionWorkspaceFromIssueId: sourceIssueId,
+      executionProvenance: { handoffRole: "review" },
+    });
+
+    await db
+      .update(issues)
+      .set({
+        executionWorkspaceId: replacementExecutionWorkspaceId,
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, sourceIssueId));
+
+    const readiness = await svc.getExecutionProvenanceReadiness(reviewIssue.id);
+
+    expect(readiness).toMatchObject({
+      ready: false,
+      code: "workspace_mismatch",
+    });
+    expect(readiness?.message).toContain("moved to a different workspace");
+    expect(readiness?.recoverySteps[1]).toContain("inheritExecutionWorkspaceFromIssueId");
+  });
+
+  it("marks review handoffs not ready when the source workspace compare target drifts", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const sourceExecutionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+    });
+
+    await db.insert(executionWorkspaces).values({
+      id: sourceExecutionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Implementation branch",
+      status: "active",
+      providerType: "git_worktree",
+      branchName: "feature/source",
+      baseRef: "main",
+    });
+
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Source issue",
+      status: "in_progress",
+      priority: "medium",
+      executionWorkspaceId: sourceExecutionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+      },
+    });
+
+    const reviewIssue = await svc.create(companyId, {
+      projectId,
+      title: "Review issue",
+      inheritExecutionWorkspaceFromIssueId: sourceIssueId,
+      executionProvenance: { handoffRole: "review" },
+    });
+
+    await db
+      .update(executionWorkspaces)
+      .set({
+        branchName: "feature/source-v2",
+        baseRef: "release",
+        updatedAt: new Date(),
+      })
+      .where(eq(executionWorkspaces.id, sourceExecutionWorkspaceId));
+
+    const readiness = await svc.getExecutionProvenanceReadiness(reviewIssue.id);
+
+    expect(readiness).toMatchObject({
+      ready: false,
+      code: "workspace_mismatch",
+    });
+    expect(readiness?.message).toContain("compare target changed");
+    expect(readiness?.recoverySteps[1]).toContain("compare target is fixed");
+  });
+
   it("createChild applies parent defaults, acceptance criteria, workspace inheritance, and optional parent blocker chaining", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();

@@ -320,6 +320,24 @@ export const ISSUE_EXECUTION_MONITOR_CLEAR_REASONS = [
 ] as const;
 export type IssueExecutionMonitorClearReason = (typeof ISSUE_EXECUTION_MONITOR_CLEAR_REASONS)[number];
 
+export const ISSUE_EXECUTION_PROVENANCE_HANDOFF_ROLES = [
+  "follow_up",
+  "review",
+  "qa",
+  "release",
+] as const;
+export type IssueExecutionProvenanceHandoffRole = (typeof ISSUE_EXECUTION_PROVENANCE_HANDOFF_ROLES)[number];
+
+export const ISSUE_EXECUTION_PROVENANCE_READINESS_CODES = [
+  "ready",
+  "missing_source_issue",
+  "missing_source_workspace",
+  "workspace_mismatch",
+  "missing_compare_target",
+  "workspace_archived",
+] as const;
+export type IssueExecutionProvenanceReadinessCode = (typeof ISSUE_EXECUTION_PROVENANCE_READINESS_CODES)[number];
+
 export const ISSUE_EXECUTION_DECISION_OUTCOMES = ["approved", "changes_requested"] as const;
 export type IssueExecutionDecisionOutcome = (typeof ISSUE_EXECUTION_DECISION_OUTCOMES)[number];
 

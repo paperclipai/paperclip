@@ -6,6 +6,8 @@ import {
   ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES,
   ISSUE_EXECUTION_MONITOR_STATE_STATUSES,
   ISSUE_EXECUTION_POLICY_MODES,
+  ISSUE_EXECUTION_PROVENANCE_HANDOFF_ROLES,
+  ISSUE_EXECUTION_PROVENANCE_READINESS_CODES,
   ISSUE_EXECUTION_STAGE_TYPES,
   ISSUE_EXECUTION_STATE_STATUSES,
   ISSUE_COMMENT_AUTHOR_TYPES,
@@ -234,6 +236,49 @@ export const issueExecutionStateSchema = z.object({
   monitor: issueExecutionMonitorStateSchema.optional().nullable(),
 });
 
+export const issueExecutionProvenanceSchema = z.object({
+  handoffRole: z.enum(ISSUE_EXECUTION_PROVENANCE_HANDOFF_ROLES),
+  sourceIssueId: z.string().uuid(),
+  sourceExecutionWorkspaceId: z.string().uuid(),
+  branchName: z.string().trim().min(1).nullable(),
+  baseRef: z.string().trim().min(1).nullable(),
+  capturedAt: z.string().datetime(),
+});
+
+export const issueExecutionProvenanceInputSchema = z.object({
+  handoffRole: z.enum(ISSUE_EXECUTION_PROVENANCE_HANDOFF_ROLES),
+  sourceIssueId: z.string().uuid().optional().nullable(),
+  sourceExecutionWorkspaceId: z.string().uuid().optional().nullable(),
+  branchName: z.string().trim().min(1).optional().nullable(),
+  baseRef: z.string().trim().min(1).optional().nullable(),
+  capturedAt: z.string().datetime().optional().nullable(),
+});
+
+const issueExecutionProvenanceReadinessExpectedSchema = z.object({
+  sourceIssueId: z.string().uuid(),
+  sourceIssueIdentifier: z.string().trim().min(1).nullable().optional(),
+  sourceIssueTitle: z.string().trim().min(1).nullable().optional(),
+  sourceExecutionWorkspaceId: z.string().uuid(),
+  branchName: z.string().trim().min(1).nullable(),
+  baseRef: z.string().trim().min(1).nullable(),
+});
+
+const issueExecutionProvenanceReadinessActualSchema = z.object({
+  executionWorkspaceId: z.string().uuid().nullable(),
+  branchName: z.string().trim().min(1).nullable(),
+  cwd: z.string().trim().min(1).nullable(),
+  status: z.string().trim().min(1).nullable(),
+});
+
+export const issueExecutionProvenanceReadinessSchema = z.object({
+  ready: z.boolean(),
+  code: z.enum(ISSUE_EXECUTION_PROVENANCE_READINESS_CODES),
+  message: z.string().trim().min(1),
+  expected: issueExecutionProvenanceReadinessExpectedSchema.nullable(),
+  actual: issueExecutionProvenanceReadinessActualSchema.nullable(),
+  recoverySteps: z.array(z.string().trim().min(1)),
+});
+
 export const issueRecoveryActionReadModelSchema = z.object({
   id: z.string().uuid(),
   companyId: z.string().uuid(),
@@ -382,6 +427,7 @@ const createIssueBaseSchema = z.object({
   billingCode: z.string().optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
   executionPolicy: issueExecutionPolicySchema.optional().nullable(),
+  executionProvenance: issueExecutionProvenanceInputSchema.optional().nullable(),
   executionWorkspaceId: z.string().uuid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
@@ -395,6 +441,9 @@ export const createIssueInputSchema = createIssueBaseSchema.extend({
 export const createIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema);
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
+export type IssueExecutionProvenance = z.infer<typeof issueExecutionProvenanceSchema>;
+export type IssueExecutionProvenanceInput = z.infer<typeof issueExecutionProvenanceInputSchema>;
+export type IssueExecutionProvenanceReadiness = z.infer<typeof issueExecutionProvenanceReadinessSchema>;
 
 export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema
   .omit({

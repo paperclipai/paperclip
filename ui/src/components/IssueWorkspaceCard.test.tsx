@@ -247,4 +247,70 @@ describe("IssueWorkspaceCard", () => {
       root.unmount();
     });
   });
+
+  it("shows same-code-change provenance for reused workspaces", () => {
+    const root = createRoot(container);
+
+    useQueryMock.mockImplementation((options: { queryKey: unknown[] }) => {
+      if (options.queryKey[0] === "instance") {
+        return { data: { enableEnvironments: false, enableIsolatedWorkspaces: true } };
+      }
+      return { data: undefined };
+    });
+
+    act(() => {
+      root.render(
+        <IssueWorkspaceCard
+          issue={createIssue({
+            executionWorkspacePreference: "reuse_existing",
+            executionProvenance: {
+              handoffRole: "review",
+              sourceIssueId: "issue-9",
+              sourceExecutionWorkspaceId: "workspace-1",
+              branchName: "feature/papa-81",
+              baseRef: "main",
+              capturedAt: "2026-04-16T05:01:00.000Z",
+            },
+            executionProvenanceReadiness: {
+              ready: true,
+              code: "ready",
+              message: "This handoff is bound to the expected implementation workspace and compare target.",
+              expected: {
+                sourceIssueId: "issue-9",
+                sourceIssueIdentifier: "PAPA-9",
+                sourceIssueTitle: "Implementation task",
+                sourceExecutionWorkspaceId: "workspace-1",
+                branchName: "feature/papa-81",
+                baseRef: "main",
+              },
+              actual: {
+                executionWorkspaceId: "workspace-1",
+                branchName: "feature/papa-81",
+                cwd: "/tmp/issue-sandbox",
+                status: "active",
+              },
+              recoverySteps: [],
+            },
+          })}
+          project={{
+            id: "project-1",
+            executionWorkspacePolicy: {
+              enabled: true,
+              defaultMode: "isolated_workspace",
+              environmentId: "env-project",
+            },
+          }}
+          onUpdate={vi.fn()}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Same code change:");
+    expect(container.textContent).toContain("review handoff from PAPA-9");
+    expect(container.textContent).toContain("ready");
+
+    act(() => {
+      root.unmount();
+    });
+  });
 });

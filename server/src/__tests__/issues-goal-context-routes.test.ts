@@ -6,6 +6,7 @@ import { issueRoutes } from "../routes/issues.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  getExecutionProvenanceReadiness: vi.fn(),
   getAncestors: vi.fn(),
   getRelationSummaries: vi.fn(),
   findMentionedProjectIds: vi.fn(),
@@ -182,6 +183,7 @@ describe.sequential("issue goal context routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(legacyProjectLinkedIssue);
+    mockIssueService.getExecutionProvenanceReadiness.mockResolvedValue(null);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.findMentionedProjectIds.mockResolvedValue([]);
@@ -374,5 +376,57 @@ describe.sequential("issue goal context routes", () => {
         }),
       ],
     }));
+  });
+
+  it("surfaces execution provenance and readiness on GET /issues/:id/heartbeat-context", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      executionWorkspaceId: "55555555-5555-4555-8555-555555555555",
+      executionProvenance: {
+        handoffRole: "review",
+        sourceIssueId: "66666666-6666-4666-8666-666666666666",
+        sourceExecutionWorkspaceId: "55555555-5555-4555-8555-555555555555",
+        branchName: "feature/pap-581",
+        baseRef: "main",
+        capturedAt: "2026-04-24T12:00:00.000Z",
+      },
+    });
+    mockIssueService.getExecutionProvenanceReadiness.mockResolvedValue({
+      ready: true,
+      code: "ready",
+      message: "This handoff is bound to the expected implementation workspace and compare target.",
+      expected: {
+        sourceIssueId: "66666666-6666-4666-8666-666666666666",
+        sourceIssueIdentifier: "PAP-580",
+        sourceIssueTitle: "Implementation issue",
+        sourceExecutionWorkspaceId: "55555555-5555-4555-8555-555555555555",
+        branchName: "feature/pap-581",
+        baseRef: "main",
+      },
+      actual: {
+        executionWorkspaceId: "55555555-5555-4555-8555-555555555555",
+        branchName: "feature/pap-581",
+        cwd: "/tmp/pap-581",
+        status: "active",
+      },
+      recoverySteps: [],
+    });
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.issue.executionProvenance).toEqual(expect.objectContaining({
+      handoffRole: "review",
+      sourceIssueId: "66666666-6666-4666-8666-666666666666",
+    }));
+    expect(res.body.issue.executionProvenanceReadiness).toEqual(expect.objectContaining({
+      ready: true,
+      code: "ready",
+    }));
+    expect(mockIssueService.getExecutionProvenanceReadiness).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+    );
   });
 });

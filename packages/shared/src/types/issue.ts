@@ -7,6 +7,8 @@ import type {
   IssueExecutionMonitorKind,
   IssueExecutionMonitorRecoveryPolicy,
   IssueExecutionMonitorStateStatus,
+  IssueExecutionProvenanceHandoffRole,
+  IssueExecutionProvenanceReadinessCode,
   IssueExecutionDecisionOutcome,
   IssueMonitorScheduledBy,
   IssueExecutionPolicyMode,
@@ -79,6 +81,40 @@ export interface IssueAssigneeAdapterOverrides {
   modelProfile?: ModelProfileKey;
   adapterConfig?: Record<string, unknown>;
   useProjectWorkspace?: boolean;
+}
+
+export interface IssueExecutionProvenance {
+  handoffRole: IssueExecutionProvenanceHandoffRole;
+  sourceIssueId: string;
+  sourceExecutionWorkspaceId: string;
+  branchName: string | null;
+  baseRef: string | null;
+  capturedAt: string;
+}
+
+export interface IssueExecutionProvenanceReadinessExpected {
+  sourceIssueId: string;
+  sourceIssueIdentifier?: string | null;
+  sourceIssueTitle?: string | null;
+  sourceExecutionWorkspaceId: string;
+  branchName: string | null;
+  baseRef: string | null;
+}
+
+export interface IssueExecutionProvenanceReadinessActual {
+  executionWorkspaceId: string | null;
+  branchName: string | null;
+  cwd: string | null;
+  status: string | null;
+}
+
+export interface IssueExecutionProvenanceReadiness {
+  ready: boolean;
+  code: IssueExecutionProvenanceReadinessCode;
+  message: string;
+  expected: IssueExecutionProvenanceReadinessExpected | null;
+  actual: IssueExecutionProvenanceReadinessActual | null;
+  recoverySteps: string[];
 }
 
 export type DocumentFormat = "markdown";
@@ -465,6 +501,8 @@ export interface Issue {
   monitorAttemptCount?: number;
   monitorNotes?: string | null;
   monitorScheduledBy?: IssueMonitorScheduledBy | null;
+  executionProvenance?: IssueExecutionProvenance | null;
+  executionProvenanceReadiness?: IssueExecutionProvenanceReadiness | null;
   executionWorkspaceId: string | null;
   executionWorkspacePreference: string | null;
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;

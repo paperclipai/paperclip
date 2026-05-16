@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import type { IssueExecutionProvenance } from "@paperclipai/shared";
 import {
   type AnyPgColumn,
   pgTable,
@@ -51,6 +52,7 @@ export const issues = pgTable(
     assigneeAdapterOverrides: jsonb("assignee_adapter_overrides").$type<Record<string, unknown>>(),
     executionPolicy: jsonb("execution_policy").$type<Record<string, unknown>>(),
     executionState: jsonb("execution_state").$type<Record<string, unknown>>(),
+    executionProvenance: jsonb("execution_provenance").$type<IssueExecutionProvenance>(),
     monitorNextCheckAt: timestamp("monitor_next_check_at", { withTimezone: true }),
     monitorWakeRequestedAt: timestamp("monitor_wake_requested_at", { withTimezone: true }),
     monitorLastTriggeredAt: timestamp("monitor_last_triggered_at", { withTimezone: true }),

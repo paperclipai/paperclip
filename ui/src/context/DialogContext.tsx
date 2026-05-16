@@ -14,6 +14,10 @@ interface NewIssueDefaults {
   executionWorkspaceId?: string;
   executionWorkspaceMode?: string;
   parentExecutionWorkspaceLabel?: string;
+  sameCodeChangeSourceIssueId?: string;
+  sameCodeChangeSourceIssueIdentifier?: string;
+  sameCodeChangeSourceIssueTitle?: string;
+  executionProvenanceHandoffRole?: string;
   assigneeAgentId?: string;
   assigneeUserId?: string;
   title?: string;

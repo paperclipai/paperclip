@@ -678,6 +678,104 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("You are waking as the active reviewer for this issue.");
   });
 
+  it("renders execution provenance recovery guidance ahead of the general contract when not ready", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-2019",
+        title: "QA handoff",
+        status: "in_review",
+      },
+      executionProvenance: {
+        handoffRole: "qa",
+        sourceIssueId: "issue-source",
+        sourceExecutionWorkspaceId: "workspace-source",
+        branchName: "feature/pap-2018",
+        baseRef: "main",
+      },
+      executionProvenanceReadiness: {
+        ready: false,
+        code: "workspace_mismatch",
+        message: "This issue is bound to a different workspace than the implementation it is supposed to judge.",
+        expected: {
+          sourceIssueId: "issue-source",
+          sourceIssueIdentifier: "PAP-2018",
+          sourceIssueTitle: "Implementation issue",
+          sourceExecutionWorkspaceId: "workspace-source",
+          branchName: "feature/pap-2018",
+          baseRef: "main",
+        },
+        actual: {
+          executionWorkspaceId: "workspace-qa",
+          branchName: "feature/pap-2019-qa",
+          cwd: "/tmp/pap-2019-qa",
+          status: "active",
+        },
+        recoverySteps: [
+          "Rebind the issue with `inheritExecutionWorkspaceFromIssueId=issue-source` to restore the source workspace.",
+        ],
+      },
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("Execution provenance:");
+    expect(prompt).toContain("- handoff role: qa");
+    expect(prompt).toContain("- readiness: not ready (workspace_mismatch)");
+    expect(prompt).toContain("Recovery steps:");
+    expect(prompt.indexOf("Execution provenance:")).toBeLessThan(
+      prompt.indexOf("Execution contract: take concrete action in this heartbeat"),
+    );
+  });
+
+  it("keeps the execution provenance recovery card on resumed sessions when not ready", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_continuation_needed",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-2020",
+        title: "Resume QA handoff",
+        status: "in_progress",
+      },
+      executionProvenance: {
+        handoffRole: "qa",
+        sourceIssueId: "issue-source",
+        sourceExecutionWorkspaceId: "workspace-source",
+        branchName: "feature/pap-2018",
+        baseRef: "main",
+      },
+      executionProvenanceReadiness: {
+        ready: false,
+        code: "workspace_mismatch",
+        message: "This issue is bound to a different workspace than the implementation it is supposed to judge.",
+        expected: {
+          sourceIssueId: "issue-source",
+          sourceIssueIdentifier: "PAP-2018",
+          sourceIssueTitle: "Implementation issue",
+          sourceExecutionWorkspaceId: "workspace-source",
+          branchName: "feature/pap-2018",
+          baseRef: "main",
+        },
+        actual: {
+          executionWorkspaceId: "workspace-qa",
+          branchName: "feature/pap-2019-qa",
+          cwd: "/tmp/pap-2019-qa",
+          status: "active",
+        },
+        recoverySteps: [
+          "Rebind the issue with `inheritExecutionWorkspaceFromIssueId=issue-source` to restore the source workspace.",
+        ],
+      },
+      fallbackFetchNeeded: false,
+    }, { resumedSession: true });
+
+    expect(prompt).toContain("## Paperclip Resume Delta");
+    expect(prompt).toContain("Execution provenance:");
+    expect(prompt).toContain("- readiness: not ready (workspace_mismatch)");
+    expect(prompt).toContain("Recovery steps:");
+    expect(prompt).toContain("inheritExecutionWorkspaceFromIssueId=issue-source");
+  });
+
   it("includes continuation and child issue summaries in structured wake context", () => {
     const payload = {
       reason: "issue_children_completed",

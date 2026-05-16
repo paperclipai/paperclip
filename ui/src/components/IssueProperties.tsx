@@ -493,6 +493,21 @@ export function IssueProperties({
     () => isMainIssueWorkspace({ issue, project: issueProject }),
     [issue, issueProject],
   );
+  const executionProvenance = issue.executionProvenance ?? null;
+  const executionProvenanceReadiness = issue.executionProvenanceReadiness ?? null;
+  const executionProvenanceExpected = executionProvenanceReadiness?.expected ?? null;
+  const executionProvenanceActual = executionProvenanceReadiness?.actual ?? null;
+  const executionProvenanceSourceRef =
+    executionProvenanceExpected?.sourceIssueIdentifier
+    ?? executionProvenance?.sourceIssueId
+    ?? null;
+  const executionProvenanceSourceTitle = executionProvenanceExpected?.sourceIssueTitle ?? null;
+  const executionProvenanceSourceHref = executionProvenanceSourceRef
+    ? `/issues/${executionProvenanceExpected?.sourceIssueIdentifier ?? executionProvenance?.sourceIssueId}`
+    : null;
+  const executionProvenanceRoleLabel = executionProvenance
+    ? executionProvenance.handoffRole.replace(/_/g, " ")
+    : null;
   const showWorkspaceDetailLink = Boolean(issue.executionWorkspaceId) && !issueUsesMainWorkspace;
   const liveWorkspaceService = useMemo(() => {
     if (issueUsesMainWorkspace) return null;
@@ -1906,6 +1921,62 @@ export function IssueProperties({
             ) : null}
           </div>
         </PropertyRow>
+
+        {executionProvenance ? (
+          <PropertyRow label="Code Change">
+            <div className="min-w-0 flex-1 space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm capitalize">{executionProvenanceRoleLabel}</span>
+                {executionProvenanceReadiness ? (
+                  <span
+                    className={cn(
+                      "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium",
+                      executionProvenanceReadiness.ready
+                        ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                        : "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+                    )}
+                  >
+                    {executionProvenanceReadiness.ready ? "Ready" : "Needs recovery"}
+                  </span>
+                ) : null}
+              </div>
+              <div className="text-sm text-muted-foreground">
+                {executionProvenanceSourceHref ? (
+                  <Link to={executionProvenanceSourceHref} className="text-foreground hover:underline">
+                    {executionProvenanceSourceRef}
+                  </Link>
+                ) : (
+                  <span className="text-foreground">{executionProvenanceSourceRef ?? "Unknown source issue"}</span>
+                )}
+                {executionProvenanceSourceTitle ? ` ${executionProvenanceSourceTitle}` : ""}
+              </div>
+              {(executionProvenanceExpected?.branchName || executionProvenanceExpected?.baseRef) ? (
+                <div className="text-[11px] text-muted-foreground">
+                  Branch {executionProvenanceExpected?.branchName ?? "unknown"} against {executionProvenanceExpected?.baseRef ?? "unknown"}.
+                </div>
+              ) : null}
+              {executionProvenanceReadiness && !executionProvenanceReadiness.ready ? (
+                <div className="rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-[11px] text-amber-900 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-100">
+                  <div className="font-medium">{executionProvenanceReadiness.message}</div>
+                  {executionProvenanceActual && (
+                    <div className="mt-1 text-amber-900/80 dark:text-amber-100/80">
+                      Actual workspace {executionProvenanceActual.executionWorkspaceId ?? "none"}
+                      {executionProvenanceActual.branchName ? ` · ${executionProvenanceActual.branchName}` : ""}
+                      {executionProvenanceActual.cwd ? ` · ${executionProvenanceActual.cwd}` : ""}
+                    </div>
+                  )}
+                  {executionProvenanceReadiness.recoverySteps.length > 0 ? (
+                    <ol className="mt-2 list-decimal space-y-1 pl-4">
+                      {executionProvenanceReadiness.recoverySteps.map((step) => (
+                        <li key={step}>{step}</li>
+                      ))}
+                    </ol>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          </PropertyRow>
+        ) : null}
 
         {relatedTasks.length > 0 ? (
           <PropertyRow label="Related Tasks">

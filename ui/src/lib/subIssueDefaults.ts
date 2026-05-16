@@ -46,6 +46,10 @@ export function buildSubIssueDefaultsForViewer(
         ? { executionWorkspaceMode: issue.executionWorkspacePreference }
         : {}),
     ...(parentExecutionWorkspaceLabel ? { parentExecutionWorkspaceLabel } : {}),
+    sameCodeChangeSourceIssueId: issue.id,
+    ...(issue.identifier ? { sameCodeChangeSourceIssueIdentifier: issue.identifier } : {}),
+    sameCodeChangeSourceIssueTitle: issue.title,
+    executionProvenanceHandoffRole: "follow_up",
     ...(issue.assigneeAgentId ? { assigneeAgentId: issue.assigneeAgentId } : {}),
     ...(inheritedAssigneeUserId ? { assigneeUserId: inheritedAssigneeUserId } : {}),
   };

@@ -379,9 +379,45 @@ type PaperclipWakeTreeHoldSummary = {
   reason: string | null;
 };
 
+type PaperclipWakeExecutionProvenance = {
+  handoffRole: string | null;
+  sourceIssueId: string | null;
+  sourceExecutionWorkspaceId: string | null;
+  branchName: string | null;
+  baseRef: string | null;
+  capturedAt: string | null;
+};
+
+type PaperclipWakeExecutionProvenanceExpected = {
+  sourceIssueId: string | null;
+  sourceIssueIdentifier: string | null;
+  sourceIssueTitle: string | null;
+  sourceExecutionWorkspaceId: string | null;
+  branchName: string | null;
+  baseRef: string | null;
+};
+
+type PaperclipWakeExecutionProvenanceActual = {
+  executionWorkspaceId: string | null;
+  branchName: string | null;
+  cwd: string | null;
+  status: string | null;
+};
+
+type PaperclipWakeExecutionProvenanceReadiness = {
+  ready: boolean;
+  code: string | null;
+  message: string | null;
+  expected: PaperclipWakeExecutionProvenanceExpected | null;
+  actual: PaperclipWakeExecutionProvenanceActual | null;
+  recoverySteps: string[];
+};
+
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
+  executionProvenance: PaperclipWakeExecutionProvenance | null;
+  executionProvenanceReadiness: PaperclipWakeExecutionProvenanceReadiness | null;
   checkedOutByHarness: boolean;
   dependencyBlockedInteraction: boolean;
   treeHoldInteraction: boolean;
@@ -469,6 +505,56 @@ function normalizePaperclipWakeLivenessContinuation(value: unknown): PaperclipWa
     state,
     reason,
     instruction,
+  };
+}
+
+function normalizePaperclipWakeExecutionProvenance(value: unknown): PaperclipWakeExecutionProvenance | null {
+  const provenance = parseObject(value);
+  const handoffRole = asString(provenance.handoffRole, "").trim() || null;
+  const sourceIssueId = asString(provenance.sourceIssueId, "").trim() || null;
+  const sourceExecutionWorkspaceId = asString(provenance.sourceExecutionWorkspaceId, "").trim() || null;
+  if (!handoffRole && !sourceIssueId && !sourceExecutionWorkspaceId) return null;
+  return {
+    handoffRole,
+    sourceIssueId,
+    sourceExecutionWorkspaceId,
+    branchName: asString(provenance.branchName, "").trim() || null,
+    baseRef: asString(provenance.baseRef, "").trim() || null,
+    capturedAt: asString(provenance.capturedAt, "").trim() || null,
+  };
+}
+
+function normalizePaperclipWakeExecutionProvenanceReadiness(value: unknown): PaperclipWakeExecutionProvenanceReadiness | null {
+  const readiness = parseObject(value);
+  const expected = parseObject(readiness.expected);
+  const actual = parseObject(readiness.actual);
+  const code = asString(readiness.code, "").trim() || null;
+  if (!code && typeof readiness.ready !== "boolean") return null;
+  return {
+    ready: asBoolean(readiness.ready, false),
+    code,
+    message: asString(readiness.message, "").trim() || null,
+    expected: expected
+      ? {
+          sourceIssueId: asString(expected.sourceIssueId, "").trim() || null,
+          sourceIssueIdentifier: asString(expected.sourceIssueIdentifier, "").trim() || null,
+          sourceIssueTitle: asString(expected.sourceIssueTitle, "").trim() || null,
+          sourceExecutionWorkspaceId: asString(expected.sourceExecutionWorkspaceId, "").trim() || null,
+          branchName: asString(expected.branchName, "").trim() || null,
+          baseRef: asString(expected.baseRef, "").trim() || null,
+        }
+      : null,
+    actual: actual
+      ? {
+          executionWorkspaceId: asString(actual.executionWorkspaceId, "").trim() || null,
+          branchName: asString(actual.branchName, "").trim() || null,
+          cwd: asString(actual.cwd, "").trim() || null,
+          status: asString(actual.status, "").trim() || null,
+        }
+      : null,
+    recoverySteps: Array.isArray(readiness.recoverySteps)
+      ? readiness.recoverySteps.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+      : [],
   };
 }
 
@@ -584,15 +670,20 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
         .map((entry) => normalizePaperclipWakeBlockerSummary(entry))
         .filter((entry): entry is PaperclipWakeBlockerSummary => Boolean(entry))
     : [];
+  const executionProvenance = normalizePaperclipWakeExecutionProvenance(payload.executionProvenance);
+  const executionProvenanceReadiness =
+    normalizePaperclipWakeExecutionProvenanceReadiness(payload.executionProvenanceReadiness);
 
   const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
-  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
+  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !executionProvenance && !executionProvenanceReadiness && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
   return {
     reason: asString(payload.reason, "").trim() || null,
     issue: normalizePaperclipWakeIssue(payload.issue),
+    executionProvenance,
+    executionProvenanceReadiness,
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
     dependencyBlockedInteraction: asBoolean(payload.dependencyBlockedInteraction, false),
     treeHoldInteraction: asBoolean(payload.treeHoldInteraction, false),
@@ -623,6 +714,51 @@ export function stringifyPaperclipWakePayload(value: unknown): string | null {
   return JSON.stringify(normalized);
 }
 
+function appendExecutionProvenancePrompt(
+  lines: string[],
+  payload: Pick<PaperclipWakePayload, "executionProvenance" | "executionProvenanceReadiness">,
+) {
+  const provenance = payload.executionProvenance;
+  const readiness = payload.executionProvenanceReadiness;
+  if (!provenance && !readiness) return;
+
+  const expected = readiness?.expected ?? null;
+  const actual = readiness?.actual ?? null;
+  const sourceIssueLabel = expected?.sourceIssueIdentifier ?? expected?.sourceIssueId ?? provenance?.sourceIssueId ?? "unknown";
+  const sourceIssueTitle = expected?.sourceIssueTitle ?? null;
+  const sourceWorkspaceId = expected?.sourceExecutionWorkspaceId ?? provenance?.sourceExecutionWorkspaceId ?? "unknown";
+  const branchName = expected?.branchName ?? provenance?.branchName ?? null;
+  const baseRef = expected?.baseRef ?? provenance?.baseRef ?? null;
+
+  lines.push("Execution provenance:");
+  if (provenance?.handoffRole) {
+    lines.push(`- handoff role: ${provenance.handoffRole}`);
+  }
+  lines.push(`- source issue: ${sourceIssueLabel}${sourceIssueTitle ? ` ${sourceIssueTitle}` : ""}`);
+  lines.push(`- source workspace: ${sourceWorkspaceId}`);
+  lines.push(`- branch: ${branchName ?? "unknown"}`);
+  lines.push(`- compare target: ${baseRef ?? "unknown"}`);
+
+  if (!readiness) return;
+
+  lines.push(`- readiness: ${readiness.ready ? "ready" : "not ready"}${readiness.code ? ` (${readiness.code})` : ""}`);
+  if (readiness.message) {
+    lines.push(`- message: ${readiness.message}`);
+  }
+  if (actual && (actual.executionWorkspaceId || actual.branchName || actual.cwd || actual.status)) {
+    lines.push(`- actual workspace: ${actual.executionWorkspaceId ?? "none"}`);
+    lines.push(`- actual branch: ${actual.branchName ?? "unknown"}`);
+    lines.push(`- actual folder: ${actual.cwd ?? "unknown"}`);
+    lines.push(`- actual status: ${actual.status ?? "unknown"}`);
+  }
+  if (readiness.recoverySteps.length > 0) {
+    lines.push("Recovery steps:");
+    for (const [index, step] of readiness.recoverySteps.entries()) {
+      lines.push(`${index + 1}. ${step}`);
+    }
+  }
+}
+
 export function readPaperclipIssueWorkModeFromContext(value: unknown): string | null {
   const context = parseObject(value);
   const issue = parseObject(context.paperclipIssue);
@@ -645,6 +781,7 @@ export function renderPaperclipWakePrompt(
     if (principal.type === "agent") return principal.agentId ? `agent ${principal.agentId}` : "agent";
     return principal.userId ? `user ${principal.userId}` : "user";
   };
+  const notReadyExecutionProvenance = normalized.executionProvenanceReadiness && !normalized.executionProvenanceReadiness.ready;
 
   const lines = resumedSession
       ? [
@@ -655,13 +792,6 @@ export function renderPaperclipWakePrompt(
         "Focus on the new wake delta below and continue the current task without restating the full heartbeat boilerplate.",
         "Fetch the API thread only when `fallbackFetchNeeded` is true or you need broader history than this batch.",
         "",
-        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
-        "",
-        `- reason: ${normalized.reason ?? "unknown"}`,
-        `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
-        `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
-        `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
-        `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
       ]
     : [
         "## Paperclip Wake Payload",
@@ -671,15 +801,24 @@ export function renderPaperclipWakePrompt(
         "Before generic repo exploration or boilerplate heartbeat updates, acknowledge the latest comment and explain how it changes your next action.",
         "Use this inline wake data first before refetching the issue thread.",
         "Only fetch the API thread when `fallbackFetchNeeded` is true or you need broader history than this batch.",
-        "",
-        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
-        "",
-        `- reason: ${normalized.reason ?? "unknown"}`,
-        `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
-        `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
-        `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
-        `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
       ];
+
+  if (notReadyExecutionProvenance) {
+    lines.push("");
+    appendExecutionProvenancePrompt(lines, normalized);
+    lines.push("");
+  }
+
+  lines.push(
+    "",
+    "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
+    "",
+    `- reason: ${normalized.reason ?? "unknown"}`,
+    `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
+    `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
+    `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
+    `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
+  );
 
   if (normalized.issue?.status) {
     lines.push(`- issue status: ${normalized.issue.status}`);
@@ -734,6 +873,11 @@ export function renderPaperclipWakePrompt(
   }
   if (normalized.missingCount > 0) {
     lines.push(`- omitted comments: ${normalized.missingCount}`);
+  }
+
+  if (!notReadyExecutionProvenance && (normalized.executionProvenance || normalized.executionProvenanceReadiness)) {
+    lines.push("");
+    appendExecutionProvenancePrompt(lines, normalized);
   }
 
   if (executionStage) {

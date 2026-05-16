@@ -5,6 +5,7 @@ export default defineConfig({
     projects: [
       "packages/shared",
       "packages/db",
+      "packages/plugins/sdk",
       "packages/adapter-utils",
       "packages/adapters/acpx-local",
       "packages/adapters/claude-local",

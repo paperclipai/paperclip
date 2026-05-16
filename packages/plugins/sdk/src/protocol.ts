@@ -883,6 +883,14 @@ export interface WorkerToHostMethods {
       originRunId?: string | null;
       blockedByIssueIds?: string[];
       labelIds?: string[];
+      executionProvenance?: {
+        handoffRole: string;
+        sourceIssueId?: string | null;
+        sourceExecutionWorkspaceId?: string | null;
+        branchName?: string | null;
+        baseRef?: string | null;
+        capturedAt?: string | null;
+      } | null;
       executionWorkspaceId?: string | null;
       executionWorkspacePreference?: string | null;
       executionWorkspaceSettings?: Record<string, unknown> | null;

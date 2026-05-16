@@ -1901,6 +1901,8 @@ async function buildPaperclipWakePayload(input: {
         status: string;
         priority: string;
         workMode: string;
+        executionWorkspaceId?: string | null;
+        executionProvenance?: Record<string, unknown> | null;
       }
     | null;
 }) {
@@ -1919,12 +1921,18 @@ async function buildPaperclipWakePayload(input: {
             status: issues.status,
             priority: issues.priority,
             workMode: issues.workMode,
+            executionWorkspaceId: issues.executionWorkspaceId,
+            executionProvenance: issues.executionProvenance,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
   if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
+  const executionProvenance = issueSummary?.executionProvenance ?? null;
+  const executionProvenanceReadiness = issueSummary?.id && issueSummary.executionProvenance
+    ? await issueService(input.db).getExecutionProvenanceReadiness(issueSummary.id)
+    : null;
 
   const commentRows =
     commentIds.length === 0
@@ -2008,6 +2016,8 @@ async function buildPaperclipWakePayload(input: {
           workMode: issueSummary.workMode,
         }
       : null,
+    executionProvenance,
+    executionProvenanceReadiness,
     childIssueSummaries: Array.isArray(input.contextSnapshot.childIssueSummaries)
       ? input.contextSnapshot.childIssueSummaries
       : [],
