@@ -187,6 +187,7 @@ function createObjectStorageRunLogStore(storage: StorageService): RunLogStore {
       entry.byteCount += bytes;
       if (entry.byteCount >= FLUSH_THRESHOLD_BYTES) {
         await uploadBuffer(companyId, handle.logRef, entry.tmpPath);
+        entry.byteCount = 0;
       }
       return bytes;
     },
@@ -233,11 +234,12 @@ let cachedStore: RunLogStore | null = null;
 
 export function getRunLogStore() {
   if (cachedStore) return cachedStore;
+  const storage = getStorageService();
   const useObjectStore =
     process.env.PAPERCLIP_OBJECT_RUN_LOGS === "1" ||
-    getStorageService().provider !== "local_disk";
+    storage.provider !== "local_disk";
   if (useObjectStore) {
-    cachedStore = createObjectStorageRunLogStore(getStorageService());
+    cachedStore = createObjectStorageRunLogStore(storage);
   } else {
     const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
     cachedStore = createLocalFileRunLogStore(basePath);

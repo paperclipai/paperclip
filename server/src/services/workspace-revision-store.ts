@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { getStorageService } from "../storage/index.js";
@@ -115,14 +115,23 @@ export async function hydrateWorkspaceRevision(input: {
   }
 }
 
+const RUN_BUFFER_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+type RunBufferEntry = { ts: string; stream: "stdout" | "stderr"; chunk: string };
+type RunBuffer = { entries: RunBufferEntry[]; lastAccessedAt: number };
+
 // In-memory buffers keyed by companyId::runId
-const runBuffers = new Map<
-  string,
-  Array<{ ts: string; stream: "stdout" | "stderr"; chunk: string }>
->();
+const runBuffers = new Map<string, RunBuffer>();
 
 function runKey(companyId: string, runId: string) {
   return `${companyId}::${runId}`;
+}
+
+function evictStaleRunBuffers() {
+  const cutoff = Date.now() - RUN_BUFFER_TTL_MS;
+  for (const [key, buf] of runBuffers) {
+    if (buf.lastAccessedAt < cutoff) runBuffers.delete(key);
+  }
 }
 
 export async function appendRunLogChunk(input: {
@@ -132,13 +141,15 @@ export async function appendRunLogChunk(input: {
   stream: "stdout" | "stderr";
   ts: string;
 }): Promise<void> {
+  evictStaleRunBuffers();
   const key = runKey(input.companyId, input.runId);
   let buf = runBuffers.get(key);
   if (!buf) {
-    buf = [];
+    buf = { entries: [], lastAccessedAt: Date.now() };
     runBuffers.set(key, buf);
   }
-  buf.push({ ts: input.ts, stream: input.stream, chunk: input.chunk });
+  buf.lastAccessedAt = Date.now();
+  buf.entries.push({ ts: input.ts, stream: input.stream, chunk: input.chunk });
 }
 
 export async function finalizeRunArtifacts(input: {
@@ -154,7 +165,7 @@ export async function finalizeRunArtifacts(input: {
 }> {
   const storage = getStorageService();
   const key = runKey(input.companyId, input.runId);
-  const buf = runBuffers.get(key) ?? [];
+  const buf = runBuffers.get(key)?.entries ?? [];
   runBuffers.delete(key);
 
   const stdoutLines = buf.filter((e) => e.stream === "stdout");
