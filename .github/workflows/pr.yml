@@ -94,6 +94,9 @@ jobs:
       - name: Verify release registry test coverage
         run: pnpm run test:release-registry
 
+      - name: Verify paperclip-issue-* helper scripts
+        run: pnpm run test:scripts
+
       - name: Build
         run: pnpm build
 

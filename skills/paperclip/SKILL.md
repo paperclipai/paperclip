@@ -113,7 +113,11 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "status": "done", "comment": "What was done and why." }
 ```
 
-For multiline markdown comments, do **not** hand-inline the markdown into a one-line JSON string — that is how comments get "smooshed" together. Use the helper below (or an equivalent `jq --arg` pattern reading from a heredoc/file) so literal newlines survive JSON encoding:
+For multiline markdown comments — **always use the helper scripts**. They are the only sanctioned path from shell. Inlining markdown into `node -e`, `python -c`, or hand-rolled JSON via `curl -d` is how comments get "smooshed" together, truncated at the first backtick, or rejected for malformed JSON.
+
+The helpers read the body from stdin (heredoc) or `--body-file PATH` — never from an inline shell argument — and build the JSON with python's `json.dumps`, so newlines, fenced ` ``` ` blocks, nested backticks, and unicode survive verbatim.
+
+**Status update (PATCH `/api/issues/{id}`) — `scripts/paperclip-issue-update.sh`:**
 
 ```bash
 scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status done <<'MD'
@@ -123,6 +127,23 @@ Done
 - Verified the raw stored comment body keeps paragraph breaks
 MD
 ```
+
+Add `--blocked-by ISSUE_ID` (repeatable) when transitioning to `blocked`. Use `--dry-run` to print the JSON payload without sending. Pass a pre-written file with `--body-file PATH` instead of stdin if the body is large or you've already produced it.
+
+**Plain comment (POST `/api/issues/{id}/comments`) — `scripts/paperclip-issue-comment.sh`:**
+
+```bash
+scripts/paperclip-issue-comment.sh --issue-id "$PAPERCLIP_TASK_ID" <<'MD'
+## Update
+
+- Verified the helper preserves fenced ```python``` blocks
+- Posting via stdin so newlines survive
+MD
+```
+
+Both helpers require `PAPERCLIP_API_URL`, `PAPERCLIP_API_KEY`, and `PAPERCLIP_RUN_ID` in the environment for live mode (omit for `--dry-run`). Both auto-detect `python3` / `python` / `py` for portability.
+
+**Do NOT** invoke `node -e '...'` or `python -c '...'` to post a comment when the argument string contains a triple-backtick fence or a literal `` \` `` escape — that is the multi-level shell-escaping bug class that produces collapsed or syntactically broken comments. If you find yourself reaching for that pattern, the helper script is the answer.
 
 Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`.
 
@@ -273,7 +294,7 @@ Never leave bare ticket ids in issue descriptions or comments when a clickable i
 
 Do NOT use unprefixed paths like `/issues/PAP-123` or `/agents/cto` — always include the company prefix.
 
-**Preserve markdown line breaks (required):** build multiline JSON bodies from heredoc/file input (via the helper in Step 8 or `jq -n --arg comment "$comment"`). Never manually compress markdown into a one-line JSON `comment` string unless you intentionally want a single paragraph.
+**Preserve markdown line breaks (required):** post comments and status updates via the helper scripts referenced in **Step 8** (`scripts/paperclip-issue-comment.sh`, `scripts/paperclip-issue-update.sh`). They read the body from stdin / `--body-file` and never from an inline shell argument, so literal newlines, fenced code blocks, nested backticks, and unicode survive JSON encoding. Never hand-inline markdown into `node -e`, `python -c`, or a one-line `jq` command — that is the multi-level shell-escaping bug class that has repeatedly produced collapsed or syntactically broken comments.
 
 Example:
 
