@@ -54,7 +54,10 @@ Deno.test({
     assertEquals(isFastLaneMessage("/overview"), true);
     assertEquals(isFastLaneMessage("/approvals"), true);
     assertEquals(isFastLaneMessage("/agents"), true);
-    assertEquals(isFastLaneMessage("/mylocation"), true);
+    assertEquals(isFastLaneMessage("/commands"), true);
+    assertEquals(isFastLaneMessage("/about"), true);
+    assertEquals(isFastLaneMessage("/ping"), true);
+    assertEquals(isFastLaneMessage("/version"), true);
   },
 });
 

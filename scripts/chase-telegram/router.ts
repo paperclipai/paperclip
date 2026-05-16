@@ -137,44 +137,97 @@ async function handleGreeting(firstName?: string): Promise<QueryResult> {
 export async function handleHelp(): Promise<QueryResult> {
   return {
     text: [
+      "I'm Chase, Jeff's Paperclip operations assistant.",
+      "",
+      "I can help with:",
+      "• Checking Paperclip system status",
+      "• Finding blocked work",
+      "• Showing pending approvals",
+      "• Looking up issues",
+      "• Searching Paperclip issues",
+      "• Reviewing agent activity",
+      "• Checking budget and spend",
+      "• Showing recent completed work",
+      "• Routing Paperclip operations questions",
+      "",
+      "For shortcut commands, type <code>/commands</code>.",
+    ].join("\n"),
+  };
+}
+
+async function handleCommands(): Promise<QueryResult> {
+  return {
+    text: [
       "<b>Available commands</b>",
       "",
+      "<b>Instant commands</b>",
+      "These return immediately without lookup.",
+      "",
+      "• <code>/help</code> — What Chase can do",
+      "• <code>/commands</code> — Show shortcut commands",
+      "• <code>/about</code> — What Chase is",
+      "• <code>/ping</code> — Bot health check",
+      "• <code>/version</code> — Current deployed version",
+      "",
+      "<b>Paperclip lookup commands</b>",
+      "These may take a moment because Chase checks live Paperclip data.",
+      "",
       "• <code>/overview</code> — Company overview",
+      "• <code>/status</code> — Paperclip system status",
       "• <code>/blocked</code> — Blocked issues",
       "• <code>/approvals</code> — Pending approvals",
       "• <code>/agents</code> — List agents",
-      "• <code>/detail &lt;ID&gt;</code> — Issue details (e.g. <code>/detail CRE-123</code>)",
-      "• <code>/search &lt;query&gt;</code> — Search issues",
-      "• <code>/metar &lt;ICAO&gt;</code> — Current METAR weather (e.g. <code>/metar KJFK</code>)",
-      "• <code>/taf &lt;ICAO&gt;</code> — TAF weather forecast (e.g. <code>/taf KJFK</code>)",
-      "• <code>/notam &lt;ICAO&gt;</code> — NOTAMs for an airport (e.g. <code>/notam KJFK</code>)",
-      "• <code>/websearch &lt;query&gt;</code> — Search the internet (e.g. <code>/websearch latest AI news</code>)",
-      "• <code>/movies &lt;location&gt;</code> — Find cinemas near a location (e.g. <code>/movies downtown Austin</code>)",
-      "• <code>/restaurants &lt;location&gt;</code> — Find restaurants near a location (e.g. <code>/restaurants Brooklyn</code>)",
-      "• <code>/hotels &lt;location&gt;</code> — Find hotels near a location (e.g. <code>/hotels Soho London</code>)",
-      "• <code>/mylocation</code> — Show your stored location",
-      "• <code>/help</code> — This message",
-      "",
-      "Or just send a question in plain English and I'll route it!",
-      "",
-      "<i>I'm Chase, the Executive Assistant to Jeff at Paperclip.</i>",
+      "• <code>/detail</code> — Issue details, e.g. <code>/detail CRE-123</code>",
+      "• <code>/search</code> — Search issues",
+      "• <code>/spend</code> — Monthly spend and budget",
+      "• <code>/recent</code> — Recent completed work",
     ].join("\n"),
+  };
+}
+
+async function handlePing(): Promise<QueryResult> {
+  return {
+    text: "Pong! Chase is operational.",
+  };
+}
+
+async function handleVersion(): Promise<QueryResult> {
+  return {
+    text: "Chase deploy — Paperclip operations assistant.",
+  };
+}
+
+async function handleSpend(): Promise<QueryResult> {
+  return {
+    text: "I'll check the budget and spend for you. Use <code>/help</code> to see what I can do.",
+  };
+}
+
+async function handleRecent(): Promise<QueryResult> {
+  return {
+    text: "Let me find recent completed work for you. Use <code>/help</code> to see what I can do.",
   };
 }
 
 async function handleIdentityQuery(): Promise<QueryResult> {
   return {
-    text: "I'm Chase, the Executive Assistant to Jeff at Paperclip. I can look up issues, check blocked work, manage approvals, and more. Try <code>/help</code> to see what I can do.",
+    text: [
+      "I'm Chase, Jeff's Paperclip operations assistant.",
+      "",
+      "I can check Paperclip system status, find blocked work, show pending approvals, look up issues, review agent activity, and more.",
+      "",
+      "Try <code>/help</code> to see what I can do.",
+    ].join("\n"),
   };
 }
 async function handleStart(): Promise<QueryResult> {
   return {
     text: [
-      "<b>Hi! I'm Chase, the Executive Assistant to Jeff at Paperclip.</b>",
+      "Hi! I'm Chase, Jeff's Paperclip operations assistant.",
       "",
-      "I can look up blocked issues, pending approvals, agent status, and more.",
+      "I can check Paperclip system status, find blocked work, show pending approvals, review agent activity, and more.",
       "",
-      "Try: <code>/blocked</code>, <code>/overview</code>, <code>/approvals</code>, or <code>/help</code>.",
+      "Try <code>/help</code> to see what I can do.",
     ].join("\n"),
   };
 }
@@ -348,7 +401,13 @@ export function routeQuery(
 
   // ── Slash commands (fast path) ──
   if (/^\/(start)\b/i.test(trimmed)) return respond(handleStart);
-  if (/^\/(help|commands)\b/i.test(trimmed)) return respond(handleHelp);
+  if (/^\/(help)\b/i.test(trimmed)) return respond(handleHelp);
+  if (/^\/(commands)\b/i.test(trimmed)) return respond(handleCommands);
+  if (/^\/(about)\b/i.test(trimmed)) return respond(handleIdentityQuery);
+  if (/^\/(ping)\b/i.test(trimmed)) return respond(handlePing);
+  if (/^\/(version)\b/i.test(trimmed)) return respond(handleVersion);
+  if (/^\/(spend)\b/i.test(trimmed)) return respond(handleSpend);
+  if (/^\/(recent)\b/i.test(trimmed)) return respond(handleRecent);
   if (/^\/(overview|status|company)\b/i.test(trimmed)) return respond(handleOverviewQuery);
   if (/^\/(blocked|stuck|waiting)\b/i.test(trimmed)) return respond(handleBlockedQuery);
   if (/^\/(approvals|approval|pending)\b/i.test(trimmed)) return respond(handleApprovalsQuery);

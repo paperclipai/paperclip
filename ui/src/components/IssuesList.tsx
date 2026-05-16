@@ -712,11 +712,10 @@ export function IssuesList({
 
   const columnTotals = useMemo(() => {
     const totals: Record<string, number> = {};
-    const statuses = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
-    for (let i = 0; i < statuses.length; i++) {
+    for (let i = 0; i < boardIssueStatuses.length; i++) {
       const query = boardIssueQueries[i];
       if (query.data) {
-        totals[statuses[i]] = query.data.total;
+        totals[boardIssueStatuses[i]] = query.data.total;
       }
     }
     return totals;

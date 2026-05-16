@@ -15,7 +15,7 @@ export function isFastLaneMessage(text: string): boolean {
   if (/^(?:nice|great|awesome|cool|perfect|excellent|sounds?\s+good|looks?\s+good|that'?s?\s+great)[,!. ]+\s+(?:thanks?|thank you|ty|thx)\b/i.test(trimmed)) return true;
 
   // Slash commands (simple lookups)
-  if (/^\/(?:start|help|blocked|overview|approvals|agents|mylocation)$/i.test(trimmed)) return true;
+  if (/^\/(?:start|help|commands|about|ping|version|blocked|overview|status|approvals|agents)$/i.test(trimmed)) return true;
 
   // Simple NL lookup queries (read-only, no state change)
   if (/what.*blocked|show.*blocked|blocked.*issues?|(?:is\s+)?(?:anything|something)\s+(?:stuck|blocked|waiting)|stuck|waiting.?on/i.test(trimmed)) return true;
