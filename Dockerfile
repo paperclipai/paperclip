@@ -2,9 +2,16 @@
 FROM node:lts-trixie-slim AS base
 ARG USER_UID=1000
 ARG USER_GID=1000
-RUN apt-get update \
+# Disable Debian's auto-clean of apt cache so the BuildKit cache mount
+# below actually retains downloaded .deb files between builds. Without
+# this the docker-clean apt hook nukes /var/cache/apt after each install,
+# defeating the cache mount.
+RUN rm -f /etc/apt/apt.conf.d/docker-clean \
+  && echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+  apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 \
-  && rm -rf /var/lib/apt/lists/* \
   && corepack enable
 
 # Chromium runtime libs (BLO-3663) — required so headless Playwright works
@@ -15,15 +22,16 @@ RUN apt-get update \
 # blocks UXDesigner's visual STOP gate on BLO-3979 every run.
 # Canonical list from `npx playwright install-deps chromium --dry-run` on
 # trixie; `t64` suffixes are Debian 13's time_t-64 transition packages.
-RUN apt-get update \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+  apt-get update \
   && apt-get install -y --no-install-recommends \
        libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 \
        libcairo2 libcups2t64 libdbus-1-3 libdrm2 libgbm1 \
        libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 \
        libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 \
        libxfixes3 libxkbcommon0 libxrandr2 \
-       fonts-liberation fonts-noto-color-emoji \
-  && rm -rf /var/lib/apt/lists/*
+       fonts-liberation fonts-noto-color-emoji
 
 # Modify the existing node user/group to have the specified UID/GID to match host user
 RUN usermod -u $USER_UID --non-unique node \
@@ -61,7 +69,12 @@ COPY packages/plugins/paperclip-plugin-slack/package.json packages/plugins/paper
 COPY packages/plugins/plugin-llm-wiki/package.json packages/plugins/plugin-llm-wiki/
 COPY patches/ patches/
 
-RUN pnpm install --frozen-lockfile
+# pnpm store mount: re-uses the content-addressable cache of downloaded
+# tarballs between builds so we only fetch packages whose hashes
+# actually changed since the last build. With --frozen-lockfile, hashes
+# are pinned, so most builds get near-100% cache hits.
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store,sharing=locked \
+    pnpm install --frozen-lockfile
 
 FROM base AS vendor
 WORKDIR /vendor
@@ -119,21 +132,28 @@ RUN cd /vendor/adapter-utils-src \
        '  "include": ["src"],' \
        '  "exclude": ["**/*.test.ts"]' \
        '}' > tsconfig.json \
-  && npm install --no-save typescript@^5.7.3 @types/node@^24.6.0 \
+  && npm install --no-save --cache /root/.npm typescript@^5.7.3 @types/node@^24.6.0 \
   && npx tsc \
   && node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));if(!p.publishConfig||!p.publishConfig.exports){console.error('FATAL: package.json missing publishConfig.exports — cannot rewrite for npm pack');process.exit(1);}Object.assign(p,p.publishConfig);delete p.publishConfig.exports;delete p.publishConfig.main;delete p.publishConfig.types;if(typeof p.exports!=='object'||!p.exports['.']||!p.exports['./*']){console.error('FATAL: rewritten exports missing required entries (./* and .)',p.exports);process.exit(1);}fs.writeFileSync('package.json',JSON.stringify(p,null,2));" \
   && npm pack \
   && mv paperclipai-adapter-utils-*.tgz /vendor/adapter-utils.tgz \
   && rm -rf /vendor/adapter-utils-src
 
-RUN git clone https://github.com/kkroo/ccrotate.git ccrotate \
+# Vendor-stage installs benefit from cache mounts too: pinned REFs mean
+# the layer invalidates only on bumps, but inside each invalidated
+# rebuild we still re-resolve every transitive dep. The pnpm and npm
+# caches let those resolutions reuse tarballs from prior builds across
+# all three vendored repos.
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store,sharing=locked \
+    git clone https://github.com/kkroo/ccrotate.git ccrotate \
   && cd ccrotate && git checkout "${CCROTATE_REF}" \
   && pnpm install --frozen-lockfile \
   && pnpm run build \
   && cd dist && npm pack \
   && mv ccrotate-*.tgz /vendor/ccrotate.tgz
 
-RUN git clone https://github.com/kkroo/paperclip-adapter-claude-k8s.git claude-k8s \
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    git clone https://github.com/kkroo/paperclip-adapter-claude-k8s.git claude-k8s \
   && cd claude-k8s && git checkout "${CLAUDE_K8S_REF}" \
   && npm ci \
   && npm install --no-save /vendor/adapter-utils.tgz \
@@ -141,7 +161,8 @@ RUN git clone https://github.com/kkroo/paperclip-adapter-claude-k8s.git claude-k
   && npm pack \
   && mv paperclip-adapter-claude-k8s-*.tgz /vendor/paperclip-adapter-claude-k8s.tgz
 
-RUN git clone https://github.com/kkroo/paperclip-adapter-opencode-k8s.git opencode-k8s \
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    git clone https://github.com/kkroo/paperclip-adapter-opencode-k8s.git opencode-k8s \
   && cd opencode-k8s && git checkout "${OPENCODE_K8S_REF}" \
   && npm ci \
   && npm install --no-save /vendor/adapter-utils.tgz \
@@ -199,7 +220,10 @@ COPY --from=vendor /vendor/paperclip-adapter-opencode-k8s.tgz /tmp/paperclip-bun
 # falling back to whatever npm publishes today.
 COPY --from=vendor /vendor/adapter-utils.tgz /tmp/paperclip-bundled-adapters/
 COPY --from=github-mcp /server/github-mcp-server /usr/local/bin/github-mcp-server
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai /tmp/ccrotate.tgz \
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    npm install --global --omit=dev --cache /root/.npm @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai /tmp/ccrotate.tgz \
   && rm /tmp/ccrotate.tgz \
   # Upstream ccrotate@1.1.0 bug: dist/cli.js reads `new URL("../package.json", import.meta.url)`,
   # which resolves to /usr/local/lib/node_modules/package.json (one level above the ccrotate
@@ -209,9 +233,8 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
   && sed -i 's|new URL("../package.json"|new URL("./package.json"|' /usr/local/lib/node_modules/ccrotate/cli.js \
   && apt-get update \
   && apt-get install -y --no-install-recommends openssh-client rsync jq zsh \
-  && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /paperclip /paperclip/.local/bin /opt/paperclip-bundled-adapters \
-  && npm install --prefix /opt/paperclip-bundled-adapters --omit=dev --no-save --legacy-peer-deps /tmp/paperclip-bundled-adapters/*.tgz \
+  && npm install --prefix /opt/paperclip-bundled-adapters --omit=dev --no-save --legacy-peer-deps --cache /root/.npm /tmp/paperclip-bundled-adapters/*.tgz \
   && rm -rf /tmp/paperclip-bundled-adapters \
   && ln -sf /usr/local/bin/claude /paperclip/.local/bin/claude \
   && chown -R node:node /paperclip /opt/paperclip-bundled-adapters
