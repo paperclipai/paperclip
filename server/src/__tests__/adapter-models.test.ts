@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
 import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
+import { models as geminiFallbackModels } from "@paperclipai/adapter-gemini-local";
 import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
 import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
 import { listAdapterModels, listServerAdapters, refreshAdapterModels } from "../adapters/index.js";
@@ -121,6 +122,20 @@ describe("adapter model listing", () => {
     const models = await listAdapterModels("opencode_local");
 
     expect(models).toEqual(opencodeFallbackModels);
+  });
+
+  it("returns gemini fallback models including current Gemini 3 options", async () => {
+    const models = await listAdapterModels("gemini_local");
+    const modelIds = models.map((model) => model.id);
+
+    expect(models).toEqual(geminiFallbackModels);
+    expect(modelIds).toEqual(expect.arrayContaining([
+      "auto-gemini-3",
+      "gemini-3.1-pro-preview",
+      "gemini-3.1-flash-lite-preview",
+      "gemini-3-flash-preview",
+    ]));
+    expect(modelIds).not.toContain("gemini-3-pro-preview");
   });
 
   it("loads cursor models dynamically and caches them", async () => {
