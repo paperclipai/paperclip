@@ -773,9 +773,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function readRunLogTailForEvidence(run: typeof heartbeatRuns.$inferSelect) {
-    if (!run.logStore || !run.logRef || !run.logBytes) return "";
+    const readableBytes = Math.max(0, run.logBytes ?? 0, run.lastOutputBytes ?? 0);
+    if (!run.logStore || !run.logRef || readableBytes <= 0) return "";
     try {
-      const offset = Math.max(0, run.logBytes - ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES);
+      const offset = Math.max(0, readableBytes - ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES);
       const result = await runLogStore.read(
         { store: run.logStore as "local_file", logRef: run.logRef },
         { offset, limitBytes: ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES },

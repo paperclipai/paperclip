@@ -171,18 +171,45 @@ function ensureDevWorkspaceBuildDeps(projectRoot: string): void {
   }
 }
 
+function findRepoRoot(startFile: string): string | null {
+  let current = path.dirname(startFile);
+  for (;;) {
+    const serverEntry = path.resolve(current, "server/src/index.ts");
+    const cliPackage = path.resolve(current, "cli/package.json");
+    if (fs.existsSync(serverEntry) && fs.existsSync(cliPackage)) {
+      return current;
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+async function importRepoLocalServerSource(entrypoint: string): Promise<unknown> {
+  try {
+    const { tsImport } = await import("tsx/esm/api");
+    return await tsImport(pathToFileURL(entrypoint).href, { parentURL: import.meta.url });
+  } catch (err) {
+    throw new Error(
+      `Failed to load the repo-local Paperclip server source through tsx.\n` +
+        `Entrypoint: ${entrypoint}\n` +
+        `${formatError(err)}`,
+    );
+  }
+}
+
 async function importServerEntry(): Promise<StartedServer> {
-  // Dev mode: try local workspace path (monorepo with tsx)
-  const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-  const devEntry = path.resolve(projectRoot, "server/src/index.ts");
-  if (fs.existsSync(devEntry)) {
+  const projectRoot = findRepoRoot(fileURLToPath(import.meta.url));
+  const devEntry = projectRoot ? path.resolve(projectRoot, "server/src/index.ts") : null;
+
+  if (projectRoot && devEntry && fs.existsSync(devEntry)) {
     ensureDevWorkspaceBuildDeps(projectRoot);
     maybeEnableUiDevMiddleware(devEntry);
-    const mod = await import(pathToFileURL(devEntry).href);
+    const mod = await importRepoLocalServerSource(devEntry);
     return await startServerFromModule(mod, devEntry);
   }
 
-  // Production mode: import the published @paperclipai/server package
   try {
     const mod = await import("@paperclipai/server");
     return await startServerFromModule(mod, "@paperclipai/server");
@@ -192,7 +219,7 @@ async function importServerEntry(): Promise<StartedServer> {
     if (isModuleNotFoundError(err) && missingServerEntrypoint) {
       throw new Error(
         `Could not locate a Paperclip server entrypoint.\n` +
-          `Tried: ${devEntry}, @paperclipai/server\n` +
+          `Tried: ${devEntry ?? "repo-local server/src/index.ts"}, @paperclipai/server\n` +
           `${formatError(err)}`,
       );
     }

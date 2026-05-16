@@ -78,6 +78,7 @@ export interface AdapterExecutionTargetProcessOptions {
   env: Record<string, string>;
   stdin?: string;
   timeoutSec: number;
+  firstOutputTimeoutSec?: number;
   graceSec: number;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
@@ -428,6 +429,7 @@ export async function runAdapterExecutionTargetProcess(
     env,
     stdin: options.stdin,
     timeoutSec: options.timeoutSec,
+    firstOutputTimeoutSec: options.firstOutputTimeoutSec,
     graceSec: options.graceSec,
     onLog: options.onLog,
     onSpawn: options.onSpawn,

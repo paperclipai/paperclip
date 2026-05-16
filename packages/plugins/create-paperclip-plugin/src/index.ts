@@ -734,6 +734,25 @@ function runCli() {
   console.log(`Created plugin scaffold at ${out}`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+function safeRealpath(value: string): string {
+  try {
+    return fs.realpathSync.native(value);
+  } catch {
+    return path.resolve(value);
+  }
+}
+
+function isDirectScaffoldCliInvocation(): boolean {
+  const entrypoint = process.argv[1];
+  if (!entrypoint) return false;
+
+  const currentFile = fileURLToPath(import.meta.url);
+  const packagePathSegment = `${path.sep}packages${path.sep}plugins${path.sep}create-paperclip-plugin${path.sep}`;
+  if (!currentFile.includes(packagePathSegment)) return false;
+
+  return safeRealpath(entrypoint) === safeRealpath(currentFile);
+}
+
+if (isDirectScaffoldCliInvocation()) {
   runCli();
 }

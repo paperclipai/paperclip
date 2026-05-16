@@ -94,7 +94,13 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     await tempDb?.cleanup();
   });
 
-  async function seedRunningRun(opts: { now: Date; ageMs: number; withOutput?: boolean; logChunk?: string }) {
+  async function seedRunningRun(opts: {
+    now: Date;
+    ageMs: number;
+    withOutput?: boolean;
+    logChunk?: string;
+    activeLogBytesOnly?: boolean;
+  }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
     const coderId = randomUUID();
@@ -176,7 +182,8 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
         .set({
           logStore: handle.store,
           logRef: handle.logRef,
-          logBytes,
+          logBytes: opts.activeLogBytesOnly ? null : logBytes,
+          lastOutputBytes: opts.activeLogBytesOnly ? logBytes : null,
         })
         .where(eq(heartbeatRuns.id, runId));
     }
@@ -242,6 +249,26 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(evaluation?.description).not.toContain("json-secret-value");
     expect(evaluation?.description).not.toContain(leakedJwt);
     expect(evaluation?.description).not.toContain(leakedGithubToken);
+  });
+
+  it("uses live output byte progress when a running run has not finalized logBytes", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      logChunk: "live tail before finalized log bytes",
+      activeLogBytesOnly: true,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation?.description).toContain("live tail before finalized log bytes");
+    expect(evaluation?.description).not.toContain("_No run-log tail was available._");
   });
 
   it("raises critical stale-run evaluations and blocks the source issue", async () => {

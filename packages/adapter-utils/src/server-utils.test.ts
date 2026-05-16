@@ -224,6 +224,30 @@ describe("runChildProcess", () => {
     expect(result.stdout).toBe("done");
   });
 
+  it("terminates a child that never produces first output", async () => {
+    let observedStderr = "";
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000);"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 0,
+        firstOutputTimeoutSec: 0.1,
+        graceSec: 1,
+        onLog: async (stream, chunk) => {
+          if (stream === "stderr") observedStderr += chunk;
+        },
+      },
+    );
+
+    expect(result.timedOut).toBe(true);
+    expect(result.timeoutReason).toBe("first_output");
+    expect(result.stderr).toContain("No stdout/stderr from child process after 0.1s");
+    expect(observedStderr).toContain("No stdout/stderr from child process after 0.1s");
+  });
+
   it("waits for onSpawn before sending stdin to the child", async () => {
     const spawnDelayMs = 150;
     const startedAt = Date.now();

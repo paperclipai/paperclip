@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { onboard } from "./commands/onboard.js";
 import { doctor } from "./commands/doctor.js";
@@ -183,4 +186,22 @@ async function main(): Promise<void> {
   }
 }
 
-void main();
+function safeRealpath(value: string): string {
+  try {
+    return fs.realpathSync.native(value);
+  } catch {
+    return path.resolve(value);
+  }
+}
+
+function isDirectCliInvocation(): boolean {
+  const entrypoint = process.argv[1];
+  if (!entrypoint) return false;
+
+  const currentFile = fileURLToPath(import.meta.url);
+  return safeRealpath(entrypoint) === safeRealpath(currentFile);
+}
+
+if (isDirectCliInvocation()) {
+  void main();
+}
