@@ -36,9 +36,13 @@ export function applyTurnBoundary(state: TurnBoundaryState, incoming: string): s
     incoming.length >= 2
   ) {
     const lastChar = prev[prev.length - 1]!;
-    const insideCodeSpan = state.backtickParity === 1;
-    const looksLikeNewTurn =
-      endsWithSentenceClose(lastChar) || (lastChar === "`" && !insideCodeSpan);
+    // Narrow the backtick trigger to a lone closing-backtick chunk (e.g. the
+    // stream "...`", "ls", "`" then "The"). A compound chunk like "`ls`" is a
+    // self-contained span and the following capitalized word is a continuation,
+    // not a new turn.
+    const closingLoneBacktick =
+      prev === "`" && state.backtickParity === 0;
+    const looksLikeNewTurn = endsWithSentenceClose(lastChar) || closingLoneBacktick;
     if (looksLikeNewTurn) {
       output = `\n${incoming}`;
     }

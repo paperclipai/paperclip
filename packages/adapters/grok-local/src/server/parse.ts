@@ -34,7 +34,6 @@ export function parseGrokJsonl(stdout: string): ParsedGrokJsonl {
   const thoughtParts: string[] = [];
   const textParts: string[] = [];
   const thoughtBoundary = createTurnBoundaryState();
-  const textBoundary = createTurnBoundaryState();
 
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -52,7 +51,7 @@ export function parseGrokJsonl(stdout: string): ParsedGrokJsonl {
 
     if (type === "text") {
       const text = asString(event.data, "");
-      if (text) textParts.push(applyTurnBoundary(textBoundary, text));
+      if (text) textParts.push(text);
       continue;
     }
 

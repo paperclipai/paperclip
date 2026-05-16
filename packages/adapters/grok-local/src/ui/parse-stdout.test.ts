@@ -57,4 +57,14 @@ describe("createGrokStdoutParser", () => {
       { kind: "thinking", ts, text: "Second", delta: true },
     ]);
   });
+
+  it("does not modify assistant `text` chunks", () => {
+    // PAPA-349 review feedback: keep final assistant text streaming verbatim;
+    // the boundary heuristic is scoped to reasoning.
+    const parser = createGrokStdoutParser();
+    parser.parseLine(JSON.stringify({ type: "text", data: "Done." }), ts);
+    expect(parser.parseLine(JSON.stringify({ type: "text", data: "Next" }), ts)).toEqual([
+      { kind: "assistant", ts, text: "Next", delta: true },
+    ]);
+  });
 });

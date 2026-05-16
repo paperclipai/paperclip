@@ -46,6 +46,19 @@ describe("parseGrokJsonl", () => {
 
     expect(parsed.thought).toBe("The user uses `ls`\nThe `ls` returned");
   });
+
+  it("preserves assistant `text` chunks verbatim (no boundary heuristic)", () => {
+    // PAPA-349 review feedback: the turn-boundary helper is scoped to the
+    // reasoning stream only. Final assistant text is stored unmodified so
+    // user-visible responses cannot be reshaped by the heuristic.
+    const parsed = parseGrokJsonl([
+      JSON.stringify({ type: "text", data: "Done." }),
+      JSON.stringify({ type: "text", data: "Next" }),
+      JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "sess-1" }),
+    ].join("\n"));
+
+    expect(parsed.summary).toBe("Done.Next");
+  });
 });
 
 describe("isGrokUnknownSessionError", () => {

@@ -41,4 +41,11 @@ describe("applyTurnBoundary", () => {
     expect(run([":", "A"]))
       .toBe(":A");
   });
+
+  it("does not insert a separator after a self-contained backtick span in a single chunk", () => {
+    // Greptile review: a chunk like "`ls`" is a balanced span; the following
+    // capitalized word should be treated as a continuation, not a new turn.
+    expect(run(["`ls`", "Then"]))
+      .toBe("`ls`Then");
+  });
 });

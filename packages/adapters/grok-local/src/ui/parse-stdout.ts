@@ -29,7 +29,6 @@ function parseLineInternal(
   line: string,
   ts: string,
   thoughtBoundary: TurnBoundaryState,
-  textBoundary: TurnBoundaryState,
 ): TranscriptEntry[] {
   const parsed = asRecord(safeJsonParse(line));
   if (!parsed) {
@@ -47,7 +46,7 @@ function parseLineInternal(
   if (type === "text") {
     const text = asString(parsed.data);
     if (!text) return [];
-    return [{ kind: "assistant", ts, text: applyTurnBoundary(textBoundary, text), delta: true }];
+    return [{ kind: "assistant", ts, text, delta: true }];
   }
 
   if (type === "error") {
@@ -70,21 +69,19 @@ function parseLineInternal(
 
 export function createGrokStdoutParser() {
   let thoughtBoundary = createTurnBoundaryState();
-  let textBoundary = createTurnBoundaryState();
   return {
     parseLine(line: string, ts: string): TranscriptEntry[] {
-      return parseLineInternal(line, ts, thoughtBoundary, textBoundary);
+      return parseLineInternal(line, ts, thoughtBoundary);
     },
     reset() {
       thoughtBoundary = createTurnBoundaryState();
-      textBoundary = createTurnBoundaryState();
     },
   };
 }
 
 // Stateless fallback for callers that haven't migrated to the stateful factory.
-// Without state, consecutive thought/text chunks at reasoning-turn boundaries can
+// Without state, consecutive thought chunks at reasoning-turn boundaries can
 // still appear merged; prefer createGrokStdoutParser for live transcripts.
 export function parseGrokStdoutLine(line: string, ts: string): TranscriptEntry[] {
-  return parseLineInternal(line, ts, createTurnBoundaryState(), createTurnBoundaryState());
+  return parseLineInternal(line, ts, createTurnBoundaryState());
 }
