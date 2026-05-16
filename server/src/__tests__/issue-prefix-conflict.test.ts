@@ -66,4 +66,17 @@ describe("isIssuePrefixConflict", () => {
     expect(isIssuePrefixConflict("23505")).toBe(false);
     expect(isIssuePrefixConflict(23505)).toBe(false);
   });
+
+  it("terminates promptly on a circular cause graph (depth-cap regression)", () => {
+    // Construct a cycle a → b → a. A naive while(cause) traversal would spin
+    // forever. The MAX_DEPTH guard must short-circuit and return false.
+    const a: Record<string, unknown> = { code: "OTHER", constraint: "irrelevant" };
+    const b: Record<string, unknown> = { code: "OTHER", constraint: "irrelevant" };
+    a.cause = b;
+    b.cause = a;
+    const start = Date.now();
+    expect(isIssuePrefixConflict(a)).toBe(false);
+    // Sanity: a hung loop would never return; assert this finished quickly.
+    expect(Date.now() - start).toBeLessThan(100);
+  });
 });

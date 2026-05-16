@@ -42,8 +42,12 @@ import { environmentService } from "./environments.js";
  * surface). Exported for unit testing.
  */
 export function isIssuePrefixConflict(error: unknown): boolean {
+  // Bounded depth so a pathological (circular or pathologically deep) error
+  // graph cannot spin the loop. Real Postgres / Drizzle errors nest at most
+  // 1–2 levels; 10 leaves comfortable headroom without becoming a foot-gun.
+  const MAX_DEPTH = 10;
   let cursor: unknown = error;
-  while (cursor && typeof cursor === "object") {
+  for (let depth = 0; cursor && typeof cursor === "object" && depth < MAX_DEPTH; depth += 1) {
     const node = cursor as {
       code?: string;
       constraint?: string;
