@@ -142,6 +142,16 @@ export type {
   RoutineExecutionIssueOrigin,
   RoutineListItem,
 } from "./routine.js";
+export type {
+  StandupPolicy,
+  StandupSession,
+  StandupParticipant,
+  StandupResponse,
+  StandupAction,
+  StandupEscalation,
+  StandupOutboxJob,
+  StandupDeadLetter,
+} from "./standup.js";
 export type { CostEvent, CostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
 export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } from "./finance.js";
 export type {

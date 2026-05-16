@@ -17,6 +17,14 @@ import {
   routineRuns,
   routines,
   routineTriggers,
+  standupActions,
+  standupDeadLetters,
+  standupEscalations,
+  standupOutboxJobs,
+  standupParticipants,
+  standupPolicies,
+  standupResponses,
+  standupSessions,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -25,6 +33,7 @@ import {
 import { issueService } from "../services/issues.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import { routineService } from "../services/routines.ts";
+import { standupService } from "../services/standups.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -46,6 +55,14 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(standupDeadLetters);
+    await db.delete(standupOutboxJobs);
+    await db.delete(standupActions);
+    await db.delete(standupEscalations);
+    await db.delete(standupResponses);
+    await db.delete(standupParticipants);
+    await db.delete(standupSessions);
+    await db.delete(standupPolicies);
     await db.delete(routineRuns);
     await db.delete(routineTriggers);
     await db.delete(routines);
@@ -174,6 +191,36 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
   }
 
+  async function linkStandupPolicy(fixture: Awaited<ReturnType<typeof seedFixture>>) {
+    const serviceRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: serviceRunId,
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      invocationSource: "test",
+      status: "running",
+    });
+    const standups = standupService(db);
+    await standups.upsertPolicy(fixture.companyId, {
+      policyKey: "car-daily",
+      title: "CAR daily standup",
+      timezone: "America/Chicago",
+      scheduleCron: "30 8 * * *",
+      recoveryByLocalTime: "09:00",
+      responseDueLocalTime: "10:00",
+      escalationDueLocalTime: "10:15",
+      participantAgentIds: [fixture.agentId],
+      responseSchema: { required: ["whatHappened", "why", "nextAction", "owner", "dueTime", "proofTarget"] },
+      genericAnswerDenylist: ["monitoring", "awaiting directives"],
+      nonGreenTriggerRule: { source: "car-loop-recovery" },
+      actionRouting: { missing_response: { actingOwnerAgentId: fixture.agentId } },
+      disableSettings: { drainMode: "drain" },
+      linkedRoutineId: fixture.routine.id,
+      serviceRunId,
+    });
+    return standups;
+  }
+
   it("creates a fresh execution issue when the previous routine issue is open but idle", async () => {
     const { companyId, issueSvc, routine, svc } = await seedFixture();
     const previousRunId = randomUUID();
@@ -242,6 +289,146 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         },
       },
     ]);
+  });
+
+  it("keeps ordinary routines on the execution issue path when no standup policy is linked", async () => {
+    const { routine, svc } = await seedFixture();
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.linkedIssueId).toBeTruthy();
+    const standupSessionRows = await db.select().from(standupSessions);
+    const routineIssues = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.originKind, "routine_execution"));
+    expect(standupSessionRows).toHaveLength(0);
+    expect(routineIssues).toHaveLength(1);
+    expect(routineIssues[0]?.originId).toBe(routine.id);
+  });
+
+  it("dispatches linked standup routines through the standup fire service", async () => {
+    const fixture = await seedFixture();
+    const standups = await linkStandupPolicy(fixture);
+
+    const run = await fixture.svc.runRoutine(fixture.routine.id, {
+      source: "manual",
+      payload: {
+        localDate: "2026-05-16",
+        triggerConditionSnapshot: { source: "manual-proof" },
+        assessmentSnapshot: { carStatus: "non_green", generator: "nonproductive" },
+      },
+    });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.linkedIssueId).toBeTruthy();
+    expect(fixture.wakeups).toHaveLength(0);
+    const routineIssues = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.originKind, "routine_execution"));
+    expect(routineIssues).toHaveLength(0);
+
+    let inspection = await standups.inspect({
+      companyId: fixture.companyId,
+      policyKey: "car-daily",
+      localDate: "2026-05-16",
+    });
+    expect(inspection.standup_forced).toBe(false);
+    expect(inspection.missing_evidence).toContain("directive_delivery");
+    expect(inspection.session?.routineId).toBe(fixture.routine.id);
+    expect(inspection.session?.routineRunId).toBe(run.id);
+    expect(inspection.session?.standupIssueId).toBe(run.linkedIssueId);
+    expect(inspection.session?.triggerSource).toBe("manual");
+    expect(inspection.participants).toHaveLength(1);
+    expect(inspection.outboxJobs.map((job) => job.jobType)).toEqual(["directive_wakeup"]);
+
+    await standups.processOutbox({
+      limit: 10,
+      deliver: async (job) => ({ ok: true, proofId: `delivered:${job.id}` }),
+    });
+    inspection = await standups.inspect({ sessionId: inspection.session!.id });
+    expect(inspection.standup_forced).toBe(true);
+  });
+
+  it("fires linked standup routines from missed scheduled ticks", async () => {
+    const fixture = await seedFixture();
+    const standups = await linkStandupPolicy(fixture);
+    const { trigger } = await fixture.svc.createTrigger(
+      fixture.routine.id,
+      {
+        kind: "schedule",
+        label: "Daily 08:30",
+        cronExpression: "30 8 * * *",
+        timezone: "America/Chicago",
+      },
+      {},
+    );
+    const scheduledFor = new Date("2026-05-16T13:30:00.000Z");
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: scheduledFor })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    const result = await fixture.svc.tickScheduledTriggers(new Date("2026-05-16T14:00:00.000Z"));
+
+    expect(result.triggered).toBe(1);
+    const [session] = await db.select().from(standupSessions);
+    expect(session).toBeTruthy();
+    const runs = await fixture.svc.listRuns(fixture.routine.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.source).toBe("schedule");
+    expect(runs[0]?.status).toBe("issue_created");
+    expect(runs[0]?.linkedIssueId).toBe(session?.standupIssueId);
+
+    const inspection = await standups.inspect({ sessionId: session!.id });
+    expect(inspection.session?.triggerId).toBe(trigger.id);
+    expect(inspection.session?.routineRunId).toBe(runs[0]?.id);
+    expect(inspection.session?.triggerSource).toBe("schedule");
+    expect(inspection.session?.triggerConditionSnapshot).toMatchObject({
+      source: "routine",
+      routineId: fixture.routine.id,
+      routineRunId: runs[0]?.id,
+      triggerId: trigger.id,
+      triggerSource: "schedule",
+      scheduledFor: scheduledFor.toISOString(),
+      missedRunRecovered: true,
+    });
+  });
+
+  it("does not mark normal scheduled linked standups as missed recovery", async () => {
+    const fixture = await seedFixture();
+    const standups = await linkStandupPolicy(fixture);
+    const { trigger } = await fixture.svc.createTrigger(
+      fixture.routine.id,
+      {
+        kind: "schedule",
+        label: "Daily 08:30",
+        cronExpression: "30 8 * * *",
+        timezone: "America/Chicago",
+      },
+      {},
+    );
+    const scheduledFor = new Date("2026-05-16T13:30:00.000Z");
+    const tickedAt = new Date("2026-05-16T13:30:30.000Z");
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: scheduledFor })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    const result = await fixture.svc.tickScheduledTriggers(tickedAt);
+
+    expect(result.triggered).toBe(1);
+    const [session] = await db.select().from(standupSessions);
+    const runs = await fixture.svc.listRuns(fixture.routine.id);
+    expect(runs[0]?.triggeredAt.toISOString()).toBe(tickedAt.toISOString());
+
+    const inspection = await standups.inspect({ sessionId: session!.id });
+    expect(inspection.session?.triggerConditionSnapshot).toMatchObject({
+      scheduledFor: scheduledFor.toISOString(),
+      missedRunRecovered: false,
+    });
   });
 
   it("waits for the assignee wakeup to be queued before returning the routine run", async () => {

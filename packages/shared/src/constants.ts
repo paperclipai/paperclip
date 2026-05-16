@@ -184,6 +184,54 @@ export type RoutineRunStatus = (typeof ROUTINE_RUN_STATUSES)[number];
 export const ROUTINE_RUN_SOURCES = ["schedule", "manual", "api", "webhook"] as const;
 export type RoutineRunSource = (typeof ROUTINE_RUN_SOURCES)[number];
 
+export const STANDUP_POLICY_STATUSES = ["active", "disabled"] as const;
+export type StandupPolicyStatus = (typeof STANDUP_POLICY_STATUSES)[number];
+
+export const STANDUP_SESSION_STATUSES = [
+  "pending",
+  "firing",
+  "forced",
+  "incomplete",
+  "failed",
+  "completed",
+  "disabled",
+] as const;
+export type StandupSessionStatus = (typeof STANDUP_SESSION_STATUSES)[number];
+
+export const STANDUP_RESPONSE_STATUSES = ["pending", "accepted", "rejected", "missing", "escalated"] as const;
+export type StandupResponseStatus = (typeof STANDUP_RESPONSE_STATUSES)[number];
+
+export const STANDUP_DELIVERY_STATUSES = ["pending", "queued", "delivered", "failed", "dead_lettered"] as const;
+export type StandupDeliveryStatus = (typeof STANDUP_DELIVERY_STATUSES)[number];
+
+export const STANDUP_ACTION_STATUSES = ["open", "in_progress", "proved", "blocked", "closed"] as const;
+export type StandupActionStatus = (typeof STANDUP_ACTION_STATUSES)[number];
+
+export const STANDUP_ESCALATION_STATUSES = ["open", "acting_owner_assigned", "closed"] as const;
+export type StandupEscalationStatus = (typeof STANDUP_ESCALATION_STATUSES)[number];
+
+export const STANDUP_OUTBOX_JOB_STATUSES = [
+  "queued",
+  "processing",
+  "succeeded",
+  "failed",
+  "dead_lettered",
+  "cancelled",
+] as const;
+export type StandupOutboxJobStatus = (typeof STANDUP_OUTBOX_JOB_STATUSES)[number];
+
+export const STANDUP_OUTBOX_JOB_TYPES = [
+  "directive_issue",
+  "directive_wakeup",
+  "action_issue",
+  "action_wakeup",
+  "escalation_issue",
+  "escalation_wakeup",
+  "response_followup",
+  "disable_notice",
+] as const;
+export type StandupOutboxJobType = (typeof STANDUP_OUTBOX_JOB_TYPES)[number];
+
 export const PAUSE_REASONS = ["manual", "budget", "system"] as const;
 export type PauseReason = (typeof PAUSE_REASONS)[number];
 
