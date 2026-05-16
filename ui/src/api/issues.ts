@@ -94,21 +94,41 @@ export const issuesApi = {
     filters?: {
       status?: string;
       projectId?: string;
+      assigneeAgentId?: string;
       participantAgentId?: string;
+      assigneeUserId?: string;
       workspaceId?: string;
+      executionWorkspaceId?: string;
       includeRoutineExecutions?: boolean;
       q?: string;
       limit?: number;
+      descendantOf?: string;
+      includeBlockedBy?: boolean;
+      parentId?: string;
+      attention?: string;
+      originKind?: string;
+      originKindPrefix?: string;
+      originId?: string;
     },
   ) => {
     const params = new URLSearchParams();
     if (filters?.status) params.set("status", filters.status);
     if (filters?.projectId) params.set("projectId", filters.projectId);
+    if (filters?.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
     if (filters?.participantAgentId) params.set("participantAgentId", filters.participantAgentId);
+    if (filters?.assigneeUserId) params.set("assigneeUserId", filters.assigneeUserId);
     if (filters?.workspaceId) params.set("workspaceId", filters.workspaceId);
+    if (filters?.executionWorkspaceId) params.set("executionWorkspaceId", filters.executionWorkspaceId);
     if (filters?.limit) params.set("limit", String(filters.limit));
     if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
     if (filters?.q) params.set("q", filters.q);
+    if (filters?.descendantOf) params.set("descendantOf", filters.descendantOf);
+    if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
+    if (filters?.parentId) params.set("parentId", filters.parentId);
+    if (filters?.attention) params.set("attention", filters.attention);
+    if (filters?.originKind) params.set("originKind", filters.originKind);
+    if (filters?.originKindPrefix) params.set("originKindPrefix", filters.originKindPrefix);
+    if (filters?.originId) params.set("originId", filters.originId);
     params.set("includeTotal", "true");
     const qs = params.toString();
     return api.get<{ data: Issue[]; total: number }>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);

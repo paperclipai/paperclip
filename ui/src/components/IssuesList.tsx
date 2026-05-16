@@ -689,6 +689,7 @@ export function IssuesList({
       queryKey: [
         ...queryKeys.issues.list(selectedCompanyId ?? "__no-company__"),
         "board-column",
+        "with-total",
         status,
         normalizedIssueSearch,
         projectId ?? "__all-projects__",
