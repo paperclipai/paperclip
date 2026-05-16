@@ -35,10 +35,26 @@ const manifest: PaperclipPluginManifestV1 = {
     "events.subscribe",
     "issues.read",
     "agents.read",
+    "agent.tools.register",
+    "plugin.state.read",
+    "plugin.state.write",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
   },
+  tools: [
+    {
+      name: "gbrain_recall_cache",
+      displayName: "Recall gbrain Context (cached)",
+      description:
+        "Return the gbrain graph neighborhood that was prefetched at agent.run.started for this run's issue (depth=2 by default). Cheap read from plugin state — no MCP round-trip. Returns {status, fetchedAtIso, issuePageSlug, depth, graph?, note?}. status='ok' means a graph is included; 'no-issue-page' means the issue has no gbrain page yet; 'skipped' or 'error' explain via note. Call this near the start of your work to get prior decisions, related agents, and recently-promoted facts for the issue you're working on.",
+      parametersSchema: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+    },
+  ],
   instanceConfigSchema: {
     type: "object",
     properties: {
@@ -79,6 +95,17 @@ const manifest: PaperclipPluginManifestV1 = {
         type: "integer",
         default: 180,
         description: "Seconds to wait after retain before querying hindsight for memory_units.",
+      },
+      prefetchRunContext: {
+        type: "boolean",
+        default: true,
+        description:
+          "Wave 2.2: on agent.run.started, fetch a depth-N graph traversal from the issue page and cache it under the run scope for the gbrain_recall_cache tool to read.",
+      },
+      recallTraversalDepth: {
+        type: "integer",
+        default: 2,
+        description: "Depth of the traverse_graph call used by wave 2.2 prefetch.",
       },
     },
   },

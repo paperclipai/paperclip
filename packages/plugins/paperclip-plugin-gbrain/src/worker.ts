@@ -20,6 +20,13 @@ import {
   OAuthClientManager,
   loadClientsFromFile,
 } from "./oauth-client-manager.js";
+import {
+  buildCacheEntry,
+  prefetchRunContext,
+  RECALL_STATE_KEY,
+  DEFAULT_RECALL_DEPTH,
+  type CachedRecall,
+} from "./recall.js";
 
 const DEFAULT_HINDSIGHT_API_URL = "http://hindsight-api.hindsight.svc.cluster.local:8888";
 const DEFAULT_FACT_PROMOTION_DELAY_SEC = 180;
@@ -32,6 +39,8 @@ interface GbrainConfig {
   autoRetain?: boolean;
   promoteFactsToPages?: boolean;
   factPromotionDelaySec?: number;
+  prefetchRunContext?: boolean;
+  recallTraversalDepth?: number;
 }
 
 async function getConfig(ctx: PluginContext): Promise<GbrainConfig> {
@@ -98,6 +107,76 @@ const plugin = definePlugin({
         { gbrainUrl: defaultGbrainUrl },
       );
     }
+
+    // Wave 2.2: prefetch graph context on run start + register the
+    // gbrain_recall_cache tool so agents can read the cached snapshot.
+    ctx.tools.register(
+      "gbrain_recall_cache",
+      {
+        displayName: "Recall gbrain Context (cached)",
+        description:
+          "Return the gbrain graph neighborhood prefetched at agent.run.started for this run's issue.",
+        parametersSchema: { type: "object", properties: {}, additionalProperties: false },
+      },
+      async (_params, runCtx) => {
+        const cached = (await ctx.state.get({
+          scopeKind: "run",
+          scopeId: runCtx.runId,
+          stateKey: RECALL_STATE_KEY,
+        })) as CachedRecall | null;
+        if (!cached) {
+          return {
+            data: {
+              status: "skipped",
+              note: "prefetch did not run for this run (no agent.run.started event or feature disabled)",
+            },
+          };
+        }
+        return { data: cached, content: JSON.stringify(cached) };
+      },
+    );
+
+    ctx.events.on("agent.run.started", async (event) => {
+      const config = await getConfig(ctx);
+      if (config.prefetchRunContext === false) return;
+      const p = event.payload as Record<string, unknown>;
+      const runId = typeof p.runId === "string" ? p.runId : null;
+      const agentId = typeof p.agentId === "string" ? p.agentId : null;
+      const issueId = typeof p.issueId === "string" ? p.issueId : null;
+      if (!runId || !agentId) return;
+
+      const gbrainUrl = config.gbrainMcpUrl ?? defaultGbrainUrl;
+      const depth = config.recallTraversalDepth ?? DEFAULT_RECALL_DEPTH;
+
+      let issueIdentifier: string | null = null;
+      if (issueId) {
+        try {
+          const issue = await ctx.issues.get(issueId, event.companyId);
+          issueIdentifier = issue?.identifier ?? null;
+        } catch {
+          // ignore — prefetch falls through with no identifier
+        }
+      }
+
+      const client = buildClient(gbrainUrl, agentId);
+      const result = await prefetchRunContext({
+        client,
+        issueIdentifier,
+        depth,
+      });
+      const entry = buildCacheEntry({ result, depth });
+      await ctx.state.set(
+        { scopeKind: "run", scopeId: runId, stateKey: RECALL_STATE_KEY },
+        entry,
+      );
+
+      ctx.logger.info("gbrain prefetch complete", {
+        runId,
+        status: entry.status,
+        issuePageSlug: entry.issuePageSlug,
+        hasGraph: entry.graph !== null,
+      });
+    });
 
     ctx.events.on("agent.run.finished", async (event) => {
       const config = await getConfig(ctx);
