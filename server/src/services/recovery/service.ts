@@ -1991,11 +1991,40 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       productiveContinuationObserved: 0,
       successfulContinuationObserved: 0,
       orphanBlockersAssigned: 0,
+      missingDispositionRecoveryResolved: 0,
       successfulRunHandoffEscalated: 0,
       escalated: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
+
+    const resolvedMissingDispositionActions = await recoveryActionsSvc.resolveStaleMissingDispositionActions({
+      limit: 250,
+    });
+    for (const resolved of resolvedMissingDispositionActions) {
+      result.missingDispositionRecoveryResolved += 1;
+      result.issueIds.push(resolved.sourceIssue.id);
+      await logActivity(db, {
+        companyId: resolved.sourceIssue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.recovery_action_resolved",
+        entityType: "issue",
+        entityId: resolved.sourceIssue.id,
+        details: {
+          identifier: resolved.sourceIssue.identifier,
+          recoveryActionId: resolved.recoveryAction.id,
+          recoveryActionStatus: resolved.recoveryAction.status,
+          outcome: resolved.recoveryAction.outcome,
+          sourceIssueStatus: resolved.sourceIssue.status,
+          resolutionNote: resolved.recoveryAction.resolutionNote,
+          resolutionReason: resolved.reason,
+          source: "missing_disposition_recovery_sweep",
+        },
+      });
+    }
 
     for (const issue of candidates) {
       const agentId = issue.assigneeAgentId;

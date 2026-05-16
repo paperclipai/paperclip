@@ -3221,6 +3221,34 @@ export function issueRoutes(
     }
     await routinesSvc.syncRunStatusForIssue(issue.id);
 
+    const autoResolvedMissingDisposition =
+      await recoveryActionsSvc.resolveActiveMissingDispositionIfSourceDisposed({
+        companyId: issue.companyId,
+        sourceIssueId: issue.id,
+      });
+    if (autoResolvedMissingDisposition) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.recovery_action_resolved",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          recoveryActionId: autoResolvedMissingDisposition.recoveryAction.id,
+          recoveryActionStatus: autoResolvedMissingDisposition.recoveryAction.status,
+          outcome: autoResolvedMissingDisposition.recoveryAction.outcome,
+          sourceIssueStatus: issue.status,
+          resolutionNote: autoResolvedMissingDisposition.recoveryAction.resolutionNote,
+          resolutionReason: autoResolvedMissingDisposition.reason,
+          source: "missing_disposition_auto_disposition",
+        },
+      });
+    }
+
     if (actor.runId) {
       await heartbeat.reportRunActivity(actor.runId).catch((err) =>
         logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue activity"));
