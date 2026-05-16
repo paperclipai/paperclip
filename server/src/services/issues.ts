@@ -3915,6 +3915,29 @@ export function issueService(db: Db) {
         return null;
       }
 
+      // Circuit breaker: skip if this parent was already woken with
+      // issue_children_completed in the last 10 minutes. Prevents
+      // child status flapping from compounding context burn — e.g.,
+      // FER-52 was observed reopening 273 times in succession because
+      // a parent with many children produces a wake on every child→done
+      // edge. Mirrors the dedupe pattern used in services/issues.ts:~870
+      // and services/issue-tree-control.ts.
+      const recentWake = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, parent.companyId),
+            eq(agentWakeupRequests.reason, "issue_children_completed"),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${parent.id}`,
+            sql`${agentWakeupRequests.createdAt} > now() - interval '10 minutes'`,
+          ),
+        )
+        .limit(1);
+      if (recentWake.length > 0) {
+        return null;
+      }
+
       const childIdsForSummaries = children.slice(0, MAX_CHILD_COMPLETION_SUMMARIES).map((child) => child.id);
       const commentRows = childIdsForSummaries.length > 0
         ? await db
