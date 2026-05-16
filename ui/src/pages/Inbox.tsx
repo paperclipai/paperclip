@@ -2169,14 +2169,14 @@ export function Inbox() {
             searchQuery.trim()
               ? "No inbox items match your search."
               : tab === "decisions"
-              ? "Nothing waiting on you. You're all caught up."
+              ? "Nothing's blocking you. Ship."
               : tab === "mine"
-              ? "Inbox zero."
+              ? "No issues on you. Take a break."
               : tab === "unread"
-              ? "No new inbox items."
+              ? "All caught up."
               : tab === "recent"
-                ? "No recent inbox items."
-                : "No inbox items match these filters."
+                ? "Nothing here yet."
+                : "Inbox is empty."
           }
         />
       )}
