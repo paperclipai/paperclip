@@ -1,8 +1,9 @@
 import { Link } from "@/lib/router";
-import { Menu } from "lucide-react";
+import { Inbox, Menu } from "lucide-react";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
+import { useInboxBadge } from "../hooks/useInboxBadge";
 import { Button } from "@/components/ui/button";
 import {
   Breadcrumb,
@@ -66,6 +67,7 @@ export function BreadcrumbBar() {
   const { toggleSidebar, isMobile, isNarrow } = useSidebar();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const scrollCollapsed = useScrollCollapse();
+  const inboxBadge = useInboxBadge(selectedCompanyId);
 
   const globalToolbarSlotContext = useMemo(
     () => ({
@@ -84,11 +86,38 @@ export function BreadcrumbBar() {
     <Button
       variant="ghost"
       size="icon-sm"
-      className="mr-2 shrink-0"
+      className="mr-1 shrink-0"
       onClick={toggleSidebar}
       aria-label="Open sidebar"
     >
       <Menu className="h-5 w-5" />
+    </Button>
+  );
+
+  // 1-tap Inbox access on phone + tablet (matches menuButton gating), with
+  // unread count badge. Sum of inbox + failedRuns mirrors the sidebar Inbox
+  // row's escalation when runs are failed.
+  const inboxUnread = inboxBadge.inbox + inboxBadge.failedRuns;
+  const inboxLabel = inboxUnread > 99 ? "99+" : String(inboxUnread);
+  const inboxButton = isNarrow && (
+    <Button
+      asChild
+      variant="ghost"
+      size="icon-sm"
+      className="mr-2 shrink-0 relative"
+      aria-label={inboxUnread > 0 ? `Inbox (${inboxLabel} unread)` : "Inbox"}
+    >
+      <Link to="/inbox">
+        <Inbox className="h-5 w-5" />
+        {inboxUnread > 0 && (
+          <span
+            className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-medium leading-none flex items-center justify-center shadow-[0_0_0_2px_hsl(var(--background))]"
+            aria-hidden="true"
+          >
+            {inboxLabel}
+          </span>
+        )}
+      </Link>
     </Button>
   );
 
@@ -105,6 +134,7 @@ export function BreadcrumbBar() {
         )}
       >
         {menuButton}
+        {inboxButton}
         {mobileToolbar}
       </div>
     );
@@ -120,6 +150,7 @@ export function BreadcrumbBar() {
         )}
       >
         {menuButton}
+        {inboxButton}
         <div className="ml-auto flex items-center">{globalToolbarSlots}</div>
       </div>
     );
@@ -136,6 +167,7 @@ export function BreadcrumbBar() {
         )}
       >
         {menuButton}
+        {inboxButton}
         <div className="min-w-0 overflow-hidden flex-1">
           <h1 className="text-sm font-semibold uppercase tracking-wider truncate">
             {breadcrumbs[0].label}
@@ -156,6 +188,7 @@ export function BreadcrumbBar() {
       )}
     >
       {menuButton}
+      {inboxButton}
       <div className="min-w-0 overflow-hidden flex-1">
         <Breadcrumb className="min-w-0 overflow-hidden">
           <BreadcrumbList className="flex-nowrap">
