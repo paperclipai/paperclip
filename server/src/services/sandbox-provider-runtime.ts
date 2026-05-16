@@ -6,6 +6,7 @@ import type {
   SandboxEnvironmentConfig,
   SandboxEnvironmentProvider,
 } from "@paperclipai/shared";
+import { DOCKER_SANDBOX_PROVIDER_KEY, DockerSandboxProvider } from "./sandbox/docker-provider.js";
 
 export interface SandboxProviderValidationResult {
   ok: boolean;
@@ -205,6 +206,7 @@ class FakeSandboxProvider implements SandboxProvider {
 
 const registeredSandboxProviders = new Map<SandboxEnvironmentProvider, SandboxProvider>([
   ["fake", new FakeSandboxProvider()],
+  [DOCKER_SANDBOX_PROVIDER_KEY, new DockerSandboxProvider()],
 ]);
 
 /**
