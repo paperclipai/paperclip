@@ -18,7 +18,7 @@ permissions:
 jobs:
   build-and-push:
     runs-on: self-hosted
-    timeout-minutes: 60
+    timeout-minutes: 90
     concurrency:
       group: docker-${{ github.ref }}
       cancel-in-progress: true
