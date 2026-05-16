@@ -621,7 +621,7 @@
     "noActiveSubIssues": "활성 하위 이슈 없음",
     "allSubIssuesDone": "All sub-issues done",
     "andMore": " ... 외 {{count}}개",
-    "assignee": "Assignee",
+    "assignee": "담당자",
     "blockedBy": "Blocked by",
     "boardColumnLimit": "Board column limit applied, showing up to",
     "boardView": "Board view",

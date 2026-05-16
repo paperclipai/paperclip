@@ -659,7 +659,8 @@
     },
     "step": "step",
     "subTaskCount": "{{count}} sub-tasks",
-    "andMore": " ... and {{count}} more"
+    "andMore": " ... and {{count}} more",
+    "assignee": "Assignee"
   },
   "newIssueDialog": {
     "title": "New issue",
