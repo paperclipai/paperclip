@@ -1395,11 +1395,16 @@ export function pluginRoutes(
 
     // Send initial comment to establish the connection
     res.write(":ok\n\n");
+    const keepalive = setInterval(() => {
+      if (!res.writable) return;
+      res.write(`:keepalive ${new Date().toISOString()}\n\n`);
+    }, 20_000);
 
     let unsubscribed = false;
     const safeUnsubscribe = () => {
       if (!unsubscribed) {
         unsubscribed = true;
+        clearInterval(keepalive);
         unsubscribe();
       }
     };
