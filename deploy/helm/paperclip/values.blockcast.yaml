@@ -173,6 +173,22 @@ tolerations:
 secret:
   existingSecret: paperclip-credentials
 
+# paperclip-plugin-gbrain (Blockcast/paperclip#25, wave 2.1) reads
+# per-agent OAuth client credentials from /etc/paperclip-plugin-gbrain/clients.json
+# to route gbrain MCP calls through admin-ui:3130/mcp (Bearer-authed, leak-free)
+# instead of the supergateway-bridge at :3131. The Secret was seeded
+# 2026-05-15 via the gbrain admin API. Chart support for these knobs
+# landed in #26.
+extraVolumes:
+  - name: gbrain-oauth-secrets
+    secret:
+      secretName: paperclip-plugin-gbrain-oauth-secrets
+      defaultMode: 0444
+extraVolumeMounts:
+  - name: gbrain-oauth-secrets
+    mountPath: /etc/paperclip-plugin-gbrain
+    readOnly: true
+
 networkPolicy:
   enabled: true
   allowFromNamespaces:
