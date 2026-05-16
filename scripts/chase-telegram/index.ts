@@ -1,7 +1,7 @@
 import { serve } from "std/http/server.ts";
 import type { TelegramUpdate } from "./types.ts";
 import { sendTelegram, isBotConfigured } from "./lib/telegram.ts";
-import { isPaperclipConfigured } from "./lib/api.ts";
+import { isPaperclipConfigured, PAPERCLIP_API_URL } from "./lib/api.ts";
 import { escapeHtml } from "./lib/html.ts";
 import { formatNotification, isAiConfigured, aiProvider } from "./lib/llm.ts";
 import { routeQuery, routeVenue, routeLocation } from "./router.ts";
@@ -21,6 +21,7 @@ const ALLOWED_IDS = (Deno.env.get("ALLOWED_TELEGRAM_USER_IDS") ?? "")
   .map(Number)
   .filter((n) => !isNaN(n));
 const WEBHOOK_SECRET = Deno.env.get("WEBHOOK_SETUP_SECRET") ?? "";
+const CHASE_AGENT_ID = Deno.env.get("CHASE_AGENT_ID") ?? "";
 const CHASE_API_KEY = Deno.env.get("CHASE_PAPERCLIP_API_KEY") ?? "";
 
 // ─── HTTP Helpers ─────────────────────────────────────────────────────
@@ -30,6 +31,66 @@ export function respondJson(body: unknown, status = 200): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+// ─── Agent Wakeup ────────────────────────────────────────────────────
+
+async function tryAgentWakeup(
+  text: string,
+  chatId: number,
+  firstName?: string,
+  messageId?: number,
+): Promise<"accepted" | "unconfigured" | "skipped" | "error"> {
+  if (!CHASE_AGENT_ID || !PAPERCLIP_API_URL) {
+    return "unconfigured";
+  }
+
+  try {
+    const res = await fetch(
+      `${PAPERCLIP_API_URL}/api/agents/${CHASE_AGENT_ID}/wakeup`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${CHASE_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          source: "automation",
+          triggerDetail: "callback",
+          reason: `Telegram message from ${firstName ?? "unknown user"}`,
+          payload: {
+            channel: "telegram",
+            chatId,
+            message: { text, firstName, messageId },
+          },
+        }),
+      },
+    );
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      console.warn(`Agent wakeup returned ${res.status}: ${errText.slice(0, 200)}`);
+      return "error";
+    }
+
+    const body = await res.json().catch(() => ({}));
+    if (body?.status === "skipped") {
+      console.warn(`Agent wakeup skipped: ${body.reason ?? "unknown"}`);
+      return "skipped";
+    }
+
+    return "accepted";
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`Agent wakeup failed: ${message}`);
+    return "error";
+  }
+}
+
+// ─── Agent Routing Enabled ────────────────────────────────────────────
+
+function isAgentRoutingConfigured(): boolean {
+  return !!(CHASE_AGENT_ID && PAPERCLIP_API_URL && CHASE_API_KEY);
 }
 
 // ─── Webhook Handler ──────────────────────────────────────────────────
@@ -75,6 +136,14 @@ export async function handleWebhook(update: TelegramUpdate): Promise<Response> {
 
   const text = msg.text;
 
+  // Try the Paperclip agent runtime first (Chase — Dispatcher)
+  const wakeupResult = await tryAgentWakeup(text, chatId, firstName, msg.message_id);
+  if (wakeupResult === "accepted") {
+    await sendTelegram(chatId, "One moment, looking that up...");
+    return respondJson({ ok: true, routedTo: "agent" });
+  }
+
+  // Fallback: old routing pipeline (kept for rollback safety)
   // Load any persisted pending state into the in-memory cache before routing
   await refreshFromStorage(chatId);
 
@@ -195,6 +264,8 @@ export function handleHealth(): Response {
     status: ok ? "healthy" : "unhealthy",
     botConfigured: isBotConfigured(),
     paperclipConfigured: isPaperclipConfigured(),
+    agentRoutingConfigured: isAgentRoutingConfigured(),
+    chaseAgentId: CHASE_AGENT_ID || null,
     aiConfigured: isAiConfigured(),
     aiProvider: aiProvider(),
     build: {
