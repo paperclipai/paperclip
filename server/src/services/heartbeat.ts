@@ -3175,6 +3175,134 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
+  const IN_REVIEW_SLA_MS: Record<string, number> = {
+    critical: 4 * 60 * 60 * 1000,
+    high: 24 * 60 * 60 * 1000,
+    medium: 72 * 60 * 60 * 1000,
+    low: 7 * 24 * 60 * 60 * 1000,
+  };
+
+  function getInReviewSlaMs(priority: string): number {
+    return IN_REVIEW_SLA_MS[priority] ?? IN_REVIEW_SLA_MS.medium;
+  }
+
+  function formatSlaDuration(ms: number): string {
+    const hours = ms / (60 * 60 * 1000);
+    if (hours < 24) return `${hours}h`;
+    const days = hours / 24;
+    return `${days}d`;
+  }
+
+  async function tickStaleInReviewIssues(now = new Date()) {
+    const staleRows = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        priority: issues.priority,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        inReviewAt: issues.inReviewAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.status, "in_review"),
+          sql`${issues.inReviewAt} is not null`,
+        ),
+      )
+      .limit(100);
+
+    let reverted = 0;
+
+    for (const row of staleRows) {
+      const slaMs = getInReviewSlaMs(row.priority);
+      const elapsed = now.getTime() - new Date(row.inReviewAt!).getTime();
+      if (elapsed < slaMs) continue;
+
+      const revertStatus = row.assigneeAgentId ? "in_progress" : "todo";
+
+      await db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(issues)
+          .set({
+            status: revertStatus,
+            inReviewAt: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, row.id),
+              eq(issues.status, "in_review"),
+            ),
+          )
+          .returning();
+        if (!updated) return;
+
+        const slaDurationLabel = formatSlaDuration(slaMs);
+        const elapsedLabel = formatSlaDuration(elapsed);
+        await tx.insert(issueComments).values({
+          companyId: row.companyId,
+          issueId: row.id,
+          body: `**SLA auto-revert** — issue exceeded the ${row.priority} review SLA (${slaDurationLabel}). Elapsed: ${elapsedLabel}. Status reverted to \`${revertStatus}\`.`,
+        });
+
+        await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "expired",
+            result: { version: 1, outcome: "sla_expired" },
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issueThreadInteractions.issueId, row.id),
+              eq(issueThreadInteractions.status, "pending"),
+              eq(issueThreadInteractions.kind, "request_confirmation"),
+            ),
+          );
+      });
+
+      await logActivity(db, {
+        companyId: row.companyId,
+        actorType: "system",
+        actorId: "heartbeat_scheduler",
+        agentId: null,
+        runId: null,
+        action: "issue.sla_in_review_reverted",
+        entityType: "issue",
+        entityId: row.id,
+        details: {
+          priority: row.priority,
+          slaMs,
+          elapsedMs: elapsed,
+          revertedTo: revertStatus,
+        },
+      });
+
+      if (row.assigneeAgentId) {
+        await enqueueWakeup(row.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_sla_in_review_reverted",
+          payload: { issueId: row.id },
+          requestedByActorType: "system",
+          requestedByActorId: "heartbeat_scheduler",
+          contextSnapshot: {
+            issueId: row.id,
+            source: "sla_auto_revert",
+            reason: "in_review_sla_expired",
+          },
+        });
+      }
+
+      reverted += 1;
+    }
+
+    return { checked: staleRows.length, reverted };
+  }
+
   async function getOldestRunForSession(agentId: string, sessionId: string) {
     return db
       .select({
@@ -9787,11 +9915,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         else skipped += 1;
       }
 
-      const issueMonitors = await tickDueIssueMonitors(now);
+      const [issueMonitors, staleReviews] = await Promise.all([
+        tickDueIssueMonitors(now),
+        tickStaleInReviewIssues(now),
+      ]);
 
       return {
-        checked: checked + issueMonitors.checked,
-        enqueued: enqueued + issueMonitors.triggered,
+        checked: checked + issueMonitors.checked + staleReviews.checked,
+        enqueued: enqueued + issueMonitors.triggered + staleReviews.reverted,
         skipped: skipped + issueMonitors.skipped,
       };
     },

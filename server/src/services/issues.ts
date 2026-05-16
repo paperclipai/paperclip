@@ -110,6 +110,11 @@ function applyStatusSideEffects(
   if (status === "cancelled") {
     patch.cancelledAt = new Date();
   }
+  if (status === "in_review") {
+    patch.inReviewAt = new Date();
+  } else {
+    patch.inReviewAt = null;
+  }
   return patch;
 }
 
@@ -1585,6 +1590,7 @@ const issueListSelect = {
   executionWorkspaceId: issues.executionWorkspaceId,
   executionWorkspacePreference: issues.executionWorkspacePreference,
   executionWorkspaceSettings: sql<null>`null`,
+  inReviewAt: issues.inReviewAt,
   startedAt: issues.startedAt,
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
