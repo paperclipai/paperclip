@@ -545,6 +545,125 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     );
   });
 
+  it("auto-resolves active missing-disposition recovery when an ordinary update closes the source issue", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "missing_disposition",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "successful_run_missing_state",
+      fingerprint: "missing-disposition:closed-source",
+      evidence: { sourceRunId: "run-1" },
+      nextAction: "Choose a valid issue disposition.",
+      wakePolicy: { type: "wake_owner" },
+    });
+    const app = createApp();
+
+    await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ status: "done" })
+      .expect(200);
+
+    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toBeNull();
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({
+      status: "resolved",
+      outcome: "restored",
+      resolutionNote: "Auto-resolved missing-disposition recovery: source issue is done.",
+    });
+
+    const activityRows = await db.select().from(activityLog).where(eq(activityLog.entityId, sourceIssueId));
+    expect(activityRows.some((row) =>
+      row.action === "issue.recovery_action_resolved" &&
+      (row.details as Record<string, unknown> | null)?.source === "missing_disposition_auto_disposition" &&
+      (row.details as Record<string, unknown> | null)?.resolutionReason === "source_closed_done"
+    )).toBe(true);
+  });
+
+  it("auto-resolves active missing-disposition recovery when rolling work returns to an assigned todo owner", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(issues).set({ status: "blocked", assigneeAgentId: managerId }).where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "missing_disposition",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "successful_run_missing_state",
+      fingerprint: "missing-disposition:rolling-continuation",
+      evidence: { sourceRunId: "run-1" },
+      nextAction: "Choose a valid issue disposition.",
+      wakePolicy: { type: "wake_owner" },
+    });
+    const app = createApp();
+
+    await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ status: "todo", assigneeAgentId: coderId })
+      .expect(200);
+
+    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toBeNull();
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({
+      status: "resolved",
+      outcome: "delegated",
+      resolutionNote: "Auto-resolved missing-disposition recovery: source issue is queued for an assigned continuation owner.",
+    });
+  });
+
+  it("sweeps stale active missing-disposition recovery actions on already-disposed source issues", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "missing_disposition",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "successful_run_missing_state",
+      fingerprint: "missing-disposition:stale-done",
+      evidence: { sourceRunId: "run-1" },
+      nextAction: "Choose a valid issue disposition.",
+      wakePolicy: { type: "wake_owner" },
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.missingDispositionRecoveryResolved).toBe(1);
+    expect(result.issueIds).toContain(sourceIssueId);
+    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toBeNull();
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({
+      status: "resolved",
+      outcome: "restored",
+      resolutionNote: "Auto-resolved missing-disposition recovery: source issue is done.",
+    });
+
+    const activityRows = await db.select().from(activityLog).where(eq(activityLog.entityId, sourceIssueId));
+    expect(activityRows.some((row) =>
+      row.action === "issue.recovery_action_resolved" &&
+      (row.details as Record<string, unknown> | null)?.source === "missing_disposition_recovery_sweep" &&
+      (row.details as Record<string, unknown> | null)?.resolutionReason === "source_closed_done"
+    )).toBe(true);
+  });
+
   it("rejects blocked recovery resolution when the source issue has no first-class blockers", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     const recoveryActionSvc = issueRecoveryActionService(db);
