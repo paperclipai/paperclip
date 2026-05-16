@@ -717,11 +717,21 @@ function AskUserQuestionsCard({
     try {
       await onSubmitInteractionAnswers(
         interaction,
-        questions.map((question) => ({
-          questionId: question.id,
-          optionIds: draftAnswers[question.id] ?? [],
-          freeText: draftFreeTextByQuestionId[question.id] ?? "",
-        })),
+        questions.map((question) => {
+          const optionIds = draftAnswers[question.id] ?? [];
+          const trimmedFreeText = (draftFreeTextByQuestionId[question.id] ?? "").trim();
+          const hasSelectedFreeTextOption = optionIds.some((optionId) => {
+            const option = question.options.find((item) => item.id === optionId);
+            return option?.allowFreeText === true;
+          });
+          return {
+            questionId: question.id,
+            optionIds,
+            ...(hasSelectedFreeTextOption && trimmedFreeText.length > 0
+              ? { freeText: trimmedFreeText }
+              : {}),
+          };
+        }),
       );
     } finally {
       setWorking(false);
