@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Building2, Check, Settings } from "lucide-react";
-import { Link, useNavigate } from "@/lib/router";
+import { Link, useLocation, useNavigate } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useOrg } from "@/context/OrgContext";
+import { useCompany } from "@/context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { cn } from "@/lib/utils";
 
@@ -32,15 +33,40 @@ export function SidebarOrgMenu({ open: controlledOpen, onOpenChange }: SidebarOr
   const open = controlledOpen ?? internalOpen;
   const setOpen = onOpenChange ?? setInternalOpen;
   const { activeOrganizations, selectedOrg, setSelectedOrgId, loading } = useOrg();
+  const { companies } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();
+  const location = useLocation();
   const navigate = useNavigate();
 
   const label = selectedOrg?.name ?? (loading ? "…" : "Org");
   const initials = orgInitials(label);
 
   function handleSelect(orgId: string) {
+    if (orgId === selectedOrg?.id) {
+      setOpen(false);
+      return;
+    }
+
+    // If the user is currently on a workspace-prefixed route (e.g. /PAP/dashboard),
+    // simply updating `selectedOrgId` won't stick — Layout's route-sync effect
+    // reads the URL's company → forces the org back to that company's org.
+    // So navigate into a workspace in the target org. Otherwise (e.g. /home,
+    // /organizations, /instance/...) just update the org selection.
+    const pathPrefix = location.pathname.split("/")[1]?.toUpperCase();
+    const onCompanyRoute = companies.some(
+      (c) => c.issuePrefix.toUpperCase() === pathPrefix,
+    );
+
     setSelectedOrgId(orgId);
     setOpen(false);
+    if (isMobile) setSidebarOpen(false);
+
+    if (onCompanyRoute) {
+      const target = companies.find(
+        (c) => c.organizationId === orgId && c.status !== "archived",
+      );
+      navigate(target ? `/${target.issuePrefix}/dashboard` : "/organizations");
+    }
   }
 
   function closeNavigationChrome() {
