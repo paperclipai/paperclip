@@ -436,6 +436,38 @@ spec:
               else
                 echo "seed: skipping plugin install — claude not at ${CLAUDE_BIN}"
               fi
+
+              # Hindsight-memory plugin config. The plugin installs above as
+              # a Claude Code plugin, but it only activates on UserPromptSubmit
+              # /Stop hooks when ${HOME}/.hindsight/claude-code.json exists
+              # with a bankId. Without this, the plugin loads silently and
+              # never recalls or retains.
+              #
+              # Bank choice: the shared "agent-memories" bank (cross-agent
+              # conversational memory). The existing in-cluster
+              # paperclip-plugin-hindsight already writes per-agent
+              # structured memory to `paperclip::<companyId>::<agentId>`
+              # banks via the paperclip event bus; the CC plugin here
+              # captures the orthogonal layer (intra-session learnings,
+              # UserPromptSubmit context) and shares it across agents.
+              # /paperclip is the PVC mount and ${HOME}=/paperclip for all
+              # claude_k8s Job pods, so a single config here is visible to
+              # every agent. Re-writes each pod start to stay in sync if
+              # the API endpoint or bank changes.
+              HS_CONFIG="${BASE}/.hindsight/claude-code.json"
+              mkdir -p "$(dirname "${HS_CONFIG}")"
+              cat > "${HS_CONFIG}" <<'EOF'
+              {
+                "hindsightApiUrl": "http://hindsight-api.hindsight.svc.cluster.local:8888",
+                "bankId": "agent-memories",
+                "bankMission": "",
+                "enableKnowledgeTools": true,
+                "requestTimeoutSeconds": 30
+              }
+              EOF
+              chmod 0600 "${HS_CONFIG}"
+              chown 1000:1000 "${BASE}/.hindsight" "${HS_CONFIG}" 2>/dev/null || true
+              echo "seed: wrote ${HS_CONFIG} pinning hindsight-memory CC plugin to agent-memories bank"
           env:
             {{- if .Values.secret.masterKey }}
             - name: PAPERCLIP_MASTER_KEY_SEED

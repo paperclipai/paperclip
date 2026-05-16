@@ -80,6 +80,15 @@ env:
       value: "true"
     - name: PAPERCLIP_RUNTIME_API_CANDIDATES_JSON
       value: '["https://paperclip.blockcast.net"]'
+    # Designated PR reviewer agent (Ally). The github-webhook route fires
+    # an additional wake here on `pull_request.opened`,
+    # `pull_request.ready_for_review`, and `pull_request_review.submitted`
+    # so PRs without a paperclip identifier still get reviewed. Ally runs
+    # both `/pr-review-toolkit:review-pr` and `/gstack:codex review` per
+    # wake and posts one consolidated comment. The webhook coalesces by
+    # repo+pr+reason so burst events don't queue redundant reviews.
+    - name: PAPERCLIP_PR_REVIEWER_AGENT_ID
+      value: "e0a5011d-5c94-4801-be52-64c14f98ac26"
     # GitHub PAT for the in-image github-mcp-server (stdio mode). The
     # claude_k8s adapter reads this StatefulSet pod's env spec and copies
     # any valueFrom entry — incl. secretKeyRef — onto every agent Job pod
