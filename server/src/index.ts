@@ -580,8 +580,11 @@ export async function startServer(): Promise<StartedServer> {
       // skip silently; manual runs surface a 409 so the operator sees the cause.
       let freeBytes: number | null = null;
       try {
-        const fsStats = await statfs(config.databaseBackupDir);
-        freeBytes = Number(fsStats.bavail) * Number(fsStats.bsize);
+        const fsStats = await statfs(config.databaseBackupDir, { bigint: true });
+        const availableBytes = fsStats.bavail * fsStats.bsize;
+        freeBytes = availableBytes > BigInt(Number.MAX_SAFE_INTEGER)
+          ? Number.MAX_SAFE_INTEGER
+          : Number(availableBytes);
       } catch (statErr) {
         // statfs not supported or path missing — log and continue. The backup
         // itself still has its own error handling for filesystem failures.
@@ -596,6 +599,7 @@ export async function startServer(): Promise<StartedServer> {
       if (
         freeBytes !== null &&
         Number.isFinite(freeBytes) &&
+        freeBytes > 0 &&
         freeBytes < DATABASE_BACKUP_FREE_SPACE_THRESHOLD_BYTES
       ) {
         logger.error(
