@@ -79,14 +79,17 @@ Use comments incrementally:
 
 Read enough ancestor/comment context to understand _why_ the task exists and what changed. Do not reflexively reload the whole thread on every heartbeat.
 
-**Attachments:** `attachments[]` appears in both `PAPERCLIP_WAKE_PAYLOAD_JSON` and in the heartbeat-context API response. Every entry includes `id`, `filename`, `contentType`, `byteSize`, and `contentPath` regardless of file type. The heartbeat-context response also includes `createdAt` and, for small text files, `inlineContent`.
+**Attachments and Documents (user-uploaded files):** When a user says they "uploaded a file" or "attached something", you MUST check BOTH `attachments[]` AND `documents[]` — the UI routes uploads to one or the other depending on how the issue was created.
+
+`attachments[]` appears in both `PAPERCLIP_WAKE_PAYLOAD_JSON` and in the heartbeat-context API response. Every entry includes `id`, `filename`, `contentType`, `byteSize`, and `contentPath` regardless of file type. The heartbeat-context response also includes `createdAt` and, for small text files, `inlineContent`.
 - If an attachment has `inlineContent`, use it directly — it is the full UTF-8 text of the file.
 - If `inlineContent` is absent but `contentType` is text-like (e.g. file exceeds the inline limit), fetch the full text with `GET {contentPath}` — this route is in the sandbox bridge allowlist.
 - Images and PDFs: `contentPath` exists but the content is binary; reference the file by `filename` and note it is attached.
+- **If `attachments[]` is empty but the user says they uploaded a file:** do NOT report "no attachments" — continue reading `documents[]` below.
 
-**Documents:** `documents[]` also appears in the heartbeat-context API response. These are user-created issue documents (markdown/text files the user uploaded or typed directly). Each entry has `key`, `title`, `format`, `body` (included inline when ≤ 64 KB), `latestRevisionId`, and `updatedAt`. The system `continuation-summary` document is excluded — it is already surfaced as `continuationSummary`.
-- Always check `documents[]` alongside `attachments[]` — users uploading `.txt` or `.md` files via the issue dialog will have their content appear here as documents, not as attachments.
+`documents[]` also appears in the heartbeat-context API response. These are user-created issue documents (markdown/text files the user uploaded or typed directly via the issue creation dialog). Each entry has `key`, `title`, `format`, `body` (included inline when ≤ 64 KB), `latestRevisionId`, and `updatedAt`. The system `continuation-summary` document is excluded — it is already surfaced as `continuationSummary`.
 - If `body` is present, use it directly. If `body` is null (document exceeds the inline limit), fetch with `GET /api/issues/{id}/documents/{key}`.
+- Files uploaded during **issue creation** almost always appear here, not in `attachments[]`.
 
 **Execution-policy review/approval wakes.** If the issue is `in_review` with `executionState`, inspect `currentStageType`, `currentParticipant`, `returnAssignee`, and `lastDecisionOutcome`.
 
