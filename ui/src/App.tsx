@@ -63,7 +63,7 @@ import { shouldRedirectCompanylessRouteToOnboarding } from "./lib/onboarding-rou
 function boardRoutes() {
   return (
     <>
-      <Route index element={<Navigate to="dashboard" replace />} />
+      <Route index element={<Navigate to="inbox/decisions" replace />} />
       <Route path="dashboard" element={<Dashboard />} />
       <Route path="dashboard/live" element={<DashboardLive />} />
       <Route path="onboarding" element={<OnboardingRoutePage />} />
@@ -195,6 +195,20 @@ function OnboardingRoutePage() {
 }
 
 function CompanyRootRedirect() {
+  const { companies, selectedCompany, loading } = useCompany();
+
+  if (loading) {
+    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+  }
+
+  // Logged-in users with a company land directly on the Decision Inbox so the
+  // morning question "what's blocking me?" is answered in zero clicks. Users
+  // with no company yet fall through to /home where the onboarding/company
+  // picker lives.
+  const targetCompany = selectedCompany ?? companies[0] ?? null;
+  if (targetCompany) {
+    return <Navigate to={`/${targetCompany.issuePrefix}/inbox/decisions`} replace />;
+  }
   return <Navigate to="/home" replace />;
 }
 
