@@ -75,7 +75,7 @@ Alle drei Tools sind über das Paperclip-Plugin als `whitestag.brain:vault.*` er
 
 - **Default-Deny** — neuer Agent ohne ACL-Zeile sieht nichts.
 - **Lokale Embeddings** — der Vault verlässt nie den Mac.
-- **Bearer-Token-Auth** zwischen Plugin und MCP-Server, ein Token pro Client (Paperclip / Claude Code / n8n).
+- **Bearer-Token-Auth** zwischen Plugin und MCP-Server, ein Token pro Client (Paperclip / Claude Code / n8n). Jeder Token ist an eine **agentId-Allowlist** gebunden: `BRAIN_CLAUDE_CODE_TOKEN` darf nur als `walter` auftreten, `BRAIN_N8N_TOKEN` nur als `n8n`. Nur der Paperclip-Token darf mehrere agentIds claimen (per `BRAIN_PAPERCLIP_ALLOWED_AGENTS=CEO,CFO,CMO,CTO,CPO,walter`) — kontrolliert das Multi-Agent-Routing innerhalb von Paperclip, verhindert aber Cross-Token-Impersonation.
 - **Audit-Log** für alle Tool-Calls, abrufbar für Auskunftsersuchen.
 - **Frontmatter-Override** für hochsensible Einzelnotizen.
 - **Indexer ist read-only** — keine Schreib-Operation kann den Vault korrumpieren.

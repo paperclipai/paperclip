@@ -28,6 +28,8 @@
     <string>7777</string>
     <key>BRAIN_PAPERCLIP_TOKEN</key>
     <string>REPLACE_WITH_PAPERCLIP_TOKEN</string>
+    <key>BRAIN_PAPERCLIP_ALLOWED_AGENTS</key>
+    <string>CEO,CFO,CMO,CTO,CPO,walter</string>
     <key>BRAIN_CLAUDE_CODE_TOKEN</key>
     <string>REPLACE_WITH_CLAUDE_CODE_TOKEN</string>
   </dict>

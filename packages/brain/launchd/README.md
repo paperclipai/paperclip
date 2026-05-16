@@ -24,6 +24,11 @@ openssl rand -hex 32   # → paste into BRAIN_CLAUDE_CODE_TOKEN slot
 #
 #    The Paperclip plugin worker will need the same value in BRAIN_PAPERCLIP_TOKEN
 #    via the plugin config UI / instance settings.
+#
+#    BRAIN_PAPERCLIP_ALLOWED_AGENTS is the comma-separated list of agentIds the
+#    Paperclip token may claim in tool calls (e.g. CEO,CFO,CMO,CTO,CPO,walter).
+#    The other two tokens (Claude Code, n8n) are locked to a single identity
+#    and cannot claim other agentIds.
 ```
 
 ## Install services
