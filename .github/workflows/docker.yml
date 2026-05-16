@@ -161,12 +161,27 @@ jobs:
           chmod 600 "$RUNNER_TEMP/.kube/config"
           echo "KUBECONFIG=$RUNNER_TEMP/.kube/config" >> "$GITHUB_ENV"
 
-      # The self-hosted runner is expected to ship with kubectl + helm. The
-      # pve* runners are inside the same network as the cluster API — no
-      # extra networking needed. The kubeconfig comes from secrets.KUBECONFIG_KKROO
-      # (an SA token kubeconfig scoped to the paperclip namespace via a
-      # RoleBinding to the admin ClusterRole). To opt out, unset
-      # `vars.PAPERCLIP_CI_DEPLOY`.
+      # ARC runner pods (arc-runner:v2) don't bake kubectl + helm — the
+      # legacy pve* VM runners did. Install on demand into $RUNNER_TEMP/bin
+      # and prepend to PATH for subsequent steps. Adds ~10s per deploy; the
+      # proper fix is baking these tools into arc-runner:v3. The kubeconfig
+      # comes from secrets.KUBECONFIG_KKROO (SA-token kubeconfig scoped to
+      # the paperclip namespace via a RoleBinding to the admin ClusterRole).
+      # ARC runners share the same cluster-internal network reach.
+      # To opt out of deploy entirely, unset vars.PAPERCLIP_CI_DEPLOY.
+      - name: Install kubectl + helm
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          KUBECTL_VERSION="$(curl -sL https://dl.k8s.io/release/stable.txt)"
+          curl -sL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
+            -o "$RUNNER_TEMP/bin/kubectl"
+          chmod +x "$RUNNER_TEMP/bin/kubectl"
+          curl -sL https://get.helm.sh/helm-v3.16.2-linux-amd64.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP/bin" --strip-components=1 linux-amd64/helm
+          chmod +x "$RUNNER_TEMP/bin/helm"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
       - name: Verify tooling + cluster reach
         env:
           NS: ${{ vars.PAPERCLIP_NAMESPACE || 'paperclip' }}
