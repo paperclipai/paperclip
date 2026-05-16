@@ -55,10 +55,14 @@ function buildRetryResponse(outcome: IssueRetryNowOutcome) {
           ? "Scheduled retry already promoted"
           : outcome === "no_scheduled_retry"
             ? "No scheduled retry"
-            : "Promotion suppressed by gate",
+            : outcome === "deferred"
+              ? "Retry remains deferred"
+              : "Promotion suppressed by gate",
     scheduledRetry:
       outcome === "promoted" || outcome === "already_promoted"
         ? { ...baseRetry, status: "queued" as const }
+        : outcome === "deferred"
+          ? { ...baseRetry }
         : null,
   };
 }
@@ -233,6 +237,23 @@ describe("IssueScheduledRetryCard", () => {
       const band = container.querySelector('[data-testid="issue-scheduled-retry-error-band"]');
       expect(band).not.toBeNull();
       expect((band?.textContent ?? "")).toContain("Promotion suppressed");
+      expect(getRetryNowButton()!.disabled).toBe(false);
+    });
+  });
+
+  it("surfaces deferred retry-now outcomes without disabling retry", async () => {
+    retryNowMock.mockResolvedValue(buildRetryResponse("deferred"));
+    renderWithProviders(
+      <IssueScheduledRetryCard issueId="issue-1" scheduledRetry={baseRetry} />,
+    );
+    act(() => {
+      getRetryNowButton()!.click();
+    });
+    await waitForUi(() => {
+      const band = container.querySelector('[data-testid="issue-scheduled-retry-error-band"]');
+      expect(band).not.toBeNull();
+      expect((band?.textContent ?? "")).toContain("Retry remains deferred");
+      expect(getRetryNowButton()!.textContent ?? "").toContain("Retry now");
       expect(getRetryNowButton()!.disabled).toBe(false);
     });
   });

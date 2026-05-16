@@ -202,6 +202,7 @@ const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+const PAUSE_CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running"] as const;
 const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
 export {
@@ -2385,12 +2386,63 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return unsafeTextProjectionPromise;
   }
 
+  // Per-agent rolling enqueue timestamps for two-tier runaway detection.
+  // Thresholds are read from instance settings at trip-check time so they
+  // can be tuned via the UI without a restart.
+  const enqueueTimestamps = new Map<string, number[]>();
+
+  async function recordEnqueueAndCheckRunaway(agentId: string, agentName: string): Promise<void> {
+    const cfg = (await instanceSettings.getGeneral()).runaway;
+    if (!cfg.autoPauseEnabled) return;
+
+    const fastWindowMs = cfg.fastWindowSec * 1000;
+    const slowWindowMs = cfg.slowWindowSec * 1000;
+    const now = Date.now();
+    const slowCutoff = now - slowWindowMs;
+    const times = (enqueueTimestamps.get(agentId) ?? []).filter((t) => t > slowCutoff);
+    times.push(now);
+    enqueueTimestamps.set(agentId, times);
+
+    const fastCount = times.filter((t) => t > now - fastWindowMs).length;
+    const slowCount = times.length;
+
+    let tripReason: string | null = null;
+    if (fastCount >= cfg.fastThresholdCount) {
+      tripReason = `auto-paused: ${fastCount} enqueues in last ${cfg.fastWindowSec}s (fast-trip threshold: ${cfg.fastThresholdCount})`;
+    } else if (slowCount >= cfg.slowThresholdCount) {
+      tripReason = `auto-paused: ${slowCount} enqueues in last ${cfg.slowWindowSec}s (slow-trip threshold: ${cfg.slowThresholdCount})`;
+    }
+
+    if (tripReason) {
+      logger.warn({ agentId, agentName, fastCount, slowCount }, "runaway detector triggered — auto-pausing agent");
+      enqueueTimestamps.delete(agentId);
+      const autoPausePatch = { autoPause: { paused: true, reason: tripReason, triggeredAt: new Date().toISOString() } };
+	      await db.update(agents).set({
+	        runtimeConfig: sql`coalesce(${agents.runtimeConfig}, '{}'::jsonb) || ${JSON.stringify(autoPausePatch)}::jsonb`,
+	        updatedAt: new Date(),
+	      }).where(eq(agents.id, agentId));
+	      await cancelActiveForAgentInternal(agentId, tripReason);
+    }
+  }
+
+
   async function getAgent(agentId: string) {
     return db
       .select()
       .from(agents)
       .where(eq(agents.id, agentId))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function canEnqueueForAgent(agentId: string): Promise<{ allowed: boolean; reason?: string }> {
+    const { paused: systemPaused } = await instanceSettings.getSystemPauseState();
+    if (systemPaused) return { allowed: false, reason: "system_paused" };
+    const agent = await getAgent(agentId);
+    if (!agent) return { allowed: false, reason: "agent_not_found" };
+    if (agent.status === "paused") return { allowed: false, reason: "agent_manual_paused" };
+    const autoPause = (agent.runtimeConfig as Record<string, unknown> | null)?.autoPause as { paused?: boolean } | undefined;
+    if (autoPause?.paused) return { allowed: false, reason: "agent_auto_paused" };
+    return { allowed: true };
   }
 
   async function getRun(runId: string, opts?: { unsafeFullResultJson?: boolean }) {
@@ -3721,11 +3773,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     runId: string,
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+    currentStatuses?: readonly string[],
   ) {
     const updated = await db
       .update(heartbeatRuns)
       .set({ status, ...patch, updatedAt: new Date() })
-      .where(eq(heartbeatRuns.id, runId))
+      .where(
+        currentStatuses
+          ? and(eq(heartbeatRuns.id, runId), inArray(heartbeatRuns.status, [...currentStatuses]))
+          : eq(heartbeatRuns.id, runId),
+      )
       .returning()
       .then((rows) => rows[0] ?? null);
 
@@ -4413,6 +4470,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
     issueId: string,
   ) {
+    const enqueueCheck = await canEnqueueForAgent(agent.id);
+    if (!enqueueCheck.allowed) {
+      logger.info({ agentId: agent.id, runId: run.id, reason: enqueueCheck.reason }, "skipping missing_issue_comment retry — enqueue gated");
+      return null;
+    }
     const contextSnapshot = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
@@ -4633,6 +4695,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
     now: Date,
   ) {
+    const enqueueCheck = await canEnqueueForAgent(agent.id);
+    if (!enqueueCheck.allowed) {
+      logger.info({ agentId: agent.id, runId: run.id, reason: enqueueCheck.reason }, "skipping process_loss retry — enqueue gated");
+      return null;
+    }
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
@@ -4747,28 +4814,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           | "issue_execution_lock_changed"
           | "issue_review_participant_changed"
           | "issue_paused"
-          | "issue_dependencies_blocked";
+          | "issue_dependencies_blocked"
+          | "scheduled_retry_paused";
         issueId: string | null;
         details: Record<string, unknown>;
       };
   type BlockedScheduledRetryGate = Extract<ScheduledRetryGate, { allowed: false }>;
 
-  async function evaluateScheduledRetryGate(input: {
-    run: typeof heartbeatRuns.$inferSelect;
-    agent: typeof agents.$inferSelect;
-    contextSnapshot: Record<string, unknown>;
-    retryReason?: string | null;
-    enforceIssueExecutionLock?: boolean;
-  }): Promise<ScheduledRetryGate> {
-    const { run, agent, contextSnapshot } = input;
-    const retryReason =
-      input.retryReason ?? readNonEmptyString(contextSnapshot.retryReason) ?? run.scheduledRetryReason ?? null;
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
-    const projectId = readNonEmptyString(contextSnapshot.projectId);
+	  async function evaluateScheduledRetryGate(input: {
+	    run: typeof heartbeatRuns.$inferSelect;
+	    agent: typeof agents.$inferSelect;
+	    contextSnapshot: Record<string, unknown>;
+	    retryReason?: string | null;
+	    enforceIssueExecutionLock?: boolean;
+	    enforceEnqueuePause?: boolean;
+	  }): Promise<ScheduledRetryGate> {
+	    const { run, agent, contextSnapshot } = input;
+	    const retryReason =
+	      input.retryReason ?? readNonEmptyString(contextSnapshot.retryReason) ?? run.scheduledRetryReason ?? null;
+	    const issueId = readNonEmptyString(contextSnapshot.issueId);
+	    const projectId = readNonEmptyString(contextSnapshot.projectId);
 
-    const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
-      issueId,
-      projectId,
+	    const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
+	      issueId,
+	      projectId,
     });
     if (budgetBlock) {
       return {
@@ -4779,14 +4848,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         details: {
           scopeType: budgetBlock.scopeType,
           scopeId: budgetBlock.scopeId,
-        },
-      };
-    }
+	        },
+	      };
+	    }
 
-    if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
-      return {
-        allowed: false,
-        reason: "Scheduled retry suppressed because the agent is not invokable",
+	    if (agent.status === "paused" && agent.pauseReason === "budget") {
+	      return {
+	        allowed: false,
+	        reason: "Scheduled retry suppressed because budget policy paused the agent",
+	        errorCode: "budget_blocked",
+	        issueId,
+	        details: {
+	          agentId: agent.id,
+	          scopeType: "agent",
+	          scopeId: agent.id,
+	        },
+	      };
+	    }
+
+	    if (input.enforceEnqueuePause) {
+	      const enqueueCheck = await canEnqueueForAgent(agent.id);
+	      if (!enqueueCheck.allowed) {
+	        return {
+	          allowed: false,
+	          reason: "Scheduled retry deferred because enqueue is paused",
+	          errorCode: "scheduled_retry_paused",
+	          issueId,
+	          details: {
+	            agentId: agent.id,
+	            pauseReason: enqueueCheck.reason ?? "unknown",
+	          },
+	        };
+	      }
+	    }
+
+	    if (agent.status === "terminated" || agent.status === "pending_approval") {
+	      return {
+	        allowed: false,
+	        reason: "Scheduled retry suppressed because the agent is not invokable",
         errorCode: "agent_not_invokable",
         issueId,
         details: {
@@ -5011,6 +5110,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         reason: string;
         errorCode: BlockedScheduledRetryGate["errorCode"];
       }
+    | {
+        outcome: "deferred";
+        run: typeof heartbeatRuns.$inferSelect;
+        reason: string;
+        errorCode: BlockedScheduledRetryGate["errorCode"];
+      }
     | { outcome: "not_promoted"; run: typeof heartbeatRuns.$inferSelect | null }
   > {
     const agent = await getAgent(dueRun.agentId);
@@ -5037,11 +5142,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const gate = await evaluateScheduledRetryGate({
       run: dueRun,
       agent,
-      contextSnapshot,
-      retryReason: dueRun.scheduledRetryReason,
-      enforceIssueExecutionLock: dueRun.scheduledRetryReason === MAX_TURN_CONTINUATION_RETRY_REASON,
-    });
-    if (!gate.allowed) {
+	      contextSnapshot,
+	      retryReason: dueRun.scheduledRetryReason,
+	      enforceIssueExecutionLock: dueRun.scheduledRetryReason === MAX_TURN_CONTINUATION_RETRY_REASON,
+	      enforceEnqueuePause: true,
+	    });
+	    if (!gate.allowed) {
+      if (gate.errorCode === "scheduled_retry_paused" || gate.errorCode === "budget_blocked") {
+        return {
+          outcome: "deferred",
+          run: dueRun,
+          reason: gate.reason,
+          errorCode: gate.errorCode,
+        };
+      }
       if (
         gate.errorCode === "issue_not_found" &&
         dueRun.scheduledRetryReason !== MAX_TURN_CONTINUATION_RETRY_REASON
@@ -5196,6 +5310,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           issueId: gate.issueId,
         };
       }
+    }
+    const enqueueCheck = await canEnqueueForAgent(agent.id);
+    if (!enqueueCheck.allowed) {
+      logger.info({ agentId: agent.id, runId: run.id, reason: enqueueCheck.reason }, "skipping bounded retry schedule — enqueue gated");
+      return { outcome: "skipped_paused" as const };
     }
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
@@ -5703,15 +5822,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         scheduledRetry,
       };
     }
-    if (promotion.outcome === "gate_suppressed") {
+    if (promotion.outcome === "deferred") {
       return {
-        outcome: "gate_suppressed" as const,
+        outcome: "deferred" as const,
         message: promotion.reason,
         scheduledRetry,
       };
     }
-    return {
-      outcome: "already_promoted" as const,
+	    if (promotion.outcome === "gate_suppressed") {
+	      return {
+	        outcome: "gate_suppressed" as const,
+	        message: promotion.reason,
+	        scheduledRetry,
+	      };
+	    }
+	    if (promotion.outcome === "not_promoted") {
+      const current = await getIssueRetryRun(issue.companyId, issue.id, ["scheduled_retry", "queued", "running", "cancelled"]);
+      if (current?.run.status === "scheduled_retry") {
+        return {
+          outcome: "deferred" as const,
+          message: "Scheduled retry remains deferred",
+          scheduledRetry: summarizeIssueScheduledRetryRun(current),
+        };
+      }
+      if (current && (current.run.status === "queued" || current.run.status === "running")) {
+        return {
+          outcome: "already_promoted" as const,
+          message: "Scheduled retry was already promoted",
+          scheduledRetry: summarizeIssueScheduledRetryRun(current),
+        };
+      }
+      return {
+        outcome: "no_scheduled_retry" as const,
+        message: "No live scheduled retry exists for this issue",
+        scheduledRetry: null,
+      };
+	    }
+	    return {
+	      outcome: "already_promoted" as const,
       message: "Scheduled retry was already promoted",
       scheduledRetry,
     };
@@ -5781,11 +5929,58 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  function isScheduledRetryRun(run: typeof heartbeatRuns.$inferSelect) {
+    return Boolean(run.retryOfRunId || run.scheduledRetryAt || run.scheduledRetryReason || run.scheduledRetryAttempt > 0);
+  }
+
+  async function deferQueuedScheduledRetry(run: typeof heartbeatRuns.$inferSelect, reason: string) {
+    const deferred = await db
+      .update(heartbeatRuns)
+      .set({
+        status: "scheduled_retry",
+        error: reason,
+        errorCode: "scheduled_retry_paused",
+        updatedAt: new Date(),
+      })
+      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+
+    if (deferred) {
+      await appendRunEvent(deferred, await nextRunEventSeq(deferred.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: reason,
+        payload: {
+          scheduledRetryAttempt: deferred.scheduledRetryAttempt,
+          scheduledRetryAt: deferred.scheduledRetryAt ? new Date(deferred.scheduledRetryAt).toISOString() : null,
+          scheduledRetryReason: deferred.scheduledRetryReason,
+          deferredFromQueued: true,
+        },
+      });
+    }
+
+    return deferred;
+  }
+
+  async function cancelIfRetryDeferralDidNotAlreadyWin(runId: string, reason: string) {
+    return cancelRunInternal(runId, reason, {
+      cancellableStatuses: PAUSE_CANCELLABLE_HEARTBEAT_RUN_STATUSES,
+    });
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
     if (!agent) {
       await cancelRunInternal(run.id, "Cancelled because the agent no longer exists");
+      return null;
+    }
+    if (agent.status === "paused" && agent.pauseReason === "budget" && isScheduledRetryRun(run)) {
+      if (!(await deferQueuedScheduledRetry(run, "Scheduled retry deferred because budget policy paused the agent"))) {
+        await cancelIfRetryDeferralDidNotAlreadyWin(run.id, "Cancelled because the agent is not invokable");
+      }
       return null;
     }
     if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
@@ -5799,6 +5994,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       projectId: readNonEmptyString(context.projectId),
     });
     if (budgetBlock) {
+      if (isScheduledRetryRun(run)) {
+        if (!(await deferQueuedScheduledRetry(run, budgetBlock.reason))) {
+          await cancelIfRetryDeferralDidNotAlreadyWin(run.id, budgetBlock.reason);
+        }
+        return null;
+      }
       await cancelRunInternal(run.id, budgetBlock.reason);
       return null;
     }
@@ -6207,7 +6408,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         lastHeartbeatAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(eq(agents.id, agentId))
+      .where(
+        and(
+          eq(agents.id, agentId),
+          notInArray(agents.status, ["paused", "terminated"]),
+        ),
+      )
       .returning()
       .then((rows) => rows[0] ?? null);
 
@@ -6693,9 +6899,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function startNextQueuedRunForAgent(agentId: string) {
     return withAgentStartLock(agentId, async () => {
+      const enqueueCheck = await canEnqueueForAgent(agentId);
+      if (!enqueueCheck.allowed) {
+        logger.info({ agentId, reason: enqueueCheck.reason }, "skipping queued run start — enqueue gated");
+        return [];
+      }
       const agent = await getAgent(agentId);
       if (!agent) return [];
-      if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+      if (agent.status === "terminated" || agent.status === "pending_approval") {
         return [];
       }
       const policy = parseHeartbeatPolicy(agent);
@@ -8326,6 +8537,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const promotedContinuationAttempt = readContinuationAttempt(
           promotedContextSnapshot.livenessContinuationAttempt,
         );
+        const deferredEnqueueCheck = await canEnqueueForAgent(deferredAgent.id);
+        if (!deferredEnqueueCheck.allowed) {
+          logger.info({ agentId: deferredAgent.id, deferredId: deferred.id, reason: deferredEnqueueCheck.reason }, "skipping deferred wake promotion — enqueue gated");
+          continue;
+        }
         const now = new Date();
         const newRun = await tx
           .insert(heartbeatRuns)
@@ -8405,6 +8621,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "released" as const };
       }
 
+      const enqueueCheck = await canEnqueueForAgent(run.agentId);
       if (issue.originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery) {
         return {
           kind: "blocked_recovery_in_place" as const,
@@ -8414,9 +8631,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const shouldBlockImmediately =
+        !enqueueCheck.allowed ||
         !recoveryAgentInvokable ||
         !recoveryAgent ||
         didAutomaticRecoveryFail(run, issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed");
+      if (!enqueueCheck.allowed) {
+        logger.info({ agentId: run.agentId, runId: run.id, reason: enqueueCheck.reason }, "skipping issue execution recovery — enqueue gated");
+      }
       if (shouldBlockImmediately) {
         const comment = buildImmediateExecutionPathRecoveryComment({
           status: issue.status as "todo" | "in_progress",
@@ -8545,6 +8766,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
+    const { paused } = await instanceSettings.getSystemPauseState();
+    if (paused) {
+      logger.info({ agentId, source: opts.source }, "system paused — skipping enqueue");
+      return null;
+    }
+
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = { ...(opts.contextSnapshot ?? {}) };
@@ -8566,6 +8793,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+
     const explicitResumeSession = await resolveExplicitResumeSessionOverride(agent, payload, taskKey);
     if (explicitResumeSession) {
       enrichedContextSnapshot.resumeFromRunId = explicitResumeSession.resumeFromRunId;
@@ -8603,6 +8831,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         finishedAt: new Date(),
       });
     };
+
+    const autoPause = (agent.runtimeConfig as Record<string, unknown> | null)?.autoPause as { paused?: boolean } | undefined;
+    if (autoPause?.paused) {
+      logger.info({ agentId, agentName: agent.name, source: opts.source }, "agent auto-paused by runaway detector — skipping enqueue");
+      await writeSkippedRequest("runaway_auto_pause");
+      return null;
+    }
 
     let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
     if (!projectId && issueId) {
@@ -9142,6 +9377,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       await startNextQueuedRunForAgent(agent.id);
+      if (agent.status !== "paused") {
+        void recordEnqueueAndCheckRunaway(agentId, agent.name).catch((err) =>
+          logger.error({ agentId, err }, "runaway detector error — auto-pause may not have fired"),
+        );
+      }
       return newRun;
     }
 
@@ -9257,16 +9497,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
 
     await startNextQueuedRunForAgent(agent.id);
+    if (agent.status !== "paused") {
+      void recordEnqueueAndCheckRunaway(agentId, agent.name).catch((err) =>
+        logger.error({ agentId, err }, "runaway detector error — auto-pause may not have fired"),
+      );
+    }
 
     return newRun;
   }
 
-  async function listProjectScopedRunIds(companyId: string, projectId: string) {
+  async function listProjectScopedRuns(companyId: string, projectId: string) {
     const runIssueId = sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
     const effectiveProjectId = sql<string | null>`coalesce(${heartbeatRuns.contextSnapshot} ->> 'projectId', ${issues.projectId}::text)`;
 
     const rows = await db
-      .selectDistinctOn([heartbeatRuns.id], { id: heartbeatRuns.id })
+      .selectDistinctOn([heartbeatRuns.id], { run: heartbeatRuns })
       .from(heartbeatRuns)
       .leftJoin(
         issues,
@@ -9278,12 +9523,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(
         and(
           eq(heartbeatRuns.companyId, companyId),
-          inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
+          inArray(heartbeatRuns.status, [...PAUSE_CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
           sql`${effectiveProjectId} = ${projectId}`,
         ),
       );
 
-    return rows.map((row) => row.id);
+    return rows.map((row) => row.run);
   }
 
   async function listProjectScopedWakeupIds(companyId: string, projectId: string) {
@@ -9360,11 +9605,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return wakeupIds.length;
   }
 
-  async function cancelRunInternal(runId: string, reason = "Cancelled by control plane") {
+  async function cancelRunInternal(
+    runId: string,
+    reason = "Cancelled by control plane",
+    options: {
+      cancellableStatuses?: readonly (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number][];
+    } = {},
+  ) {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
-    if (!CANCELLABLE_HEARTBEAT_RUN_STATUSES.includes(run.status as (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number])) return run;
+    const cancellableStatuses = options.cancellableStatuses ?? CANCELLABLE_HEARTBEAT_RUN_STATUSES;
+    if (!cancellableStatuses.includes(run.status as (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number])) return run;
     const agent = await getAgent(run.agentId);
+
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: new Date(),
+      error: reason,
+      errorCode: "cancelled",
+      ...(agent ? {
+        resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
+          resultJson: parseObject(run.resultJson),
+          errorCode: "cancelled",
+          errorMessage: reason,
+        }),
+      } : {}),
+    }, cancellableStatuses);
+    if (!cancelled) return getRun(runId);
 
     const running = runningProcesses.get(run.id);
     if (running) {
@@ -9379,19 +9645,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         processGroupId: run.processGroupId,
       });
     }
-
-    const cancelled = await setRunStatus(run.id, "cancelled", {
-      finishedAt: new Date(),
-      error: reason,
-      errorCode: "cancelled",
-      ...(agent ? {
-        resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
-          resultJson: parseObject(run.resultJson),
-          errorCode: "cancelled",
-          errorMessage: reason,
-        }),
-      } : {}),
-    });
 
     await setWakeupStatus(run.wakeupRequestId, "cancelled", {
       finishedAt: new Date(),
@@ -9414,12 +9667,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return cancelled;
   }
 
-  async function cancelActiveForAgentInternal(agentId: string, reason = "Cancelled due to agent pause") {
+  async function cancelActiveForAgentInternal(
+    agentId: string,
+    reason = "Cancelled due to agent pause",
+    options: { includeScheduledRetries?: boolean } = {},
+  ) {
     const agent = await getAgent(agentId);
+    const cancellableStatuses = options.includeScheduledRetries
+      ? CANCELLABLE_HEARTBEAT_RUN_STATUSES
+      : PAUSE_CANCELLABLE_HEARTBEAT_RUN_STATUSES;
     const runs = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES])));
+	      .select()
+	      .from(heartbeatRuns)
+	      .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...cancellableStatuses])));
 
     for (const run of runs) {
       await setRunStatus(run.id, "cancelled", {
@@ -9460,29 +9720,86 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return runs.length;
   }
 
+  async function cancelBudgetScopeAgentWork(agentId: string) {
+    const agent = await getAgent(agentId);
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...PAUSE_CANCELLABLE_HEARTBEAT_RUN_STATUSES])));
+
+    for (const run of runs) {
+      if (run.status === "queued" && isScheduledRetryRun(run)) {
+        if (await deferQueuedScheduledRetry(run, "Scheduled retry deferred because budget policy paused the agent")) {
+          continue;
+        }
+      }
+      const cancelled = await setRunStatus(run.id, "cancelled", {
+        finishedAt: new Date(),
+        error: "Cancelled due to budget pause",
+        errorCode: "cancelled",
+        ...(agent ? {
+          resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
+            resultJson: parseObject(run.resultJson),
+            errorCode: "cancelled",
+            errorMessage: "Cancelled due to budget pause",
+          }),
+        } : {}),
+      }, PAUSE_CANCELLABLE_HEARTBEAT_RUN_STATUSES);
+      if (!cancelled) continue;
+      await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+        finishedAt: new Date(),
+        error: "Cancelled due to budget pause",
+      });
+
+      const running = runningProcesses.get(run.id);
+      if (running) {
+        await terminateHeartbeatRunProcess({
+          pid: running.child.pid ?? run.processPid,
+          processGroupId: running.processGroupId ?? run.processGroupId,
+          graceMs: Math.max(1, running.graceSec) * 1000,
+        });
+        runningProcesses.delete(run.id);
+      } else if (run.processPid || run.processGroupId) {
+        await terminateHeartbeatRunProcess({
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        });
+      }
+      await releaseIssueExecutionAndPromote(run);
+    }
+
+    return runs.length;
+  }
+
   async function cancelBudgetScopeWork(scope: BudgetEnforcementScope) {
     if (scope.scopeType === "agent") {
-      await cancelActiveForAgentInternal(scope.scopeId, "Cancelled due to budget pause");
+      await cancelBudgetScopeAgentWork(scope.scopeId);
       await cancelPendingWakeupsForBudgetScope(scope);
       return;
     }
 
-    const runIds =
+    const runs =
       scope.scopeType === "company"
         ? await db
-          .select({ id: heartbeatRuns.id })
+          .select()
           .from(heartbeatRuns)
           .where(
             and(
               eq(heartbeatRuns.companyId, scope.companyId),
-              inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
+              inArray(heartbeatRuns.status, [...PAUSE_CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
             ),
           )
-          .then((rows) => rows.map((row) => row.id))
-        : await listProjectScopedRunIds(scope.companyId, scope.scopeId);
+        : await listProjectScopedRuns(scope.companyId, scope.scopeId);
 
-    for (const runId of runIds) {
-      await cancelRunInternal(runId, "Cancelled due to budget pause");
+    for (const run of runs) {
+      if (run.status === "queued" && isScheduledRetryRun(run)) {
+        if (await deferQueuedScheduledRetry(run, "Scheduled retry deferred because budget policy paused its scope")) {
+          continue;
+        }
+      }
+      await cancelRunInternal(run.id, "Cancelled due to budget pause", {
+        cancellableStatuses: PAUSE_CANCELLABLE_HEARTBEAT_RUN_STATUSES,
+      });
     }
 
     await cancelPendingWakeupsForBudgetScope(scope);
@@ -9756,6 +10073,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     buildRunOutputSilence,
 
     tickTimers: async (now = new Date()) => {
+      const { paused } = await instanceSettings.getSystemPauseState();
+      if (paused) {
+        logger.info("system paused — heartbeat tick skipped");
+        return { checked: 0, enqueued: 0, skipped: 0 };
+      }
+
       const allAgents = await db.select().from(agents);
       let checked = 0;
       let enqueued = 0;
@@ -9798,7 +10121,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     cancelRun: (runId: string) => cancelRunInternal(runId),
 
-    cancelActiveForAgent: (agentId: string) => cancelActiveForAgentInternal(agentId),
+    cancelActiveForAgent: (
+      agentId: string,
+      options?: { includeScheduledRetries?: boolean; reason?: string },
+    ) => cancelActiveForAgentInternal(agentId, options?.reason, {
+      includeScheduledRetries: options?.includeScheduledRetries,
+    }),
+
+    clearAgentEnqueueTimestamps: (agentId: string) => { enqueueTimestamps.delete(agentId); },
+
+    cancelAllActiveRuns: async (reason: string) => {
+      const activeAgentIds = await db
+        .selectDistinct({ agentId: heartbeatRuns.agentId })
+        .from(heartbeatRuns)
+        .where(inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES]));
+      await Promise.all(activeAgentIds.map(({ agentId }) => cancelActiveForAgentInternal(agentId, reason)));
+    },
 
     cancelBudgetScopeWork,
 

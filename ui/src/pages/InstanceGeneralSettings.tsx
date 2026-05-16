@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { PatchInstanceGeneralSettings, BackupRetentionPolicy } from "@paperclipai/shared";
+import type { PatchInstanceGeneralSettings, BackupRetentionPolicy, RunawayDetectorSettings } from "@paperclipai/shared";
 import {
   DAILY_RETENTION_PRESETS,
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_RUNAWAY_SETTINGS,
 } from "@paperclipai/shared";
 import { LogOut, SlidersHorizontal } from "lucide-react";
 import { authApi } from "@/api/auth";
@@ -81,6 +82,7 @@ export function InstanceGeneralSettings() {
   const keyboardShortcuts = generalQuery.data?.keyboardShortcuts === true;
   const feedbackDataSharingPreference = generalQuery.data?.feedbackDataSharingPreference ?? "prompt";
   const backupRetention: BackupRetentionPolicy = generalQuery.data?.backupRetention ?? DEFAULT_BACKUP_RETENTION;
+  const runaway: RunawayDetectorSettings = generalQuery.data?.runaway ?? DEFAULT_RUNAWAY_SETTINGS;
 
   return (
     <div className="max-w-4xl space-y-6">
@@ -274,6 +276,100 @@ export function InstanceGeneralSettings() {
       </section>
 
       <section className="rounded-xl border border-border bg-card p-5">
+        <div className="space-y-5">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Runaway detector</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Automatically pauses agents that enqueue runs too rapidly. The fast-trip threshold
+              trips within a short window; the slow-trip catches sustained over-activity.
+              Startup guard pauses the system at boot when the queued backlog is too large.
+            </p>
+          </div>
+
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1">
+              <h3 className="text-sm font-medium">Auto-pause on runaway</h3>
+              <p className="text-sm text-muted-foreground">
+                When enabled, agents that exceed the fast or slow enqueue thresholds are
+                automatically paused.
+              </p>
+            </div>
+            <ToggleSwitch
+              checked={runaway.autoPauseEnabled}
+              onCheckedChange={() =>
+                updateGeneralMutation.mutate({ runaway: { ...runaway, autoPauseEnabled: !runaway.autoPauseEnabled } })
+              }
+              disabled={updateGeneralMutation.isPending}
+              aria-label="Toggle runaway auto-pause"
+            />
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <RunawayNumberField
+              label="Fast window"
+              description="Seconds"
+              value={runaway.fastWindowSec}
+              min={5}
+              disabled={updateGeneralMutation.isPending}
+              onCommit={(v) => updateGeneralMutation.mutate({ runaway: { ...runaway, fastWindowSec: v } })}
+            />
+            <RunawayNumberField
+              label="Fast threshold"
+              description="Max enqueues in fast window"
+              value={runaway.fastThresholdCount}
+              min={1}
+              disabled={updateGeneralMutation.isPending}
+              onCommit={(v) => updateGeneralMutation.mutate({ runaway: { ...runaway, fastThresholdCount: v } })}
+            />
+            <RunawayNumberField
+              label="Slow window"
+              description="Seconds"
+              value={runaway.slowWindowSec}
+              min={5}
+              disabled={updateGeneralMutation.isPending}
+              onCommit={(v) => updateGeneralMutation.mutate({ runaway: { ...runaway, slowWindowSec: v } })}
+            />
+            <RunawayNumberField
+              label="Slow threshold"
+              description="Max enqueues in slow window"
+              value={runaway.slowThresholdCount}
+              min={1}
+              disabled={updateGeneralMutation.isPending}
+              onCommit={(v) => updateGeneralMutation.mutate({ runaway: { ...runaway, slowThresholdCount: v } })}
+            />
+          </div>
+
+          <div className="flex items-start justify-between gap-4 border-t border-border pt-4">
+            <div className="space-y-1">
+              <h3 className="text-sm font-medium">Startup guard</h3>
+              <p className="text-sm text-muted-foreground">
+                Pauses the system at boot when the queued-run backlog exceeds the threshold,
+                preventing an immediate re-flood after a crash recovery. This check runs once
+                at process start — it is not a continuous guard.
+              </p>
+            </div>
+            <ToggleSwitch
+              checked={runaway.startupGuardEnabled}
+              onCheckedChange={() =>
+                updateGeneralMutation.mutate({ runaway: { ...runaway, startupGuardEnabled: !runaway.startupGuardEnabled } })
+              }
+              disabled={updateGeneralMutation.isPending}
+              aria-label="Toggle startup guard"
+            />
+          </div>
+
+          <RunawayNumberField
+            label="Startup guard threshold"
+            description="Queued runs at boot that trigger a system pause"
+            value={runaway.startupGuardThreshold}
+            min={1}
+            disabled={updateGeneralMutation.isPending || !runaway.startupGuardEnabled}
+            onCommit={(v) => updateGeneralMutation.mutate({ runaway: { ...runaway, startupGuardThreshold: v } })}
+          />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
         <div className="space-y-4">
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">AI feedback sharing</h2>
@@ -377,6 +473,58 @@ function StatusBox({ label, value }: { label: string; value: string }) {
     <div className="rounded-lg border border-border bg-background px-3 py-3">
       <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
       <div className="mt-2 text-sm font-medium">{value}</div>
+    </div>
+  );
+}
+
+function RunawayNumberField({
+  label,
+  description,
+  value,
+  min,
+  disabled,
+  onCommit,
+}: {
+  label: string;
+  description: string;
+  value: number;
+  min: number;
+  disabled: boolean;
+  onCommit: (v: number) => void;
+}) {
+  const [draft, setDraft] = useState<string>(String(value));
+
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  function handleBlur() {
+    const parsed = parseInt(draft, 10);
+    if (!Number.isNaN(parsed) && parsed >= min && parsed !== value) {
+      onCommit(parsed);
+    } else {
+      setDraft(String(value));
+    }
+  }
+
+  return (
+    <div className="space-y-1">
+      <label className="text-sm font-medium">{label}</label>
+      <p className="text-xs text-muted-foreground">{description}</p>
+      <input
+        type="number"
+        min={min}
+        value={draft}
+        disabled={disabled}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={handleBlur}
+        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+        className={cn(
+          "w-full rounded-md border border-border bg-background px-3 py-2 text-sm",
+          "focus:outline-none focus:ring-1 focus:ring-foreground/30",
+          "disabled:cursor-not-allowed disabled:opacity-60",
+        )}
+      />
     </div>
   );
 }

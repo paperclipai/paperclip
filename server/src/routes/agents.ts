@@ -118,7 +118,10 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
 
 export function agentRoutes(
   db: Db,
-  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+  options: {
+    pluginWorkerManager?: PluginWorkerManager;
+    schedulerHeartbeat?: ReturnType<typeof heartbeatService>;
+  } = {},
 ) {
   // Legacy hardcoded maps — used as fallback when adapter module does not
   // declare capability flags explicitly.
@@ -168,7 +171,7 @@ export function agentRoutes(
   const environmentRuntime = environmentRuntimeService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
-  const heartbeat = heartbeatService(db, {
+  const heartbeat = options.schedulerHeartbeat ?? heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
   const recovery = recoveryService(db, { enqueueWakeup: heartbeat.wakeup });
@@ -2798,7 +2801,10 @@ export function agentRoutes(
       return;
     }
 
-    await heartbeat.cancelActiveForAgent(id);
+    await heartbeat.cancelActiveForAgent(id, {
+      includeScheduledRetries: true,
+      reason: "Cancelled because the agent was terminated",
+    });
 
     await logActivity(db, {
       companyId: agent.companyId,
@@ -2980,6 +2986,43 @@ export function agentRoutes(
       source: req.body.source,
       skippedResponse: (agent) => buildSkippedWakeupResponse(agent, req.body.payload ?? null),
     });
+  });
+
+	  router.post("/agents/:id/unpause-auto", async (req, res) => {
+	    assertBoard(req);
+	    const id = req.params.id as string;
+	    const agent = await getAccessibleAgent(req, res, id);
+	    if (!agent) {
+	      return;
+	    }
+
+    const [updated] = await db
+      .update(agentsTable)
+	      .set({
+	        runtimeConfig: sql`coalesce(${agentsTable.runtimeConfig}, '{}'::jsonb) - 'autoPause'`,
+	        updatedAt: new Date(),
+	      })
+	      .where(and(eq(agentsTable.id, id), eq(agentsTable.companyId, agent.companyId)))
+	      .returning();
+
+    // Clear stale runaway timestamps so the first post-unpause enqueue doesn't
+    // immediately re-trip the detector due to pre-pause activity.
+    heartbeat.clearAgentEnqueueTimestamps(id);
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "agent.auto_pause_cleared",
+      entityType: "agent",
+      entityId: id,
+      details: { agentName: agent.name },
+    });
+
+    res.json(updated ?? agent);
   });
 
   router.post("/agents/:id/heartbeat/invoke", async (req, res) => {

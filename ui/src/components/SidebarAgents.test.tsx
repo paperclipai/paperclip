@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarAgents } from "./SidebarAgents";
+import { queryKeys } from "../lib/queryKeys";
 
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -20,6 +21,12 @@ const mockAuthApi = vi.hoisted(() => ({
 
 const mockHeartbeatsApi = vi.hoisted(() => ({
   liveRunsForCompany: vi.fn(),
+}));
+const mockAccessApi = vi.hoisted(() => ({
+  getCurrentBoardAccess: vi.fn(),
+}));
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getAgentQueuedCounts: vi.fn(),
 }));
 
 const mockOpenNewAgent = vi.hoisted(() => vi.fn());
@@ -89,6 +96,14 @@ vi.mock("../api/auth", () => ({
 
 vi.mock("../api/heartbeats", () => ({
   heartbeatsApi: mockHeartbeatsApi,
+}));
+
+vi.mock("../api/access", () => ({
+  accessApi: mockAccessApi,
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -193,6 +208,15 @@ describe("SidebarAgents", () => {
       user: { id: "user-1" },
     });
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
+      user: { id: "user-1", email: null, name: null, image: null },
+      userId: "user-1",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+      source: "session",
+      keyId: null,
+    });
+    mockInstanceSettingsApi.getAgentQueuedCounts.mockResolvedValue([]);
     localStorage.clear();
   });
 
@@ -274,6 +298,86 @@ describe("SidebarAgents", () => {
 
     expect(agentLinkLabels(container)).toEqual(["Alpha", "Bravo", "Charlie"]);
     expect(localStorage.getItem("paperclip.agentSortMode:company-1:user-1")).toBe("alphabetical");
+  });
+
+  it("renders queued run counts and auto-pause state for instance admins", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
+      user: { id: "user-1", email: null, name: null, image: null },
+      userId: "user-1",
+      isInstanceAdmin: true,
+      companyIds: ["company-1"],
+      source: "session",
+      keyId: null,
+    });
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({
+        id: "agent-a",
+        name: "Alpha",
+        urlKey: "alpha",
+        runtimeConfig: {
+          autoPause: { paused: true, reason: "runaway_detected", triggeredAt: "2026-04-23T10:00:00.000Z" },
+        },
+      }),
+    ]);
+    mockInstanceSettingsApi.getAgentQueuedCounts.mockResolvedValue([
+      { agentId: "agent-a", queuedCount: 3 },
+    ]);
+
+    await renderSidebarAgents();
+    await flushReact();
+
+    expect(mockAccessApi.getCurrentBoardAccess).toHaveBeenCalled();
+    expect(mockInstanceSettingsApi.getAgentQueuedCounts).toHaveBeenCalled();
+    expect(container.textContent).toContain("3");
+    expect(container.querySelector('[aria-label="Agent auto-paused by runaway detector"]')).not.toBeNull();
+    expect(container.querySelector('[title="3 queued runs"]')).not.toBeNull();
+  });
+
+  it("does not load or render queued run counts for non-admins", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
+      user: { id: "user-1", email: null, name: null, image: null },
+      userId: "user-1",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+      source: "session",
+      keyId: null,
+    });
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" }),
+    ]);
+    mockInstanceSettingsApi.getAgentQueuedCounts.mockResolvedValue([
+      { agentId: "agent-a", queuedCount: 3 },
+    ]);
+
+    await renderSidebarAgents();
+    await flushReact();
+
+    expect(mockAccessApi.getCurrentBoardAccess).toHaveBeenCalled();
+    expect(mockInstanceSettingsApi.getAgentQueuedCounts).not.toHaveBeenCalled();
+    expect(container.querySelector('[title="3 queued runs"]')).toBeNull();
+  });
+
+  it("does not render cached queued run counts for non-admins", async () => {
+    queryClient.setQueryData(queryKeys.instance.agentQueuedCounts, [
+      { agentId: "agent-a", queuedCount: 3 },
+    ]);
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
+      user: { id: "user-1", email: null, name: null, image: null },
+      userId: "user-1",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+      source: "session",
+      keyId: null,
+    });
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" }),
+    ]);
+
+    await renderSidebarAgents();
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.getAgentQueuedCounts).not.toHaveBeenCalled();
+    expect(container.querySelector('[title="3 queued runs"]')).toBeNull();
   });
 
   it("sorts recent agents by heartbeat, updated time, and created time descending", async () => {

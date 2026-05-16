@@ -6,6 +6,7 @@ import { activityApi } from "../api/activity";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { buildCompanyUserProfileMap } from "../lib/company-members";
 import { useCompany } from "../context/CompanyContext";
@@ -20,7 +21,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { Bot, CircleDot, Clock, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -47,6 +48,20 @@ export function Dashboard() {
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+  });
+
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+  });
+  const isInstanceAdmin = !!boardAccess?.isInstanceAdmin;
+
+  const { data: agentQueuedCounts } = useQuery({
+    queryKey: [...queryKeys.instance.agentQueuedCounts, "dashboard"],
+    queryFn: () => instanceSettingsApi.getAgentQueuedCounts(),
+    refetchInterval: 15_000,
+    enabled: !!selectedCompanyId && isInstanceAdmin,
   });
 
   useEffect(() => {
@@ -152,6 +167,12 @@ export function Dashboard() {
     return map;
   }, [agents]);
 
+  const companyQueuedCount = useMemo(() => {
+    return (agentQueuedCounts ?? []).reduce((total, entry) => total + entry.queuedCount, 0);
+  }, [agentQueuedCounts]);
+
+  const activeAgentCount = (agents ?? []).filter((a) => a.status !== "terminated").length;
+
   const entityNameMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const i of issues ?? []) map.set(`issue:${i.id}`, i.identifier ?? i.id.slice(0, 8));
@@ -251,6 +272,19 @@ export function Dashboard() {
                 </span>
               }
             />
+            {isInstanceAdmin ? (
+              <MetricCard
+                icon={Clock}
+                value={companyQueuedCount}
+                label="Queued Runs"
+                to="/instance/settings/health"
+                description={
+                  <span>
+                    {activeAgentCount} active agent{activeAgentCount !== 1 ? "s" : ""}
+                  </span>
+                }
+              />
+            ) : null}
             <MetricCard
               icon={CircleDot}
               value={data.tasks.inProgress}

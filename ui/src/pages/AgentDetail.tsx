@@ -11,6 +11,7 @@ import { companySkillsApi } from "../api/companySkills";
 import { budgetsApi } from "../api/budgets";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
+import { accessApi } from "../api/access";
 import { ApiError } from "../api/client";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { activityApi } from "../api/activity";
@@ -805,6 +806,34 @@ export function AgentDetail() {
     },
   });
 
+  const clearAutoPause = useMutation({
+    mutationFn: () => agentsApi.unpauseAuto(agentLookupRef, resolvedCompanyId ?? undefined),
+    onSuccess: () => {
+      setActionError(null);
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+      }
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to clear auto-pause");
+    },
+  });
+
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+  });
+
+  const { data: agentQueuedCountsData } = useQuery({
+    queryKey: queryKeys.instance.agentQueuedCounts,
+    queryFn: () => instanceSettingsApi.getAgentQueuedCounts(),
+    enabled: !!boardAccess?.isInstanceAdmin,
+    refetchInterval: 15_000,
+  });
+
   const budgetMutation = useMutation({
     mutationFn: (amount: number) =>
       budgetsApi.upsertPolicy(resolvedCompanyId!, {
@@ -913,6 +942,9 @@ export function AgentDetail() {
   }
   const isPendingApproval = agent.status === "pending_approval";
   const showConfigActionBar = (activeView === "configuration" || activeView === "instructions") && (configDirty || configSaving);
+  const autoPause = (agent.runtimeConfig as Record<string, unknown> | null)?.autoPause as { paused?: boolean; reason?: string; triggeredAt?: string } | undefined;
+  const isAutoPaused = autoPause?.paused === true;
+  const thisAgentQueuedCount = agentQueuedCountsData?.find((e) => e.agentId === agent.id)?.queuedCount ?? 0;
 
   return (
     <div className={cn("space-y-6", isMobile && showConfigActionBar && "pb-24")}>
@@ -1011,6 +1043,50 @@ export function AgentDetail() {
           </Popover>
         </div>
       </div>
+
+      {isAutoPaused && (
+        <div className="rounded-md border border-amber-300/60 bg-amber-50 px-4 py-3 dark:border-amber-500/25 dark:bg-amber-500/10">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-amber-900 dark:text-amber-100">
+                Agent auto-paused by runaway detector
+              </p>
+              {autoPause?.reason && (
+                <p className="mt-0.5 text-xs text-amber-800 dark:text-amber-200">{autoPause.reason}</p>
+              )}
+              {autoPause?.triggeredAt && (
+                <p className="text-xs text-amber-700 dark:text-amber-300">
+                  Triggered at {new Date(autoPause.triggeredAt).toLocaleString()}
+                </p>
+              )}
+              {thisAgentQueuedCount > 0 && (
+                <p className="mt-0.5 text-xs text-amber-700 dark:text-amber-300">
+                  {thisAgentQueuedCount} queued run{thisAgentQueuedCount !== 1 ? "s" : ""} will remain blocked until auto-pause is cleared.
+                </p>
+              )}
+              <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                This agent will not process new runs until auto-pause is cleared.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={clearAutoPause.isPending}
+              onClick={() => clearAutoPause.mutate()}
+              className="shrink-0 border-amber-300/70 bg-white/70 text-amber-900 hover:bg-white dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100 dark:hover:bg-amber-500/20"
+            >
+              {clearAutoPause.isPending ? "Clearing…" : "Clear Auto-Pause"}
+            </Button>
+          </div>
+        </div>
+      )}
+      {!isAutoPaused && thisAgentQueuedCount > 0 && (
+        <div className="rounded-md border border-orange-200/60 bg-orange-50/60 px-4 py-2.5 dark:border-orange-500/20 dark:bg-orange-500/10">
+          <p className="text-xs text-orange-800 dark:text-orange-300">
+            {thisAgentQueuedCount} queued run{thisAgentQueuedCount !== 1 ? "s" : ""} pending for this agent.
+          </p>
+        </div>
+      )}
 
       {!urlRunId && (
         <Tabs

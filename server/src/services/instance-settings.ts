@@ -3,6 +3,7 @@ import { companies, instanceSettings } from "@paperclipai/db";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_RUNAWAY_SETTINGS,
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   instanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
@@ -12,7 +13,7 @@ import {
   type InstanceSettings,
   type PatchInstanceExperimentalSettings,
 } from "@paperclipai/shared";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
 const DEFAULT_SINGLETON_KEY = "default";
 
@@ -25,6 +26,7 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       feedbackDataSharingPreference:
         parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
       backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
+      runaway: parsed.data.runaway ?? DEFAULT_RUNAWAY_SETTINGS,
     };
   }
   return {
@@ -32,6 +34,7 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
     keyboardShortcuts: false,
     feedbackDataSharingPreference: DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
     backupRetention: DEFAULT_BACKUP_RETENTION,
+    runaway: DEFAULT_RUNAWAY_SETTINGS,
   };
 }
 
@@ -107,8 +110,49 @@ export function instanceSettingsService(db: Db) {
     throw new Error("Failed to initialize instance settings row");
   }
 
+  async function getSystemPauseState(): Promise<{ paused: boolean; pausedAt: string | null; pauseReason: string | null }> {
+    const row = await getOrCreateRow();
+    const raw = (row.general ?? {}) as Record<string, unknown>;
+    return {
+      paused: raw._systemPaused === true,
+      pausedAt: typeof raw._systemPausedAt === "string" ? raw._systemPausedAt : null,
+      pauseReason: typeof raw._systemPauseReason === "string" ? raw._systemPauseReason : null,
+    };
+  }
+
+  async function setSystemPause(paused: boolean, reason?: string): Promise<void> {
+    const row = await getOrCreateRow();
+    const now = new Date();
+    if (paused) {
+      const patch = {
+        _systemPaused: true,
+        _systemPausedAt: now.toISOString(),
+        _systemPauseReason: reason ?? null,
+      };
+      await db
+        .update(instanceSettings)
+        .set({
+          general: sql`${instanceSettings.general} || ${JSON.stringify(patch)}::jsonb`,
+          updatedAt: now,
+        })
+        .where(eq(instanceSettings.id, row.id));
+    } else {
+      await db
+        .update(instanceSettings)
+        .set({
+          general: sql`${instanceSettings.general} - '_systemPaused' - '_systemPausedAt' - '_systemPauseReason'`,
+          updatedAt: now,
+        })
+        .where(eq(instanceSettings.id, row.id));
+    }
+  }
+
   return {
     get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow()),
+
+    getSystemPauseState,
+    pause: (reason?: string) => setSystemPause(true, reason),
+    unpause: () => setSystemPause(false),
 
     getGeneral: async (): Promise<InstanceGeneralSettings> => {
       const row = await getOrCreateRow();
@@ -122,15 +166,23 @@ export function instanceSettingsService(db: Db) {
 
     updateGeneral: async (patch: PatchInstanceGeneralSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
+      const currentNormalized = normalizeGeneralSettings(current.general);
       const nextGeneral = normalizeGeneralSettings({
-        ...normalizeGeneralSettings(current.general),
+        ...currentNormalized,
         ...patch,
+        // Deep-merge runaway sub-object so a partial PATCH (allowed by the
+        // schema's .partial()) doesn't silently reset unspecified thresholds
+        // to defaults — it preserves the current stored values instead.
+        ...(patch.runaway ? { runaway: { ...currentNormalized.runaway, ...patch.runaway } } : {}),
       });
       const now = new Date();
+      // Use a jsonb-level merge (col || $value) instead of a full column
+      // overwrite so _system* pause keys written by pause/unpause between
+      // our read and this write are never silently reverted.
       const [updated] = await db
         .update(instanceSettings)
         .set({
-          general: { ...nextGeneral },
+          general: sql`${instanceSettings.general} || ${JSON.stringify(nextGeneral)}::jsonb`,
           updatedAt: now,
         })
         .where(eq(instanceSettings.id, current.id))
