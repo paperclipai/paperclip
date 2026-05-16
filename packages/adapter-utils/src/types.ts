@@ -2,7 +2,6 @@
 // Minimal adapter-facing interfaces (no drizzle dependency)
 // ---------------------------------------------------------------------------
 
-import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
 
 export interface AdapterAgent {
@@ -500,6 +499,7 @@ export interface CreateConfigValues {
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
   intervalSec: number;
-  /** Arbitrary key-value pairs populated by schema-driven config fields. */
+  reportsTo?: string | null;
+  capabilities?: string;
   adapterSchemaValues?: Record<string, unknown>;
 }

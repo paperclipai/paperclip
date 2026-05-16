@@ -56,7 +56,11 @@ import {
   trackRecentAssignee,
   trackRecentAssigneeUser,
 } from "@/lib/recent-assignees";
-import { getRecentProjectIds, trackRecentProject } from "@/lib/recent-projects";
+import { registerLanguage } from "../i18n.js";
+import {
+  getRecentProjectIds,
+  trackRecentProject,
+} from "@/lib/recent-projects";
 
 // ---------------------------------------------------------------------------
 // Global bridge registry
@@ -72,6 +76,9 @@ export interface PluginBridgeRegistry {
   react: unknown;
   reactDom: unknown;
   sdkUi: Record<string, unknown>;
+  i18n: {
+    registerLanguage: (lang: any, translations: any) => void;
+  };
 }
 
 declare global {
@@ -541,6 +548,9 @@ export function initPluginBridge(
   globalThis.__paperclipPluginBridge__ = {
     react,
     reactDom,
+    i18n: {
+      registerLanguage: registerLanguage,
+    },
     sdkUi: {
       usePluginData,
       usePluginAction,

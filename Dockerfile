@@ -37,7 +37,8 @@ COPY packages/plugins/paperclip-plugin-fake-sandbox/package.json packages/plugin
 COPY packages/plugins/plugin-llm-wiki/package.json packages/plugins/plugin-llm-wiki/
 COPY patches/ patches/
 
-RUN pnpm install --frozen-lockfile
+RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
+  pnpm install --no-frozen-lockfile
 
 FROM base AS build
 WORKDIR /app
@@ -52,13 +53,20 @@ FROM base AS production
 ARG USER_UID=1000
 ARG USER_GID=1000
 WORKDIR /app
-COPY --chown=node:node --from=build /app /app
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
-  && apt-get update \
+# Install OS packages first (caches well, rarely changes)
+RUN apt-get update \
   && apt-get install -y --no-install-recommends openssh-client jq \
-  && rm -rf /var/lib/apt/lists/* \
-  && mkdir -p /paperclip \
-  && chown node:node /paperclip
+  && rm -rf /var/lib/apt/lists/*
+
+# Install global agent CLIs (separate layer for better caching)
+RUN --mount=type=cache,id=npm-global,target=/root/.npm \
+  npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest \
+  && mv /usr/local/bin/gemini /usr/local/bin/gemini-real \
+  && echo '#!/bin/sh\nexec /usr/local/bin/gemini-real "$@" --no-sandbox' > /usr/local/bin/gemini \
+  && chmod +x /usr/local/bin/gemini
+
+# Copy application build output
+COPY --chown=node:node --from=build /app /app
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
