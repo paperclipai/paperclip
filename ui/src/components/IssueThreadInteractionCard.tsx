@@ -662,6 +662,14 @@ function AskUserQuestionsCard({
       ]),
     ),
   );
+  const [draftFreeTextByQuestionId, setDraftFreeTextByQuestionId] = useState<Record<string, string>>(
+    () => Object.fromEntries(
+      (interaction.result?.answers ?? []).map((answer) => [
+        answer.questionId,
+        answer.freeText ?? "",
+      ]),
+    ),
+  );
   const [working, setWorking] = useState(false);
   const [cancelling, setCancelling] = useState(false);
 
@@ -671,6 +679,14 @@ function AskUserQuestionsCard({
         (interaction.result?.answers ?? []).map((answer) => [
           answer.questionId,
           [...answer.optionIds],
+        ]),
+      ),
+    );
+    setDraftFreeTextByQuestionId(
+      Object.fromEntries(
+        (interaction.result?.answers ?? []).map((answer) => [
+          answer.questionId,
+          answer.freeText ?? "",
         ]),
       ),
     );
@@ -704,6 +720,7 @@ function AskUserQuestionsCard({
         questions.map((question) => ({
           questionId: question.id,
           optionIds: draftAnswers[question.id] ?? [],
+          freeText: draftFreeTextByQuestionId[question.id] ?? "",
         })),
       );
     } finally {
@@ -784,6 +801,30 @@ function AskUserQuestionsCard({
                   />
                 ))}
               </div>
+              {(draftAnswers[question.id] ?? []).some((optionId) => {
+                const option = question.options.find((item) => item.id === optionId);
+                return option?.allowFreeText === true;
+              }) ? (
+                <div className="mt-3">
+                  <label
+                    htmlFor={`${interaction.id}-${question.id}-free-text`}
+                    className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground"
+                  >
+                    Resposta livre
+                  </label>
+                  <Textarea
+                    id={`${interaction.id}-${question.id}-free-text`}
+                    className="mt-1"
+                    value={draftFreeTextByQuestionId[question.id] ?? ""}
+                    onChange={(event) =>
+                      setDraftFreeTextByQuestionId((current) => ({
+                        ...current,
+                        [question.id]: event.target.value,
+                      }))}
+                    placeholder="Digite uma resposta opcional"
+                  />
+                </div>
+              ) : null}
             </div>
           ))}
 

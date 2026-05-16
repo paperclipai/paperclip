@@ -148,6 +148,12 @@ function createAskUserQuestionsInteraction(
               label: "Collapse all descendants by default",
               description: "Show only root tasks until the operator expands the tree.",
             },
+            {
+              id: "other-mode",
+              label: "Outra abordagem",
+              description: "Descreva uma alternativa em texto livre.",
+              allowFreeText: true,
+            },
           ],
         },
         {
@@ -295,7 +301,8 @@ export const answeredAskUserQuestionsInteraction = createAskUserQuestionsInterac
     answers: [
       {
         questionId: "collapse-depth",
-        optionIds: ["visible-root"],
+        optionIds: ["other-mode"],
+        freeText: "Mostrar raiz + filhos diretos, com toggle manual para netos.",
       },
       {
         questionId: "post-submit-summary",

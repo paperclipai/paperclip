@@ -147,4 +147,26 @@ describe("issue thread interaction helpers", () => {
 
     expect(labels).toEqual(["Option 2", "Option 1"]);
   });
+
+  it("includes free-text responses in answered labels", () => {
+    const labels = getQuestionAnswerLabels({
+      question: {
+        id: "question-1",
+        prompt: "Pick options",
+        selectionMode: "single",
+        options: [
+          { id: "option-other", label: "Outra" },
+        ],
+      },
+      answers: [
+        {
+          questionId: "question-1",
+          optionIds: ["option-other"],
+          freeText: "  detalhar o caso especial  ",
+        },
+      ],
+    });
+
+    expect(labels).toEqual(["Outra", "Outra: detalhar o caso especial"]);
+  });
 });
