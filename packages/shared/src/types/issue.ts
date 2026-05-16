@@ -27,6 +27,34 @@ import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
 import type { IssueWorkProduct } from "./work-product.js";
 import type {
+  IssueDispositionFindingBundle,
+  IssueFinalDisposition,
+  IssueDispositionEvidenceRef,
+  IssueFinalDispositionRecord as CanonicalIssueFinalDispositionRecord,
+} from "../issue-disposition.js";
+export type {
+  IssueDispositionFinding,
+  IssueDispositionFindingBundle,
+  IssueDispositionFindingBundleKind,
+  IssueDispositionEvidenceRefKind,
+  IssueDispositionEvidenceRef,
+  IssueDispositionSourceClass,
+  IssueDispositionParentBlockerIntention,
+  IssueDispositionTransitionInput,
+  IssueDispositionTransitionResult,
+  IssueDispositionTransitionIntention,
+  IssueDispositionTransitionMissingPrecondition,
+  IssueDispositionIdempotencyKey,
+  IssueDispositionIdempotencyKeyInput,
+  IssueFinalDisposition,
+  IssueFinalDispositionSource,
+  IssueDispositionUsefulOutputClass,
+  IssueDispositionNextGate,
+  IssueDispositionProjection,
+  IssueDispositionVerdict,
+  IssueDispositionProjectionFreshness,
+} from "../issue-disposition.js";
+import type {
   MissionControlIssuePolicy,
   MissionControlValidatorReport,
   MissionControlValidatorVerdict,
@@ -575,13 +603,26 @@ export interface IssueCommentMetadataRunLinkRow extends IssueCommentMetadataRowB
   title?: string | null;
 }
 
+export type IssueFinalDispositionRecord = CanonicalIssueFinalDispositionRecord;
+
+export interface IssueCommentMetadataDispositionRow extends IssueCommentMetadataRowBase {
+  type: "disposition";
+  value: IssueFinalDisposition;
+  reason?: string | null;
+  evidenceRefs: IssueDispositionEvidenceRef[];
+  idempotencyKey?: string | null;
+  findingBundles?: IssueDispositionFindingBundle[];
+  finalDisposition?: IssueFinalDispositionRecord | null;
+}
+
 export type IssueCommentMetadataRow =
   | IssueCommentMetadataTextRow
   | IssueCommentMetadataCodeRow
   | IssueCommentMetadataKeyValueRow
   | IssueCommentMetadataIssueLinkRow
   | IssueCommentMetadataAgentLinkRow
-  | IssueCommentMetadataRunLinkRow;
+  | IssueCommentMetadataRunLinkRow
+  | IssueCommentMetadataDispositionRow;
 
 export interface IssueCommentMetadataSection {
   title?: string | null;
