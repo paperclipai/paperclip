@@ -1,5 +1,11 @@
 # @paperclipai/server
 
+## Unreleased
+
+### Patch Changes
+
+- Preserve external adapter capabilities and schema-backed fields for non-local custom bridge adapters.
+
 ## 0.3.1
 
 ### Patch Changes
