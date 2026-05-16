@@ -56,7 +56,7 @@ This is the single most important decision for hire quality. Pick exactly one pa
 - **Adjacent template** — no exact match, but an existing template is close (for example, a "Backend Engineer" hire adapted from `coder.md`, or a "Content Designer" adapted from `uxdesigner.md`). Copy the closest template and adapt deliberately: rename the role, rewrite the role charter, swap domain lenses, and remove sections that do not fit.
 - **Generic fallback** — no template is close. Use the baseline role guide to construct a new `AGENTS.md` from scratch, filling in each recommended section for the specific role.
 
-Template index and when-to-use guidance:
+Template index (software + board game domains) and when-to-use guidance:
 `skills/paperclip-create-agent/references/agent-instruction-templates.md`
 
 Generic fallback for no-template hires:
@@ -157,7 +157,9 @@ For each linked issue, either:
 ## References
 
 - Template index and how to apply a template: `skills/paperclip-create-agent/references/agent-instruction-templates.md`
-- Individual role templates: `skills/paperclip-create-agent/references/agents/`
+- Software role templates: `skills/paperclip-create-agent/references/agents/software/`
+- Board game role templates: `skills/paperclip-create-agent/references/agents/boardgame/`
+- Playtester archetypes: `skills/paperclip-create-agent/references/agents/boardgame/playtester-archetypes/`
 - Generic baseline role guide (no-template fallback): `skills/paperclip-create-agent/references/baseline-role-guide.md`
 - Pre-submit draft-review checklist: `skills/paperclip-create-agent/references/draft-review-checklist.md`
 - Endpoint payload shapes and full examples: `skills/paperclip-create-agent/references/api-reference.md`
