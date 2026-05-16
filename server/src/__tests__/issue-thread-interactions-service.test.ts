@@ -407,6 +407,17 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       userId: "local-board",
     });
 
+    await expect(interactionsSvc.answerQuestions({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      answers: [
+        { questionId: "scope", optionIds: ["phase-1"], freeText: "Texto inválido para opção sem flag" },
+      ],
+    }, {
+      userId: "local-board",
+    })).rejects.toThrow("does not allow free text");
+
     const answered = await interactionsSvc.answerQuestions({
       id: issueId,
       companyId,
@@ -429,17 +440,6 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       ],
       summaryMarkdown: "Ship Phase 1 with tests and docs.",
     });
-
-    await expect(interactionsSvc.answerQuestions({
-      id: issueId,
-      companyId,
-    }, created.id, {
-      answers: [
-        { questionId: "scope", optionIds: ["phase-1"], freeText: "Texto inválido para opção sem flag" },
-      ],
-    }, {
-      userId: "local-board",
-    })).rejects.toThrow("does not allow free text");
 
     await expect(interactionsSvc.answerQuestions({
       id: issueId,
