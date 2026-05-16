@@ -16,6 +16,7 @@ import type {
   CompanyPortabilityImportResult,
   CompanyPortabilityInclude,
   CompanyPortabilityManifest,
+  CompanyPortabilityIssueCommentManifestEntry,
   CompanyPortabilityPreview,
   CompanyPortabilityPreviewAgentPlan,
   CompanyPortabilityPreviewResult,
@@ -42,6 +43,9 @@ import {
   ROUTINE_TRIGGER_SIGNING_MODES,
   deriveProjectUrlKey,
   envConfigSchema,
+  issueCommentAuthorTypeSchema,
+  issueCommentMetadataSchema,
+  issueCommentPresentationSchema,
   normalizeAgentUrlKey,
 } from "@paperclipai/shared";
 import {
@@ -642,6 +646,96 @@ function asBoolean(value: unknown): boolean | null {
 
 function asInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) ? value : null;
+}
+
+function hasOwn(record: Record<string, unknown>, key: string) {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+function readStringArray(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const entries = value.filter((entry): entry is string => typeof entry === "string");
+  return entries.length === value.length ? entries : null;
+}
+
+function derivePortableCommentAuthorType(value: Record<string, unknown>) {
+  const explicit = issueCommentAuthorTypeSchema.safeParse(value.authorType);
+  if (explicit.success) return explicit.data;
+  return asString(value.authorAgentSlug) ? "agent" : asString(value.authorUserId) ? "user" : "system";
+}
+
+function readPortableIssueComments(
+  value: unknown,
+  warnings: string[],
+  sourceLabel: string,
+): CompanyPortabilityIssueCommentManifestEntry[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    warnings.push(`${sourceLabel} comments were ignored because they are not an array.`);
+    return [];
+  }
+
+  const comments: CompanyPortabilityIssueCommentManifestEntry[] = [];
+  for (const [index, entry] of value.entries()) {
+    if (!isPlainRecord(entry)) {
+      warnings.push(`${sourceLabel} comment ${index + 1} was ignored because it is not an object.`);
+      continue;
+    }
+    const body = asString(entry.body);
+    if (!body) {
+      warnings.push(`${sourceLabel} comment ${index + 1} was ignored because it has no body.`);
+      continue;
+    }
+    const presentation = entry.presentation == null ? null : issueCommentPresentationSchema.safeParse(entry.presentation);
+    if (presentation && !presentation.success) {
+      warnings.push(`${sourceLabel} comment ${index + 1} has invalid presentation metadata and was ignored.`);
+      continue;
+    }
+    const metadata = entry.metadata == null ? null : issueCommentMetadataSchema.safeParse(entry.metadata);
+    if (metadata && !metadata.success) {
+      warnings.push(`${sourceLabel} comment ${index + 1} has invalid hidden metadata and was ignored.`);
+      continue;
+    }
+    const createdAt = asString(entry.createdAt);
+    comments.push({
+      body,
+      authorType: derivePortableCommentAuthorType(entry),
+      authorAgentSlug: asString(entry.authorAgentSlug),
+      authorUserId: asString(entry.authorUserId),
+      presentation: presentation ? presentation.data : null,
+      metadata: metadata ? metadata.data : null,
+      createdAt: createdAt && Number.isNaN(Date.parse(createdAt)) ? null : createdAt,
+    });
+  }
+  return comments;
+}
+
+function appendCodexImportArg(adapterConfig: Record<string, unknown>, arg: string) {
+  const extraArgs = readStringArray(adapterConfig.extraArgs);
+  if (extraArgs) {
+    if (!extraArgs.includes(arg)) adapterConfig.extraArgs = [...extraArgs, arg];
+    return;
+  }
+
+  const legacyArgs = readStringArray(adapterConfig.args);
+  if (legacyArgs && legacyArgs.length > 0) {
+    if (!legacyArgs.includes(arg)) adapterConfig.args = [...legacyArgs, arg];
+    return;
+  }
+
+  if (legacyArgs?.includes(arg)) return;
+  adapterConfig.extraArgs = [arg];
+}
+
+function applyImportAdapterRunDefaults(
+  adapterType: string,
+  adapterConfig: Record<string, unknown>,
+) {
+  const next = { ...adapterConfig };
+  if (adapterType === "codex_local") {
+    appendCodexImportArg(next, "--skip-git-repo-check");
+  }
+  return next;
 }
 
 function normalizeRoutineTriggerExtension(value: unknown): CompanyPortabilityIssueRoutineTriggerManifestEntry | null {
@@ -2685,6 +2779,7 @@ function buildManifestFromPackageFiles(
       assigneeAdapterOverrides: isPlainRecord(extension.assigneeAdapterOverrides)
         ? extension.assigneeAdapterOverrides
         : null,
+      comments: readPortableIssueComments(extension.comments, warnings, `Task ${slug}`),
       metadata: isPlainRecord(extension.metadata) ? extension.metadata : null,
     });
     if (frontmatter.kind && frontmatter.kind !== "task") {
@@ -2804,7 +2899,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     if (mode === "agent_safe" && IMPORT_FORBIDDEN_ADAPTER_TYPES.has(effectiveAdapterType)) {
       throw forbidden(`Adapter type "${effectiveAdapterType}" is not allowed in safe imports`);
     }
-    const nextAdapterConfig = writePaperclipSkillSyncPreference({ ...adapterConfig }, desiredSkills);
+    const nextAdapterConfig = writePaperclipSkillSyncPreference(
+      applyImportAdapterRunDefaults(effectiveAdapterType, adapterConfig),
+      desiredSkills,
+    );
     delete nextAdapterConfig.promptTemplate;
     delete nextAdapterConfig.bootstrapPromptTemplate;
     delete nextAdapterConfig.instructionsFilePath;
@@ -3380,6 +3478,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           });
         }
       }
+      const comments = await issuesSvc.listComments(issue.id, { order: "asc" });
       files[taskPath] = buildMarkdown(
         {
           name: issue.title,
@@ -3397,6 +3496,20 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         projectWorkspaceKey: projectWorkspaceKey ?? undefined,
         executionWorkspaceSettings: issue.executionWorkspaceSettings ?? undefined,
         assigneeAdapterOverrides: issue.assigneeAdapterOverrides ?? undefined,
+        comments: comments.length > 0
+          ? comments.map((comment) => ({
+              body: comment.body,
+              authorType: comment.authorType,
+              authorAgentSlug: comment.authorAgentId ? (idToSlug.get(comment.authorAgentId) ?? null) : null,
+              // Portable bundles preserve author kind, but not raw board user ids.
+              authorUserId: null,
+              presentation: comment.presentation,
+              metadata: comment.metadata,
+              createdAt: comment.createdAt instanceof Date
+                ? comment.createdAt.toISOString()
+                : new Date(comment.createdAt).toISOString(),
+            }))
+          : undefined,
       });
       paperclipTasksOut[taskSlug] = isPlainRecord(extension) ? extension : {};
     }
@@ -4496,7 +4609,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           warnings.push(`Task ${manifestIssue.slug} was downgraded to todo because its assignee could not be imported as assignable work.`);
           issueStatus = "todo";
         }
-        await issues.create(targetCompany.id, {
+        const createdIssue = await issues.create(targetCompany.id, {
           projectId,
           projectWorkspaceId,
           title: manifestIssue.title,
@@ -4511,6 +4624,33 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           executionWorkspaceSettings: manifestIssue.executionWorkspaceSettings,
           labelIds: manifestIssue.labelIds ?? [],
         });
+        for (const comment of manifestIssue.comments ?? []) {
+          const authorAgentId = comment.authorType === "agent" && comment.authorAgentSlug
+            ? importedSlugToAgentId.get(comment.authorAgentSlug)
+              ?? existingSlugToAgentId.get(comment.authorAgentSlug)
+              ?? null
+            : null;
+          if (comment.authorType === "agent" && comment.authorAgentSlug && !authorAgentId) {
+            warnings.push(`Comment on task ${manifestIssue.slug} was imported as a system comment because author agent ${comment.authorAgentSlug} was not imported.`);
+          }
+          if (comment.authorType === "user" && !actorUserId) {
+            warnings.push(`Comment on task ${manifestIssue.slug} was imported as a system comment because no importing user was available.`);
+          }
+          const authorType = authorAgentId
+            ? "agent"
+            : comment.authorType === "user" && actorUserId
+              ? "user"
+              : "system";
+          await issues.addComment(createdIssue.id, comment.body, {
+            agentId: authorAgentId ?? undefined,
+            userId: authorType === "user" ? actorUserId ?? undefined : undefined,
+          }, {
+            authorType,
+            presentation: comment.presentation,
+            metadata: comment.metadata,
+            createdAt: comment.createdAt,
+          });
+        }
       }
     }
 

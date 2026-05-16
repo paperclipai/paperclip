@@ -4,6 +4,7 @@ export type IssueLivenessSeverity = "warning" | "critical";
 
 export type IssueLivenessState =
   | "blocked_by_unassigned_issue"
+  | "blocked_by_assigned_backlog_issue"
   | "blocked_by_uninvokable_assignee"
   | "blocked_by_cancelled_issue"
   | "invalid_review_participant"
@@ -496,6 +497,21 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
 
     if (blocker.status === "in_review") {
       return reviewFinding(source, blocker, dependencyPath);
+    }
+
+    if (blocker.status === "backlog" && blocker.assigneeAgentId) {
+      return finding({
+        issue: source,
+        state: "blocked_by_assigned_backlog_issue",
+        reason: `${issueLabel(source)} is blocked by assigned backlog issue ${issueLabel(blocker)} with no wake, active run, human owner, interaction, approval, monitor, or recovery issue owning the next action.`,
+        dependencyPath,
+        recoveryIssue: blocker,
+        recommendedOwnerCandidateAgentIds: ownerCandidates.map((candidate) => candidate.agentId),
+        recommendedOwnerCandidates: ownerCandidates,
+        recommendedAction:
+          `Review ${issueLabel(blocker)} and either move it to todo so the assignee wakes, assign a human owner or interaction if it is intentionally parked, or remove it from ${issueLabel(source)}'s blockers if it is no longer required.`,
+        blockerIssueId: blocker.id,
+      });
     }
 
     if (!blocker.assigneeAgentId && !blocker.assigneeUserId) {

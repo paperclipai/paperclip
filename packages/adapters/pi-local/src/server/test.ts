@@ -259,17 +259,6 @@ export async function testEnvironment(
     args.push("--tools", "read");
     if (extraArgs.length > 0) args.push(...extraArgs);
 
-    // For remote targets, do NOT spread the host process.env into the probe
-    // env: it leaks macOS-only PATH, HOME, TMPDIR, etc. into the remote shell.
-    // In particular the Mac PATH overrides the nvm-sourced PATH that
-    // buildSshSpawnTarget sets up, which on Linux SSH targets resolves `node`
-    // to /usr/bin/node (Node 18) instead of nvm's Node 22, causing pi-tui to
-    // crash with `Invalid regular expression flags` on its /v unicode regex.
-    // Match the pattern used by claude_local / codex_local / gemini_local /
-    // opencode_local probes: send only the user-configured adapter env across
-    // SSH. Local probes still get the full runtimeEnv.
-    const probeEnv = targetIsRemote ? normalizeEnv(env) : runtimeEnv;
-
     try {
       const probe = await runAdapterExecutionTargetProcess(
         runId,
@@ -278,7 +267,7 @@ export async function testEnvironment(
         args,
         {
           cwd,
-          env: probeEnv,
+          env: runtimeEnv,
           timeoutSec: 60,
           graceSec: 5,
           onLog: async () => {},

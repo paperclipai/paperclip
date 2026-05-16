@@ -27,6 +27,7 @@ import type {
   IssueSurfaceVisibility,
 } from "../constants.js";
 import type { Agent } from "./agent.js";
+import type { CompanySkill } from "./company-skill.js";
 import type { Project } from "./project.js";
 import type { Routine, RoutineTrigger, RoutineVariable } from "./routine.js";
 
@@ -164,6 +165,7 @@ export interface PluginManagedAgentDeclaration {
   instructions?: {
     entryFile?: string;
     content?: string;
+    files?: Record<string, string>;
     assetPath?: string;
   };
 }
@@ -208,7 +210,33 @@ export interface PluginManagedProjectDeclaration {
   settings?: Record<string, unknown>;
 }
 
-export type PluginManagedResourceKind = "agent" | "project" | "routine";
+export interface PluginManagedSkillFileDeclaration {
+  /** Relative path inside the skill folder, for example `references/guide.md`. */
+  path: string;
+  /** File contents written when the skill is installed or reset. */
+  content: string;
+}
+
+/**
+ * Declares a company skill that a plugin can install into each company's
+ * skills library and later resolve by stable key.
+ */
+export interface PluginManagedSkillDeclaration {
+  /** Stable identifier for this managed skill, unique within the plugin. */
+  skillKey: string;
+  /** Suggested visible skill name. */
+  displayName: string;
+  /** Suggested skill slug. Defaults to `skillKey`. */
+  slug?: string;
+  /** Suggested skill description. */
+  description?: string | null;
+  /** Full `SKILL.md` contents. Defaults to generated markdown from display metadata. */
+  markdown?: string;
+  /** Additional files installed with the skill. */
+  files?: PluginManagedSkillFileDeclaration[];
+}
+
+export type PluginManagedResourceKind = "agent" | "project" | "routine" | "skill";
 
 export interface PluginManagedResourceRef {
   pluginKey?: string;
@@ -258,6 +286,10 @@ export interface PluginManagedAgentResolution {
   agent: Agent | null;
   status: "missing" | "resolved" | "created" | "relinked" | "reset";
   approvalId?: string | null;
+  defaultDrift?: {
+    entryFile: string;
+    changedFiles: string[];
+  } | null;
 }
 
 export interface PluginManagedProjectResolution {
@@ -279,6 +311,19 @@ export interface PluginManagedRoutineResolution {
   routine: Routine | null;
   status: "missing" | "missing_refs" | "resolved" | "created" | "relinked" | "reset";
   missingRefs?: PluginManagedResourceRef[];
+}
+
+export interface PluginManagedSkillResolution {
+  pluginKey: string;
+  resourceKind: "skill";
+  resourceKey: string;
+  companyId: string;
+  skillId: string | null;
+  skill: CompanySkill | null;
+  status: "missing" | "resolved" | "created" | "relinked" | "reset";
+  defaultDrift?: {
+    changedFiles: string[];
+  } | null;
 }
 
 /**
@@ -496,6 +541,8 @@ export interface PaperclipPluginManifestV1 {
   projects?: PluginManagedProjectDeclaration[];
   /** Suggested company-scoped routines this plugin can provision and resolve by stable key. */
   routines?: PluginManagedRoutineDeclaration[];
+  /** Suggested company skills this plugin can install and resolve by stable key. */
+  skills?: PluginManagedSkillDeclaration[];
   /** Trusted local folders this plugin can configure and access by stable key. */
   localFolders?: PluginLocalFolderDeclaration[];
   /**

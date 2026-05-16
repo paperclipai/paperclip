@@ -84,9 +84,21 @@ const scrollableBlockStyle: React.CSSProperties = {
   overflowX: "auto",
 };
 
+const tableCellWrapStyle: React.CSSProperties = {
+  overflowWrap: "anywhere",
+  wordBreak: "normal",
+};
+
 function mergeWrapStyle(style?: React.CSSProperties): React.CSSProperties {
   return {
     ...wrapAnywhereStyle,
+    ...style,
+  };
+}
+
+function mergeTableCellStyle(style?: React.CSSProperties): React.CSSProperties {
+  return {
+    ...tableCellWrapStyle,
     ...style,
   };
 }
@@ -514,13 +526,20 @@ export function MarkdownBody({
         {blockquoteChildren}
       </blockquote>
     ),
+    table: ({ node: _node, style: tableStyle, children: tableChildren, ...tableProps }) => (
+      <div className="paperclip-markdown-table-scroll" role="region" aria-label="Scrollable table" tabIndex={0}>
+        <table {...tableProps} style={tableStyle as React.CSSProperties | undefined}>
+          {tableChildren}
+        </table>
+      </div>
+    ),
     td: ({ node: _node, style: tableCellStyle, children: tableCellChildren, ...tableCellProps }) => (
-      <td {...tableCellProps} style={mergeWrapStyle(tableCellStyle as React.CSSProperties | undefined)}>
+      <td {...tableCellProps} style={mergeTableCellStyle(tableCellStyle as React.CSSProperties | undefined)}>
         {tableCellChildren}
       </td>
     ),
     th: ({ node: _node, style: tableHeaderStyle, children: tableHeaderChildren, ...tableHeaderProps }) => (
-      <th {...tableHeaderProps} style={mergeWrapStyle(tableHeaderStyle as React.CSSProperties | undefined)}>
+      <th {...tableHeaderProps} style={mergeTableCellStyle(tableHeaderStyle as React.CSSProperties | undefined)}>
         {tableHeaderChildren}
       </th>
     ),

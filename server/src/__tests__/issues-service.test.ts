@@ -24,7 +24,12 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { instanceSettingsService } from "../services/instance-settings.ts";
-import { clampIssueListLimit, ISSUE_LIST_MAX_LIMIT, issueService } from "../services/issues.ts";
+import {
+  clampIssueListLimit,
+  deriveIssueCommentRunLogAttribution,
+  ISSUE_LIST_MAX_LIMIT,
+  issueService,
+} from "../services/issues.ts";
 import { buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -35,6 +40,69 @@ describe("issue list limit helpers", () => {
     expect(clampIssueListLimit(0)).toBe(1);
     expect(clampIssueListLimit(25.9)).toBe(25);
     expect(clampIssueListLimit(ISSUE_LIST_MAX_LIMIT + 10)).toBe(ISSUE_LIST_MAX_LIMIT);
+  });
+});
+
+describe("deriveIssueCommentRunLogAttribution", () => {
+  it("recovers agent attribution from run logs that printed the posted comment id", () => {
+    const commentId = randomUUID();
+    const runId = randomUUID();
+    const agentId = randomUUID();
+
+    const derived = deriveIssueCommentRunLogAttribution(
+      [
+        {
+          id: commentId,
+          authorAgentId: null,
+          authorUserId: "user-1",
+          createdByRunId: null,
+          createdAt: new Date("2026-05-11T18:55:40.090Z"),
+        },
+      ],
+      [
+        {
+          runId,
+          agentId,
+          createdAt: new Date("2026-05-11T18:51:56.246Z"),
+          startedAt: new Date("2026-05-11T18:51:56.257Z"),
+          finishedAt: new Date("2026-05-11T18:55:45.600Z"),
+          logContent: `comment id: ${commentId}\n`,
+        },
+      ],
+    );
+
+    expect(derived.get(commentId)).toEqual({
+      derivedAuthorAgentId: agentId,
+      derivedCreatedByRunId: runId,
+      derivedAuthorSource: "run_log_comment_post",
+    });
+  });
+
+  it("does not rewrite comments without exact run-log proof", () => {
+    const commentId = randomUUID();
+    const derived = deriveIssueCommentRunLogAttribution(
+      [
+        {
+          id: commentId,
+          authorAgentId: null,
+          authorUserId: "user-1",
+          createdByRunId: null,
+          createdAt: new Date("2026-05-11T18:55:40.090Z"),
+        },
+      ],
+      [
+        {
+          runId: randomUUID(),
+          agentId: randomUUID(),
+          createdAt: new Date("2026-05-11T18:51:56.246Z"),
+          startedAt: new Date("2026-05-11T18:51:56.257Z"),
+          finishedAt: new Date("2026-05-11T18:55:45.600Z"),
+          logContent: "posted results without echoing the comment id",
+        },
+      ],
+    );
+
+    expect(derived.has(commentId)).toBe(false);
   });
 });
 
@@ -82,6 +150,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(goals);
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(instanceSettings);
     await db.delete(companies);
@@ -1089,6 +1158,134 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
 
     expect(comments.map((comment) => comment.id)).toEqual([firstCommentId]);
+  });
+
+  it("lists user comments when derived run attribution scans a timestamp window", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const commentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Comments issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      contextSnapshot: { issueId },
+      createdAt: new Date("2026-05-12T22:58:00.000Z"),
+      startedAt: new Date("2026-05-12T22:58:00.000Z"),
+      finishedAt: new Date("2026-05-12T23:14:00.000Z"),
+    });
+
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorUserId: "user-1",
+      body: "Comment should be visible",
+      createdAt: new Date("2026-05-12T23:00:00.000Z"),
+      updatedAt: new Date("2026-05-12T23:00:00.000Z"),
+    });
+
+    const comments = await svc.listComments(issueId, {
+      order: "desc",
+      limit: 50,
+    });
+
+    expect(comments.map((comment) => comment.id)).toEqual([commentId]);
+    expect(comments[0]?.body).toBe("Comment should be visible");
+  });
+
+  it("lists user comments when a candidate attribution run log is missing", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const commentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Comments issue with missing run log",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      contextSnapshot: { issueId },
+      createdAt: new Date("2026-05-12T22:58:00.000Z"),
+      startedAt: new Date("2026-05-12T22:58:00.000Z"),
+      finishedAt: new Date("2026-05-12T23:14:00.000Z"),
+      logStore: "local_file",
+      logRef: "missing/run-log.ndjson",
+      logBytes: 128,
+    });
+
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorUserId: "user-1",
+      body: "Comment should still be visible",
+      createdAt: new Date("2026-05-12T23:00:00.000Z"),
+      updatedAt: new Date("2026-05-12T23:00:00.000Z"),
+    });
+
+    const comments = await svc.listComments(issueId, {
+      order: "desc",
+      limit: 50,
+    });
+
+    expect(comments.map((comment) => comment.id)).toEqual([commentId]);
+    expect(comments[0]?.body).toBe("Comment should still be visible");
+    expect(comments[0]?.metadata).toBeNull();
   });
 
   it("includes blockedBy summaries on list rows in one batched pass", async () => {

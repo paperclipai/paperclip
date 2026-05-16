@@ -4,6 +4,8 @@ This guide describes the current, implemented way to create a Paperclip plugin i
 
 It is intentionally narrower than [PLUGIN_SPEC.md](./PLUGIN_SPEC.md). The spec includes future ideas; this guide only covers the alpha surface that exists now.
 
+> **New to plugins?** Start with the short [Local Plugin Development guide](./LOCAL_PLUGIN_DEVELOPMENT.md) — it walks the CLI happy path (`plugin init` → `pnpm dev` → `plugin install <path>`) end to end. Come back here for the full manifest surface, worker capabilities, and UI components.
+
 ## Current reality
 
 - Treat plugin workers and plugin UI as trusted code.
@@ -20,23 +22,13 @@ It is intentionally narrower than [PLUGIN_SPEC.md](./PLUGIN_SPEC.md). The spec i
 
 ## Scaffold a plugin
 
-Use the scaffold package:
+Use the CLI scaffold command:
 
 ```bash
-pnpm --filter @paperclipai/create-paperclip-plugin build
-node packages/plugins/create-paperclip-plugin/dist/index.js @yourscope/plugin-name --output ./packages/plugins/examples
+paperclipai plugin init @yourscope/plugin-name --output /absolute/path/to/plugin-repos
 ```
 
-For a plugin that lives outside the Paperclip repo:
-
-```bash
-pnpm --filter @paperclipai/create-paperclip-plugin build
-node packages/plugins/create-paperclip-plugin/dist/index.js @yourscope/plugin-name \
-  --output /absolute/path/to/plugin-repos \
-  --sdk-path /absolute/path/to/paperclip/packages/plugins/sdk
-```
-
-That creates a package with:
+That creates `<output>/plugin-name/` with:
 
 - `src/manifest.ts`
 - `src/worker.ts`
@@ -47,27 +39,19 @@ That creates a package with:
 
 Inside this monorepo, the scaffold uses `workspace:*` for `@paperclipai/plugin-sdk`.
 
-Outside this monorepo, the scaffold snapshots `@paperclipai/plugin-sdk` from the local Paperclip checkout into a `.paperclip-sdk/` tarball so you can build and test a plugin without publishing anything to npm first.
+Outside this monorepo, the scaffold snapshots `@paperclipai/plugin-sdk` from the local Paperclip checkout into a `.paperclip-sdk/` tarball so you can build and test a plugin without publishing anything to npm first. Pass `--sdk-path /absolute/path/to/paperclip/packages/plugins/sdk` if you have more than one Paperclip checkout.
 
-## Recommended local workflow
+## Local development workflow
 
-From the generated plugin folder:
+See the short [Local Plugin Development guide](./LOCAL_PLUGIN_DEVELOPMENT.md) for the full happy path (`pnpm dev` → `paperclipai plugin install <absolute-path>` → `paperclipai plugin list`) and reload semantics.
+
+Minimum verification from the generated plugin folder:
 
 ```bash
 pnpm install
 pnpm typecheck
 pnpm test
 pnpm build
-```
-
-For local development, install it into Paperclip from an absolute local path through the plugin manager or API. The server supports local filesystem installs and watches local-path plugins for file changes so worker restarts happen automatically after rebuilds.
-
-Example:
-
-```bash
-curl -X POST http://127.0.0.1:3100/api/plugins/install \
-  -H "Content-Type: application/json" \
-  -d '{"packageName":"/absolute/path/to/your-plugin","isLocalPath":true}'
 ```
 
 ## Supported alpha surface
@@ -85,10 +69,11 @@ Worker:
 - database namespace via `ctx.db`
 - scoped JSON API routes declared with `apiRoutes`
 - entities
-- projects and project workspaces
+- projects, project workspaces, and plugin-managed projects
 - companies
 - issues, comments, namespaced `plugin:<pluginKey>` origins, blocker relations, checkout assertions, assignment wakeups, and orchestration summaries
-- agents and agent sessions
+- agents, plugin-managed agents, and agent sessions
+- plugin-managed routines
 - goals
 - data/actions
 - streams
@@ -144,6 +129,161 @@ and applies checkout policy before dispatching to the worker's `onApiRequest`
 handler. The worker receives sanitized headers, route params, query, parsed JSON
 body, actor context, and company id. Do not use plugin routes to claim core
 paths; they always remain under `/api/plugins/:pluginId/api/*`.
+
+## Managed Paperclip resources
+
+Plugins that provide durable Paperclip business objects should declare them in
+the manifest and let the host create or relink the actual records per company.
+Do this for plugin-owned agents, plugin-owned projects, and recurring automation.
+Do not hide long-lived work behind private plugin state when it should be visible
+to the board, scoped to a company, audited, budgeted, and assigned like normal
+Paperclip work.
+
+Use these surfaces:
+
+- Managed agents: declare top-level `agents[]` and require
+  `agents.managed`. Use this when the plugin provides a named worker the board
+  should see in the org, budget, pause, invoke, and inspect. Managed agents are
+  normal Paperclip agents with plugin ownership metadata, not background plugin
+  workers.
+- Managed projects: declare top-level `projects[]` and require
+  `projects.managed`. Use this when the plugin needs a stable company-scoped
+  project for its issues, routines, or workspace-oriented UI. Keep plugin work
+  in a project instead of scattering generated issues across unrelated projects.
+- Managed routines: declare top-level `routines[]` and require
+  `routines.managed`. Use this for scheduled, webhook, or manually triggered
+  jobs that should create visible Paperclip issues. Prefer managed routines over
+  plugin `jobs[]` for recurring business work; plugin jobs are for plugin
+  runtime maintenance that does not need a board-visible task trail.
+
+Managed resources are resolved by stable plugin keys, not hardcoded database
+ids. In a worker action or data handler, call `ctx.agents.managed.reconcile()`,
+`ctx.projects.managed.reconcile()`, and `ctx.routines.managed.reconcile()` for
+the current `companyId`. `reconcile()` creates the missing resource, relinks a
+recoverable binding, or returns the existing resource. `reset()` reapplies the
+manifest defaults when the operator wants to restore the plugin's suggested
+configuration.
+
+Declare dependencies between managed resources with refs. A routine can point
+at a managed agent through `assigneeRef` and at a managed project through
+`projectRef`. Reconcile the referenced agent and project before reconciling the
+routine; if a ref is still missing, the routine resolution reports
+`missing_refs` instead of guessing.
+
+```ts
+import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+
+const manifest: PaperclipPluginManifestV1 = {
+  id: "example.research-plugin",
+  apiVersion: 1,
+  version: "0.1.0",
+  displayName: "Research Plugin",
+  description: "Creates a managed research agent and scheduled research routine.",
+  author: "Example",
+  categories: ["automation"],
+  capabilities: [
+    "agents.managed",
+    "projects.managed",
+    "routines.managed",
+    "instance.settings.register",
+  ],
+  entrypoints: {
+    worker: "./dist/worker.js",
+    ui: "./dist/ui",
+  },
+  agents: [
+    {
+      agentKey: "researcher",
+      displayName: "Researcher",
+      role: "research",
+      title: "Research Agent",
+      capabilities: "Runs recurring research briefs for this company.",
+      adapterPreference: ["codex_local", "claude_local", "process"],
+      instructions: {
+        content: "Follow the Paperclip heartbeat and produce concise research briefs.",
+      },
+    },
+  ],
+  projects: [
+    {
+      projectKey: "research",
+      displayName: "Research",
+      description: "Recurring research work created by the Research Plugin.",
+      status: "in_progress",
+    },
+  ],
+  routines: [
+    {
+      routineKey: "weekly-brief",
+      title: "Weekly research brief",
+      description: "Create a short research brief for the board.",
+      assigneeRef: { resourceKind: "agent", resourceKey: "researcher" },
+      projectRef: { resourceKind: "project", resourceKey: "research" },
+      priority: "medium",
+      triggers: [
+        {
+          kind: "schedule",
+          label: "Monday morning",
+          cronExpression: "0 9 * * 1",
+          timezone: "America/Chicago",
+          enabled: false,
+        },
+      ],
+    },
+  ],
+  ui: {
+    slots: [
+      {
+        type: "settingsPage",
+        id: "settings",
+        displayName: "Research",
+        exportName: "SettingsPage",
+      },
+    ],
+  },
+};
+
+export default manifest;
+```
+
+In the worker, expose a small setup action or settings-page action that
+reconciles the resources for the selected company:
+
+```ts
+import { definePlugin } from "@paperclipai/plugin-sdk";
+
+export default definePlugin({
+  setup(ctx) {
+    ctx.actions.register("setup-company", async (params) => {
+      const companyId = String(params.companyId ?? "");
+      if (!companyId) throw new Error("companyId is required");
+
+      const project = await ctx.projects.managed.reconcile("research", companyId);
+      const agent = await ctx.agents.managed.reconcile("researcher", companyId);
+      const routine = await ctx.routines.managed.reconcile("weekly-brief", companyId);
+
+      return { project, agent, routine };
+    });
+  },
+});
+```
+
+Authoring rules:
+
+- Keep keys stable once published. Renaming `agentKey`, `projectKey`, or
+  `routineKey` creates a new managed resource from the host's point of view.
+- Use managed agents for plugin-provided labor. Use `ctx.agents.invoke()` or
+  `ctx.agents.sessions` only after you have a real agent id, either selected by
+  the operator or resolved from `ctx.agents.managed`.
+- Use managed routines for recurring or externally triggered work that should
+  produce tasks. Schedule, webhook, and API triggers are visible routine
+  triggers, and each run has the normal Paperclip issue/audit trail.
+- Use managed projects to keep plugin-generated work organized and to give
+  project-scoped plugin UI a stable home. For filesystem access inside a
+  project, still resolve project workspaces through `ctx.projects`.
+- Keep defaults conservative. Managed declarations are suggestions owned by the
+  plugin, but the resulting resources are normal Paperclip records that the
+  operator can inspect, pause, and adjust.
 
 UI:
 

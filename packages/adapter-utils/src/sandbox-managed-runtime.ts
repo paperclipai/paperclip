@@ -3,6 +3,7 @@ import { constants as fsConstants, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { captureDirectorySnapshot, mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -248,6 +249,9 @@ export async function prepareSandboxManagedRuntime(input: {
 }): Promise<PreparedSandboxManagedRuntime> {
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
+  const baselineSnapshot = await captureDirectorySnapshot(input.workspaceLocalDir, {
+    exclude: [...new Set([".paperclip-runtime", ...(input.preserveAbsentOnRestore ?? []), ...(input.workspaceExclude ?? [])])],
+  });
 
   await withTempDir("paperclip-sandbox-sync-", async (tempDir) => {
     const workspaceTarPath = path.join(tempDir, "workspace.tar");
@@ -263,7 +267,7 @@ export async function prepareSandboxManagedRuntime(input: {
     const preservedNames = new Set([".paperclip-runtime", ...(input.preserveAbsentOnRestore ?? [])]);
     const findPreserveArgs = [...preservedNames].map((entry) => `! -name ${shellQuote(entry)}`).join(" ");
     await input.client.run(
-      `sh -lc ${shellQuote(
+      `sh -c ${shellQuote(
         `mkdir -p ${shellQuote(workspaceRemoteDir)} && ` +
           `find ${shellQuote(workspaceRemoteDir)} -mindepth 1 -maxdepth 1 ${findPreserveArgs} -exec rm -rf -- {} + && ` +
           `tar -xf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} && ` +
@@ -285,7 +289,7 @@ export async function prepareSandboxManagedRuntime(input: {
       const remoteAssetTar = path.posix.join(runtimeRootDir, `${asset.key}-upload.tar`);
       await input.client.writeFile(remoteAssetTar, toArrayBuffer(assetTarBytes));
       await input.client.run(
-        `sh -lc ${shellQuote(
+        `sh -c ${shellQuote(
           `rm -rf ${shellQuote(remoteAssetDir)} && ` +
             `mkdir -p ${shellQuote(remoteAssetDir)} && ` +
             `tar -xf ${shellQuote(remoteAssetTar)} -C ${shellQuote(remoteAssetDir)} && ` +
@@ -310,7 +314,7 @@ export async function prepareSandboxManagedRuntime(input: {
       await withTempDir("paperclip-sandbox-restore-", async (tempDir) => {
         const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-download.tar");
         await input.client.run(
-          `sh -lc ${shellQuote(
+          `sh -c ${shellQuote(
             `mkdir -p ${shellQuote(runtimeRootDir)} && ` +
               `tar -cf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} ` +
               `${tarExcludeFlags(input.workspaceExclude)} .`,
@@ -326,8 +330,10 @@ export async function prepareSandboxManagedRuntime(input: {
           archivePath: localArchivePath,
           localDir: extractedDir,
         });
-        await mirrorDirectory(extractedDir, input.workspaceLocalDir, {
-          preserveAbsent: [".paperclip-runtime", ...(input.preserveAbsentOnRestore ?? [])],
+        await mergeDirectoryWithBaseline({
+          baseline: baselineSnapshot,
+          sourceDir: extractedDir,
+          targetDir: input.workspaceLocalDir,
         });
       });
     },

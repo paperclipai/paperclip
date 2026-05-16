@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { AnchorHTMLAttributes, ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, Project } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssuesList } from "./IssuesList";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -123,7 +123,17 @@ vi.mock("./IssueRow", () => ({
 }));
 
 vi.mock("./KanbanBoard", () => ({
-  KanbanBoard: (props: { issues: Issue[] }) => {
+  KANBAN_BOARD_HIGH_VOLUME_THRESHOLD: 100,
+  KANBAN_COLD_STATUSES: ["backlog", "done", "cancelled"],
+  KANBAN_COLUMN_DEFAULT_PAGE_SIZE: 10,
+  KANBAN_COLUMN_PAGE_SIZE_OPTIONS: [10, 25, 50],
+  KanbanBoard: (props: {
+    issues: Issue[];
+    compactCards?: boolean;
+    collapsedStatuses?: string[];
+    initialVisibleCount?: number;
+    revealIncrement?: number;
+  }) => {
     mockKanbanBoard(props);
     return (
       <div data-testid="kanban-board">
@@ -179,6 +189,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     lastActivityAt: null,
     isUnreadForMe: false,
     ...overrides,
+    workMode: overrides.workMode ?? "standard",
   };
 }
 
@@ -392,6 +403,70 @@ describe("IssuesList", () => {
     expect(dialogState.openNewIssue).toHaveBeenCalledWith({
       parentId: "parent-1",
       projectId: "project-1",
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("uses workspace group defaults when creating an issue from a grouped section", async () => {
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ groupBy: "workspace", sortField: "updated", sortDir: "desc" }),
+    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([
+      {
+        id: "execution-workspace-1",
+        name: "Feature Branch",
+        mode: "isolated_workspace",
+        projectWorkspaceId: "project-workspace-1",
+      },
+    ]);
+
+    const issue = createIssue({
+      id: "issue-workspace",
+      projectId: "project-1",
+      projectWorkspaceId: "project-workspace-1",
+      executionWorkspaceId: "execution-workspace-1",
+    });
+    const project = {
+      id: "project-1",
+      name: "Paperclip App",
+      color: null,
+      workspaces: [{ id: "project-workspace-1", name: "Primary workspace" }],
+      primaryWorkspace: { id: "project-workspace-1" },
+      executionWorkspacePolicy: { defaultProjectWorkspaceId: "project-workspace-1" },
+    } as Project;
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[issue]}
+        agents={[]}
+        projects={[project]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const button = container.querySelector<HTMLButtonElement>('button[aria-label="New issue in Feature Branch"]');
+      expect(button).not.toBeNull();
+    });
+
+    await act(async () => {
+      const button = container.querySelector<HTMLButtonElement>('button[aria-label="New issue in Feature Branch"]');
+      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(dialogState.openNewIssue).toHaveBeenCalledWith({
+      executionWorkspaceId: "execution-workspace-1",
+      executionWorkspaceMode: "reuse_existing",
+      projectId: "project-1",
+      projectWorkspaceId: "project-workspace-1",
     });
 
     act(() => {
@@ -940,6 +1015,110 @@ describe("IssuesList", () => {
       expect(container.textContent).toContain("Done column issue");
       expect(container.textContent).not.toContain("Parent total-limited issue");
     });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("uses compact cards and collapsed cold lanes for high-volume boards", async () => {
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ viewMode: "board" }),
+    );
+
+    const backlogIssues = Array.from({ length: 101 }, (_, index) =>
+      createIssue({
+        id: `issue-backlog-${index + 1}`,
+        identifier: `PAP-${index + 1}`,
+        title: `Backlog issue ${index + 1}`,
+        status: "backlog",
+      }),
+    );
+
+    mockIssuesApi.list.mockImplementation((_companyId, filters) => {
+      if (filters?.status === "backlog") return Promise.resolve(backlogIssues);
+      return Promise.resolve([]);
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({
+        compactCards: true,
+        collapsedStatuses: expect.arrayContaining(["backlog", "done", "cancelled"]),
+        initialVisibleCount: 10,
+        revealIncrement: 10,
+      }));
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("lets board users choose the per-column page size", async () => {
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ viewMode: "board" }),
+    );
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue({ id: "issue-page-size", title: "Page size issue" })]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({
+        initialVisibleCount: 10,
+        revealIncrement: 10,
+      }));
+    });
+
+    const pageSizeButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.getAttribute("title") === "Cards per column",
+    );
+    expect(pageSizeButton).toBeTruthy();
+
+    act(() => {
+      pageSizeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    let option25: HTMLButtonElement | undefined;
+    await waitForAssertion(() => {
+      option25 = Array.from(document.body.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("25 per column"),
+      );
+      expect(option25).toBeTruthy();
+    });
+
+    act(() => {
+      option25?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({
+        initialVisibleCount: 25,
+        revealIncrement: 25,
+      }));
+    });
+
+    expect(localStorage.getItem("paperclip:test-issues:company-1")).toContain("\"boardColumnPageSize\":25");
 
     act(() => {
       root.unmount();

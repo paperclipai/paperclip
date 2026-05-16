@@ -1,5 +1,10 @@
 import { z } from "zod";
 import { MAX_COMPANY_ATTACHMENT_MAX_BYTES } from "../constants.js";
+import {
+  issueCommentAuthorTypeSchema,
+  issueCommentMetadataSchema,
+  issueCommentPresentationSchema,
+} from "./issue.js";
 import { routineVariableSchema } from "./routine.js";
 
 export const portabilityIncludeSchema = z
@@ -131,6 +136,16 @@ export const portabilityIssueRoutineManifestEntrySchema = z.object({
   triggers: z.array(portabilityIssueRoutineTriggerManifestEntrySchema).default([]),
 });
 
+export const portabilityIssueCommentManifestEntrySchema = z.object({
+  body: z.string().min(1),
+  authorType: issueCommentAuthorTypeSchema,
+  authorAgentSlug: z.string().min(1).nullable(),
+  authorUserId: z.string().nullable(),
+  presentation: issueCommentPresentationSchema.nullable(),
+  metadata: issueCommentMetadataSchema.nullable(),
+  createdAt: z.string().datetime().nullable(),
+});
+
 export const portabilityIssueManifestEntrySchema = z.object({
   slug: z.string().min(1),
   identifier: z.string().min(1).nullable(),
@@ -149,6 +164,7 @@ export const portabilityIssueManifestEntrySchema = z.object({
   billingCode: z.string().nullable(),
   executionWorkspaceSettings: z.record(z.unknown()).nullable(),
   assigneeAdapterOverrides: z.record(z.unknown()).nullable(),
+  comments: z.array(portabilityIssueCommentManifestEntrySchema).default([]),
   metadata: z.record(z.unknown()).nullable(),
 });
 

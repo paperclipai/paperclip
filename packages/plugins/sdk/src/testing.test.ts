@@ -66,6 +66,7 @@ function buildIssue(input: Partial<Issue> & Pick<Issue, "id" | "companyId" | "ti
     title,
     description: null,
     status: "todo",
+    workMode: "standard",
     priority: "medium",
     assigneeAgentId: null,
     assigneeUserId: null,
