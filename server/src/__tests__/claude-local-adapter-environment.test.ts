@@ -80,6 +80,37 @@ describe("claude_local environment diagnostics", () => {
     expect(result.checks.some((check) => check.level === "error")).toBe(false);
   });
 
+  it("does not warn about host ANTHROPIC_API_KEY when config explicitly overrides it (even with non-string value)", async () => {
+    delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
+    process.env.ANTHROPIC_API_KEY = "sk-test-host";
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: {
+        command: process.execPath,
+        cwd: process.cwd(),
+        env: {
+          ANTHROPIC_API_KEY: { type: "plain", value: "" },
+        },
+      },
+    });
+
+    expect(
+      result.checks.some(
+        (check) =>
+          check.code === "claude_anthropic_api_key_overrides_subscription",
+      ),
+    ).toBe(false);
+    expect(
+      result.checks.some(
+        (check) => check.code === "claude_subscription_mode_possible",
+      ),
+    ).toBe(true);
+    expect(result.checks.some((check) => check.level === "error")).toBe(false);
+  });
+
   it("returns bedrock auth info when CLAUDE_CODE_USE_BEDROCK is set in host environment", async () => {
     delete process.env.ANTHROPIC_API_KEY;
     process.env.CLAUDE_CODE_USE_BEDROCK = "1";

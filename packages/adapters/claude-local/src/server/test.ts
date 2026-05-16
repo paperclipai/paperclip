@@ -20,7 +20,7 @@ import {
   resolveAdapterExecutionTargetCwd,
 } from "@paperclipai/adapter-utils/execution-target";
 import path from "node:path";
-import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
+import { describeClaudeFailure, detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
 import { isBedrockModelId } from "./models.js";
 import { buildClaudeProbePermissionArgs } from "./permissions.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -105,6 +105,12 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+
+  // Detect if config explicitly mentions ANTHROPIC_API_KEY (even with non-string
+  // value like { type: "plain", value: "" } from the "Unset" UI action). When
+  // the config explicitly overrides it, the host env should not be considered.
+  const configExplicitlyHasAnthropicApiKey = "ANTHROPIC_API_KEY" in envConfig;
+
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   const installCheck = await maybeRunSandboxInstallCommand({
     runId,
@@ -145,7 +151,12 @@ export async function testEnvironment(
     (considerHostEnv && isNonEmpty(process.env.ANTHROPIC_BEDROCK_BASE_URL));
 
   const configApiKey = env.ANTHROPIC_API_KEY;
-  const hostApiKey = considerHostEnv ? process.env.ANTHROPIC_API_KEY : undefined;
+  // When config explicitly has ANTHROPIC_API_KEY (even as an override with empty
+  // value), it takes precedence over the host env.
+  const hostApiKey =
+    considerHostEnv && !configExplicitlyHasAnthropicApiKey
+      ? process.env.ANTHROPIC_API_KEY
+      : undefined;
   if (hasBedrock) {
     const source =
       env.CLAUDE_CODE_USE_BEDROCK === "1" ||
@@ -176,6 +187,14 @@ export async function testEnvironment(
       level: "info",
       message: "ANTHROPIC_API_KEY is not set; subscription-based auth can be used if Claude is logged in.",
     });
+  }
+
+  // Build the env actually passed to the probe process. Since runChildProcess
+  // merges with process.env, explicitly set ANTHROPIC_API_KEY to empty string
+  // when the config overrides it, so the host env value doesn't leak through.
+  const probeEnv: Record<string, string> = { ...env };
+  if (configExplicitlyHasAnthropicApiKey && !isNonEmpty(configApiKey)) {
+    probeEnv.ANTHROPIC_API_KEY = "";
   }
 
   const canRunProbe =
@@ -212,71 +231,159 @@ export async function testEnvironment(
       if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
       if (extraArgs.length > 0) args.push(...extraArgs);
 
-      const probe = await runAdapterExecutionTargetProcess(
-        runId,
-        target,
-        command,
-        args,
-        {
-          cwd,
-          env,
-          timeoutSec: 45,
-          graceSec: 5,
-          stdin: "Respond with hello.",
-          onLog: async () => {},
-        },
-      );
+      async function runSingleProbe(
+        probeRunEnv: Record<string, string>,
+      ): Promise<{
+        probeResult: Awaited<ReturnType<typeof runAdapterExecutionTargetProcess>>;
+        parsedStream: ReturnType<typeof parseClaudeStreamJson>;
+        parsed: Record<string, unknown> | null;
+        detail: string | null;
+      }> {
+        const probeResult = await runAdapterExecutionTargetProcess(
+          runId,
+          target,
+          command,
+          args,
+          {
+            cwd,
+            env: probeRunEnv,
+            timeoutSec: 45,
+            graceSec: 5,
+            stdin: "Respond with hello.",
+            onLog: async () => {},
+          },
+        );
 
-      const parsedStream = parseClaudeStreamJson(probe.stdout);
-      const parsed = parsedStream.resultJson;
-      const loginMeta = detectClaudeLoginRequired({
-        parsed,
-        stdout: probe.stdout,
-        stderr: probe.stderr,
-      });
-      const detail = summarizeProbeDetail(probe.stdout, probe.stderr);
+        const parsedStream = parseClaudeStreamJson(probeResult.stdout);
+        const parsed = parsedStream.resultJson;
+        const detail = summarizeProbeDetail(probeResult.stdout, probeResult.stderr);
+        return { probeResult, parsedStream, parsed, detail };
+      }
 
-      if (probe.timedOut) {
-        checks.push({
-          code: "claude_hello_probe_timed_out",
-          level: "warn",
-          message: "Claude hello probe timed out.",
-          hint: "Retry the probe. If this persists, verify Claude can run `Respond with hello` from this directory manually.",
-        });
-      } else if (loginMeta.requiresLogin) {
-        checks.push({
-          code: "claude_hello_probe_auth_required",
-          level: "warn",
-          message: "Claude CLI is installed, but login is required.",
-          ...(detail ? { detail } : {}),
-          hint: loginMeta.loginUrl
-            ? `Run \`claude login\` and complete sign-in at ${loginMeta.loginUrl}, then retry.`
-            : "Run `claude login` in this environment, then retry the probe.",
-        });
-      } else if ((probe.exitCode ?? 1) === 0) {
-        const summary = parsedStream.summary.trim();
-        const hasHello = /\bhello\b/i.test(summary);
-        checks.push({
-          code: hasHello ? "claude_hello_probe_passed" : "claude_hello_probe_unexpected_output",
-          level: hasHello ? "info" : "warn",
-          message: hasHello
-            ? "Claude hello probe succeeded."
-            : "Claude probe ran but did not return `hello` as expected.",
-          ...(summary ? { detail: summary.replace(/\s+/g, " ").trim().slice(0, 240) } : {}),
-          ...(hasHello
-            ? {}
-            : {
+      function addProbeCheck(
+        parsed: Record<string, unknown> | null,
+        detail: string | null,
+        loginMeta: ReturnType<typeof detectClaudeLoginRequired>,
+        probeResult: Awaited<ReturnType<typeof runAdapterExecutionTargetProcess>>,
+        parsedStream: ReturnType<typeof parseClaudeStreamJson>,
+      ) {
+        if (probeResult.timedOut) {
+          checks.push({
+            code: "claude_hello_probe_timed_out",
+            level: "warn",
+            message: "Claude hello probe timed out.",
+            hint: "Retry the probe. If this persists, verify Claude can run `Respond with hello` from this directory manually.",
+          });
+          return;
+        }
+
+        if (loginMeta.requiresLogin) {
+          checks.push({
+            code: "claude_hello_probe_auth_required",
+            level: "warn",
+            message: "Claude CLI is installed, but login is required.",
+            ...(detail ? { detail } : {}),
+            hint: loginMeta.loginUrl
+              ? `Run \`claude login\` and complete sign-in at ${loginMeta.loginUrl}, then retry.`
+              : "Run `claude login` in this environment, then retry the probe.",
+          });
+          return;
+        }
+
+        if ((probeResult.exitCode ?? 1) === 0) {
+          const summary = parsedStream.summary.trim();
+          const hasHello = /\bhello\b/i.test(summary);
+          checks.push({
+            code: hasHello ? "claude_hello_probe_passed" : "claude_hello_probe_unexpected_output",
+            level: hasHello ? "info" : "warn",
+            message: hasHello
+              ? "Claude hello probe succeeded."
+              : "Claude probe ran but did not return `hello` as expected.",
+            ...(summary ? { detail: summary.replace(/\s+/g, " ").trim().slice(0, 240) } : {}),
+            ...(hasHello
+              ? {}
+              : {
                 hint: "Try the probe manually (`claude --print - --output-format stream-json --verbose`) and prompt `Respond with hello`.",
               }),
-        });
-      } else {
+          });
+          return;
+        }
+
+        // Probe failed — try to surface a specific error from the structured
+        // JSON output before falling back to the generic stderr line.
+        const failureMessage = parsed
+          ? describeClaudeFailure(parsed)
+          : null;
         checks.push({
           code: "claude_hello_probe_failed",
           level: "error",
           message: "Claude hello probe failed.",
-          ...(detail ? { detail } : {}),
+          ...(failureMessage || detail ? { detail: failureMessage ?? detail } : {}),
           hint: "Run `claude --print - --output-format stream-json --verbose` manually in this directory and prompt `Respond with hello` to debug.",
         });
+      }
+
+      const initial = await runSingleProbe(probeEnv);
+      const loginMeta = detectClaudeLoginRequired({
+        parsed: initial.parsed,
+        stdout: initial.probeResult.stdout,
+        stderr: initial.probeResult.stderr,
+      });
+
+      // Problem 1: automatic API-key → subscription fallback.
+      // When the probe failed AND ANTHROPIC_API_KEY came from the host env
+      // (not from the adapter config), retry without it. If the fallback
+      // probe succeeds using subscription auth, report the probe as a
+      // warning-level pass instead of an error-level failure.
+      const apiKeyCameFromHost =
+        isNonEmpty(hostApiKey) &&
+        !isNonEmpty(configApiKey) &&
+        !configExplicitlyHasAnthropicApiKey;
+      const shouldRetryWithoutApiKey =
+        apiKeyCameFromHost &&
+        !initial.probeResult.timedOut &&
+        !loginMeta.requiresLogin &&
+        (initial.probeResult.exitCode ?? 1) !== 0;
+
+      if (shouldRetryWithoutApiKey) {
+        const retryEnv = { ...probeEnv, ANTHROPIC_API_KEY: "" };
+        const retry = await runSingleProbe(retryEnv);
+        const retryLoginMeta = detectClaudeLoginRequired({
+          parsed: retry.parsed,
+          stdout: retry.probeResult.stdout,
+          stderr: retry.probeResult.stderr,
+        });
+
+        if ((retry.probeResult.exitCode ?? 1) === 0 && /\bhello\b/i.test(retry.parsedStream.summary.trim())) {
+          // Fallback succeeded — report a warning-level pass
+          checks.push({
+            code: "claude_hello_probe_passed_fallback",
+            level: "warn",
+            message:
+              "Claude hello probe succeeded via subscription fallback after host ANTHROPIC_API_KEY failed.",
+            detail:
+              "The ANTHROPIC_API_KEY from the host environment had insufficient credits or permissions. Paperclip retried with subscription-based auth, which succeeded.",
+            hint:
+              "Unset ANTHROPIC_API_KEY from your shell environment to avoid this fallback on future probes.",
+          });
+        } else {
+          // Fallback also failed — report the original failure (prefer specific JSON error)
+          addProbeCheck(
+            initial.parsed,
+            initial.detail,
+            loginMeta,
+            initial.probeResult,
+            initial.parsedStream,
+          );
+        }
+      } else {
+        addProbeCheck(
+          initial.parsed,
+          initial.detail,
+          loginMeta,
+          initial.probeResult,
+          initial.parsedStream,
+        );
       }
     }
   }
