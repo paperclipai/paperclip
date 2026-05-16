@@ -936,7 +936,7 @@ describe("IssuesList", () => {
     );
 
     await waitForMicrotaskAssertion(() => {
-      expect(container.textContent).toContain("Showing up to 200 matches. Refine the search to narrow further.");
+      expect(container.textContent).toContain("Showing up to 200 matches. Refine filters or search to reveal the rest.");
     });
 
     act(() => {

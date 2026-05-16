@@ -1229,7 +1229,7 @@ describe("IssueDetail", () => {
 
     expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
       stopRunLabel: "Pause work",
-      stoppingRunLabel: "Pausing...",
+      stoppingRunLabel: "Applying…",
       issueWorkMode: "standard",
     });
 
