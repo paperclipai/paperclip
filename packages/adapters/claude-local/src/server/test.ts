@@ -367,13 +367,13 @@ export async function testEnvironment(
               "Unset ANTHROPIC_API_KEY from your shell environment to avoid this fallback on future probes.",
           });
         } else {
-          // Fallback also failed — report the original failure (prefer specific JSON error)
+          // Fallback also failed — report the retry failure (prefer specific JSON error)
           addProbeCheck(
-            initial.parsed,
-            initial.detail,
-            loginMeta,
-            initial.probeResult,
-            initial.parsedStream,
+            retry.parsed,
+            retry.detail,
+            retryLoginMeta,
+            retry.probeResult,
+            retry.parsedStream,
           );
         }
       } else {
