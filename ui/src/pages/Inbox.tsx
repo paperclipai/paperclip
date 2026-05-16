@@ -1439,10 +1439,10 @@ export function Inbox() {
     onMutate: (run) => {
       setRetryingRunIds((prev) => new Set(prev).add(run.id));
     },
-    onSuccess: ({ newRun, originalRun }) => {
+    onSuccess: ({ originalRun }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(originalRun.companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(originalRun.companyId, originalRun.agentId) });
-      navigate(`/agents/${originalRun.agentId}/runs/${newRun.id}`);
+      dismissInboxItem(`run:${originalRun.id}`);
     },
     onSettled: (_data, _error, run) => {
       if (!run) return;

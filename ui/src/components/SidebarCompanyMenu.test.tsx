@@ -40,38 +40,35 @@ vi.mock("@/lib/router", () => ({
   useNavigate: () => mockNavigate,
 }));
 
+const mockCompanies = vi.hoisted(() => [
+  {
+    id: "company-1",
+    issuePrefix: "PAP",
+    name: "Acme Labs",
+    brandColor: "#3366ff",
+    status: "active",
+  },
+  {
+    id: "company-2",
+    issuePrefix: "STR",
+    name: "Strata",
+    brandColor: "#36a269",
+    status: "active",
+  },
+  {
+    id: "company-3",
+    issuePrefix: "ANA",
+    name: "Anachronist Wiki",
+    brandColor: "#a36a21",
+    status: "active",
+  },
+]);
+
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
-    companies: [
-      {
-        id: "company-1",
-        issuePrefix: "PAP",
-        name: "Acme Labs",
-        brandColor: "#3366ff",
-        status: "active",
-      },
-      {
-        id: "company-2",
-        issuePrefix: "STR",
-        name: "Strata",
-        brandColor: "#36a269",
-        status: "active",
-      },
-      {
-        id: "company-3",
-        issuePrefix: "ANA",
-        name: "Anachronist Wiki",
-        brandColor: "#a36a21",
-        status: "active",
-      },
-    ],
-    selectedCompany: {
-      id: "company-1",
-      issuePrefix: "PAP",
-      name: "Acme Labs",
-      brandColor: "#3366ff",
-      status: "active",
-    },
+    companies: mockCompanies,
+    companiesInOrg: mockCompanies,
+    selectedCompany: mockCompanies[0],
     setSelectedCompanyId: mockSetSelectedCompanyId,
   }),
 }));

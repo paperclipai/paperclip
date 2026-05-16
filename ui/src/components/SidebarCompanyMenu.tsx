@@ -132,7 +132,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
   const [internalOpen, setInternalOpen] = useState(false);
   const [isEditingOrder, setIsEditingOrder] = useState(false);
   const queryClient = useQueryClient();
-  const { companies, selectedCompany, setSelectedCompanyId } = useCompany();
+  const { companies, companiesInOrg, selectedCompany, setSelectedCompanyId } = useCompany();
   const { openOnboarding } = useDialogActions();
   const { isMobile, setSidebarOpen } = useSidebar();
   const location = useLocation();
@@ -148,8 +148,8 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
     }),
   );
   const sidebarCompanies = useMemo(
-    () => companies.filter((company) => company.status !== "archived"),
-    [companies],
+    () => companiesInOrg.filter((company) => company.status !== "archived"),
+    [companiesInOrg],
   );
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -184,9 +184,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
 
   function selectCompany(company: Company) {
     const pathPrefix = location.pathname.split("/")[1]?.toUpperCase();
-    const isCompanyRoute = sidebarCompanies.some((sidebarCompany) => (
-      sidebarCompany.issuePrefix.toUpperCase() === pathPrefix
-    ));
+    const isCompanyRoute = companies.some((c) => c.issuePrefix.toUpperCase() === pathPrefix);
     const shouldLeaveCurrentRoute = company.id !== selectedCompany?.id
       && (location.pathname.startsWith("/instance/") || isCompanyRoute);
 
