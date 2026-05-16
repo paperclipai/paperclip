@@ -714,10 +714,21 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
           };
         }
 
-        const participant = selectStageParticipant(nextStage, {
-          preferred: explicitAssignee,
-          exclude: existingState?.returnAssignee ?? null,
-        });
+        // When the actor IS the returnAssignee (code executor approving their own stage),
+        // keep returnAssignee excluded so a self-review can never slip through to the next stage.
+        // When the actor is a DIFFERENT agent (e.g. TechLead approving stage 0 while CTO is
+        // returnAssignee), fall back to including the returnAssignee — they may be an explicitly
+        // named participant at a later stage and should not be silently blocked.
+        const actorIsReturnAssignee = principalsEqual(actor, existingState?.returnAssignee ?? null);
+        const canFallbackToReturnAssignee = actor !== null && !actorIsReturnAssignee;
+        const participant =
+          selectStageParticipant(nextStage, {
+            preferred: explicitAssignee,
+            exclude: existingState?.returnAssignee ?? null,
+          }) ??
+          (canFallbackToReturnAssignee
+            ? selectStageParticipant(nextStage, { preferred: explicitAssignee })
+            : null);
         if (!participant) {
           throw unprocessable(`No eligible ${nextStage.type} participant is configured for this issue`);
         }

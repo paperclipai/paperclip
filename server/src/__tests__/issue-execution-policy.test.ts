@@ -1039,6 +1039,106 @@ describe("issue execution policy transitions", () => {
       expect(result.patch.assigneeAgentId).toBeUndefined();
     });
 
+    it("allows returnAssignee to be next-stage reviewer when actor is a different agent", () => {
+      // Scenario: issue was assigned to ctoAgentId when moved to in_review, so
+      // returnAssignee = cto. Stage 0 is QA review; stage 1 is CTO review.
+      // QA approves stage 0 — CTO must be allowed into stage 1 despite being returnAssignee.
+      const ctoAgentId = "33333333-3333-4333-8333-333333333333";
+      const policy = makePolicy([
+        {
+          type: "review",
+          participants: [{ type: "agent", agentId: qaAgentId }],
+        },
+        {
+          type: "review",
+          participants: [{ type: "agent", agentId: ctoAgentId }],
+        },
+      ]);
+      const reviewStageId = policy.stages[0].id;
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            // CTO was the issue assignee when in_review was set — they are returnAssignee
+            // but also the explicit reviewer at stage 1.
+            returnAssignee: { type: "agent", agentId: ctoAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        // QA (not the returnAssignee) is approving stage 0
+        actor: { agentId: qaAgentId },
+        commentBody: "QA sign-off complete.",
+      });
+
+      // Stage 1 should advance to CTO even though CTO is returnAssignee
+      expect(result.patch).toMatchObject({
+        status: "in_review",
+        assigneeAgentId: ctoAgentId,
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: ctoAgentId },
+          completedStageIds: [reviewStageId],
+        },
+      });
+    });
+
+    it("treats unknown actor identity as a non-participant before any fallback can apply", () => {
+      const ctoAgentId = "33333333-3333-4333-8333-333333333333";
+      const policy = makePolicy([
+        {
+          type: "review",
+          participants: [{ type: "agent", agentId: qaAgentId }],
+        },
+        {
+          type: "review",
+          participants: [{ type: "agent", agentId: ctoAgentId }],
+        },
+      ]);
+      const reviewStageId = policy.stages[0].id;
+
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: qaAgentId,
+            assigneeUserId: null,
+            executionPolicy: policy,
+            executionState: {
+              status: "pending",
+              currentStageId: reviewStageId,
+              currentStageIndex: 0,
+              currentStageType: "review",
+              currentParticipant: { type: "agent", agentId: qaAgentId },
+              returnAssignee: { type: "agent", agentId: ctoAgentId },
+              completedStageIds: [],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+            },
+          },
+          policy,
+          requestedStatus: "done",
+          requestedAssigneePatch: {},
+          actor: {},
+          commentBody: "Approval without actor identity should not unlock fallback.",
+        }),
+      ).toThrow("Only the active reviewer or approver can advance the current execution stage");
+    });
+
     it("skips a self-review-only review stage and advances to approval", () => {
       const policy = makePolicy([
         {
