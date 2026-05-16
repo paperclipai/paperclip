@@ -9,6 +9,7 @@ import { ThemeProvider } from "../context/ThemeContext";
 import { TooltipProvider } from "./ui/tooltip";
 import {
   pendingAskUserQuestionsInteraction,
+  pendingAskUserQuestionsWithFreeTextInteraction,
   commentExpiredRequestConfirmationInteraction,
   disabledDeclineReasonRequestConfirmationInteraction,
   failedRequestConfirmationInteraction,
@@ -113,7 +114,7 @@ describe("IssueThreadInteractionCard", () => {
   it("shows free-text textarea for selected options that allow it and submits the value", async () => {
     const onSubmitInteractionAnswers = vi.fn(async () => undefined);
     const host = renderCard({
-      interaction: pendingAskUserQuestionsInteraction,
+      interaction: pendingAskUserQuestionsWithFreeTextInteraction,
       onSubmitInteractionAnswers,
     });
 
