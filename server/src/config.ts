@@ -116,6 +116,11 @@ export interface Config {
   // route refuses every request -- accepting unsigned webhooks would
   // let any caller drive paperclip wakes by impersonating GitHub.
   githubWebhookSecret: string;
+  // Agent ID that receives an additional wake on `pull_request.opened`,
+  // `pull_request.ready_for_review`, and `pull_request_review.submitted`
+  // events to drive PR review automation. When unset, the github-webhook
+  // route only wakes the issue assignee (legacy behavior).
+  githubPrReviewerAgentId: string;
   telemetryEnabled: boolean;
 }
 
@@ -368,6 +373,14 @@ export function loadConfig(): Config {
       process.env.PAPERCLIP_LINEAR_REDIRECT_URI ??
       `http://localhost:${Number(process.env.PORT) || fileConfig?.server.port || 3100}/api/auth/linear/callback`,
     githubWebhookSecret: process.env.GITHUB_WEBHOOK_SECRET ?? "",
+    // Agent ID that receives an additional wake on `pull_request.opened`,
+    // `pull_request.ready_for_review`, and `pull_request_review.submitted`
+    // events to drive PR review automation. When unset, the github-webhook
+    // route only wakes the issue assignee (legacy behavior). The reviewer
+    // wake fires regardless of whether the PR branch references a paperclip
+    // identifier, so PRs without a BLO-XXX in the branch/title/body still
+    // get reviewed.
+    githubPrReviewerAgentId: process.env.PAPERCLIP_PR_REVIEWER_AGENT_ID ?? "",
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
   };
 }

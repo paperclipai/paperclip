@@ -487,6 +487,7 @@ ${error ? "" : "setTimeout(function(){window.close()},2000)"}
     githubWebhookRoutes(db, {
       webhookSecret: appConfig.githubWebhookSecret || null,
       pluginWorkerManager: workerManager,
+      prReviewerAgentId: appConfig.githubPrReviewerAgentId || null,
     }),
   );
 

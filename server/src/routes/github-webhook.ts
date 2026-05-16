@@ -27,7 +27,6 @@
  */
 import { Router } from "express";
 import crypto from "node:crypto";
-import { eq } from "drizzle-orm";
 import { type Db, issues } from "@paperclipai/db";
 import { heartbeatService } from "../services/heartbeat.js";
 import { logger } from "../middleware/logger.js";
@@ -42,6 +41,15 @@ export interface GithubWebhookConfig {
    */
   webhookSecret: string | null;
   pluginWorkerManager?: PluginWorkerManager;
+  /**
+   * Agent ID that receives an additional wake on PR-shaped events
+   * (`pull_request.opened`, `pull_request.ready_for_review`,
+   * `pull_request_review.submitted`). Drives automated PR review. The
+   * reviewer wake fires independently of the issue-assignee wake and
+   * does NOT require the PR branch/title/body to reference a paperclip
+   * identifier. When null, only the legacy issue-assignee wake fires.
+   */
+  prReviewerAgentId?: string | null;
 }
 
 // Conservative pattern: 2-10 uppercase letters, dash, 1-6 digits.
@@ -260,8 +268,80 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
 
     const payload = (req.body ?? {}) as Record<string, unknown>;
     const context = resolveEventContext(eventName, payload);
+
+    // PR-review wake fires independently of the identifier-matching
+    // issue-assignee wake below: it targets a dedicated reviewer agent so
+    // PRs without a paperclip identifier in the branch/title/body still
+    // get reviewed. We fire it once per delivery, only for the events
+    // that should drive a review:
+    //   - pull_request.opened          — new PR ready for first review
+    //   - pull_request.ready_for_review — draft promoted to ready
+    //   - pull_request_review.submitted — request a counter-review pass
+    // (We deliberately skip pull_request.closed/synchronize and check_run/
+    //  workflow_run — those are post-merge signals or per-push thrash.)
+    const prReviewWakeReasons = new Set([
+      "github_pr_opened",
+      "github_pr_ready_for_review",
+      "github_pr_review",
+    ]);
+    const reviewerWakeFired = await (async () => {
+      if (!config.prReviewerAgentId) return false;
+      if (!context || !context.wakeReason) return false;
+      if (!prReviewWakeReasons.has(context.wakeReason)) return false;
+      if (!context.prNumber) return false;
+      try {
+        const heartbeat = heartbeatService(db, {
+          pluginWorkerManager: config.pluginWorkerManager,
+        });
+        await heartbeat.wakeup(config.prReviewerAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: context.wakeReason,
+          payload: {
+            source: "github",
+            event: eventName,
+            deliveryId,
+            prNumber: context.prNumber,
+            repoFullName: context.repoFullName,
+            reviewKind: "pr_review",
+          },
+          contextSnapshot: {
+            wakeReason: context.wakeReason,
+            wakeSource: "automation",
+            wakeTriggerDetail: "system",
+            commentSource: "github",
+            githubEvent: eventName,
+            githubDeliveryId: deliveryId,
+            githubPrNumber: context.prNumber,
+            githubRepoFullName: context.repoFullName,
+            reviewKind: "pr_review",
+          },
+          // One wake per PR per event so a flurry of check_run/synchronize
+          // bursts on the same PR don't trigger N reviews.
+          idempotencyKey: `pr_review:${context.repoFullName ?? "unknown"}:${context.prNumber}:${context.wakeReason}`,
+        });
+        return true;
+      } catch (err) {
+        logger.error(
+          {
+            err,
+            agentId: config.prReviewerAgentId,
+            event: eventName,
+            prNumber: context?.prNumber,
+            repoFullName: context?.repoFullName,
+          },
+          "github webhook reviewer wake failed",
+        );
+        return false;
+      }
+    })();
+
     if (!context || context.identifiers.length === 0) {
-      res.status(200).json({ ok: true, ignored: "no_paperclip_identifier" });
+      res.status(200).json({
+        ok: true,
+        ignored: "no_paperclip_identifier",
+        reviewerWakeFired,
+      });
       return;
     }
 

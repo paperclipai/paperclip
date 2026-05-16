@@ -391,6 +391,51 @@ spec:
               else
                 echo "seed: skipping mcp.json — bridge stdio.js not found at ${MCP_BRIDGE_JS}"
               fi
+
+              # Install Claude Code plugins from claude-plugins-official +
+              # vectorize-io/hindsight marketplaces. The image bakes
+              # @anthropic-ai/claude-code but no plugins; the PVC at /paperclip
+              # masks anything baked under HOME, so plugins must be installed
+              # at pod boot (idempotent — `claude plugin install` no-ops if
+              # already present). Marketplaces only need to be added once but
+              # `marketplace add` is also idempotent. All inputs are static so
+              # this runs in ~30s on a fresh PVC and a few seconds on warm.
+              #
+              # Plugins land in /paperclip/.claude/plugins/, visible to both
+              # the server pod's claude sessions AND to any claude_k8s Job pod
+              # that mounts the same PVC.
+              #
+              # If `claude` is unavailable for any reason the block is
+              # non-fatal — agents that don't need these plugins continue to
+              # work, and the next seed run will retry.
+              CLAUDE_BIN="/usr/local/bin/claude"
+              if [ -x "${CLAUDE_BIN}" ]; then
+                # claude expects $HOME to point at the user's claude dir for
+                # plugin scope=user installs (default scope).
+                export HOME="${BASE}"
+                echo "seed: registering Claude Code plugin marketplaces"
+                "${CLAUDE_BIN}" plugin marketplace add anthropics/claude-plugins-official 2>&1 | grep -v "already" || true
+                "${CLAUDE_BIN}" plugin marketplace add vectorize-io/hindsight 2>&1 | grep -v "already" || true
+                echo "seed: installing Claude Code plugins (idempotent)"
+                for plugin in \
+                  pr-review-toolkit@claude-plugins-official \
+                  code-review@claude-plugins-official \
+                  commit-commands@claude-plugins-official \
+                  mcp-server-dev@claude-plugins-official \
+                  claude-md-management@claude-plugins-official \
+                  feature-dev@claude-plugins-official \
+                  agent-sdk-dev@claude-plugins-official \
+                  plugin-dev@claude-plugins-official \
+                  frontend-design@claude-plugins-official \
+                  hindsight-memory@hindsight \
+                ; do
+                  "${CLAUDE_BIN}" plugin install "${plugin}" 2>&1 | tail -2 || \
+                    echo "seed: plugin install ${plugin} failed (non-fatal)"
+                done
+                chown -R 1000:1000 "${BASE}/.claude" 2>/dev/null || true
+              else
+                echo "seed: skipping plugin install — claude not at ${CLAUDE_BIN}"
+              fi
           env:
             {{- if .Values.secret.masterKey }}
             - name: PAPERCLIP_MASTER_KEY_SEED
