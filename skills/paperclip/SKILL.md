@@ -94,6 +94,8 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 - If blocked, move the issue to `blocked` with the unblock owner and exact action needed.
 - Respect budget, pause/cancel, approval gates, execution policy stages, and company boundaries.
 
+Scope the work to one heartbeat. If the issue will not fit inside the configured timeout, do the smallest useful slice, leave a progress comment, and create or delegate a follow-up instead of overrunning the timeout.
+
 **Step 8 — Update status and communicate.** Always include the run ID header.
 If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
 

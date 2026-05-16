@@ -9,6 +9,7 @@ import {
   buildInvocationEnvForLogs,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   materializePaperclipSkillCopy,
+  ensurePathInEnv,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
   runningProcesses,
@@ -976,5 +977,30 @@ describe("appendWithByteCap", () => {
     expect(output).not.toContain("\uFFFD");
     expect(Buffer.from(output, "utf8").toString("utf8")).toBe(output);
     expect(Buffer.byteLength(output, "utf8")).toBeLessThanOrEqual(7);
+  });
+});
+
+describe("ensurePathInEnv", () => {
+  it.skipIf(process.platform === "win32")("adds ~/.local/bin to an existing PATH", () => {
+    const env = ensurePathInEnv({
+      HOME: "/Users/tester",
+      PATH: "/usr/bin:/bin",
+    });
+
+    const entries = env.PATH?.split(":") ?? [];
+    expect(entries.slice(0, 2)).toEqual(["/usr/bin", "/bin"]);
+    expect(entries).toContain("/Users/tester/.local/bin");
+    expect(entries).toContain("/usr/local/bin");
+  });
+
+  it.skipIf(process.platform === "win32")("fills a missing PATH with defaults and ~/.local/bin", () => {
+    const env = ensurePathInEnv({
+      HOME: "/Users/tester",
+    });
+
+    const entries = env.PATH?.split(":") ?? [];
+    expect(entries).toContain("/Users/tester/.local/bin");
+    expect(entries).toContain("/usr/local/bin");
+    expect(entries).toContain("/opt/homebrew/bin");
   });
 });

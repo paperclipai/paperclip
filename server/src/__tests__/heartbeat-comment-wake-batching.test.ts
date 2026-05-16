@@ -1163,6 +1163,212 @@ describe("heartbeat comment wake batching", () => {
     }
   }, 20_000);
 
+  it("drops deferred assignee wakes if ownership changes before promotion", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const primaryAgentId = randomUUID();
+    const reassignedAgentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values([
+        {
+          id: primaryAgentId,
+          companyId,
+          name: "Primary Agent",
+          role: "engineer",
+          status: "idle",
+          adapterType: "openclaw_gateway",
+          adapterConfig: {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            payloadTemplate: {
+              message: "wake now",
+            },
+            waitTimeoutMs: 2_000,
+          },
+          runtimeConfig: {},
+          permissions: {},
+        },
+        {
+          id: reassignedAgentId,
+          companyId,
+          name: "Reassigned Agent",
+          role: "engineer",
+          status: "idle",
+          adapterType: "openclaw_gateway",
+          adapterConfig: {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            payloadTemplate: {
+              message: "wake now",
+            },
+            waitTimeoutMs: 2_000,
+          },
+          runtimeConfig: {},
+          permissions: {},
+        },
+      ]);
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Prevent stale deferred assignee wake",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: primaryAgentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      const primaryRun = await heartbeat.wakeup(primaryAgentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_assigned",
+        },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+      });
+
+      expect(primaryRun).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+      await waitFor(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, primaryRun!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "running";
+      });
+
+      // Mark the primary run as having posted a comment so the
+      // missing-issue-comment follow-up path does not add extra runs.
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: primaryAgentId,
+        createdByRunId: primaryRun?.id ?? null,
+        body: "Primary run acknowledged",
+      });
+
+      await db
+        .update(issues)
+        .set({
+          assigneeAgentId: reassignedAgentId,
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, issueId));
+
+      const deferredWakeRun = await heartbeat.wakeup(reassignedAgentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_assigned",
+          source: "issue.update",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+
+      expect(deferredWakeRun).toBeNull();
+
+      await waitFor(async () => {
+        const deferred = await db
+          .select()
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, companyId),
+              eq(agentWakeupRequests.agentId, reassignedAgentId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        return Boolean(deferred);
+      });
+
+      await db
+        .update(issues)
+        .set({
+          assigneeAgentId: primaryAgentId,
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, issueId));
+
+      gateway.releaseFirstWait();
+
+      await waitFor(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, primaryRun!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "succeeded";
+      }, 90_000);
+
+      await waitFor(async () => {
+        const failed = await db
+          .select()
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, companyId),
+              eq(agentWakeupRequests.agentId, reassignedAgentId),
+              eq(agentWakeupRequests.status, "failed"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        return Boolean(failed);
+      }, 90_000);
+
+      const reassignedRuns = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, reassignedAgentId));
+      expect(reassignedRuns).toHaveLength(0);
+
+      const failedWake = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, reassignedAgentId),
+            eq(agentWakeupRequests.status, "failed"),
+          ),
+        )
+        .then((rows) => rows[rows.length - 1] ?? null);
+
+      expect(failedWake?.error ?? "").toContain("issue assignee changed");
+      expect(gateway.getAgentPayloads()).toHaveLength(1);
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
   it("defers mentioned-agent wakes while another agent is actively executing the same issue", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
