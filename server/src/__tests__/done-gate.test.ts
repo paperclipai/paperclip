@@ -8,6 +8,12 @@ vi.mock("../middleware/logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+// Mock node:child_process so execFileAsync in done-gate is controllable per test.
+// vitest hoists vi.mock() calls, so this runs before the module is imported.
+vi.mock("node:child_process", () => ({
+  execFile: vi.fn(),
+}));
+
 // Stub the DB — done-gate only uses it for project workspace lookup
 const mockDb = {
   select: vi.fn().mockReturnThis(),
@@ -28,6 +34,7 @@ function makeDbWithRepoUrl(repoUrl: string | null) {
   } as unknown as import("@paperclipai/db").Db;
 }
 
+import { execFile } from "node:child_process";
 import { validateDoneGate } from "../services/done-gate.js";
 
 // Helper: build a close comment body for Path A
@@ -281,20 +288,217 @@ describe("done-gate Path A structural validation", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Shadow mode
+// Path A — SHA verification via GitHub API (mocked fetch)
+// Use distinct SHAs per test to avoid hitting the module-level SHA cache.
 // ---------------------------------------------------------------------------
 
-describe("done-gate shadow mode", () => {
-  beforeEach(() => {
-    // Temporarily override the module-level constant via env
-    // (module is already loaded; test shadow mode by testing the behaviour inline)
+const GITHUB_REPO_URL = "https://github.com/paperclipai/paperclip";
+
+describe("done-gate Path A — SHA verification via GitHub API", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
   });
 
-  it("returns null (no rejection) when DONE_GATE_SHADOW_MODE=true regardless of missing block", async () => {
-    // We can't easily toggle the module constant after import, so test via
-    // the exported flag value being respected in the logic by patching the
-    // module. For now verify the flag is exported for external control.
-    const gateModule = await import("../services/done-gate.js");
-    expect(typeof gateModule.DONE_GATE_SHADOW_MODE).toBe("boolean");
+  it("accepts Path A when GitHub API returns 200 (SHA exists on main)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ status: 200 }));
+
+    const result = await validateDoneGate({
+      commentBody: pathABody({ sha: "b".repeat(40) }),
+      issueId: "issue-sha-200",
+      projectId: "proj-1",
+      companyId: "co-1",
+      db: makeDbWithRepoUrl(GITHUB_REPO_URL),
+    });
+    expect(result).toBeNull();
+  });
+
+  it("rejects with path_a_sha_not_found when GitHub API returns 404 (phantom SHA)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ status: 404 }));
+
+    const result = await validateDoneGate({
+      commentBody: pathABody({ sha: "c".repeat(40) }),
+      issueId: "issue-sha-404",
+      projectId: "proj-1",
+      companyId: "co-1",
+      db: makeDbWithRepoUrl(GITHUB_REPO_URL),
+    });
+    expect(result?.reason).toBe("path_a_sha_not_found");
+    expect(result?.details).toMatchObject({ verifiedSha: expect.stringContaining("404") });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Path A — SHA verification fallback paths (fetch unavailable → ls-remote)
+// ---------------------------------------------------------------------------
+
+describe("done-gate Path A — ls-remote fallback", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it("accepts when GitHub API times out but ls-remote confirms SHA as main HEAD", async () => {
+    const sha = "e".repeat(40);
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network timeout")));
+    // promisify(execFile) calls execFile(file, args, opts, callback); callback(err, value)
+    vi.mocked(execFile).mockImplementation((...args: any[]) => {
+      const cb = args[args.length - 1];
+      cb(null, { stdout: `${sha}\trefs/heads/main\n`, stderr: "" });
+      return {} as any;
+    });
+
+    const result = await validateDoneGate({
+      commentBody: pathABody({ sha }),
+      issueId: "issue-sha-ls-ok",
+      projectId: "proj-1",
+      companyId: "co-1",
+      db: makeDbWithRepoUrl(GITHUB_REPO_URL),
+    });
+    expect(result).toBeNull();
+  });
+
+  it("rejects with path_a_sha_infra_unavailable when both GitHub API and ls-remote fail", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network timeout")));
+    vi.mocked(execFile).mockImplementation((...args: any[]) => {
+      const cb = args[args.length - 1];
+      cb(new Error("git ls-remote failed"));
+      return {} as any;
+    });
+
+    const result = await validateDoneGate({
+      commentBody: pathABody({ sha: "d".repeat(40) }),
+      issueId: "issue-sha-double-fail",
+      projectId: "proj-1",
+      companyId: "co-1",
+      db: makeDbWithRepoUrl(GITHUB_REPO_URL),
+    });
+    expect(result?.reason).toBe("path_a_sha_infra_unavailable");
+  });
+
+  it("accepts via ls-remote directly for non-GitHub repo URLs when SHA matches main HEAD", async () => {
+    const sha = "4".repeat(40);
+    vi.mocked(execFile).mockImplementation((...args: any[]) => {
+      const cb = args[args.length - 1];
+      cb(null, { stdout: `${sha}\trefs/heads/main\n`, stderr: "" });
+      return {} as any;
+    });
+
+    const result = await validateDoneGate({
+      commentBody: pathABody({ sha }),
+      issueId: "issue-sha-non-gh-ok",
+      projectId: "proj-1",
+      companyId: "co-1",
+      db: makeDbWithRepoUrl("https://gitea.example.com/org/repo"),
+    });
+    expect(result).toBeNull();
+  });
+
+  it("rejects with path_a_sha_infra_unavailable when ls-remote fails for non-GitHub repo", async () => {
+    vi.mocked(execFile).mockImplementation((...args: any[]) => {
+      const cb = args[args.length - 1];
+      cb(new Error("git ls-remote: connection refused"));
+      return {} as any;
+    });
+
+    const result = await validateDoneGate({
+      commentBody: pathABody({ sha: "5".repeat(40) }),
+      issueId: "issue-sha-non-gh-fail",
+      projectId: "proj-1",
+      companyId: "co-1",
+      db: makeDbWithRepoUrl("https://gitea.example.com/org/repo"),
+    });
+    expect(result?.reason).toBe("path_a_sha_infra_unavailable");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shadow mode — behavioral tests
+// DONE_GATE_SHADOW_MODE is a module-level constant evaluated at import time.
+// Use vi.resetModules() + dynamic import to load a fresh module instance with
+// the env var set to "true", then restore after each test.
+// ---------------------------------------------------------------------------
+
+describe("done-gate shadow mode (behavioral)", () => {
+  afterEach(async () => {
+    process.env.DONE_GATE_SHADOW_MODE = "false";
+    vi.resetModules();
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  async function loadShadowGate() {
+    process.env.DONE_GATE_SHADOW_MODE = "true";
+    vi.resetModules();
+    const mod = await import("../services/done-gate.js");
+    expect(mod.DONE_GATE_SHADOW_MODE).toBe(true);
+    return mod.validateDoneGate;
+  }
+
+  it("suppresses missing_close_block — returns null instead of 422", async () => {
+    const shadowValidate = await loadShadowGate();
+    const result = await shadowValidate({
+      commentBody: "no valid close block here",
+      issueId: "issue-shadow-1",
+      projectId: null,
+      companyId: "co-1",
+      db: mockDb,
+    });
+    expect(result).toBeNull();
+  });
+
+  it("suppresses path_b_reason_not_allowed — returns null instead of 422", async () => {
+    const shadowValidate = await loadShadowGate();
+    const result = await shadowValidate({
+      commentBody: "non-shippable: completely-random-not-in-allowlist",
+      issueId: "issue-shadow-2",
+      projectId: null,
+      companyId: "co-1",
+      db: mockDb,
+    });
+    expect(result).toBeNull();
+  });
+
+  it("suppresses path_a_sha_not_found — returns null instead of 422", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ status: 404 }));
+    const shadowValidate = await loadShadowGate();
+    const result = await shadowValidate({
+      commentBody: pathABody({ sha: "0".repeat(40) }),
+      issueId: "issue-shadow-3",
+      projectId: "proj-1",
+      companyId: "co-1",
+      db: makeDbWithRepoUrl(GITHUB_REPO_URL),
+    });
+    expect(result).toBeNull();
+  });
+
+  it("suppresses path_a_sha_infra_unavailable — returns null instead of 422", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("timeout")));
+    vi.mocked(execFile).mockImplementation((...args: any[]) => {
+      const cb = args[args.length - 1];
+      cb(new Error("ls-remote failed"));
+      return {} as any;
+    });
+    const shadowValidate = await loadShadowGate();
+    const result = await shadowValidate({
+      commentBody: pathABody({ sha: "1".repeat(40) }),
+      issueId: "issue-shadow-4",
+      projectId: "proj-1",
+      companyId: "co-1",
+      db: makeDbWithRepoUrl(GITHUB_REPO_URL),
+    });
+    expect(result).toBeNull();
+  });
+
+  it("suppresses close_override_path_not_yet_enabled — returns null instead of 422", async () => {
+    const shadowValidate = await loadShadowGate();
+    const result = await shadowValidate({
+      commentBody: "close-override: approval-abc",
+      issueId: "issue-shadow-5",
+      projectId: null,
+      companyId: "co-1",
+      db: mockDb,
+    });
+    expect(result).toBeNull();
   });
 });
