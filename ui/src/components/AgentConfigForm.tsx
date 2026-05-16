@@ -190,6 +190,55 @@ function clampDelayMsFromSeconds(value: number) {
   return clampInteger(value, 0, MAX_TURN_CONTINUATION_MAX_DELAY_SEC) * 1000;
 }
 
+/* ---- Active window helpers ----
+   Mirrors server/src/services/heartbeat-window.ts. The server parser is the
+   source of truth; this UI just produces a well-shaped object for it. */
+
+const ACTIVE_WINDOW_DEFAULT = {
+  timezone: "Africa/Johannesburg",
+  daysOfWeek: [1, 2, 3, 4, 5] as number[],
+  startMinute: 9 * 60,
+  endMinute: 17 * 60,
+};
+const DAY_LABELS = ["S", "M", "T", "W", "T", "F", "S"];
+const DAY_FULL_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+function minutesToHHMM(total: number): string {
+  const m = clampInteger(total, 0, 24 * 60 - 1);
+  const hh = Math.floor(m / 60).toString().padStart(2, "0");
+  const mm = (m % 60).toString().padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+function hhmmToMinutes(value: string): number | null {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
+  if (!match) return null;
+  const hh = Number(match[1]);
+  const mm = Number(match[2]);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+  return hh * 60 + mm;
+}
+
+interface ActiveWindowShape {
+  timezone: string;
+  daysOfWeek: number[];
+  startMinute: number;
+  endMinute: number;
+}
+
+function normalizeActiveWindow(raw: unknown): ActiveWindowShape | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const tz = typeof obj.timezone === "string" && obj.timezone ? obj.timezone : ACTIVE_WINDOW_DEFAULT.timezone;
+  const days = Array.isArray(obj.daysOfWeek)
+    ? Array.from(new Set(obj.daysOfWeek.map((d) => Math.trunc(Number(d))).filter((d) => d >= 0 && d <= 6))).sort((a, b) => a - b)
+    : [...ACTIVE_WINDOW_DEFAULT.daysOfWeek];
+  const start = typeof obj.startMinute === "number" ? clampInteger(obj.startMinute, 0, 24 * 60 - 1) : ACTIVE_WINDOW_DEFAULT.startMinute;
+  const end = typeof obj.endMinute === "number" ? clampInteger(obj.endMinute, 0, 24 * 60 - 1) : ACTIVE_WINDOW_DEFAULT.endMinute;
+  return { timezone: tz, daysOfWeek: days, startMinute: start, endMinute: end };
+}
+
 
 /* ---- Form ---- */
 
@@ -1253,6 +1302,107 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   className={inputClass}
                 />
               </Field>
+              {(() => {
+                const rawWindow = eff<unknown>(
+                  "heartbeat",
+                  "activeWindow",
+                  (heartbeat.activeWindow ?? null) as unknown,
+                );
+                const window = normalizeActiveWindow(rawWindow);
+                const enabled = window !== null;
+                const w = window ?? ACTIVE_WINDOW_DEFAULT;
+                const updateWindow = (patch: Partial<ActiveWindowShape>) =>
+                  mark("heartbeat", "activeWindow", { ...w, ...patch });
+                const toggleDay = (day: number) => {
+                  const next = w.daysOfWeek.includes(day)
+                    ? w.daysOfWeek.filter((d) => d !== day)
+                    : [...w.daysOfWeek, day].sort((a, b) => a - b);
+                  // Server requires at least one day; ignore the click that would empty the set.
+                  if (next.length === 0) return;
+                  updateWindow({ daysOfWeek: next });
+                };
+                const crossesMidnight = w.endMinute < w.startMinute;
+                return (
+                  <div className="rounded-md border border-border/70 px-3 py-2">
+                    <ToggleField
+                      label="Limit to active hours"
+                      hint={help.activeWindow}
+                      checked={enabled}
+                      onChange={(v) =>
+                        mark("heartbeat", "activeWindow", v ? { ...ACTIVE_WINDOW_DEFAULT } : null)
+                      }
+                    />
+                    {enabled ? (
+                      <div className="mt-3 space-y-3">
+                        <Field label="Timezone" hint={help.activeWindowTimezone}>
+                          <input
+                            type="text"
+                            className={inputClass}
+                            value={w.timezone}
+                            placeholder="Africa/Johannesburg"
+                            onChange={(e) => updateWindow({ timezone: e.target.value })}
+                          />
+                        </Field>
+                        <Field label="Days" hint={help.activeWindowDays}>
+                          <div className="flex gap-1" role="group" aria-label="Days of week">
+                            {DAY_LABELS.map((label, day) => {
+                              const active = w.daysOfWeek.includes(day);
+                              return (
+                                <button
+                                  key={day}
+                                  type="button"
+                                  aria-pressed={active}
+                                  aria-label={DAY_FULL_NAMES[day]}
+                                  title={DAY_FULL_NAMES[day]}
+                                  onClick={() => toggleDay(day)}
+                                  className={cn(
+                                    "h-7 w-7 rounded-md border text-xs font-medium transition-colors",
+                                    active
+                                      ? "border-green-600 bg-green-600 text-white"
+                                      : "border-border bg-transparent text-muted-foreground hover:bg-accent/40",
+                                  )}
+                                >
+                                  {label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </Field>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <Field label="Start" hint={help.activeWindowStart}>
+                            <input
+                              type="time"
+                              className={inputClass}
+                              value={minutesToHHMM(w.startMinute)}
+                              onChange={(e) => {
+                                const m = hhmmToMinutes(e.target.value);
+                                if (m != null) updateWindow({ startMinute: m });
+                              }}
+                            />
+                          </Field>
+                          <Field label="End" hint={help.activeWindowEnd}>
+                            <input
+                              type="time"
+                              className={inputClass}
+                              value={minutesToHHMM(w.endMinute)}
+                              onChange={(e) => {
+                                const m = hhmmToMinutes(e.target.value);
+                                if (m != null) updateWindow({ endMinute: m });
+                              }}
+                            />
+                          </Field>
+                        </div>
+                        {crossesMidnight ? (
+                          <p className="text-[11px] text-muted-foreground">
+                            End is before start — window crosses midnight (active from start on each selected
+                            day through end the following morning).
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })()}
               <div className="rounded-md border border-border/70 px-3 py-2">
                 <ToggleField
                   label="Continue after max-turn stop"
