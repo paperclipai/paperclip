@@ -5288,6 +5288,41 @@ export function issueService(db: Db) {
       return [...resolved];
     },
 
+    /**
+     * Returns true if the given agent has been @-mentioned in any comment in the issue thread.
+     * Checks both the structured `[@Name](agent://agentId)` URI link form and the `@name` text form,
+     * consistent with the logic in `findMentionedAgents`.
+     */
+    hasAgentBeenMentionedInThread: async (issueId: string, companyId: string, agentId: string): Promise<boolean> => {
+      const agentRow = await db
+        .select({ name: agents.name })
+        .from(agents)
+        .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!agentRow) return false;
+
+      const uriPattern = `%agent://${agentId}%`;
+      const namePattern = `%@${agentRow.name.toLowerCase()}%`;
+
+      const result = await db
+        .select({ id: issueComments.id })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.issueId, issueId),
+            eq(issueComments.companyId, companyId),
+            or(
+              like(issueComments.body, uriPattern),
+              sql`lower(${issueComments.body}) like ${namePattern}`,
+            ),
+          ),
+        )
+        .limit(1);
+
+      return result.length > 0;
+    },
+
     findMentionedProjectIds: async (
       issueId: string,
       opts?: { includeCommentBodies?: boolean },

@@ -7,6 +7,7 @@ const mockIssueService = vi.hoisted(() => ({
   assertCheckoutOwner: vi.fn(),
   create: vi.fn(),
   findMentionedAgents: vi.fn(),
+  hasAgentBeenMentionedInThread: vi.fn(),
   getByIdentifier: vi.fn(),
   getById: vi.fn(),
   getRelationSummaries: vi.fn(),
@@ -186,6 +187,7 @@ describe("issue workspace command authorization", () => {
     mockIssueService.addComment.mockResolvedValue(null);
     mockIssueService.create.mockResolvedValue(makeIssue());
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockIssueService.hasAgentBeenMentionedInThread.mockResolvedValue(false);
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockIssueService.getByIdentifier.mockResolvedValue(null);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
