@@ -15,6 +15,7 @@ import {
 import {
   agents,
   companies,
+  companySecretBindings,
   companySecretVersions,
   companySecrets,
   createDb,
@@ -132,6 +133,18 @@ describeEmbeddedPostgres("environment runtime driver contract", () => {
           version: "latest",
         },
       };
+      // v513 requires a row in company_secret_bindings for every secret_ref
+      // a consumer resolves at runtime; without it, secretService.resolve
+      // throws "Secret is not bound to environment:<id> at <configPath>".
+      await db.insert(companySecretBindings).values({
+        companyId,
+        secretId: secret.id,
+        targetType: "environment",
+        targetId: environmentId,
+        configPath: "privateKeySecretRef",
+        versionSelector: "latest",
+        required: true,
+      });
     }
     await db.insert(environments).values({
       id: environmentId,

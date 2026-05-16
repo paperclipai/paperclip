@@ -132,11 +132,17 @@ describeEmbeddedPostgres("github-webhook route", () => {
 
   beforeEach(async () => {
     if (!db) return;
-    // Drain queued/running heartbeat runs before TRUNCATE so the
-    // scheduler isn't racing the cleanup (lifted from
-    // heartbeat-issue-liveness-escalation.test.ts).
+    // Drain queued/running heartbeat runs before TRUNCATE so the scheduler
+    // isn't racing the cleanup (lifted from heartbeat-issue-liveness-escalation).
+    // The wake-driving test enqueues a real heartbeat run that runs in a
+    // fire-and-forget `void executeRun(...)` (see services/heartbeat.ts).
+    // Under load that background execution can outlive the test it was spawned
+    // in; if so, we force-finalize the row so the FK cascade in TRUNCATE isn't
+    // blocked on in-flight row locks. The 30s drain budget absorbs CI runner
+    // variance without sticking forever.
+    const drainDeadline = Date.now() + 30_000;
     let idlePolls = 0;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    while (Date.now() < drainDeadline) {
       const runs = await db
         .select({ status: heartbeatRuns.status })
         .from(heartbeatRuns);
@@ -150,8 +156,11 @@ describeEmbeddedPostgres("github-webhook route", () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
+    await db.execute(sql.raw(
+      `UPDATE "heartbeat_runs" SET status='failed', finished_at=NOW() WHERE status IN ('queued','running')`,
+    ));
     await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
-  });
+  }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();

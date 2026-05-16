@@ -414,6 +414,11 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
           username: parsed.config.username,
           remoteWorkspacePath: parsed.config.remoteWorkspacePath,
           remoteCwd,
+          // The cache lookup above (`preferredCandidate`) reads
+          // `lease.metadata.paperclipApiUrl` from prior leases to short-
+          // circuit subsequent probes (BLO-1489). The v513 merge dropped
+          // this write — restore so the cache actually populates.
+          paperclipApiUrl,
         },
       });
     },

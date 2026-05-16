@@ -14,6 +14,7 @@ import {
 import {
   agents,
   companies,
+  companySecretBindings,
   companySecretVersions,
   companySecrets,
   createDb,
@@ -187,6 +188,18 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           version: "latest",
         },
       };
+      // v513 requires a row in company_secret_bindings for every secret_ref
+      // a consumer resolves at runtime; without it, secretService.resolve
+      // throws "Secret is not bound to environment:<id> at <configPath>".
+      await db.insert(companySecretBindings).values({
+        companyId,
+        secretId: secret.id,
+        targetType: "environment",
+        targetId: environmentId,
+        configPath: "privateKeySecretRef",
+        versionSelector: "latest",
+        required: true,
+      });
     }
     await db.insert(environments).values({
       id: environmentId,
@@ -753,8 +766,8 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(executed.stdout).toBe("ok\n");
     expect(released).toHaveLength(1);
     expect(released[0]?.lease.status).toBe("released");
-    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentExecute", expect.anything());
-    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentReleaseLease", expect.anything());
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentExecute", expect.anything(), expect.any(Number));
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentReleaseLease", expect.anything(), expect.any(Number));
   });
 
   it("uses resolved secret-ref config for plugin-backed sandbox execute and release", async () => {
@@ -782,6 +795,16 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       driver: "sandbox",
       name: environment.name,
       config: providerConfig,
+    });
+    // v513 requires a binding row for every secret_ref consumers resolve at runtime.
+    await db.insert(companySecretBindings).values({
+      companyId,
+      secretId: apiSecret.id,
+      targetType: "environment",
+      targetId: environment.id,
+      configPath: "apiKey",
+      versionSelector: "latest",
+      required: true,
     });
     await db.insert(plugins).values({
       id: pluginId,
@@ -894,12 +917,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       config: expect.objectContaining({
         apiKey: "resolved-provider-key",
       }),
-    }));
+    }), expect.any(Number));
     expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentReleaseLease", expect.objectContaining({
       config: expect.objectContaining({
         apiKey: "resolved-provider-key",
       }),
-    }));
+    }), expect.any(Number));
   });
 
   it("falls back to acquire when plugin-backed sandbox lease resume throws", async () => {
@@ -1009,7 +1032,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(workerManager.call).toHaveBeenNthCalledWith(1, pluginId, "environmentResumeLease", expect.objectContaining({
       driverKey: "fake-plugin",
       providerLeaseId: "stale-plugin-lease",
-    }));
+    }), expect.any(Number));
     expect(workerManager.call).toHaveBeenNthCalledWith(2, pluginId, "environmentAcquireLease", expect.objectContaining({
       driverKey: "fake-plugin",
       config: {
@@ -1018,7 +1041,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         reuseLease: true,
       },
       runId,
-    }));
+    }), expect.any(Number));
   });
 
   it("releases a sandbox run lease from metadata after the environment config changes", async () => {
@@ -1133,6 +1156,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       driverKey: "fake-plugin",
       companyId,
       environmentId: environment.id,
+      issueId: null,
       config: { template: "base" },
       runId,
       workspaceMode: undefined,
@@ -1168,6 +1192,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       driverKey: "fake-plugin",
       companyId,
       environmentId: environment.id,
+      issueId: null,
       config: {},
       providerLeaseId: "plugin-lease-1",
       leaseMetadata: expect.objectContaining({
@@ -1326,6 +1351,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       driverKey: "fake-plugin",
       companyId,
       environmentId: environment.id,
+      issueId: null,
       config: { template: "base" },
       providerLeaseId: "plugin-lease-full",
       leaseMetadata: expect.objectContaining({
@@ -1351,11 +1377,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       args: ["ok"],
       cwd: "/workspace/project",
       env: { FOO: "bar" },
-    }));
+    }), expect.any(Number));
     expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentDestroyLease", {
       driverKey: "fake-plugin",
       companyId,
       environmentId: environment.id,
+      issueId: null,
       config: { template: "base" },
       providerLeaseId: "plugin-lease-full",
       leaseMetadata: expect.objectContaining({

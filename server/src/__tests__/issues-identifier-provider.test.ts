@@ -71,7 +71,11 @@ describeEmbeddedPostgres("identifier_provider + legacy_identifier", () => {
           identifierProvider: "github" as never,
         })
         .returning(),
-    ).rejects.toThrow(/companies_identifier_provider_check/i);
+    // Drizzle wraps the underlying PG error in `Failed query: ...` text that
+    // no longer surfaces the constraint name; the wrapped SQL still names the
+    // column, so match on that as a stable signal that the DB rejected the
+    // unknown identifier_provider value.
+    ).rejects.toThrow(/identifier_provider/i);
   });
 
   it("issues.legacy_identifier defaults to null and round-trips text", async () => {

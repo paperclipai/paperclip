@@ -288,6 +288,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       "paperclipai.plugin-llm-wiki",
       createEventBusStub(),
       undefined,
+      undefined,
       {
         manifest: {
           id: "paperclipai.plugin-llm-wiki",
@@ -381,6 +382,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       pluginId,
       "paperclip.local-folders",
       createEventBusStub(),
+      undefined,
       undefined,
       {
         manifest: {
