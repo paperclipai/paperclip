@@ -61,6 +61,7 @@ jobs:
             TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}" \
             PAPERCLIP_API_URL="${{ secrets.PAPERCLIP_API_URL }}" \
             CHASE_PAPERCLIP_API_KEY="${{ secrets.CHASE_PAPERCLIP_API_KEY }}" \
+            CHASE_AGENT_ID="${{ secrets.CHASE_AGENT_ID }}" \
             PAPERCLIP_COMPANY_ID="${{ secrets.PAPERCLIP_COMPANY_ID }}"
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
