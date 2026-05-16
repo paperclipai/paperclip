@@ -8,6 +8,7 @@ import type { Issue, RoutineListItem } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   Routines,
+  buildRoutinesTabHref,
   buildRoutineGroups,
   countRoutinesByStatus,
   deriveRoutineHealthBadges,
@@ -487,6 +488,14 @@ describe("Routines page", () => {
     expect(filterRoutinesByStatus(routines, "active").map((routine) => routine.id)).toEqual(["routine-active"]);
     expect(filterRoutinesByStatus(routines, "paused").map((routine) => routine.id)).toEqual(["routine-paused"]);
     expect(filterRoutinesByStatus(routines, "archived").map((routine) => routine.id)).toEqual(["routine-archived"]);
+  });
+
+  it("preserves routine status filters when building tab navigation URLs", () => {
+    expect(buildRoutinesTabHref("routines", "active")).toBe("/routines");
+    expect(buildRoutinesTabHref("routines", "archived")).toBe("/routines?status=archived");
+    expect(buildRoutinesTabHref("runs", "active")).toBe("/routines?tab=runs");
+    expect(buildRoutinesTabHref("runs", "paused")).toBe("/routines?tab=runs&status=paused");
+    expect(buildRoutinesTabHref("runs", "archived")).toBe("/routines?tab=runs&status=archived");
   });
 
   it("derives routine health badges for trigger and stale last-run states", () => {
