@@ -24,6 +24,33 @@ import { loadPaperclipEnvFile } from "./config/env.js";
 import { initTelemetryFromConfigFile, flushTelemetry } from "./telemetry.js";
 import { registerWorktreeCommands } from "./commands/worktree.js";
 import { registerPluginCommands } from "./commands/client/plugin.js";
+import { registerProjectCommands } from "./commands/client/project.js";
+import { registerGoalCommands } from "./commands/client/goal.js";
+import { registerSecretCommands } from "./commands/client/secret.js";
+import { registerEnvironmentCommands } from "./commands/client/environment.js";
+import { registerCostCommands } from "./commands/client/cost.js";
+import { registerFinanceCommands } from "./commands/client/finance.js";
+import { registerBudgetCommands } from "./commands/client/budget.js";
+import {
+  registerRunCommands,
+  registerWorkspaceOperationCommands,
+} from "./commands/client/run.js";
+import { registerRoutineClientCommands } from "./commands/client/routine.js";
+import { registerExecutionWorkspaceCommands } from "./commands/client/execution-workspace.js";
+import { registerAdapterCommands } from "./commands/client/adapter.js";
+import { registerCompanySkillCommands } from "./commands/client/company-skill.js";
+import { registerInstanceCommands } from "./commands/client/instance.js";
+import { registerUserCommands } from "./commands/client/user.js";
+import { registerIssueExtensionCommands } from "./commands/client/issue-extras.js";
+import { registerIssueTreeControlCommands } from "./commands/client/issue-tree-control.js";
+import { registerAgentExtensionCommands } from "./commands/client/agent-extras.js";
+import { registerCompanyExtensionCommands } from "./commands/client/company-extras.js";
+import { registerPluginExtensionCommands } from "./commands/client/plugin-extras.js";
+import { registerAccessCommands } from "./commands/client/access.js";
+import { registerLlmsCommands } from "./commands/client/llms.js";
+import { registerAssetCommands } from "./commands/client/asset.js";
+import { registerAttachmentExtensionCommands } from "./commands/client/attachment-extras.js";
+import { registerApprovalExtensionCommands } from "./commands/client/approval-extras.js";
 import { registerClientAuthCommands } from "./commands/client/auth.js";
 import { cliVersion } from "./version.js";
 
@@ -152,6 +179,31 @@ registerSecretCommands(program);
 registerWorktreeCommands(program);
 registerEnvLabCommands(program);
 registerPluginCommands(program);
+registerProjectCommands(program);
+registerGoalCommands(program);
+registerSecretCommands(program);
+registerEnvironmentCommands(program);
+registerCostCommands(program);
+registerFinanceCommands(program);
+registerBudgetCommands(program);
+registerRunCommands(program);
+registerWorkspaceOperationCommands(program);
+registerRoutineClientCommands(program);
+registerExecutionWorkspaceCommands(program);
+registerAdapterCommands(program);
+registerCompanySkillCommands(program);
+registerInstanceCommands(program);
+registerUserCommands(program);
+registerIssueExtensionCommands(program);
+registerAttachmentExtensionCommands(program);
+registerIssueTreeControlCommands(program);
+registerAgentExtensionCommands(program);
+registerCompanyExtensionCommands(program);
+registerPluginExtensionCommands(program);
+registerApprovalExtensionCommands(program);
+registerAccessCommands(program);
+registerLlmsCommands(program);
+registerAssetCommands(program);
 
 const auth = program.command("auth").description("Authentication and bootstrap utilities");
 

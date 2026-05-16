@@ -1,5 +1,12 @@
 import { Command } from "commander";
-import type { Agent } from "@paperclipai/shared";
+import {
+  createAgentKeySchema,
+  createAgentSchema,
+  updateAgentPermissionsSchema,
+  updateAgentSchema,
+  wakeAgentSchema,
+  type Agent,
+} from "@paperclipai/shared";
 import {
   removeMaintainerOnlySkillSymlinks,
   resolvePaperclipSkillsDir,
@@ -25,6 +32,111 @@ interface AgentLocalCliOptions extends BaseClientOptions {
   companyId?: string;
   keyName?: string;
   installSkills?: boolean;
+}
+
+interface AgentCreateOptions extends BaseClientOptions {
+  companyId?: string;
+  name: string;
+  adapterType: string;
+  role?: string;
+  title?: string;
+  icon?: string;
+  reportsTo?: string;
+  capabilities?: string;
+  desiredSkills?: string;
+  adapterConfig?: string;
+  runtimeConfig?: string;
+  defaultEnvironmentId?: string;
+  budgetMonthlyCents?: string;
+  metadata?: string;
+}
+
+interface AgentUpdateOptions extends BaseClientOptions {
+  name?: string;
+  role?: string;
+  title?: string;
+  icon?: string;
+  reportsTo?: string;
+  capabilities?: string;
+  desiredSkills?: string;
+  adapterType?: string;
+  adapterConfig?: string;
+  replaceAdapterConfig?: boolean;
+  runtimeConfig?: string;
+  defaultEnvironmentId?: string;
+  budgetMonthlyCents?: string;
+  status?: string;
+  metadata?: string;
+}
+
+interface AgentDeleteOptions extends BaseClientOptions {
+  yes?: boolean;
+}
+
+interface AgentPermissionsOptions extends BaseClientOptions {
+  canCreateAgents: string;
+  canAssignTasks: string;
+}
+
+interface AgentKeyCreateOptions extends BaseClientOptions {
+  name?: string;
+}
+
+interface AgentKeyDeleteOptions extends BaseClientOptions {
+  yes?: boolean;
+}
+
+interface AgentWakeupOptions extends BaseClientOptions {
+  source?: string;
+  triggerDetail?: string;
+  reason?: string;
+  payload?: string;
+  idempotencyKey?: string;
+  forceFreshSession?: boolean;
+}
+
+function parseJsonObject(
+  raw: string | undefined,
+  flag: string,
+): Record<string, unknown> | undefined {
+  if (raw === undefined) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`--${flag} must be valid JSON: ${(err as Error).message}`);
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`--${flag} must be a JSON object`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function parseBoolFlag(value: string, name: string): boolean {
+  const v = value.toLowerCase();
+  if (v === "true" || v === "1" || v === "yes") return true;
+  if (v === "false" || v === "0" || v === "no") return false;
+  throw new Error(`--${name} must be true or false`);
+}
+
+function parseIntOpt(value: string | undefined, name: string): number | undefined {
+  if (value === undefined) return undefined;
+  const n = Number(value);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+    throw new Error(`--${name} must be a non-negative integer`);
+  }
+  return n;
+}
+
+function splitCsv(value: string | undefined): string[] | undefined {
+  if (value === undefined) return undefined;
+  return value.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+async function confirmAction(message: string): Promise<boolean> {
+  const { confirm } = await import("@clack/prompts");
+  const answer = await confirm({ message, initialValue: false });
+  return answer === true;
 }
 
 interface CreatedAgentKey {
@@ -306,6 +418,306 @@ export function registerAgentCommands(program: Command): void {
           console.log("");
           console.log("# Run this in your shell before launching codex/claude:");
           console.log(exportsText);
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("create")
+      .description("Create a new agent in a company")
+      .requiredOption("-C, --company-id <id>", "Company ID")
+      .requiredOption("--name <name>", "Agent display name")
+      .requiredOption("--adapter-type <type>", "Adapter type (e.g. claude, codex, copilot)")
+      .option("--role <role>", "Agent role")
+      .option("--title <title>", "Agent title")
+      .option("--icon <icon>", "Agent icon name")
+      .option("--reports-to <id>", "Manager agent UUID")
+      .option("--capabilities <text>", "Capabilities description")
+      .option("--desired-skills <list>", "Comma-separated desired skill names")
+      .option("--adapter-config <json>", "Adapter config as JSON object", "{}")
+      .option("--runtime-config <json>", "Runtime config as JSON object", "{}")
+      .option("--default-environment-id <id>", "Default environment UUID")
+      .option("--budget-monthly-cents <n>", "Monthly budget in cents")
+      .option("--metadata <json>", "Metadata as JSON object")
+      .action(async (opts: AgentCreateOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts, { requireCompany: true });
+
+          const payload: Record<string, unknown> = {
+            name: opts.name,
+            adapterType: opts.adapterType,
+          };
+          if (opts.role !== undefined) payload.role = opts.role;
+          if (opts.title !== undefined) payload.title = opts.title;
+          if (opts.icon !== undefined) payload.icon = opts.icon;
+          if (opts.reportsTo !== undefined) payload.reportsTo = opts.reportsTo;
+          if (opts.capabilities !== undefined) payload.capabilities = opts.capabilities;
+          const skills = splitCsv(opts.desiredSkills);
+          if (skills !== undefined) payload.desiredSkills = skills;
+          const adapterConfig = parseJsonObject(opts.adapterConfig, "adapter-config");
+          if (adapterConfig !== undefined) payload.adapterConfig = adapterConfig;
+          const runtimeConfig = parseJsonObject(opts.runtimeConfig, "runtime-config");
+          if (runtimeConfig !== undefined) payload.runtimeConfig = runtimeConfig;
+          if (opts.defaultEnvironmentId !== undefined)
+            payload.defaultEnvironmentId = opts.defaultEnvironmentId;
+          const budget = parseIntOpt(opts.budgetMonthlyCents, "budget-monthly-cents");
+          if (budget !== undefined) payload.budgetMonthlyCents = budget;
+          const metadata = parseJsonObject(opts.metadata, "metadata");
+          if (metadata !== undefined) payload.metadata = metadata;
+
+          const parsed = createAgentSchema.parse(payload);
+          const row = await ctx.api.post<Agent>(
+            `/api/companies/${ctx.companyId}/agents`,
+            parsed,
+          );
+          printOutput(row, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("update")
+      .description("Update an agent's mutable fields")
+      .argument("<agentId>", "Agent ID")
+      .option("--name <name>", "New name")
+      .option("--role <role>", "New role")
+      .option("--title <title>", "New title")
+      .option("--icon <icon>", "New icon")
+      .option("--reports-to <id>", "New manager agent UUID (or empty string to unset)")
+      .option("--capabilities <text>", "New capabilities description")
+      .option("--desired-skills <list>", "Comma-separated desired skills (replaces list)")
+      .option("--adapter-type <type>", "New adapter type")
+      .option("--adapter-config <json>", "Adapter config as JSON object (merged unless --replace-adapter-config)")
+      .option("--replace-adapter-config", "Replace adapter config wholesale instead of merging")
+      .option("--runtime-config <json>", "Runtime config as JSON object")
+      .option("--default-environment-id <id>", "New default environment UUID")
+      .option("--budget-monthly-cents <n>", "New monthly budget in cents")
+      .option("--status <status>", "New status")
+      .option("--metadata <json>", "Metadata as JSON object")
+      .action(async (agentId: string, opts: AgentUpdateOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const payload: Record<string, unknown> = {};
+          if (opts.name !== undefined) payload.name = opts.name;
+          if (opts.role !== undefined) payload.role = opts.role;
+          if (opts.title !== undefined) payload.title = opts.title;
+          if (opts.icon !== undefined) payload.icon = opts.icon;
+          if (opts.reportsTo !== undefined) payload.reportsTo = opts.reportsTo === "" ? null : opts.reportsTo;
+          if (opts.capabilities !== undefined) payload.capabilities = opts.capabilities;
+          const skills = splitCsv(opts.desiredSkills);
+          if (skills !== undefined) payload.desiredSkills = skills;
+          if (opts.adapterType !== undefined) payload.adapterType = opts.adapterType;
+          const adapterConfig = parseJsonObject(opts.adapterConfig, "adapter-config");
+          if (adapterConfig !== undefined) payload.adapterConfig = adapterConfig;
+          if (opts.replaceAdapterConfig) payload.replaceAdapterConfig = true;
+          const runtimeConfig = parseJsonObject(opts.runtimeConfig, "runtime-config");
+          if (runtimeConfig !== undefined) payload.runtimeConfig = runtimeConfig;
+          if (opts.defaultEnvironmentId !== undefined)
+            payload.defaultEnvironmentId = opts.defaultEnvironmentId === ""
+              ? null
+              : opts.defaultEnvironmentId;
+          const budget = parseIntOpt(opts.budgetMonthlyCents, "budget-monthly-cents");
+          if (budget !== undefined) payload.budgetMonthlyCents = budget;
+          if (opts.status !== undefined) payload.status = opts.status;
+          const metadata = parseJsonObject(opts.metadata, "metadata");
+          if (metadata !== undefined) payload.metadata = metadata;
+
+          const parsed = updateAgentSchema.parse(payload);
+          const row = await ctx.api.patch<Agent>(
+            `/api/agents/${encodeURIComponent(agentId)}`,
+            parsed,
+          );
+          printOutput(row, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("delete")
+      .description("Delete an agent")
+      .argument("<agentId>", "Agent ID")
+      .option("-y, --yes", "Skip confirmation prompt")
+      .action(async (agentId: string, opts: AgentDeleteOptions) => {
+        try {
+          if (!opts.yes && process.stdin.isTTY) {
+            const ok = await confirmAction(`Delete agent ${agentId}? This cannot be undone.`);
+            if (!ok) {
+              console.error("Aborted.");
+              process.exit(1);
+            }
+          }
+          const ctx = resolveCommandContext(opts);
+          const row = await ctx.api.delete<Agent>(`/api/agents/${encodeURIComponent(agentId)}`);
+          printOutput(row, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  for (const action of ["pause", "resume", "approve", "terminate"] as const) {
+    addCommonClientOptions(
+      agent
+        .command(action)
+        .description(`${action[0].toUpperCase()}${action.slice(1)} an agent`)
+        .argument("<agentId>", "Agent ID")
+        .action(async (agentId: string, opts: BaseClientOptions) => {
+          try {
+            const ctx = resolveCommandContext(opts);
+            const row = await ctx.api.post<Agent>(
+              `/api/agents/${encodeURIComponent(agentId)}/${action}`,
+              {},
+            );
+            printOutput(row, { json: ctx.json });
+          } catch (err) {
+            handleCommandError(err);
+          }
+        }),
+      { includeCompany: false },
+    );
+  }
+
+  addCommonClientOptions(
+    agent
+      .command("permissions")
+      .description("Update agent permissions (canCreateAgents, canAssignTasks)")
+      .argument("<agentId>", "Agent ID")
+      .requiredOption("--can-create-agents <bool>", "true or false")
+      .requiredOption("--can-assign-tasks <bool>", "true or false")
+      .action(async (agentId: string, opts: AgentPermissionsOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const parsed = updateAgentPermissionsSchema.parse({
+            canCreateAgents: parseBoolFlag(opts.canCreateAgents, "can-create-agents"),
+            canAssignTasks: parseBoolFlag(opts.canAssignTasks, "can-assign-tasks"),
+          });
+          const row = await ctx.api.patch<Agent>(
+            `/api/agents/${encodeURIComponent(agentId)}/permissions`,
+            parsed,
+          );
+          printOutput(row, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("wakeup")
+      .description("Wake up an agent (enqueue a heartbeat run)")
+      .argument("<agentId>", "Agent ID")
+      .option("--source <source>", "Source (timer, assignment, on_demand, automation)")
+      .option("--trigger-detail <detail>", "Trigger detail (manual, ping, callback, system)")
+      .option("--reason <text>", "Reason")
+      .option("--payload <json>", "Wake-up payload as JSON object")
+      .option("--idempotency-key <key>", "Idempotency key")
+      .option("--force-fresh-session", "Force a fresh session")
+      .action(async (agentId: string, opts: AgentWakeupOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const payload: Record<string, unknown> = {};
+          if (opts.source !== undefined) payload.source = opts.source;
+          if (opts.triggerDetail !== undefined) payload.triggerDetail = opts.triggerDetail;
+          if (opts.reason !== undefined) payload.reason = opts.reason;
+          const wakePayload = parseJsonObject(opts.payload, "payload");
+          if (wakePayload !== undefined) payload.payload = wakePayload;
+          if (opts.idempotencyKey !== undefined) payload.idempotencyKey = opts.idempotencyKey;
+          if (opts.forceFreshSession) payload.forceFreshSession = true;
+
+          const parsed = wakeAgentSchema.parse(payload);
+          const row = await ctx.api.post<unknown>(
+            `/api/agents/${encodeURIComponent(agentId)}/wakeup`,
+            parsed,
+          );
+          printOutput(row, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  const key = agent.command("key").description("Agent API key operations");
+
+  addCommonClientOptions(
+    key
+      .command("list")
+      .description("List API keys for an agent")
+      .argument("<agentId>", "Agent ID")
+      .action(async (agentId: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const rows = (await ctx.api.get<unknown[]>(
+            `/api/agents/${encodeURIComponent(agentId)}/keys`,
+          )) ?? [];
+          printOutput(rows, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    key
+      .command("create")
+      .description("Create a new API key for an agent (token returned once)")
+      .argument("<agentId>", "Agent ID")
+      .option("--name <name>", "Key label", "default")
+      .action(async (agentId: string, opts: AgentKeyCreateOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const payload = createAgentKeySchema.parse({ name: opts.name ?? "default" });
+          const row = await ctx.api.post<CreatedAgentKey>(
+            `/api/agents/${encodeURIComponent(agentId)}/keys`,
+            payload,
+          );
+          printOutput(row, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    key
+      .command("delete")
+      .description("Delete an API key")
+      .argument("<agentId>", "Agent ID")
+      .argument("<keyId>", "Key ID")
+      .option("-y, --yes", "Skip confirmation prompt")
+      .action(async (agentId: string, keyId: string, opts: AgentKeyDeleteOptions) => {
+        try {
+          if (!opts.yes && process.stdin.isTTY) {
+            const ok = await confirmAction(
+              `Delete API key ${keyId} for agent ${agentId}? Anything using it will lose access.`,
+            );
+            if (!ok) {
+              console.error("Aborted.");
+              process.exit(1);
+            }
+          }
+          const ctx = resolveCommandContext(opts);
+          const row = await ctx.api.delete<unknown>(
+            `/api/agents/${encodeURIComponent(agentId)}/keys/${encodeURIComponent(keyId)}`,
+          );
+          printOutput(row, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }
