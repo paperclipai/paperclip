@@ -53,6 +53,8 @@ import {
   goalService,
   heartbeatService,
   issueApprovalService,
+  issueDispositionService,
+  extractDispositionRowFromMetadata,
   issueThreadInteractionService,
   ISSUE_LIST_DEFAULT_LIMIT,
   ISSUE_LIST_MAX_LIMIT,
@@ -804,6 +806,7 @@ export function issueRoutes(
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
+  const dispositionSvc = issueDispositionService(db);
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
@@ -4393,15 +4396,50 @@ export function issueRoutes(
       }
     }
 
-    const comment = await svc.addComment(id, req.body.body, {
-      agentId: actor.agentId ?? undefined,
-      userId: actor.actorType === "user" ? actor.actorId : undefined,
-      runId: actor.runId,
-    }, {
-      authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
-      presentation: req.body.presentation ?? null,
-      metadata: req.body.metadata ?? null,
-    });
+    const dispositionMatch = extractDispositionRowFromMetadata(req.body.metadata ?? null);
+    let comment: Awaited<ReturnType<typeof svc.addComment>>;
+    let dispositionApplied: Awaited<ReturnType<typeof dispositionSvc.applyCommentDisposition>> | null = null;
+    if (dispositionMatch) {
+      try {
+        dispositionApplied = await dispositionSvc.applyCommentDisposition({
+          issueId: id,
+          body: req.body.body,
+          authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+          presentation: req.body.presentation ?? null,
+          metadata: req.body.metadata,
+          actor: {
+            actorType: actor.actorType === "agent" ? "agent" : actor.actorType === "user" ? "user" : "system",
+            agentId: actor.agentId ?? null,
+            userId: actor.actorType === "user" ? actor.actorId ?? null : null,
+            runId: actor.runId ?? null,
+          },
+        });
+      } catch (err) {
+        if (err instanceof HttpError) {
+          res.status(err.status).json({ error: err.message, details: err.details });
+          return;
+        }
+        throw err;
+      }
+      // Re-fetch through the issue service so the returned comment shape (with
+      // redaction + author type normalization) matches the legacy code path.
+      const reloadedComment = await svc.getComment(dispositionApplied.comment.id);
+      comment = reloadedComment ?? (dispositionApplied.comment as unknown as Awaited<ReturnType<typeof svc.addComment>>);
+      if (dispositionApplied.applied) {
+        const updatedIssue = await svc.getById(id);
+        if (updatedIssue) currentIssue = updatedIssue;
+      }
+    } else {
+      comment = await svc.addComment(id, req.body.body, {
+        agentId: actor.agentId ?? undefined,
+        userId: actor.actorType === "user" ? actor.actorId : undefined,
+        runId: actor.runId,
+      }, {
+        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+        presentation: req.body.presentation ?? null,
+        metadata: req.body.metadata ?? null,
+      });
+    }
     await issueReferencesSvc.syncComment(comment.id);
     const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(currentIssue.id);
     const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
@@ -4431,6 +4469,21 @@ export function issueRoutes(
         ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
         ...(interruptedRunId ? { interruptedRunId } : {}),
+        ...(dispositionApplied
+          ? {
+            disposition: {
+              value: dispositionApplied.dispositionValue,
+              applied: dispositionApplied.applied,
+              noop: dispositionApplied.noop,
+              previousStatus: dispositionApplied.evidence.previousStatus,
+              nextStatus: dispositionApplied.evidence.nextStatus,
+              parentBlockerIntention: dispositionApplied.evidence.parentBlockerIntention,
+              sourceRunId: dispositionApplied.evidence.sourceRunId,
+              sourceCommentId: dispositionApplied.evidence.sourceCommentId,
+              idempotencyKey: dispositionApplied.idempotencyKey,
+            },
+          }
+          : {}),
         ...summarizeIssueReferenceActivityDetails({
           addedReferencedIssues: commentReferenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
           removedReferencedIssues: commentReferenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),

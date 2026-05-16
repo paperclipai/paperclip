@@ -39,6 +39,19 @@ export {
 } from "./final-delivery-sender.js";
 export { issueTreeControlService } from "./issue-tree-control.js";
 export { issueApprovalService } from "./issue-approvals.js";
+export {
+  DISPOSITION_ERROR_CODES,
+  countDispositionRows,
+  dispositionBodyEquivalent,
+  extractDispositionRowFromMetadata,
+  issueDispositionService,
+  validateWorkerSelfAttest,
+  type AppliedCommentDispositionResult,
+  type ApplyCommentDispositionInput,
+  type DispositionErrorCode,
+  type DispositionWriterActor,
+  type IssueDispositionService,
+} from "./issue-disposition.js";
 export { issueReferenceService } from "./issue-references.js";
 export { goalService } from "./goals.js";
 export { activityService, type ActivityFilters } from "./activity.js";

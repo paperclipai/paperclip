@@ -1,0 +1,212 @@
+import { describe, expect, it } from "vitest";
+import { buildIssueDispositionIdempotencyKey, type IssueCommentMetadata } from "@paperclipai/shared";
+import {
+  countDispositionRows,
+  dispositionBodyEquivalent,
+  extractDispositionRowFromMetadata,
+  validateWorkerSelfAttest,
+} from "./issue-disposition.js";
+
+const ISSUE_ID = "11111111-1111-4111-8111-111111111111";
+const RUN_ID = "22222222-2222-4222-8222-222222222222";
+const AGENT_ID = "33333333-3333-4333-8333-333333333333";
+const OTHER_AGENT_ID = "44444444-4444-4444-8444-444444444444";
+
+function buildMetadata(rows: IssueCommentMetadata["sections"][number]["rows"], sourceRunId: string | null = RUN_ID): IssueCommentMetadata {
+  return {
+    version: 1,
+    sourceRunId,
+    sections: [{ title: null, rows }],
+  };
+}
+
+function buildDispositionRow(overrides?: Partial<{
+  value: "done" | "blocked" | "needs_review" | "needs_qa" | "needs_approval" | "needs_fix" | "duplicate" | "superseded" | "not_actionable";
+  idempotencyKey: string;
+  reason: string | null;
+}>): IssueCommentMetadata["sections"][number]["rows"][number] {
+  const value = overrides?.value ?? "done";
+  return {
+    type: "disposition",
+    value,
+    reason: overrides?.reason ?? "All work completed",
+    evidenceRefs: [],
+    idempotencyKey:
+      overrides?.idempotencyKey
+      ?? buildIssueDispositionIdempotencyKey({ issueId: ISSUE_ID, sourceRunId: RUN_ID, dispositionValue: value }),
+  };
+}
+
+describe("extractDispositionRowFromMetadata", () => {
+  it("returns null when metadata is missing", () => {
+    expect(extractDispositionRowFromMetadata(null)).toBeNull();
+    expect(extractDispositionRowFromMetadata(undefined)).toBeNull();
+  });
+
+  it("returns null when no disposition row is present", () => {
+    const metadata = buildMetadata([
+      { type: "text", text: "hello" },
+    ]);
+    expect(extractDispositionRowFromMetadata(metadata)).toBeNull();
+  });
+
+  it("finds the first disposition row across sections", () => {
+    const dispositionRow = buildDispositionRow();
+    const metadata: IssueCommentMetadata = {
+      version: 1,
+      sourceRunId: RUN_ID,
+      sections: [
+        { rows: [{ type: "text", text: "non-disposition" }] },
+        { rows: [dispositionRow] },
+      ],
+    };
+    const match = extractDispositionRowFromMetadata(metadata);
+    expect(match).not.toBeNull();
+    expect(match?.sectionIndex).toBe(1);
+    expect(match?.rowIndex).toBe(0);
+    expect(match?.row.type).toBe("disposition");
+  });
+});
+
+describe("countDispositionRows", () => {
+  it("counts disposition rows across all sections", () => {
+    const metadata: IssueCommentMetadata = {
+      version: 1,
+      sourceRunId: RUN_ID,
+      sections: [
+        { rows: [buildDispositionRow({ value: "done" }), { type: "text", text: "note" }] },
+        { rows: [buildDispositionRow({ value: "blocked", idempotencyKey: buildIssueDispositionIdempotencyKey({ issueId: ISSUE_ID, sourceRunId: RUN_ID, dispositionValue: "blocked" }) })] },
+      ],
+    };
+    expect(countDispositionRows(metadata)).toBe(2);
+  });
+
+  it("returns 0 for empty/null metadata", () => {
+    expect(countDispositionRows(null)).toBe(0);
+  });
+});
+
+describe("dispositionBodyEquivalent", () => {
+  const row = buildDispositionRow();
+  const baseMetadata = buildMetadata([row]);
+
+  it("treats identical body+metadata as equivalent", () => {
+    expect(
+      dispositionBodyEquivalent(
+        { body: "hello", metadata: baseMetadata },
+        { body: "hello", metadata: baseMetadata },
+      ),
+    ).toBe(true);
+  });
+
+  it("ignores key order in nested metadata objects", () => {
+    const alt: IssueCommentMetadata = {
+      version: 1,
+      sections: baseMetadata.sections,
+      sourceRunId: baseMetadata.sourceRunId,
+    };
+    expect(dispositionBodyEquivalent({ body: "hello", metadata: baseMetadata }, { body: "hello", metadata: alt })).toBe(true);
+  });
+
+  it("rejects body differences", () => {
+    expect(
+      dispositionBodyEquivalent(
+        { body: "hello", metadata: baseMetadata },
+        { body: "world", metadata: baseMetadata },
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects metadata payload differences", () => {
+    const otherMetadata = buildMetadata([buildDispositionRow({ reason: "Different reason" })]);
+    expect(
+      dispositionBodyEquivalent(
+        { body: "hello", metadata: baseMetadata },
+        { body: "hello", metadata: otherMetadata },
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("validateWorkerSelfAttest", () => {
+  const baseInput = {
+    dispositionValue: "done" as const,
+    actor: { actorType: "agent" as const, agentId: AGENT_ID, userId: null, runId: RUN_ID },
+    issueAssigneeAgentId: AGENT_ID,
+    issueAssigneeUserId: null,
+    approvedDecisionActors: [
+      { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "review" as const },
+      { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "approval" as const },
+    ],
+    hasReviewStage: true,
+    hasApprovalStage: true,
+  };
+
+  it("allows a worker when distinct reviewer and approver decisions exist", () => {
+    expect(validateWorkerSelfAttest(baseInput).ok).toBe(true);
+  });
+
+  it("rejects worker self-attest when only their own approved review decision exists", () => {
+    const result = validateWorkerSelfAttest({
+      ...baseInput,
+      approvedDecisionActors: [
+        { actorAgentId: AGENT_ID, actorUserId: null, stageType: "review" },
+        { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "approval" },
+      ],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected rejection");
+    expect(result.missing).toBe("distinct_reviewer");
+  });
+
+  it("rejects worker self-attest when only their own approval decision exists", () => {
+    const result = validateWorkerSelfAttest({
+      ...baseInput,
+      approvedDecisionActors: [
+        { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "review" },
+        { actorAgentId: AGENT_ID, actorUserId: null, stageType: "approval" },
+      ],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected rejection");
+    expect(result.missing).toBe("distinct_approval_owner");
+  });
+
+  it("skips check entirely for non-done dispositions", () => {
+    expect(validateWorkerSelfAttest({
+      ...baseInput,
+      dispositionValue: "needs_review",
+      approvedDecisionActors: [],
+    }).ok).toBe(true);
+  });
+
+  it("skips check entirely when actor is not the assignee", () => {
+    expect(validateWorkerSelfAttest({
+      ...baseInput,
+      actor: { actorType: "agent", agentId: OTHER_AGENT_ID, userId: null, runId: RUN_ID },
+      approvedDecisionActors: [],
+    }).ok).toBe(true);
+  });
+
+  it("skips review check when no review stage exists", () => {
+    expect(validateWorkerSelfAttest({
+      ...baseInput,
+      hasReviewStage: false,
+      approvedDecisionActors: [
+        { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "approval" },
+      ],
+    }).ok).toBe(true);
+  });
+
+  it("rejects when no approved approval decision exists at all but stage required", () => {
+    const result = validateWorkerSelfAttest({
+      ...baseInput,
+      approvedDecisionActors: [
+        { actorAgentId: OTHER_AGENT_ID, actorUserId: null, stageType: "review" },
+      ],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected rejection");
+    expect(result.missing).toBe("distinct_approval_owner");
+  });
+});
