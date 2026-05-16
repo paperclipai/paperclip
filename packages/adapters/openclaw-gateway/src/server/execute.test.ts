@@ -1,5 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { resolveSessionKey } from "./execute.js";
+import { isSensitiveLogKey, resolveSessionKey } from "./execute.js";
+
+describe("isSensitiveLogKey", () => {
+  it("matches existing snake/dash-bounded sensitive keys", () => {
+    expect(isSensitiveLogKey("authorization")).toBe(true);
+    expect(isSensitiveLogKey("api_key")).toBe(true);
+    expect(isSensitiveLogKey("x-openclaw-auth")).toBe(true);
+    expect(isSensitiveLogKey("x-openclaw-token")).toBe(true);
+  });
+
+  it("matches camelCase gatewayToken and gatewayPassword", () => {
+    expect(isSensitiveLogKey("gatewayToken")).toBe(true);
+    expect(isSensitiveLogKey("gatewayPassword")).toBe(true);
+  });
+
+  it("does not match benign keys", () => {
+    expect(isSensitiveLogKey("agentId")).toBe(false);
+    expect(isSensitiveLogKey("issueId")).toBe(false);
+    expect(isSensitiveLogKey("model")).toBe(false);
+    expect(isSensitiveLogKey("gatewayUrl")).toBe(false);
+  });
+});
 
 describe("resolveSessionKey", () => {
   it("prefixes run-scoped session keys with the configured agent", () => {

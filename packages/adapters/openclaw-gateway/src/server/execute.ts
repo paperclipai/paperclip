@@ -93,8 +93,11 @@ const DEFAULT_CLIENT_MODE = "backend";
 const DEFAULT_CLIENT_VERSION = "paperclip";
 const DEFAULT_ROLE = "operator";
 
+// Extend the snake/dash-bounded keyword match with explicit camelCase keys so
+// that any future caller that injects gatewayToken/gatewayPassword into
+// agentParams gets those values redacted in the outbound payload log.
 const SENSITIVE_LOG_KEY_PATTERN =
-  /(^|[_-])(auth|authorization|token|secret|password|api[_-]?key|private[_-]?key)([_-]|$)|^x-openclaw-(auth|token)$/i;
+  /(^|[_-])(auth|authorization|token|secret|password|api[_-]?key|private[_-]?key)([_-]|$)|^x-openclaw-(auth|token)$|^gatewayToken$|^gatewayPassword$/i;
 
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
@@ -246,7 +249,7 @@ function resolveAuthToken(config: Record<string, unknown>, headers: Record<strin
   return tokenFromAuthHeader(authHeader);
 }
 
-function isSensitiveLogKey(key: string): boolean {
+export function isSensitiveLogKey(key: string): boolean {
   return SENSITIVE_LOG_KEY_PATTERN.test(key.trim());
 }
 
