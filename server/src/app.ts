@@ -382,6 +382,19 @@ export async function createApp(
     });
     const renderViteHtml = viteHtmlRenderer;
 
+    // Serve /sw.js explicitly so it never reaches Vite's transform pipeline.
+    // Without this, an intercepting browser-side SW or HMR edge case can
+    // trigger Vite's "public file imported from source" overlay error.
+    const swPath = path.join(publicUiRoot, "sw.js");
+    if (fs.existsSync(swPath)) {
+      app.get("/sw.js", (_req, res) => {
+        res
+          .set("Content-Type", "application/javascript")
+          .set("Cache-Control", "no-cache")
+          .set("Service-Worker-Allowed", "/")
+          .sendFile(swPath);
+      });
+    }
     if (fs.existsSync(publicUiRoot)) {
       app.use(express.static(publicUiRoot, { index: false }));
     }
