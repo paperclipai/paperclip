@@ -74,6 +74,10 @@ vi.mock("./SidebarCompanyMenu", () => ({
   SidebarCompanyMenu: () => <div>Company menu</div>,
 }));
 
+vi.mock("./SidebarOrgMenu", () => ({
+  SidebarOrgMenu: () => <div>Org menu</div>,
+}));
+
 vi.mock("./SidebarProjects", () => ({
   SidebarProjects: () => null,
 }));
