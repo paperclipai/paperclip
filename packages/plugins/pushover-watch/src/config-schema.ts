@@ -2,6 +2,7 @@ export type CompanyConfig = {
   companyId: string;
   issuePrefix: string;
   topAgentIds: string[];
+  secretaryAgentIds?: string[];
   enabled?: boolean;
 };
 

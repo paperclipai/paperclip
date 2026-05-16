@@ -4,9 +4,24 @@ import type {
   CompanyConfig,
   CachedIssueState,
 } from "./config-schema.js";
-import { matchesT1, matchesT2, matchesT3 } from "./transitions.js";
+import { matchesT1, matchesT2, matchesT3, matchesT6, type T6Status } from "./transitions.js";
 import { commentMentionsUser } from "./mentions.js";
 import { sendPushover, sendGlance, type SendParams } from "./pushover-client.js";
+
+// Server-internal housekeeping issue origins. The recovery service creates
+// these issues (e.g. "Recover stalled issue PAP-1", "Recover missing next step
+// PAP-1") and they cycle through todo → done on their own; pushing them to the
+// watch is pure noise.
+const SUPPRESSED_ORIGIN_KINDS: ReadonlySet<string> = new Set([
+  "stranded_issue_recovery",
+  "stale_active_run_evaluation",
+  "harness_liveness_escalation",
+  "issue_productivity_review",
+]);
+
+function isSystemRecoveryIssue(originKind: string | null | undefined): boolean {
+  return !!originKind && SUPPRESSED_ORIGIN_KINDS.has(originKind);
+}
 
 type GlancePayload = {
   title: string;
@@ -42,6 +57,32 @@ function issueUrl(config: PluginConfig, company: CompanyConfig, identifier: stri
 
 function truncate(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max - 1) + "…";
+}
+
+function secretaryPushLabels(
+  prefix: string,
+  status: T6Status,
+): { titleLabel: string; glanceTitle: string; priority: 0 | 1 } {
+  switch (status) {
+    case "done":
+      return {
+        titleLabel: `[${prefix}] Sekretärin erledigt`,
+        glanceTitle: `[${prefix}] Sekretärin erledigt`,
+        priority: 0,
+      };
+    case "in_review":
+      return {
+        titleLabel: `[${prefix}] Sekretärin: Review`,
+        glanceTitle: `[${prefix}] Sekretärin: Review`,
+        priority: 0,
+      };
+    case "blocked":
+      return {
+        titleLabel: `[${prefix}] Sekretärin: Blockiert`,
+        glanceTitle: `[${prefix}] Sekretärin: Blockiert`,
+        priority: 1,
+      };
+  }
 }
 
 async function dispatch(
@@ -95,6 +136,14 @@ export async function handleIssueUpdated(
     return;
   }
 
+  if (isSystemRecoveryIssue(issue.originKind)) {
+    ctx.logger.info("pushover_watch_skip_system_origin", {
+      issueId,
+      originKind: issue.originKind,
+    });
+    return;
+  }
+
   const prev = (await ctx.state.get(issueStateKey(issueId))) as CachedIssueState | null;
 
   const next: CachedIssueState = {
@@ -119,6 +168,35 @@ export async function handleIssueUpdated(
   const title = issue.title ?? "";
 
   const identifierLabel = issue.identifier ?? "";
+
+  // T6: Sekretärin transition into done / in_review / blocked.
+  // Checked before T1/T2/T3 so the more specific Sekretärin label wins when
+  // the same transition would also match a generic trigger (e.g. Sekretärin
+  // hands an issue to Walter via in_review → T6, not T2).
+  const t6 = matchesT6(prev, next, company.secretaryAgentIds ?? []);
+  if (t6) {
+    const { titleLabel, glanceTitle, priority } = secretaryPushLabels(company.issuePrefix, t6);
+    const { userKey, appToken } = await resolveCredentials(ctx, config);
+    await dispatch(
+      ctx,
+      config,
+      {
+        userKey,
+        appToken,
+        title: `${titleLabel}: ${truncate(title, 80)}`,
+        message: title,
+        url,
+        urlTitle: "In Paperclip öffnen",
+        priority,
+      },
+      {
+        title: glanceTitle,
+        text: title,
+        subtext: identifierLabel,
+      },
+    );
+    return;
+  }
 
   // T1: CEO/CHO done
   if (matchesT1(prev, next, company.topAgentIds)) {
@@ -231,6 +309,7 @@ export async function handleCommentCreated(
     ctx.issues.listComments(issueId, event.companyId),
   ]);
   if (!issue) return;
+  if (isSystemRecoveryIssue(issue.originKind)) return;
 
   const comment = comments.find((c) => c.id === commentId);
   if (!comment) return;

@@ -252,8 +252,11 @@ runWorker(plugin, import.meta.url);
 | T3 | `issue.updated` | `prev.status≠blocked ∧ new.status=blocked ∧ jüngster Kommentar enthält user://<boardUserId>` | `1` | `[<PREFIX>] Blockiert, braucht dich: <issue.title>` |
 | T4 | `issue.comment.created` | Body matcht `user://18r34Ghx5N0LHRptMCT6Fp1WaoGqhvc9` UND Author ≠ Walter | `0` | `[<PREFIX>] @-Mention von <author>: <issue.title>` |
 | T5 | `approval.created` | `payload.type=request_board_approval ∧ payload.status=pending` | `1` | `[<PREFIX>] Approval wartet: <payload.title>` |
+| T6 | `issue.updated` | `prev.status≠new.status ∧ new.status ∈ {done, in_review, blocked} ∧ (prev.assigneeAgentId ∈ companyCfg.secretaryAgentIds ∨ new.assigneeAgentId ∈ companyCfg.secretaryAgentIds)` | `0` (done/in_review) / `1` (blocked) | `[<PREFIX>] Sekretärin erledigt / Sekretärin: Review / Sekretärin: Blockiert: <issue.title>` |
 
-**Click-Back-URL** für T1–T4: `<clickbackBaseUrl>/<PREFIX>/issues/<issue.identifier>`
+T6 läuft vor T1/T2/T3 und preemptet überlappende Matches (z.B. Sekretärin → `in_review` mit Walter als assignee würde sonst T2 feuern — stattdessen Sekretärin-Label). Bei leerem `secretaryAgentIds` (z.B. HEA) ist T6 inaktiv.
+
+**Click-Back-URL** für T1–T4 und T6: `<clickbackBaseUrl>/<PREFIX>/issues/<issue.identifier>`
 **Click-Back-URL** für T5: `<clickbackBaseUrl>/<PREFIX>/approvals/<approval.id>`
 
 ## State-Management (Ansatz B)

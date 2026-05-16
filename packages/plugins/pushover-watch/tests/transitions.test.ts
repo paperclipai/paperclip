@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { matchesT1, matchesT2, matchesT3 } from "../src/transitions.js";
+import { matchesT1, matchesT2, matchesT3, matchesT6 } from "../src/transitions.js";
 import type { CachedIssueState } from "../src/config-schema.js";
 
 const CEO = "506c873e-3a40-4483-9a45-0eb0fa1554bb";
@@ -92,5 +92,56 @@ describe("matchesT3 — blocked transition (mention check is caller's job)", () 
     const prev = state({ status: "blocked" });
     const next = state({ status: "blocked" });
     expect(matchesT3(prev, next)).toBe(false);
+  });
+});
+
+const SECRETARY = "e24b8d9d-143e-4141-b413-4361aa618771";
+
+describe("matchesT6 — Sekretärin transition", () => {
+  it("returns the new status when Sekretärin was assignee and status changes to in_review", () => {
+    const prev = state({ status: "in_progress", assigneeAgentId: SECRETARY });
+    const next = state({ status: "in_review", assigneeAgentId: null, assigneeUserId: WALTER });
+    expect(matchesT6(prev, next, [SECRETARY])).toBe("in_review");
+  });
+
+  it("returns 'done' when Sekretärin is still the assignee and status moves to done", () => {
+    const prev = state({ status: "in_progress", assigneeAgentId: SECRETARY });
+    const next = state({ status: "done", assigneeAgentId: SECRETARY });
+    expect(matchesT6(prev, next, [SECRETARY])).toBe("done");
+  });
+
+  it("returns 'blocked' on transition into blocked, regardless of comment mention", () => {
+    const prev = state({ status: "in_progress", assigneeAgentId: SECRETARY });
+    const next = state({ status: "blocked", assigneeAgentId: SECRETARY });
+    expect(matchesT6(prev, next, [SECRETARY])).toBe("blocked");
+  });
+
+  it("returns null when secretaryAgentIds is empty", () => {
+    const prev = state({ status: "in_progress", assigneeAgentId: SECRETARY });
+    const next = state({ status: "done", assigneeAgentId: SECRETARY });
+    expect(matchesT6(prev, next, [])).toBe(null);
+  });
+
+  it("returns null when no Sekretärin was ever involved", () => {
+    const prev = state({ status: "in_progress", assigneeAgentId: CEO });
+    const next = state({ status: "done", assigneeAgentId: CEO });
+    expect(matchesT6(prev, next, [SECRETARY])).toBe(null);
+  });
+
+  it("returns null when status did not change", () => {
+    const prev = state({ status: "in_review", assigneeAgentId: SECRETARY });
+    const next = state({ status: "in_review", assigneeAgentId: SECRETARY });
+    expect(matchesT6(prev, next, [SECRETARY])).toBe(null);
+  });
+
+  it("returns null when next.status is not one of done/in_review/blocked", () => {
+    const prev = state({ status: "todo", assigneeAgentId: SECRETARY });
+    const next = state({ status: "in_progress", assigneeAgentId: SECRETARY });
+    expect(matchesT6(prev, next, [SECRETARY])).toBe(null);
+  });
+
+  it("fires on first-event (prev=null) when Sekretärin issue arrives in a trigger status", () => {
+    const next = state({ status: "in_review", assigneeAgentId: SECRETARY });
+    expect(matchesT6(null, next, [SECRETARY])).toBe("in_review");
   });
 });

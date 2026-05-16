@@ -29,3 +29,23 @@ export function matchesT3(
   if (prev?.status === "blocked") return false;
   return true;
 }
+
+export type T6Status = "done" | "in_review" | "blocked";
+
+export function matchesT6(
+  prev: CachedIssueState | null,
+  next: CachedIssueState,
+  secretaryAgentIds: string[],
+): T6Status | null {
+  if (secretaryAgentIds.length === 0) return null;
+  if (prev?.status === next.status) return null;
+  if (next.status !== "done" && next.status !== "in_review" && next.status !== "blocked") {
+    return null;
+  }
+  const wasSecretary =
+    !!prev?.assigneeAgentId && secretaryAgentIds.includes(prev.assigneeAgentId);
+  const isSecretary =
+    !!next.assigneeAgentId && secretaryAgentIds.includes(next.assigneeAgentId);
+  if (!wasSecretary && !isSecretary) return null;
+  return next.status;
+}

@@ -3,6 +3,7 @@ import { handleIssueUpdated, handleCommentCreated, handleApprovalCreated } from 
 import type { PluginConfig, CachedIssueState } from "../src/config-schema.js";
 
 const CEO = "506c873e-3a40-4483-9a45-0eb0fa1554bb";
+const SECRETARY = "e24b8d9d-143e-4141-b413-4361aa618771";
 const WALTER = "18r34Ghx5N0LHRptMCT6Fp1WaoGqhvc9";
 const WHI = "9cebf3cf-efe8-4597-a400-f06488900a87";
 
@@ -14,7 +15,13 @@ function baseConfig(): PluginConfig {
     clickbackBaseUrl: "https://company.whitestag.ai",
     dryRun: false,
     companies: [
-      { companyId: WHI, issuePrefix: "WHI", topAgentIds: [CEO], enabled: true },
+      {
+        companyId: WHI,
+        issuePrefix: "WHI",
+        topAgentIds: [CEO],
+        secretaryAgentIds: [SECRETARY],
+        enabled: true,
+      },
     ],
   };
 }
@@ -26,6 +33,7 @@ type IssueStub = {
   status?: string;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
+  originKind?: string | null;
 };
 
 function makeCtx(
@@ -207,6 +215,135 @@ describe("handleIssueUpdated", () => {
     await handleIssueUpdated(ctx, baseConfig(), issueUpdatedEvent({ status: "blocked" }) as any);
     expect(ctx.http.fetch).not.toHaveBeenCalled();
   });
+
+  it("fires T6 when Sekretärin hands an issue to Walter via in_review", async () => {
+    const prev: CachedIssueState = {
+      status: "in_progress",
+      assigneeAgentId: SECRETARY,
+      assigneeUserId: null,
+      updatedAt: "2026-05-11T09:00:00.000Z",
+    };
+    const ctx = makeCtx(prev, {
+      issue: { status: "in_review", assigneeAgentId: null, assigneeUserId: WALTER },
+    });
+    await handleIssueUpdated(ctx, baseConfig(), issueUpdatedEvent({ status: "in_review" }) as any);
+
+    expect(ctx.http.fetch).toHaveBeenCalledTimes(2);
+    const body = messagesCall(ctx);
+    expect(body.get("title")).toMatch(/^\[WHI\] Sekretärin: Review:/);
+    expect(body.get("priority")).toBe("0");
+
+    const glance = glanceCall(ctx);
+    expect(glance.get("title")).toBe("[WHI] Sekretärin: Review");
+  });
+
+  it("fires T6 (done) when Sekretärin closes an issue herself", async () => {
+    const prev: CachedIssueState = {
+      status: "in_progress",
+      assigneeAgentId: SECRETARY,
+      assigneeUserId: null,
+      updatedAt: "2026-05-11T09:00:00.000Z",
+    };
+    const ctx = makeCtx(prev, {
+      issue: { status: "done", assigneeAgentId: SECRETARY },
+    });
+    await handleIssueUpdated(ctx, baseConfig(), issueUpdatedEvent({ status: "done" }) as any);
+    const body = messagesCall(ctx);
+    expect(body.get("title")).toMatch(/^\[WHI\] Sekretärin erledigt:/);
+    expect(body.get("priority")).toBe("0");
+  });
+
+  it("fires T6 (blocked, priority 1) without requiring a Walter @-mention", async () => {
+    const prev: CachedIssueState = {
+      status: "in_progress",
+      assigneeAgentId: SECRETARY,
+      assigneeUserId: null,
+      updatedAt: "2026-05-11T09:00:00.000Z",
+    };
+    const ctx = makeCtx(prev, {
+      issue: { status: "blocked", assigneeAgentId: SECRETARY },
+      comments: [
+        { id: "c-1", body: "kein mention hier", authorAgentId: SECRETARY, authorUserId: null, createdAt: new Date() },
+      ],
+    });
+    await handleIssueUpdated(ctx, baseConfig(), issueUpdatedEvent({ status: "blocked" }) as any);
+    const body = messagesCall(ctx);
+    expect(body.get("title")).toMatch(/^\[WHI\] Sekretärin: Blockiert:/);
+    expect(body.get("priority")).toBe("1");
+  });
+
+  it("T6 preempts T2 (no double-fire) when Sekretärin moves issue to in_review for Walter", async () => {
+    const prev: CachedIssueState = {
+      status: "in_progress",
+      assigneeAgentId: SECRETARY,
+      assigneeUserId: null,
+      updatedAt: "2026-05-11T09:00:00.000Z",
+    };
+    const ctx = makeCtx(prev, {
+      issue: { status: "in_review", assigneeAgentId: SECRETARY, assigneeUserId: WALTER },
+    });
+    await handleIssueUpdated(ctx, baseConfig(), issueUpdatedEvent({ status: "in_review" }) as any);
+
+    expect(ctx.http.fetch).toHaveBeenCalledTimes(2);
+    const body = messagesCall(ctx);
+    expect(body.get("title")).toMatch(/^\[WHI\] Sekretärin: Review:/);
+    expect(body.get("title")).not.toMatch(/Review-Handover/);
+  });
+
+  it("does NOT fire T6 for a non-Sekretärin agent", async () => {
+    const prev: CachedIssueState = {
+      status: "in_progress",
+      assigneeAgentId: "other-agent",
+      assigneeUserId: null,
+      updatedAt: "2026-05-11T09:00:00.000Z",
+    };
+    const ctx = makeCtx(prev, {
+      issue: { status: "in_review", assigneeAgentId: "other-agent", assigneeUserId: null },
+    });
+    await handleIssueUpdated(ctx, baseConfig(), issueUpdatedEvent({ status: "in_review" }) as any);
+    // T2 also won't fire (assigneeUserId !== Walter) — should be silent
+    expect(ctx.http.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "stranded_issue_recovery",
+    "stale_active_run_evaluation",
+    "harness_liveness_escalation",
+    "issue_productivity_review",
+  ])("suppresses notifications when originKind=%s (system recovery issue)", async (originKind) => {
+    const prev: CachedIssueState = {
+      status: "in_progress",
+      assigneeAgentId: CEO,
+      assigneeUserId: null,
+      updatedAt: "2026-05-11T09:00:00.000Z",
+    };
+    const ctx = makeCtx(prev, {
+      issue: {
+        status: "done",
+        assigneeAgentId: CEO,
+        title: "Recover stalled issue WHI-42",
+        originKind,
+      },
+    });
+    await handleIssueUpdated(ctx, baseConfig(), issueUpdatedEvent() as any);
+    expect(ctx.http.fetch).not.toHaveBeenCalled();
+  });
+
+  it("does NOT fire T6 when secretaryAgentIds is empty (HEA-like company)", async () => {
+    const cfg = baseConfig();
+    cfg.companies[0].secretaryAgentIds = [];
+    const prev: CachedIssueState = {
+      status: "in_progress",
+      assigneeAgentId: SECRETARY,
+      assigneeUserId: null,
+      updatedAt: "2026-05-11T09:00:00.000Z",
+    };
+    const ctx = makeCtx(prev, {
+      issue: { status: "done", assigneeAgentId: SECRETARY },
+    });
+    await handleIssueUpdated(ctx, cfg, issueUpdatedEvent({ status: "done" }) as any);
+    expect(ctx.http.fetch).not.toHaveBeenCalled();
+  });
 });
 
 function commentCreatedEvent(commentId: string, issueId = "iss-1") {
@@ -270,6 +407,23 @@ describe("handleCommentCreated (T4)", () => {
   it("does not fire when comment cannot be located in the parent issue", async () => {
     const ctx = makeCtx(null, { comments: [] });
     await handleCommentCreated(ctx, baseConfig(), commentCreatedEvent("c-missing") as any);
+    expect(ctx.http.fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not fire @-mention notification on a system-recovery issue", async () => {
+    const ctx = makeCtx(null, {
+      issue: { originKind: "stranded_issue_recovery", title: "Recover stalled issue WHI-42" },
+      comments: [
+        {
+          id: "c-9",
+          body: `[@Walter](user://${WALTER}) — handover`,
+          authorAgentId: "agent-x",
+          authorUserId: null,
+          createdAt: new Date(),
+        },
+      ],
+    });
+    await handleCommentCreated(ctx, baseConfig(), commentCreatedEvent("c-9") as any);
     expect(ctx.http.fetch).not.toHaveBeenCalled();
   });
 
