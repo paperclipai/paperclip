@@ -634,6 +634,7 @@ function IssueManagementStories() {
                   childIssues={childIssues}
                   onAddSubIssue={() => undefined}
                   onUpdate={() => undefined}
+                  onSubmitExecutionDecision={async () => undefined}
                   inline
                 />
               </div>

@@ -96,7 +96,12 @@ function ScheduledRetrySurfaceStories() {
             IssueProperties Scheduled retry row - hidden when no live retry
           </div>
           <div className="rounded-lg border border-border bg-background/70 p-4">
-            <IssueProperties issue={baseIssue} onUpdate={() => undefined} inline />
+            <IssueProperties
+              issue={baseIssue}
+              onUpdate={() => undefined}
+              onSubmitExecutionDecision={async () => undefined}
+              inline
+            />
           </div>
         </section>
 
@@ -108,6 +113,7 @@ function ScheduledRetrySurfaceStories() {
             <IssueProperties
               issue={issueWithRetry(transientRetry)}
               onUpdate={() => undefined}
+              onSubmitExecutionDecision={async () => undefined}
               inline
             />
           </div>
@@ -121,6 +127,7 @@ function ScheduledRetrySurfaceStories() {
             <IssueProperties
               issue={issueWithRetry(continuationRetry)}
               onUpdate={() => undefined}
+              onSubmitExecutionDecision={async () => undefined}
               inline
             />
           </div>
@@ -134,6 +141,7 @@ function ScheduledRetrySurfaceStories() {
             <IssueProperties
               issue={issueWithRetry(dueNowRetry)}
               onUpdate={() => undefined}
+              onSubmitExecutionDecision={async () => undefined}
               inline
             />
           </div>
