@@ -44,4 +44,16 @@ describe("openCode models", () => {
       }),
     ).rejects.toThrow("Failed to start command");
   });
+
+  it("accepts an openrouter/ provider/model id without running discovery", () => {
+    expect(requireOpenCodeModelId("openrouter/anthropic/claude-sonnet-4.5")).toBe(
+      "openrouter/anthropic/claude-sonnet-4.5",
+    );
+  });
+
+  it("rejects a bare model name without provider prefix", () => {
+    expect(() => requireOpenCodeModelId("claude-sonnet-4.5")).toThrow(
+      "OpenCode requires `adapterConfig.model`",
+    );
+  });
 });
