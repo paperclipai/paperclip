@@ -645,6 +645,27 @@ export function pluginRoutes(
     return [];
   }
 
+  function resolvePluginConfigCompanyId(req: Request): string | null {
+    const body = req.body as { companyId?: unknown } | undefined;
+    const rawCompanyId = typeof req.query.companyId === "string"
+      ? req.query.companyId
+      : typeof body?.companyId === "string"
+        ? body.companyId
+        : null;
+
+    if (rawCompanyId) {
+      if (
+        req.actor.type !== "board" ||
+        (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin)
+      ) {
+        assertCompanyAccess(req, rawCompanyId);
+      }
+      return rawCompanyId;
+    }
+
+    return null;
+  }
+
   async function logPluginMutationActivity(
     req: Request,
     action: string,
@@ -2111,7 +2132,8 @@ export function pluginRoutes(
       return;
     }
 
-    const config = await registry.getConfig(plugin.id);
+    const companyId = resolvePluginConfigCompanyId(req);
+    const config = await registry.getConfig(plugin.id, companyId);
     res.json(config);
   });
 
@@ -2141,11 +2163,12 @@ export function pluginRoutes(
       return;
     }
 
-    const body = req.body as { configJson?: Record<string, unknown> } | undefined;
+    const body = req.body as { configJson?: Record<string, unknown>; companyId?: string } | undefined;
     if (!body?.configJson || typeof body.configJson !== "object") {
       res.status(400).json({ error: '"configJson" is required and must be an object' });
       return;
     }
+    const companyId = resolvePluginConfigCompanyId(req);
 
     // Strip devUiUrl unless the caller is an instance admin. devUiUrl activates
     // a dev-proxy in the static file route that could be abused for SSRF if any
@@ -2180,18 +2203,19 @@ export function pluginRoutes(
 
       const result = await registry.upsertConfig(plugin.id, {
         configJson: body.configJson,
-      });
+      }, companyId);
       await logPluginMutationActivity(req, "plugin.config.updated", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,
+        companyId,
         configKeyCount: Object.keys(body.configJson).length,
       });
 
-      // Notify the running worker about the config change (PLUGIN_SPEC §25.4.4).
-      // If the worker implements onConfigChanged, send the new config via RPC.
-      // If it doesn't (METHOD_NOT_IMPLEMENTED), restart the worker so it picks
-      // up the new config on re-initialize. If no worker is running, skip.
-      if (bridgeDeps?.workerManager.isRunning(plugin.id)) {
+      // Notify the running worker only for legacy/global config changes
+      // (PLUGIN_SPEC §25.4.4). Company-scoped config is persisted for PR1, but
+      // runtime consumption waits for PR2 so one company's config is never sent
+      // to a process that still treats config as global.
+      if (companyId === null && bridgeDeps?.workerManager.isRunning(plugin.id)) {
         try {
           await bridgeDeps.workerManager.call(
             plugin.id,
