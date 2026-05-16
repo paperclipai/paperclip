@@ -13,22 +13,26 @@ import {
   sessionCodec as opencodeSessionCodec,
   isOpenCodeUnknownSessionError,
 } from "@paperclipai/adapter-opencode-local/server";
+import { sessionCodec as acpxSessionCodec } from "@paperclipai/adapter-acpx-local/server";
 
 describe("adapter session codecs", () => {
   it("normalizes claude session params with cwd", () => {
     const parsed = claudeSessionCodec.deserialize({
       session_id: "claude-session-1",
       folder: "/tmp/workspace",
+      prompt_bundle_key: "bundle-1",
     });
     expect(parsed).toEqual({
       sessionId: "claude-session-1",
       cwd: "/tmp/workspace",
+      promptBundleKey: "bundle-1",
     });
 
     const serialized = claudeSessionCodec.serialize(parsed);
     expect(serialized).toEqual({
       sessionId: "claude-session-1",
       cwd: "/tmp/workspace",
+      promptBundleKey: "bundle-1",
     });
     expect(claudeSessionCodec.getDisplayId?.(serialized ?? null)).toBe("claude-session-1");
   });
@@ -103,6 +107,50 @@ describe("adapter session codecs", () => {
       cwd: "/tmp/gemini",
     });
     expect(geminiSessionCodec.getDisplayId?.(serialized ?? null)).toBe("gemini-session-1");
+  });
+
+  it("preserves acpx session params required for compatibility checks", () => {
+    const parsed = acpxSessionCodec.deserialize({
+      sessionKey: "paperclip:company:agent:task:fingerprint",
+      runtimeSessionName: "runtime-session-1",
+      acpxRecordId: "record-1",
+      acpSessionId: "acp-session-1",
+      agentSessionId: "agent-session-1",
+      agent: "claude",
+      cwd: "/tmp/acpx",
+      mode: "persistent",
+      stateDir: "/tmp/acpx-state",
+      configFingerprint: "fingerprint",
+      workspaceId: "workspace-1",
+      repoUrl: "https://example.com/repo.git",
+      repoRef: "main",
+      remoteExecution: {
+        environmentId: "environment-1",
+        leaseId: "lease-1",
+      },
+    });
+
+    expect(parsed).toMatchObject({
+      sessionKey: "paperclip:company:agent:task:fingerprint",
+      runtimeSessionName: "runtime-session-1",
+      acpxRecordId: "record-1",
+      acpSessionId: "acp-session-1",
+      agentSessionId: "agent-session-1",
+      agent: "claude",
+      cwd: "/tmp/acpx",
+      mode: "persistent",
+      stateDir: "/tmp/acpx-state",
+      configFingerprint: "fingerprint",
+      workspaceId: "workspace-1",
+      repoUrl: "https://example.com/repo.git",
+      repoRef: "main",
+      remoteExecution: {
+        environmentId: "environment-1",
+        leaseId: "lease-1",
+      },
+    });
+    expect(acpxSessionCodec.serialize(parsed)).toEqual(parsed);
+    expect(acpxSessionCodec.getDisplayId?.(parsed)).toBe("runtime-session-1");
   });
 });
 

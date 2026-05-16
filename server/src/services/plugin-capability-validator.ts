@@ -47,27 +47,57 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "companies.get": ["companies.read"],
   "projects.list": ["projects.read"],
   "projects.get": ["projects.read"],
+  "projects.managed.get": ["projects.managed"],
+  "projects.managed.reconcile": ["projects.managed"],
+  "projects.managed.reset": ["projects.managed"],
+  "routines.managed.get": ["routines.managed"],
+  "routines.managed.reconcile": ["routines.managed"],
+  "routines.managed.reset": ["routines.managed"],
   "project.workspaces.list": ["project.workspaces.read"],
   "project.workspaces.get": ["project.workspaces.read"],
   "issues.list": ["issues.read"],
   "issues.get": ["issues.read"],
+  "issues.relations.get": ["issue.relations.read"],
   "issue.comments.list": ["issue.comments.read"],
   "issue.comments.get": ["issue.comments.read"],
   "agents.list": ["agents.read"],
   "agents.get": ["agents.read"],
+  "agents.managed.get": ["agents.managed"],
+  "agents.managed.reconcile": ["agents.managed"],
+  "agents.managed.reset": ["agents.managed"],
   "goals.list": ["goals.read"],
   "goals.get": ["goals.read"],
   "activity.list": ["activity.read"],
   "activity.get": ["activity.read"],
   "costs.list": ["costs.read"],
   "costs.get": ["costs.read"],
+  "issues.summaries.getOrchestration": ["issues.orchestration.read"],
+  "db.namespace": ["database.namespace.read"],
+  "db.query": ["database.namespace.read"],
+  "localFolders.declarations": [],
+  "localFolders.configure": ["local.folders"],
+  "localFolders.status": ["local.folders"],
+  "localFolders.list": ["local.folders"],
+  "localFolders.readText": ["local.folders"],
+  "localFolders.writeTextAtomic": ["local.folders"],
 
   // Data write operations
   "issues.create": ["issues.create"],
   "issues.update": ["issues.update"],
+  "issues.relations.setBlockedBy": ["issue.relations.write"],
+  "issues.relations.addBlockers": ["issue.relations.write"],
+  "issues.relations.removeBlockers": ["issue.relations.write"],
+  "issues.assertCheckoutOwner": ["issues.checkout"],
+  "issues.getSubtree": ["issue.subtree.read"],
+  "issues.requestWakeup": ["issues.wakeup"],
+  "issues.requestWakeups": ["issues.wakeup"],
   "issue.comments.create": ["issue.comments.create"],
+  "issue.interactions.create": ["issue.interactions.create"],
   "activity.log": ["activity.log.write"],
   "metrics.write": ["metrics.write"],
+  "telemetry.track": ["telemetry.track"],
+  "db.migrate": ["database.namespace.migrate"],
+  "db.execute": ["database.namespace.write"],
 
   // Plugin state operations
   "plugin.state.get": ["plugin.state.read"],
@@ -87,6 +117,16 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   // Agent tools
   "agent.tools.register": ["agent.tools.register"],
   "agent.tools.execute": ["agent.tools.register"],
+
+  // Environment runtime drivers
+  "environment.validateConfig": ["environment.drivers.register"],
+  "environment.probe": ["environment.drivers.register"],
+  "environment.acquireLease": ["environment.drivers.register"],
+  "environment.resumeLease": ["environment.drivers.register"],
+  "environment.releaseLease": ["environment.drivers.register"],
+  "environment.destroyLease": ["environment.drivers.register"],
+  "environment.realizeWorkspace": ["environment.drivers.register"],
+  "environment.execute": ["environment.drivers.register"],
 };
 
 /**
@@ -108,6 +148,7 @@ const UI_SLOT_CAPABILITIES: Record<PluginUiSlotType, PluginCapability> = {
   commentAnnotation: "ui.commentAnnotation.register",
   commentContextMenuItem: "ui.action.register",
   settingsPage: "instance.settings.register",
+  routeSidebar: "ui.sidebar.register",
 };
 
 /**
@@ -140,6 +181,11 @@ const FEATURE_CAPABILITIES: Record<string, PluginCapability> = {
   tools: "agent.tools.register",
   jobs: "jobs.schedule",
   webhooks: "webhooks.receive",
+  database: "database.namespace.migrate",
+  environmentDrivers: "environment.drivers.register",
+  agents: "agents.managed",
+  projects: "projects.managed",
+  routines: "routines.managed",
 };
 
 // ---------------------------------------------------------------------------

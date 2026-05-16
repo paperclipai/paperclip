@@ -2,10 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
   buildAgentMentionHref,
   buildProjectMentionHref,
+  buildSkillMentionHref,
+  buildUserMentionHref,
   extractAgentMentionIds,
   extractProjectMentionIds,
+  extractSkillMentionIds,
+  extractUserMentionIds,
   parseAgentMentionHref,
   parseProjectMentionHref,
+  parseSkillMentionHref,
+  parseUserMentionHref,
 } from "./project-mentions.js";
 
 describe("project-mentions", () => {
@@ -25,5 +31,22 @@ describe("project-mentions", () => {
       icon: "code",
     });
     expect(extractAgentMentionIds(`[@CodexCoder](${href})`)).toEqual(["agent-123"]);
+  });
+
+  it("round-trips user mentions", () => {
+    const href = buildUserMentionHref("user-123");
+    expect(parseUserMentionHref(href)).toEqual({
+      userId: "user-123",
+    });
+    expect(extractUserMentionIds(`[@Taylor](${href})`)).toEqual(["user-123"]);
+  });
+
+  it("round-trips skill mentions with slug metadata", () => {
+    const href = buildSkillMentionHref("skill-123", "release-changelog");
+    expect(parseSkillMentionHref(href)).toEqual({
+      skillId: "skill-123",
+      slug: "release-changelog",
+    });
+    expect(extractSkillMentionIds(`[/release-changelog](${href})`)).toEqual(["skill-123"]);
   });
 });

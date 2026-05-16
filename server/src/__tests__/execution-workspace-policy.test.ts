@@ -6,6 +6,7 @@ import {
   issueExecutionWorkspaceModeForPersistedWorkspace,
   parseIssueExecutionWorkspaceSettings,
   parseProjectExecutionWorkspacePolicy,
+  resolveExecutionWorkspaceEnvironmentId,
   resolveExecutionWorkspaceMode,
 } from "../services/execution-workspace-policy.ts";
 
@@ -117,6 +118,7 @@ describe("execution workspace policy helpers", () => {
       parseProjectExecutionWorkspacePolicy({
         enabled: true,
         defaultMode: "isolated",
+        environmentId: "8f8ab8f2-d95f-4315-9f08-d683a1e0f73b",
         workspaceStrategy: {
           type: "git_worktree",
           worktreeParentDir: ".paperclip/worktrees",
@@ -127,6 +129,7 @@ describe("execution workspace policy helpers", () => {
     ).toEqual({
       enabled: true,
       defaultMode: "isolated_workspace",
+      environmentId: "8f8ab8f2-d95f-4315-9f08-d683a1e0f73b",
       workspaceStrategy: {
         type: "git_worktree",
         worktreeParentDir: ".paperclip/worktrees",
@@ -137,10 +140,81 @@ describe("execution workspace policy helpers", () => {
     expect(
       parseIssueExecutionWorkspaceSettings({
         mode: "project_primary",
+        environmentId: "8f8ab8f2-d95f-4315-9f08-d683a1e0f73b",
       }),
     ).toEqual({
       mode: "shared_workspace",
+      environmentId: "8f8ab8f2-d95f-4315-9f08-d683a1e0f73b",
     });
+  });
+
+  it("prefers persisted environment selection over issue and project defaults", () => {
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        projectPolicy: { enabled: true, environmentId: "project-env" },
+        issueSettings: { environmentId: "issue-env" },
+        workspaceConfig: { environmentId: "workspace-env" },
+        agentDefaultEnvironmentId: "agent-env",
+        defaultEnvironmentId: "default-env",
+      }),
+    ).toBe("workspace-env");
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        projectPolicy: { enabled: true, environmentId: "project-env" },
+        issueSettings: { environmentId: "issue-env" },
+        workspaceConfig: null,
+        agentDefaultEnvironmentId: "agent-env",
+        defaultEnvironmentId: "default-env",
+      }),
+    ).toBe("issue-env");
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        projectPolicy: { enabled: true, environmentId: "project-env" },
+        issueSettings: null,
+        workspaceConfig: null,
+        agentDefaultEnvironmentId: "agent-env",
+        defaultEnvironmentId: "default-env",
+      }),
+    ).toBe("project-env");
+  });
+
+  it("falls back to the agent default environment before the company default", () => {
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        projectPolicy: null,
+        issueSettings: null,
+        workspaceConfig: null,
+        agentDefaultEnvironmentId: "agent-env",
+        defaultEnvironmentId: "default-env",
+      }),
+    ).toBe("agent-env");
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        projectPolicy: { enabled: true, environmentId: null },
+        issueSettings: null,
+        workspaceConfig: null,
+        agentDefaultEnvironmentId: "agent-env",
+        defaultEnvironmentId: "default-env",
+      }),
+    ).toBe("default-env");
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        projectPolicy: null,
+        issueSettings: null,
+        workspaceConfig: null,
+        agentDefaultEnvironmentId: null,
+        defaultEnvironmentId: "default-env",
+      }),
+    ).toBe("default-env");
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        projectPolicy: { enabled: true, environmentId: null },
+        issueSettings: null,
+        workspaceConfig: null,
+        agentDefaultEnvironmentId: null,
+        defaultEnvironmentId: "default-env",
+      }),
+    ).toBe("default-env");
   });
 
   it("maps persisted execution workspace modes back to issue settings", () => {

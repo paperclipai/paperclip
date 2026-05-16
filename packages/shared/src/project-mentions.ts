@@ -1,5 +1,7 @@
 export const PROJECT_MENTION_SCHEME = "project://";
 export const AGENT_MENTION_SCHEME = "agent://";
+export const USER_MENTION_SCHEME = "user://";
+export const SKILL_MENTION_SCHEME = "skill://";
 
 const HEX_COLOR_RE = /^[0-9a-f]{6}$/i;
 const HEX_COLOR_SHORT_RE = /^[0-9a-f]{3}$/i;
@@ -7,7 +9,10 @@ const HEX_COLOR_WITH_HASH_RE = /^#[0-9a-f]{6}$/i;
 const HEX_COLOR_SHORT_WITH_HASH_RE = /^#[0-9a-f]{3}$/i;
 const PROJECT_MENTION_LINK_RE = /\[[^\]]*]\((project:\/\/[^)\s]+)\)/gi;
 const AGENT_MENTION_LINK_RE = /\[[^\]]*]\((agent:\/\/[^)\s]+)\)/gi;
+const USER_MENTION_LINK_RE = /\[[^\]]*]\((user:\/\/[^)\s]+)\)/gi;
+const SKILL_MENTION_LINK_RE = /\[[^\]]*]\((skill:\/\/[^)\s]+)\)/gi;
 const AGENT_ICON_NAME_RE = /^[a-z0-9-]+$/i;
+const SKILL_SLUG_RE = /^[a-z0-9][a-z0-9-]*$/i;
 
 export interface ParsedProjectMention {
   projectId: string;
@@ -17,6 +22,15 @@ export interface ParsedProjectMention {
 export interface ParsedAgentMention {
   agentId: string;
   icon: string | null;
+}
+
+export interface ParsedUserMention {
+  userId: string;
+}
+
+export interface ParsedSkillMention {
+  skillId: string;
+  slug: string | null;
 }
 
 function normalizeHexColor(input: string | null | undefined): string | null {
@@ -103,6 +117,58 @@ export function parseAgentMentionHref(href: string): ParsedAgentMention | null {
   };
 }
 
+export function buildUserMentionHref(userId: string): string {
+  return `${USER_MENTION_SCHEME}${userId.trim()}`;
+}
+
+export function parseUserMentionHref(href: string): ParsedUserMention | null {
+  if (!href.startsWith(USER_MENTION_SCHEME)) return null;
+
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return null;
+  }
+
+  if (url.protocol !== "user:") return null;
+
+  const userId = `${url.hostname}${url.pathname}`.replace(/^\/+/, "").trim();
+  if (!userId) return null;
+
+  return { userId };
+}
+
+export function buildSkillMentionHref(skillId: string, slug?: string | null): string {
+  const trimmedSkillId = skillId.trim();
+  const normalizedSlug = normalizeSkillSlug(slug ?? null);
+  if (!normalizedSlug) {
+    return `${SKILL_MENTION_SCHEME}${trimmedSkillId}`;
+  }
+  return `${SKILL_MENTION_SCHEME}${trimmedSkillId}?s=${encodeURIComponent(normalizedSlug)}`;
+}
+
+export function parseSkillMentionHref(href: string): ParsedSkillMention | null {
+  if (!href.startsWith(SKILL_MENTION_SCHEME)) return null;
+
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return null;
+  }
+
+  if (url.protocol !== "skill:") return null;
+
+  const skillId = `${url.hostname}${url.pathname}`.replace(/^\/+/, "").trim();
+  if (!skillId) return null;
+
+  return {
+    skillId,
+    slug: normalizeSkillSlug(url.searchParams.get("s") ?? url.searchParams.get("slug")),
+  };
+}
+
 export function extractProjectMentionIds(markdown: string): string[] {
   if (!markdown) return [];
   const ids = new Set<string>();
@@ -127,9 +193,40 @@ export function extractAgentMentionIds(markdown: string): string[] {
   return [...ids];
 }
 
+export function extractUserMentionIds(markdown: string): string[] {
+  if (!markdown) return [];
+  const ids = new Set<string>();
+  const re = new RegExp(USER_MENTION_LINK_RE);
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(markdown)) !== null) {
+    const parsed = parseUserMentionHref(match[1]);
+    if (parsed) ids.add(parsed.userId);
+  }
+  return [...ids];
+}
+
+export function extractSkillMentionIds(markdown: string): string[] {
+  if (!markdown) return [];
+  const ids = new Set<string>();
+  const re = new RegExp(SKILL_MENTION_LINK_RE);
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(markdown)) !== null) {
+    const parsed = parseSkillMentionHref(match[1]);
+    if (parsed) ids.add(parsed.skillId);
+  }
+  return [...ids];
+}
+
 function normalizeAgentIcon(input: string | null | undefined): string | null {
   if (!input) return null;
   const trimmed = input.trim().toLowerCase();
   if (!trimmed || !AGENT_ICON_NAME_RE.test(trimmed)) return null;
+  return trimmed;
+}
+
+function normalizeSkillSlug(input: string | null | undefined): string | null {
+  if (!input) return null;
+  const trimmed = input.trim().toLowerCase();
+  if (!trimmed || !SKILL_SLUG_RE.test(trimmed)) return null;
   return trimmed;
 }

@@ -31,7 +31,7 @@ async function buildCodexSkillSnapshot(
     sourcePath: entry.source,
     targetPath: null,
     detail: desiredSet.has(entry.key)
-      ? "Will be linked into the workspace .agents/skills directory on the next run."
+      ? "Will be linked into the effective CODEX_HOME/skills/ directory on the next run."
       : null,
     required: Boolean(entry.required),
     requiredReason: entry.requiredReason ?? null,
