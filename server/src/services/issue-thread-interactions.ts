@@ -275,7 +275,7 @@ function normalizeQuestionAnswers(args: {
     answerByQuestionId.set(answer.questionId, {
       questionId: answer.questionId,
       optionIds: uniqueOptionIds,
-      freeText: hasFreeText ? trimmedFreeText : null,
+      ...(hasFreeText ? { freeText: trimmedFreeText } : {}),
     });
   }
 
