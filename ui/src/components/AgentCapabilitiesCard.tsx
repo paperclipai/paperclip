@@ -10,7 +10,7 @@ import { companiesApi } from "../api/companies";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 
-function formatConfig(config: AgentCapabilityConfig) {
+function formatConfig(config: AgentCapabilityConfig | AgentCapabilityConfigInput) {
   return JSON.stringify(config, null, 2);
 }
 
@@ -43,9 +43,44 @@ function summarize(settings: AgentCapabilitySettingsResponse | undefined) {
   };
 }
 
-function isConfigEmpty(config: AgentCapabilityConfig | null | undefined) {
-  if (!config) return true;
-  return config.mcpServers.length === 0 && config.skillRefs.length === 0 && config.toolRefs.length === 0;
+// LET-281 Effective Preview inheritance: per-category fallback.
+// For each of mcpServers / skillRefs / toolRefs, if the agent-local config
+// has any entries for that category we treat local as authoritative for that
+// category only. Untouched categories fall back to the global default for
+// that category. We do not entry-level merge across scopes in this slice;
+// that is intentional to keep semantics predictable. liveApply and
+// liveExternalActions are always forced to false in the preview because the
+// preview is read-only and must never represent a live-apply intent.
+type EffectiveCategorySource = "local" | "global" | "empty";
+
+function mergeCategory<T>(localList: readonly T[] | undefined, globalList: readonly T[] | undefined): T[] {
+  if (localList && localList.length > 0) return [...localList];
+  return [...(globalList ?? [])];
+}
+
+function describeCategorySource(
+  localList: readonly unknown[] | undefined,
+  globalList: readonly unknown[] | undefined,
+): EffectiveCategorySource {
+  if (localList && localList.length > 0) return "local";
+  if (globalList && globalList.length > 0) return "global";
+  return "empty";
+}
+
+function summarizeEffectiveSources(sources: {
+  mcp: EffectiveCategorySource;
+  skills: EffectiveCategorySource;
+  tools: EffectiveCategorySource;
+}): string {
+  const buckets: Record<EffectiveCategorySource, string[]> = { local: [], global: [], empty: [] };
+  buckets[sources.mcp].push("MCP");
+  buckets[sources.skills].push("skills");
+  buckets[sources.tools].push("tools");
+  const parts: string[] = [];
+  if (buckets.local.length > 0) parts.push(`${buckets.local.join("/")} from agent local`);
+  if (buckets.global.length > 0) parts.push(`${buckets.global.join("/")} from global defaults`);
+  if (parts.length === 0) return "no configured capabilities";
+  return parts.join("; ");
 }
 
 function resolveEffectiveConfig(
@@ -56,14 +91,18 @@ function resolveEffectiveConfig(
   const globalConfig = globalSettings?.config;
   const effective = {
     version: 1 as const,
-    mcpServers: isConfigEmpty(localConfig) ? (globalConfig?.mcpServers ?? []) : (localConfig?.mcpServers ?? []),
-    skillRefs: isConfigEmpty(localConfig) ? (globalConfig?.skillRefs ?? []) : (localConfig?.skillRefs ?? []),
-    toolRefs: isConfigEmpty(localConfig) ? (globalConfig?.toolRefs ?? []) : (localConfig?.toolRefs ?? []),
+    mcpServers: mergeCategory(localConfig?.mcpServers, globalConfig?.mcpServers),
+    skillRefs: mergeCategory(localConfig?.skillRefs, globalConfig?.skillRefs),
+    toolRefs: mergeCategory(localConfig?.toolRefs, globalConfig?.toolRefs),
     liveApply: false as const,
     liveExternalActions: false as const,
   };
-  const source = isConfigEmpty(localConfig) ? "global defaults" : "agent local";
-  return { effective, source };
+  const sources = {
+    mcp: describeCategorySource(localConfig?.mcpServers, globalConfig?.mcpServers),
+    skills: describeCategorySource(localConfig?.skillRefs, globalConfig?.skillRefs),
+    tools: describeCategorySource(localConfig?.toolRefs, globalConfig?.toolRefs),
+  };
+  return { effective, sources, sourceSummary: summarizeEffectiveSources(sources) };
 }
 
 function withPaperclipPreset(settings: AgentCapabilitySettingsResponse | undefined, draft: string): AgentCapabilityConfigInput {
@@ -99,6 +138,7 @@ function CapabilitySettingsCard({
   enabled = true,
   emptyText = "No desired MCP servers saved yet.",
   effectivePreviewSettings,
+  showEffectivePreview = false,
 }: {
   title: string;
   description: string;
@@ -108,6 +148,7 @@ function CapabilitySettingsCard({
   enabled?: boolean;
   emptyText?: string;
   effectivePreviewSettings?: AgentCapabilitySettingsResponse | undefined;
+  showEffectivePreview?: boolean;
 }) {
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState("");
@@ -140,19 +181,44 @@ function CapabilitySettingsCard({
   const saveDisabled = saveMutation.isPending || Boolean(parsedDraft.error) || !draft.trim();
 
   if (capabilitiesQuery.isLoading) {
-    return <div className="rounded-lg border border-border p-4 text-sm text-muted-foreground">Loading capabilities…</div>;
+    return (
+      <div className="rounded-lg border border-border p-4 text-sm text-muted-foreground" role="status">
+        Loading capability workspace… No live MCP install, connect, execute, or external action occurred.
+      </div>
+    );
   }
 
   if (capabilitiesQuery.error) {
     return (
       <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
-        Failed to load agent capabilities.
+        <p className="font-medium">Failed to load agent capabilities. No live action occurred.</p>
+        <p className="mt-1 text-xs text-destructive/80">
+          Desired config was not changed, and no MCP install, connect, execute, or external action was attempted.
+        </p>
       </div>
     );
   }
 
   const serverList = capabilitiesQuery.data?.config.mcpServers ?? [];
-  const effectivePreview = resolveEffectiveConfig(capabilitiesQuery.data, effectivePreviewSettings);
+  const effectivePreview = showEffectivePreview
+    ? resolveEffectiveConfig(capabilitiesQuery.data, effectivePreviewSettings)
+    : null;
+
+  const formatDraft = () => {
+    const parsed = parseDraft(draft);
+    if (!parsed.config) {
+      setClientError(parsed.error ?? "Invalid JSON");
+      return;
+    }
+    setDraft(formatConfig(parsed.config));
+    setClientError(null);
+  };
+
+  const resetDraft = () => {
+    if (!capabilitiesQuery.data) return;
+    setDraft(formatConfig(capabilitiesQuery.data.config));
+    setClientError(null);
+  };
 
   return (
     <section className="space-y-4 rounded-xl border border-border bg-card p-4 shadow-sm">
@@ -160,6 +226,10 @@ function CapabilitySettingsCard({
         <div>
           <h2 className="text-lg font-semibold">{title}</h2>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{description}</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Desired config only — no live MCP install, connect, execute, or apply happens from this card.
+            Live and external capability apply remains approval-gated.
+          </p>
         </div>
         <div className="rounded-full border border-amber-300/70 bg-amber-50 px-3 py-1 text-xs font-medium text-amber-900 dark:border-amber-400/40 dark:bg-amber-950/30 dark:text-amber-100">
           no live MCP install/execution
@@ -181,13 +251,16 @@ function CapabilitySettingsCard({
         </div>
       </div>
 
-      {effectivePreviewSettings && (
+      {effectivePreview && (
         <div className="rounded-lg border border-border bg-muted/20 p-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <p className="text-sm font-medium">Effective Preview (read-only)</p>
               <p className="text-xs text-muted-foreground">
-                Effective capabilities currently resolve from {effectivePreview.source}.
+                Effective capabilities resolve per category: {effectivePreview.sourceSummary}.
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Read-only preview — no live MCP install/connect/execute is triggered when this renders.
               </p>
             </div>
             <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">read-only</span>
@@ -197,14 +270,17 @@ function CapabilitySettingsCard({
             <div className="rounded-md border border-border bg-background/60 p-2">
               <p className="text-xs uppercase tracking-wide text-muted-foreground">MCP servers</p>
               <p className="mt-1 text-sm font-semibold">{effectivePreview.effective.mcpServers.length}</p>
+              <p className="text-[10px] uppercase tracking-wide text-muted-foreground">source: {effectivePreview.sources.mcp}</p>
             </div>
             <div className="rounded-md border border-border bg-background/60 p-2">
               <p className="text-xs uppercase tracking-wide text-muted-foreground">Skills</p>
               <p className="mt-1 text-sm font-semibold">{effectivePreview.effective.skillRefs.length}</p>
+              <p className="text-[10px] uppercase tracking-wide text-muted-foreground">source: {effectivePreview.sources.skills}</p>
             </div>
             <div className="rounded-md border border-border bg-background/60 p-2">
               <p className="text-xs uppercase tracking-wide text-muted-foreground">Tools</p>
               <p className="mt-1 text-sm font-semibold">{effectivePreview.effective.toolRefs.length}</p>
+              <p className="text-[10px] uppercase tracking-wide text-muted-foreground">source: {effectivePreview.sources.tools}</p>
             </div>
           </div>
 
@@ -258,45 +334,67 @@ function CapabilitySettingsCard({
         )}
       </div>
 
-      <label className="block space-y-2">
-        <span className="text-sm font-medium">Capability desired config JSON</span>
-        <textarea
-          className="min-h-[260px] w-full rounded-md border border-input bg-background p-3 font-mono text-xs shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          value={draft}
-          onChange={(event) => {
-            setDraft(event.target.value);
-            setClientError(null);
-          }}
-          spellCheck={false}
-          aria-label="Capability desired config JSON"
-        />
-      </label>
+      <details className="rounded-lg border border-border bg-background/60 p-3">
+        <summary className="cursor-pointer text-sm font-medium">Advanced JSON fallback</summary>
+        <div className="mt-3 space-y-3">
+          <div className="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+            <p className="font-medium text-foreground">Schema hints</p>
+            <p>
+              Version 1 supports mcpServers, skillRefs, toolRefs, liveApply=false, and liveExternalActions=false. Required secrets must be named references only.
+            </p>
+            <p className="mt-1">
+              Redaction warning: never paste raw tokens, passwords, bearer strings, private destinations, proxies, or credential material into desired config.
+            </p>
+          </div>
+          <label className="block space-y-2">
+            <span className="text-sm font-medium">Capability desired config JSON</span>
+            <textarea
+              className="min-h-[260px] w-full rounded-md border border-input bg-background p-3 font-mono text-xs shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              value={draft}
+              onChange={(event) => {
+                setDraft(event.target.value);
+                setClientError(null);
+              }}
+              spellCheck={false}
+              aria-label="Capability desired config JSON"
+            />
+          </label>
 
-      {(parsedDraft.error || clientError || saveMutation.error) && (
-        <p className="text-sm text-destructive">
-          {parsedDraft.error ?? clientError ?? (saveMutation.error instanceof Error ? saveMutation.error.message : "Save failed")}
-        </p>
-      )}
+          {(parsedDraft.error || clientError || saveMutation.error) && (
+            <p className="text-sm text-destructive">
+              {parsedDraft.error ?? clientError ?? (saveMutation.error instanceof Error ? saveMutation.error.message : "Save failed")}. No live action occurred.
+            </p>
+          )}
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-xs text-muted-foreground">
-          Dry-run/apply preview only: approval required before any live MCP connection, install, or external action.
-        </p>
-        <Button
-          type="button"
-          disabled={saveDisabled}
-          onClick={() => {
-            const parsed = parseDraft(draft);
-            if (!parsed.config) {
-              setClientError(parsed.error ?? "Invalid JSON");
-              return;
-            }
-            saveMutation.mutate(parsed.config);
-          }}
-        >
-          {saveMutation.isPending ? "Saving…" : "Save desired config"}
-        </Button>
-      </div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-xs text-muted-foreground">
+              Save writes desired config only. Approval is required before any live MCP connection, install, execution, apply, or external action.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="outline" size="sm" disabled={!draft.trim()} onClick={formatDraft}>
+                Format JSON
+              </Button>
+              <Button type="button" variant="outline" size="sm" disabled={!capabilitiesQuery.data} onClick={resetDraft}>
+                Reset to last saved
+              </Button>
+              <Button
+                type="button"
+                disabled={saveDisabled}
+                onClick={() => {
+                  const parsed = parseDraft(draft);
+                  if (!parsed.config) {
+                    setClientError(parsed.error ?? "Invalid JSON");
+                    return;
+                  }
+                  saveMutation.mutate(parsed.config);
+                }}
+              >
+                {saveMutation.isPending ? "Saving…" : "Save desired config"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      </details>
     </section>
   );
 }
@@ -317,6 +415,7 @@ export function AgentCapabilitiesCard({ agentId, companyId }: { agentId: string;
       updateFn={(config) => agentsApi.updateCapabilities(agentId, config, companyId)}
       enabled={Boolean(agentId)}
       effectivePreviewSettings={companyCapabilityDefaultsQuery.data}
+      showEffectivePreview={Boolean(companyId)}
     />
   );
 }
