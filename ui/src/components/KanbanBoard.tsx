@@ -80,7 +80,7 @@ function KanbanColumn({
               {statusLabel(status)}
             </span>
             <span className="text-xs text-muted-foreground/60 ml-auto tabular-nums">
-              {total ?? issues.length}
+              {(total ?? 0) || issues.length}
             </span>
           </>
         )}

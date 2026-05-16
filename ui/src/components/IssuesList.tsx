@@ -669,7 +669,7 @@ export function IssuesList({
   const { data: searchedIssues = [] } = useQuery({
     queryKey: [
       ...queryKeys.issues.search(selectedCompanyId!, normalizedIssueSearch, projectId),
-      searchFilters ?? {},
+      JSON.stringify(searchFilters ?? {}),
       ISSUE_SEARCH_RESULT_LIMIT,
       enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
     ],
@@ -693,7 +693,7 @@ export function IssuesList({
         status,
         normalizedIssueSearch,
         projectId ?? "__all-projects__",
-        searchFilters ?? {},
+        JSON.stringify(searchFilters ?? {}),
         ISSUE_BOARD_COLUMN_RESULT_LIMIT,
         enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
       ],
