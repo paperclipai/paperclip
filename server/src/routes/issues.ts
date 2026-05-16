@@ -4356,14 +4356,23 @@ export function issueRoutes(
     const isClosed = isClosedIssueStatus(issue.status);
     const isBlocked = issue.status === "blocked";
     const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;
+    // When a disposition row carries the status transition, the writer is the
+    // single source of truth for status changes. Suppress implicit reopen,
+    // implicit todo-move, and interrupt side effects on this code path so that
+    // an invalid disposition (rejected by the writer) does not leave behind
+    // pre-validation state mutations. Explicit reopen/resume/interrupt combos
+    // are already rejected by the preflight above.
+    const dispositionCarriesStatusTransition = Boolean(dispositionMatchPreflight);
     const effectiveMoveToTodoRequested =
-      explicitMoveToTodoRequested ||
-      shouldImplicitlyMoveCommentedIssueToTodo({
-        issueStatus: issue.status,
-        assigneeAgentId: issue.assigneeAgentId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-      });
+      !dispositionCarriesStatusTransition && (
+        explicitMoveToTodoRequested ||
+        shouldImplicitlyMoveCommentedIssueToTodo({
+          issueStatus: issue.status,
+          assigneeAgentId: issue.assigneeAgentId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+        })
+      );
     const hasUnresolvedFirstClassBlockers =
       isBlocked && effectiveMoveToTodoRequested
         ? (await svc.getDependencyReadiness(issue.id)).unresolvedBlockerCount > 0
@@ -4408,7 +4417,7 @@ export function issueRoutes(
       });
     }
 
-    if (interruptRequested) {
+    if (interruptRequested && !dispositionCarriesStatusTransition) {
       if (req.actor.type !== "board") {
         res.status(403).json({ error: "Only board users can interrupt active runs from issue comments" });
         return;

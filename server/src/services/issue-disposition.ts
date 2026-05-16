@@ -28,7 +28,20 @@ import {
   parseIssueDispositionIdempotencyKey,
 } from "@paperclipai/shared";
 import { conflict, unprocessable, notFound } from "../errors.js";
-import { normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
+import {
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+} from "./issue-execution-policy.js";
+
+function hasExecutionParticipantValue(value: unknown): boolean {
+  const state = parseIssueExecutionState(value);
+  if (!state || state.status !== "pending") return false;
+  const participant = state.currentParticipant;
+  if (!participant) return false;
+  if (participant.type === "agent") return Boolean(participant.agentId);
+  if (participant.type === "user") return Boolean(participant.userId);
+  return false;
+}
 
 export interface DispositionWriterActor {
   actorType: "agent" | "user" | "system";
@@ -82,6 +95,9 @@ export const DISPOSITION_ERROR_CODES = {
   SOURCE_RUN_REQUIRED: "disposition_source_run_required",
   SOURCE_RUN_NOT_FOUND: "disposition_source_run_not_found",
   SOURCE_RUN_FOREIGN_COMPANY: "disposition_source_run_foreign_company",
+  SOURCE_RUN_ACTOR_MISMATCH: "disposition_source_run_actor_mismatch",
+  CALLER_SUPPLIED_FINAL_DISPOSITION: "disposition_caller_supplied_final_disposition",
+  REVIEW_PATH_REQUIRED: "disposition_review_path_required",
   INVALID_TRANSITION: "invalid_disposition_transition",
   WORKER_SELF_ATTEST: "disposition_worker_self_attest",
   MULTIPLE_DISPOSITION_ROWS: "disposition_multiple_rows",
@@ -352,7 +368,20 @@ export function issueDispositionService(db: Db) {
         });
       }
 
-      const sourceRunId = input.metadata.sourceRunId ?? row.finalDisposition?.sourceRunId ?? input.actor.runId ?? null;
+      // Reject caller-supplied authoritative finalDisposition. The writer is
+      // the only authority for that record (it is the only side that knows the
+      // real sourceCommentId, setAt, and resolved sourceRunId). Allowing a
+      // client to set it would let an agent fabricate authoritative-looking
+      // evidence rows. Strip-and-overwrite is an option in a future slice; for
+      // 3C-B we reject explicitly so the contract stays unambiguous.
+      if (row.finalDisposition) {
+        throw unprocessable(
+          "Disposition row must not carry a caller-supplied finalDisposition; the backend writer is the sole authority for that record.",
+          { code: DISPOSITION_ERROR_CODES.CALLER_SUPPLIED_FINAL_DISPOSITION },
+        );
+      }
+
+      const sourceRunId = input.metadata.sourceRunId ?? input.actor.runId ?? null;
       if (!sourceRunId) {
         throw unprocessable("Disposition writes require a sourceRunId on the carrying metadata", {
           code: DISPOSITION_ERROR_CODES.SOURCE_RUN_REQUIRED,
@@ -362,6 +391,19 @@ export function issueDispositionService(db: Db) {
         throw unprocessable("Disposition idempotency key sourceRunId must match metadata.sourceRunId", {
           code: DISPOSITION_ERROR_CODES.IDEMPOTENCY_KEY_INVALID,
         });
+      }
+      // SourceRun ownership: when the actor is authenticated with a run, the
+      // disposition's sourceRunId must equal that run. Otherwise an agent
+      // commenting under run A could fabricate evidence keyed on run B.
+      if (input.actor.runId && input.actor.runId !== sourceRunId) {
+        throw unprocessable(
+          "Disposition sourceRunId must match the authenticated actor's runId.",
+          {
+            code: DISPOSITION_ERROR_CODES.SOURCE_RUN_ACTOR_MISMATCH,
+            actorRunId: input.actor.runId,
+            sourceRunId,
+          },
+        );
       }
 
       const presentation = issueCommentPresentationSchema.nullable().parse(input.presentation ?? null);
@@ -385,10 +427,14 @@ export function issueDispositionService(db: Db) {
         if (!issueRow) throw notFound("Issue not found");
 
         const sourceRun = await tx
-          .select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId })
+          .select({
+            id: heartbeatRuns.id,
+            companyId: heartbeatRuns.companyId,
+            agentId: heartbeatRuns.agentId,
+          })
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, sourceRunId))
-          .then((rows: Array<{ id: string; companyId: string }>) => rows[0] ?? null);
+          .then((rows: Array<{ id: string; companyId: string; agentId: string }>) => rows[0] ?? null);
         if (!sourceRun) {
           throw unprocessable("Disposition sourceRunId does not reference a known heartbeat run", {
             code: DISPOSITION_ERROR_CODES.SOURCE_RUN_NOT_FOUND,
@@ -398,6 +444,23 @@ export function issueDispositionService(db: Db) {
           throw unprocessable("Disposition sourceRunId belongs to a different company than the target issue", {
             code: DISPOSITION_ERROR_CODES.SOURCE_RUN_FOREIGN_COMPANY,
           });
+        }
+        // Agent ownership: an agent actor's sourceRun must be owned by that
+        // same agent. Without this an agent can carry another agent's runId
+        // and launder evidence through it.
+        if (
+          input.actor.actorType === "agent"
+          && input.actor.agentId
+          && sourceRun.agentId !== input.actor.agentId
+        ) {
+          throw unprocessable(
+            "Disposition sourceRunId must reference a heartbeat run owned by the authenticated agent actor.",
+            {
+              code: DISPOSITION_ERROR_CODES.SOURCE_RUN_ACTOR_MISMATCH,
+              actorAgentId: input.actor.agentId,
+              sourceRunAgentId: sourceRun.agentId,
+            },
+          );
         }
 
         const dispositionCandidateComments = await tx
@@ -555,6 +618,9 @@ export function issueDispositionService(db: Db) {
           });
         }
 
+        const hasTypedExecutionParticipant = hasExecutionParticipantValue(issueRow.executionState);
+        const hasMonitorScheduled = issueRow.monitorNextCheckAt != null;
+
         const transition = evaluateDispositionTransition({
           actorType: input.actor.actorType,
           existingStatus: issueRow.status as Parameters<typeof evaluateDispositionTransition>[0]["existingStatus"],
@@ -578,6 +644,37 @@ export function issueDispositionService(db: Db) {
             validFromStatuses: transition.validFromStatuses,
             missing: transition.missing,
           });
+        }
+
+        // Stage-state safety: when the disposition's intention targets an
+        // execution stage type (review/approval) and the resulting status is
+        // in_review, an agent actor must leave the issue with a typed next
+        // owner. Otherwise the issue lands in_review with no one driving the
+        // review, defeating the review-path invariant codified in
+        // INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE.
+        if (
+          input.actor.actorType === "agent"
+          && transition.intention.targetStatus === "in_review"
+          && transition.intention.targetExecutionStageType
+          && issueRow.status !== "in_review"
+        ) {
+          const hasReviewOwner =
+            hasTypedExecutionParticipant
+            || hasMonitorScheduled
+            || hasPendingApproval
+            || hasPendingInteraction
+            || hasHumanAssignee;
+          if (!hasReviewOwner) {
+            throw unprocessable(
+              "Disposition targets an execution review/approval stage but the issue has no typed next owner. "
+              + "Configure executionState.currentParticipant, link a pending approval, set a human assigneeUserId, "
+              + "create a pending issue thread interaction, or schedule a monitor before reusing this disposition.",
+              {
+                code: DISPOSITION_ERROR_CODES.REVIEW_PATH_REQUIRED,
+                targetExecutionStageType: transition.intention.targetExecutionStageType,
+              },
+            );
+          }
         }
 
         const createdAt = input.createdAt ? new Date(input.createdAt) : null;

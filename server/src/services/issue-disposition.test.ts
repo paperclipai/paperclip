@@ -8,11 +8,19 @@ import {
   countDispositionRows,
   derivePreconditionFlags,
   dispositionBodyEquivalent,
+  DISPOSITION_ERROR_CODES,
   extractDispositionRowFromMetadata,
+  issueDispositionService,
   validateWorkerSelfAttest,
   type DispositionDecisionRow,
 } from "./issue-disposition.js";
 import type { IssueExecutionPolicy } from "@paperclipai/shared";
+import type { Db } from "@paperclipai/db";
+
+// A db stub that should never be reached by the pre-transaction validations
+// below; if any of these tests do reach a transaction, the test will fail
+// loudly with "db.transaction is not a function".
+const NEVER_TX_DB = {} as unknown as Db;
 
 const ISSUE_ID = "11111111-1111-4111-8111-111111111111";
 const RUN_ID = "22222222-2222-4222-8222-222222222222";
@@ -215,6 +223,136 @@ describe("validateWorkerSelfAttest", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected rejection");
     expect(result.missing).toBe("distinct_approval_owner");
+  });
+});
+
+describe("applyCommentDisposition pre-transaction validation", () => {
+  const ISSUE_ID_LOCAL = "11111111-1111-4111-8111-111111111111";
+  const RUN_ID_LOCAL = "22222222-2222-4222-8222-222222222222";
+  const AGENT_ID_LOCAL = "33333333-3333-4333-8333-333333333333";
+  const OTHER_RUN_ID_LOCAL = "55555555-5555-4555-8555-555555555555";
+
+  function metadataWithRow(
+    overrides?: Partial<{
+      idempotencyKey: string;
+      finalDisposition: IssueCommentMetadataDispositionRow["finalDisposition"];
+      sourceRunId: string | null;
+      value: IssueCommentMetadataDispositionRow["value"];
+    }>,
+  ): IssueCommentMetadata {
+    const value = overrides?.value ?? "done";
+    const idempotencyKey =
+      overrides?.idempotencyKey
+      ?? buildIssueDispositionIdempotencyKey({
+        issueId: ISSUE_ID_LOCAL,
+        sourceRunId: RUN_ID_LOCAL,
+        dispositionValue: value,
+      });
+    return {
+      version: 1,
+      sourceRunId: overrides?.sourceRunId === undefined ? RUN_ID_LOCAL : overrides.sourceRunId,
+      sections: [
+        {
+          rows: [
+            {
+              type: "disposition",
+              value,
+              reason: "ok",
+              evidenceRefs: [],
+              idempotencyKey,
+              ...(overrides?.finalDisposition !== undefined
+                ? { finalDisposition: overrides.finalDisposition }
+                : {}),
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  it("rejects a caller-supplied finalDisposition with a typed error code", async () => {
+    const svc = issueDispositionService(NEVER_TX_DB);
+    await expect(
+      svc.applyCommentDisposition({
+        issueId: ISSUE_ID_LOCAL,
+        body: "hi",
+        authorType: "agent",
+        metadata: metadataWithRow({
+          finalDisposition: {
+            value: "done",
+            setAt: new Date().toISOString(),
+            setByActor: { type: "agent", id: AGENT_ID_LOCAL },
+            sourceRunId: RUN_ID_LOCAL,
+            evidenceRefs: [],
+            idempotencyKey: buildIssueDispositionIdempotencyKey({
+              issueId: ISSUE_ID_LOCAL,
+              sourceRunId: RUN_ID_LOCAL,
+              dispositionValue: "done",
+            }),
+          },
+        }),
+        actor: { actorType: "agent", agentId: AGENT_ID_LOCAL, runId: RUN_ID_LOCAL },
+      }),
+    ).rejects.toMatchObject({
+      details: { code: DISPOSITION_ERROR_CODES.CALLER_SUPPLIED_FINAL_DISPOSITION },
+    });
+  });
+
+  it("rejects sourceRunId that does not match the actor's runId", async () => {
+    const svc = issueDispositionService(NEVER_TX_DB);
+    // sourceRunId in metadata + idempotency key references OTHER_RUN_ID; actor's run is RUN_ID.
+    const otherKey = buildIssueDispositionIdempotencyKey({
+      issueId: ISSUE_ID_LOCAL,
+      sourceRunId: OTHER_RUN_ID_LOCAL,
+      dispositionValue: "done",
+    });
+    await expect(
+      svc.applyCommentDisposition({
+        issueId: ISSUE_ID_LOCAL,
+        body: "hi",
+        authorType: "agent",
+        metadata: metadataWithRow({ sourceRunId: OTHER_RUN_ID_LOCAL, idempotencyKey: otherKey }),
+        actor: { actorType: "agent", agentId: AGENT_ID_LOCAL, runId: RUN_ID_LOCAL },
+      }),
+    ).rejects.toMatchObject({
+      details: { code: DISPOSITION_ERROR_CODES.SOURCE_RUN_ACTOR_MISMATCH },
+    });
+  });
+
+  it("requires sourceRunId to be present in metadata when actor has no runId", async () => {
+    const svc = issueDispositionService(NEVER_TX_DB);
+    await expect(
+      svc.applyCommentDisposition({
+        issueId: ISSUE_ID_LOCAL,
+        body: "hi",
+        authorType: "user",
+        metadata: metadataWithRow({ sourceRunId: null }),
+        actor: { actorType: "user", userId: "user-1" },
+      }),
+    ).rejects.toMatchObject({
+      details: { code: DISPOSITION_ERROR_CODES.SOURCE_RUN_REQUIRED },
+    });
+  });
+
+  it("rejects when idempotency key sourceRunId does not match metadata.sourceRunId", async () => {
+    const svc = issueDispositionService(NEVER_TX_DB);
+    // metadata.sourceRunId = RUN_ID, but idempotency key built for OTHER_RUN_ID
+    const mismatchKey = buildIssueDispositionIdempotencyKey({
+      issueId: ISSUE_ID_LOCAL,
+      sourceRunId: OTHER_RUN_ID_LOCAL,
+      dispositionValue: "done",
+    });
+    await expect(
+      svc.applyCommentDisposition({
+        issueId: ISSUE_ID_LOCAL,
+        body: "hi",
+        authorType: "agent",
+        metadata: metadataWithRow({ sourceRunId: RUN_ID_LOCAL, idempotencyKey: mismatchKey }),
+        actor: { actorType: "agent", agentId: AGENT_ID_LOCAL, runId: RUN_ID_LOCAL },
+      }),
+    ).rejects.toMatchObject({
+      details: { code: DISPOSITION_ERROR_CODES.IDEMPOTENCY_KEY_INVALID },
+    });
   });
 });
 

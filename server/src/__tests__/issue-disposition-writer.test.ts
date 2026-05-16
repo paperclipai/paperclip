@@ -250,7 +250,7 @@ describeEmbeddedPostgres("issue disposition writer (integration)", () => {
     });
   });
 
-  it("allows distinct idempotency keys (different sourceRunId) without collision", async () => {
+  it("does not idempotency-collide distinct keys for the same issue (transition checks still apply post-terminal)", async () => {
     const seeded = await seed();
     const svc = issueDispositionService(db);
     const firstKeyMetadata = buildMetadataWithDispositionRow({ issueId: seeded.issueId, runId: seeded.workerRunId });
@@ -273,20 +273,27 @@ describeEmbeddedPostgres("issue disposition writer (integration)", () => {
     });
     expect(first.applied).toBe(true);
 
-    // Issue is now done; second key with the same disposition still applies (idempotent for that key)
-    // and creates a separate comment because the keys differ. Status stays done.
-    const second = await svc.applyCommentDisposition({
-      issueId: seeded.issueId,
-      body: "second done",
-      authorType: "agent",
-      metadata: secondKeyMetadata,
-      actor: { actorType: "agent", agentId: seeded.workerAgentId, runId: otherRunId },
+    // Distinct-key semantics: the second key must *not* be rejected as an
+    // idempotency collision (different sourceRunId, different key). It must
+    // still respect the shared transition table — `done` is not a valid
+    // from-status for `done`, so the second attempt rejects with
+    // INVALID_TRANSITION. The issue stays done with exactly one comment.
+    await expect(
+      svc.applyCommentDisposition({
+        issueId: seeded.issueId,
+        body: "second done",
+        authorType: "agent",
+        metadata: secondKeyMetadata,
+        actor: { actorType: "agent", agentId: seeded.workerAgentId, runId: otherRunId },
+      }),
+    ).rejects.toMatchObject({
+      details: { code: DISPOSITION_ERROR_CODES.INVALID_TRANSITION },
     });
-    expect(second.applied).toBe(true);
-    expect(second.comment.id).not.toBe(first.comment.id);
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
-    expect(comments).toHaveLength(2);
+    expect(comments).toHaveLength(1);
+    const issueRow = await db.select().from(issues).where(eq(issues.id, seeded.issueId)).then((rows) => rows[0]);
+    expect(issueRow?.status).toBe("done");
   });
 
   it("rejects when sourceRunId references a heartbeat run owned by another company", async () => {

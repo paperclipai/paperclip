@@ -1834,5 +1834,62 @@ describe.sequential("issue comment reopen routes", () => {
       expect(mockApplyCommentDisposition).not.toHaveBeenCalled();
       expect(mockIssueService.addComment).toHaveBeenCalled();
     });
+
+    it("does not implicitly reopen or move-to-todo when a disposition row is present, even on a closed issue", async () => {
+      setupBaseStubs();
+      // Issue is closed (done). On the legacy path this would normally
+      // implicit-reopen-to-todo for some agent actors. With a disposition row
+      // present, the writer owns the status transition and the route must not
+      // mutate status pre-validation.
+      mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+      const appliedComment = {
+        id: "disposition-comment-2",
+        issueId: ISSUE_ID,
+        companyId: "company-1",
+        body: "Marking done again",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        authorAgentId: "22222222-2222-4222-8222-222222222222",
+        authorUserId: null,
+      };
+      mockApplyCommentDisposition.mockResolvedValue({
+        comment: appliedComment,
+        applied: false,
+        noop: true,
+        dispositionValue: "done",
+        intention: null,
+        sourceRunId: RUN_ID,
+        idempotencyKey: dispositionRow.idempotencyKey,
+        evidence: {
+          sourceRunId: RUN_ID,
+          sourceCommentId: appliedComment.id,
+          actor: { actorType: "agent", agentId: "22222222-2222-4222-8222-222222222222", runId: RUN_ID },
+          parentBlockerIntention: null,
+          parentBlockerCleared: false,
+          parentBlockerReplacementDeferred: false,
+          previousStatus: "done",
+          nextStatus: "done",
+        },
+      });
+      (mockIssueService as unknown as { getComment?: ReturnType<typeof vi.fn> }).getComment =
+        vi.fn(async () => appliedComment);
+
+      const res = await request(await installActor(createApp(), agentActor()))
+        .post(`/api/issues/${ISSUE_ID}/comments`)
+        .send({
+          body: "Marking done again",
+          metadata: dispositionMetadata,
+        });
+
+      expect(res.status).toBe(201);
+      // The writer was invoked; the route never called svc.update to reopen.
+      expect(mockApplyCommentDisposition).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      // No issue.updated reopen activity should have been logged.
+      const reopenActivity = mockLogActivity.mock.calls.find(
+        ([, input]) => (input as { action: string }).action === "issue.updated",
+      );
+      expect(reopenActivity).toBeUndefined();
+    });
   });
 });
