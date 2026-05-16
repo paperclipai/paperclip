@@ -44,8 +44,13 @@ import { buildWorkspaceRealizationRequest } from "./workspace-realization.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { logActivity } from "./activity-log.js";
 import { parseObject } from "../adapters/utils.js";
-import type { RealizedExecutionWorkspace } from "./workspace-runtime.js";
+import {
+  assertWorkspaceHookCommandIsRepoManaged,
+  resolveWorkspaceHookTimeoutMs,
+  type RealizedExecutionWorkspace,
+} from "./workspace-runtime.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { redactSensitiveText } from "../redaction.js";
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -136,9 +141,31 @@ function formatProvisionFailureDetail(result: {
   const signal = typeof result.signal === "string" && result.signal.trim().length > 0
     ? ` (signal ${result.signal.trim()})`
     : "";
-  const detail = firstNonEmptyLine(result.stderr) ?? firstNonEmptyLine(result.stdout);
+  const detail =
+    firstNonEmptyLine(redactSensitiveText(result.stderr)) ??
+    firstNonEmptyLine(redactSensitiveText(result.stdout));
   const status = `exit code ${result.exitCode ?? "null"}${signal}`;
   return detail ? `${status}: ${detail}` : status;
+}
+
+function buildRemoteProvisionEnv(input: {
+  companyId: string;
+  issueId: string | null;
+  executionWorkspace: RealizedExecutionWorkspace;
+}) {
+  return {
+    SHELL: "/bin/bash",
+    PAPERCLIP_WORKSPACE_CWD: input.executionWorkspace.cwd,
+    PAPERCLIP_WORKSPACE_PATH: input.executionWorkspace.cwd,
+    PAPERCLIP_WORKSPACE_WORKTREE_PATH: input.executionWorkspace.worktreePath ?? input.executionWorkspace.cwd,
+    PAPERCLIP_WORKSPACE_BRANCH: input.executionWorkspace.branchName ?? "",
+    PAPERCLIP_WORKSPACE_REPO_REF: input.executionWorkspace.repoRef ?? "",
+    PAPERCLIP_WORKSPACE_REPO_URL: input.executionWorkspace.repoUrl ?? "",
+    PAPERCLIP_PROJECT_ID: input.executionWorkspace.projectId ?? "",
+    PAPERCLIP_AGENT_ID: "",
+    PAPERCLIP_COMPANY_ID: input.companyId,
+    PAPERCLIP_ISSUE_ID: input.issueId ?? "",
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -418,17 +445,35 @@ export function environmentRunOrchestrator(
         : executionWorkspace.cwd);
     if (provisionCommand && environment.driver !== "local") {
       try {
+        assertWorkspaceHookCommandIsRepoManaged(provisionCommand, executionWorkspace.cwd);
+        const timeoutMs = resolveWorkspaceHookTimeoutMs();
+        const provisionEnv = buildRemoteProvisionEnv({
+          companyId,
+          issueId,
+          executionWorkspace,
+        });
         const provisionResult = await environmentRuntime.execute({
           environment,
           lease,
           command: "bash",
           args: ["-lc", provisionCommand],
           cwd: realizedCwd,
-          env: {
-            SHELL: "/bin/bash",
-          },
-          timeoutMs: 300_000,
+          env: provisionEnv,
+          timeoutMs,
         });
+        workspaceRealization = {
+          ...workspaceRealization,
+          provision: {
+            command: redactSensitiveText(provisionCommand),
+            cwd: realizedCwd,
+            envKeys: Object.keys(provisionEnv).sort(),
+            timeoutMs,
+            exitCode: provisionResult.exitCode,
+            timedOut: provisionResult.timedOut,
+            stdout: redactSensitiveText(provisionResult.stdout).slice(0, 4096),
+            stderr: redactSensitiveText(provisionResult.stderr).slice(0, 4096),
+          },
+        };
         if (provisionResult.exitCode !== 0 || provisionResult.timedOut) {
           throw new Error(formatProvisionFailureDetail(provisionResult));
         }

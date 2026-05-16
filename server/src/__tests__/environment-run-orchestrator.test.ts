@@ -1,3 +1,8 @@
+import { execFile } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -55,6 +60,8 @@ import {
 import type { Environment, EnvironmentLease, ExecutionWorkspace } from "@paperclipai/shared";
 import type { RealizedExecutionWorkspace } from "../services/workspace-runtime.ts";
 import type { EnvironmentRuntimeService } from "../services/environment-runtime.ts";
+
+const execFileAsync = promisify(execFile);
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -153,6 +160,7 @@ function makePersistedExecutionWorkspace(
 function makeRealizeInput(overrides: {
   environment?: Environment;
   lease?: EnvironmentLease;
+  executionWorkspace?: RealizedExecutionWorkspace;
   persistedExecutionWorkspace?: ExecutionWorkspace | null;
 } = {}): Parameters<ReturnType<typeof environmentRunOrchestrator>["realizeForRun"]>[0] {
   return {
@@ -162,7 +170,7 @@ function makeRealizeInput(overrides: {
     companyId: "company-1",
     issueId: null,
     heartbeatRunId: "run-1",
-    executionWorkspace: makeExecutionWorkspace(),
+    executionWorkspace: overrides.executionWorkspace ?? makeExecutionWorkspace(),
     effectiveExecutionWorkspaceMode: null,
     persistedExecutionWorkspace: overrides.persistedExecutionWorkspace !== undefined
       ? overrides.persistedExecutionWorkspace
@@ -193,6 +201,25 @@ function makeMockRuntime(overrides: Partial<EnvironmentRuntimeService> = {}): En
     }),
     ...overrides,
   } as unknown as EnvironmentRuntimeService;
+}
+
+async function createRepoManagedProvisionWorkspace(scriptName = "provision-remote.sh") {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-remote-provision-"));
+  await execGit(cwd, ["init"]);
+  await execGit(cwd, ["config", "user.email", "paperclip@example.test"]);
+  await execGit(cwd, ["config", "user.name", "Paperclip Test"]);
+  await fs.mkdir(path.join(cwd, "scripts"), { recursive: true });
+  await fs.writeFile(path.join(cwd, "scripts", scriptName), "#!/usr/bin/env bash\necho provision ok\n", "utf8");
+  await execGit(cwd, ["add", "scripts"]);
+  await execGit(cwd, ["commit", "-m", "Add provision hook"]);
+  return {
+    cwd,
+    command: `bash ./scripts/${scriptName}`,
+  };
+}
+
+async function execGit(cwd: string, args: string[]) {
+  await execFileAsync("git", args, { cwd });
 }
 
 // ---------------------------------------------------------------------------
@@ -356,6 +383,7 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
   });
 
   it("runs a remote provision command after workspace realization when configured", async () => {
+    const provision = await createRepoManagedProvisionWorkspace();
     mockBuildWorkspaceRealizationRequest.mockReturnValue({
       version: 1,
       adapterType: "claude_local",
@@ -377,7 +405,7 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
         worktreePath: null,
       },
       runtimeOverlay: {
-        provisionCommand: "npm install -g @anthropic-ai/claude-code",
+        provisionCommand: provision.command,
       },
     });
     mockResolveEnvironmentExecutionTarget.mockResolvedValue({
@@ -405,6 +433,7 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
 
     await orchestrator.realizeForRun(makeRealizeInput({
       environment: makeEnvironment("sandbox"),
+      executionWorkspace: makeExecutionWorkspace(provision.cwd),
     }));
 
     expect(runtime.execute).toHaveBeenCalledOnce();
@@ -412,15 +441,19 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
       environment: expect.objectContaining({ driver: "sandbox" }),
       lease: expect.objectContaining({ id: "lease-1" }),
       command: "bash",
-      args: ["-lc", "npm install -g @anthropic-ai/claude-code"],
+      args: ["-lc", provision.command],
       cwd: "/remote/workspace",
-      env: {
+      env: expect.objectContaining({
         SHELL: "/bin/bash",
-      },
+        PAPERCLIP_COMPANY_ID: "company-1",
+        PAPERCLIP_WORKSPACE_CWD: provision.cwd,
+      }),
+      timeoutMs: 300_000,
     }));
   });
 
   it("runs project-level provision commands for ssh environments", async () => {
+    const provision = await createRepoManagedProvisionWorkspace("provision-ssh.sh");
     mockBuildWorkspaceRealizationRequest.mockReturnValue({
       version: 1,
       adapterType: "gemini_local",
@@ -442,7 +475,7 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
         worktreePath: null,
       },
       runtimeOverlay: {
-        provisionCommand: "npm install -g @google/gemini-cli",
+        provisionCommand: provision.command,
       },
     });
     mockResolveEnvironmentExecutionTarget.mockResolvedValue({
@@ -490,16 +523,18 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
           username: "ssh-user",
         },
       }),
+      executionWorkspace: makeExecutionWorkspace(provision.cwd),
     }));
 
     expect(runtime.execute).toHaveBeenCalledWith(expect.objectContaining({
       command: "bash",
-      args: ["-lc", "npm install -g @google/gemini-cli"],
+      args: ["-lc", provision.command],
     }));
     expect(mockResolveEnvironmentExecutionTarget).toHaveBeenCalledOnce();
   });
 
   it("surfaces remote provision command failures before resolving the adapter target", async () => {
+    const provision = await createRepoManagedProvisionWorkspace("install-tool.sh");
     mockBuildWorkspaceRealizationRequest.mockReturnValue({
       version: 1,
       adapterType: "claude_local",
@@ -521,7 +556,7 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
         worktreePath: null,
       },
       runtimeOverlay: {
-        provisionCommand: "install-tool",
+        provisionCommand: provision.command,
       },
     });
 
@@ -538,6 +573,7 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
 
     await expect(orchestrator.realizeForRun(makeRealizeInput({
       environment: makeEnvironment("sandbox"),
+      executionWorkspace: makeExecutionWorkspace(provision.cwd),
     }))).rejects.toSatisfy(
       (err: unknown) =>
         err instanceof EnvironmentRunError &&

@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
@@ -16,6 +16,7 @@ import {
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
+import { redactEventPayload, redactSensitiveText } from "../redaction.js";
 import {
   createLocalServiceKey,
   findLocalServiceRegistryRecordByRuntimeServiceId,
@@ -118,6 +119,23 @@ const runtimeServicesById = new Map<string, RuntimeServiceRecord>();
 const runtimeServicesByReuseKey = new Map<string, string>();
 const runtimeServiceLeasesByRun = new Map<string, string[]>();
 const DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES = 256 * 1024;
+const DEFAULT_WORKSPACE_HOOK_TIMEOUT_MS = 300_000;
+const DEFAULT_WORKSPACE_HOOK_TIMEOUT_MAX_MS = 900_000;
+const WORKSPACE_HOOK_INHERITED_ENV_KEYS = [
+  "PATH",
+  "HOME",
+  "SHELL",
+  "PAPERCLIP_CONFIG",
+  "PAPERCLIP_HOME",
+  "PAPERCLIP_INSTANCE_ID",
+  "PAPERCLIP_WORKTREES_DIR",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "SystemRoot",
+  "WINDIR",
+  "ComSpec",
+];
 
 type ProcessOutputCapture = {
   text: string;
@@ -129,6 +147,38 @@ type ProcessOutputAccumulator = {
   append(chunk: string): void;
   finish(): ProcessOutputCapture;
 };
+
+export function resolveWorkspaceHookTimeoutMs(input: {
+  requestedMs?: number | null;
+  defaultMs?: number | null;
+  maxMs?: number | null;
+} = {}): number {
+  const envRequestedMs = Number.parseInt(
+    process.env.PAPERCLIP_WORKSPACE_HOOK_TIMEOUT_MS ?? "",
+    10,
+  );
+  const envMaxMs = Number.parseInt(
+    process.env.PAPERCLIP_WORKSPACE_HOOK_TIMEOUT_MAX_MS ?? "",
+    10,
+  );
+  const configuredMaxMs =
+    typeof input.maxMs === "number" && Number.isFinite(input.maxMs) && input.maxMs > 0
+      ? input.maxMs
+      : Number.isFinite(envMaxMs) && envMaxMs > 0
+        ? envMaxMs
+        : DEFAULT_WORKSPACE_HOOK_TIMEOUT_MAX_MS;
+  const configuredDefaultMs =
+    typeof input.defaultMs === "number" && Number.isFinite(input.defaultMs) && input.defaultMs > 0
+      ? input.defaultMs
+      : DEFAULT_WORKSPACE_HOOK_TIMEOUT_MS;
+  const requestedMs =
+    typeof input.requestedMs === "number" && Number.isFinite(input.requestedMs) && input.requestedMs > 0
+      ? input.requestedMs
+      : Number.isFinite(envRequestedMs) && envRequestedMs > 0
+        ? envRequestedMs
+        : configuredDefaultMs;
+  return Math.max(1, Math.trunc(Math.min(requestedMs, configuredMaxMs)));
+}
 
 export async function resetRuntimeServicesForTests() {
   for (const record of runtimeServicesById.values()) {
@@ -469,10 +519,13 @@ async function executeProcess(input: {
   env?: NodeJS.ProcessEnv;
   maxStdoutBytes?: number;
   maxStderrBytes?: number;
+  timeoutMs?: number;
 }): Promise<{
   stdout: string;
   stderr: string;
   code: number | null;
+  signal: NodeJS.Signals | null;
+  timedOut: boolean;
   stdoutTruncated: boolean;
   stderrTruncated: boolean;
   stdoutBytes: number;
@@ -482,12 +535,29 @@ async function executeProcess(input: {
     stdout: ProcessOutputAccumulator;
     stderr: ProcessOutputAccumulator;
     code: number | null;
+    signal: NodeJS.Signals | null;
+    timedOut: boolean;
   }>((resolve, reject) => {
+    let timedOut = false;
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,
       stdio: ["ignore", "pipe", "pipe"],
       env: input.env ?? process.env,
     });
+    const timeoutMs =
+      typeof input.timeoutMs === "number" && Number.isFinite(input.timeoutMs) && input.timeoutMs > 0
+        ? Math.trunc(input.timeoutMs)
+        : null;
+    const timeout = timeoutMs
+      ? globalThis.setTimeout(() => {
+          timedOut = true;
+          child.kill("SIGTERM");
+          globalThis.setTimeout(() => {
+            if (child.exitCode === null) child.kill("SIGKILL");
+          }, 2_000).unref();
+        }, timeoutMs)
+      : null;
+    timeout?.unref();
     const stdout = createProcessOutputCapture(input.maxStdoutBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
     const stderr = createProcessOutputCapture(input.maxStderrBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
     child.stdout?.on("data", (chunk) => {
@@ -497,14 +567,19 @@ async function executeProcess(input: {
       stderr.append(String(chunk));
     });
     child.on("error", reject);
-    child.on("close", (code) => resolve({ stdout, stderr, code }));
+    child.on("close", (code, signal) => {
+      if (timeout) clearTimeout(timeout);
+      resolve({ stdout, stderr, code, signal, timedOut });
+    });
   });
   const stdout = proc.stdout.finish();
   const stderr = proc.stderr.finish();
   return {
-    stdout: stdout.text,
-    stderr: stderr.text,
+    stdout: redactSensitiveText(stdout.text),
+    stderr: redactSensitiveText(stderr.text),
     code: proc.code,
+    signal: proc.signal,
+    timedOut: proc.timedOut,
     stdoutTruncated: stdout.truncated,
     stderrTruncated: stderr.truncated,
     stdoutBytes: stdout.totalBytes,
@@ -694,7 +769,7 @@ function buildWorkspaceCommandEnv(input: {
   agent: ExecutionWorkspaceAgentRef;
   created: boolean;
 }) {
-  const env: NodeJS.ProcessEnv = { ...process.env };
+  const env: NodeJS.ProcessEnv = buildWorkspaceHookBaseEnv(process.env);
   env.PAPERCLIP_WORKSPACE_CWD = input.worktreePath;
   env.PAPERCLIP_WORKSPACE_PATH = input.worktreePath;
   env.PAPERCLIP_WORKSPACE_WORKTREE_PATH = input.worktreePath;
@@ -717,13 +792,27 @@ function buildWorkspaceCommandEnv(input: {
   return env;
 }
 
+function buildWorkspaceHookBaseEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of WORKSPACE_HOOK_INHERITED_ENV_KEYS) {
+    const value = baseEnv[key];
+    if (value !== undefined) {
+      env[key] = value;
+    }
+  }
+  return env;
+}
+
 function quoteShellArg(value: string) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string) {
+  if (/<<|https?:\/\//i.test(command)) {
+    throw new Error("Workspace hook command must be repo-managed and cannot use heredocs or remote URLs.");
+  }
   const patterns = [
-    /^(?<prefix>(?:bash|sh|zsh)\s+)(?<quote>["']?)(?<relative>\.\/[^"'\s]+)\k<quote>(?<suffix>(?:\s.*)?)$/s,
+    /^(?<prefix>(?:(?:bash|sh|zsh|node|python|python3|tsx)\s+))(?<quote>["']?)(?<relative>\.\/[^"'\s]+)\k<quote>(?<suffix>(?:\s.*)?)$/s,
     /^(?<quote>["']?)(?<relative>\.\/[^"'\s]+)\k<quote>(?<suffix>(?:\s.*)?)$/s,
   ];
 
@@ -732,15 +821,40 @@ function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string) {
     if (!match?.groups) continue;
 
     const relativePath = match.groups.relative;
-    const repoManagedPath = path.join(repoRoot, relativePath.slice(2));
-    if (!existsSync(repoManagedPath)) continue;
+    const repoManagedPath = path.resolve(repoRoot, relativePath.slice(2));
+    const resolvedRepoRoot = path.resolve(repoRoot);
+    if (repoManagedPath !== resolvedRepoRoot && !repoManagedPath.startsWith(`${resolvedRepoRoot}${path.sep}`)) {
+      throw new Error(`Workspace hook command must reference a path inside the repo: ${relativePath}`);
+    }
+    if (!existsSync(repoManagedPath)) {
+      throw new Error(`Workspace hook command must reference an existing repo-managed script: ${relativePath}`);
+    }
+    try {
+      execFileSync("git", ["-C", repoRoot, "ls-files", "--error-unmatch", relativePath.slice(2)], {
+        stdio: "ignore",
+      });
+    } catch {
+      throw new Error(`Workspace hook command must reference a versioned repo-managed script: ${relativePath}`);
+    }
 
     const prefix = match.groups.prefix ?? "";
     const suffix = match.groups.suffix ?? "";
+    if (suffix && /[;&|`$(){}<>!]|&&|\|\|/.test(suffix)) {
+      throw new Error(
+        "Workspace hook command suffix contains shell operators or metacharacters. " +
+          "Only simple arguments to the governed script are allowed.",
+      );
+    }
     return `${prefix}${quoteShellArg(repoManagedPath)}${suffix}`;
   }
 
-  return command;
+  throw new Error(
+    'Workspace hook command must reference a repo-managed relative script, for example "bash ./scripts/provision.sh".',
+  );
+}
+
+export function assertWorkspaceHookCommandIsRepoManaged(command: string, repoRoot: string) {
+  resolveRepoManagedWorkspaceCommand(command, repoRoot);
 }
 
 async function runWorkspaceCommand(input: {
@@ -749,6 +863,7 @@ async function runWorkspaceCommand(input: {
   cwd: string;
   env: NodeJS.ProcessEnv;
   label: string;
+  timeoutMs?: number;
 }) {
   const shell = resolveShell();
   const proc = await executeProcess({
@@ -756,15 +871,30 @@ async function runWorkspaceCommand(input: {
     args: ["-c", input.resolvedCommand ?? input.command],
     cwd: input.cwd,
     env: input.env,
+    timeoutMs: input.timeoutMs,
   });
   if (proc.code === 0) return;
 
   const details = [proc.stderr.trim(), proc.stdout.trim()].filter(Boolean).join("\n");
   throw new Error(
-    details.length > 0
-      ? `${input.label} failed: ${details}`
-      : `${input.label} failed with exit code ${proc.code ?? -1}`,
+    proc.timedOut
+      ? `${input.label} timed out after ${input.timeoutMs ?? DEFAULT_WORKSPACE_HOOK_TIMEOUT_MS}ms`
+      : details.length > 0
+        ? `${input.label} failed: ${details}`
+        : `${input.label} failed with exit code ${proc.code ?? -1}`,
   );
+}
+
+function buildWorkspaceCommandOperationMetadata(input: {
+  metadata?: Record<string, unknown> | null;
+  env: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+}) {
+  return redactEventPayload({
+    ...(input.metadata ?? {}),
+    envKeys: Object.keys(input.env).sort(),
+    timeoutMs: input.timeoutMs ?? null,
+  });
 }
 
 async function recordGitOperation(
@@ -840,6 +970,7 @@ async function recordWorkspaceCommandOperation(
     label: string;
     metadata?: Record<string, unknown> | null;
     successMessage?: string | null;
+    timeoutMs?: number;
   },
 ) {
   if (!recorder) {
@@ -852,9 +983,9 @@ async function recordWorkspaceCommandOperation(
   let code: number | null = null;
   const operation = await recorder.recordOperation({
     phase: input.phase,
-    command: input.command,
+    command: redactSensitiveText(input.command),
     cwd: input.cwd,
-    metadata: input.metadata ?? null,
+    metadata: buildWorkspaceCommandOperationMetadata(input),
     run: async () => {
       const shell = resolveShell();
       const result = await executeProcess({
@@ -862,23 +993,26 @@ async function recordWorkspaceCommandOperation(
         args: ["-c", input.resolvedCommand ?? input.command],
         cwd: input.cwd,
         env: input.env,
+        timeoutMs: input.timeoutMs,
       });
       stdout = result.stdout;
       stderr = result.stderr;
       code = result.code;
       return {
-        status: result.code === 0 ? "succeeded" : "failed",
+        status: result.code === 0 && !result.timedOut ? "succeeded" : "failed",
         exitCode: result.code,
         stdout: result.stdout,
         stderr: result.stderr,
         system: result.code === 0 ? input.successMessage ?? null : null,
         metadata:
-          result.stdoutTruncated || result.stderrTruncated
+          result.stdoutTruncated || result.stderrTruncated || result.timedOut
             ? {
                 stdoutTruncated: result.stdoutTruncated,
                 stderrTruncated: result.stderrTruncated,
                 stdoutBytes: result.stdoutBytes,
                 stderrBytes: result.stderrBytes,
+                timedOut: result.timedOut,
+                signal: result.signal,
               }
             : null,
       };
@@ -909,6 +1043,7 @@ async function provisionExecutionWorktree(input: {
   const provisionCommand = asString(input.strategy.provisionCommand, "").trim();
   if (!provisionCommand) return;
   const resolvedProvisionCommand = resolveRepoManagedWorkspaceCommand(provisionCommand, input.repoRoot);
+  const timeoutMs = resolveWorkspaceHookTimeoutMs();
 
   await recordWorkspaceCommandOperation(input.recorder, {
     phase: "workspace_provision",
@@ -933,6 +1068,7 @@ async function provisionExecutionWorktree(input: {
       resolvedCommand: resolvedProvisionCommand === provisionCommand ? null : resolvedProvisionCommand,
     },
     successMessage: `Provisioned workspace at ${input.worktreePath}\n`,
+    timeoutMs,
   });
 }
 
@@ -949,7 +1085,7 @@ function buildExecutionWorkspaceCleanupEnv(input: {
   };
   projectWorkspaceCwd?: string | null;
 }) {
-  const env: NodeJS.ProcessEnv = sanitizeRuntimeServiceBaseEnv(process.env);
+  const env: NodeJS.ProcessEnv = buildWorkspaceHookBaseEnv(process.env);
   env.PAPERCLIP_WORKSPACE_CWD = input.workspace.cwd ?? "";
   env.PAPERCLIP_WORKSPACE_PATH = input.workspace.cwd ?? "";
   env.PAPERCLIP_WORKSPACE_WORKTREE_PATH =
@@ -1354,9 +1490,14 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
 
   for (const command of cleanupCommands) {
     try {
-      const resolvedCommand = repoRoot
-        ? resolveRepoManagedWorkspaceCommand(command, repoRoot)
-        : command;
+      if (!repoRoot) {
+        warnings.push(
+          `Skipping cleanup command "${command}" — cannot validate governed hook without resolved repo root.`,
+        );
+        continue;
+      }
+      const resolvedCommand = resolveRepoManagedWorkspaceCommand(command, repoRoot);
+      const timeoutMs = resolveWorkspaceHookTimeoutMs();
       await recordWorkspaceCommandOperation(input.recorder, {
         phase: "workspace_teardown",
         command,
@@ -1372,6 +1513,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
           resolvedCommand: resolvedCommand === command ? null : resolvedCommand,
         },
         successMessage: `Completed cleanup command "${command}"\n`,
+        timeoutMs,
       });
     } catch (err) {
       warnings.push(err instanceof Error ? err.message : String(err));
