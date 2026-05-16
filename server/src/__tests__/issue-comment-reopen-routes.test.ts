@@ -73,8 +73,10 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
 const mockApplyCommentDisposition = vi.hoisted(() => vi.fn());
+const mockPreflightDispositionRequest = vi.hoisted(() => vi.fn());
 const mockIssueDispositionService = vi.hoisted(() => ({
   applyCommentDisposition: mockApplyCommentDisposition,
+  preflightDispositionRequest: mockPreflightDispositionRequest,
 }));
 const mockExtractDispositionRowFromMetadata = vi.hoisted(() => vi.fn(() => null));
 const mockIssueFinalDeliveryService = vi.hoisted(() => ({
@@ -271,6 +273,8 @@ describe.sequential("issue comment reopen routes", () => {
     mockRoutineService.syncRunStatusForIssue.mockReset();
     mockIssueTreeControlService.getActivePauseHoldGate.mockReset();
     mockApplyCommentDisposition.mockReset();
+    mockPreflightDispositionRequest.mockReset();
+    mockPreflightDispositionRequest.mockImplementation(() => undefined);
     mockExtractDispositionRowFromMetadata.mockReset();
     mockExtractDispositionRowFromMetadata.mockImplementation(() => null);
     mockTxInsertValues.mockReset();
@@ -1890,6 +1894,110 @@ describe.sequential("issue comment reopen routes", () => {
         ([, input]) => (input as { action: string }).action === "issue.updated",
       );
       expect(reopenActivity).toBeUndefined();
+    });
+
+    it("rejects an invalid disposition request before assertCheckoutOwner runs (pre-mutation preflight)", async () => {
+      // Reproduces the QA blocker: assertAgentIssueMutationAllowed used to run
+      // before any disposition validation, and its assertCheckoutOwner branch
+      // can mutate execution-run/checkout state. The new preflight rejects
+      // schema/idempotency/sourceRun/finalDisposition errors before any
+      // mutation-shaped side effect, so a rejected disposition leaves zero
+      // pre-validation state changes.
+      setupBaseStubs();
+      mockIssueService.getById.mockResolvedValue({
+        ...makeIssue("in_progress"),
+        checkoutRunId: "stale-run",
+      });
+      const { HttpError } = await import("../errors.js");
+      mockPreflightDispositionRequest.mockImplementation(() => {
+        throw new HttpError(422, "Disposition row must not carry a caller-supplied finalDisposition", {
+          code: "disposition_caller_supplied_final_disposition",
+        });
+      });
+
+      const res = await request(await installActor(createApp(), agentActor()))
+        .post(`/api/issues/${ISSUE_ID}/comments`)
+        .send({
+          body: "Marking done",
+          metadata: dispositionMetadata,
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body).toMatchObject({
+        details: { code: "disposition_caller_supplied_final_disposition" },
+      });
+      // Critically: the checkout-owner adoption path never ran for the
+      // rejected request, so no execution-run/checkout-lock mutation could
+      // have escaped before the writer would reject.
+      expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+      expect(mockApplyCommentDisposition).not.toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("suppresses downstream side effects on writer noop (idempotent retry)", async () => {
+      // Reproduces the QA blocker: when the writer returned noop=true for an
+      // idempotent retry, the route still ran syncComment, reportRunActivity,
+      // issue.comment_added activity logging, interaction expiration, and
+      // wakeup enqueue. That duplicated activity rows and re-woke assignees
+      // for a no-op write. The noop branch now short-circuits past every
+      // downstream side effect.
+      setupBaseStubs();
+      mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+      const existingComment = {
+        id: "existing-disposition-comment",
+        issueId: ISSUE_ID,
+        companyId: "company-1",
+        body: "Marking done",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        authorAgentId: "22222222-2222-4222-8222-222222222222",
+        authorUserId: null,
+      };
+      mockApplyCommentDisposition.mockResolvedValue({
+        comment: existingComment,
+        applied: false,
+        noop: true,
+        dispositionValue: "done",
+        intention: null,
+        sourceRunId: RUN_ID,
+        idempotencyKey: dispositionRow.idempotencyKey,
+        evidence: {
+          sourceRunId: RUN_ID,
+          sourceCommentId: existingComment.id,
+          actor: { actorType: "agent", agentId: "22222222-2222-4222-8222-222222222222", runId: RUN_ID },
+          parentBlockerIntention: null,
+          parentBlockerCleared: false,
+          parentBlockerReplacementDeferred: false,
+          parentBlockerReplaced: false,
+          parentBlockerReplacementIssueId: null,
+          previousStatus: "done",
+          nextStatus: "done",
+        },
+      });
+      (mockIssueService as unknown as { getComment?: ReturnType<typeof vi.fn> }).getComment =
+        vi.fn(async () => existingComment);
+
+      const res = await request(await installActor(createApp(), agentActor()))
+        .post(`/api/issues/${ISSUE_ID}/comments`)
+        .send({
+          body: "Marking done",
+          metadata: dispositionMetadata,
+        });
+
+      expect(res.status).toBe(201);
+      expect(mockApplyCommentDisposition).toHaveBeenCalledTimes(1);
+
+      // None of these downstream side effects should fire on noop.
+      const commentAddedCall = mockLogActivity.mock.calls.find(
+        ([, input]) => (input as { action: string }).action === "issue.comment_added",
+      );
+      expect(commentAddedCall).toBeUndefined();
+      expect(mockHeartbeatService.reportRunActivity).not.toHaveBeenCalled();
+      expect(
+        mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment,
+      ).not.toHaveBeenCalled();
+      // Wakeup should not be enqueued for a noop retry either.
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     });
   });
 });

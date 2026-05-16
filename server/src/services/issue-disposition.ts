@@ -82,6 +82,8 @@ export interface AppliedCommentDispositionResult {
     parentBlockerIntention: IssueDispositionTransitionIntention["parentBlockerIntention"] | null;
     parentBlockerCleared: boolean;
     parentBlockerReplacementDeferred: boolean;
+    parentBlockerReplaced: boolean;
+    parentBlockerReplacementIssueId: string | null;
     previousStatus: string;
     nextStatus: string;
   };
@@ -101,6 +103,7 @@ export const DISPOSITION_ERROR_CODES = {
   INVALID_TRANSITION: "invalid_disposition_transition",
   WORKER_SELF_ATTEST: "disposition_worker_self_attest",
   MULTIPLE_DISPOSITION_ROWS: "disposition_multiple_rows",
+  CALLED_WITHOUT_DISPOSITION: "disposition_called_without_row",
 } as const;
 export type DispositionErrorCode = (typeof DISPOSITION_ERROR_CODES)[keyof typeof DISPOSITION_ERROR_CODES];
 
@@ -343,12 +346,126 @@ export function validateWorkerSelfAttest(input: WorkerSelfAttestInput): WorkerSe
   return { ok: true };
 }
 
+export interface PreflightDispositionRequestInput {
+  issueId: string;
+  metadata: IssueCommentMetadata | null | undefined;
+  presentation?: IssueCommentPresentation | null;
+  actor: DispositionWriterActor;
+}
+
+export interface PreflightDispositionRequestResult {
+  row: IssueCommentMetadataDispositionRow;
+  idempotencyKey: string;
+  sourceRunId: string;
+  validatedMetadata: IssueCommentMetadata;
+  validatedPresentation: IssueCommentPresentation | null;
+}
+
+/**
+ * Run every DB-independent validation the writer would otherwise run inside
+ * its transaction. Callers (e.g. the comment route) invoke this BEFORE any
+ * mutation-shaped pre-writer side effect (checkout-lock assertion, stale-run
+ * adoption, etc.) so that an invalid disposition cannot leave behind state
+ * mutations that the writer would later reject.
+ *
+ * The writer itself still calls this on entry so direct callers cannot bypass
+ * it; the route call is a defense-in-depth ordering fix.
+ */
+export function preflightDispositionRequest(
+  input: PreflightDispositionRequestInput,
+): PreflightDispositionRequestResult {
+  const dispositionMatch = extractDispositionRowFromMetadata(input.metadata);
+  if (!dispositionMatch) {
+    throw unprocessable(
+      "applyCommentDisposition called without a disposition row in metadata",
+      { code: DISPOSITION_ERROR_CODES.CALLED_WITHOUT_DISPOSITION },
+    );
+  }
+  if (countDispositionRows(input.metadata) > 1) {
+    throw unprocessable("Comment metadata cannot include more than one disposition row", {
+      code: DISPOSITION_ERROR_CODES.MULTIPLE_DISPOSITION_ROWS,
+    });
+  }
+
+  const row = dispositionMatch.row;
+  const idempotencyKey = row.idempotencyKey;
+  if (!idempotencyKey) {
+    throw unprocessable("Disposition row requires an idempotencyKey to be written by the backend writer", {
+      code: DISPOSITION_ERROR_CODES.IDEMPOTENCY_KEY_REQUIRED,
+    });
+  }
+  const parsedKey = parseIssueDispositionIdempotencyKey(idempotencyKey);
+  if (!parsedKey) {
+    throw unprocessable("Disposition idempotency key is invalid", {
+      code: DISPOSITION_ERROR_CODES.IDEMPOTENCY_KEY_INVALID,
+    });
+  }
+  if (parsedKey.issueId !== input.issueId) {
+    throw unprocessable("Disposition idempotency key issueId must match target issue", {
+      code: DISPOSITION_ERROR_CODES.IDEMPOTENCY_KEY_ISSUE_MISMATCH,
+    });
+  }
+  if (parsedKey.dispositionValue !== row.value) {
+    throw unprocessable("Disposition idempotency key value must match disposition value", {
+      code: DISPOSITION_ERROR_CODES.IDEMPOTENCY_KEY_INVALID,
+    });
+  }
+
+  if (row.finalDisposition) {
+    throw unprocessable(
+      "Disposition row must not carry a caller-supplied finalDisposition; the backend writer is the sole authority for that record.",
+      { code: DISPOSITION_ERROR_CODES.CALLER_SUPPLIED_FINAL_DISPOSITION },
+    );
+  }
+
+  const sourceRunId = input.metadata?.sourceRunId ?? input.actor.runId ?? null;
+  if (!sourceRunId) {
+    throw unprocessable("Disposition writes require a sourceRunId on the carrying metadata", {
+      code: DISPOSITION_ERROR_CODES.SOURCE_RUN_REQUIRED,
+    });
+  }
+  if (parsedKey.sourceRunId !== sourceRunId) {
+    throw unprocessable("Disposition idempotency key sourceRunId must match metadata.sourceRunId", {
+      code: DISPOSITION_ERROR_CODES.IDEMPOTENCY_KEY_INVALID,
+    });
+  }
+  if (input.actor.runId && input.actor.runId !== sourceRunId) {
+    throw unprocessable(
+      "Disposition sourceRunId must match the authenticated actor's runId.",
+      {
+        code: DISPOSITION_ERROR_CODES.SOURCE_RUN_ACTOR_MISMATCH,
+        actorRunId: input.actor.runId,
+        sourceRunId,
+      },
+    );
+  }
+
+  const validatedPresentation = issueCommentPresentationSchema.nullable().parse(input.presentation ?? null);
+  const validatedMetadata = issueCommentMetadataSchema.parse(input.metadata);
+
+  return {
+    row,
+    idempotencyKey,
+    sourceRunId,
+    validatedMetadata,
+    validatedPresentation,
+  };
+}
+
+/**
+ * Marker for the second argument of the per-issue advisory lock. Stable
+ * arbitrary int32; only its uniqueness within the issueId namespace matters,
+ * not its value.
+ */
+const DISPOSITION_ISSUE_LOCK_MARKER = 0x44495350; // "DISP"
+
 export function issueDispositionService(db: Db) {
   return {
     extractDispositionRowFromMetadata,
     countDispositionRows,
     dispositionBodyEquivalent,
     validateWorkerSelfAttest,
+    preflightDispositionRequest,
 
     /**
      * Atomically write a comment that carries a disposition row and apply the
@@ -358,89 +475,41 @@ export function issueDispositionService(db: Db) {
     applyCommentDisposition: async (
       input: ApplyCommentDispositionInput,
     ): Promise<AppliedCommentDispositionResult> => {
-      const dispositionMatch = extractDispositionRowFromMetadata(input.metadata);
-      if (!dispositionMatch) {
-        throw unprocessable("applyCommentDisposition called without a disposition row in metadata");
-      }
-      if (countDispositionRows(input.metadata) > 1) {
-        throw unprocessable("Comment metadata cannot include more than one disposition row", {
-          code: DISPOSITION_ERROR_CODES.MULTIPLE_DISPOSITION_ROWS,
-        });
-      }
-
-      const row = dispositionMatch.row;
-      const idempotencyKey = row.idempotencyKey;
-      if (!idempotencyKey) {
-        throw unprocessable("Disposition row requires an idempotencyKey to be written by the backend writer", {
-          code: DISPOSITION_ERROR_CODES.IDEMPOTENCY_KEY_REQUIRED,
-        });
-      }
-      const parsedKey = parseIssueDispositionIdempotencyKey(idempotencyKey);
-      if (!parsedKey) {
-        throw unprocessable("Disposition idempotency key is invalid", {
-          code: DISPOSITION_ERROR_CODES.IDEMPOTENCY_KEY_INVALID,
-        });
-      }
-      if (parsedKey.issueId !== input.issueId) {
-        throw unprocessable("Disposition idempotency key issueId must match target issue", {
-          code: DISPOSITION_ERROR_CODES.IDEMPOTENCY_KEY_ISSUE_MISMATCH,
-        });
-      }
-      if (parsedKey.dispositionValue !== row.value) {
-        throw unprocessable("Disposition idempotency key value must match disposition value", {
-          code: DISPOSITION_ERROR_CODES.IDEMPOTENCY_KEY_INVALID,
-        });
-      }
-
-      // Reject caller-supplied authoritative finalDisposition. The writer is
-      // the only authority for that record (it is the only side that knows the
-      // real sourceCommentId, setAt, and resolved sourceRunId). Allowing a
-      // client to set it would let an agent fabricate authoritative-looking
-      // evidence rows. Strip-and-overwrite is an option in a future slice; for
-      // 3C-B we reject explicitly so the contract stays unambiguous.
-      if (row.finalDisposition) {
-        throw unprocessable(
-          "Disposition row must not carry a caller-supplied finalDisposition; the backend writer is the sole authority for that record.",
-          { code: DISPOSITION_ERROR_CODES.CALLER_SUPPLIED_FINAL_DISPOSITION },
-        );
-      }
-
-      const sourceRunId = input.metadata.sourceRunId ?? input.actor.runId ?? null;
-      if (!sourceRunId) {
-        throw unprocessable("Disposition writes require a sourceRunId on the carrying metadata", {
-          code: DISPOSITION_ERROR_CODES.SOURCE_RUN_REQUIRED,
-        });
-      }
-      if (parsedKey.sourceRunId !== sourceRunId) {
-        throw unprocessable("Disposition idempotency key sourceRunId must match metadata.sourceRunId", {
-          code: DISPOSITION_ERROR_CODES.IDEMPOTENCY_KEY_INVALID,
-        });
-      }
-      // SourceRun ownership: when the actor is authenticated with a run, the
-      // disposition's sourceRunId must equal that run. Otherwise an agent
-      // commenting under run A could fabricate evidence keyed on run B.
-      if (input.actor.runId && input.actor.runId !== sourceRunId) {
-        throw unprocessable(
-          "Disposition sourceRunId must match the authenticated actor's runId.",
-          {
-            code: DISPOSITION_ERROR_CODES.SOURCE_RUN_ACTOR_MISMATCH,
-            actorRunId: input.actor.runId,
-            sourceRunId,
-          },
-        );
-      }
-
-      const presentation = issueCommentPresentationSchema.nullable().parse(input.presentation ?? null);
-      const validatedMetadata = issueCommentMetadataSchema.parse(input.metadata);
+      const preflight = preflightDispositionRequest({
+        issueId: input.issueId,
+        metadata: input.metadata,
+        presentation: input.presentation,
+        actor: input.actor,
+      });
+      const row = preflight.row;
+      const idempotencyKey = preflight.idempotencyKey;
+      const sourceRunId = preflight.sourceRunId;
+      const presentation = preflight.validatedPresentation;
+      const validatedMetadata = preflight.validatedMetadata;
 
       return db.transaction(async (tx) => {
-        // Concurrency-safe idempotency: serialize concurrent attempts to write
-        // the same (issueId, idempotencyKey) tuple via two int4 advisory locks
-        // composed into pg_advisory_xact_lock(int4, int4). The lock is bound
-        // to this transaction and released automatically on commit/rollback.
+        // Concurrency-safe serialization for ALL status-changing dispositions
+        // on this issue (independent of idempotency key): without this lock,
+        // two concurrent different-key writes could both read the same
+        // previousStatus, pass transition checks, and race the final write.
+        // Both locks are bound to this transaction and released on
+        // commit/rollback.
         const lockA = hashToInt32(input.issueId);
         const lockB = hashToInt32(idempotencyKey);
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(${lockA}, ${DISPOSITION_ISSUE_LOCK_MARKER})`,
+        );
+        // Same-key idempotent retries also serialize so the noop comparison
+        // against the prior insert is race-free even when many parallel
+        // retries of the same idempotency key contend.
         await tx.execute(sql`SELECT pg_advisory_xact_lock(${lockA}, ${lockB})`);
+        // Belt-and-suspenders row lock: even if advisory locks are bypassed
+        // by a sibling code path that does not call this writer, the FOR
+        // UPDATE prevents concurrent updates to the issue row inside the
+        // window where the writer reads previousStatus and writes nextStatus.
+        await tx.execute(
+          sql`SELECT id FROM ${issues} WHERE id = ${input.issueId} FOR UPDATE`,
+        );
 
         const issueRow = await tx
           .select()
@@ -540,6 +609,8 @@ export function issueDispositionService(db: Db) {
                 parentBlockerIntention: null,
                 parentBlockerCleared: false,
                 parentBlockerReplacementDeferred: false,
+                parentBlockerReplaced: false,
+                parentBlockerReplacementIssueId: null,
                 previousStatus: issueRow.status,
                 nextStatus: issueRow.status,
               },
@@ -757,6 +828,8 @@ export function issueDispositionService(db: Db) {
 
         let parentBlockerCleared = false;
         let parentBlockerReplacementDeferred = false;
+        let parentBlockerReplaced = false;
+        let parentBlockerReplacementIssueId: string | null = null;
         if (intention.parentBlockerIntention === "remove_from_parent_blockers") {
           if (issueRow.parentId) {
             const deleted = await tx
@@ -776,10 +849,138 @@ export function issueDispositionService(db: Db) {
           intention.parentBlockerIntention === "replace_with_canonical_issue"
           || intention.parentBlockerIntention === "replace_with_successor"
         ) {
-          // Replacement edges (canonical/successor) are out of scope for the
-          // 3C-B writer slice; defer to a follow-up. Mark the intention so the
-          // evidence chain makes the deferral explicit.
-          parentBlockerReplacementDeferred = true;
+          // Duplicate/superseded: this issue is cancelled in favor of a
+          // canonical/successor issue. When this issue blocks its parent, the
+          // (this -> parent, blocks) edge must move to (replacement -> parent,
+          // blocks) so the parent stays blocked by the live work item rather
+          // than a cancelled duplicate.
+          //
+          // The replacement issue is the first issue-kind evidence ref on the
+          // disposition row. evaluateDispositionTransition already required it
+          // for duplicate (hasCanonicalIssueRef) / superseded (hasSuccessorRef).
+          const replacementRef = (row.evidenceRefs ?? []).find(
+            (ref): ref is { kind: "issue"; id: string } => ref.kind === "issue",
+          );
+          const replacementIssueId = replacementRef?.id ?? null;
+
+          if (issueRow.parentId && replacementIssueId) {
+            // Self-replacement would just delete the parent edge without a
+            // replacement — fall back to the remove path semantics in that
+            // pathological case.
+            if (replacementIssueId === input.issueId) {
+              const deleted = await tx
+                .delete(issueRelations)
+                .where(
+                  and(
+                    eq(issueRelations.companyId, issueRow.companyId),
+                    eq(issueRelations.issueId, input.issueId),
+                    eq(issueRelations.relatedIssueId, issueRow.parentId),
+                    eq(issueRelations.type, "blocks"),
+                  ),
+                )
+                .returning({ id: issueRelations.id });
+              parentBlockerCleared = deleted.length > 0;
+            } else if (replacementIssueId === issueRow.parentId) {
+              // Replacement is the parent itself: deleting the existing edge
+              // is the only safe action; we never add a self-blocking edge.
+              const deleted = await tx
+                .delete(issueRelations)
+                .where(
+                  and(
+                    eq(issueRelations.companyId, issueRow.companyId),
+                    eq(issueRelations.issueId, input.issueId),
+                    eq(issueRelations.relatedIssueId, issueRow.parentId),
+                    eq(issueRelations.type, "blocks"),
+                  ),
+                )
+                .returning({ id: issueRelations.id });
+              parentBlockerCleared = deleted.length > 0;
+            } else {
+              // Verify the replacement exists and belongs to the same company
+              // before pointing the parent's blocker at it. A cross-company or
+              // missing ref must not silently mutate relations.
+              const replacementIssueRow = await tx
+                .select({ id: issues.id, companyId: issues.companyId })
+                .from(issues)
+                .where(eq(issues.id, replacementIssueId))
+                .then((rows: Array<{ id: string; companyId: string }>) => rows[0] ?? null);
+
+              if (!replacementIssueRow || replacementIssueRow.companyId !== issueRow.companyId) {
+                // Bad ref: clear the parent edge (this issue is cancelled and
+                // can no longer block) and mark the replacement as deferred so
+                // the audit chain is explicit about what did NOT happen.
+                const deleted = await tx
+                  .delete(issueRelations)
+                  .where(
+                    and(
+                      eq(issueRelations.companyId, issueRow.companyId),
+                      eq(issueRelations.issueId, input.issueId),
+                      eq(issueRelations.relatedIssueId, issueRow.parentId),
+                      eq(issueRelations.type, "blocks"),
+                    ),
+                  )
+                  .returning({ id: issueRelations.id });
+                parentBlockerCleared = deleted.length > 0;
+                parentBlockerReplacementDeferred = true;
+              } else {
+                // Delete the (this -> parent, blocks) edge and insert the
+                // (replacement -> parent, blocks) edge. The insert is
+                // idempotent: skip when an equivalent edge already exists.
+                const deleted = await tx
+                  .delete(issueRelations)
+                  .where(
+                    and(
+                      eq(issueRelations.companyId, issueRow.companyId),
+                      eq(issueRelations.issueId, input.issueId),
+                      eq(issueRelations.relatedIssueId, issueRow.parentId),
+                      eq(issueRelations.type, "blocks"),
+                    ),
+                  )
+                  .returning({ id: issueRelations.id });
+                parentBlockerCleared = deleted.length > 0;
+
+                const existingReplacementEdge = await tx
+                  .select({ id: issueRelations.id })
+                  .from(issueRelations)
+                  .where(
+                    and(
+                      eq(issueRelations.companyId, issueRow.companyId),
+                      eq(issueRelations.issueId, replacementIssueId),
+                      eq(issueRelations.relatedIssueId, issueRow.parentId),
+                      eq(issueRelations.type, "blocks"),
+                    ),
+                  );
+
+                if (existingReplacementEdge.length === 0) {
+                  await tx.insert(issueRelations).values({
+                    companyId: issueRow.companyId,
+                    issueId: replacementIssueId,
+                    relatedIssueId: issueRow.parentId,
+                    type: "blocks",
+                  });
+                }
+                parentBlockerReplaced = true;
+                parentBlockerReplacementIssueId = replacementIssueId;
+              }
+            }
+          } else if (issueRow.parentId && !replacementIssueId) {
+            // No replacement ref despite the intention. evaluateDispositionTransition
+            // should already have rejected this, but defend by clearing the
+            // parent edge and marking the replacement as deferred.
+            const deleted = await tx
+              .delete(issueRelations)
+              .where(
+                and(
+                  eq(issueRelations.companyId, issueRow.companyId),
+                  eq(issueRelations.issueId, input.issueId),
+                  eq(issueRelations.relatedIssueId, issueRow.parentId),
+                  eq(issueRelations.type, "blocks"),
+                ),
+              )
+              .returning({ id: issueRelations.id });
+            parentBlockerCleared = deleted.length > 0;
+            parentBlockerReplacementDeferred = true;
+          }
         }
 
         const evidenceDetails: Record<string, unknown> = {
@@ -795,6 +996,8 @@ export function issueDispositionService(db: Db) {
             parentBlockerIntention: intention.parentBlockerIntention,
             parentBlockerCleared,
             parentBlockerReplacementDeferred,
+            parentBlockerReplaced,
+            parentBlockerReplacementIssueId,
             sourceRunId,
             sourceCommentId: insertedComment.id,
             idempotencyKey,
@@ -834,6 +1037,8 @@ export function issueDispositionService(db: Db) {
             parentBlockerIntention: intention.parentBlockerIntention,
             parentBlockerCleared,
             parentBlockerReplacementDeferred,
+            parentBlockerReplaced,
+            parentBlockerReplacementIssueId,
             previousStatus,
             nextStatus,
           },

@@ -288,6 +288,211 @@ describe("applyCommentDisposition atomic evidence (fake-db, deterministic)", () 
     expect(mutations).toHaveLength(0);
   });
 
+  it("acquires a per-issue advisory lock before reading or mutating the issue row", async () => {
+    // Per-QA: two concurrent different-key disposition writes for the same
+    // issue must serialize. We assert here that the writer issues the
+    // per-issue lock SQL BEFORE any select against the issues table, so
+    // sibling transactions block until the first commits.
+    const state = baseState();
+    const { db, operations } = buildFakeDb(state);
+    const svc = issueDispositionService(db);
+
+    await svc.applyCommentDisposition({
+      issueId: ISSUE_ID_A,
+      body: "Marking done",
+      authorType: "agent",
+      metadata: buildAtomicityMetadata(),
+      actor: { actorType: "agent", agentId: WORKER_AGENT_ID, runId: WORKER_RUN_ID },
+    });
+
+    const firstSelectIssueIdx = operations.findIndex(
+      (op) => op.kind === "select" && op.table === issues,
+    );
+    const firstIssueUpdateIdx = operations.findIndex(
+      (op) => op.kind === "update" && op.table === issues,
+    );
+    // At least one execute (the advisory lock + row lock SQL) must precede
+    // both the first issue select and any mutation to the issue row.
+    const firstExecuteIdx = operations.findIndex((op) => op.kind === "execute");
+    expect(firstExecuteIdx).toBeGreaterThanOrEqual(0);
+    expect(firstExecuteIdx).toBeLessThan(firstSelectIssueIdx);
+    expect(firstExecuteIdx).toBeLessThan(firstIssueUpdateIdx);
+
+    // Three execute calls: per-issue advisory lock, per-key advisory lock,
+    // and the FOR UPDATE row lock. All must run before the issue select.
+    const executesBeforeIssueSelect = operations
+      .slice(0, firstSelectIssueIdx)
+      .filter((op) => op.kind === "execute");
+    expect(executesBeforeIssueSelect.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("replaces the parent-blocker edge with the canonical issue on duplicate", async () => {
+    // Per-QA blocker 4: duplicate/superseded must replace the parent-blocker
+    // edge instead of leaving the parent blocked by a cancelled duplicate.
+    // The canonical issue id comes from the disposition's evidenceRefs.
+    const CANONICAL_ISSUE_ID = "66666666-6666-4666-8666-666666666666";
+    const PARENT_ISSUE_ID = "77777777-7777-4777-8777-777777777777";
+    const state = baseState();
+    state.issue = {
+      ...(state.issue as Record<string, unknown>),
+      parentId: PARENT_ISSUE_ID,
+    };
+    // No existing (canonical -> parent) edge in this test, so the writer
+    // must insert one in the same tx as it deletes the (this -> parent) edge.
+    state.deleteResults = [{ id: "deleted-edge-1" }];
+
+    // Override the select handler to return the canonical issue row when
+    // queried for replacement validation.
+    const originalBuildFakeDb = buildFakeDb;
+    const { db, operations } = (function () {
+      const ops: OperationRecord[] = [];
+      let counter = 0;
+      function makeTx(txId: number) {
+        function makeThenable<T>(value: T) {
+          return {
+            then: (resolve: (v: T) => unknown) => Promise.resolve(value).then(resolve),
+          };
+        }
+        function makeChainable(seedRows: Array<Record<string, unknown>>) {
+          const obj: Record<string, unknown> = {};
+          obj.where = () => makeChainable(seedRows);
+          obj.innerJoin = () => makeChainable(seedRows);
+          obj.then = (resolve: (v: unknown) => unknown) => Promise.resolve(seedRows).then(resolve);
+          return obj;
+        }
+        let issueSelectCount = 0;
+        return {
+          execute: async (_sql: unknown) => {
+            ops.push({ kind: "execute", txId });
+            return [];
+          },
+          select: (_cols?: unknown) => ({
+            from: (table: unknown) => {
+              ops.push({ kind: "select", table, txId });
+              let seed: Array<Record<string, unknown>> = [];
+              if (table === issues) {
+                issueSelectCount += 1;
+                if (issueSelectCount === 1) {
+                  seed = [state.issue as Record<string, unknown>];
+                } else {
+                  // Second select against issues: the canonical-issue lookup
+                  // for replacement validation. Return a same-company row.
+                  seed = [{ id: CANONICAL_ISSUE_ID, companyId: COMPANY_ID_A }];
+                }
+              } else if (table === heartbeatRuns) seed = state.heartbeatRun ? [state.heartbeatRun] : [];
+              else if (table === issueComments) seed = state.existingDispositionComments;
+              else if (table === issueExecutionDecisions) seed = state.decisions;
+              else if (table === issueRelations) seed = state.blockerRelations;
+              else if (table === issueApprovals || table === approvals) seed = state.pendingApprovals;
+              else if (table === issueThreadInteractions) seed = state.pendingInteractions;
+              return makeChainable(seed);
+            },
+          }),
+          insert: (table: unknown) => ({
+            values: (v: unknown) => {
+              ops.push({ kind: "insert", table, values: v, txId });
+              if (table === issueComments) {
+                return { returning: () => makeThenable([state.insertedComment]) };
+              }
+              const thenable = makeThenable(undefined);
+              return { ...thenable, returning: () => makeThenable([]) };
+            },
+          }),
+          update: (table: unknown) => ({
+            set: (v: unknown) => ({
+              where: (_c: unknown) => {
+                ops.push({ kind: "update", table, set: v, txId });
+                return Promise.resolve(undefined);
+              },
+            }),
+          }),
+          delete: (table: unknown) => ({
+            where: (_c: unknown) => {
+              ops.push({ kind: "delete", table, txId });
+              return {
+                returning: () => makeThenable(state.deleteResults),
+                then: (resolve: (v: unknown) => unknown) => Promise.resolve(state.deleteResults).then(resolve),
+              };
+            },
+          }),
+        } as unknown;
+      }
+      return {
+        db: {
+          transaction: async (cb: (tx: unknown) => Promise<unknown>) => {
+            counter += 1;
+            return cb(makeTx(counter));
+          },
+        } as unknown as Db,
+        operations: ops,
+      };
+    })();
+    void originalBuildFakeDb;
+    const svc = issueDispositionService(db);
+
+    const metadata: IssueCommentMetadata = {
+      version: 1,
+      sourceRunId: WORKER_RUN_ID,
+      sections: [
+        {
+          rows: [
+            {
+              type: "disposition",
+              value: "duplicate",
+              reason: "Duplicate of canonical issue",
+              evidenceRefs: [{ kind: "issue", id: CANONICAL_ISSUE_ID }],
+              idempotencyKey: buildIssueDispositionIdempotencyKey({
+                issueId: ISSUE_ID_A,
+                sourceRunId: WORKER_RUN_ID,
+                dispositionValue: "duplicate",
+              }),
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = await svc.applyCommentDisposition({
+      issueId: ISSUE_ID_A,
+      body: "Closing as duplicate",
+      authorType: "agent",
+      metadata,
+      actor: { actorType: "agent", agentId: WORKER_AGENT_ID, runId: WORKER_RUN_ID },
+    });
+
+    expect(result.applied).toBe(true);
+    expect(result.evidence.parentBlockerReplaced).toBe(true);
+    expect(result.evidence.parentBlockerReplacementIssueId).toBe(CANONICAL_ISSUE_ID);
+    expect(result.evidence.parentBlockerReplacementDeferred).toBe(false);
+
+    // The relation delete and the canonical-issue insert must both land in
+    // the same transaction as the comment/issue/activity writes.
+    const relationDelete = operations.find((op) => op.kind === "delete" && op.table === issueRelations);
+    const relationInsert = operations.find((op) => op.kind === "insert" && op.table === issueRelations);
+    expect(relationDelete).toBeTruthy();
+    expect(relationInsert).toBeTruthy();
+    expect(relationDelete?.txId).toBe(relationInsert?.txId);
+
+    // The inserted edge points the canonical issue at the parent.
+    expect(relationInsert?.values).toMatchObject({
+      companyId: COMPANY_ID_A,
+      issueId: CANONICAL_ISSUE_ID,
+      relatedIssueId: PARENT_ISSUE_ID,
+      type: "blocks",
+    });
+
+    // Atomic evidence row carries the replacement record.
+    const activityInsert = operations.find((op) => op.kind === "insert" && op.table === activityLog);
+    const details = (activityInsert?.values as { details: { disposition: Record<string, unknown> } })
+      ?.details.disposition;
+    expect(details).toMatchObject({
+      parentBlockerIntention: "replace_with_canonical_issue",
+      parentBlockerReplaced: true,
+      parentBlockerReplacementIssueId: CANONICAL_ISSUE_ID,
+      parentBlockerReplacementDeferred: false,
+    });
+  });
+
   it("rejects an agent disposition that would land the issue in_review without a typed next owner", async () => {
     const state = baseState();
     // Configure a review stage on the policy so the transition validator's

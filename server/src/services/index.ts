@@ -45,6 +45,7 @@ export {
   dispositionBodyEquivalent,
   extractDispositionRowFromMetadata,
   issueDispositionService,
+  preflightDispositionRequest,
   validateWorkerSelfAttest,
   type AppliedCommentDispositionResult,
   type ApplyCommentDispositionInput,

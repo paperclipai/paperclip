@@ -4324,6 +4324,51 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    // Pre-mutation disposition preflight: when the comment carries a
+    // disposition row we must reject schema/idempotency/sourceRun/finalDisp
+    // errors BEFORE assertAgentIssueMutationAllowed runs. That helper can
+    // clear terminal execution-run state and adopt stale checkout locks,
+    // and those mutations must not happen for a request the writer would
+    // ultimately reject. The preflight here mirrors the writer's pre-tx
+    // checks; the writer also runs them on entry, so direct service callers
+    // cannot bypass them.
+    const dispositionMatchPreflight = extractDispositionRowFromMetadata(req.body.metadata ?? null);
+    const reopenRequested = req.body.reopen === true;
+    const resumeRequested = req.body.resume === true;
+    const interruptRequested = req.body.interrupt === true;
+    if (dispositionMatchPreflight
+      && (reopenRequested || resumeRequested === true || interruptRequested)) {
+      res.status(422).json({
+        error:
+          "Disposition-carrying comments cannot also request reopen/resume/interrupt; the disposition transition drives status.",
+        details: { code: "disposition_combines_with_lifecycle_flag" },
+      });
+      return;
+    }
+    if (dispositionMatchPreflight) {
+      const preflightActor = getActorInfo(req);
+      try {
+        dispositionSvc.preflightDispositionRequest({
+          issueId: id,
+          metadata: req.body.metadata,
+          presentation: req.body.presentation ?? null,
+          actor: {
+            actorType: preflightActor.actorType === "agent"
+              ? "agent"
+              : preflightActor.actorType === "user" ? "user" : "system",
+            agentId: preflightActor.agentId ?? null,
+            userId: preflightActor.actorType === "user" ? preflightActor.actorId ?? null : null,
+            runId: preflightActor.runId ?? null,
+          },
+        });
+      } catch (err) {
+        if (err instanceof HttpError) {
+          res.status(err.status).json({ error: err.message, details: err.details });
+          return;
+        }
+        throw err;
+      }
+    }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
@@ -4336,19 +4381,6 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
-    const reopenRequested = req.body.reopen === true;
-    const resumeRequested = req.body.resume === true;
-    const interruptRequested = req.body.interrupt === true;
-    const dispositionMatchPreflight = extractDispositionRowFromMetadata(req.body.metadata ?? null);
-    if (dispositionMatchPreflight
-      && (reopenRequested || resumeRequested === true || interruptRequested)) {
-      res.status(422).json({
-        error:
-          "Disposition-carrying comments cannot also request reopen/resume/interrupt; the disposition transition drives status.",
-        details: { code: "disposition_combines_with_lifecycle_flag" },
-      });
-      return;
-    }
     if (resumeRequested === true && !(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
     if (resumeRequested !== true && reopenRequested === true && req.actor.type === "agent") {
       if (!(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
@@ -4478,6 +4510,16 @@ export function issueRoutes(
       if (dispositionApplied.applied) {
         const updatedIssue = await svc.getById(id);
         if (updatedIssue) currentIssue = updatedIssue;
+      } else if (dispositionApplied.noop) {
+        // Idempotent retry: the writer returned the existing comment without
+        // touching the issue/comment/evidence state. Skip every downstream
+        // side effect (reference sync was already done at the original
+        // insert, the comment_added activity row was already written, wakeups
+        // and interaction expirations already fired). Repeating any of these
+        // for an idempotent retry would duplicate activity rows and wake
+        // assignees again for a no-op write.
+        res.status(201).json(comment);
+        return;
       }
     } else {
       comment = await svc.addComment(id, req.body.body, {
@@ -4531,6 +4573,9 @@ export function issueRoutes(
               parentBlockerCleared: dispositionApplied.evidence.parentBlockerCleared,
               parentBlockerReplacementDeferred:
                 dispositionApplied.evidence.parentBlockerReplacementDeferred,
+              parentBlockerReplaced: dispositionApplied.evidence.parentBlockerReplaced,
+              parentBlockerReplacementIssueId:
+                dispositionApplied.evidence.parentBlockerReplacementIssueId,
               sourceRunId: dispositionApplied.evidence.sourceRunId,
               sourceCommentId: dispositionApplied.evidence.sourceCommentId,
               idempotencyKey: dispositionApplied.idempotencyKey,
