@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { LiveEvent } from "@paperclipai/shared";
+import { ApiError } from "../../api/client";
 import { instanceSettingsApi } from "../../api/instanceSettings";
 import { heartbeatsApi } from "../../api/heartbeats";
 import { buildTranscript, getUIAdapter, onAdapterChange, type RunLogChunk, type TranscriptEntry } from "../../adapters";
@@ -8,18 +9,24 @@ import { queryKeys } from "../../lib/queryKeys";
 
 const LOG_POLL_INTERVAL_MS = 2000;
 const LOG_READ_LIMIT_BYTES = 256_000;
+const EMPTY_RUN_LOG_CHUNKS: RunLogChunk[] = [];
 
 export interface RunTranscriptSource {
   id: string;
   status: string;
   adapterType: string;
   hasStoredOutput?: boolean;
+  logBytes?: number | null;
+  lastOutputBytes?: number | null;
 }
 
 interface UseLiveRunTranscriptsOptions {
   runs: RunTranscriptSource[];
   companyId?: string | null;
   maxChunksPerRun?: number;
+  logPollIntervalMs?: number;
+  logReadLimitBytes?: number;
+  enableRealtimeUpdates?: boolean;
 }
 
 function readString(value: unknown): string | null {
@@ -28,6 +35,19 @@ function readString(value: unknown): string | null {
 
 function isTerminalStatus(status: string): boolean {
   return status === "failed" || status === "timed_out" || status === "cancelled" || status === "succeeded";
+}
+
+function runKnownLogBytes(run: RunTranscriptSource): number | null {
+  const bytes = run.status === "queued"
+    ? run.logBytes
+    : run.lastOutputBytes ?? run.logBytes;
+  return typeof bytes === "number" && Number.isFinite(bytes) && bytes > 0 ? bytes : null;
+}
+
+export function resolveInitialLogOffset(run: RunTranscriptSource, limitBytes: number): number {
+  const knownBytes = runKnownLogBytes(run);
+  if (knownBytes === null) return 0;
+  return Math.max(0, knownBytes - Math.max(0, limitBytes));
 }
 
 function parsePersistedLogContent(
@@ -70,11 +90,18 @@ export function useLiveRunTranscripts({
   runs,
   companyId,
   maxChunksPerRun = 200,
+  logPollIntervalMs = LOG_POLL_INTERVAL_MS,
+  logReadLimitBytes = LOG_READ_LIMIT_BYTES,
+  enableRealtimeUpdates = true,
 }: UseLiveRunTranscriptsOptions) {
   const runsKey = useMemo(
     () =>
       runs
-        .map((run) => `${run.id}:${run.status}:${run.adapterType}:${run.hasStoredOutput === true ? "1" : "0"}`)
+        .map((run) => {
+          const logBytes = typeof run.logBytes === "number" ? run.logBytes : "";
+          const lastOutputBytes = typeof run.lastOutputBytes === "number" ? run.lastOutputBytes : "";
+          return `${run.id}:${run.status}:${run.adapterType}:${run.hasStoredOutput === true ? "1" : "0"}:${logBytes}:${lastOutputBytes}`;
+        })
         .sort((a, b) => a.localeCompare(b))
         .join(","),
     [runs],
@@ -85,6 +112,14 @@ export function useLiveRunTranscripts({
   const seenChunkKeysRef = useRef(new Set<string>());
   const pendingLogRowsByRunRef = useRef(new Map<string, string>());
   const logOffsetByRunRef = useRef(new Map<string, number>());
+  const missingTerminalLogRunIdsRef = useRef(new Set<string>());
+  const transcriptCacheRef = useRef(new Map<string, {
+    adapterType: string;
+    chunks: RunLogChunk[];
+    censorUsernameInLogs: boolean;
+    parserTick: number;
+    transcript: TranscriptEntry[];
+  }>());
   // Tick counter to force transcript recomputation when dynamic parser loads
   const [parserTick, setParserTick] = useState(0);
   useEffect(() => {
@@ -160,6 +195,16 @@ export function useLiveRunTranscripts({
         logOffsetByRunRef.current.delete(runId);
       }
     }
+    for (const runId of missingTerminalLogRunIdsRef.current.keys()) {
+      if (!knownRunIds.has(runId)) {
+        missingTerminalLogRunIdsRef.current.delete(runId);
+      }
+    }
+    for (const runId of transcriptCacheRef.current.keys()) {
+      if (!knownRunIds.has(runId)) {
+        transcriptCacheRef.current.delete(runId);
+      }
+    }
   }, [normalizedRuns]);
 
   useEffect(() => {
@@ -168,9 +213,12 @@ export function useLiveRunTranscripts({
     let cancelled = false;
 
     const readRunLog = async (run: RunTranscriptSource) => {
-      const offset = logOffsetByRunRef.current.get(run.id) ?? 0;
+      if (missingTerminalLogRunIdsRef.current.has(run.id)) {
+        return;
+      }
+      const offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
       try {
-        const result = await heartbeatsApi.log(run.id, offset, LOG_READ_LIMIT_BYTES);
+        const result = await heartbeatsApi.log(run.id, offset, logReadLimitBytes);
         if (cancelled) return;
 
         appendChunks(run.id, parsePersistedLogContent(run.id, result.content, pendingLogRowsByRunRef.current));
@@ -182,8 +230,10 @@ export function useLiveRunTranscripts({
         if (result.content.length > 0) {
           logOffsetByRunRef.current.set(run.id, offset + result.content.length);
         }
-      } catch {
-        // Ignore log read errors while output is initializing.
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404 && isTerminalStatus(run.status)) {
+          missingTerminalLogRunIdsRef.current.add(run.id);
+        }
       } finally {
         if (!cancelled) {
           setHydratedRunIds((prev) => {
@@ -202,19 +252,20 @@ export function useLiveRunTranscripts({
 
     void readAll();
     const activeRuns = normalizedRuns.filter((run) => !isTerminalStatus(run.status));
-    const interval = activeRuns.length > 0
+    const interval = activeRuns.length > 0 && logPollIntervalMs > 0
       ? window.setInterval(() => {
           void Promise.all(activeRuns.map((run) => readRunLog(run)));
-        }, LOG_POLL_INTERVAL_MS)
+        }, logPollIntervalMs)
       : null;
 
     return () => {
       cancelled = true;
       if (interval !== null) window.clearInterval(interval);
     };
-  }, [normalizedRuns, runIdsKey]);
+  }, [logPollIntervalMs, logReadLimitBytes, normalizedRuns, runIdsKey]);
 
   useEffect(() => {
+    if (!enableRealtimeUpdates) return;
     if (!companyId || activeRunIds.size === 0) return;
 
     let closed = false;
@@ -322,19 +373,45 @@ export function useLiveRunTranscripts({
         }
       }
     };
-  }, [activeRunIds, companyId, runById]);
+  }, [activeRunIds, companyId, enableRealtimeUpdates, runById]);
 
   const transcriptByRun = useMemo(() => {
     const next = new Map<string, TranscriptEntry[]>();
     const censorUsernameInLogs = generalSettings?.censorUsernameInLogs === true;
+    const cache = transcriptCacheRef.current;
+    const currentRunIds = new Set<string>();
     for (const run of normalizedRuns) {
+      currentRunIds.add(run.id);
+      const chunks = chunksByRun.get(run.id) ?? EMPTY_RUN_LOG_CHUNKS;
+      const cached = cache.get(run.id);
+      if (
+        cached &&
+        cached.adapterType === run.adapterType &&
+        cached.chunks === chunks &&
+        cached.censorUsernameInLogs === censorUsernameInLogs &&
+        cached.parserTick === parserTick
+      ) {
+        next.set(run.id, cached.transcript);
+        continue;
+      }
+
       const adapter = getUIAdapter(run.adapterType);
-      next.set(
-        run.id,
-        buildTranscript(chunksByRun.get(run.id) ?? [], adapter, {
-          censorUsernameInLogs,
-        }),
-      );
+      const transcript = buildTranscript(chunks, adapter, {
+        censorUsernameInLogs,
+      });
+      cache.set(run.id, {
+        adapterType: run.adapterType,
+        chunks,
+        censorUsernameInLogs,
+        parserTick,
+        transcript,
+      });
+      next.set(run.id, transcript);
+    }
+    for (const runId of cache.keys()) {
+      if (!currentRunIds.has(runId)) {
+        cache.delete(runId);
+      }
     }
     return next;
   }, [chunksByRun, generalSettings?.censorUsernameInLogs, normalizedRuns, parserTick]);

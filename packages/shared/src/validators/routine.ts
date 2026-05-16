@@ -4,6 +4,7 @@ import {
   ROUTINE_CATCH_UP_POLICIES,
   ROUTINE_CONCURRENCY_POLICIES,
   ROUTINE_STATUSES,
+  ROUTINE_TRIGGER_KINDS,
   ROUTINE_TRIGGER_SIGNING_MODES,
   ROUTINE_VARIABLE_TYPES,
 } from "../constants.js";
@@ -63,8 +64,48 @@ export const createRoutineSchema = z.object({
 
 export type CreateRoutine = z.infer<typeof createRoutineSchema>;
 
-export const updateRoutineSchema = createRoutineSchema.partial();
+export const updateRoutineSchema = createRoutineSchema.partial().extend({
+  baseRevisionId: z.string().uuid().optional().nullable(),
+});
 export type UpdateRoutine = z.infer<typeof updateRoutineSchema>;
+
+export const routineRevisionSnapshotRoutineV1Schema = z.object({
+  id: z.string().uuid(),
+  companyId: z.string().uuid(),
+  projectId: z.string().uuid().nullable(),
+  goalId: z.string().uuid().nullable(),
+  parentIssueId: z.string().uuid().nullable(),
+  title: z.string().trim().min(1).max(200),
+  description: z.string().nullable(),
+  assigneeAgentId: z.string().uuid().nullable(),
+  priority: z.enum(ISSUE_PRIORITIES),
+  status: z.enum(ROUTINE_STATUSES),
+  concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES),
+  catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES),
+  variables: z.array(routineVariableSchema),
+}).strict();
+
+export const routineRevisionSnapshotTriggerV1Schema = z.object({
+  id: z.string().uuid(),
+  kind: z.enum(ROUTINE_TRIGGER_KINDS),
+  label: z.string().nullable(),
+  enabled: z.boolean(),
+  cronExpression: z.string().nullable(),
+  timezone: z.string().nullable(),
+  publicId: z.string().nullable(),
+  signingMode: z.enum(ROUTINE_TRIGGER_SIGNING_MODES).nullable(),
+  replayWindowSec: z.number().int().min(30).max(86_400).nullable(),
+}).strict();
+
+export const routineRevisionSnapshotV1Schema = z.object({
+  version: z.literal(1),
+  routine: routineRevisionSnapshotRoutineV1Schema,
+  triggers: z.array(routineRevisionSnapshotTriggerV1Schema),
+}).strict();
+
+export const routineRevisionSnapshotSchema = routineRevisionSnapshotV1Schema;
+export type RoutineRevisionSnapshotV1 = z.infer<typeof routineRevisionSnapshotV1Schema>;
+export type RoutineRevisionSnapshot = z.infer<typeof routineRevisionSnapshotSchema>;
 
 const baseTriggerSchema = z.object({
   label: z.string().trim().max(120).optional().nullable(),

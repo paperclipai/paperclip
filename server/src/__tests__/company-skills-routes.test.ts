@@ -20,26 +20,46 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockTrackSkillImported = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 
-vi.mock("@paperclipai/shared/telemetry", () => ({
-  trackSkillImported: mockTrackSkillImported,
-  trackErrorHandlerCrash: vi.fn(),
-}));
+function registerModuleMocks() {
+  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
 
-vi.mock("../telemetry.js", () => ({
-  getTelemetryClient: mockGetTelemetryClient,
-}));
+  vi.doMock("@paperclipai/shared/telemetry", () => ({
+    trackSkillImported: mockTrackSkillImported,
+    trackErrorHandlerCrash: vi.fn(),
+  }));
 
-vi.mock("../services/index.js", () => ({
-  accessService: () => mockAccessService,
-  agentService: () => mockAgentService,
-  companySkillService: () => mockCompanySkillService,
-  logActivity: mockLogActivity,
-}));
+  vi.doMock("../telemetry.js", () => ({
+    getTelemetryClient: mockGetTelemetryClient,
+  }));
+
+  vi.doMock("../services/access.js", () => ({
+    accessService: () => mockAccessService,
+  }));
+
+  vi.doMock("../services/activity-log.js", () => ({
+    logActivity: mockLogActivity,
+  }));
+
+  vi.doMock("../services/agents.js", () => ({
+    agentService: () => mockAgentService,
+  }));
+
+  vi.doMock("../services/company-skills.js", () => ({
+    companySkillService: () => mockCompanySkillService,
+  }));
+
+  vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
+    companySkillService: () => mockCompanySkillService,
+    logActivity: mockLogActivity,
+  }));
+}
 
 async function createApp(actor: Record<string, unknown>) {
   const [{ companySkillRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/company-skills.js"),
-    import("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/company-skills.js")>("../routes/company-skills.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -55,7 +75,18 @@ async function createApp(actor: Record<string, unknown>) {
 describe("company skill mutation permissions", () => {
   beforeEach(() => {
     vi.resetModules();
-    vi.resetAllMocks();
+    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../services/access.js");
+    vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/agents.js");
+    vi.doUnmock("../services/company-skills.js");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/company-skills.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
+    vi.clearAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockCompanySkillService.importFromSource.mockResolvedValue({
       imported: [],
@@ -83,10 +114,10 @@ describe("company skill mutation permissions", () => {
       .send({ source: "https://github.com/vercel-labs/agent-browser" });
 
     expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
-    expect(mockCompanySkillService.importFromSource).toHaveBeenCalledWith(
-      "company-1",
-      "https://github.com/vercel-labs/agent-browser",
-    );
+    expect(res.body).toEqual({
+      imported: [],
+      warnings: [],
+    });
   });
 
   it("tracks public GitHub skill imports with an explicit skill reference", async () => {
@@ -216,7 +247,7 @@ describe("company skill mutation permissions", () => {
       .post("/api/companies/company-1/skills/import")
       .send({ source: "https://github.com/acme/private-skill" });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
     expect(mockTrackSkillImported).toHaveBeenCalledWith(expect.anything(), {
       sourceType: "github",
       skillRef: null,

@@ -9,17 +9,24 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
   updateExperimental: vi.fn(),
   listCompanyIds: vi.fn(),
 }));
+const mockHeartbeatService = vi.hoisted(() => ({
+  buildIssueGraphLivenessAutoRecoveryPreview: vi.fn(),
+  reconcileIssueGraphLiveness: vi.fn(),
+}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
-vi.mock("../services/index.js", () => ({
-  instanceSettingsService: () => mockInstanceSettingsService,
-  logActivity: mockLogActivity,
-}));
+function registerModuleMocks() {
+  vi.doMock("../services/index.js", () => ({
+    heartbeatService: () => mockHeartbeatService,
+    instanceSettingsService: () => mockInstanceSettingsService,
+    logActivity: mockLogActivity,
+  }));
+}
 
 async function createApp(actor: any) {
-  const [{ instanceSettingsRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/instance-settings.js"),
-    import("../middleware/index.js"),
+  const [{ errorHandler }, { instanceSettingsRoutes }] = await Promise.all([
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    vi.importActual<typeof import("../routes/instance-settings.js")>("../routes/instance-settings.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -35,15 +42,31 @@ async function createApp(actor: any) {
 describe("instance settings routes", () => {
   beforeEach(() => {
     vi.resetModules();
-    vi.resetAllMocks();
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/instance-settings.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
+    vi.clearAllMocks();
+    mockInstanceSettingsService.getGeneral.mockReset();
+    mockInstanceSettingsService.getExperimental.mockReset();
+    mockInstanceSettingsService.updateGeneral.mockReset();
+    mockInstanceSettingsService.updateExperimental.mockReset();
+    mockInstanceSettingsService.listCompanyIds.mockReset();
+    mockHeartbeatService.buildIssueGraphLivenessAutoRecoveryPreview.mockReset();
+    mockHeartbeatService.reconcileIssueGraphLiveness.mockReset();
+    mockLogActivity.mockReset();
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
       keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
     });
     mockInstanceSettingsService.getExperimental.mockResolvedValue({
+      enableEnvironments: false,
       enableIsolatedWorkspaces: false,
       autoRestartDevServerWhenIdle: false,
+      enableIssueGraphLivenessAutoRecovery: true,
+      issueGraphLivenessAutoRecoveryLookbackHours: 24,
     });
     mockInstanceSettingsService.updateGeneral.mockResolvedValue({
       id: "instance-settings-1",
@@ -56,11 +79,35 @@ describe("instance settings routes", () => {
     mockInstanceSettingsService.updateExperimental.mockResolvedValue({
       id: "instance-settings-1",
       experimental: {
+        enableEnvironments: true,
         enableIsolatedWorkspaces: true,
         autoRestartDevServerWhenIdle: false,
+        enableIssueGraphLivenessAutoRecovery: true,
+        issueGraphLivenessAutoRecoveryLookbackHours: 24,
       },
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1", "company-2"]);
+    mockHeartbeatService.buildIssueGraphLivenessAutoRecoveryPreview.mockResolvedValue({
+      lookbackHours: 24,
+      cutoff: "2026-04-26T12:00:00.000Z",
+      generatedAt: "2026-04-27T12:00:00.000Z",
+      findings: 1,
+      recoverableFindings: 1,
+      skippedOutsideLookback: 0,
+      items: [],
+    });
+    mockHeartbeatService.reconcileIssueGraphLiveness.mockResolvedValue({
+      findings: 1,
+      autoRecoveryEnabled: true,
+      lookbackHours: 24,
+      cutoff: "2026-04-26T12:00:00.000Z",
+      escalationsCreated: 1,
+      existingEscalations: 0,
+      skipped: 0,
+      skippedAutoRecoveryDisabled: 0,
+      skippedOutsideLookback: 0,
+      escalationIssueIds: ["issue-2"],
+    });
   });
 
   it("allows local board users to read and update experimental settings", async () => {
@@ -74,8 +121,11 @@ describe("instance settings routes", () => {
     const getRes = await request(app).get("/api/instance/settings/experimental");
     expect(getRes.status).toBe(200);
     expect(getRes.body).toEqual({
+      enableEnvironments: false,
       enableIsolatedWorkspaces: false,
       autoRestartDevServerWhenIdle: false,
+      enableIssueGraphLivenessAutoRecovery: true,
+      issueGraphLivenessAutoRecoveryLookbackHours: 24,
     });
 
     const patchRes = await request(app)
@@ -87,7 +137,7 @@ describe("instance settings routes", () => {
       enableIsolatedWorkspaces: true,
     });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
-  });
+  }, 10_000);
 
   it("allows local board users to update guarded dev-server auto-restart", async () => {
     const app = await createApp({
@@ -102,8 +152,90 @@ describe("instance settings routes", () => {
       .send({ autoRestartDevServerWhenIdle: true })
       .expect(200);
 
+    expect(
+      mockInstanceSettingsService.updateExperimental.mock.calls.some(
+        ([patch]) => patch?.autoRestartDevServerWhenIdle === true,
+      ),
+    ).toBe(true);
+  });
+
+  it("allows local board users to update issue graph liveness auto-recovery", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    await request(app)
+      .patch("/api/instance/settings/experimental")
+      .send({
+        enableIssueGraphLivenessAutoRecovery: true,
+        issueGraphLivenessAutoRecoveryLookbackHours: 12,
+      })
+      .expect(200);
+
     expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
-      autoRestartDevServerWhenIdle: true,
+      enableIssueGraphLivenessAutoRecovery: true,
+      issueGraphLivenessAutoRecoveryLookbackHours: 12,
+    });
+  });
+
+  it("previews issue graph liveness recovery candidates before enabling", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app)
+      .post("/api/instance/settings/experimental/issue-graph-liveness-auto-recovery/preview")
+      .send({ lookbackHours: 12 })
+      .expect(200);
+
+    expect(res.body).toMatchObject({ lookbackHours: 24, recoverableFindings: 1 });
+    expect(mockHeartbeatService.buildIssueGraphLivenessAutoRecoveryPreview).toHaveBeenCalledWith({
+      lookbackHours: 12,
+    });
+  });
+
+  it("kicks off issue graph liveness recovery on demand", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    await request(app)
+      .post("/api/instance/settings/experimental/issue-graph-liveness-auto-recovery/run")
+      .send({ lookbackHours: 12 })
+      .expect(200);
+
+    expect(mockHeartbeatService.reconcileIssueGraphLiveness).toHaveBeenCalledWith({
+      runId: null,
+      force: true,
+      lookbackHours: 12,
+    });
+    expect(mockLogActivity).toHaveBeenCalledTimes(2);
+  });
+
+  it("allows local board users to update environment controls", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    await request(app)
+      .patch("/api/instance/settings/experimental")
+      .send({ enableEnvironments: true })
+      .expect(200);
+
+    expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
+      enableEnvironments: true,
     });
   });
 
@@ -152,7 +284,27 @@ describe("instance settings routes", () => {
     const res = await request(app).get("/api/instance/settings/general");
 
     expect(res.status).toBe(200);
-    expect(mockInstanceSettingsService.getGeneral).toHaveBeenCalled();
+    expect(res.body).toEqual({
+      censorUsernameInLogs: false,
+      keyboardShortcuts: false,
+      feedbackDataSharingPreference: "prompt",
+    });
+  });
+
+  it("rejects signed-in users without company access from reading general settings", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-2",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [],
+      memberships: [],
+    });
+
+    const res = await request(app).get("/api/instance/settings/general");
+
+    expect(res.status).toBe(403);
+    expect(mockInstanceSettingsService.getGeneral).not.toHaveBeenCalled();
   });
 
   it("rejects non-admin board users from updating general settings", async () => {

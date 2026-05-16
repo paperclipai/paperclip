@@ -1,4 +1,5 @@
 import type { Agent } from "@paperclipai/shared";
+import type { CompanyUserProfile } from "./company-members";
 
 type ActivityDetails = Record<string, unknown> | null | undefined;
 
@@ -16,6 +17,7 @@ type ActivityIssueReference = {
 
 interface ActivityFormatOptions {
   agentMap?: Map<string, Agent>;
+  userProfileMap?: Map<string, CompanyUserProfile>;
   currentUserId?: string | null;
 }
 
@@ -25,13 +27,30 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "issue.checked_out": "checked out",
   "issue.released": "released",
   "issue.comment_added": "commented on",
+  "issue.comment_cancelled": "cancelled a queued comment on",
   "issue.attachment_added": "attached file to",
   "issue.attachment_removed": "removed attachment from",
   "issue.document_created": "created document for",
   "issue.document_updated": "updated document on",
+  "issue.document_locked": "locked document on",
+  "issue.document_unlocked": "unlocked document on",
   "issue.document_deleted": "deleted document from",
+  "issue.monitor_scheduled": "scheduled monitor on",
+  "issue.monitor_triggered": "triggered monitor for",
+  "issue.monitor_cleared": "cleared monitor on",
+  "issue.monitor_skipped": "skipped monitor for",
+  "issue.monitor_exhausted": "exhausted monitor on",
+  "issue.monitor_recovery_wake_queued": "queued monitor recovery for",
+  "issue.monitor_recovery_issue_created": "created monitor recovery for",
+  "issue.monitor_escalated_to_board": "escalated monitor for",
   "issue.commented": "commented on",
   "issue.deleted": "deleted",
+  "issue.successful_run_handoff_required": "flagged missing next step on",
+  "issue.successful_run_handoff_resolved": "recorded next step chosen on",
+  "issue.successful_run_handoff_escalated": "escalated missing next step on",
+  "issue.recovery_action_opened": "opened a recovery action on",
+  "issue.recovery_action_resolved": "resolved the recovery action on",
+  "issue.recovery_action_escalated": "escalated the recovery action on",
   "agent.created": "created",
   "agent.updated": "updated",
   "agent.paused": "paused",
@@ -65,13 +84,30 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
   "issue.checked_out": "checked out the issue",
   "issue.released": "released the issue",
   "issue.comment_added": "added a comment",
+  "issue.comment_cancelled": "cancelled a queued comment",
   "issue.feedback_vote_saved": "saved feedback on an AI output",
   "issue.attachment_added": "added an attachment",
   "issue.attachment_removed": "removed an attachment",
   "issue.document_created": "created a document",
   "issue.document_updated": "updated a document",
+  "issue.document_locked": "locked a document",
+  "issue.document_unlocked": "unlocked a document",
   "issue.document_deleted": "deleted a document",
+  "issue.monitor_scheduled": "scheduled a monitor",
+  "issue.monitor_triggered": "triggered a monitor",
+  "issue.monitor_cleared": "cleared a monitor",
+  "issue.monitor_skipped": "skipped a monitor",
+  "issue.monitor_exhausted": "exhausted a monitor",
+  "issue.monitor_recovery_wake_queued": "queued a monitor recovery wake",
+  "issue.monitor_recovery_issue_created": "created a monitor recovery issue",
+  "issue.monitor_escalated_to_board": "escalated a monitor to the board",
   "issue.deleted": "deleted the issue",
+  "issue.successful_run_handoff_required": "Run finished without a clear next step",
+  "issue.successful_run_handoff_resolved": "Next step chosen",
+  "issue.successful_run_handoff_escalated": "Run finished without a next step - recovery escalated",
+  "issue.recovery_action_opened": "Opened a source-scoped recovery action",
+  "issue.recovery_action_resolved": "Resolved the recovery action",
+  "issue.recovery_action_escalated": "Escalated the recovery action",
   "agent.created": "created an agent",
   "agent.updated": "updated the agent",
   "agent.paused": "paused the agent",
@@ -116,9 +152,11 @@ function readIssueReferences(details: ActivityDetails, key: string): ActivityIss
   return value.filter(isActivityIssueReference);
 }
 
-function formatUserLabel(userId: string | null | undefined, currentUserId?: string | null): string {
+function formatUserLabel(userId: string | null | undefined, options: ActivityFormatOptions = {}): string {
   if (!userId || userId === "local-board") return "Board";
-  if (currentUserId && userId === currentUserId) return "You";
+  if (options.currentUserId && userId === options.currentUserId) return "You";
+  const profile = options.userProfileMap?.get(userId);
+  if (profile) return profile.label;
   return `user ${userId.slice(0, 5)}`;
 }
 
@@ -127,7 +165,7 @@ function formatParticipantLabel(participant: ActivityParticipant, options: Activ
     const agentId = participant.agentId ?? "";
     return options.agentMap?.get(agentId)?.name ?? "agent";
   }
-  return formatUserLabel(participant.userId, options.currentUserId);
+  return formatUserLabel(participant.userId, options);
 }
 
 function formatIssueReferenceLabel(reference: ActivityIssueReference): string {
@@ -165,7 +203,20 @@ function formatIssueUpdatedVerb(details: ActivityDetails): string | null {
   return null;
 }
 
-function formatIssueUpdatedAction(details: ActivityDetails): string | null {
+function formatAssigneeName(details: ActivityDetails, options: ActivityFormatOptions): string | null {
+  if (!details) return null;
+  const agentId = details.assigneeAgentId;
+  const userId = details.assigneeUserId;
+  if (typeof agentId === "string" && agentId) {
+    return options.agentMap?.get(agentId)?.name ?? "agent";
+  }
+  if (typeof userId === "string" && userId) {
+    return formatUserLabel(userId, options);
+  }
+  return null;
+}
+
+function formatIssueUpdatedAction(details: ActivityDetails, options: ActivityFormatOptions = {}): string | null {
   if (!details) return null;
   const previous = asRecord(details._previous) ?? {};
   const parts: string[] = [];
@@ -187,7 +238,8 @@ function formatIssueUpdatedAction(details: ActivityDetails): string | null {
     );
   }
   if (details.assigneeAgentId !== undefined || details.assigneeUserId !== undefined) {
-    parts.push(details.assigneeAgentId || details.assigneeUserId ? "assigned the issue" : "unassigned the issue");
+    const assigneeName = formatAssigneeName(details, options);
+    parts.push(assigneeName ? `assigned the issue to ${assigneeName}` : "unassigned the issue");
   }
   if (details.title !== undefined) parts.push("updated the title");
   if (details.description !== undefined) parts.push("updated the description");
@@ -264,7 +316,7 @@ export function formatIssueActivityAction(
   options: ActivityFormatOptions = {},
 ): string {
   if (action === "issue.updated") {
-    const issueUpdatedAction = formatIssueUpdatedAction(details);
+    const issueUpdatedAction = formatIssueUpdatedAction(details, options);
     if (issueUpdatedAction) return issueUpdatedAction;
   }
 
@@ -276,8 +328,22 @@ export function formatIssueActivityAction(
   });
   if (structuredChange) return structuredChange;
 
+  if (action.startsWith("issue.monitor_") && details) {
+    const serviceName = typeof details.serviceName === "string" && details.serviceName.trim()
+      ? details.serviceName.trim()
+      : null;
+    const base = ISSUE_ACTIVITY_LABELS[action] ?? action.replace(/[._]/g, " ");
+    return serviceName ? `${base} for ${serviceName}` : base;
+  }
+
   if (
-    (action === "issue.document_created" || action === "issue.document_updated" || action === "issue.document_deleted") &&
+    (
+      action === "issue.document_created" ||
+      action === "issue.document_updated" ||
+      action === "issue.document_locked" ||
+      action === "issue.document_unlocked" ||
+      action === "issue.document_deleted"
+    ) &&
     details
   ) {
     const key = typeof details.key === "string" ? details.key : "document";

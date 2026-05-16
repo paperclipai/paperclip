@@ -115,38 +115,6 @@ If the first real publish returns npm `E404`, check npm-side prerequisites befor
 - The initial publish must include `--access public` for a public scoped package.
 - npm also requires either account 2FA for publishing or a granular token that is allowed to bypass 2FA.
 
-### Manual first publish for `@paperclipai/mcp-server`
-
-If you need to publish only the MCP server package once by hand, use:
-
-- `@paperclipai/mcp-server`
-
-Recommended flow from the repo root:
-
-```bash
-# optional sanity check: this 404s until the first publish exists
-npm view @paperclipai/mcp-server version
-
-# make sure the build output is fresh
-pnpm --filter @paperclipai/mcp-server build
-
-# confirm your local npm auth before the real publish
-npm whoami
-
-# safe preview of the exact publish payload
-cd packages/mcp-server
-pnpm publish --dry-run --no-git-checks --access public
-
-# real publish
-pnpm publish --no-git-checks --access public
-```
-
-Notes:
-
-- Publish from `packages/mcp-server/`, not the repo root.
-- If `npm view @paperclipai/mcp-server version` already returns the same version that is in [`packages/mcp-server/package.json`](../packages/mcp-server/package.json), do not republish. Bump the version or use the normal repo-wide release flow in [`scripts/release.sh`](../scripts/release.sh).
-- The same npm-side prerequisites apply as above: valid npm auth, permission to publish to the `@paperclipai` scope, `--access public`, and the required publish auth/2FA policy.
-
 ## Version formats
 
 Paperclip uses calendar versions:
@@ -175,6 +143,13 @@ This keeps the default install path unchanged while allowing explicit installs w
 npx paperclipai@canary onboard
 ```
 
+The release script now verifies two things after a canary publish:
+
+- the `canary` dist-tag resolves to the version that was just published
+- every published internal `@paperclipai/*` dependency referenced by that manifest exists on npm
+
+It also treats `latest -> canary` as a failure by default, because npm metadata can otherwise leave the default install path pointing at an unreleased canary dependency graph. Only pass `./scripts/release.sh canary --allow-canary-latest` when that `latest` behavior is explicitly intended.
+
 ### Stable
 
 Stable publishes use the npm dist-tag `latest`.
@@ -200,6 +175,58 @@ That means:
 - trusted publisher rules are configured per workflow file
 
 See [doc/RELEASE-AUTOMATION-SETUP.md](RELEASE-AUTOMATION-SETUP.md) for the GitHub/npm setup steps.
+
+## Release enrollment for new public packages
+
+Paperclip does not auto-publish every non-private workspace package anymore.
+CI publishing is controlled by [`scripts/release-package-manifest.json`](../scripts/release-package-manifest.json).
+
+When you add a new public package:
+
+1. add it to the manifest and decide whether CI should publish it immediately
+2. if CI should publish it, bootstrap the package on npm before merge
+3. if CI should not publish it yet, keep `"publishFromCi": false`
+4. only enable `"publishFromCi": true` after npm trusted publishing is configured for that package
+
+PR CI now checks changed release-enabled package manifests against npm. That catches a missing first-publish bootstrap before the change reaches `master`.
+
+### One-time bootstrap sequence for a new package
+
+The first publish of a brand-new package still needs one human maintainer with npm write access.
+After that, trusted publishing can take over.
+
+Example for `@paperclipai/adapter-acpx-local` from the repo root:
+
+```bash
+# safe preview
+pnpm run release:bootstrap-package -- @paperclipai/adapter-acpx-local
+
+# one-time first publish from an authenticated maintainer machine
+pnpm run release:bootstrap-package -- @paperclipai/adapter-acpx-local --publish --otp 123456
+```
+
+The helper script:
+
+- checks that the package does not already exist on npm
+- builds the target package unless `--skip-build` is passed
+- runs `npm pack --dry-run` in the package directory
+- only runs the real `npm publish --access public` when `--publish --otp <code>` is provided
+
+For the real `--publish` step, the maintainer machine must already be authenticated to npm.
+If `npm whoami` returns `401`, first run `npm logout --registry=https://registry.npmjs.org/` to clear any stale local auth, then run `npm login` or `npm adduser` locally as an npm org member, and finally rerun the helper.
+That local human auth is fine for the one-time bootstrap publish; we just do not want the same auth model inside CI.
+The helper now requires `--otp <code>` up front for `--publish`, so it fails before the real publish attempt if the one-time password is missing.
+
+After that first publish succeeds:
+
+1. open `https://www.npmjs.com/package/@paperclipai/adapter-acpx-local`
+2. go to `Settings` → `Trusted publishing`
+3. add repository `paperclipai/paperclip`
+4. set workflow filename to `release.yml`
+5. optionally go to `Settings` → `Publishing access` and enable `Require two-factor authentication and disallow tokens`
+6. keep `publishFromCi: true` in [`scripts/release-package-manifest.json`](../scripts/release-package-manifest.json)
+
+Once those steps are done, future canary and stable publishes for that package are automated through GitHub OIDC. The manual step is only the first package creation on npm.
 
 ## Rollback model
 

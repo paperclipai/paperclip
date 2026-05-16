@@ -61,6 +61,7 @@ interface IssueUpdateOptions extends BaseClientOptions {
 interface IssueCommentOptions extends BaseClientOptions {
   body: string;
   reopen?: boolean;
+  resume?: boolean;
 }
 
 interface IssueCheckoutOptions extends BaseClientOptions {
@@ -241,12 +242,14 @@ export function registerIssueCommands(program: Command): void {
       .argument("<issueId>", "Issue ID")
       .requiredOption("--body <text>", "Comment body")
       .option("--reopen", "Reopen if issue is done/cancelled")
+      .option("--resume", "Request explicit follow-up and wake the assignee when resumable")
       .action(async (issueId: string, opts: IssueCommentOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
           const payload = addIssueCommentSchema.parse({
             body: opts.body,
             reopen: opts.reopen,
+            resume: opts.resume,
           });
           const comment = await ctx.api.post<IssueComment>(`/api/issues/${issueId}/comments`, payload);
           printOutput(comment, { json: ctx.json });

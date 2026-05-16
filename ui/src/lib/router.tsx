@@ -9,12 +9,7 @@ import {
   extractCompanyPrefixFromPath,
   normalizeCompanyPrefix,
 } from "@/lib/company-routes";
-
-function parseIssuePathIdFromPath(pathname: string | null | undefined): string | null {
-  if (!pathname) return null;
-  const match = pathname.match(/(?:^|\/)issues\/([^/?#]+)/);
-  return match?.[1] ?? null;
-}
+import { parseIssuePathIdFromPath } from "@/lib/issue-reference";
 
 function resolveTo(to: To, companyPrefix: string | null): To {
   if (typeof to === "string") {
@@ -51,10 +46,19 @@ export * from "react-router-dom";
 type CompanyLinkProps = React.ComponentProps<typeof RouterDom.Link> & {
   disableIssueQuicklook?: boolean;
   issuePrefetch?: Issue | null;
+  issueQuicklookSide?: React.ComponentProps<typeof IssueLinkQuicklook>["issueQuicklookSide"];
+  issueQuicklookAlign?: React.ComponentProps<typeof IssueLinkQuicklook>["issueQuicklookAlign"];
 };
 
 export const Link = React.forwardRef<HTMLAnchorElement, CompanyLinkProps>(
-  function CompanyLink({ to, disableIssueQuicklook = false, issuePrefetch = null, ...props }, ref) {
+  function CompanyLink({
+    to,
+    disableIssueQuicklook = false,
+    issuePrefetch = null,
+    issueQuicklookSide,
+    issueQuicklookAlign,
+    ...props
+  }, ref) {
     const companyPrefix = useActiveCompanyPrefix();
     const resolvedTo = resolveTo(to, companyPrefix);
     const issuePathId = parseIssuePathIdFromPath(typeof resolvedTo === "string" ? resolvedTo : resolvedTo.pathname);
@@ -67,6 +71,8 @@ export const Link = React.forwardRef<HTMLAnchorElement, CompanyLinkProps>(
           issuePathId={issuePathId}
           disableIssueQuicklook={disableIssueQuicklook}
           issuePrefetch={issuePrefetch}
+          issueQuicklookSide={issueQuicklookSide}
+          issueQuicklookAlign={issueQuicklookAlign}
           {...props}
         />
       );

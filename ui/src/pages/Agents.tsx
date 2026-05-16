@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
-import { useDialog } from "../context/DialogContext";
+import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -41,6 +41,13 @@ function filterAgents(agents: Agent[], tab: FilterTab, showTerminated: boolean):
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function getConfiguredModel(agent: Agent): string | null {
+  const value = agent.adapterConfig?.model;
+  if (typeof value !== "string") return null;
+  const model = value.trim();
+  return model.length > 0 ? model : null;
+}
+
 function filterOrgTree(nodes: OrgNode[], tab: FilterTab, showTerminated: boolean): OrgNode[] {
   return nodes
     .reduce<OrgNode[]>((acc, node) => {
@@ -55,7 +62,7 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, showTerminated: boolean
 
 export function Agents() {
   const { selectedCompanyId } = useCompany();
-  const { openNewAgent } = useDialog();
+  const { openNewAgent } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
   const location = useLocation();
@@ -81,8 +88,8 @@ export function Agents() {
   });
 
   const { data: runs } = useQuery({
-    queryKey: queryKeys.heartbeats(selectedCompanyId!),
-    queryFn: () => heartbeatsApi.list(selectedCompanyId!),
+    queryKey: [...queryKeys.liveRuns(selectedCompanyId!), "agents-page"],
+    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
     enabled: !!selectedCompanyId,
     refetchInterval: 15_000,
   });
@@ -253,8 +260,14 @@ export function Agents() {
                           liveCount={liveRunByAgent.get(agent.id)!.liveCount}
                         />
                       )}
-                      <span className="text-xs text-muted-foreground font-mono w-14 text-right">
+                      <span className="w-28 whitespace-nowrap text-left font-mono text-xs text-muted-foreground">
                         {getAdapterLabel(agent.adapterType)}
+                      </span>
+                      <span
+                        className="w-36 truncate text-left font-mono text-xs text-muted-foreground"
+                        title={getConfiguredModel(agent) ?? undefined}
+                      >
+                        {getConfiguredModel(agent) ?? "—"}
                       </span>
                       <span className="text-xs text-muted-foreground w-16 text-right">
                         {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "—"}
@@ -356,8 +369,14 @@ function OrgTreeNode({
             )}
             {agent && (
               <>
-                <span className="text-xs text-muted-foreground font-mono w-14 text-right">
+                <span className="w-28 whitespace-nowrap text-left font-mono text-xs text-muted-foreground">
                   {getAdapterLabel(agent.adapterType)}
+                </span>
+                <span
+                  className="w-36 truncate text-left font-mono text-xs text-muted-foreground"
+                  title={getConfiguredModel(agent) ?? undefined}
+                >
+                  {getConfiguredModel(agent) ?? "—"}
                 </span>
                 <span className="text-xs text-muted-foreground w-16 text-right">
                   {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "—"}

@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   createCostEventSchema,
   createFinanceEventSchema,
+  normalizeIssueIdentifier,
   resolveBudgetIncidentSchema,
   updateBudgetSchema,
   upsertBudgetPolicySchema,
@@ -14,12 +15,14 @@ import {
   financeService,
   companyService,
   agentService,
+  issueService,
   heartbeatService,
   logActivity,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 export function parseCostDateRange(query: Record<string, unknown>) {
   const fromRaw = query.from as string | undefined;
@@ -41,9 +44,14 @@ export function parseCostLimit(query: Record<string, unknown>) {
   return limit;
 }
 
-export function costRoutes(db: Db) {
+export function costRoutes(
+  db: Db,
+  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+) {
   const router = Router();
-  const heartbeat = heartbeatService(db);
+  const heartbeat = heartbeatService(db, {
+    pluginWorkerManager: options.pluginWorkerManager,
+  });
   const budgetHooks = {
     cancelWorkForScope: heartbeat.cancelBudgetScopeWork,
   };
@@ -52,6 +60,15 @@ export function costRoutes(db: Db) {
   const budgets = budgetService(db, budgetHooks);
   const companies = companyService(db);
   const agents = agentService(db);
+  const issues = issueService(db);
+
+  async function resolveIssueByRef(rawId: string) {
+    const identifier = normalizeIssueIdentifier(rawId);
+    if (identifier) {
+      return issues.getByIdentifier(identifier);
+    }
+    return issues.getById(rawId);
+  }
 
   router.post("/companies/:companyId/cost-events", validate(createCostEventSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -117,6 +134,19 @@ export function costRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     const range = parseCostDateRange(req.query);
     const summary = await costs.summary(companyId, range);
+    res.json(summary);
+  });
+
+  router.get("/issues/:id/cost-summary", async (req, res) => {
+    const rawId = req.params.id as string;
+    const issue = await resolveIssueByRef(rawId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const excludeRoot = req.query.excludeRoot === "true" || req.query.excludeRoot === "1";
+    const summary = await costs.issueTreeSummary(issue.companyId, issue.id, { excludeRoot });
     res.json(summary);
   });
 
@@ -290,13 +320,7 @@ export function costRoutes(db: Db) {
     }
 
     assertCompanyAccess(req, agent.companyId);
-
-    if (req.actor.type === "agent") {
-      if (req.actor.agentId !== agentId) {
-        res.status(403).json({ error: "Agent can only change its own budget" });
-        return;
-      }
-    }
+    assertBoard(req);
 
     const updated = await agents.update(agentId, { budgetMonthlyCents: req.body.budgetMonthlyCents });
     if (!updated) {
