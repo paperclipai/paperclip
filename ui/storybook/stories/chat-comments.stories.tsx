@@ -15,6 +15,11 @@ import type {
   IssueChatTranscriptEntry,
 } from "@/lib/issue-chat-messages";
 import type { IssueTimelineEvent } from "@/lib/issue-timeline-events";
+import {
+  issueChatRendererCrashComments,
+  issueChatRendererCrashLinkedRuns,
+  issueChatRendererCrashTranscriptsByRunId,
+} from "../fixtures/issueChatRendererCrashFixture";
 import { storybookAgentMap, storybookAgents } from "../fixtures/paperclipData";
 
 const companyId = "company-storybook";
@@ -872,6 +877,35 @@ export const IssueChatWithTimeline: Story = {
     <div className="paperclip-story">
       <main className="paperclip-story__inner">
         <IssueChatMatrix />
+      </main>
+    </div>
+  ),
+};
+
+export const IssueChatRendererCrashRegression: Story = {
+  render: () => (
+    <div className="paperclip-story">
+      <main className="paperclip-story__inner">
+        <Section eyebrow="IssueChatThread" title="Renderer crash regression fixture">
+          <div className="rounded-lg border border-border bg-background/70 p-4">
+            <IssueChatThread
+              comments={issueChatRendererCrashComments}
+              timelineEvents={[]}
+              linkedRuns={issueChatRendererCrashLinkedRuns}
+              liveRuns={[]}
+              companyId={companyId}
+              projectId={projectId}
+              agentMap={storybookAgentMap}
+              currentUserId={currentUserId}
+              userLabelMap={boardUserLabels}
+              onAdd={async () => {}}
+              showComposer={false}
+              enableLiveTranscriptPolling={false}
+              transcriptsByRunId={issueChatRendererCrashTranscriptsByRunId}
+              hasOutputForRun={(runId) => issueChatRendererCrashTranscriptsByRunId.has(runId)}
+            />
+          </div>
+        </Section>
       </main>
     </div>
   ),

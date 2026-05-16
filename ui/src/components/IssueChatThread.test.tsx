@@ -28,6 +28,12 @@ import {
   issueChatLongThreadLinkedRuns,
   issueChatLongThreadTranscriptsByRunId,
 } from "../fixtures/issueChatLongThreadFixture";
+import {
+  issueChatRendererCrashComments,
+  issueChatRendererCrashLinkedRuns,
+  issueChatRendererCrashSentinel,
+  issueChatRendererCrashTranscriptsByRunId,
+} from "../../storybook/fixtures/issueChatRendererCrashFixture";
 import type {
   IssueChatLinkedRun,
   IssueChatTranscriptEntry,
@@ -84,6 +90,9 @@ vi.mock("../lib/issue-chat-scroll", async (importOriginal) => {
 vi.mock("./MarkdownBody", () => ({
   MarkdownBody: ({ children }: { children: ReactNode }) => {
     markdownBodyRenderMock(children);
+    if (typeof children === "string" && children.includes("ISSUE_CHAT_RENDERER_CRASH_SENTINEL")) {
+      throw new Error("Mock MarkdownBody renderer crash");
+    }
     return <div>{children}</div>;
   },
 }));
@@ -1751,6 +1760,56 @@ describe("IssueChatThread", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("falls back in-place when one mixed transcript message row crashes", () => {
+    const root = createRoot(container);
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      act(() => {
+        root.render(
+          <MemoryRouter>
+            <IssueChatThread
+              comments={issueChatRendererCrashComments}
+              linkedRuns={issueChatRendererCrashLinkedRuns}
+              timelineEvents={[]}
+              liveRuns={[]}
+              transcriptsByRunId={issueChatRendererCrashTranscriptsByRunId}
+              hasOutputForRun={(runId) => issueChatRendererCrashTranscriptsByRunId.has(runId)}
+              agentMap={issueChatLongThreadAgentMap}
+              onAdd={async () => {}}
+              showComposer={false}
+              enableLiveTranscriptPolling={false}
+            />
+          </MemoryRouter>,
+        );
+      });
+
+      const transcriptToggle = Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Codex"),
+      );
+      expect(transcriptToggle).toBeTruthy();
+
+      act(() => {
+        transcriptToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+
+      expect(container.querySelectorAll("[data-testid='issue-chat-message-row-fallback']")).toHaveLength(1);
+      expect(container.textContent).toContain("Message renderer hit an internal state error.");
+      expect(container.textContent).toContain(issueChatRendererCrashSentinel);
+      expect(container.textContent).toContain("QA follow-up: messages after the failing row");
+      expect(container.textContent).not.toContain("Chat renderer hit an internal state error.");
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Issue chat message failed to render"),
+        expect.objectContaining({ messageId: expect.any(String) }),
+      );
+    } finally {
+      act(() => {
+        root.unmount();
+      });
+      consoleErrorSpy.mockRestore();
+    }
   });
 
   it("shows deferred wake badge only for hold-deferred queued comments", () => {

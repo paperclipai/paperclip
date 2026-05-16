@@ -455,17 +455,26 @@ function fallbackAuthorLabel(message: ThreadMessage) {
   return "System";
 }
 
-function fallbackTextParts(message: ThreadMessage) {
+function fallbackTextParts(message: ThreadMessage): string[] {
   const contentLines: string[] = [];
-  for (const part of message.content) {
-    if (part.type === "text" || part.type === "reasoning") {
-      if (part.text.trim().length > 0) contentLines.push(part.text);
+  const content = Array.isArray(message.content) ? message.content : [];
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const record = part as Record<string, unknown>;
+    if (record.type === "text" || record.type === "reasoning") {
+      const text = typeof record.text === "string" ? record.text : "";
+      if (text.trim().length > 0) contentLines.push(text);
       continue;
     }
-    if (part.type === "tool-call") {
-      const lines = [`Tool: ${part.toolName}`];
-      if (part.argsText?.trim()) lines.push(`Args:\n${part.argsText}`);
-      if (typeof part.result === "string" && part.result.trim()) lines.push(`Result:\n${part.result}`);
+    if (record.type === "tool-call") {
+      const toolName = typeof record.toolName === "string" && record.toolName.trim()
+        ? record.toolName
+        : "tool";
+      const argsText = typeof record.argsText === "string" ? record.argsText : "";
+      const result = typeof record.result === "string" ? record.result : "";
+      const lines = [`Tool: ${toolName}`];
+      if (argsText.trim()) lines.push(`Args:\n${argsText}`);
+      if (result.trim()) lines.push(`Result:\n${result}`);
       contentLines.push(lines.join("\n\n"));
     }
   }
@@ -475,6 +484,14 @@ function fallbackTextParts(message: ThreadMessage) {
     contentLines.push(custom["waitingText"]);
   }
   return contentLines;
+}
+
+function PlainFallbackTextBlock({ children }: { children: string }) {
+  return (
+    <pre className="whitespace-pre-wrap break-words rounded-md bg-muted/40 px-3 py-2 font-sans text-sm leading-6 text-foreground/80">
+      {children}
+    </pre>
+  );
 }
 
 function IssueChatFallbackThread({
@@ -525,7 +542,7 @@ function IssueChatFallbackThread({
                 </div>
                 <div className="space-y-2">
                   {lines.length > 0 ? lines.map((line, index) => (
-                    <MarkdownBody key={`${message.id}:fallback:${index}`}>{line}</MarkdownBody>
+                    <PlainFallbackTextBlock key={`${message.id}:fallback:${index}`}>{line}</PlainFallbackTextBlock>
                   )) : (
                     <p className="text-sm text-muted-foreground">No message content.</p>
                   )}
@@ -537,6 +554,79 @@ function IssueChatFallbackThread({
       )}
     </div>
   );
+}
+
+type IssueChatMessageErrorBoundaryProps = {
+  message: ThreadMessage;
+  children: ReactNode;
+};
+
+type IssueChatMessageErrorBoundaryState = {
+  hasError: boolean;
+};
+
+class IssueChatMessageErrorBoundary extends Component<
+  IssueChatMessageErrorBoundaryProps,
+  IssueChatMessageErrorBoundaryState
+> {
+  override state: IssueChatMessageErrorBoundaryState = { hasError: false };
+
+  static getDerivedStateFromError(): IssueChatMessageErrorBoundaryState {
+    return { hasError: true };
+  }
+
+  override componentDidCatch(error: unknown, info: ErrorInfo): void {
+    console.error("Issue chat message failed to render; falling back to plain text row", {
+      error,
+      info: info.componentStack,
+      messageId: this.props.message.id,
+    });
+  }
+
+  override componentDidUpdate(prevProps: IssueChatMessageErrorBoundaryProps): void {
+    if (this.state.hasError && prevProps.message.id !== this.props.message.id) {
+      this.setState({ hasError: false });
+    }
+  }
+
+  override render() {
+    if (!this.state.hasError) return this.props.children;
+
+    const lines = fallbackTextParts(this.props.message);
+    const anchorId = issueChatMessageAnchorId(this.props.message);
+    return (
+      <div
+        id={anchorId ?? undefined}
+        data-testid="issue-chat-message-row-fallback"
+        data-message-role={this.props.message.role}
+        data-message-kind={issueChatMessageKind(this.props.message)}
+        className="rounded-xl border border-amber-300/60 bg-amber-50/70 px-4 py-3 text-amber-950 dark:border-amber-500/30 dark:bg-amber-950/20 dark:text-amber-100"
+      >
+        <div className="mb-2 flex items-start gap-2">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <p className="text-sm font-medium">Message renderer hit an internal state error.</p>
+            <p className="text-xs opacity-80">Showing safe plain text for this message.</p>
+          </div>
+        </div>
+        <div className="mb-2 flex items-center gap-2 text-sm">
+          <span className="font-medium text-foreground">{fallbackAuthorLabel(this.props.message)}</span>
+          {this.props.message.createdAt ? (
+            <span className="text-[11px] text-muted-foreground">
+              {commentDateLabel(this.props.message.createdAt)}
+            </span>
+          ) : null}
+        </div>
+        <div className="space-y-2">
+          {lines.length > 0 ? lines.map((line, index) => (
+            <PlainFallbackTextBlock key={`${this.props.message.id}:message-fallback:${index}`}>{line}</PlainFallbackTextBlock>
+          )) : (
+            <p className="text-sm text-muted-foreground">No message content.</p>
+          )}
+        </div>
+      </div>
+    );
+  }
 }
 
 const DRAFT_DEBOUNCE_MS = 800;
@@ -3020,13 +3110,15 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
               transform: `translateY(${virtualItem.start - scrollMargin}px)`,
             }}
           >
-            <IssueChatMessageRow
-              message={message}
-              feedbackVoteByTargetId={feedbackVoteByTargetId}
-              activeRunIds={activeRunIds}
-              stoppingRunId={stoppingRunId}
-              interruptingQueuedRunId={interruptingQueuedRunId}
-            />
+            <IssueChatMessageErrorBoundary message={message}>
+              <IssueChatMessageRow
+                message={message}
+                feedbackVoteByTargetId={feedbackVoteByTargetId}
+                activeRunIds={activeRunIds}
+                stoppingRunId={stoppingRunId}
+                interruptingQueuedRunId={interruptingQueuedRunId}
+              />
+            </IssueChatMessageErrorBoundary>
           </div>
         );
       })}
@@ -4241,16 +4333,17 @@ export function IssueChatThread({
                 // index-scoped message providers; live transcripts can shrink
                 // or regroup while the runtime still holds stale indices.
                 messages.map((message) => (
-                  <IssueChatMessageRow
-                    key={message.id}
-                    message={message}
-                    feedbackVoteByTargetId={feedbackVoteByTargetId}
-                    activeRunIds={activeRunIds}
-                    stoppingRunId={stoppingRunId}
-                    interruptingQueuedRunId={interruptingQueuedRunId}
-                  />
-              ))
-            )}
+                  <IssueChatMessageErrorBoundary key={message.id} message={message}>
+                    <IssueChatMessageRow
+                      message={message}
+                      feedbackVoteByTargetId={feedbackVoteByTargetId}
+                      activeRunIds={activeRunIds}
+                      stoppingRunId={stoppingRunId}
+                      interruptingQueuedRunId={interruptingQueuedRunId}
+                    />
+                  </IssueChatMessageErrorBoundary>
+                ))
+              )}
               {showComposer ? (
                 <div data-testid="issue-chat-thread-notices" className="space-y-2">
                   <IssueAssignedBacklogNotice
