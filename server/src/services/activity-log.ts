@@ -26,7 +26,12 @@ export function setPluginEventBus(bus: PluginEventBus): void {
  * In-process cache of run IDs already ensured in heartbeat_runs.
  * Avoids a redundant DB round-trip on every logActivity call within the same
  * server process once a run has been confirmed or stub-inserted.
+ *
+ * This is intentionally bounded. A long-lived Paperclip server can process many
+ * agent runs; clearing the cache only reintroduces occasional no-op upserts and
+ * prevents unbounded memory growth.
  */
+const MAX_ENSURED_RUN_IDS = 50_000;
 const _ensuredRunIds = new Set<string>();
 
 export interface LogActivityInput {
@@ -43,14 +48,16 @@ export interface LogActivityInput {
 
 export async function logActivity(db: Db, input: LogActivityInput) {
   // Ensure the run exists in heartbeat_runs before writing it as a FK.
-  // Gateway agents (openclaw, http adapters) send X-Paperclip-Run-Id values
-  // that may arrive before the heartbeat system has registered the run.
-  // Upserting a stub row means the FK on activity_log.run_id never fails.
+  // Gateway agents (openclaw, http adapters) can send externally minted
+  // X-Paperclip-Run-Id values that arrive before the heartbeat system has
+  // registered the run. Upserting a stub row means the FK on activity_log.run_id
+  // never fails for that externally minted run ID. For normal heartbeat-owned
+  // runs the row already exists, and onConflictDoNothing makes this a no-op.
   //
   // When agentId is absent we cannot satisfy the NOT NULL constraint on
-  // heartbeat_runs.agent_id, so we drop runId from the insert instead.
-  // The heartbeat system owns these rows; our stub is overwritten once the
-  // real run record arrives, making status:"running" safe as a placeholder.
+  // heartbeat_runs.agent_id, so we drop runId from the insert instead. Stub rows
+  // are deliberately minimal placeholders; later activity for the same run ID
+  // reuses the existing row rather than trying to create a second heartbeat run.
   const effectiveRunId = (input.runId && input.agentId) ? input.runId : null;
   if (effectiveRunId && !_ensuredRunIds.has(effectiveRunId)) {
     await db
@@ -63,6 +70,9 @@ export async function logActivity(db: Db, input: LogActivityInput) {
         status: "running",
       })
       .onConflictDoNothing();
+    if (_ensuredRunIds.size >= MAX_ENSURED_RUN_IDS) {
+      _ensuredRunIds.clear();
+    }
     _ensuredRunIds.add(effectiveRunId);
   }
 
