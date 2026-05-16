@@ -85,9 +85,12 @@ interface ClaudeRuntimeConfig {
   env: Record<string, string>;
   loggedEnv: Record<string, string>;
   timeoutSec: number;
+  firstOutputTimeoutSec: number;
   graceSec: number;
   extraArgs: string[];
 }
+
+const DEFAULT_CLAUDE_FIRST_OUTPUT_TIMEOUT_SEC = 10 * 60;
 
 export function claudeSessionCwdMatchesExecutionTarget(input: {
   runtimeSessionCwd: string;
@@ -278,6 +281,10 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     executionTarget,
     asNumber(config.timeoutSec, 0),
   );
+  const firstOutputTimeoutSec = Math.max(
+    0,
+    asNumber(config.firstOutputTimeoutSec, DEFAULT_CLAUDE_FIRST_OUTPUT_TIMEOUT_SEC),
+  );
   const graceSec = asNumber(config.graceSec, 20);
   await ensureAdapterExecutionTargetRuntimeCommandInstalled({
     runId,
@@ -317,6 +324,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     env,
     loggedEnv,
     timeoutSec,
+    firstOutputTimeoutSec,
     graceSec,
     extraArgs,
   };
@@ -417,6 +425,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env,
     loggedEnv: initialLoggedEnv,
     timeoutSec,
+    firstOutputTimeoutSec,
     graceSec,
     extraArgs,
   } = runtimeConfig;
@@ -749,11 +758,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
+    await onLog(
+      "stdout",
+      [
+        `[paperclip] Launching Claude Code (${resumeSessionId ? "resume" : "fresh"} session) in ${effectiveExecutionCwd}.`,
+        `prompt=${prompt.length} chars`,
+        `timeout=${timeoutSec > 0 ? `${timeoutSec}s` : "disabled"}`,
+        `first-output-timeout=${firstOutputTimeoutSec > 0 ? `${firstOutputTimeoutSec}s` : "disabled"}`,
+      ].join(" ") + "\n",
+    );
+
     const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
       cwd,
       env,
       stdin: prompt,
       timeoutSec,
+      firstOutputTimeoutSec,
       graceSec,
       onSpawn,
       onLog,
@@ -790,13 +810,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : undefined;
 
     if (proc.timedOut) {
+      const firstOutputTimedOut = proc.timeoutReason === "first_output";
       return {
         exitCode: proc.exitCode,
         signal: proc.signal,
         timedOut: true,
-        errorMessage: `Timed out after ${timeoutSec}s`,
+        errorMessage: firstOutputTimedOut
+          ? `Timed out waiting for first Claude output after ${firstOutputTimeoutSec}s`
+          : `Timed out after ${timeoutSec}s`,
         errorCode: "timeout",
         errorMeta,
+        resultJson: firstOutputTimedOut
+          ? {
+              timeoutReason: "first_output",
+              firstOutputTimeoutSec,
+            }
+          : undefined,
         clearSession: Boolean(opts.clearSessionOnMissingSession),
       };
     }

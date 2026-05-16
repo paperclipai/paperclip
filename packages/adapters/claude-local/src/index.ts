@@ -48,6 +48,7 @@ Core fields:
 
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
+- firstOutputTimeoutSec (number, optional, default 600): terminate the run if Claude produces no stdout/stderr after launch; set 0 to disable
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:
