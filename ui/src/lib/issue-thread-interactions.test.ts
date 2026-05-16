@@ -155,7 +155,7 @@ describe("issue thread interaction helpers", () => {
         prompt: "Pick options",
         selectionMode: "single",
         options: [
-          { id: "option-other", label: "Outra" },
+          { id: "option-other", label: "Other", allowFreeText: true },
         ],
       },
       answers: [
@@ -167,6 +167,6 @@ describe("issue thread interaction helpers", () => {
       ],
     });
 
-    expect(labels).toEqual(["Outra", "Outra: detalhar o caso especial"]);
+    expect(labels).toEqual(["Other", "Other: detalhar o caso especial"]);
   });
 });

@@ -142,7 +142,10 @@ export function getQuestionAnswerLabels(args: {
     .filter((label): label is string => typeof label === "string");
   const freeText = questionAnswer?.freeText?.trim() ?? "";
   if (freeText.length > 0) {
-    labels.push(`Outra: ${freeText}`);
+    const freeTextOptionLabel = question.options.find(
+      (option) => selectedIds.includes(option.id) && option.allowFreeText === true,
+    )?.label;
+    labels.push(`${freeTextOptionLabel ?? "Free response"}: ${freeText}`);
   }
   return labels;
 }

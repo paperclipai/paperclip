@@ -810,7 +810,7 @@ function AskUserQuestionsCard({
                     htmlFor={`${interaction.id}-${question.id}-free-text`}
                     className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground"
                   >
-                    Resposta livre
+                    Free response
                   </label>
                   <Textarea
                     id={`${interaction.id}-${question.id}-free-text`}
@@ -821,7 +821,7 @@ function AskUserQuestionsCard({
                         ...current,
                         [question.id]: event.target.value,
                       }))}
-                    placeholder="Digite uma resposta opcional"
+                    placeholder="Enter an optional response"
                   />
                 </div>
               ) : null}
