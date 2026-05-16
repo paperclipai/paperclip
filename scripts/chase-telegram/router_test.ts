@@ -361,33 +361,36 @@ Deno.test({
   async fn() {
     const { handler } = routeQuery("/start");
     const result = await handler();
-    assertStringIncludes(result.text, "Executive Assistant to Jeff");
-    assertStringIncludes(result.text, "I can look up blocked issues");
+    assertStringIncludes(result.text, "Jeff's Paperclip operations assistant");
+    assertStringIncludes(result.text, "blocked work");
+    assertStringIncludes(result.text, "/help");
   },
   sanitizeResources: false,
   sanitizeOps: false,
 });
 
 Deno.test({
-  name: "routeQuery /help handler returns command list",
+  name: "routeQuery /help handler returns operations help text",
   async fn() {
     const { handler } = routeQuery("/help");
     const result = await handler();
-    assertStringIncludes(result.text, "Available commands");
-    assertStringIncludes(result.text, "/overview");
-    assertStringIncludes(result.text, "/blocked");
-    assertStringIncludes(result.text, "/metar");
+    assertStringIncludes(result.text, "Jeff's Paperclip operations assistant");
+    assertStringIncludes(result.text, "Checking Paperclip system status");
+    assertStringIncludes(result.text, "blocked work");
+    assertStringIncludes(result.text, "/commands");
   },
   sanitizeResources: false,
   sanitizeOps: false,
 });
 
 Deno.test({
-  name: "routeQuery /commands handler returns help text",
+  name: "routeQuery /commands handler returns commands list",
   async fn() {
     const { handler } = routeQuery("/commands");
     const result = await handler();
     assertStringIncludes(result.text, "Available commands");
+    assertStringIncludes(result.text, "Instant commands");
+    assertStringIncludes(result.text, "Paperclip lookup commands");
   },
   sanitizeResources: false,
   sanitizeOps: false,
@@ -422,7 +425,7 @@ Deno.test({
   async fn() {
     const { handler } = routeQuery("who are you");
     const result = await handler();
-    assertStringIncludes(result.text, "Executive Assistant to Jeff");
+    assertStringIncludes(result.text, "Jeff's Paperclip operations assistant");
     assertStringIncludes(result.text, "/help");
   },
   sanitizeResources: false,

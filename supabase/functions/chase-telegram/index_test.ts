@@ -38,6 +38,7 @@ Deno.test({
     assertEquals(typeof data.botConfigured, "boolean");
     assertEquals(typeof data.paperclipConfigured, "boolean");
     assertEquals(typeof data.agentRoutingConfigured, "boolean");
+    assertEquals(data.fastLaneEnabled, true);
     assertEquals(data.chaseAgentId, "717b8295-e4a5-4baf-98e5-e8c7d92d509b");
     assertEquals(typeof data.aiConfigured, "boolean");
     assertEquals(typeof data.aiProvider, "string");
@@ -61,7 +62,7 @@ Deno.test({
         message_id: 100,
         from: { id: 12345, first_name: "TestUser" },
         chat: { id: 67890, type: "private" },
-        text: "Tell me about blocked issues",
+        text: "Analyze the current workload and suggest priorities",
         date: 1000000,
       },
     }));
@@ -81,16 +82,13 @@ Deno.test({
     const { handleRequest } = await import("./index.ts");
     mockFetch(/paperclip\.avva\.aero/, () => new Response("Internal Error", { status: 500 }));
     mockFetch(/api\.telegram\.org/, () => mockJsonResponse({ ok: true }));
-    mockFetch(/status=blocked/, () =>
-      mockJsonResponse(SAMPLE_ISSUES.filter((i) => i.status === "blocked")),
-    );
     const res = await handleRequest(jsonRequest("POST", "/", {
       update_id: 1,
       message: {
         message_id: 101,
         from: { id: 12345, first_name: "TestUser" },
         chat: { id: 67890, type: "private" },
-        text: "/blocked",
+        text: "I need detailed analysis of current sprint progress",
         date: 1000000,
       },
     }));
@@ -174,6 +172,106 @@ Deno.test({
     }));
     const data = await res.json();
     assertEquals(data.ok, true);
+    teardownMockFetch();
+  },
+  sanitizeResources: false,
+  sanitizeOps: false,
+});
+
+Deno.test({
+  name: "POST / handles greeting via fast lane (no agent, no issue)",
+  async fn() {
+    setupMockFetch();
+    const { handleRequest } = await import("./index.ts");
+    mockFetch(/api\.telegram\.org/, () => mockJsonResponse({ ok: true }));
+    const res = await handleRequest(jsonRequest("POST", "/", {
+      update_id: 1,
+      message: {
+        message_id: 100,
+        from: { id: 12345, first_name: "TestUser" },
+        chat: { id: 67890, type: "private" },
+        text: "hello",
+        date: 1000000,
+      },
+    }));
+    const data = await res.json();
+    assertEquals(data.ok, true);
+    assertEquals(data.fastLane, true);
+    teardownMockFetch();
+  },
+  sanitizeResources: false,
+  sanitizeOps: false,
+});
+
+Deno.test({
+  name: "POST / greeting bypasses expired pending task (fast lane clears stale state)",
+  async fn() {
+    setupMockFetch();
+    const { handleRequest } = await import("./index.ts");
+    // Mock Paperclip state issue search to return a state issue
+    mockFetch(
+      /issues\?q=Chase%20Telegram%20State/,
+      () => mockJsonResponse([{ id: "state-issue-1", title: "Chase Telegram State" }]),
+    );
+    // Mock pending task document: GET returns expired, DELETE succeeds
+    mockFetch(
+      /issues\/[\w-]+\/documents\/pending-telegram-67890$/,
+      (_, init) => {
+        if ((init?.method ?? "GET") === "DELETE") return mockJsonResponse({});
+        return mockJsonResponse({
+          body: JSON.stringify({
+            title: "Hunter: review PR",
+            description: "review PR",
+            sourceMessage: "have Hunter review the PR",
+            createdAt: Date.now() - 45 * 60 * 1000, // 45 min ago (expired)
+          }),
+        });
+      },
+    );
+    mockFetch(/api\.telegram\.org/, () => mockJsonResponse({ ok: true }));
+    const res = await handleRequest(jsonRequest("POST", "/", {
+      update_id: 1,
+      message: {
+        message_id: 100,
+        from: { id: 12345, first_name: "TestUser" },
+        chat: { id: 67890, type: "private" },
+        text: "hello",
+        date: 1000000,
+      },
+    }));
+    const data = await res.json();
+    // Should NOT return "Your pending task preview has expired"
+    // Should be handled as a fast lane greeting
+    assertEquals(data.ok, true);
+    assertEquals(data.fastLane, true);
+    teardownMockFetch();
+  },
+  sanitizeResources: false,
+  sanitizeOps: false,
+});
+
+Deno.test({
+  name: "POST / handles /blocked lookup via fast lane with mocked API",
+  async fn() {
+    setupMockFetch();
+    const { handleRequest } = await import("./index.ts");
+    mockFetch(/api\.telegram\.org/, () => mockJsonResponse({ ok: true }));
+    mockFetch(/status=blocked/, () =>
+      mockJsonResponse(SAMPLE_ISSUES.filter((i) => i.status === "blocked"))
+    );
+    const res = await handleRequest(jsonRequest("POST", "/", {
+      update_id: 1,
+      message: {
+        message_id: 101,
+        from: { id: 12345, first_name: "TestUser" },
+        chat: { id: 67890, type: "private" },
+        text: "/blocked",
+        date: 1000000,
+      },
+    }));
+    const data = await res.json();
+    assertEquals(data.ok, true);
+    assertEquals(data.fastLane, true);
     teardownMockFetch();
   },
   sanitizeResources: false,
