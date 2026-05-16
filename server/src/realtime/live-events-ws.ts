@@ -40,6 +40,11 @@ const { WebSocket, WebSocketServer } = require("ws") as {
   WebSocketServer: new (opts: { noServer: boolean }) => WsServer;
 };
 
+const LIVE_WS_KEEPALIVE_INTERVAL_MS = Math.max(
+  10_000,
+  Number.parseInt(process.env.PAPERCLIP_LIVE_WS_KEEPALIVE_INTERVAL_MS ?? "", 10) || 20_000,
+);
+
 interface UpgradeContext {
   companyId: string;
   actorType: "board" | "agent";
@@ -198,6 +203,23 @@ export function setupLiveEventsWebSocketServer(
     }
   }, 30000);
 
+  const appKeepaliveInterval = setInterval(() => {
+    const payload = JSON.stringify({
+      type: "live.keepalive",
+      companyId: "*",
+      createdAt: new Date().toISOString(),
+      payload: {},
+    });
+    for (const socket of wss.clients) {
+      if (socket.readyState !== WebSocket.OPEN) continue;
+      try {
+        socket.send(payload);
+      } catch {
+        socket.terminate();
+      }
+    }
+  }, LIVE_WS_KEEPALIVE_INTERVAL_MS);
+
   wss.on("connection", (socket: WsSocket, req: IncomingMessage) => {
     const context = (req as IncomingMessageWithContext).paperclipUpgradeContext;
     if (!context) {
@@ -231,6 +253,7 @@ export function setupLiveEventsWebSocketServer(
 
   wss.on("close", () => {
     clearInterval(pingInterval);
+    clearInterval(appKeepaliveInterval);
   });
 
   server.on("upgrade", (req, socket, head) => {

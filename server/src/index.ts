@@ -623,11 +623,19 @@ export async function startServer(): Promise<StartedServer> {
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 
-  // Increase keep-alive timeouts to safely outlive default idle timeouts
-  // of common reverse proxies and load balancers (like AWS ALB, Nginx, or Traefik).
-  // This prevents intermittent 502/ECONNRESET errors caused by Node's 5s default.
-  server.keepAliveTimeout = 185000;
-  server.headersTimeout = 186000;
+  // Keep idle HTTP connections open long enough for operator sessions that sit
+  // on a live run page without clicking. headersTimeout must exceed
+  // keepAliveTimeout or Node may close sockets early.
+  const keepAliveTimeoutMs = Math.max(
+    600_000,
+    Number.parseInt(process.env.PAPERCLIP_HTTP_KEEPALIVE_TIMEOUT_MS ?? "", 10) || 650_000,
+  );
+  server.keepAliveTimeout = keepAliveTimeoutMs;
+  server.headersTimeout = keepAliveTimeoutMs + 10_000;
+  server.requestTimeout = Math.max(
+    0,
+    Number.parseInt(process.env.PAPERCLIP_HTTP_REQUEST_TIMEOUT_MS ?? "", 10) || 0,
+  );
   
   if (listenPort !== requestedListenPort) {
     logger.warn(`Requested port is busy; using next free port (requestedPort=${requestedListenPort}, selectedPort=${listenPort})`);
