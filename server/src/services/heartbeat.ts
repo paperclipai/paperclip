@@ -3211,6 +3211,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           sql`${issues.inReviewAt} is not null`,
         ),
       )
+      .orderBy(asc(issues.inReviewAt))
       .limit(100);
 
     let reverted = 0;
