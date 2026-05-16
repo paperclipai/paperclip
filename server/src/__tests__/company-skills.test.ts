@@ -7,6 +7,7 @@ import {
   findMissingLocalSkillIds,
   normalizeGitHubSkillDirectory,
   parseSkillImportSourceInput,
+  readInlineSkillImports,
   readLocalSkillImportFromDirectory,
   readLocalSkillImports,
 } from "../services/company-skills.js";
@@ -258,6 +259,61 @@ describe("local directory skill imports", () => {
     const subPaths = new Set(subSkill.fileInventory.map((e) => e.path));
     expect(subPaths).toContain("SKILL.md");
     expect(subPaths).toContain("scripts/sub.sh");
+  });
+});
+
+describe("inline skill imports (covers GitHub/skills.sh inventory pattern)", () => {
+  const COMPANY_ID = "55555555-5555-5555-5555-555555555555";
+
+  it("includes all files for root-level SKILL.md in inline imports", () => {
+    const files: Record<string, string> = {
+      "SKILL.md": "---\nname: inline-skill\n---\n\n# Inline Skill\n",
+      "scripts/deploy.sh": "echo deploy\n",
+      "references/checklist.md": "# Checklist\n",
+      "assets/logo.png": "fake-png",
+    };
+
+    const imported = readInlineSkillImports(COMPANY_ID, files);
+
+    expect(imported).toHaveLength(1);
+    const paths = new Set(imported[0]!.fileInventory.map((e) => e.path));
+    expect(paths).toContain("SKILL.md");
+    expect(paths).toContain("scripts/deploy.sh");
+    expect(paths).toContain("references/checklist.md");
+    expect(paths).toContain("assets/logo.png");
+  });
+
+  it("classifies kinds correctly for root-level inline imports", () => {
+    const files: Record<string, string> = {
+      "SKILL.md": "---\nname: typed-inline\n---\n\n# Typed\n",
+      "scripts/run.sh": "echo ok\n",
+      "references/notes.md": "# Notes\n",
+      "assets/icon.svg": "<svg/>",
+    };
+
+    const imported = readInlineSkillImports(COMPANY_ID, files);
+
+    const byPath = new Map(imported[0]!.fileInventory.map((e) => [e.path, e.kind]));
+    expect(byPath.get("SKILL.md")).toBe("skill");
+    expect(byPath.get("scripts/run.sh")).toBe("script");
+    expect(byPath.get("references/notes.md")).toBe("reference");
+    expect(byPath.get("assets/icon.svg")).toBe("asset");
+  });
+
+  it("scopes files correctly for nested SKILL.md in inline imports", () => {
+    const files: Record<string, string> = {
+      "my-skill/SKILL.md": "---\nname: nested-skill\n---\n\n# Nested\n",
+      "my-skill/references/guide.md": "# Guide\n",
+      "other-file.txt": "unrelated\n",
+    };
+
+    const imported = readInlineSkillImports(COMPANY_ID, files);
+
+    expect(imported).toHaveLength(1);
+    const paths = new Set(imported[0]!.fileInventory.map((e) => e.path));
+    expect(paths).toContain("SKILL.md");
+    expect(paths).toContain("references/guide.md");
+    expect(paths).not.toContain("other-file.txt");
   });
 });
 

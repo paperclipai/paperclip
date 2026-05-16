@@ -796,7 +796,7 @@ function deriveImportedSkillSource(
   };
 }
 
-function readInlineSkillImports(companyId: string, files: Record<string, string>): ImportedSkill[] {
+export function readInlineSkillImports(companyId: string, files: Record<string, string>): ImportedSkill[] {
   const normalizedFiles = normalizePackageFileMap(files);
   const skillPaths = Object.keys(normalizedFiles).filter(
     (entry) => path.posix.basename(entry).toLowerCase() === "skill.md",
@@ -812,9 +812,9 @@ function readInlineSkillImports(companyId: string, files: Record<string, string>
     const slug = deriveImportedSkillSlug(parsed.frontmatter, slugFallback);
     const source = deriveImportedSkillSource(parsed.frontmatter, slug);
     const inventory = Object.keys(normalizedFiles)
-      .filter((entry) => entry === skillPath || (skillDir ? entry.startsWith(`${skillDir}/`) : false))
+      .filter((entry) => entry === skillPath || (!skillDir || entry.startsWith(`${skillDir}/`)))
       .map((entry) => {
-        const relative = entry === skillPath ? "SKILL.md" : entry.slice(skillDir.length + 1);
+        const relative = entry === skillPath ? "SKILL.md" : (skillDir ? entry.slice(skillDir.length + 1) : entry);
         return {
           path: normalizePortablePath(relative),
           kind: classifyInventoryKind(relative),
@@ -1119,12 +1119,16 @@ async function readUrlSkillImports(
           slug,
         ),
       };
+      const isRootSkill = skillDir === ".";
       const inventory = filteredPaths
-        .filter((entry) => entry === relativeSkillPath || entry.startsWith(`${skillDir}/`))
-        .map((entry) => ({
-          path: entry === relativeSkillPath ? "SKILL.md" : entry.slice(skillDir.length + 1),
-          kind: classifyInventoryKind(entry === relativeSkillPath ? "SKILL.md" : entry.slice(skillDir.length + 1)),
-        }))
+        .filter((entry) => entry === relativeSkillPath || (isRootSkill ? true : entry.startsWith(`${skillDir}/`)))
+        .map((entry) => {
+          const relative = entry === relativeSkillPath ? "SKILL.md" : (isRootSkill ? entry : entry.slice(skillDir.length + 1));
+          return {
+            path: relative,
+            kind: classifyInventoryKind(relative),
+          };
+        })
         .sort((left, right) => left.path.localeCompare(right.path));
       skills.push({
         key: deriveCanonicalSkillKey(companyId, {
