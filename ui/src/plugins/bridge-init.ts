@@ -72,6 +72,9 @@ export interface PluginBridgeRegistry {
   react: unknown;
   reactDom: unknown;
   sdkUi: Record<string, unknown>;
+  i18n: {
+    registerLanguage: (lang: any, translations: any) => void;
+  };
 }
 
 declare global {
@@ -541,6 +544,9 @@ export function initPluginBridge(
   globalThis.__paperclipPluginBridge__ = {
     react,
     reactDom,
+    i18n: {
+      registerLanguage: (window as any).__paperclip_register_language,
+    },
     sdkUi: {
       usePluginData,
       usePluginAction,

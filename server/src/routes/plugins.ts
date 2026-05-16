@@ -120,7 +120,8 @@ interface AvailablePluginExample {
   displayName: string;
   description: string;
   localPath: string;
-  tag: "example";
+  isLocalPath: boolean;
+  tag: "example" | "recommended";
 }
 
 /** Response body for GET /api/plugins/:pluginId/health */
@@ -151,6 +152,18 @@ const PLUGIN_SCOPED_API_RESPONSE_HEADER_ALLOWLIST = new Set([
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../..");
 
+const RECOMMENDED_PLUGINS: AvailablePluginExample[] = [
+  {
+    packageName: "paperclip-plugin-i18n-pt-br",
+    pluginKey: "paperclip-plugin-i18n-pt-br",
+    displayName: "Português (Brasil)",
+    description: "Pacote de idioma para Português do Brasil. Adiciona localização completa para a interface.",
+    localPath: "",
+    isLocalPath: false,
+    tag: "recommended",
+  },
+];
+
 const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
   {
     packageName: "@paperclipai/plugin-hello-world-example",
@@ -158,6 +171,7 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
     displayName: "Hello World Widget (Example)",
     description: "Reference UI plugin that adds a simple Hello World widget to the Paperclip dashboard.",
     localPath: "packages/plugins/examples/plugin-hello-world-example",
+    isLocalPath: true,
     tag: "example",
   },
   {
@@ -166,6 +180,7 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
     displayName: "File Browser (Example)",
     description: "Example plugin that adds a Files link in project navigation plus a project detail file browser.",
     localPath: "packages/plugins/examples/plugin-file-browser-example",
+    isLocalPath: true,
     tag: "example",
   },
   {
@@ -174,6 +189,7 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
     displayName: "Kitchen Sink (Example)",
     description: "Reference plugin that demonstrates the current Paperclip plugin API surface, bridge flows, UI extension surfaces, jobs, webhooks, tools, streams, and trusted local workspace/process demos.",
     localPath: "packages/plugins/examples/plugin-kitchen-sink-example",
+    isLocalPath: true,
     tag: "example",
   },
   {
@@ -182,16 +198,18 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
     displayName: "Orchestration Smoke (Example)",
     description: "Acceptance fixture for scoped plugin routes, restricted database namespaces, issue orchestration, documents, wakeups, summaries, and UI status surfaces.",
     localPath: "packages/plugins/examples/plugin-orchestration-smoke-example",
+    isLocalPath: true,
     tag: "example",
   },
 ];
 
 function listBundledPluginExamples(): AvailablePluginExample[] {
-  return BUNDLED_PLUGIN_EXAMPLES.flatMap((plugin) => {
+  const bundled = BUNDLED_PLUGIN_EXAMPLES.flatMap((plugin) => {
     const absoluteLocalPath = path.resolve(REPO_ROOT, plugin.localPath);
     if (!existsSync(absoluteLocalPath)) return [];
     return [{ ...plugin, localPath: absoluteLocalPath }];
   });
+  return [...bundled, ...RECOMMENDED_PLUGINS];
 }
 
 /**
@@ -1671,6 +1689,74 @@ export function pluginRoutes(
       publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "disabled" } });
       res.json(result);
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(400).json({ error: message });
+    }
+  });
+
+  /**
+   * POST /api/plugins/:pluginId/upgrade
+   *
+   * Upgrade an installed plugin to the latest version from npm.
+   *
+   * The upgrade flow:
+   * 1. Resolve the plugin by ID or key.
+   * 2. Deactivate the running plugin (stop worker, unregister events/jobs/tools).
+   * 3. Run `npm install <packageName>@latest` in the plugin directory.
+   * 4. Re-validate the manifest and update the database record.
+   * 5. Reactivate the plugin with the new version.
+   *
+   * Request body (optional):
+   * - version: Target version (defaults to latest if omitted)
+   *
+   * Response: `{ ok: true }`
+   * Errors:
+   * - 404 if plugin not found
+   * - 400 if upgrade fails (bad manifest, npm error, etc.)
+   */
+  router.post("/plugins/:pluginId/upgrade", async (req, res) => {
+    assertInstanceAdmin(req);
+    const { pluginId } = req.params;
+    const body = req.body as { version?: string } | undefined;
+    const version = body?.version;
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    try {
+      // Step 1: Deactivate the running plugin before upgrading
+      await lifecycle.disable(plugin.id, "Upgrading plugin...");
+
+      // Step 2: Run the upgrade through the loader (npm install @latest)
+      const upgradeResult = await loader.upgradePlugin(plugin.id, {
+        packageName: plugin.packageName,
+        version: version ?? undefined,
+      });
+
+      // Step 3: Re-enable the plugin with the new version
+      await lifecycle.enable(plugin.id);
+
+      const updated = await registry.getById(plugin.id);
+
+      await logPluginMutationActivity(req, "plugin.upgraded", plugin.id, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        previousVersion: plugin.version,
+        newVersion: updated?.version ?? upgradeResult.discovered.version,
+      });
+      publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "upgraded" } });
+
+      res.json({ ok: true });
+    } catch (err) {
+      // If upgrade fails, try to re-enable the plugin at its old version
+      try {
+        await lifecycle.enable(plugin.id);
+      } catch {
+        // Best-effort recovery — don't mask the original error
+      }
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: message });
     }

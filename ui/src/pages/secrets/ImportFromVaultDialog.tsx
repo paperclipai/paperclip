@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
@@ -105,15 +106,15 @@ function statusToneClasses(status: RemoteSecretImportCandidate["status"]) {
   }
 }
 
-function statusBadgeLabel(status: RemoteSecretImportCandidate["status"]) {
+function statusBadgeLabel(status: RemoteSecretImportCandidate["status"], t: (key: string) => string) {
   switch (status) {
     case "duplicate":
-      return "Imported";
+      return t("status.duplicate");
     case "conflict":
-      return "Conflict";
+      return t("status.conflict");
     case "ready":
     default:
-      return "Ready";
+      return t("status.ready");
   }
 }
 
@@ -122,6 +123,7 @@ function StatusBadge({
 }: {
   status: RemoteSecretImportCandidate["status"];
 }) {
+  const { t } = useTranslation();
   const Icon =
     status === "conflict"
       ? AlertTriangle
@@ -131,12 +133,13 @@ function StatusBadge({
   return (
     <Badge variant="outline" className={cn("gap-1 px-1.5 py-0 font-normal", statusToneClasses(status))}>
       <Icon className="h-3 w-3" />
-      {statusBadgeLabel(status)}
+      {statusBadgeLabel(status, t)}
     </Badge>
   );
 }
 
 function RowResultBadge({ status }: { status: RemoteSecretImportRowResult["status"] }) {
+  const { t } = useTranslation();
   switch (status) {
     case "imported":
       return (
@@ -144,7 +147,7 @@ function RowResultBadge({ status }: { status: RemoteSecretImportRowResult["statu
           variant="outline"
           className="gap-1 px-1.5 py-0 font-normal text-emerald-600 border-emerald-500/40 dark:text-emerald-400"
         >
-          <CheckCircle2 className="h-3 w-3" /> Created
+          <CheckCircle2 className="h-3 w-3" /> {t("status.created")}
         </Badge>
       );
     case "skipped":
@@ -153,7 +156,7 @@ function RowResultBadge({ status }: { status: RemoteSecretImportRowResult["statu
           variant="outline"
           className="gap-1 px-1.5 py-0 font-normal text-muted-foreground border-border/60"
         >
-          <Link2 className="h-3 w-3" /> Skipped
+          <Link2 className="h-3 w-3" /> {t("status.skipped")}
         </Badge>
       );
     case "error":
@@ -163,7 +166,7 @@ function RowResultBadge({ status }: { status: RemoteSecretImportRowResult["statu
           variant="outline"
           className="gap-1 px-1.5 py-0 font-normal text-destructive border-destructive/40"
         >
-          <XCircle className="h-3 w-3" /> Failed
+          <XCircle className="h-3 w-3" /> {t("status.failed")}
         </Badge>
       );
   }
@@ -176,20 +179,20 @@ function middleTruncate(value: string, max = 60) {
   return `${value.slice(0, head)}…${value.slice(value.length - tail)}`;
 }
 
-function formatRelativeShort(value: string | null | undefined): string {
+function formatRelativeShort(value: string | null | undefined, t: (key: string, options?: any) => string): string {
   if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
   const diff = Date.now() - date.getTime();
   if (diff < 0) return date.toLocaleDateString();
   const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 60) return t("common.time.s_ago", { count: seconds });
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) return t("common.time.m_ago", { count: minutes });
   const hours = Math.floor(minutes / 60);
-  if (hours < 48) return `${hours}h ago`;
+  if (hours < 48) return t("common.time.h_ago", { count: hours });
   const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
+  if (days < 30) return t("common.time.d_ago", { count: days });
   return date.toLocaleDateString();
 }
 
@@ -330,6 +333,7 @@ export function ImportFromVaultDialog({
   onImportComplete,
   onManageVaults,
 }: ImportFromVaultDialogProps) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const toast = useToastActions();
   const awsVaults = useMemo(() => awsVaultOptions(providerConfigs), [providerConfigs]);
@@ -741,7 +745,7 @@ export function ImportFromVaultDialog({
                 onClick={() => setStep("review")}
                 disabled={totalSelected === 0}
               >
-                Continue → Review
+                {t("common.continue")} → {t("common.review" as any, { defaultValue: "Review" })}
               </Button>
             )}
             {step === "review" && (
@@ -756,16 +760,16 @@ export function ImportFromVaultDialog({
               >
                 {importMutation.isPending ? (
                   <>
-                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Importing…
+                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> {t("common.importing" as any, { defaultValue: "Importing…" })}
                   </>
                 ) : (
-                  `Import ${draftList.length}`
+                  `${t("common.import")} ${draftList.length}`
                 )}
               </Button>
             )}
             {step === "result" && (
               <Button size="sm" onClick={() => handleClose(true)}>
-                Done
+                {t("common.done")}
               </Button>
             )}
           </div>
@@ -776,10 +780,11 @@ export function ImportFromVaultDialog({
 }
 
 function Stepper({ step }: { step: Step }) {
+  const { t } = useTranslation();
   const steps: { id: Step; label: string }[] = [
-    { id: "select", label: "Select" },
-    { id: "review", label: "Review" },
-    { id: "result", label: "Result" },
+    { id: "select", label: t("common.select" as any, { defaultValue: "Select" }) },
+    { id: "review", label: t("common.review" as any, { defaultValue: "Review" }) },
+    { id: "result", label: t("common.result" as any, { defaultValue: "Result" }) },
   ];
   const activeIndex = steps.findIndex((s) => s.id === step);
   return (
@@ -870,14 +875,15 @@ function SelectStep(props: SelectStepProps) {
     noEligibleVaults,
     onManageVaults,
   } = props;
+  const { t } = useTranslation();
 
   if (noEligibleVaults) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center p-6" data-testid="select-empty-vaults">
         <EmptyState
           icon={Cloud}
-          message="No AWS provider vault configured. Add one to import secrets."
-          action={onManageVaults ? "Manage vaults" : undefined}
+          message={t("secrets.noAwsVaultsConfigured")}
+          action={onManageVaults ? t("secrets.manageVaults") : undefined}
           onAction={onManageVaults}
         />
       </div>
@@ -899,8 +905,8 @@ function SelectStep(props: SelectStepProps) {
             value={vaultId ?? undefined}
             onValueChange={onVaultChange}
           >
-            <SelectTrigger size="sm" className="text-xs" aria-label="Select AWS vault">
-              <SelectValue placeholder="Select an AWS vault" />
+            <SelectTrigger size="sm" className="text-xs" aria-label={t("secrets.selectAwsVault")}>
+              <SelectValue placeholder={t("secrets.selectAwsVaultPlaceholder")} />
             </SelectTrigger>
             <SelectContent>
               {awsVaults.map((vault) => {
@@ -938,9 +944,9 @@ function SelectStep(props: SelectStepProps) {
           <Input
             value={searchInput}
             onChange={(event) => onSearchInput(event.target.value)}
-            placeholder="Search by name, ARN, tag"
+            placeholder={t("secrets.searchVaultPlaceholder")}
             className="pl-7 pr-7 text-xs"
-            aria-label="Search remote secrets"
+            aria-label={t("secrets.searchVaultLabel")}
             data-testid="vault-search"
           />
           {showSearchSpinner && (
@@ -970,7 +976,7 @@ function SelectStep(props: SelectStepProps) {
             className="h-6 px-2 text-xs"
             onClick={() => onShowOnlySelectedChange(!showOnlySelected)}
           >
-            {showOnlySelected ? "Show all" : "Show selected"}
+            {showOnlySelected ? t("common.showAll") : t("common.showSelected")}
           </Button>
         </div>
       )}
@@ -994,11 +1000,11 @@ function SelectStep(props: SelectStepProps) {
                     disabled={selectableInLoaded.length === 0}
                   />
                 </th>
-                <th className="px-2 py-2 text-left font-medium">Remote name</th>
-                <th className="px-2 py-2 text-left font-medium">Reference</th>
-                <th className="px-2 py-2 text-left font-medium">Last changed</th>
-                <th className="px-2 py-2 text-left font-medium">Suggested name</th>
-                <th className="px-2 py-2 text-left font-medium">State</th>
+                <th className="px-2 py-2 text-left font-medium">{t("secrets.remoteName")}</th>
+                <th className="px-2 py-2 text-left font-medium">{t("secrets.reference")}</th>
+                <th className="px-2 py-2 text-left font-medium">{t("secrets.lastChanged")}</th>
+                <th className="px-2 py-2 text-left font-medium">{t("secrets.suggestedName")}</th>
+                <th className="px-2 py-2 text-left font-medium">{t("secrets.state")}</th>
               </tr>
             </thead>
             <tbody data-testid="vault-table-body">
@@ -1045,7 +1051,7 @@ function SelectStep(props: SelectStepProps) {
                       </span>
                     </td>
                     <td className="px-2 py-2.5 text-xs text-muted-foreground">
-                      {formatRelativeShort(lastChanged)}
+                      {formatRelativeShort(lastChanged, t)}
                     </td>
                     <td className="px-2 py-2.5 text-xs font-mono">{candidate.key}</td>
                     <td className="px-2 py-2.5 text-xs">
@@ -1054,7 +1060,7 @@ function SelectStep(props: SelectStepProps) {
                         {candidate.status === "duplicate" &&
                           candidate.conflicts.find((c) => c.type === "exact_reference")?.existingSecretId && (
                             <span className="text-[11px] text-muted-foreground">
-                              Already imported
+                              {t("secrets.alreadyImported")}
                             </span>
                           )}
                       </div>
@@ -1081,9 +1087,9 @@ function SelectStep(props: SelectStepProps) {
         {hasNextPage && !previewError && (
           <div className="flex items-center justify-between border-t border-border/60 px-5 py-2 text-xs text-muted-foreground">
             <span>
-              {candidates.length} loaded
+              {t("secrets.loadedCount", { count: candidates.length })}
               {selectableInLoaded.length > 0 && (
-                <span> · {selectableInLoaded.length} selectable</span>
+                <span> · {t("secrets.selectableCount", { count: selectableInLoaded.length })}</span>
               )}
             </span>
             <Button
@@ -1095,10 +1101,10 @@ function SelectStep(props: SelectStepProps) {
             >
               {pageLoading ? (
                 <>
-                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Loading…
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> {t("common.loading")}
                 </>
               ) : (
-                `Load ${PAGE_SIZE} more`
+                t("secrets.loadMore", { count: PAGE_SIZE })
               )}
             </Button>
           </div>
@@ -1109,6 +1115,7 @@ function SelectStep(props: SelectStepProps) {
 }
 
 function PreviewErrorBanner({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  const { t } = useTranslation();
   const isPermission = isPermissionError(error);
   const isThrottling = isThrottlingError(error);
   const message = readableErrorMessage(error);
@@ -1122,19 +1129,19 @@ function PreviewErrorBanner({ error, onRetry }: { error: unknown; onRetry: () =>
       <div className="flex-1">
         <div className="font-medium">
           {isPermission
-            ? "AWS denied list access"
+            ? t("secrets.awsDeniedAccess")
             : isThrottling
-              ? "AWS throttled the listing request"
-              : "Could not load remote secrets"}
+              ? t("secrets.awsThrottled")
+              : t("secrets.loadSecretsFailed")}
         </div>
         <div className="mt-1 text-xs leading-relaxed text-destructive/80">
           {isPermission
-            ? "The AWS principal behind this vault is missing secretsmanager:ListSecrets. Update IAM and try again."
+            ? t("secrets.iamMissingPermissions")
             : message}
         </div>
         <div className="mt-2 flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={onRetry}>
-            <RefreshCw className="mr-1.5 h-3.5 w-3.5" /> Retry
+            <RefreshCw className="mr-1.5 h-3.5 w-3.5" /> {t("common.retry" as any, { defaultValue: "Retry" })}
           </Button>
           {isPermission && (
             <a
@@ -1143,7 +1150,7 @@ function PreviewErrorBanner({ error, onRetry }: { error: unknown; onRetry: () =>
               rel="noreferrer"
               className="inline-flex items-center gap-1 text-xs font-medium underline"
             >
-              IAM reference <ExternalLink className="h-3 w-3" />
+              {t("secrets.iamReference")} <ExternalLink className="h-3 w-3" />
             </a>
           )}
         </div>
@@ -1163,18 +1170,19 @@ function SkeletonRows({ rows }: { rows: number }) {
 }
 
 function EmptyCandidates({ query }: { query: string }) {
+  const { t } = useTranslation();
   if (query) {
     return (
       <EmptyState
         icon={Search}
-        message={`No remote secrets match "${query}".`}
+        message={t("secrets.noRemoteSecretsMatch", { query })}
       />
     );
   }
   return (
     <EmptyState
       icon={Database}
-      message="No secrets visible to this vault."
+      message={t("secrets.noSecretsVisible")}
     />
   );
 }
@@ -1188,12 +1196,13 @@ interface ReviewStepProps {
 }
 
 function ReviewStep({ drafts, reviewErrors, updateDraft, removeDraft, importing }: ReviewStepProps) {
+  const { t } = useTranslation();
   if (drafts.length === 0) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center p-6">
         <EmptyState
           icon={Info}
-          message="No secrets selected. Go back to pick remote secrets to import."
+          message={t("secrets.noSecretsSelected")}
         />
       </div>
     );
@@ -1205,10 +1214,10 @@ function ReviewStep({ drafts, reviewErrors, updateDraft, removeDraft, importing 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex flex-wrap items-center gap-3 border-b border-border/60 bg-muted/20 px-5 py-3 text-xs">
-        <span className="font-medium">{ready} secrets ready to import</span>
+        <span className="font-medium">{t("secrets.readyToImportCount", { count: ready })}</span>
         {blocked > 0 && (
           <span className="text-amber-600 dark:text-amber-400">
-            {blocked} need attention before import
+            {t("secrets.needAttentionCount", { count: blocked })}
           </span>
         )}
       </div>
@@ -1336,21 +1345,22 @@ function ResultStep({ result, draftList }: ResultStepProps) {
     return map;
   }, [draftList]);
 
+  const { t } = useTranslation();
   const heading =
     result.errorCount === result.results.length && result.errorCount > 0
-      ? "Import failed"
+      ? t("secrets.importFailed")
       : result.errorCount === 0 && result.skippedCount === 0
-        ? `All ${result.importedCount} secrets imported`
-        : "Import complete";
+        ? t("secrets.allSecretsImported", { count: result.importedCount })
+        : t("secrets.importComplete");
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="border-b border-border/60 px-5 py-3" data-testid="result-summary">
         <h3 className="text-sm font-semibold">{heading}</h3>
         <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-          <span className="text-emerald-600 dark:text-emerald-400">✓ {result.importedCount} created</span>
-          <span>⊘ {result.skippedCount} skipped</span>
-          <span className="text-destructive">⨯ {result.errorCount} failed</span>
+          <span className="text-emerald-600 dark:text-emerald-400">✓ {t("secrets.importedResultCount", { count: result.importedCount })}</span>
+          <span>⊘ {t("secrets.skippedResultCount", { count: result.skippedCount })}</span>
+          <span className="text-destructive">⨯ {t("secrets.errorResultCount", { count: result.errorCount })}</span>
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -1443,22 +1453,23 @@ function FooterStatus({
   blockedReviewCount,
   result,
 }: FooterStatusProps) {
+  const { t } = useTranslation();
   if (step === "select") {
     return (
       <div className="text-xs text-muted-foreground">
         {totalSelected === 0
-          ? "Select remote secrets to import"
-          : `${totalSelected} selected`}
+          ? t("secrets.selectRemoteSecrets")
+          : t("secrets.selectedCount", { count: totalSelected })}
       </div>
     );
   }
   if (step === "review") {
     return (
       <div className="text-xs text-muted-foreground">
-        {readyReviewCount} ready
+        {t("secrets.readyCount", { count: readyReviewCount })}
         {blockedReviewCount > 0 && (
           <span className="ml-2 text-amber-600 dark:text-amber-400">
-            · {blockedReviewCount} blocked
+            · {t("secrets.blockedCount", { count: blockedReviewCount })}
           </span>
         )}
       </div>
@@ -1467,9 +1478,9 @@ function FooterStatus({
   if (result) {
     return (
       <div className="flex items-center gap-3 text-xs text-muted-foreground">
-        <span>{result.importedCount} created</span>
-        <span>{result.skippedCount} skipped</span>
-        <span>{result.errorCount} failed</span>
+        <span>{t("secrets.importedResultCount", { count: result.importedCount })}</span>
+        <span>{t("secrets.skippedResultCount", { count: result.skippedCount })}</span>
+        <span>{t("secrets.errorResultCount", { count: result.errorCount })}</span>
       </div>
     );
   }
