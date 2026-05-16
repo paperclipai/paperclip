@@ -37,6 +37,7 @@ Request behavior fields:
 - autoPairOnFirstConnect (boolean, optional): on first "pairing required", attempt device.pair.list/device.pair.approve via shared auth, then retry once (default true)
 - paperclipApiUrl (string, optional): absolute Paperclip base URL advertised in wake text
 - paperclipApiKeyPath (string, optional): path to the claimed API key JSON file read by the agent at wake time (default ~/.openclaw/workspace/paperclip-claimed-api-key.json)
+- claimedApiKeyPath (string, optional, deprecated): backward-compatible alias for paperclipApiKeyPath; paperclipApiKeyPath wins when both are set
 
 Session routing fields:
 - sessionKeyStrategy (string, optional): issue (default), fixed, or run

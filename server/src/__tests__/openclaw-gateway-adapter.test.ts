@@ -412,6 +412,7 @@ describe("openclaw gateway adapter execute", () => {
               message: "wake now",
               extraSystemPrompt: "Operator-provided system prompt prefix.",
             },
+            claimedApiKeyPath: "/custom/claimed-api-key.json",
             waitTimeoutMs: 2000,
           },
           {
@@ -494,6 +495,7 @@ describe("openclaw gateway adapter execute", () => {
       expect(String(payload?.message ?? "")).toContain("wake now");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_TASK_ID=task-123");
+      expect(String(payload?.message ?? "")).toContain("PAPERCLIP_API_KEY=<token from /custom/claimed-api-key.json>");
       expect(String(payload?.message ?? "")).toContain("## Paperclip Wake Payload");
       expect(String(payload?.message ?? "")).toContain(
         "Treat this wake payload as the highest-priority change for the current heartbeat.",

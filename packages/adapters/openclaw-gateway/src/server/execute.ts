@@ -1122,7 +1122,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     structuredWakeJson
       ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
       : structuredWakePrompt,
-    nonEmpty(ctx.config.paperclipApiKeyPath),
+    nonEmpty(ctx.config.paperclipApiKeyPath) ?? nonEmpty(ctx.config.claimedApiKeyPath),
   );
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);

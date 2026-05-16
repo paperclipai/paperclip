@@ -4,7 +4,7 @@
 
 ### Patch Changes
 
-- Preserve OpenClaw gateway compatibility by sending Paperclip run context via `extraSystemPrompt`, supporting configurable claimed API key paths, and bumping the gateway protocol version to 4.
+- Preserve OpenClaw gateway compatibility by sending Paperclip run context via `extraSystemPrompt`, supporting configurable claimed API key paths, retaining the deprecated `claimedApiKeyPath` alias, and bumping the gateway protocol version to 4.
 
 ## 0.3.1
 
