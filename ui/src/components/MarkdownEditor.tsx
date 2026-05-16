@@ -575,6 +575,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   const [isDragOver, setIsDragOver] = useState(false);
   const [richEditorError, setRichEditorError] = useState<string | null>(null);
   const dragDepthRef = useRef(0);
+  // Track IME composition (Korean/Chinese/Japanese input) to prevent React 19
+  // controlled re-renders from disrupting active composition. See React #39262.
+  const isComposingRef = useRef(false);
 
   // Stable ref for imageUploadHandler so plugins don't recreate on every render
   const imageUploadHandlerRef = useRef(imageUploadHandler);
@@ -1047,7 +1050,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           readOnly={readOnly}
           onChange={(event) => {
             if (readOnly) return;
-            onChange(event.target.value);
+            if (!isComposingRef.current) {
+              onChange(event.target.value);
+            }
             autoSizeFallbackTextarea(event.target);
           }}
           onBlur={() => onBlur?.()}
@@ -1175,6 +1180,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         }
       }}
       onPasteCapture={handlePasteCapture}
+      onCompositionStart={() => { isComposingRef.current = true; }}
+      onCompositionEnd={() => {
+        isComposingRef.current = false;
+        // After IME composition ends, flush the final value through onChange
+        // so the parent state stays in sync with the composed content.
+        const next = latestValueRef.current;
+        if (next !== valueRef.current) {
+          onChange(next);
+        }
+      }}
     >
       <MDXEditor
         ref={setEditorRef}
@@ -1203,7 +1218,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             }
           }
           latestValueRef.current = next;
-          onChange(next);
+          // Skip parent onChange during IME composition (Korean/Chinese/Japanese)
+          // to prevent React controlled re-renders from disrupting composition.
+          if (!isComposingRef.current) {
+            onChange(next);
+          }
         }}
         onBlur={() => onBlur?.()}
         onError={(payload) => {
