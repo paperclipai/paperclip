@@ -1,7 +1,7 @@
 import { serve } from "std/http/server.ts";
 import type { TelegramUpdate } from "./types.ts";
 import { sendTelegram, isBotConfigured } from "./lib/telegram.ts";
-import { isPaperclipConfigured, PAPERCLIP_API_URL } from "./lib/api.ts";
+import { isPaperclipConfigured, PAPERCLIP_API_URL, paperclipPost, COMPANY_ID } from "./lib/api.ts";
 import { escapeHtml } from "./lib/html.ts";
 import { formatNotification, isAiConfigured, aiProvider } from "./lib/llm.ts";
 import { routeQuery, routeVenue, routeLocation } from "./router.ts";
@@ -35,17 +35,74 @@ export function respondJson(body: unknown, status = 200): Response {
 
 // ─── Agent Wakeup ────────────────────────────────────────────────────
 
+const TELEGRAM_FUNCTION_URL = Deno.env.get("TELEGRAM_FUNCTION_URL") ??
+  `https://tujyntcurpxvxgokcsaz.functions.supabase.co/chase-telegram`;
+
+async function createTelegramIssue(
+  text: string,
+  chatId: number,
+  firstName?: string,
+  messageId?: number,
+): Promise<{ id: string; identifier: string } | null> {
+  if (!COMPANY_ID || !PAPERCLIP_API_URL) {
+    console.warn("Paperclip not configured, skipping issue creation");
+    return null;
+  }
+
+  const title = `Telegram from ${firstName ?? "unknown"}: ${text.length > 80 ? text.slice(0, 80) + "..." : text}`;
+  const description = JSON.stringify({
+    type: "telegram_dispatch",
+    chatId,
+    from: firstName ?? "unknown",
+    text,
+    messageId,
+    notifyUrl: `${TELEGRAM_FUNCTION_URL}/notify`,
+  });
+
+  try {
+    const issue = await paperclipPost<{ id: string; identifier: string }>(
+      `/api/companies/${COMPANY_ID}/issues`,
+      {
+        title,
+        description,
+        assigneeAgentId: CHASE_AGENT_ID,
+        labelIds: [],
+        status: "todo",
+      },
+    );
+    console.log(`Created issue ${issue.identifier} for Telegram message`);
+    return issue;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`Failed to create Telegram issue: ${message}`);
+    return null;
+  }
+}
+
 async function tryAgentWakeup(
   text: string,
   chatId: number,
   firstName?: string,
   messageId?: number,
 ): Promise<"accepted" | "unconfigured" | "skipped" | "error"> {
-  if (!CHASE_AGENT_ID || !PAPERCLIP_API_URL) {
+  if (!CHASE_AGENT_ID || !PAPERCLIP_API_URL || !CHASE_API_KEY) {
     return "unconfigured";
   }
 
+  const issue = await createTelegramIssue(text, chatId, firstName, messageId);
+
   try {
+    const payload: Record<string, unknown> = {
+      channel: "telegram",
+      chatId,
+      message: { text, firstName, messageId },
+      chaseApiKey: CHASE_API_KEY,
+      telegramFunctionUrl: TELEGRAM_FUNCTION_URL,
+    };
+    if (issue) {
+      payload.issueId = issue.id;
+    }
+
     const res = await fetch(
       `${PAPERCLIP_API_URL}/api/agents/${CHASE_AGENT_ID}/wakeup`,
       {
@@ -58,11 +115,7 @@ async function tryAgentWakeup(
           source: "automation",
           triggerDetail: "callback",
           reason: `Telegram message from ${firstName ?? "unknown user"}`,
-          payload: {
-            channel: "telegram",
-            chatId,
-            message: { text, firstName, messageId },
-          },
+          payload,
         }),
       },
     );
