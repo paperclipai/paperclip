@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
   getByKey: vi.fn(),
+  getConfig: vi.fn(),
   upsertConfig: vi.fn(),
   getCompanySettings: vi.fn(),
   upsertCompanySettings: vi.fn(),
@@ -286,6 +287,180 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(res.status).toBe(422);
     expect(res.body.error).toMatch(/secret references are disabled/i);
     expect(mockRegistry.upsertConfig).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("reads plugin config from the requested company scope", async () => {
+    readyPlugin();
+    mockRegistry.getConfig.mockResolvedValue({
+      id: "99999999-9999-4999-8999-999999999999",
+      pluginId,
+      companyId: companyA,
+      configJson: { botName: "company-a" },
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const { app } = await createApp(boardActor({
+      isInstanceAdmin: true,
+      companyIds: [companyA, companyB],
+    }));
+
+    const res = await request(app)
+      .get(`/api/plugins/${pluginId}/config?companyId=${companyA}`);
+
+    expect(res.status).toBe(200);
+    expect(mockRegistry.getConfig).toHaveBeenCalledWith(pluginId, companyA);
+    expect(res.body.configJson).toEqual({ botName: "company-a" });
+  }, 20_000);
+
+  it("allows instance admins to read company-scoped plugin config without company membership", async () => {
+    readyPlugin();
+    mockRegistry.getConfig.mockResolvedValue({
+      id: "99999999-9999-4999-8999-999999999999",
+      pluginId,
+      companyId: companyA,
+      configJson: { botName: "company-a" },
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const { app } = await createApp(boardActor({
+      userId: "admin-1",
+      isInstanceAdmin: true,
+      companyIds: [],
+      memberships: [],
+    }));
+
+    const res = await request(app)
+      .get(`/api/plugins/${pluginId}/config?companyId=${companyA}`);
+
+    expect(res.status).toBe(200);
+    expect(mockRegistry.getConfig).toHaveBeenCalledWith(pluginId, companyA);
+    expect(res.body.configJson).toEqual({ botName: "company-a" });
+  }, 20_000);
+
+  it("does not fall back to legacy config for explicit company-scoped reads", async () => {
+    readyPlugin();
+    mockRegistry.getConfig.mockResolvedValue(null);
+
+    const { app } = await createApp(boardActor({
+      isInstanceAdmin: true,
+      companyIds: [companyA, companyB],
+    }));
+
+    const res = await request(app)
+      .get(`/api/plugins/${pluginId}/config?companyId=${companyA}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toBeNull();
+    expect(mockRegistry.getConfig).toHaveBeenCalledTimes(1);
+    expect(mockRegistry.getConfig).toHaveBeenCalledWith(pluginId, companyA);
+  }, 20_000);
+
+  it("saves plugin config into the requested company scope without changing plugin package API", async () => {
+    readyPlugin();
+    mockRegistry.upsertConfig.mockResolvedValue({
+      id: "99999999-9999-4999-8999-999999999999",
+      pluginId,
+      companyId: companyA,
+      configJson: { botName: "company-a" },
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const workerManager = {
+      isRunning: vi.fn().mockReturnValue(true),
+      call: vi.fn(),
+    };
+
+    const { app } = await createApp(
+      boardActor({
+        isInstanceAdmin: true,
+        companyIds: [companyA, companyB],
+      }),
+      {},
+      { bridgeDeps: { workerManager } },
+    );
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/config`)
+      .send({
+        companyId: companyA,
+        configJson: { botName: "company-a" },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockRegistry.upsertConfig).toHaveBeenCalledWith(
+      pluginId,
+      { configJson: { botName: "company-a" } },
+      companyA,
+    );
+    expect(workerManager.isRunning).not.toHaveBeenCalled();
+    expect(workerManager.call).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("keeps legacy plugin config calls without companyId on the global fallback row", async () => {
+    readyPlugin();
+    mockRegistry.upsertConfig.mockResolvedValue({
+      id: "99999999-9999-4999-8999-999999999999",
+      pluginId,
+      companyId: null,
+      configJson: { botName: "legacy-global" },
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const workerManager = {
+      isRunning: vi.fn().mockReturnValue(true),
+      call: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const { app } = await createApp(
+      boardActor({
+        isInstanceAdmin: true,
+        companyIds: [companyA, companyB],
+      }),
+      {},
+      { bridgeDeps: { workerManager } },
+    );
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/config`)
+      .send({
+        configJson: { botName: "legacy-global" },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockRegistry.upsertConfig).toHaveBeenCalledWith(
+      pluginId,
+      { configJson: { botName: "legacy-global" } },
+      null,
+    );
+    expect(workerManager.isRunning).toHaveBeenCalledWith(pluginId);
+    expect(workerManager.call).toHaveBeenCalledWith(
+      pluginId,
+      "configChanged",
+      { config: { botName: "legacy-global" } },
+    );
+  }, 20_000);
+
+  it("rejects plugin config reads for companies outside the board user's membership", async () => {
+    readyPlugin();
+
+    const { app } = await createApp(boardActor({
+      isInstanceAdmin: false,
+      companyIds: [companyA],
+    }));
+
+    const res = await request(app)
+      .get(`/api/plugins/${pluginId}/config?companyId=${companyB}`);
+
+    expect(res.status).toBe(403);
+    expect(mockRegistry.getConfig).not.toHaveBeenCalled();
   }, 20_000);
 
   it("allows instance admins to upgrade plugins", async () => {
