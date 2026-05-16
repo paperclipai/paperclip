@@ -1521,19 +1521,33 @@ export function issueRoutes(
     }));
 
     if (includeTotal) {
-      const statusFilter = req.query.status as string | undefined;
-      const countConditions = [eq(issueRows.companyId, companyId), isNull(issueRows.hiddenAt)];
-      if (statusFilter) {
-        const statuses = statusFilter.split(",").map((s) => s.trim());
-        countConditions.push(
-          statuses.length === 1 ? eq(issueRows.status, statuses[0]) : inArray(issueRows.status, statuses),
-        );
-      }
-      const [totalRow] = await db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(issueRows)
-        .where(and(...countConditions));
-      res.json({ data: mapped, total: totalRow?.count ?? 0 });
+      const total = await svc.count(companyId, {
+        attention: attention === "blocked" ? "blocked" : undefined,
+        status: req.query.status as string | undefined,
+        assigneeAgentId: req.query.assigneeAgentId as string | undefined,
+        participantAgentId: req.query.participantAgentId as string | undefined,
+        assigneeUserId,
+        touchedByUserId,
+        inboxArchivedByUserId,
+        unreadForUserId,
+        projectId: req.query.projectId as string | undefined,
+        workspaceId: req.query.workspaceId as string | undefined,
+        executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
+        parentId: req.query.parentId as string | undefined,
+        descendantOf: req.query.descendantOf as string | undefined,
+        labelId: req.query.labelId as string | undefined,
+        originKind: req.query.originKind as string | undefined,
+        originKindPrefix: req.query.originKindPrefix as string | undefined,
+        originId: req.query.originId as string | undefined,
+        includeRoutineExecutions:
+          req.query.includeRoutineExecutions === "true" || req.query.includeRoutineExecutions === "1",
+        excludeRoutineExecutions:
+          req.query.excludeRoutineExecutions === "true" || req.query.excludeRoutineExecutions === "1",
+        includePluginOperations:
+          req.query.includePluginOperations === "true" || req.query.includePluginOperations === "1",
+        q: req.query.q as string | undefined,
+      });
+      res.json({ data: mapped, total });
     } else {
       res.json(mapped);
     }

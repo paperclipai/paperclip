@@ -3618,6 +3618,7 @@ export function issueService(db: Db) {
         else if (statuses.length > 1) conditions.push(inArray(issues.status, statuses));
       }
       if (filters?.assigneeAgentId) conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
+      if (filters?.participantAgentId) conditions.push(participatedByAgentCondition(companyId, filters.participantAgentId));
       if (filters?.assigneeUserId) conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
       if (filters?.workspaceId) {
@@ -3632,6 +3633,33 @@ export function issueService(db: Db) {
       if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
       if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
       if (!shouldIncludePluginOperationIssues(filters)) conditions.push(nonPluginOperationIssueCondition());
+      if (filters?.q) {
+        const rawSearch = filters.q.trim();
+        if (rawSearch.length > 0) {
+          const escapedSearch = escapeLikePattern(rawSearch);
+          const containsPattern = `%${escapedSearch}%`;
+          const titleContainsMatch = sql<boolean>`${issues.title} ILIKE ${containsPattern} ESCAPE '\\'`;
+          const identifierContainsMatch = sql<boolean>`${issues.identifier} ILIKE ${containsPattern} ESCAPE '\\'`;
+          const descriptionContainsMatch = sql<boolean>`${issues.description} ILIKE ${containsPattern} ESCAPE '\\'`;
+          const commentContainsMatch = sql<boolean>`
+            EXISTS (
+              SELECT 1
+              FROM ${issueComments}
+              WHERE ${issueComments.issueId} = ${issues.id}
+                AND ${issueComments.companyId} = ${companyId}
+                AND ${issueComments.body} ILIKE ${containsPattern} ESCAPE '\\'
+            )
+          `;
+          conditions.push(
+            or(
+              titleContainsMatch,
+              identifierContainsMatch,
+              descriptionContainsMatch,
+              commentContainsMatch,
+            )!,
+          );
+        }
+      }
       const [row] = await db
         .select({ count: sql<number>`count(*)` })
         .from(issues)
