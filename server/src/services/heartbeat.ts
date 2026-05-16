@@ -6472,6 +6472,51 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return cancelled;
   }
 
+  // Two wakeup paths can each insert a queued heartbeat_run for the same
+  // (agentId, issueId) on the same tick (user-clicked Retry + dependency
+  // fanout + scheduled tick, etc.). Without dedupe, startNextQueuedRunForAgent
+  // claims and dispatches both, the second loses the per-issue k8s Job
+  // creation race, and surfaces a misleading
+  // `Concurrent run blocked: orphaned Job ...` failure in the UI. Cancel the
+  // loser at claim time so the surviving sibling does the work cleanly.
+  async function cancelQueuedRunForDuplicateDispatch(
+    run: typeof heartbeatRuns.$inferSelect,
+    issueId: string,
+  ) {
+    const now = new Date();
+    const reason =
+      "Cancelled because a sibling run is already dispatched for this issue; the surviving run will continue the work";
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: now,
+      error: reason,
+      errorCode: "duplicate_dispatch_suppressed",
+      resultJson: {
+        ...parseObject(run.resultJson),
+        stopReason: "duplicate_dispatch_suppressed",
+        effectiveTimeoutSec: 0,
+        timeoutConfigured: false,
+        timeoutSource: "duplicate_dispatch_gate",
+        timeoutFired: false,
+      },
+    });
+    if (!cancelled) return null;
+
+    await setWakeupStatus(run.wakeupRequestId, "skipped", {
+      finishedAt: now,
+      error: reason,
+    });
+
+    await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "info",
+      message: reason,
+      payload: { issueId, agentId: run.agentId },
+    });
+
+    return cancelled;
+  }
+
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
@@ -7292,11 +7337,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return left.createdAt.getTime() - right.createdAt.getTime();
       });
 
+      // Per-issue dedupe: if a queued run targets an issue that already has a
+      // running sibling (this iteration's claim OR a prior tick's still-running
+      // run), suppress it instead of letting two dispatches race for the same
+      // k8s Job slot. Cross-agent and null-issueId (autonomous) runs are
+      // unaffected — withAgentStartLock already scopes this to one agent and
+      // the gate only fires when issueId is present.
+      const inFlightIssueIds = new Set<string>();
+      const runningRows = await db
+        .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "running")));
+      for (const row of runningRows) {
+        const id = readNonEmptyString(parseObject(row.contextSnapshot).issueId);
+        if (id) inFlightIssueIds.add(id);
+      }
+
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
         if (claimedRuns.length >= availableSlots) break;
+        const queuedIssueId = readNonEmptyString(parseObject(queuedRun.contextSnapshot).issueId);
+        if (queuedIssueId && inFlightIssueIds.has(queuedIssueId)) {
+          await cancelQueuedRunForDuplicateDispatch(queuedRun, queuedIssueId);
+          logger.info(
+            { runId: queuedRun.id, agentId, issueId: queuedIssueId },
+            "startNextQueuedRunForAgent: cancelled duplicate queued run for in-flight issue",
+          );
+          continue;
+        }
         const claimed = await claimQueuedRun(queuedRun);
-        if (claimed) claimedRuns.push(claimed);
+        if (!claimed) continue;
+        claimedRuns.push(claimed);
+        if (queuedIssueId) inFlightIssueIds.add(queuedIssueId);
       }
       if (claimedRuns.length === 0) return [];
 

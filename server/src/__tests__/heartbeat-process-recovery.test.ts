@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { and, eq, or, inArray } from "drizzle-orm";
+import { and, asc, eq, or, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -1633,6 +1633,107 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeups).toHaveLength(1);
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
     expect(runs).toHaveLength(0);
+  });
+
+  // BLO-3220 double-dispatch fix: two wakeup paths can each insert a queued
+  // heartbeat_run for the same (agent, issue) on the same tick (user-clicked
+  // Retry + scheduled tick + dependency fanout, etc.). Pre-fix, the dispatcher
+  // claimed and dispatched both; the second lost the k8s Job creation race
+  // and surfaced as `Concurrent run blocked: orphaned Job ...` in the UI.
+  it("collapses duplicate queued runs for the same (agent, issue) to one dispatch", async () => {
+    const { companyId, agentId, issueId } = await seedAssignedTodoNoRunFixture();
+    const olderRunId = randomUUID();
+    const newerRunId = randomUUID();
+    const olderWakeupId = randomUUID();
+    const newerWakeupId = randomUUID();
+    const olderTime = new Date(Date.now() - 1_000);
+    const newerTime = new Date();
+
+    await db.insert(agentWakeupRequests).values([
+      {
+        id: olderWakeupId,
+        companyId,
+        agentId,
+        source: "assignment",
+        triggerDetail: "first",
+        reason: "issue_assigned",
+        payload: { issueId },
+        status: "queued",
+      },
+      {
+        id: newerWakeupId,
+        companyId,
+        agentId,
+        source: "assignment",
+        triggerDetail: "second",
+        reason: "issue_assigned",
+        payload: { issueId },
+        status: "queued",
+      },
+    ]);
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: olderRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "first",
+        status: "queued",
+        wakeupRequestId: olderWakeupId,
+        contextSnapshot: { issueId },
+        createdAt: olderTime,
+        updatedAt: olderTime,
+      },
+      {
+        id: newerRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "second",
+        status: "queued",
+        wakeupRequestId: newerWakeupId,
+        contextSnapshot: { issueId },
+        createdAt: newerTime,
+        updatedAt: newerTime,
+      },
+    ]);
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, olderRunId);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId))
+      .orderBy(asc(heartbeatRuns.createdAt));
+    expect(runs).toHaveLength(2);
+
+    const winner = runs.find((r) => r.id === olderRunId);
+    const loser = runs.find((r) => r.id === newerRunId);
+    // Older row wins per startNextQueuedRunForAgent's createdAt-ASC tie-break.
+    // We only assert the winner was claimed past `queued` — the dedupe gate's
+    // job is to ensure exactly one row leaves the queued state per (agent,
+    // issue). Where the winner's mocked-adapter run ultimately lands is
+    // executeRun-setup territory covered by other tests.
+    expect(winner?.status).not.toBe("queued");
+    expect(winner?.status).not.toBe("cancelled");
+    expect(loser?.status).toBe("cancelled");
+    expect(loser?.errorCode).toBe("duplicate_dispatch_suppressed");
+    expect(loser?.error).toContain("sibling run is already dispatched");
+    expect(loser?.resultJson).toMatchObject({
+      stopReason: "duplicate_dispatch_suppressed",
+      timeoutSource: "duplicate_dispatch_gate",
+      timeoutFired: false,
+    });
+
+    const loserWakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, newerWakeupId))
+      .then((rows) => rows[0] ?? null);
+    expect(loserWakeup?.status).toBe("skipped");
   });
 
   it("skips budget-blocked assigned todo work with no prior run and continues the sweep", async () => {
