@@ -335,7 +335,7 @@ EOF
 if [[ -e "$worktree_config_path" && -e "$worktree_env_path" ]]; then
   echo "Reusing existing isolated Paperclip worktree config at $worktree_config_path" >&2
 else
-  if paperclipai_command_available; then
+  if [[ "${PAPERCLIP_PROVISION_WORKTREE_SKIP_CLI_INIT:-}" != "1" ]] && paperclipai_command_available; then
     run_isolated_worktree_init
   else
     echo "paperclipai CLI not available in this workspace; writing isolated fallback config without DB seeding." >&2
