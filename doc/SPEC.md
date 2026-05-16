@@ -6,7 +6,7 @@ Target specification for the Paperclip control plane. Living document — update
 
 ## 1. Company Model [DRAFT]
 
-A Company is a first-order object. One Paperclip instance runs multiple Companies. A Company does not have a standalone "goal" field — its direction is defined by its set of Initiatives (see Task Hierarchy Mapping).
+A Company is a first-order object. One Paperclip instance runs multiple Companies. A Company does not have a standalone `goal` field; its direction is expressed through root records in the `goals` table (usually `level = "company"`) and through the projects/issues linked to those goals.
 
 ### Fields (Draft)
 
@@ -269,7 +269,7 @@ There is no separate messaging or chat system. Tasks are the communication chann
 
 ### Task Hierarchy Mapping
 
-Full hierarchy: **Initiative** (company goal) → Projects → Milestones → Issues → Sub-issues. Everything traces back to an initiative, and the "company goal" is just the first/primary initiative.
+Full hierarchy: **Company-level goal** → Projects → Issues → Sub-issues. Everything traces back to a root goal through `goal_id`, project-goal linkage, or parent issue ancestry.
 
 ---
 
@@ -314,10 +314,10 @@ Budgets can be set to **unlimited** (no ceiling).
 
 How a Company goes from "created" to "running":
 
-1. Human creates a Company and its initial Initiatives
+1. Human creates a Company and its initial company-level goals
 2. Human defines initial top-level tasks
 3. Human creates the CEO Agent (using the default CEO template or custom)
-4. CEO's first heartbeat: reviews the Initiatives and tasks, proposes a strategic breakdown (org structure, sub-tasks, hiring plan)
+4. CEO's first heartbeat: reviews the goals and tasks, proposes a strategic breakdown (org structure, sub-tasks, hiring plan)
 5. **Board approves** the CEO's strategic plan
 6. CEO begins execution — creating tasks, proposing hires (Board-approved), delegating
 
@@ -450,7 +450,7 @@ Each is a distinct page/route:
 2. **Task Board** — Task management. Kanban and list views. Filter by team, agent, project, status.
 3. **Dashboard** — high-level metrics: agent count, active tasks, costs, goal progress, burn rate. The "glance" view from GOAL.md.
 4. **Agent Detail** — deep dive on a single agent: their tasks, activity, costs, configuration, status history.
-5. **Project/Initiative Views** — progress tracking against milestones and goals.
+5. **Project/Goal Views** — progress tracking against projects, milestones, and goals.
 6. **Cost Dashboard** — spend visualization at every level (agent, task, project, company).
 
 ### Board Controls (Available Everywhere)
@@ -468,7 +468,7 @@ Each is a distinct page/route:
 
 ### Must Have (V1)
 
-- [ ] **Company CRUD** — create a Company with Initiatives
+- [ ] **Company CRUD** — create a Company with company-level goals
 - [ ] **Agent CRUD** — create/edit/pause/resume Agents with Adapter config
 - [ ] **Org chart** — define reporting structure, visualize it
 - [ ] **Process adapter** — invoke(), status(), cancel() for local child processes

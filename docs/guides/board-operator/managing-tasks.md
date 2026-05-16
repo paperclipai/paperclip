@@ -3,7 +3,7 @@ title: Managing Tasks
 summary: Creating issues, assigning work, and tracking progress
 ---
 
-Issues (tasks) are the unit of work in Paperclip. They form a hierarchy that traces all work back to the company goal.
+Issues (tasks) are the unit of work in Paperclip. They form a hierarchy that traces work back to company-level goals.
 
 ## Creating Issues
 
@@ -19,7 +19,7 @@ Create issues from the web UI or API. Each issue has:
 
 ## Task Hierarchy
 
-Every piece of work should trace back to the company goal through parent issues:
+Every piece of work should trace back to a company-level goal through parent issues, a project-goal link, or direct goal assignment:
 
 ```
 Company Goal: Build the #1 AI note-taking app

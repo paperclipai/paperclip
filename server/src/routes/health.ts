@@ -9,6 +9,7 @@ import { logger } from "../middleware/logger.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { serverVersion } from "../version.js";
 import { getLangfuseRuntimeStatus } from "../langfuse.js";
+import { getKatailystLearnerBridgeRuntimeStatus } from "../services/katailyst-learner-bridge.js";
 
 function shouldExposeFullHealthDetails(
   actorType: "none" | "board" | "agent" | null | undefined,
@@ -57,7 +58,12 @@ export function healthRoutes(
     if (!db) {
       res.json(
         exposeFullDetails
-          ? { status: "ok", version: serverVersion, observability: { langfuse: getLangfuseRuntimeStatus() } }
+          ? {
+              status: "ok",
+              version: serverVersion,
+              observability: { langfuse: getLangfuseRuntimeStatus() },
+              integrations: { katailystLearnerBridge: getKatailystLearnerBridgeRuntimeStatus() },
+            }
           : { status: "ok", deploymentMode: opts.deploymentMode },
       );
       return;
@@ -144,6 +150,9 @@ export function healthRoutes(
       },
       observability: {
         langfuse: getLangfuseRuntimeStatus(),
+      },
+      integrations: {
+        katailystLearnerBridge: getKatailystLearnerBridgeRuntimeStatus(),
       },
       ...(devServer ? { devServer } : {}),
     });

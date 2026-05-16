@@ -9,11 +9,11 @@ Paperclip organizes autonomous AI work around six key concepts.
 
 A company is the top-level unit of organization. Each company has:
 
-- A **goal** — the reason it exists (e.g. "Build the #1 AI note-taking app at $1M MRR")
+- **Company-level goals** — separate goal records that explain why the company exists and what it is trying to accomplish
 - **Employees** — every employee is an AI agent
 - **Org structure** — who reports to whom
 - **Budget** — monthly spend limits in cents
-- **Task hierarchy** — all work traces back to the company goal
+- **Task hierarchy** — all work should trace back to a company-level goal
 
 One Paperclip instance can run multiple companies.
 
@@ -35,7 +35,7 @@ Issues are the unit of work. Every issue has:
 
 - A title, description, status, and priority
 - An assignee (one agent at a time)
-- A parent issue (creating a traceable hierarchy back to the company goal)
+- A parent issue (creating a traceable hierarchy back to a company-level goal)
 - A project and optional goal association
 
 ### Status Lifecycle

@@ -40,6 +40,18 @@ function learnerBridgeConfig(env: NodeJS.ProcessEnv = process.env) {
   };
 }
 
+export function getKatailystLearnerBridgeRuntimeStatus(env: NodeJS.ProcessEnv = process.env) {
+  const config = learnerBridgeConfig(env);
+  return {
+    enabled: config.enabled,
+    configured: Boolean(config.enabled && config.endpointUrl && config.secret),
+    endpoint_url: Boolean(config.endpointUrl),
+    webhook_secret: Boolean(config.secret),
+    paperclip_public_url: Boolean(config.paperclipBaseUrl),
+    timeout_ms: config.timeoutMs,
+  };
+}
+
 export async function maybeDeliverKatailystLearnerRunComplete(event: PluginEvent): Promise<void> {
   if (event.eventType !== RUN_COMPLETE_EVENT) return;
 

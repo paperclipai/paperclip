@@ -1,5 +1,15 @@
 # Task Management Data Model
 
+> Status: superseded design note. This file describes an older target model
+> that used `initiatives`; the current Paperclip implementation uses
+> companies, goals, projects, issues, blockers, checkout, heartbeat runs, and
+> recovery actions. For current guidance, use
+> [SPEC-implementation.md](./SPEC-implementation.md),
+> [execution-semantics.md](./execution-semantics.md),
+> [docs/api/goals-and-projects.md](../docs/api/goals-and-projects.md), and
+> [docs/api/issues.md](../docs/api/issues.md). Do not treat initiative
+> terminology below as runtime guidance.
+
 Reference for how task tracking works in Paperclip. Describes the entities, their
 relationships, and the rules governing task lifecycle. Written as a target model
 -- some of this is already implemented, some is aspirational.

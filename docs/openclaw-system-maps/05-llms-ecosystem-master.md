@@ -263,10 +263,10 @@ Every working repo in the HLT ecosystem with a one-line identity + canonical pat
 - **[brand-design-lab](https://github.com/Awhitter/katailyst-brand-design-lab)** — `@katailyst/sidecar-template`: reusable Next.js 15 sidecar scaffold for domain-focused workspaces (also hosts Bruce/Sarah/Marcus recruiting persona prompts). Fork + edit `lib/site.config.ts` to spin up a new sidecar. Local: `~/hlt/brand-design-lab`. Local-only (port 3100).
 - **[evidence-based-business](https://github.com/Awhitter/cleanEBB)** — `hlt-data-analyzer`: Vite + React + Express analytics dashboard (Metabase-backed reads Redshift + Supabase) with AI-assisted insight generation. Live: https://answers.hltcorp.com (200). Key dirs: `src/`, `server/`, `migrations/`, `scripts/`, `tests/`. Also ships `/api/ai-analysis` as the endpoint Katailyst agents consume.
 - **[gpt-researcher](https://github.com/Awhitter/hlt-gpt-researcher)** — HLT fork of `assafelovic/gpt-researcher`. FastAPI + LangGraph + Tavily + OpenAI. Endpoints: `POST /api/quick_search` (2-5s cited summary), `POST /report/` (30-90s deep autonomous report). Live: https://gpt-researcher-production-2b53.up.railway.app (405 on HEAD, POST-only — live confirmed). Active branch `session-2026-04-16-local-tweaks`.
-- **[mastra](https://github.com/Awhitter/whastra)** — `agent-stack-mastra`: general Mastra workflow substrate. 4-Hub architecture (Intake → Insight → Agents → Workflows). Invoked by Paperclip's `mastra-gateway` adapter over HTTP with governance. Local: `~/hlt/mastra`. Key deps: @mastra/core, Inngest, Slack Web API, Apify.
+- **[mastra](https://github.com/Awhitter/whastra)** — `agent-stack-mastra`: general Mastra workflow substrate. 4-Hub architecture (Intake → Insight → Agents → Workflows). Adjacent workflow runtime; Paperclip does not currently depend on a `mastra-gateway` adapter in production. Local: `~/hlt/mastra`. Key deps: @mastra/core, Inngest, Slack Web API, Apify.
 - **[research-team](https://github.com/Awhitter/alecs-research-council)** — specialized Mastra research-council (sibling of `~/hlt/mastra`, focused on research workflows with analyst/validator/synthesizer role agents). Local: `~/hlt/research-team`.
 - **[operator-evals](https://github.com/Awhitter/katailyst-operator-evals)** — standalone Next.js 16 dashboard: Katailyst registry readiness, benchmark runs, tool canaries. Read-only view over Katailyst eval system. Operator-flagged for potential absorption into Katailyst itself. Local: `~/hlt/operator-evals`.
-- **[paperclip](https://github.com/Awhitter/paperclip)** — HLT fork of `paperclipai/paperclip`: governance plane (companies, goals, budgets, approvals, audit log) for agent work. pnpm workspace with `server/`, `ui/`, `adapters/*`, `cli/`, `db/`. HLT fork adds `mastra-gateway` adapter (branch `session-2026-04-16-mastra-gateway-adapter-wip`). Local: `~/hlt/paperclip`.
+- **[paperclip](https://github.com/Awhitter/paperclip)** — HLT fork of `paperclipai/paperclip`: governed work-control system for agent work (companies, goals, projects, issues, budgets, approvals, audit log, heartbeat runs). Deployed on Render at `https://paperclip-vqnh.onrender.com` with Render Postgres. pnpm workspace with `server/`, `ui/`, `adapters/*`, `cli/`, `db/`. HLT fork includes the server-side Katailyst learner bridge for `agent.run.finished` events. Local: `/Users/alecwhitters/src/github.com/Awhitter/paperclip`.
 
 ## Hub examples
 
@@ -274,7 +274,7 @@ Hubs are graph context clusters in the Katailyst registry. They are not prescrib
 
 - **[hub:hlt-brand-system-architecture]** — master map of the complete HLT brand system: Who/How/Products/Audiences/Templates/Channels/Bundles. Single reference for brand landscape + gaps.
 - **[hub:hub-analysis]** — decision-ready analysis + reporting: performance review, finance interpretation, content quality scoring, competitive comparison, synthesis of research into recommendations.
-- **[hub:hub-article]** — article + long-form content (blog, deep dives, how-to, listicles, SEO). Start with `do-research`; layer HLT editorial voice + product-specific brand context.
+- **[hub:hub-article]** — article + long-form content (blog, deep dives, how-to, listicles, SEO). Commonly composes with `do-research`, HLT editorial voice, audience research, and product-specific brand context when semantic discovery says they are relevant.
 - **[hub:hub-brand]** — master brand hub: brand cards, product voice guides, communications references, visual identity, context bundles, family hubs for NCLEX + NP products.
 - **[hub:hub-copywriting]** — landing page, pricing, upgrade screens, CTAs, app store descriptions, ad copy, conversion-focused writing. Routes into writing-craft KBs + HLT copy references.
 - **[hub:hub-data]** — super-router for data/analytics/metrics/measurement: Marketo (838K leads), Localytics (DAU/retention), financial (MRR/churn/LTV/CAC), A/B tools, content performance. Single entry when any agent needs numbers.
@@ -1081,9 +1081,9 @@ This is the "are we really integrated" pass. Each repo should know: what it conn
 | `brand-design-lab` | PAT to katailyst | template env | sidecar-template reference | scaffolding new sidecars |
 | `evidence-based-business` | Metabase + Supabase readonly | `CLEAN_EBB_API_TOKEN` / `EBB_API_TOKEN` for auth smoke | `/api/ai-analysis` exists; 401 without token is expected | operator via answers.hltcorp.com |
 | `gpt-researcher` | — (cited web research service) | `OPENAI_API_KEY` + `TAVILY_API_KEY` | `/api/quick_search` + `/report/*` | sidecar specialists + direct operator use |
-| `mastra` | Inngest workflow runtime | n/a | Mastra workflow invocations | paperclip mastra-gateway |
+| `mastra` | Inngest workflow runtime | n/a | Mastra workflow invocations | adjacent workflow runtime |
 | `operator-evals` | PAT to katailyst | katailyst PAT | eval dashboard | operator |
-| `paperclip` | local agent runtime | `PAPERCLIP_API_URL` + `PAPERCLIP_API_KEY` | approval gates + company governance | sidecar (via mastra-gateway adapter, WIP) |
+| `paperclip` | governed work-control system on Render | Render Postgres + Paperclip/Katailyst bridge secrets | goals, projects, issues, approvals, budgets, heartbeat runs, audit trail | Katalyst learner intake + OpenClaw/Hermes work governance |
 | `research-team` | Mastra-based | research API keys | research reports | operator |
 
 **Critical seams to fix (cross-references `## Known gaps` above):**
@@ -1171,7 +1171,7 @@ Ordered by unblocked effort. Each item has a clear exit criterion.
 ### Operator-gated (do not execute until operator confirms)
 
 - A1. Google Ads repo creation + vault path + first campaign scaffold.
-- A2. Paperclip deployment (currently not deployed; mastra-gateway adapter WIP unblocks on this).
+- A2. Paperclip production hardening (deployed on Render; remaining work is authenticated run creation, bridge observability, and verified run-complete delivery into Katailyst).
 - A3. Move Agent Canvas off Replit onto dedicated infra.
 - A4. Almanac v2 canonical path + any live-data wiring between Almanac and the system master.
 

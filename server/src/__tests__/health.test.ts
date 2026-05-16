@@ -27,6 +27,13 @@ describe("GET /health", () => {
     delete process.env.LANGFUSE_BASE_URL;
     delete process.env.LANGFUSE_HOST;
     delete process.env.LANGFUSE_RECORD_IO;
+    delete process.env.KATAILYST_LEARNER_BRIDGE_ENABLED;
+    delete process.env.KATAILYST_LEARNER_ENDPOINT_URL;
+    delete process.env.HERMES_LEARNER_WEBHOOK_SECRET;
+    delete process.env.KATAILYST_LEARNER_WEBHOOK_SECRET;
+    delete process.env.PAPERCLIP_PUBLIC_URL;
+    delete process.env.RENDER_EXTERNAL_URL;
+    delete process.env.KATAILYST_LEARNER_TIMEOUT_MS;
     mockReadPersistedDevServerStatus.mockReturnValue(undefined);
   });
 
@@ -47,6 +54,16 @@ describe("GET /health", () => {
           secret_key: false,
           base_url: "https://us.cloud.langfuse.com",
           record_io: false,
+        },
+      },
+      integrations: {
+        katailystLearnerBridge: {
+          enabled: true,
+          configured: false,
+          endpoint_url: false,
+          webhook_secret: false,
+          paperclip_public_url: false,
+          timeout_ms: 5000,
         },
       },
     });
@@ -70,6 +87,29 @@ describe("GET /health", () => {
     });
     expect(JSON.stringify(res.body)).not.toContain("sk-test");
     expect(JSON.stringify(res.body)).not.toContain("pk-test");
+  });
+
+  it("reports redacted Katailyst learner bridge readiness when configured", async () => {
+    process.env.KATAILYST_LEARNER_ENDPOINT_URL = "https://katailyst.example/api/hermes/learner/run-complete";
+    process.env.HERMES_LEARNER_WEBHOOK_SECRET = "learner-secret";
+    process.env.PAPERCLIP_PUBLIC_URL = "https://paperclip.example";
+    process.env.KATAILYST_LEARNER_TIMEOUT_MS = "7000";
+
+    const app = createApp();
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.integrations.katailystLearnerBridge).toEqual({
+      enabled: true,
+      configured: true,
+      endpoint_url: true,
+      webhook_secret: true,
+      paperclip_public_url: true,
+      timeout_ms: 7000,
+    });
+    expect(JSON.stringify(res.body)).not.toContain("learner-secret");
+    expect(JSON.stringify(res.body)).not.toContain("katailyst.example");
+    expect(JSON.stringify(res.body)).not.toContain("paperclip.example");
   });
 
   it("returns 200 when the database probe succeeds", async () => {
@@ -213,6 +253,16 @@ describe("GET /health", () => {
       bootstrapInviteActive: false,
       features: {
         companyDeletionEnabled: false,
+      },
+      integrations: {
+        katailystLearnerBridge: {
+          enabled: true,
+          configured: false,
+          endpoint_url: false,
+          webhook_secret: false,
+          paperclip_public_url: false,
+          timeout_ms: 5000,
+        },
       },
     });
   });
