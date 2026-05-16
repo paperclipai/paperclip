@@ -194,6 +194,22 @@ describe("server adapter registry", () => {
     expect(adapter!.supportsLocalAgentJwt).toBe(true);
   });
 
+  it("built-in hermes_observable adapter declares capability flags", async () => {
+    const adapter = requireServerAdapter("hermes_observable");
+    expect(adapter.supportsInstructionsBundle).toBe(true);
+    expect(adapter.instructionsPathKey).toBe("instructionsFilePath");
+    expect(adapter.requiresMaterializedRuntimeSkills).toBe(false);
+    expect(adapter.supportsLocalAgentJwt).toBe(true);
+    expect(adapter.getConfigSchema).toBeTypeOf("function");
+    const schema = await adapter.getConfigSchema!();
+    expect(schema).toMatchObject({
+      fields: expect.arrayContaining([
+        expect.objectContaining({ key: "hermesApiBaseUrl" }),
+        expect.objectContaining({ key: "endpointMode" }),
+      ]),
+    });
+  });
+
   it("built-in local adapters declare cheap model profile defaults where supported", async () => {
     await expect(listAdapterModelProfiles("claude_local")).resolves.toEqual([
       expect.objectContaining({
