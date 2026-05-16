@@ -47,6 +47,9 @@ const addDirIndex = argv.indexOf("--add-dir");
 const addDir = addDirIndex >= 0 ? argv[addDirIndex + 1] : null;
 const instructionsIndex = argv.indexOf("--append-system-prompt-file");
 const instructionsFilePath = instructionsIndex >= 0 ? argv[instructionsIndex + 1] : null;
+const settingsIndex = argv.indexOf("--settings");
+const settingsJson = settingsIndex >= 0 ? argv[settingsIndex + 1] : null;
+const settingsEnv = settingsJson ? (() => { try { return JSON.parse(settingsJson).env || null; } catch { return null; } })() : null;
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
 const payload = {
   argv,
@@ -62,6 +65,7 @@ const payload = {
   paperclipApiUrl: process.env.PAPERCLIP_API_URL || null,
   paperclipApiKey: process.env.PAPERCLIP_API_KEY || null,
   paperclipApiBridgeMode: process.env.PAPERCLIP_API_BRIDGE_MODE || null,
+  settingsEnv,
 };
 if (capturePath) {
   fs.writeFileSync(capturePath, JSON.stringify(payload), "utf8");
@@ -88,6 +92,7 @@ type CapturePayload = {
   paperclipApiBridgeMode?: string | null;
   appendedSystemPromptFilePath?: string | null;
   appendedSystemPromptFileContents?: string | null;
+  settingsEnv?: Record<string, string> | null;
 };
 
 async function writeRetryThenSucceedClaudeCommand(commandPath: string): Promise<void> {
@@ -1113,6 +1118,40 @@ describe("claude execute", () => {
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("injects PAPERCLIP_* vars into --settings env for tool-level propagation", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-settings-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    try {
+      await execute({
+        runId: "run-settings-test",
+        agent: { id: "agent-42", companyId: "company-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "test-jwt-token",
+        onLog: async () => {},
+        onMeta: async () => {},
+      });
+      const captured = JSON.parse(await fs.readFile(capturePath, "utf-8")) as CapturePayload;
+      const settingsEnv = captured.settingsEnv;
+      expect(settingsEnv).toBeTruthy();
+      expect(settingsEnv?.PAPERCLIP_API_KEY).toBe("test-jwt-token");
+      expect(settingsEnv?.PAPERCLIP_AGENT_ID).toBe("agent-42");
+      expect(settingsEnv?.PAPERCLIP_COMPANY_ID).toBe("company-1");
+      expect(settingsEnv?.PAPERCLIP_RUN_ID).toBe("run-settings-test");
+      // Large JSON payloads should not be injected into --settings
+      expect(Object.keys(settingsEnv ?? {}).every((k) => !k.endsWith("_JSON"))).toBe(true);
+    } finally {
+      restore();
       await fs.rm(root, { recursive: true, force: true });
     }
   });
