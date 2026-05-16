@@ -614,6 +614,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           "- Next action: resolve this blocker or reassign it to the right owner.",
         ].join("\n"),
         {},
+        {
+          authorType: "system",
+          presentation: {
+            kind: "system_notice",
+            tone: "warning",
+            title: "Assigned orphan blocker",
+            detailsDefaultOpen: false,
+          },
+        },
       );
 
       await logActivity(db, {
@@ -998,12 +1007,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       blockedByIssueIds: nextBlockerIds,
     });
     await issuesSvc.addComment(input.sourceIssue.id, [
-      "Paperclip detected critical output silence on this issue's active run.",
+      `当前结论：BLOCKED。关联 active run 已达到 critical 输出静默阈值，源 issue 已被显式阻塞。`,
+      `当前执行 owner：${input.evaluationIssue.identifier ?? input.evaluationIssue.id} assignee。`,
+      "当前 gate：stale-run recovery / explicit review task。",
+      `下一步动作：继续处理 ${input.evaluationIssue.identifier ?? input.evaluationIssue.id}，判断该 run 是误报、应 snooze，还是需要 cancel / recover。`,
+      `完成后回到：${input.sourceIssue.identifier ?? input.sourceIssue.id} 当前 owner。`,
       "",
       `- Evaluation issue: ${input.evaluationIssue.identifier ?? input.evaluationIssue.id}`,
       `- Run: \`${input.run.id}\``,
-      "",
-      "This blocks the source issue on the explicit review task without cancelling the active process.",
     ].join("\n"), { runId: input.run.id });
     await logActivity(db, {
       companyId: input.sourceIssue.companyId,
@@ -1746,6 +1757,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         prefix,
       }),
       {},
+      {
+        authorType: "system",
+        presentation: {
+          kind: "system_notice",
+          tone: "warning",
+          title: "Automatic recovery stopped",
+          detailsDefaultOpen: false,
+        },
+      },
     );
 
     await logActivity(db, {
@@ -1904,6 +1924,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         } else {
           await issuesSvc.addComment(input.issue.id, `${input.comment ?? ""}${recoveryLine}`, {}, {
             authorType: "system",
+            presentation: {
+              kind: "system_notice",
+              tone: "warning",
+              title: "Recovery follow-up required",
+              detailsDefaultOpen: false,
+            },
           });
         }
       }
@@ -2893,6 +2919,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       issue.id,
       buildLivenessOriginalIssueComment(input.finding, escalation),
       { runId: input.runId ?? null },
+      {
+        authorType: "system",
+        presentation: {
+          kind: "system_notice",
+          tone: "warning",
+          title: "Issue graph liveness escalation",
+          detailsDefaultOpen: false,
+        },
+      },
     );
 
     await logActivity(db, {

@@ -3113,3 +3113,203 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     expect(row).toEqual({ executionRunId: null, executionLockedAt: null });
   });
 });
+
+describeEmbeddedPostgres("issueService.addComment publish guardrails", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-comment-guardrails-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedIssue() {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Guard comment publishing",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+
+    return { issueId, agentId };
+  }
+
+  it("rejects tool bootstrap and API-key dumps before the comment is inserted", async () => {
+    const { issueId, agentId } = await seedIssue();
+    const dangerousBody = [
+      "当前结论：IN_PROGRESS",
+      "当前执行 owner：BackendEngineer 2",
+      "当前 gate：comment publish guardrail",
+      "下一步动作：阻止工具启动日志进入 issue 线程。",
+      "完成后回到：Sawyer review。",
+      "",
+      "🤖 AI Agent with Tool Calling",
+      "Using API key from PAPERCLIP_API_KEY",
+    ].join("\n");
+
+    await expect(svc.addComment(issueId, dangerousBody, { agentId })).rejects.toMatchObject({
+      status: 422,
+      message: "Issue comment blocked by publish guardrail",
+      details: expect.objectContaining({
+        blockedReasons: expect.arrayContaining(["包含 tool/bootstrap 启动横幅", "包含 API-key 启动日志短语"]),
+      }),
+    });
+
+    const comments = await db.select({ id: issueComments.id }).from(issueComments);
+    expect(comments).toHaveLength(0);
+  });
+
+  it("requires machine-authored comments to include the structured status sections", async () => {
+    const { issueId, agentId } = await seedIssue();
+
+    await expect(
+      svc.addComment(issueId, "修复已经完成，准备交给 Sawyer review。", { agentId }),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: "Machine-authored issue comment must use the structured status format",
+      details: expect.objectContaining({
+        missingSections: expect.arrayContaining([
+          "当前结论",
+          "当前执行 owner",
+          "当前 gate",
+          "下一步动作",
+          "完成后回到",
+        ]),
+      }),
+    });
+
+    const comments = await db.select({ id: issueComments.id }).from(issueComments);
+    expect(comments).toHaveLength(0);
+  });
+
+  it("treats runId-only actors as machine-authored for structured status enforcement", async () => {
+    const { issueId } = await seedIssue();
+
+    await expect(
+      svc.addComment(issueId, "修复已经完成，准备交给 Sawyer review。", { runId: randomUUID() }),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: "Machine-authored issue comment must use the structured status format",
+      details: expect.objectContaining({
+        missingSections: expect.arrayContaining([
+          "当前结论",
+          "当前执行 owner",
+          "当前 gate",
+          "下一步动作",
+          "完成后回到",
+        ]),
+      }),
+    });
+  });
+
+  it("allows machine-authored system notices without the structured status sections", async () => {
+    const { issueId } = await seedIssue();
+
+    const stored = await svc.addComment(
+      issueId,
+      "Paperclip needs a disposition before this issue can continue.",
+      {},
+      {
+        authorType: "system",
+        presentation: {
+          kind: "system_notice",
+          tone: "warning",
+          title: "Missing issue disposition",
+          detailsDefaultOpen: false,
+        },
+      },
+    );
+
+    expect(stored.body).toBe("Paperclip needs a disposition before this issue can continue.");
+    expect(stored.presentation).toEqual({
+      kind: "system_notice",
+      tone: "warning",
+      title: "Missing issue disposition",
+      detailsDefaultOpen: false,
+    });
+  });
+
+  it("allows human troubleshooting comments that mention api keys and shell commands without raw bootstrap payloads", async () => {
+    const { issueId } = await seedIssue();
+    const stored = await svc.addComment(
+      issueId,
+      [
+        "I am having trouble using API key rotation in this flow.",
+        "I reproduced it after running bash -lc for the local script and checking curl -sS output.",
+      ].join("\n"),
+      { userId: randomUUID() },
+    );
+
+    expect(stored.body).toContain("using API key rotation");
+    expect(stored.body).toContain("bash -lc");
+  });
+
+  it("allows structured agent comments while redacting non-blocked secret assignments", async () => {
+    const { issueId, agentId } = await seedIssue();
+    const stored = await svc.addComment(
+      issueId,
+      [
+        "当前结论：DONE",
+        "当前执行 owner：Sawyer。",
+        "当前 gate：review handoff。",
+        "下一步动作：审阅这个补丁并决定是否合并。",
+        "完成后回到：BackendEngineer 2。",
+        "",
+        "password=super-secret-value",
+      ].join("\n"),
+      { agentId },
+    );
+
+    expect(stored.body).toContain("password=[REDACTED]");
+    expect(stored.body).not.toContain("super-secret-value");
+
+    const comments = await db.select({ body: issueComments.body }).from(issueComments);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("password=[REDACTED]");
+  });
+});

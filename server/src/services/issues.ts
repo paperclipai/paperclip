@@ -68,6 +68,7 @@ import { redactSensitiveText } from "../redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
+import { sanitizeIssueCommentBody } from "./issue-comment-guardrails.js";
 import {
   isVerifiedIssueTreeControlInteractionWake,
   issueTreeControlService,
@@ -5077,7 +5078,6 @@ export function issueService(db: Db) {
       const currentUserRedactionOptions = {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
       };
-      const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
       const authorType = issueCommentAuthorTypeSchema.parse(
         options?.authorType ?? (actor.agentId ? "agent" : actor.userId ? "user" : "system"),
       );
@@ -5085,6 +5085,11 @@ export function issueService(db: Db) {
       const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
       const metadata = issueCommentMetadataSchema.nullable().parse(options?.metadata ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
+      const guardedBody = sanitizeIssueCommentBody(body, {
+        machineAuthored: authorType !== "user",
+        presentation,
+      });
+      const redactedBody = redactCurrentUserText(guardedBody, currentUserRedactionOptions);
       const [comment] = await db
         .insert(issueComments)
         .values({

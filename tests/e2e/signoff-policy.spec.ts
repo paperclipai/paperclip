@@ -48,6 +48,22 @@ interface IssueRunLockState {
   executionRunId: string | null;
 }
 
+function structuredStatusComment(input: {
+  conclusion: "DONE" | "IN_PROGRESS" | "FAIL" | "BLOCKED";
+  owner: string;
+  gate: string;
+  nextAction: string;
+  returnTo: string;
+}) {
+  return [
+    `当前结论：${input.conclusion}。`,
+    `当前执行 owner：${input.owner}`,
+    `当前 gate：${input.gate}`,
+    `下一步动作：${input.nextAction}`,
+    `完成后回到：${input.returnTo}`,
+  ].join("\n");
+}
+
 /** Create an authenticated APIRequestContext for an agent (token set, no run ID yet). */
 async function createAgentRequest(token: string): Promise<APIRequestContext> {
   return pwRequest.newContext({
@@ -279,7 +295,16 @@ test.describe("Signoff execution policy", () => {
     // Step 1: Executor marks done → should route to reviewer
     const step1Res = await agentCheckoutAndPatch(
       ctx.boardRequest, ctx.executor, issueId, ["in_progress"],
-      { status: "done", comment: "Implemented the feature, ready for review." },
+      {
+        status: "done",
+        comment: structuredStatusComment({
+          conclusion: "DONE",
+          owner: "Reviewer",
+          gate: "review stage",
+          nextAction: "Reviewer records the review decision on this issue.",
+          returnTo: "Approver if approved; Executor if changes requested.",
+        }),
+      },
     );
     expect(step1Res.ok()).toBe(true);
     const step1Issue = await step1Res.json();
@@ -301,7 +326,16 @@ test.describe("Signoff execution policy", () => {
     // Step 3: Reviewer approves → should route to approver
     const step3Res = await agentPatch(
       ctx.boardRequest, ctx.reviewer, issueId,
-      { status: "done", comment: "QA signoff complete. Looks good." },
+      {
+        status: "done",
+        comment: structuredStatusComment({
+          conclusion: "DONE",
+          owner: "Approver",
+          gate: "approval stage",
+          nextAction: "Approver records the final approval decision.",
+          returnTo: "Executor if changes are requested; otherwise the issue closes.",
+        }),
+      },
     );
     expect(step3Res.ok()).toBe(true);
     const step3Issue = await step3Res.json();
@@ -319,7 +353,16 @@ test.describe("Signoff execution policy", () => {
     // Step 5: Approver approves → should complete
     const step5Res = await agentPatch(
       ctx.boardRequest, ctx.approver, issueId,
-      { status: "done", comment: "Approved. Ship it." },
+      {
+        status: "done",
+        comment: structuredStatusComment({
+          conclusion: "DONE",
+          owner: "Release owner",
+          gate: "execution complete",
+          nextAction: "Close the signoff flow and continue normal ship steps.",
+          returnTo: "No further signoff participant; issue should remain done.",
+        }),
+      },
     );
     expect(step5Res.ok()).toBe(true);
     const step5Issue = await step5Res.json();
@@ -337,7 +380,16 @@ test.describe("Signoff execution policy", () => {
     // Executor marks done → routes to reviewer
     const doneRes = await agentCheckoutAndPatch(
       ctx.boardRequest, ctx.executor, issueId, ["in_progress"],
-      { status: "done", comment: "Ready for review." },
+      {
+        status: "done",
+        comment: structuredStatusComment({
+          conclusion: "DONE",
+          owner: "Reviewer",
+          gate: "review stage",
+          nextAction: "Reviewer decides whether to approve or request changes.",
+          returnTo: "Approver if approved; Executor if changes requested.",
+        }),
+      },
     );
     expect(doneRes.ok()).toBe(true);
     expect((await doneRes.json()).status).toBe("in_review");
@@ -345,7 +397,16 @@ test.describe("Signoff execution policy", () => {
     // Reviewer requests changes → returns to executor
     const changesRes = await agentPatch(
       ctx.boardRequest, ctx.reviewer, issueId,
-      { status: "in_progress", comment: "Needs another pass on edge cases." },
+      {
+        status: "in_progress",
+        comment: structuredStatusComment({
+          conclusion: "IN_PROGRESS",
+          owner: "Executor",
+          gate: "changes requested",
+          nextAction: "Executor addresses the reviewer feedback and resubmits.",
+          returnTo: "Reviewer after the executor marks the issue done again.",
+        }),
+      },
     );
     expect(changesRes.ok()).toBe(true);
     const changesIssue = await changesRes.json();
@@ -358,7 +419,16 @@ test.describe("Signoff execution policy", () => {
     // Executor re-submits → goes back to reviewer (same stage)
     const resubmitRes = await agentCheckoutAndPatch(
       ctx.boardRequest, ctx.executor, issueId, ["in_progress"],
-      { status: "done", comment: "Fixed the edge cases." },
+      {
+        status: "done",
+        comment: structuredStatusComment({
+          conclusion: "DONE",
+          owner: "Reviewer",
+          gate: "review stage",
+          nextAction: "Reviewer re-checks the resubmitted changes.",
+          returnTo: "Approver if approved; Executor if more changes are requested.",
+        }),
+      },
     );
     expect(resubmitRes.ok()).toBe(true);
     const resubmitIssue = await resubmitRes.json();
@@ -376,7 +446,16 @@ test.describe("Signoff execution policy", () => {
     // Executor marks done → routes to reviewer
     await agentCheckoutAndPatch(
       ctx.boardRequest, ctx.executor, issueId, ["in_progress"],
-      { status: "done", comment: "Done." },
+      {
+        status: "done",
+        comment: structuredStatusComment({
+          conclusion: "DONE",
+          owner: "Reviewer",
+          gate: "review stage",
+          nextAction: "Reviewer records the next-stage decision.",
+          returnTo: "Approver if approved; Executor if changes requested.",
+        }),
+      },
     );
 
     // Reviewer tries to approve without comment → should fail
@@ -396,7 +475,16 @@ test.describe("Signoff execution policy", () => {
     // Executor marks done → routes to reviewer
     const doneRes = await agentCheckoutAndPatch(
       ctx.boardRequest, ctx.executor, issueId, ["in_progress"],
-      { status: "done", comment: "Done." },
+      {
+        status: "done",
+        comment: structuredStatusComment({
+          conclusion: "DONE",
+          owner: "Reviewer",
+          gate: "review stage",
+          nextAction: "Reviewer decides whether this issue can advance.",
+          returnTo: "Approver if approved; Executor if changes requested.",
+        }),
+      },
     );
     expect(doneRes.ok()).toBe(true);
 
@@ -410,7 +498,16 @@ test.describe("Signoff execution policy", () => {
     // Non-participant (approver at this stage) tries to advance → should be rejected
     const advanceRes = await agentPatch(
       ctx.boardRequest, ctx.approver, issueId,
-      { status: "done", comment: "I'm the approver, not the reviewer." },
+      {
+        status: "done",
+        comment: structuredStatusComment({
+          conclusion: "DONE",
+          owner: "Reviewer",
+          gate: "review stage",
+          nextAction: "Only the active review participant can advance the issue.",
+          returnTo: "Approver only after the review stage completes.",
+        }),
+      },
     );
     expect(advanceRes.ok()).toBe(false);
     expect(advanceRes.status()).toBeGreaterThanOrEqual(400);
@@ -424,7 +521,16 @@ test.describe("Signoff execution policy", () => {
     // Executor marks done → routes to reviewer
     const doneRes = await agentCheckoutAndPatch(
       ctx.boardRequest, ctx.executor, issue.id, ["in_progress"],
-      { status: "done", comment: "Ready for review." },
+      {
+        status: "done",
+        comment: structuredStatusComment({
+          conclusion: "DONE",
+          owner: "Reviewer",
+          gate: "review stage",
+          nextAction: "Reviewer records the final review-only decision.",
+          returnTo: "Executor if changes requested; otherwise the issue closes.",
+        }),
+      },
     );
     expect(doneRes.ok()).toBe(true);
     expect((await doneRes.json()).status).toBe("in_review");
@@ -432,7 +538,16 @@ test.describe("Signoff execution policy", () => {
     // Reviewer approves → should complete immediately (no approval stage)
     const approveRes = await agentPatch(
       ctx.boardRequest, ctx.reviewer, issue.id,
-      { status: "done", comment: "LGTM." },
+      {
+        status: "done",
+        comment: structuredStatusComment({
+          conclusion: "DONE",
+          owner: "Release owner",
+          gate: "review-only completion",
+          nextAction: "Close the issue because the only required stage is complete.",
+          returnTo: "No further participant; issue should remain done.",
+        }),
+      },
     );
     expect(approveRes.ok()).toBe(true);
     const doneIssue = await approveRes.json();
