@@ -834,6 +834,44 @@ export function AgentDetail() {
     },
   });
 
+  const uploadAvatar = useMutation({
+    mutationFn: async (file: File) => {
+      if (!agent || !resolvedCompanyId) {
+        throw new Error("Select a company before uploading an agent avatar.");
+      }
+      const asset = await assetsApi.uploadAgentAvatar(resolvedCompanyId, agent.id, file);
+      return agentsApi.update(agentLookupRef, { avatarAssetId: asset.assetId }, resolvedCompanyId);
+    },
+    onSuccess: () => {
+      setActionError(null);
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.org(resolvedCompanyId) });
+      }
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to upload avatar");
+    },
+  });
+
+  const removeAvatar = useMutation({
+    mutationFn: () => agentsApi.update(agentLookupRef, { avatarAssetId: null }, resolvedCompanyId ?? undefined),
+    onSuccess: () => {
+      setActionError(null);
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.org(resolvedCompanyId) });
+      }
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to remove avatar");
+    },
+  });
+
   const resetTaskSession = useMutation({
     mutationFn: (taskKey: string | null) =>
       agentsApi.resetSession(agentLookupRef, taskKey, resolvedCompanyId ?? undefined),
@@ -921,10 +959,19 @@ export function AgentDetail() {
         <div className="flex items-center gap-3 min-w-0">
           <AgentIconPicker
             value={agent.icon}
+            avatarUrl={agent.avatarUrl}
             onChange={(icon) => updateIcon.mutate(icon)}
+            onAvatarUpload={(file) => uploadAvatar.mutate(file)}
+            onAvatarRemove={agent.avatarUrl ? () => removeAvatar.mutate() : undefined}
+            isUploadingAvatar={uploadAvatar.isPending}
+            isRemovingAvatar={removeAvatar.isPending}
           >
-            <button className="shrink-0 flex items-center justify-center h-12 w-12 rounded-lg bg-accent hover:bg-accent/80 transition-colors">
-              <AgentIcon icon={agent.icon} className="h-6 w-6" />
+            <button
+              type="button"
+              aria-label="Edit agent avatar or icon"
+              className="shrink-0 flex h-12 w-12 items-center justify-center overflow-hidden rounded-lg bg-accent transition-colors hover:bg-accent/80"
+            >
+              <AgentIcon icon={agent.icon} avatarUrl={agent.avatarUrl} className={agent.avatarUrl ? "h-full w-full" : "h-6 w-6"} />
             </button>
           </AgentIconPicker>
           <div className="min-w-0">

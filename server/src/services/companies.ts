@@ -5,6 +5,7 @@ import {
   companyLogos,
   assets,
   agents,
+  agentAvatars,
   agentApiKeys,
   agentRuntimeState,
   agentTaskSessions,
@@ -287,6 +288,7 @@ export function companyService(db: Db) {
         await tx.delete(documents).where(eq(documents.companyId, id));
         await tx.delete(issues).where(eq(issues.companyId, id));
         await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
+        await tx.delete(agentAvatars).where(eq(agentAvatars.companyId, id));
         await tx.delete(assets).where(eq(assets.companyId, id));
         await tx.delete(goals).where(eq(goals.companyId, id));
         await tx.delete(projects).where(eq(projects.companyId, id));

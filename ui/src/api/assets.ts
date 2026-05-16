@@ -26,4 +26,16 @@ export const assetsApi = {
     form.append("file", safeFile);
     return api.postForm<AssetImage>(`/companies/${companyId}/logo`, form);
   },
+
+  uploadAgentAvatar: async (companyId: string, agentId: string, file: File) => {
+    const buffer = await file.arrayBuffer();
+    const safeFile = new File([buffer], file.name, { type: file.type });
+
+    const form = new FormData();
+    form.append("file", safeFile);
+    return api.postForm<AssetImage>(
+      `/companies/${companyId}/agents/${agentId}/avatar`,
+      form,
+    );
+  },
 };

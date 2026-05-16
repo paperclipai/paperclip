@@ -1,13 +1,15 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
+import sharp from "sharp";
 import createDOMPurify from "dompurify";
 import { JSDOM } from "jsdom";
 import type { Db } from "@paperclipai/db";
 import { createAssetImageMetadataSchema } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
-import { assetService, logActivity } from "../services/index.js";
+import { accessService, agentService, assetService, logActivity } from "../services/index.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { forbidden } from "../errors.js";
 const SVG_CONTENT_TYPE = "image/svg+xml";
 const ALLOWED_COMPANY_LOGO_CONTENT_TYPES = new Set([
   "image/png",
@@ -17,6 +19,47 @@ const ALLOWED_COMPANY_LOGO_CONTENT_TYPES = new Set([
   "image/gif",
   SVG_CONTENT_TYPE,
 ]);
+const ALLOWED_AGENT_AVATAR_CONTENT_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/webp",
+  "image/gif",
+]);
+const AGENT_AVATAR_MAX_BYTES = 5 * 1024 * 1024;
+const AGENT_AVATAR_MAX_PIXELS = 16_000_000;
+
+async function validateRasterImageBuffer(input: {
+  body: Buffer;
+  contentType: string;
+}): Promise<string | null> {
+  if (!ALLOWED_AGENT_AVATAR_CONTENT_TYPES.has(input.contentType)) {
+    return `Unsupported image type: ${input.contentType || "unknown"}`;
+  }
+  if (input.body.length <= 0) {
+    return "Image is empty";
+  }
+
+  try {
+    const metadata = await sharp(input.body, { animated: input.contentType === "image/gif" }).metadata();
+    const expectedFormat =
+      input.contentType === "image/jpeg" || input.contentType === "image/jpg"
+        ? "jpeg"
+        : input.contentType.replace("image/", "");
+    if (metadata.format !== expectedFormat) {
+      return "File contents do not match the declared image type";
+    }
+    if (!metadata.width || !metadata.height) {
+      return "Image dimensions could not be read";
+    }
+    if (metadata.width * metadata.height > AGENT_AVATAR_MAX_PIXELS) {
+      return "Image dimensions are too large";
+    }
+  } catch {
+    return "Image could not be decoded";
+  }
+  return null;
+}
 
 function sanitizeSvgBuffer(input: Buffer): Buffer | null {
   const raw = input.toString("utf8").trim();
@@ -85,6 +128,8 @@ function sanitizeSvgBuffer(input: Buffer): Buffer | null {
 export function assetRoutes(db: Db, storage: StorageService) {
   const router = Router();
   const svc = assetService(db);
+  const agentsSvc = agentService(db);
+  const access = accessService(db);
   const assetUpload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
@@ -92,6 +137,10 @@ export function assetRoutes(db: Db, storage: StorageService) {
   const companyLogoUpload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
+  });
+  const agentAvatarUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: AGENT_AVATAR_MAX_BYTES, files: 1 },
   });
 
   async function runSingleFileUpload(
@@ -105,6 +154,38 @@ export function assetRoutes(db: Db, storage: StorageService) {
         else resolve();
       });
     });
+  }
+
+  function canCreateAgents(agent: { role: string; permissions: Record<string, unknown> | null | undefined }) {
+    if (!agent.permissions || typeof agent.permissions !== "object") return false;
+    return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
+  }
+
+  async function assertCanUploadAgentAvatar(req: Request, targetAgent: { id: string; companyId: string }) {
+    assertCompanyAccess(req, targetAgent.companyId);
+    if (req.actor.type === "board") {
+      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+      const allowed = await access.canUser(targetAgent.companyId, req.actor.userId, "agents:create");
+      if (!allowed) throw forbidden("Missing permission: agents:create");
+      return;
+    }
+    if (!req.actor.agentId) throw forbidden("Agent authentication required");
+
+    const actorAgent = await agentsSvc.getById(req.actor.agentId);
+    if (!actorAgent || actorAgent.companyId !== targetAgent.companyId) {
+      throw forbidden("Agent key cannot access another company");
+    }
+
+    if (actorAgent.id === targetAgent.id) return;
+    if (actorAgent.role === "ceo") return;
+    const allowedByGrant = await access.hasPermission(
+      targetAgent.companyId,
+      "agent",
+      actorAgent.id,
+      "agents:create",
+    );
+    if (allowedByGrant || canCreateAgents(actorAgent)) return;
+    throw forbidden("Only CEO or agent creators can modify other agents");
   }
 
   router.post("/companies/:companyId/assets/images", async (req, res) => {
@@ -289,6 +370,103 @@ export function assetRoutes(db: Db, storage: StorageService) {
         contentType: asset.contentType,
         byteSize: asset.byteSize,
         namespace: "assets/companies",
+      },
+    });
+
+    res.status(201).json({
+      assetId: asset.id,
+      companyId: asset.companyId,
+      provider: asset.provider,
+      objectKey: asset.objectKey,
+      contentType: asset.contentType,
+      byteSize: asset.byteSize,
+      sha256: asset.sha256,
+      originalFilename: asset.originalFilename,
+      createdByAgentId: asset.createdByAgentId,
+      createdByUserId: asset.createdByUserId,
+      createdAt: asset.createdAt,
+      updatedAt: asset.updatedAt,
+      contentPath: `/api/assets/${asset.id}/content`,
+    });
+  });
+
+  router.post("/companies/:companyId/agents/:agentId/avatar", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const agentId = req.params.agentId as string;
+    assertCompanyAccess(req, companyId);
+
+    const agent = await agentsSvc.getById(agentId);
+    if (!agent || agent.companyId !== companyId) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanUploadAgentAvatar(req, agent);
+
+    try {
+      await runSingleFileUpload(agentAvatarUpload, req, res);
+    } catch (err) {
+      if (err instanceof multer.MulterError) {
+        if (err.code === "LIMIT_FILE_SIZE") {
+          res.status(422).json({ error: `Image exceeds ${AGENT_AVATAR_MAX_BYTES} bytes` });
+          return;
+        }
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+
+    const file = (req as Request & { file?: { mimetype: string; buffer: Buffer; originalname: string } }).file;
+    if (!file) {
+      res.status(400).json({ error: "Missing file field 'file'" });
+      return;
+    }
+
+    const contentType = (file.mimetype || "").toLowerCase();
+    const validationError = await validateRasterImageBuffer({
+      body: file.buffer,
+      contentType,
+    });
+    if (validationError) {
+      res.status(422).json({ error: validationError });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const stored = await storage.putFile({
+      companyId,
+      namespace: `assets/agents/${agentId}/avatar`,
+      originalFilename: file.originalname || null,
+      contentType,
+      body: file.buffer,
+    });
+
+    const asset = await svc.create(companyId, {
+      provider: stored.provider,
+      objectKey: stored.objectKey,
+      contentType: stored.contentType,
+      byteSize: stored.byteSize,
+      sha256: stored.sha256,
+      originalFilename: stored.originalFilename,
+      createdByAgentId: actor.agentId,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+    });
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "asset.created",
+      entityType: "asset",
+      entityId: asset.id,
+      details: {
+        originalFilename: asset.originalFilename,
+        contentType: asset.contentType,
+        byteSize: asset.byteSize,
+        namespace: `assets/agents/${agentId}/avatar`,
+        avatarForAgentId: agentId,
       },
     });
 

@@ -9,6 +9,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "../components/StatusBadge";
+import { AgentIcon } from "../components/AgentIconPicker";
 import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
 import { EntityRow } from "../components/EntityRow";
 import { EmptyState } from "../components/EmptyState";
@@ -233,9 +234,14 @@ export function Agents() {
                 to={agentUrl(agent)}
                 className={agent.pausedAt && tab !== "paused" ? "opacity-50" : ""}
                 leading={
-                  <span className="relative flex h-2.5 w-2.5">
+                  <span className="relative flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-muted">
+                    <AgentIcon
+                      icon={agent.icon}
+                      avatarUrl={agent.avatarUrl}
+                      className={agent.avatarUrl ? "h-full w-full" : "h-3.5 w-3.5 text-muted-foreground"}
+                    />
                     <span
-                      className={`absolute inline-flex h-full w-full rounded-full ${agentStatusDot[agent.status] ?? agentStatusDotDefault}`}
+                      className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-background ${agentStatusDot[agent.status] ?? agentStatusDotDefault}`}
                     />
                   </span>
                 }
@@ -337,8 +343,13 @@ function OrgTreeNode({
         to={agent ? agentUrl(agent) : `/agents/${node.id}`}
         className={cn("flex items-center gap-3 px-3 py-2 hover:bg-accent/30 transition-colors w-full text-left no-underline text-inherit", agent?.pausedAt && tab !== "paused" && "opacity-50")}
       >
-        <span className="relative flex h-2.5 w-2.5 shrink-0">
-          <span className={`absolute inline-flex h-full w-full rounded-full ${statusColor}`} />
+        <span className="relative flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-muted">
+          <AgentIcon
+            icon={agent?.icon}
+            avatarUrl={agent?.avatarUrl}
+            className={agent?.avatarUrl ? "h-full w-full" : "h-3.5 w-3.5 text-muted-foreground"}
+          />
+          <span className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-background ${statusColor}`} />
         </span>
         <div className="flex-1 min-w-0">
           <span className="text-sm font-medium">{node.name}</span>

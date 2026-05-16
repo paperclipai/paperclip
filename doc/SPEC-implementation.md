@@ -145,6 +145,7 @@ Invariant: every business record belongs to exactly one company.
 - `role` text not null
 - `title` text null
 - `icon` text null
+- `avatar_asset_id` via `agent_avatars` null; user-uploaded agent avatar image asset
 - `status` enum: `active | paused | idle | running | error | pending_approval | terminated`
 - `reports_to` uuid fk `agents.id` null
 - `capabilities` text null
