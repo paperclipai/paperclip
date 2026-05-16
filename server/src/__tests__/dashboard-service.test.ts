@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -48,6 +48,7 @@ describeEmbeddedPostgres("dashboard service", () => {
 
   afterEach(async () => {
     await db.delete(heartbeatRuns);
+    await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -164,6 +165,52 @@ describeEmbeddedPostgres("dashboard service", () => {
       failed: 2,
       other: 1,
       total: 3,
+    });
+  });
+
+  it("includes canonical needsBoard task count in dashboard summary", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: randomUUID(),
+        companyId,
+        title: "Board review issue",
+        status: "in_review",
+        priority: "medium",
+        assigneeUserId: "local-board",
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        title: "Regular todo issue",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        title: "Completed issue",
+        status: "done",
+        priority: "medium",
+      },
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    expect(summary.tasks).toMatchObject({
+      open: 2,
+      inProgress: 0,
+      blocked: 0,
+      done: 1,
+      needsBoard: 1,
     });
   });
 });

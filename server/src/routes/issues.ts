@@ -1444,6 +1444,19 @@ export function issueRoutes(
     const parsedOffset = rawOffset !== undefined && /^\d+$/.test(rawOffset)
       ? Number.parseInt(rawOffset, 10)
       : null;
+    const rawNeedsBoard = req.query.needsBoard as string | undefined;
+    let needsBoard: boolean | undefined;
+    if (rawNeedsBoard !== undefined) {
+      const normalizedNeedsBoard = rawNeedsBoard.trim().toLowerCase();
+      if (["1", "true", "yes", "on"].includes(normalizedNeedsBoard)) {
+        needsBoard = true;
+      } else if (["0", "false", "no", "off"].includes(normalizedNeedsBoard)) {
+        needsBoard = false;
+      } else {
+        res.status(400).json({ error: "needsBoard must be a boolean value" });
+        return;
+      }
+    }
     const attention = req.query.attention as string | undefined;
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
@@ -1504,6 +1517,7 @@ export function issueRoutes(
       includeBlockedInboxAttention:
         req.query.includeBlockedInboxAttention === "true" || req.query.includeBlockedInboxAttention === "1",
       q: req.query.q as string | undefined,
+      needsBoard,
       limit,
       offset,
     });
@@ -1639,6 +1653,7 @@ export function issueRoutes(
       relations,
       blockerAttention,
       productivityReview,
+      needsBoardProjection,
       scheduledRetry,
       attachments,
       continuationSummary,
@@ -1653,6 +1668,12 @@ export function issueRoutes(
         svc.getRelationSummaries(issue.id),
         svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
         svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
+        svc.listNeedsBoardProjections(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? {
+          needsBoard: false,
+          needsBoardActionable: false,
+          needsBoardReasons: [],
+          needsBoardUnblockImpact: null,
+        }),
         svc.getCurrentScheduledRetry(issue.id),
         svc.listAttachments(issue.id),
         documentsSvc.getIssueDocumentByKey(issue.id, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
@@ -1679,6 +1700,10 @@ export function issueRoutes(
         workMode: issue.workMode,
         ...(blockerAttention ? { blockerAttention } : {}),
         productivityReview,
+        needsBoard: needsBoardProjection.needsBoard,
+        needsBoardActionable: needsBoardProjection.needsBoardActionable,
+        needsBoardReasons: needsBoardProjection.needsBoardReasons,
+        needsBoardUnblockImpact: needsBoardProjection.needsBoardUnblockImpact,
         scheduledRetry,
         activeRecoveryAction,
         priority: issue.priority,
@@ -1760,6 +1785,7 @@ export function issueRoutes(
       relations,
       blockerAttention,
       productivityReview,
+      needsBoardProjection,
       referenceSummary,
       successfulRunHandoffStates,
       scheduledRetry,
@@ -1772,6 +1798,12 @@ export function issueRoutes(
       svc.getRelationSummaries(issue.id),
       svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
       svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
+      svc.listNeedsBoardProjections(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? {
+        needsBoard: false,
+        needsBoardActionable: false,
+        needsBoardReasons: [],
+        needsBoardUnblockImpact: null,
+      }),
       issueReferencesSvc.listIssueReferenceSummary(issue.id),
       listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id]),
       svc.getCurrentScheduledRetry(issue.id),
@@ -1800,6 +1832,10 @@ export function issueRoutes(
       ...(blockerAttention ? { blockerAttention } : {}),
       productivityReview,
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
+      needsBoard: needsBoardProjection.needsBoard,
+      needsBoardActionable: needsBoardProjection.needsBoardActionable,
+      needsBoardReasons: needsBoardProjection.needsBoardReasons,
+      needsBoardUnblockImpact: needsBoardProjection.needsBoardUnblockImpact,
       scheduledRetry,
       activeRecoveryAction,
       blockedBy: relationsWithRecoveryActions.blockedBy,

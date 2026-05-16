@@ -101,6 +101,7 @@ import {
   UserPlus,
   Search,
   ListTree,
+  CircleDot,
 } from "lucide-react";
 
 const INBOX_HEARTBEAT_RUN_LIMIT = 200;
@@ -1883,6 +1884,7 @@ export function Inbox() {
     dashboard.costs.monthBudgetCents > 0 &&
     dashboard.costs.monthUtilizationPercent >= 80 &&
     !dismissedAlerts.has("alert:budget");
+  const needsBoardCount = dashboard?.tasks.needsBoard ?? 0;
   const hasAlerts = showAggregateAgentError || showBudgetAlert;
   const showWorkItemsSection = totalVisibleWorkItems > 0;
   const showAlertsSection = shouldShowInboxSection({
@@ -1968,6 +1970,19 @@ export function Inbox() {
         </Tabs>
 
         <div className="flex items-center gap-2">
+          <Link
+            to="/issues?needsBoard=true"
+            className={cn(
+              "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-3 text-xs font-medium no-underline transition-colors",
+              needsBoardCount > 0
+                ? "border-amber-500/40 bg-amber-500/10 text-amber-700 hover:bg-amber-500/15 dark:text-amber-300"
+                : "border-border text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+            )}
+          >
+            <CircleDot className="h-3.5 w-3.5" />
+            <span>Needs Board Queue</span>
+            <span className="font-mono">{needsBoardCount}</span>
+          </Link>
           <div className="relative hidden sm:block">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input

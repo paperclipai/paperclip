@@ -41,18 +41,39 @@ export function mergeIssuePagesStable(pages: Issue[][]): Issue[] {
   return merged;
 }
 
-export function buildIssuesSearchUrl(currentHref: string, search: string): string | null {
+function buildIssuesUrl(
+  currentHref: string,
+  updates: { search?: string; needsBoardOnly?: boolean },
+): string | null {
   const url = new URL(currentHref);
-  const currentSearch = url.searchParams.get("q") ?? "";
-  if (currentSearch === search) return null;
+  const original = `${url.pathname}${url.search}${url.hash}`;
 
-  if (search.length > 0) {
-    url.searchParams.set("q", search);
-  } else {
-    url.searchParams.delete("q");
+  if (updates.search !== undefined) {
+    if (updates.search.length > 0) {
+      url.searchParams.set("q", updates.search);
+    } else {
+      url.searchParams.delete("q");
+    }
   }
 
-  return `${url.pathname}${url.search}${url.hash}`;
+  if (updates.needsBoardOnly !== undefined) {
+    if (updates.needsBoardOnly) {
+      url.searchParams.set("needsBoard", "true");
+    } else {
+      url.searchParams.delete("needsBoard");
+    }
+  }
+
+  const next = `${url.pathname}${url.search}${url.hash}`;
+  return next === original ? null : next;
+}
+
+export function buildIssuesSearchUrl(currentHref: string, search: string): string | null {
+  return buildIssuesUrl(currentHref, { search });
+}
+
+export function buildIssuesNeedsBoardUrl(currentHref: string, needsBoardOnly: boolean): string | null {
+  return buildIssuesUrl(currentHref, { needsBoardOnly });
 }
 
 export function Issues() {
@@ -64,13 +85,24 @@ export function Issues() {
   const fetchNextPageInFlightRef = useRef(false);
 
   const urlSearch = searchParams.get("q") ?? "";
+  const urlNeedsBoardOnly = searchParams.get("needsBoard") === "true";
   const [searchOverride, setSearchOverride] = useState<{ search: string; locationSearch: string } | null>(null);
+  const [needsBoardOverride, setNeedsBoardOverride] = useState<{
+    needsBoardOnly: boolean;
+    locationSearch: string;
+  } | null>(null);
   const syncedSearch = useMemo(() => {
     if (typeof window !== "undefined" && searchOverride?.locationSearch === window.location.search) {
       return searchOverride.search;
     }
     return urlSearch;
   }, [searchOverride, urlSearch, location.search]);
+  const syncedNeedsBoardOnly = useMemo(() => {
+    if (typeof window !== "undefined" && needsBoardOverride?.locationSearch === window.location.search) {
+      return needsBoardOverride.needsBoardOnly;
+    }
+    return urlNeedsBoardOnly;
+  }, [location.search, needsBoardOverride, urlNeedsBoardOnly]);
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
   const initialWorkspaces = searchParams.getAll("workspace").filter((workspaceId) => workspaceId.length > 0);
   const workspaceIdFilter = initialWorkspaces.length === 1 ? initialWorkspaces[0] : undefined;
@@ -82,6 +114,15 @@ export function Issues() {
     }
     window.history.replaceState(window.history.state, "", nextUrl);
     setSearchOverride({ search, locationSearch: window.location.search });
+  }, []);
+  const handleNeedsBoardFilterChange = useCallback((needsBoardOnly: boolean) => {
+    const nextUrl = buildIssuesNeedsBoardUrl(window.location.href, needsBoardOnly);
+    if (!nextUrl) {
+      setNeedsBoardOverride(null);
+      return;
+    }
+    window.history.replaceState(window.history.state, "", nextUrl);
+    setNeedsBoardOverride({ needsBoardOnly, locationSearch: window.location.search });
   }, []);
 
   const { data: agents } = useQuery({
@@ -133,6 +174,8 @@ export function Issues() {
       ...queryKeys.issues.list(selectedCompanyId!),
       "participant-agent",
       participantAgentId ?? "__all__",
+      "needs-board",
+      syncedNeedsBoardOnly ? "yes" : "no",
       "workspace",
       workspaceIdFilter ?? "__all__",
       "with-routine-executions",
@@ -141,6 +184,7 @@ export function Issues() {
     ],
     queryFn: ({ pageParam }) => issuesApi.list(selectedCompanyId!, {
       participantAgentId,
+      needsBoard: syncedNeedsBoardOnly ? true : undefined,
       workspaceId: workspaceIdFilter,
       includeRoutineExecutions: true,
       limit: issuePageSize,
@@ -189,13 +233,23 @@ export function Issues() {
       issueLinkState={issueLinkState}
       initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
       initialWorkspaces={initialWorkspaces.length > 0 ? initialWorkspaces : undefined}
+      initialNeedsBoardOnly={syncedNeedsBoardOnly}
       initialSearch={syncedSearch}
       onSearchChange={handleSearchChange}
+      onNeedsBoardFilterChange={handleNeedsBoardFilterChange}
       enableRoutineVisibilityFilter
       hasMoreIssues={hasMoreServerIssues}
       onLoadMoreIssues={loadMoreServerIssues}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-      searchFilters={participantAgentId || workspaceIdFilter ? { participantAgentId, workspaceId: workspaceIdFilter } : undefined}
+      searchFilters={
+        participantAgentId || workspaceIdFilter || syncedNeedsBoardOnly
+          ? {
+            participantAgentId,
+            workspaceId: workspaceIdFilter,
+            needsBoard: syncedNeedsBoardOnly ? true : undefined,
+          }
+          : undefined
+      }
     />
   );
 }

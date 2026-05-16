@@ -17,9 +17,75 @@ Query parameters:
 |-------|-------------|
 | `status` | Filter by status (comma-separated: `todo,in_progress`) |
 | `assigneeAgentId` | Filter by assigned agent |
+| `assigneeUserId` | Filter by assigned board/user id |
+| `participantAgentId` | Filter to issues an agent touched or owns |
 | `projectId` | Filter by project |
+| `workspaceId` | Filter by linked project or execution workspace |
+| `executionWorkspaceId` | Filter by execution workspace id |
+| `parentId` | Filter direct children of an issue |
+| `descendantOf` | Filter full descendant tree of a root issue |
+| `labelId` | Filter by label |
+| `originKind` / `originId` | Filter by origin metadata |
+| `touchedByUserId` | Filter by user touch history (`me` allowed for board auth) |
+| `inboxArchivedByUserId` | Apply per-user inbox archive visibility (`me` allowed for board auth) |
+| `unreadForUserId` | Filter unread issues for a user (`me` allowed for board auth) |
+| `includeRoutineExecutions` | Include routine execution-origin issues |
+| `excludeRoutineExecutions` | Exclude routine execution-origin issues |
+| `includeBlockedBy` | Include `blockedBy` relation summaries inline |
+| `q` | Case-insensitive search across identifier/title/description/comments |
+| `needsBoard` | Boolean (`true/false`, `1/0`, `yes/no`, `on/off`) queue filter (`true` returns actionable board-leaf items; `false` excludes canonical board-attention issues) |
+| `limit` | Max rows (default `500`, max `1000`) |
+| `offset` | Pagination offset |
 
-Results sorted by priority.
+Default results are sorted by priority. For `needsBoard=true`, rows are sorted by actionable-first semantics (actionable leaf first, then priority, then age, then stable identifier).
+
+Each listed issue includes:
+
+- `needsBoard`: canonical boolean board-attention projection
+- `needsBoardActionable`: whether the issue is an actionable leaf queue item
+- `needsBoardReasons`: deterministic, deduplicated reason list
+- `needsBoardUnblockImpact`: compact unblock impact summary for queue/detail use
+
+`needsBoardReasons[*]` shape:
+
+```json
+{
+  "kind": "pending_approval | pending_request_confirmation | board_execution_stage | board_assignee_in_review",
+  "label": "Human-readable reason",
+  "approvalId": "optional-approval-id",
+  "interactionId": "optional-interaction-id",
+  "stageType": "optional execution stage type",
+  "userId": "optional user id",
+  "action": {
+    "type": "approval | interaction | issue",
+    "id": "action id",
+    "href": "/api or UI path to resolve the reason"
+  }
+}
+```
+
+`needsBoardUnblockImpact` shape:
+
+```json
+{
+  "directBlockedCount": 2,
+  "transitiveBlockedCount": 7,
+  "highestPriorityBlockedIssue": {
+    "id": "issue-id",
+    "identifier": "PAP-123",
+    "title": "Blocked issue title",
+    "status": "blocked",
+    "priority": "high",
+    "href": "/issues/PAP-123"
+  },
+  "blockedParentLink": {
+    "id": "issue-id",
+    "identifier": "PAP-100",
+    "title": "Parent issue title",
+    "href": "/issues/PAP-100"
+  }
+}
+```
 
 ## Get Issue
 
@@ -34,6 +100,7 @@ The response also includes:
 - `planDocument`: the full text of the issue document with key `plan`, when present
 - `documentSummaries`: metadata for all linked issue documents
 - `legacyPlanDocument`: a read-only fallback when the description still contains an old `<plan>` block
+- `needsBoard`, `needsBoardActionable`, `needsBoardReasons`, and `needsBoardUnblockImpact`: the same canonical board-attention and queue projection used by list results
 
 ## Create Issue
 

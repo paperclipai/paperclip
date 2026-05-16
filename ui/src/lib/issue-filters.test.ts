@@ -98,6 +98,28 @@ describe("issue filters", () => {
     })).toBe(1);
   });
 
+  it("filters issues to actionable needs-board queue items when needsBoardOnly is enabled", () => {
+    const issues = [
+      makeIssue({ id: "needs-board-ancestor", needsBoard: true, needsBoardActionable: false }),
+      makeIssue({ id: "needs-board-leaf", needsBoard: true, needsBoardActionable: true }),
+      makeIssue({ id: "not-needs-board", needsBoard: false, needsBoardActionable: false }),
+    ];
+
+    const filtered = applyIssueFilters(issues, {
+      ...defaultIssueFilterState,
+      needsBoardOnly: true,
+    });
+
+    expect(filtered.map((issue) => issue.id)).toEqual(["needs-board-leaf"]);
+  });
+
+  it("counts the needs-board filter as an active filter group", () => {
+    expect(countActiveIssueFilters({
+      ...defaultIssueFilterState,
+      needsBoardOnly: true,
+    })).toBe(1);
+  });
+
   it("does not treat default project workspaces as workspace filter matches", () => {
     const issue = makeIssue({
       id: "default-workspace-issue",

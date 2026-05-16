@@ -35,8 +35,14 @@ import type {
   IssueBlockerAttention,
   IssueBlockedInboxAttention,
   IssueBlockedInboxIssueRef,
+  IssueExecutionStageType,
+  IssueNeedsBoardImpactIssue,
+  IssueNeedsBoardReason,
+  IssueNeedsBoardUnblockImpact,
+  IssueNeedsBoardParentLink,
   IssueProductivityReview,
   IssueProductivityReviewTrigger,
+  IssuePriority,
   IssueRelationIssueSummary,
   SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
@@ -61,7 +67,11 @@ import {
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
-import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
+import {
+  buildInitialIssueMonitorFields,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+} from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -232,6 +242,7 @@ export interface IssueFilters {
   excludeRoutineExecutions?: boolean;
   includePluginOperations?: boolean;
   includeBlockedBy?: boolean;
+  needsBoard?: boolean;
   includeBlockedInboxAttention?: boolean;
   q?: string;
   limit?: number;
@@ -302,6 +313,28 @@ type IssueRelationSummaryMap = {
   blockedBy: IssueRelationIssueSummary[];
   blocks: IssueRelationIssueSummary[];
 };
+type IssueNeedsBoardProjection = {
+  needsBoard: boolean;
+  needsBoardActionable: boolean;
+  needsBoardReasons: IssueNeedsBoardReason[];
+  needsBoardUnblockImpact: IssueNeedsBoardUnblockImpact | null;
+};
+type IssueNeedsBoardSourceRow = Pick<
+  IssueRow,
+  | "id"
+  | "identifier"
+  | "title"
+  | "status"
+  | "priority"
+  | "assigneeUserId"
+  | "executionState"
+  | "createdAt"
+  | "parentId"
+>;
+type IssueNeedsBoardImpactRow = Pick<
+  IssueRow,
+  "id" | "identifier" | "title" | "status" | "priority" | "createdAt" | "parentId"
+>;
 export type IssueDependencyReadiness = {
   issueId: string;
   blockerIssueIds: string[];
@@ -328,8 +361,21 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 }
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
+const NEEDS_BOARD_REASON_SORT_ORDER: Record<IssueNeedsBoardReason["kind"], number> = {
+  pending_approval: 0,
+  pending_request_confirmation: 1,
+  board_execution_stage: 2,
+  board_assignee_in_review: 3,
+};
+const ISSUE_PRIORITY_SORT_ORDER: Record<IssuePriority, number> = {
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+};
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
@@ -1601,6 +1647,443 @@ function withActiveRuns(
     ...row,
     activeRun: row.executionRunId ? (runMap.get(row.executionRunId) ?? null) : null,
   }));
+}
+
+function emptyIssueNeedsBoardProjection(): IssueNeedsBoardProjection {
+  return {
+    needsBoard: false,
+    needsBoardActionable: false,
+    needsBoardReasons: [],
+    needsBoardUnblockImpact: null,
+  };
+}
+
+function issuePathIdForNeedsBoard(input: { id: string; identifier: string | null }) {
+  const identifier = input.identifier?.trim();
+  return identifier && identifier.length > 0 ? identifier : input.id;
+}
+
+function issueNeedsBoardIssueHref(input: { id: string; identifier: string | null }) {
+  return `/issues/${encodeURIComponent(issuePathIdForNeedsBoard(input))}`;
+}
+
+function needsBoardIssuePriorityRank(priority: string) {
+  return ISSUE_PRIORITY_SORT_ORDER[priority as IssuePriority] ?? Number.MAX_SAFE_INTEGER;
+}
+
+function compareIssuePriorityAgeStable(
+  left: Pick<IssueNeedsBoardImpactRow, "id" | "identifier" | "priority" | "createdAt">,
+  right: Pick<IssueNeedsBoardImpactRow, "id" | "identifier" | "priority" | "createdAt">,
+) {
+  const priorityDiff = needsBoardIssuePriorityRank(left.priority) - needsBoardIssuePriorityRank(right.priority);
+  if (priorityDiff !== 0) return priorityDiff;
+  const ageDiff = left.createdAt.getTime() - right.createdAt.getTime();
+  if (ageDiff !== 0) return ageDiff;
+  const identifierDiff = issuePathIdForNeedsBoard(left).localeCompare(issuePathIdForNeedsBoard(right));
+  if (identifierDiff !== 0) return identifierDiff;
+  return left.id.localeCompare(right.id);
+}
+
+function sortNeedsBoardQueueRows<
+  T extends Pick<IssueNeedsBoardProjection, "needsBoardActionable"> &
+    Pick<IssueNeedsBoardSourceRow, "id" | "identifier" | "priority" | "createdAt">,
+>(rows: T[]) {
+  return [...rows].sort((left, right) => {
+    if (left.needsBoardActionable !== right.needsBoardActionable) {
+      return left.needsBoardActionable ? -1 : 1;
+    }
+    return compareIssuePriorityAgeStable(left, right);
+  });
+}
+
+function collectBlockedDescendantIds(rootIssueId: string, adjacency: Map<string, string[]>) {
+  const queue = [...(adjacency.get(rootIssueId) ?? [])];
+  const visited = new Set<string>([rootIssueId]);
+  const descendants = new Set<string>();
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    descendants.add(current);
+    queue.push(...(adjacency.get(current) ?? []));
+  }
+
+  return descendants;
+}
+
+function buildNeedsBoardImpactIssue(row: IssueNeedsBoardImpactRow): IssueNeedsBoardImpactIssue {
+  return {
+    id: row.id,
+    identifier: row.identifier,
+    title: row.title,
+    status: row.status as IssueNeedsBoardImpactIssue["status"],
+    priority: row.priority as IssueNeedsBoardImpactIssue["priority"],
+    href: issueNeedsBoardIssueHref(row),
+  };
+}
+
+function buildNeedsBoardParentLink(row: IssueNeedsBoardImpactRow): IssueNeedsBoardParentLink {
+  return {
+    id: row.id,
+    identifier: row.identifier,
+    title: row.title,
+    href: issueNeedsBoardIssueHref(row),
+  };
+}
+
+function issueNeedsBoardReasonKey(reason: IssueNeedsBoardReason) {
+  return [
+    reason.kind,
+    reason.action.type,
+    reason.action.id,
+    reason.approvalId ?? "",
+    reason.interactionId ?? "",
+    reason.stageType ?? "",
+    reason.userId ?? "",
+  ].join(":");
+}
+
+function addIssueNeedsBoardReason(
+  projections: Map<string, IssueNeedsBoardProjection>,
+  issueId: string,
+  reason: IssueNeedsBoardReason,
+) {
+  const current = projections.get(issueId) ?? emptyIssueNeedsBoardProjection();
+  const seen = new Set(current.needsBoardReasons.map(issueNeedsBoardReasonKey));
+  const key = issueNeedsBoardReasonKey(reason);
+  if (!seen.has(key)) {
+    current.needsBoardReasons.push(reason);
+  }
+  current.needsBoard = current.needsBoardReasons.length > 0;
+  projections.set(issueId, current);
+}
+
+function sortIssueNeedsBoardReasons(reasons: IssueNeedsBoardReason[]) {
+  return [...reasons].sort((left, right) => {
+    const orderDiff =
+      NEEDS_BOARD_REASON_SORT_ORDER[left.kind] - NEEDS_BOARD_REASON_SORT_ORDER[right.kind];
+    if (orderDiff !== 0) return orderDiff;
+    if (left.action.type !== right.action.type) return left.action.type.localeCompare(right.action.type);
+    if (left.action.id !== right.action.id) return left.action.id.localeCompare(right.action.id);
+    return left.label.localeCompare(right.label);
+  });
+}
+
+async function listIssueNeedsBoardProjectionMap(
+  dbOrTx: any,
+  companyId: string,
+  issueRows: IssueNeedsBoardSourceRow[],
+) {
+  const projections = new Map<string, IssueNeedsBoardProjection>();
+  for (const row of issueRows) {
+    projections.set(row.id, emptyIssueNeedsBoardProjection());
+  }
+
+  const candidateRows = issueRows.filter((row) => !TERMINAL_ISSUE_STATUSES.has(row.status));
+  if (candidateRows.length === 0) return projections;
+
+  const issueIds = [...new Set(candidateRows.map((row) => row.id))];
+  const issueById = new Map(candidateRows.map((row) => [row.id, row]));
+
+  const boardUserCandidates = new Set<string>();
+  const executionStageByIssueId = new Map<
+    string,
+    { userId: string; stageType: IssueExecutionStageType }
+  >();
+
+  for (const row of candidateRows) {
+    const assigneeUserId = row.assigneeUserId?.trim() ?? null;
+    if (row.status === "in_review" && assigneeUserId) {
+      boardUserCandidates.add(assigneeUserId);
+    }
+
+    if (row.status !== "in_review") continue;
+    const executionState = parseIssueExecutionState(row.executionState);
+    const participant = executionState?.currentParticipant;
+    if (
+      executionState?.currentStageType &&
+      participant?.type === "user" &&
+      participant.userId?.trim()
+    ) {
+      const userId = participant.userId.trim();
+      boardUserCandidates.add(userId);
+      executionStageByIssueId.set(row.id, {
+        userId,
+        stageType: executionState.currentStageType,
+      });
+    }
+  }
+
+  const boardUserIds = new Set<string>(["local-board"]);
+  const membershipUserIds = [...boardUserCandidates].filter((userId) => userId !== "local-board");
+  if (membershipUserIds.length > 0) {
+    const rows = await dbOrTx
+      .select({ principalId: companyMemberships.principalId })
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.status, "active"),
+          inArray(companyMemberships.principalId, membershipUserIds),
+        ),
+      );
+    for (const row of rows) {
+      boardUserIds.add(row.principalId);
+    }
+  }
+
+  const [pendingApprovalRows, pendingConfirmationRows] = await Promise.all([
+    dbOrTx
+      .select({
+        issueId: issueApprovals.issueId,
+        approvalId: approvals.id,
+      })
+      .from(issueApprovals)
+      .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+      .where(
+        and(
+          eq(issueApprovals.companyId, companyId),
+          eq(approvals.companyId, companyId),
+          eq(approvals.status, "pending"),
+          inArray(issueApprovals.issueId, issueIds),
+        ),
+      ),
+    dbOrTx
+      .select({
+        issueId: issueThreadInteractions.issueId,
+        interactionId: issueThreadInteractions.id,
+      })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.kind, "request_confirmation"),
+          eq(issueThreadInteractions.status, "pending"),
+          inArray(issueThreadInteractions.issueId, issueIds),
+        ),
+      ),
+  ]);
+
+  for (const row of pendingApprovalRows) {
+    const issue = issueById.get(row.issueId);
+    if (!issue) continue;
+    addIssueNeedsBoardReason(projections, row.issueId, {
+      kind: "pending_approval",
+      label: "Pending formal approval requires board review.",
+      approvalId: row.approvalId,
+      action: {
+        type: "approval",
+        id: row.approvalId,
+        href: `/approvals/${row.approvalId}`,
+      },
+    });
+  }
+
+  for (const row of pendingConfirmationRows) {
+    const issue = issueById.get(row.issueId);
+    if (!issue) continue;
+    addIssueNeedsBoardReason(projections, row.issueId, {
+      kind: "pending_request_confirmation",
+      label: "Pending request confirmation requires board response.",
+      interactionId: row.interactionId,
+      action: {
+        type: "interaction",
+        id: row.interactionId,
+        href: `${issueNeedsBoardIssueHref(issue)}#interaction-${row.interactionId}`,
+      },
+    });
+  }
+
+  for (const row of candidateRows) {
+    if (row.status !== "in_review") continue;
+    const assigneeUserId = row.assigneeUserId?.trim() ?? null;
+    if (assigneeUserId && boardUserIds.has(assigneeUserId)) {
+      addIssueNeedsBoardReason(projections, row.id, {
+        kind: "board_assignee_in_review",
+        label: "Issue is assigned to a board user while in review.",
+        userId: assigneeUserId,
+        action: {
+          type: "issue",
+          id: row.id,
+          href: issueNeedsBoardIssueHref(row),
+        },
+      });
+    }
+  }
+
+  for (const [issueId, stage] of executionStageByIssueId.entries()) {
+    if (!boardUserIds.has(stage.userId)) continue;
+    const issue = issueById.get(issueId);
+    if (!issue) continue;
+    addIssueNeedsBoardReason(projections, issueId, {
+      kind: "board_execution_stage",
+      label: `Execution ${stage.stageType} stage is waiting on a board participant.`,
+      stageType: stage.stageType,
+      userId: stage.userId,
+      action: {
+        type: "issue",
+        id: issueId,
+        href: issueNeedsBoardIssueHref(issue),
+      },
+    });
+  }
+
+  for (const [issueId, projection] of projections.entries()) {
+    const sortedReasons = sortIssueNeedsBoardReasons(projection.needsBoardReasons);
+    projections.set(issueId, {
+      needsBoard: sortedReasons.length > 0,
+      needsBoardActionable: false,
+      needsBoardReasons: sortedReasons,
+      needsBoardUnblockImpact: null,
+    });
+  }
+
+  const needsBoardIssueIds = new Set<string>(
+    [...projections.entries()]
+      .filter(([, projection]) => projection.needsBoard)
+      .map(([issueId]) => issueId),
+  );
+  if (needsBoardIssueIds.size === 0) return projections;
+
+  const [openImpactRows, relationRows] = await Promise.all([
+    dbOrTx
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+        priority: issues.priority,
+        createdAt: issues.createdAt,
+        parentId: issues.parentId,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      ),
+    dbOrTx
+      .select({
+        blockerIssueId: issueRelations.issueId,
+        blockedIssueId: issueRelations.relatedIssueId,
+      })
+      .from(issueRelations)
+      .where(and(eq(issueRelations.companyId, companyId), eq(issueRelations.type, "blocks"))),
+  ]);
+
+  const openImpactById = new Map<string, IssueNeedsBoardImpactRow>(
+    openImpactRows.map((row: IssueNeedsBoardImpactRow) => [row.id, row]),
+  );
+  const adjacency = new Map<string, string[]>();
+  for (const row of relationRows as Array<{ blockerIssueId: string; blockedIssueId: string }>) {
+    if (!openImpactById.has(row.blockerIssueId) || !openImpactById.has(row.blockedIssueId)) continue;
+    const list = adjacency.get(row.blockerIssueId) ?? [];
+    list.push(row.blockedIssueId);
+    adjacency.set(row.blockerIssueId, list);
+  }
+
+  for (const issueId of needsBoardIssueIds) {
+    const currentProjection = projections.get(issueId) ?? emptyIssueNeedsBoardProjection();
+    const descendants = collectBlockedDescendantIds(issueId, adjacency);
+    const directBlockedCount = (adjacency.get(issueId) ?? []).length;
+    const transitiveBlockedCount = descendants.size;
+    const impactedRows = [...descendants]
+      .map((blockedIssueId) => openImpactById.get(blockedIssueId))
+      .filter((row): row is IssueNeedsBoardImpactRow => Boolean(row));
+    const highestPriorityBlockedIssue = impactedRows.length > 0
+      ? impactedRows.sort(compareIssuePriorityAgeStable)[0]
+      : null;
+
+    const sourceIssue = issueById.get(issueId) ?? null;
+    const blockedParentRow = sourceIssue?.parentId && descendants.has(sourceIssue.parentId)
+      ? openImpactById.get(sourceIssue.parentId) ?? null
+      : null;
+    const hasNeedsBoardDescendant = [...descendants].some((descendantId) =>
+      needsBoardIssueIds.has(descendantId)
+    );
+
+    projections.set(issueId, {
+      ...currentProjection,
+      needsBoardActionable: !hasNeedsBoardDescendant,
+      needsBoardUnblockImpact: {
+        directBlockedCount,
+        transitiveBlockedCount,
+        highestPriorityBlockedIssue: highestPriorityBlockedIssue
+          ? buildNeedsBoardImpactIssue(highestPriorityBlockedIssue)
+          : null,
+        blockedParentLink: blockedParentRow ? buildNeedsBoardParentLink(blockedParentRow) : null,
+      },
+    });
+  }
+
+  return projections;
+}
+
+async function listNeedsBoardIssueIds(dbOrTx: any, companyId: string) {
+  const projections = await listCanonicalNeedsBoardProjectionMap(dbOrTx, companyId);
+  return listNeedsBoardIssueIdsFromProjections(projections, (projection) => projection.needsBoardActionable);
+}
+
+function listNeedsBoardIssueIdsFromProjections(
+  projections: Map<string, IssueNeedsBoardProjection>,
+  predicate: (projection: IssueNeedsBoardProjection) => boolean,
+) {
+  return [...projections.entries()]
+    .filter(([, projection]) => predicate(projection))
+    .map(([issueId]) => issueId);
+}
+
+async function listOpenNeedsBoardSourceRows(dbOrTx: any, companyId: string) {
+  return dbOrTx
+    .select({
+      id: issues.id,
+      identifier: issues.identifier,
+      title: issues.title,
+      status: issues.status,
+      priority: issues.priority,
+      assigneeUserId: issues.assigneeUserId,
+      executionState: issues.executionState,
+      createdAt: issues.createdAt,
+      parentId: issues.parentId,
+    })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        isNull(issues.hiddenAt),
+        notInArray(issues.status, ["done", "cancelled"]),
+      ),
+    );
+}
+
+async function listCanonicalNeedsBoardProjectionMap(dbOrTx: any, companyId: string) {
+  const rows = await listOpenNeedsBoardSourceRows(dbOrTx, companyId);
+  return listIssueNeedsBoardProjectionMap(dbOrTx, companyId, rows);
+}
+
+function projectNeedsBoardProjectionsForRows(
+  projections: Map<string, IssueNeedsBoardProjection>,
+  issueRows: IssueNeedsBoardSourceRow[],
+) {
+  const projected = new Map<string, IssueNeedsBoardProjection>();
+  for (const row of issueRows) {
+    projected.set(row.id, projections.get(row.id) ?? emptyIssueNeedsBoardProjection());
+  }
+  return projected;
+}
+
+async function listNeedsBoardProjectionSubset(
+  dbOrTx: any,
+  companyId: string,
+  issueRows: IssueNeedsBoardSourceRow[],
+) {
+  if (issueRows.length === 0) return new Map<string, IssueNeedsBoardProjection>();
+  const projections = await listCanonicalNeedsBoardProjectionMap(dbOrTx, companyId);
+  return projectNeedsBoardProjectionsForRows(projections, issueRows);
 }
 
 async function userCommentStatsForIssues(
@@ -3407,6 +3890,14 @@ export function issueService(db: Db) {
       const contextUserId = unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId;
       const includeBlockedBy = filters?.includeBlockedBy === true;
       const includeBlockedInboxAttention = filters?.includeBlockedInboxAttention === true;
+      const queueSortMode = filters?.needsBoard === true;
+      let canonicalNeedsBoardProjectionPromise: Promise<Map<string, IssueNeedsBoardProjection>> | null = null;
+      const getCanonicalNeedsBoardProjections = () => {
+        if (!canonicalNeedsBoardProjectionPromise) {
+          canonicalNeedsBoardProjectionPromise = listCanonicalNeedsBoardProjectionMap(db, companyId);
+        }
+        return canonicalNeedsBoardProjectionPromise;
+      };
       const rawSearch = filters?.q?.trim() ?? "";
       const hasSearch = rawSearch.length > 0;
       const escapedSearch = hasSearch ? escapeLikePattern(rawSearch) : "";
@@ -3504,6 +3995,21 @@ export function issueService(db: Db) {
       if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
         conditions.push(ne(issues.originKind, "routine_execution"));
       }
+      if (filters?.needsBoard !== undefined) {
+        const needsBoardProjectionMap = await getCanonicalNeedsBoardProjections();
+        const needsBoardIssueIds = listNeedsBoardIssueIdsFromProjections(
+          needsBoardProjectionMap,
+          filters.needsBoard
+            ? (projection) => projection.needsBoardActionable
+            : (projection) => projection.needsBoard,
+        );
+        if (filters.needsBoard) {
+          if (needsBoardIssueIds.length === 0) return [];
+          conditions.push(inArray(issues.id, needsBoardIssueIds));
+        } else if (needsBoardIssueIds.length > 0) {
+          conditions.push(notInArray(issues.id, needsBoardIssueIds));
+        }
+      }
       conditions.push(isNull(issues.hiddenAt));
 
       const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
@@ -3530,9 +4036,11 @@ export function issueService(db: Db) {
           desc(issues.updatedAt),
           desc(issues.id),
         );
-      const pageQuery = offset > 0
-        ? (limit === undefined ? baseQuery.offset(offset) : baseQuery.limit(limit).offset(offset))
-        : (limit === undefined ? baseQuery : baseQuery.limit(limit));
+      const pageQuery = queueSortMode
+        ? baseQuery
+        : offset > 0
+          ? (limit === undefined ? baseQuery.offset(offset) : baseQuery.limit(limit).offset(offset))
+          : (limit === undefined ? baseQuery : baseQuery.limit(limit));
       const rows = (await pageQuery).map((row) => ({
         ...row,
         description: decodeDatabaseTextPreview(row.description, ISSUE_LIST_DESCRIPTION_MAX_CHARS),
@@ -3545,7 +4053,7 @@ export function issueService(db: Db) {
       }
 
       const issueIds = withRuns.map((row) => row.id);
-      const [statsRows, readRows, lastActivityRows, blockedByMap] = await Promise.all([
+      const [statsRows, readRows, lastActivityRows, blockedByMap, canonicalNeedsBoardProjections] = await Promise.all([
         contextUserId
           ? userCommentStatsForIssues(db, companyId, contextUserId, issueIds)
           : Promise.resolve([]),
@@ -3556,6 +4064,7 @@ export function issueService(db: Db) {
         includeBlockedBy
           ? blockedByMapForIssues(db, companyId, issueIds)
           : Promise.resolve(new Map<string, IssueRelationIssueSummary[]>()),
+        getCanonicalNeedsBoardProjections(),
       ]);
       const statsByIssueId = new Map(statsRows.map((row) => [row.issueId, row]));
       const lastActivityByIssueId = new Map(lastActivityRows.map((row) => [row.issueId, row]));
@@ -3572,13 +4081,14 @@ export function issueService(db: Db) {
       ]);
 
       if (!contextUserId) {
-        return withRuns.map((row) => {
+        const rowsWithProjection = withRuns.map((row) => {
           const activity = lastActivityByIssueId.get(row.id);
           const lastActivityAt = latestIssueActivityAt(
             row.updatedAt,
             activity?.latestCommentAt ?? null,
             activity?.latestLogAt ?? null,
           ) ?? row.updatedAt;
+          const needsBoardProjection = canonicalNeedsBoardProjections.get(row.id) ?? emptyIssueNeedsBoardProjection();
           return {
             ...row,
             ...(includeBlockedBy ? { blockedBy: blockedByMap.get(row.id) ?? [] } : {}),
@@ -3588,19 +4098,26 @@ export function issueService(db: Db) {
             ...(productivityReviewByIssueId.has(row.id)
               ? { productivityReview: productivityReviewByIssueId.get(row.id) }
               : {}),
+            ...needsBoardProjection,
           };
         });
+        if (!queueSortMode) return rowsWithProjection;
+        const sortedRows = sortNeedsBoardQueueRows(rowsWithProjection);
+        return limit === undefined
+          ? sortedRows.slice(offset)
+          : sortedRows.slice(offset, offset + limit);
       }
 
       const readByIssueId = new Map(readRows.map((row) => [row.issueId, row.myLastReadAt]));
 
-      return withRuns.map((row) => {
+      const rowsWithProjection = withRuns.map((row) => {
         const activity = lastActivityByIssueId.get(row.id);
         const lastActivityAt = latestIssueActivityAt(
           row.updatedAt,
           activity?.latestCommentAt ?? null,
           activity?.latestLogAt ?? null,
         ) ?? row.updatedAt;
+        const needsBoardProjection = canonicalNeedsBoardProjections.get(row.id) ?? emptyIssueNeedsBoardProjection();
         return {
           ...row,
           ...(includeBlockedBy ? { blockedBy: blockedByMap.get(row.id) ?? [] } : {}),
@@ -3610,6 +4127,7 @@ export function issueService(db: Db) {
           ...(productivityReviewByIssueId.has(row.id)
             ? { productivityReview: productivityReviewByIssueId.get(row.id) }
             : {}),
+          ...needsBoardProjection,
           ...deriveIssueUserContext(row, contextUserId, {
             myLastCommentAt: statsByIssueId.get(row.id)?.myLastCommentAt ?? null,
             myLastReadAt: readByIssueId.get(row.id) ?? null,
@@ -3617,6 +4135,11 @@ export function issueService(db: Db) {
           }),
         };
       });
+      if (!queueSortMode) return rowsWithProjection;
+      const sortedRows = sortNeedsBoardQueueRows(rowsWithProjection);
+      return limit === undefined
+        ? sortedRows.slice(offset)
+        : sortedRows.slice(offset, offset + limit);
     },
 
     count: async (companyId: string, filters?: IssueFilters) => {
@@ -3812,6 +4335,19 @@ export function issueService(db: Db) {
       dbOrTx: any = db,
     ) => {
       return listIssueProductivityReviewMap(dbOrTx, companyId, sourceIssueIds);
+    },
+
+    listNeedsBoardProjections: async (
+      companyId: string,
+      issueRows: IssueNeedsBoardSourceRow[],
+      dbOrTx: any = db,
+    ) => {
+      return listNeedsBoardProjectionSubset(dbOrTx, companyId, issueRows);
+    },
+
+    countNeedsBoard: async (companyId: string, dbOrTx: any = db) => {
+      const issueIds = await listNeedsBoardIssueIds(dbOrTx, companyId);
+      return issueIds.length;
     },
 
     listWakeableBlockedDependents: async (blockerIssueId: string) => {

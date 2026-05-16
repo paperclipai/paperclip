@@ -19,6 +19,7 @@ export interface DashboardSummary {
     inProgress: number;
     blocked: number;
     done: number;
+    needsBoard?: number;
   };
   costs: {
     monthSpendCents: number;

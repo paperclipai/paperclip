@@ -71,6 +71,7 @@ import { IssuesList } from "../components/IssuesList";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { IssueReferenceActivitySummary } from "../components/IssueReferenceActivitySummary";
 import { IssueRelatedWorkPanel } from "../components/IssueRelatedWorkPanel";
+import { NeedsBoardReasonPill } from "../components/NeedsBoardReasonPill";
 import { IssueMonitorActivityCard } from "../components/IssueMonitorActivityCard";
 import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
 import { IssueProperties } from "../components/IssueProperties";
@@ -3603,6 +3604,60 @@ export function IssueDetail() {
             </Popover>
           </div>
         </div>
+
+        {(issue.needsBoardReasons?.length ?? 0) > 0 || issue.needsBoardUnblockImpact ? (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
+              Needs board
+            </span>
+            {(issue.needsBoardReasons ?? []).map((reason) => (
+              <NeedsBoardReasonPill
+                key={`${reason.kind}:${reason.action.id}`}
+                reason={reason}
+                href={reason.action.type === "issue" ? undefined : reason.action.href}
+                onClick={
+                  reason.action.type === "issue"
+                    ? () => {
+                      if (isMobile) {
+                        setMobilePropsOpen(true);
+                        return;
+                      }
+                      setPanelVisible(true);
+                    }
+                    : undefined
+                }
+              />
+            ))}
+            {issue.needsBoardUnblockImpact ? (
+              <>
+                <span className="inline-flex items-center rounded-full border border-border bg-background px-2 py-0.5 text-[10px] text-muted-foreground">
+                  {issue.needsBoardUnblockImpact.directBlockedCount} direct blocked
+                </span>
+                <span className="inline-flex items-center rounded-full border border-border bg-background px-2 py-0.5 text-[10px] text-muted-foreground">
+                  {issue.needsBoardUnblockImpact.transitiveBlockedCount} total blocked
+                </span>
+              </>
+            ) : null}
+            {issue.needsBoardUnblockImpact?.highestPriorityBlockedIssue ? (
+              <Link
+                to={issue.needsBoardUnblockImpact.highestPriorityBlockedIssue.href}
+                className="inline-flex items-center rounded-full border border-border bg-background px-2 py-0.5 text-[10px] font-medium text-foreground hover:bg-accent/50"
+                title={issue.needsBoardUnblockImpact.highestPriorityBlockedIssue.title}
+              >
+                Impact: {issue.needsBoardUnblockImpact.highestPriorityBlockedIssue.identifier ?? issue.needsBoardUnblockImpact.highestPriorityBlockedIssue.title}
+              </Link>
+            ) : null}
+            {issue.needsBoardUnblockImpact?.blockedParentLink ? (
+              <Link
+                to={issue.needsBoardUnblockImpact.blockedParentLink.href}
+                className="inline-flex items-center rounded-full border border-border bg-background px-2 py-0.5 text-[10px] font-medium text-foreground hover:bg-accent/50"
+                title={issue.needsBoardUnblockImpact.blockedParentLink.title}
+              >
+                Parent: {issue.needsBoardUnblockImpact.blockedParentLink.identifier ?? issue.needsBoardUnblockImpact.blockedParentLink.title}
+              </Link>
+            ) : null}
+          </div>
+        ) : null}
 
         <InlineEditor
           value={issue.title}

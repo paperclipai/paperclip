@@ -65,6 +65,7 @@ vi.mock("@/lib/router", () => ({
   }) => (
     <a href={to} {...props}>{children}</a>
   ),
+  useNavigate: () => () => undefined,
 }));
 
 vi.mock("../api/issues", () => ({
@@ -945,7 +946,7 @@ describe("IssuesList", () => {
       container,
     );
 
-    await waitForMicrotaskAssertion(() => {
+    await waitForAssertion(() => {
       expect(container.textContent).toContain("Showing up to 200 matches. Refine the search to narrow further.");
     });
 

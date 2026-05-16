@@ -5,16 +5,20 @@ import { sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  approvals,
   companies,
+  companyMemberships,
   createDb,
   environments,
   executionWorkspaces,
   goals,
   heartbeatRuns,
+  issueApprovals,
   instanceSettings,
   issueComments,
   issueInboxArchives,
   issueRelations,
+  issueThreadInteractions,
   issues,
   projectWorkspaces,
   projects,
@@ -2897,6 +2901,610 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
         desiredState: null,
         serviceStates: null,
       },
+    });
+  });
+});
+
+describeEmbeddedPostgres("issueService needsBoard projections", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-needs-board-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueThreadInteractions);
+    await db.delete(issueApprovals);
+    await db.delete(approvals);
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companyMemberships);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("derives canonical needsBoard reasons, supports boolean filters, and keeps count/list consistent", async () => {
+    const companyId = randomUUID();
+    const allReasonsIssueId = randomUUID();
+    const approvalOnlyIssueId = randomUUID();
+    const confirmationOnlyIssueId = randomUUID();
+    const assigneeOnlyIssueId = randomUUID();
+    const stageOnlyIssueId = randomUUID();
+    const noReasonIssueId = randomUUID();
+    const approvalIdAllReasons = randomUUID();
+    const approvalIdApprovalOnly = randomUUID();
+    const stageIdAllReasons = randomUUID();
+    const stageIdStageOnly = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: allReasonsIssueId,
+        companyId,
+        title: "All reasons",
+        status: "in_review",
+        priority: "medium",
+        assigneeUserId: "local-board",
+        executionState: {
+          status: "pending",
+          currentStageId: stageIdAllReasons,
+          currentStageIndex: 0,
+          currentStageType: "approval",
+          currentParticipant: { type: "user", userId: "local-board" },
+          returnAssignee: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+          reviewRequest: null,
+          monitor: null,
+        },
+      },
+      {
+        id: approvalOnlyIssueId,
+        companyId,
+        title: "Approval only",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: confirmationOnlyIssueId,
+        companyId,
+        title: "Confirmation only",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: assigneeOnlyIssueId,
+        companyId,
+        title: "Board assignee in review",
+        status: "in_review",
+        priority: "medium",
+        assigneeUserId: "local-board",
+      },
+      {
+        id: stageOnlyIssueId,
+        companyId,
+        title: "Board execution stage",
+        status: "in_review",
+        priority: "medium",
+        executionState: {
+          status: "pending",
+          currentStageId: stageIdStageOnly,
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "user", userId: "local-board" },
+          returnAssignee: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+          reviewRequest: null,
+          monitor: null,
+        },
+      },
+      {
+        id: noReasonIssueId,
+        companyId,
+        title: "No board attention",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    await db.insert(approvals).values([
+      {
+        id: approvalIdAllReasons,
+        companyId,
+        type: "plan_confirmation",
+        status: "pending",
+        payload: { version: 1 },
+      },
+      {
+        id: approvalIdApprovalOnly,
+        companyId,
+        type: "plan_confirmation",
+        status: "pending",
+        payload: { version: 1 },
+      },
+    ]);
+
+    await db.insert(issueApprovals).values([
+      {
+        companyId,
+        issueId: allReasonsIssueId,
+        approvalId: approvalIdAllReasons,
+        linkedByUserId: "local-board",
+      },
+      {
+        companyId,
+        issueId: approvalOnlyIssueId,
+        approvalId: approvalIdApprovalOnly,
+        linkedByUserId: "local-board",
+      },
+    ]);
+
+    await db.insert(issueThreadInteractions).values([
+      {
+        companyId,
+        issueId: allReasonsIssueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        payload: { version: 1, prompt: "Ship this?" },
+        createdByUserId: "local-board",
+      },
+      {
+        companyId,
+        issueId: confirmationOnlyIssueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        payload: { version: 1, prompt: "Confirm scope?" },
+        createdByUserId: "local-board",
+      },
+    ]);
+
+    const allIssues = await svc.list(companyId);
+    const byId = new Map(allIssues.map((issue) => [issue.id, issue]));
+
+    expect(byId.get(allReasonsIssueId)?.needsBoard).toBe(true);
+    expect(byId.get(allReasonsIssueId)?.needsBoardReasons?.map((reason) => reason.kind)).toEqual([
+      "pending_approval",
+      "pending_request_confirmation",
+      "board_execution_stage",
+      "board_assignee_in_review",
+    ]);
+    expect(byId.get(approvalOnlyIssueId)?.needsBoardReasons?.map((reason) => reason.kind)).toEqual([
+      "pending_approval",
+    ]);
+    expect(byId.get(confirmationOnlyIssueId)?.needsBoardReasons?.map((reason) => reason.kind)).toEqual([
+      "pending_request_confirmation",
+    ]);
+    expect(byId.get(assigneeOnlyIssueId)?.needsBoardReasons?.map((reason) => reason.kind)).toEqual([
+      "board_assignee_in_review",
+    ]);
+    expect(byId.get(stageOnlyIssueId)?.needsBoardReasons?.map((reason) => reason.kind)).toEqual([
+      "board_execution_stage",
+    ]);
+    expect(byId.get(noReasonIssueId)?.needsBoard).toBe(false);
+    expect(byId.get(noReasonIssueId)?.needsBoardReasons).toEqual([]);
+
+    const needsBoardRows = await svc.list(companyId, { needsBoard: true });
+    expect(new Set(needsBoardRows.map((issue) => issue.id))).toEqual(new Set([
+      allReasonsIssueId,
+      approvalOnlyIssueId,
+      confirmationOnlyIssueId,
+      assigneeOnlyIssueId,
+      stageOnlyIssueId,
+    ]));
+
+    const notNeedsBoardRows = await svc.list(companyId, { needsBoard: false });
+    expect(new Set(notNeedsBoardRows.map((issue) => issue.id))).toEqual(new Set([noReasonIssueId]));
+
+    const needsBoardCount = await svc.countNeedsBoard(companyId);
+    expect(needsBoardCount).toBe(needsBoardRows.length);
+  });
+
+  it("excludes terminal issues and resolved approvals/interactions from needsBoard", async () => {
+    const companyId = randomUUID();
+    const doneIssueId = randomUUID();
+    const cancelledIssueId = randomUUID();
+    const approvedApprovalIssueId = randomUUID();
+    const acceptedConfirmationIssueId = randomUUID();
+    const nonBoardAssigneeIssueId = randomUUID();
+    const activeBoardIssueId = randomUUID();
+    const doneApprovalId = randomUUID();
+    const cancelledApprovalId = randomUUID();
+    const approvedApprovalId = randomUUID();
+    const activeApprovalId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: "board-user-1",
+      status: "active",
+      membershipRole: "operator",
+    });
+
+    await db.insert(issues).values([
+      {
+        id: doneIssueId,
+        companyId,
+        title: "Done issue with pending approval",
+        status: "done",
+        priority: "medium",
+      },
+      {
+        id: cancelledIssueId,
+        companyId,
+        title: "Cancelled issue with pending approval",
+        status: "cancelled",
+        priority: "medium",
+      },
+      {
+        id: approvedApprovalIssueId,
+        companyId,
+        title: "Approved approval should not flag",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: acceptedConfirmationIssueId,
+        companyId,
+        title: "Accepted interaction should not flag",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: nonBoardAssigneeIssueId,
+        companyId,
+        title: "Non-board in review assignee",
+        status: "in_review",
+        priority: "medium",
+        assigneeUserId: "not-a-board-user",
+      },
+      {
+        id: activeBoardIssueId,
+        companyId,
+        title: "Active board assignee",
+        status: "in_review",
+        priority: "medium",
+        assigneeUserId: "board-user-1",
+      },
+    ]);
+
+    await db.insert(approvals).values([
+      {
+        id: doneApprovalId,
+        companyId,
+        type: "plan_confirmation",
+        status: "pending",
+        payload: { version: 1 },
+      },
+      {
+        id: cancelledApprovalId,
+        companyId,
+        type: "plan_confirmation",
+        status: "pending",
+        payload: { version: 1 },
+      },
+      {
+        id: approvedApprovalId,
+        companyId,
+        type: "plan_confirmation",
+        status: "approved",
+        payload: { version: 1 },
+      },
+      {
+        id: activeApprovalId,
+        companyId,
+        type: "plan_confirmation",
+        status: "pending",
+        payload: { version: 1 },
+      },
+    ]);
+
+    await db.insert(issueApprovals).values([
+      { companyId, issueId: doneIssueId, approvalId: doneApprovalId, linkedByUserId: "local-board" },
+      { companyId, issueId: cancelledIssueId, approvalId: cancelledApprovalId, linkedByUserId: "local-board" },
+      { companyId, issueId: approvedApprovalIssueId, approvalId: approvedApprovalId, linkedByUserId: "local-board" },
+      { companyId, issueId: activeBoardIssueId, approvalId: activeApprovalId, linkedByUserId: "local-board" },
+    ]);
+
+    await db.insert(issueThreadInteractions).values([
+      {
+        companyId,
+        issueId: acceptedConfirmationIssueId,
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee",
+        payload: { version: 1, prompt: "Accepted already" },
+        createdByUserId: "local-board",
+      },
+    ]);
+
+    const needsBoardRows = await svc.list(companyId, { needsBoard: true });
+    expect(needsBoardRows.map((issue) => issue.id)).toEqual([activeBoardIssueId]);
+    expect(await svc.countNeedsBoard(companyId)).toBe(1);
+  });
+
+  it("computes unblock impact and prefers actionable leaf queue items", async () => {
+    const companyId = randomUUID();
+    const ancestorBoardIssueId = randomUUID();
+    const leafBoardIssueId = randomUUID();
+    const blockedParentIssueId = randomUUID();
+    const blockedHighAId = randomUUID();
+    const blockedHighBId = randomUUID();
+    const doneBlockedId = randomUUID();
+    const hiddenBlockedId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: ancestorBoardIssueId,
+        companyId,
+        identifier: "PAP-100",
+        title: "Ancestor board wait",
+        status: "in_review",
+        priority: "medium",
+        assigneeUserId: "local-board",
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      },
+      {
+        id: leafBoardIssueId,
+        companyId,
+        identifier: "PAP-101",
+        title: "Leaf board wait",
+        status: "in_review",
+        priority: "high",
+        assigneeUserId: "local-board",
+        parentId: blockedParentIssueId,
+        createdAt: new Date("2026-01-02T00:00:00.000Z"),
+      },
+      {
+        id: blockedParentIssueId,
+        companyId,
+        identifier: "PAP-102",
+        title: "Blocked parent issue",
+        status: "blocked",
+        priority: "medium",
+        createdAt: new Date("2026-01-03T00:00:00.000Z"),
+      },
+      {
+        id: blockedHighAId,
+        companyId,
+        identifier: "PAP-200",
+        title: "Blocked high A",
+        status: "blocked",
+        priority: "high",
+        createdAt: new Date("2026-01-04T00:00:00.000Z"),
+      },
+      {
+        id: blockedHighBId,
+        companyId,
+        identifier: "PAP-199",
+        title: "Blocked high B",
+        status: "blocked",
+        priority: "high",
+        createdAt: new Date("2026-01-04T00:00:00.000Z"),
+      },
+      {
+        id: doneBlockedId,
+        companyId,
+        identifier: "PAP-900",
+        title: "Done blocked issue",
+        status: "done",
+        priority: "critical",
+        createdAt: new Date("2026-01-05T00:00:00.000Z"),
+      },
+      {
+        id: hiddenBlockedId,
+        companyId,
+        identifier: "PAP-901",
+        title: "Hidden blocked issue",
+        status: "blocked",
+        priority: "critical",
+        hiddenAt: new Date("2026-01-06T00:00:00.000Z"),
+        createdAt: new Date("2026-01-06T00:00:00.000Z"),
+      },
+    ]);
+
+    await db.insert(issueRelations).values([
+      { companyId, issueId: ancestorBoardIssueId, relatedIssueId: leafBoardIssueId, type: "blocks" },
+      { companyId, issueId: leafBoardIssueId, relatedIssueId: blockedParentIssueId, type: "blocks" },
+      { companyId, issueId: blockedParentIssueId, relatedIssueId: blockedHighAId, type: "blocks" },
+      { companyId, issueId: blockedParentIssueId, relatedIssueId: blockedHighBId, type: "blocks" },
+      { companyId, issueId: leafBoardIssueId, relatedIssueId: doneBlockedId, type: "blocks" },
+      { companyId, issueId: leafBoardIssueId, relatedIssueId: hiddenBlockedId, type: "blocks" },
+    ]);
+
+    const allRows = await svc.list(companyId);
+    const byId = new Map(allRows.map((issue) => [issue.id, issue]));
+
+    expect(byId.get(ancestorBoardIssueId)?.needsBoard).toBe(true);
+    expect(byId.get(ancestorBoardIssueId)?.needsBoardActionable).toBe(false);
+    expect(byId.get(leafBoardIssueId)?.needsBoard).toBe(true);
+    expect(byId.get(leafBoardIssueId)?.needsBoardActionable).toBe(true);
+    expect(byId.get(leafBoardIssueId)?.needsBoardUnblockImpact).toEqual({
+      directBlockedCount: 1,
+      transitiveBlockedCount: 3,
+      highestPriorityBlockedIssue: {
+        id: blockedHighBId,
+        identifier: "PAP-199",
+        title: "Blocked high B",
+        status: "blocked",
+        priority: "high",
+        href: "/issues/PAP-199",
+      },
+      blockedParentLink: {
+        id: blockedParentIssueId,
+        identifier: "PAP-102",
+        title: "Blocked parent issue",
+        href: "/issues/PAP-102",
+      },
+    });
+
+    const queueRows = await svc.list(companyId, { needsBoard: true });
+    expect(queueRows.map((issue) => issue.id)).toEqual([leafBoardIssueId]);
+    expect(await svc.countNeedsBoard(companyId)).toBe(1);
+  });
+
+  it("keeps needsBoardActionable canonical for paginated rows and single-issue projection slices", async () => {
+    const companyId = randomUUID();
+    const ancestorBoardIssueId = randomUUID();
+    const leafBoardIssueId = randomUUID();
+    const ancestorCreatedAt = new Date("2026-02-10T00:00:00.000Z");
+    const leafCreatedAt = new Date("2026-02-11T00:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: ancestorBoardIssueId,
+        companyId,
+        identifier: "PAP-410",
+        title: "Ancestor board wait",
+        status: "in_review",
+        priority: "critical",
+        assigneeUserId: "local-board",
+        createdAt: ancestorCreatedAt,
+      },
+      {
+        id: leafBoardIssueId,
+        companyId,
+        identifier: "PAP-411",
+        title: "Leaf board wait",
+        status: "in_review",
+        priority: "low",
+        assigneeUserId: "local-board",
+        createdAt: leafCreatedAt,
+      },
+    ]);
+
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: ancestorBoardIssueId,
+      relatedIssueId: leafBoardIssueId,
+      type: "blocks",
+    });
+
+    const firstPage = await svc.list(companyId, { limit: 1, offset: 0 });
+    expect(firstPage).toHaveLength(1);
+    expect(firstPage[0].id).toBe(ancestorBoardIssueId);
+    expect(firstPage[0].needsBoard).toBe(true);
+    expect(firstPage[0].needsBoardActionable).toBe(false);
+
+    const secondPage = await svc.list(companyId, { limit: 1, offset: 1 });
+    expect(secondPage).toHaveLength(1);
+    expect(secondPage[0].id).toBe(leafBoardIssueId);
+    expect(secondPage[0].needsBoard).toBe(true);
+    expect(secondPage[0].needsBoardActionable).toBe(true);
+
+    const singleIssueProjection = await svc.listNeedsBoardProjections(companyId, [{
+      id: ancestorBoardIssueId,
+      identifier: "PAP-410",
+      title: "Ancestor board wait",
+      status: "in_review",
+      priority: "critical",
+      assigneeUserId: "local-board",
+      executionState: null,
+      createdAt: ancestorCreatedAt,
+      parentId: null,
+    }]);
+    expect(singleIssueProjection.get(ancestorBoardIssueId)?.needsBoard).toBe(true);
+    expect(singleIssueProjection.get(ancestorBoardIssueId)?.needsBoardActionable).toBe(false);
+
+    const queueRows = await svc.list(companyId, { needsBoard: true });
+    expect(queueRows.map((issue) => issue.id)).toEqual([leafBoardIssueId]);
+    expect(await svc.countNeedsBoard(companyId)).toBe(1);
+  });
+
+  it("keeps needsBoard impact fields empty when no blocked descendants exist", async () => {
+    const companyId = randomUUID();
+    const boardIssueId = randomUUID();
+    const approvalId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: boardIssueId,
+      companyId,
+      identifier: "PAP-300",
+      title: "Needs board without downstream blockers",
+      status: "todo",
+      priority: "medium",
+      createdAt: new Date("2026-02-01T00:00:00.000Z"),
+    });
+
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId,
+      type: "plan_confirmation",
+      status: "pending",
+      payload: { version: 1 },
+    });
+
+    await db.insert(issueApprovals).values({
+      companyId,
+      issueId: boardIssueId,
+      approvalId,
+      linkedByUserId: "local-board",
+    });
+
+    const rows = await svc.list(companyId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].needsBoard).toBe(true);
+    expect(rows[0].needsBoardActionable).toBe(true);
+    expect(rows[0].needsBoardUnblockImpact).toEqual({
+      directBlockedCount: 0,
+      transitiveBlockedCount: 0,
+      highestPriorityBlockedIssue: null,
+      blockedParentLink: null,
     });
   });
 });

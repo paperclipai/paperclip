@@ -162,6 +162,17 @@ export function IssueFiltersPopover({
                   </button>
                 );
               })}
+              <button
+                type="button"
+                className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
+                  state.needsBoardOnly
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : "border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground"
+                }`}
+                onClick={() => onChange({ needsBoardOnly: !state.needsBoardOnly })}
+              >
+                Needs Board Queue
+              </button>
             </div>
           </div>
 

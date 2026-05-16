@@ -18,6 +18,7 @@ export type IssueFilterState = {
   labels: string[];
   projects: string[];
   workspaces: string[];
+  needsBoardOnly: boolean;
   liveOnly?: boolean;
   hideRoutineExecutions: boolean;
 };
@@ -30,6 +31,7 @@ export const defaultIssueFilterState: IssueFilterState = {
   labels: [],
   projects: [],
   workspaces: [],
+  needsBoardOnly: false,
   liveOnly: false,
   hideRoutineExecutions: false,
 };
@@ -71,6 +73,7 @@ export function normalizeIssueFilterState(value: unknown): IssueFilterState {
     labels: normalizeIssueFilterValueArray(candidate.labels),
     projects: normalizeIssueFilterValueArray(candidate.projects),
     workspaces: normalizeIssueFilterValueArray(candidate.workspaces),
+    needsBoardOnly: candidate.needsBoardOnly === true,
     liveOnly: candidate.liveOnly === true,
     hideRoutineExecutions: candidate.hideRoutineExecutions === true,
   };
@@ -166,6 +169,10 @@ export function applyIssueFilters(
       return workspaceId != null && state.workspaces.includes(workspaceId);
     });
   }
+  if (state.needsBoardOnly) {
+    // Match the canonical Needs Board queue contract used by /issues?needsBoard=true.
+    result = result.filter((issue) => issue.needsBoardActionable === true);
+  }
   return result;
 }
 
@@ -181,6 +188,7 @@ export function countActiveIssueFilters(
   if (state.labels.length > 0) count += 1;
   if (state.projects.length > 0) count += 1;
   if (state.workspaces.length > 0) count += 1;
+  if (state.needsBoardOnly) count += 1;
   if (state.liveOnly) count += 1;
   if (enableRoutineVisibilityFilter && state.hideRoutineExecutions) count += 1;
   return count;

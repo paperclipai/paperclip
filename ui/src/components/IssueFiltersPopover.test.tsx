@@ -80,5 +80,6 @@ describe("IssueFiltersPopover", () => {
     );
     expect(layoutGrid?.className).toContain("grid-cols-1");
     expect(popoverContent?.textContent).toContain("Live runs only");
+    expect(popoverContent?.textContent).toContain("Needs Board Queue");
   });
 });

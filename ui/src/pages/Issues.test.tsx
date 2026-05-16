@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { Issue } from "@paperclipai/shared";
-import { buildIssuesSearchUrl, getNextIssuesPageOffset, mergeIssuePagesStable } from "./Issues";
+import {
+  buildIssuesNeedsBoardUrl,
+  buildIssuesSearchUrl,
+  getNextIssuesPageOffset,
+  mergeIssuePagesStable,
+} from "./Issues";
 
 function createIssue(id: string, title: string): Issue {
   return { id, title } as Issue;
@@ -17,6 +22,25 @@ describe("buildIssuesSearchUrl", () => {
 
   it("returns null when the URL already matches the current search", () => {
     expect(buildIssuesSearchUrl("http://localhost:3100/issues?q=bug+", "bug ")).toBeNull();
+  });
+});
+
+describe("buildIssuesNeedsBoardUrl", () => {
+  it("adds the needsBoard param without dropping existing search or hash state", () => {
+    expect(buildIssuesNeedsBoardUrl("http://localhost:3100/issues?q=bug#details", true)).toBe(
+      "/issues?q=bug&needsBoard=true#details",
+    );
+  });
+
+  it("removes the needsBoard param when the queue filter is cleared", () => {
+    expect(buildIssuesNeedsBoardUrl("http://localhost:3100/issues?q=bug&needsBoard=true#details", false)).toBe(
+      "/issues?q=bug#details",
+    );
+  });
+
+  it("returns null when the current URL already matches the queue filter state", () => {
+    expect(buildIssuesNeedsBoardUrl("http://localhost:3100/issues?needsBoard=true", true)).toBeNull();
+    expect(buildIssuesNeedsBoardUrl("http://localhost:3100/issues?q=bug", false)).toBeNull();
   });
 });
 

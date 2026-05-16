@@ -5,6 +5,7 @@ import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 
 const mockIssueService = vi.hoisted(() => ({
+  list: vi.fn(),
   getById: vi.fn(),
   getAncestors: vi.fn(),
   getRelationSummaries: vi.fn(),
@@ -13,6 +14,7 @@ const mockIssueService = vi.hoisted(() => ({
   getComment: vi.fn(),
   listBlockerAttention: vi.fn(),
   listProductivityReviews: vi.fn(),
+  listNeedsBoardProjections: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
   listAttachments: vi.fn(),
 }));
@@ -181,6 +183,7 @@ const projectGoal = {
 describe.sequential("issue goal context routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIssueService.list.mockResolvedValue([]);
     mockIssueService.getById.mockResolvedValue(legacyProjectLinkedIssue);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
@@ -193,6 +196,7 @@ describe.sequential("issue goal context routes", () => {
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.listBlockerAttention.mockResolvedValue(new Map());
     mockIssueService.listProductivityReviews.mockResolvedValue(new Map());
+    mockIssueService.listNeedsBoardProjections.mockResolvedValue(new Map());
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
     mockIssueService.listAttachments.mockResolvedValue([]);
     mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({});
