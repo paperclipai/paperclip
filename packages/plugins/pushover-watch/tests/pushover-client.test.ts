@@ -10,7 +10,9 @@ function makeCtx(fetchImpl: (url: string, opts: any) => Promise<Response>) {
 
 describe("sendPushover", () => {
   it("POSTs the expected form-encoded payload to api.pushover.net", async () => {
-    const ctx = makeCtx(async () => new Response("{}", { status: 200 }));
+    const ctx = makeCtx(
+      async () => new Response(JSON.stringify({ status: 1, request: "req" }), { status: 200 }),
+    );
 
     const res = await sendPushover(ctx, {
       userKey: "u-key",
@@ -55,11 +57,83 @@ describe("sendPushover", () => {
       expect.objectContaining({ status: 401 }),
     );
   });
+
+  // Pushover returns HTTP 200 even when the message is rejected for reasons
+  // like "user key is invalid" or "all devices disabled" — the failure shows up
+  // only in the JSON body as `{"status":0,"errors":[...]}`. Treat that as a
+  // failure so we don't silently drop notifications.
+  it("returns ok:false when body status is 0 even on HTTP 200", async () => {
+    const ctx = makeCtx(
+      async () =>
+        new Response(
+          JSON.stringify({
+            status: 0,
+            errors: ["user identifier is invalid"],
+            request: "abc-123",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+
+    const res = await sendPushover(ctx, {
+      userKey: "bad",
+      appToken: "t",
+      title: "x",
+      message: "y",
+      url: "https://example.com",
+      urlTitle: "open",
+      priority: 0,
+    });
+
+    expect(res.ok).toBe(false);
+    expect(res.status).toBe(200);
+    expect(ctx.logger.warn).toHaveBeenCalledWith(
+      "pushover_send_rejected",
+      expect.objectContaining({
+        status: 200,
+        bodyStatus: 0,
+        errors: ["user identifier is invalid"],
+        request: "abc-123",
+      }),
+    );
+    expect(ctx.logger.info).not.toHaveBeenCalledWith(
+      "pushover_send_ok",
+      expect.anything(),
+    );
+  });
+
+  it("returns ok:true on body status 1", async () => {
+    const ctx = makeCtx(
+      async () =>
+        new Response(JSON.stringify({ status: 1, request: "abc-123" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+
+    const res = await sendPushover(ctx, {
+      userKey: "u",
+      appToken: "t",
+      title: "x",
+      message: "y",
+      url: "https://example.com",
+      urlTitle: "open",
+      priority: 0,
+    });
+
+    expect(res.ok).toBe(true);
+    expect(ctx.logger.info).toHaveBeenCalledWith(
+      "pushover_send_ok",
+      expect.objectContaining({ status: 200, title: "x" }),
+    );
+  });
 });
 
 describe("sendGlance", () => {
   it("POSTs the expected form-encoded payload to api.pushover.net/1/glances.json", async () => {
-    const ctx = makeCtx(async () => new Response("{}", { status: 200 }));
+    const ctx = makeCtx(
+      async () => new Response(JSON.stringify({ status: 1, request: "req" }), { status: 200 }),
+    );
 
     const res = await sendGlance(ctx, {
       userKey: "u-key",
@@ -84,7 +158,9 @@ describe("sendGlance", () => {
   });
 
   it("truncates title/text/subtext to Pushover's 100-char limit", async () => {
-    const ctx = makeCtx(async () => new Response("{}", { status: 200 }));
+    const ctx = makeCtx(
+      async () => new Response(JSON.stringify({ status: 1, request: "req" }), { status: 200 }),
+    );
     const longTitle = "T".repeat(150);
     const longText = "X".repeat(150);
 
@@ -102,7 +178,9 @@ describe("sendGlance", () => {
   });
 
   it("omits empty fields so Pushover doesn't reject the call", async () => {
-    const ctx = makeCtx(async () => new Response("{}", { status: 200 }));
+    const ctx = makeCtx(
+      async () => new Response(JSON.stringify({ status: 1, request: "req" }), { status: 200 }),
+    );
 
     await sendGlance(ctx, {
       userKey: "u",
@@ -129,6 +207,38 @@ describe("sendGlance", () => {
     expect(ctx.logger.warn).toHaveBeenCalledWith(
       "pushover_glance_failed",
       expect.objectContaining({ status: 400 }),
+    );
+  });
+
+  it("returns ok:false when body status is 0 even on HTTP 200", async () => {
+    const ctx = makeCtx(
+      async () =>
+        new Response(
+          JSON.stringify({
+            status: 0,
+            errors: ["application token is invalid"],
+            request: "xyz-789",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+
+    const res = await sendGlance(ctx, {
+      userKey: "u",
+      appToken: "bad",
+      title: "x",
+    });
+
+    expect(res.ok).toBe(false);
+    expect(res.status).toBe(200);
+    expect(ctx.logger.warn).toHaveBeenCalledWith(
+      "pushover_glance_rejected",
+      expect.objectContaining({
+        status: 200,
+        bodyStatus: 0,
+        errors: ["application token is invalid"],
+        request: "xyz-789",
+      }),
     );
   });
 });

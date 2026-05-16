@@ -12,6 +12,16 @@ export type SendParams = {
 
 export type SendResult = { ok: boolean; status?: number };
 
+type PushoverBody = { status?: number; errors?: string[]; request?: string };
+
+async function parsePushoverBody(res: Response): Promise<PushoverBody | null> {
+  try {
+    return (await res.json()) as PushoverBody;
+  } catch {
+    return null;
+  }
+}
+
 export async function sendPushover(
   ctx: PluginContext,
   params: SendParams,
@@ -35,6 +45,17 @@ export async function sendPushover(
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     ctx.logger.warn("pushover_send_failed", { status: res.status, body: body.slice(0, 500) });
+    return { ok: false, status: res.status };
+  }
+  const parsed = await parsePushoverBody(res);
+  if (parsed && parsed.status !== 1) {
+    ctx.logger.warn("pushover_send_rejected", {
+      status: res.status,
+      bodyStatus: parsed.status ?? null,
+      errors: parsed.errors ?? [],
+      request: parsed.request ?? null,
+      title: params.title,
+    });
     return { ok: false, status: res.status };
   }
   ctx.logger.info("pushover_send_ok", { status: res.status, title: params.title });
@@ -74,6 +95,17 @@ export async function sendGlance(
     ctx.logger.warn("pushover_glance_failed", {
       status: res.status,
       body: responseBody.slice(0, 500),
+    });
+    return { ok: false, status: res.status };
+  }
+  const parsed = await parsePushoverBody(res);
+  if (parsed && parsed.status !== 1) {
+    ctx.logger.warn("pushover_glance_rejected", {
+      status: res.status,
+      bodyStatus: parsed.status ?? null,
+      errors: parsed.errors ?? [],
+      request: parsed.request ?? null,
+      title: params.title,
     });
     return { ok: false, status: res.status };
   }
