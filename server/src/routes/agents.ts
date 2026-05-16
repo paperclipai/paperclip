@@ -56,6 +56,7 @@ import {
 } from "./workspace-command-authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
+import { parseActiveWindow } from "../services/heartbeat-window.js";
 import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
@@ -923,6 +924,22 @@ export function agentRoutes(
     for (const entry of listRuntimeModelProfileAdapterConfigs(runtimeConfig)) {
       assertNoAgentAdapterConfigMutation(req, entry.adapterConfig, entry.path);
     }
+  }
+
+  /**
+   * Strict-validate `runtimeConfig.heartbeat.activeWindow` on writes.
+   *
+   * Read paths in services/heartbeat.ts treat parse errors as "no window"
+   * (fail-open, so the scheduler never starves an agent on bad data). The
+   * write path here is strict — bad shapes should never persist.
+   */
+  function assertValidHeartbeatActiveWindowOnWrite(runtimeConfig: unknown): void {
+    const heartbeat = asRecord(asRecord(runtimeConfig)?.heartbeat);
+    if (!heartbeat) return;
+    if (!hasOwn(heartbeat, "activeWindow")) return;
+    const value = heartbeat.activeWindow;
+    if (value == null) return; // explicit clear
+    parseActiveWindow(value); // throws unprocessable on invalid shape/tz/range
   }
 
   async function normalizeMediatedAdapterConfigForPersistence(input: {
@@ -1971,6 +1988,7 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireInput.runtimeConfig);
+    assertValidHeartbeatActiveWindowOnWrite(hireInput.runtimeConfig);
     const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
       hireInput.adapterType,
       rawHireAdapterConfig,
@@ -2157,6 +2175,7 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, createInput.runtimeConfig);
+    assertValidHeartbeatActiveWindowOnWrite(createInput.runtimeConfig);
     const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
       createInput.adapterType,
       rawCreateAdapterConfig,
@@ -2589,6 +2608,7 @@ export function agentRoutes(
         return;
       }
       assertNoAgentRuntimeConfigAdapterConfigMutation(req, runtimeConfig);
+      assertValidHeartbeatActiveWindowOnWrite(runtimeConfig);
       requestedRuntimeConfig = runtimeConfig;
     }
     const touchesAdapterConfiguration =

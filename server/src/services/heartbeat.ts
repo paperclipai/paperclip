@@ -76,6 +76,11 @@ import {
   normalizeMaxTurnStopReason,
 } from "./heartbeat-stop-metadata.js";
 import {
+  isWithinActiveWindow,
+  parseActiveWindow,
+  type HeartbeatActiveWindow,
+} from "./heartbeat-window.js";
+import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
@@ -5721,11 +5726,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
 
+    // activeWindow is best-effort here: malformed shapes are treated as
+    // "no window" so the scheduler never starves an agent on a parse bug.
+    // The strict validation path is the API write (routes/agents.ts), which
+    // calls assertActiveWindow before persisting.
+    let activeWindow: HeartbeatActiveWindow | null = null;
+    try {
+      activeWindow = parseActiveWindow(heartbeat.activeWindow);
+    } catch {
+      activeWindow = null;
+    }
+
     return {
       enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      activeWindow,
     };
   }
 
@@ -9767,6 +9784,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 
         checked += 1;
+        // Active-window gate. Skip (do not enqueue, do not advance lastHeartbeatAt)
+        // when the agent has a configured window and we are outside it. When the
+        // window opens, the next tick fires immediately because elapsedMs has
+        // grown past intervalSec while we were quiet.
+        if (policy.activeWindow && !isWithinActiveWindow(policy.activeWindow, now)) {
+          skipped += 1;
+          continue;
+        }
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
