@@ -169,7 +169,7 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
   const activeIssue = routine.activeIssue ?? null;
 
   return (
-    <div className="group flex flex-col gap-3 border-b border-border px-3 py-3 transition-colors hover:bg-accent/50 last:border-b-0 sm:flex-row sm:items-center">
+    <div className="flex flex-col gap-3 border-b border-border px-3 py-3 last:border-b-0 sm:flex-row sm:items-center">
       <div className="min-w-0 flex-1 space-y-1.5">
         <div className="flex flex-wrap items-center gap-2">
           <Link to={href} className="truncate text-sm font-medium text-inherit no-underline hover:underline">

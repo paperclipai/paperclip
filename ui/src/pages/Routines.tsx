@@ -312,8 +312,12 @@ export function sortRoutines(
   });
 }
 
-function buildRoutinesTabHref(tab: RoutinesTab, statusFilter: RoutineStatusFilter = "active") {
-  if (tab === "runs") return "/routines?tab=runs";
+export function buildRoutinesTabHref(tab: RoutinesTab, statusFilter: RoutineStatusFilter = "active") {
+  if (tab === "runs") {
+    const params = new URLSearchParams({ tab: "runs" });
+    if (statusFilter !== "active") params.set("status", statusFilter);
+    return `/routines?${params.toString()}`;
+  }
   return statusFilter === "active" ? "/routines" : `/routines?status=${statusFilter}`;
 }
 
