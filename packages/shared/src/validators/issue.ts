@@ -710,11 +710,29 @@ export const requestConfirmationPayloadSchema = z.object({
   detailsMarkdown: z.string().max(20000).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
   target: requestConfirmationTargetSchema.nullable().optional(),
+  timeoutMinutes: z.number().int().min(1).max(1440).nullable().optional(),
+  timeoutAction: z.enum(["auto_accept", "escalate_to_ceo"]).nullable().optional(),
+  escalationAgentId: z.string().uuid().nullable().optional(),
+}).superRefine((val, ctx) => {
+  if (val.timeoutAction != null && val.timeoutMinutes == null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "timeoutMinutes is required when timeoutAction is set",
+      path: ["timeoutMinutes"],
+    });
+  }
+  if (val.timeoutAction === "escalate_to_ceo" && val.escalationAgentId == null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "escalationAgentId is required when timeoutAction is escalate_to_ceo",
+      path: ["escalationAgentId"],
+    });
+  }
 });
 
 export const requestConfirmationResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["accepted", "rejected", "superseded_by_comment", "stale_target"]),
+  outcome: z.enum(["accepted", "rejected", "superseded_by_comment", "stale_target", "timed_out"]),
   reason: z.string().trim().max(4000).nullable().optional(),
   commentId: z.string().uuid().nullable().optional(),
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),

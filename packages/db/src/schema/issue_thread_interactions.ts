@@ -30,6 +30,7 @@ export const issueThreadInteractions = pgTable(
     resolvedByUserId: text("resolved_by_user_id"),
     payload: jsonb("payload").$type<IssueThreadInteractionPayload>().notNull(),
     result: jsonb("result").$type<IssueThreadInteractionResult>(),
+    scheduledEscalationAt: timestamp("scheduled_escalation_at", { withTimezone: true }),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -50,5 +51,6 @@ export const issueThreadInteractions = pgTable(
       .on(table.companyId, table.issueId, table.idempotencyKey)
       .where(sql`${table.idempotencyKey} IS NOT NULL`),
     sourceCommentIdx: index("issue_thread_interactions_source_comment_idx").on(table.sourceCommentId),
+    scheduledEscalationIdx: index("issue_thread_interactions_scheduled_escalation_idx").on(table.scheduledEscalationAt),
   }),
 );

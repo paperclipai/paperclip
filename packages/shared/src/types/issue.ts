@@ -703,11 +703,17 @@ export interface RequestConfirmationPayload {
   detailsMarkdown?: string | null;
   supersedeOnUserComment?: boolean;
   target?: RequestConfirmationTarget | null;
+  /** Minutes to wait for board response before firing timeoutAction. Must be >= 1. */
+  timeoutMinutes?: number | null;
+  /** Action to take when timeoutMinutes elapses with no board response. */
+  timeoutAction?: "auto_accept" | "escalate_to_ceo" | null;
+  /** Agent ID to attribute the auto-acceptance to when timeoutAction is "escalate_to_ceo". */
+  escalationAgentId?: string | null;
 }
 
 export interface RequestConfirmationResult {
   version: 1;
-  outcome: "accepted" | "rejected" | "superseded_by_comment" | "stale_target";
+  outcome: "accepted" | "rejected" | "superseded_by_comment" | "stale_target" | "timed_out";
   reason?: string | null;
   commentId?: string | null;
   staleTarget?: RequestConfirmationTarget | null;

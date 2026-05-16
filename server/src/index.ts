@@ -32,6 +32,7 @@ import {
   feedbackService,
   heartbeatService,
   instanceSettingsService,
+  issueThreadInteractionService,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
@@ -738,7 +739,40 @@ export async function startServer(): Promise<StartedServer> {
         .catch((err) => {
           logger.error({ err }, "routine scheduler tick failed");
         });
-  
+
+      const interactionTickNow = new Date();
+      void issueThreadInteractionService(db as any)
+        .tickTimeouts(interactionTickNow)
+        .then((result) => {
+          if (result.autoAccepted > 0 || result.errors > 0) {
+            logger.info({ ...result }, "interaction timeout tick auto-accepted confirmations");
+          }
+          for (const target of result.wakeTargets) {
+            if (target.agentId) {
+              void heartbeat.wakeup(target.agentId, {
+                source: "automation",
+                triggerDetail: "system",
+                reason: "issue_commented",
+                payload: {
+                  issueId: target.issueId,
+                  mutation: "interaction_timeout",
+                },
+                requestedByActorType: "system",
+                requestedByActorId: "interaction_timeout_scheduler",
+                contextSnapshot: {
+                  issueId: target.issueId,
+                  taskId: target.issueId,
+                  wakeReason: "issue_commented",
+                  source: "interaction_timeout",
+                },
+              }).catch((err) => logger.warn({ err, issueId: target.issueId, agentId: target.agentId }, "failed to wake agent after interaction timeout"));
+            }
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "interaction timeout tick failed");
+        });
+
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure
       // persisted queued work is still being driven forward.
       void heartbeat

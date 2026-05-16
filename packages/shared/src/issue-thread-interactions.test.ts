@@ -92,6 +92,66 @@ describe("issue thread interaction schemas", () => {
     });
   });
 
+  it("accepts auto_accept timeout configuration", () => {
+    const parsed = createIssueThreadInteractionSchema.parse({
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Proceed with deployment?",
+        timeoutMinutes: 60,
+        timeoutAction: "auto_accept",
+      },
+    });
+
+    expect(parsed.kind).toBe("request_confirmation");
+    if (parsed.kind !== "request_confirmation") return;
+    expect(parsed.payload.timeoutMinutes).toBe(60);
+    expect(parsed.payload.timeoutAction).toBe("auto_accept");
+    expect(parsed.payload.escalationAgentId).toBeUndefined();
+  });
+
+  it("accepts escalate_to_ceo timeout configuration", () => {
+    const parsed = createIssueThreadInteractionSchema.parse({
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Proceed with deployment?",
+        timeoutMinutes: 30,
+        timeoutAction: "escalate_to_ceo",
+        escalationAgentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      },
+    });
+
+    expect(parsed.kind).toBe("request_confirmation");
+    if (parsed.kind !== "request_confirmation") return;
+    expect(parsed.payload.timeoutMinutes).toBe(30);
+    expect(parsed.payload.timeoutAction).toBe("escalate_to_ceo");
+    expect(parsed.payload.escalationAgentId).toBe("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+  });
+
+  it("rejects escalate_to_ceo without escalationAgentId", () => {
+    expect(() => createIssueThreadInteractionSchema.parse({
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Proceed?",
+        timeoutMinutes: 30,
+        timeoutAction: "escalate_to_ceo",
+      },
+    })).toThrow("escalationAgentId is required when timeoutAction is escalate_to_ceo");
+  });
+
+  it("rejects timeoutAction without timeoutMinutes", () => {
+    expect(() => createIssueThreadInteractionSchema.parse({
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Proceed?",
+        timeoutAction: "auto_accept",
+      },
+    })).toThrow("timeoutMinutes is required when timeoutAction is set");
+  });
+
   it("rejects unsafe request_confirmation target hrefs", () => {
     const base = {
       kind: "request_confirmation",

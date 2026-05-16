@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, lte } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   documents,
@@ -681,6 +681,14 @@ export function issueThreadInteractionService(db: Db) {
         });
       }
 
+      let scheduledEscalationAt: Date | null = null;
+      if (data.kind === "request_confirmation") {
+        const confirmPayload = data.payload as { timeoutMinutes?: number | null };
+        if (confirmPayload.timeoutMinutes != null && confirmPayload.timeoutMinutes > 0) {
+          scheduledEscalationAt = new Date(Date.now() + confirmPayload.timeoutMinutes * 60 * 1000);
+        }
+      }
+
       let created: IssueThreadInteractionRow;
       try {
         [created] = await db
@@ -699,6 +707,7 @@ export function issueThreadInteractionService(db: Db) {
             createdByAgentId: actor.agentId ?? null,
             createdByUserId: actor.userId ?? null,
             payload: data.payload,
+            scheduledEscalationAt,
           })
           .returning();
       } catch (error) {
@@ -1205,6 +1214,97 @@ export function issueThreadInteractionService(db: Db) {
 
       await touchIssue(db, issue.id);
       return hydrateInteraction(updated);
+    },
+
+    tickTimeouts: async (now: Date): Promise<{
+      processed: number;
+      autoAccepted: number;
+      errors: number;
+      wakeTargets: Array<{ issueId: string; agentId: string | null; status: string }>;
+    }> => {
+      const dueRows = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(and(
+          eq(issueThreadInteractions.kind, "request_confirmation"),
+          eq(issueThreadInteractions.status, "pending"),
+          isNotNull(issueThreadInteractions.scheduledEscalationAt),
+          lte(issueThreadInteractions.scheduledEscalationAt, now),
+        ));
+
+      let processed = 0;
+      let autoAccepted = 0;
+      let errors = 0;
+      const wakeTargets: Array<{ issueId: string; agentId: string | null; status: string }> = [];
+
+      for (const row of dueRows) {
+        processed += 1;
+        try {
+          const interaction = hydrateInteraction(row) as RequestConfirmationInteraction;
+          const { timeoutAction, escalationAgentId } = interaction.payload;
+          if (!timeoutAction) continue;
+
+          const resolvedByAgentId =
+            timeoutAction === "escalate_to_ceo" ? (escalationAgentId ?? null) : null;
+
+          const [updated] = await db
+            .update(issueThreadInteractions)
+            .set({
+              status: "accepted",
+              result: {
+                version: 1,
+                outcome: "timed_out",
+              },
+              resolvedByAgentId,
+              resolvedAt: now,
+              updatedAt: now,
+            })
+            .where(and(
+              eq(issueThreadInteractions.id, row.id),
+              eq(issueThreadInteractions.status, "pending"),
+            ))
+            .returning();
+
+          if (!updated) continue;
+
+          // Return the issue to the creator agent so the workflow continues.
+          const creatorAgentId = row.createdByAgentId ?? null;
+          if (creatorAgentId) {
+            const issueRows = await db
+              .select({ id: issues.id, status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+              .from(issues)
+              .where(eq(issues.id, row.issueId));
+            const issueRow = issueRows[0] ?? null;
+
+            if (issueRow && !isTerminalIssueStatus(issueRow.status)) {
+              await db
+                .update(issues)
+                .set({
+                  assigneeAgentId: creatorAgentId,
+                  assigneeUserId: null,
+                  updatedAt: now,
+                })
+                .where(eq(issues.id, row.issueId));
+
+              wakeTargets.push({
+                issueId: row.issueId,
+                agentId: creatorAgentId,
+                status: issueRow.status,
+              });
+            } else {
+              await touchIssue(db, row.issueId);
+            }
+          } else {
+            await touchIssue(db, row.issueId);
+          }
+
+          autoAccepted += 1;
+        } catch {
+          errors += 1;
+        }
+      }
+
+      return { processed, autoAccepted, errors, wakeTargets };
     },
   };
 }
