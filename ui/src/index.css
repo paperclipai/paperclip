@@ -3,6 +3,13 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Korean text optimization (i18n) */
+:lang(ko) {
+  word-break: keep-all;
+  overflow-wrap: break-word;
+  letter-spacing: -0.02em;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);

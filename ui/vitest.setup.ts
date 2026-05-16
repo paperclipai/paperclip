@@ -1,6 +1,18 @@
 const storageEntries = new Map<string, string>();
 
-// Mock react-i18next for all tests
+// Initialize i18next for test environment (use actual i18next instance per Gemini advisory)
+import i18n from "i18next";
+import { initReactI18next } from "react-i18next";
+import en from "./src/i18n/locales/en.json";
+
+const i18nForTest = i18n.createInstance();
+i18nForTest.use(initReactI18next).init({
+  lng: "en",
+  fallbackLng: "en",
+  resources: { en: { translation: en } },
+  interpolation: { escapeValue: false },
+  initImmediate: false,
+});
 // Components use t() calls with English fallback, but in test environment
 // we mock the hook to return the key's fallback value (2nd argument) or the key itself.
 import { vi } from "vitest";
