@@ -842,7 +842,7 @@ export function Inbox() {
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
     enabled: !!selectedCompanyId,
-    refetchInterval: 5000,
+    refetchInterval: 15_000,
   });
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
   const { data: companyMembers } = useQuery({

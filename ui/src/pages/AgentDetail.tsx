@@ -3507,7 +3507,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   const { data: workspaceOperations = [] } = useQuery({
     queryKey: queryKeys.runWorkspaceOperations(run.id),
     queryFn: () => heartbeatsApi.workspaceOperations(run.id),
-    refetchInterval: isLive ? 2000 : false,
+    refetchInterval: isLive ? 5000 : false,
   });
 
   function isRunLogUnavailable(err: unknown): boolean {
@@ -3715,7 +3715,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       } catch {
         // ignore polling errors
       }
-    }, 2000);
+    }, 5000);
     return () => clearInterval(interval);
   }, [run.id, isLive, isStreamingConnected, events]);
 
@@ -3737,7 +3737,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         if (isRunLogUnavailable(err)) return;
         // ignore polling errors
       }
-    }, 2000);
+    }, 5000);
     return () => clearInterval(interval);
   }, [run.id, isLive, isStreamingConnected, logOffset]);
 
