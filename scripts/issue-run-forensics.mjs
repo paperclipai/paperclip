@@ -10,6 +10,13 @@
  *   node scripts/issue-run-forensics.mjs --company <uuid> --issue ROU-20 --issue-activity
  *   node scripts/issue-run-forensics.mjs --company <uuid> --issue ROU-20 --reverse-last-per-run
  *
+ * Company-wide activity (GET /api/companies/:companyId/activity), optional filters:
+ *
+ *   node scripts/issue-run-forensics.mjs --company <uuid> --company-activity
+ *   node scripts/issue-run-forensics.mjs --company <uuid> --company-activity --agent-id <uuid>
+ *   node scripts/issue-run-forensics.mjs --company <uuid> --company-activity --entity-type issue --entity-id <uuid>
+ *   node scripts/issue-run-forensics.mjs --company <uuid> --company-activity --with-agent-names
+ *
  * Env: PAPERCLIP_API_BASE, PAPERCLIP_AUTH
  *
  * --run N  : 1-based index after sorting runs by createdAt ascending.
@@ -34,6 +41,12 @@ function parseArgs(argv) {
     else if (a === "--prompt-excerpt") out.promptExcerpt = argv[++i];
     else if (a === "--issue-activity") out.issueActivity = true;
     else if (a === "--reverse-last-per-run") out.reverseLastPerRun = true;
+    else if (a === "--company-activity") out.companyActivity = true;
+    else if (a === "--agent-id") out.agentIdFilter = argv[++i];
+    else if (a === "--entity-type") out.entityType = argv[++i];
+    else if (a === "--entity-id") out.entityId = argv[++i];
+    else if (a === "--activity-limit") out.activityLimit = argv[++i];
+    else if (a === "--with-agent-names") out.withAgentNames = true;
     else if (a === "--help" || a === "-h") out.help = true;
     else throw new Error(`Unknown argument: ${a}`);
   }
@@ -211,6 +224,48 @@ async function dumpRunForensics(base, auth, issueRef, runId, eventsLimit, prompt
   console.log("");
 }
 
+async function fetchAgentNameMap(base, auth, companyId) {
+  const rows = await requestJson(`${base}/api/companies/${companyId}/agents`, { auth });
+  if (!Array.isArray(rows)) return new Map();
+  const m = new Map();
+  for (const a of rows) {
+    if (a && typeof a.id === "string") {
+      const label =
+        typeof a.name === "string" && a.name.trim()
+          ? a.name.trim()
+          : typeof a.title === "string" && a.title.trim()
+            ? a.title.trim()
+            : a.id.slice(0, 8);
+      m.set(a.id, label);
+    }
+  }
+  return m;
+}
+
+function printCompanyActivity(rows, { companyId, filters }, agentNames) {
+  console.log(`\n## Company activity (companyId=${companyId})\n`);
+  console.log("**Query filters:**", JSON.stringify(filters));
+  console.log("");
+  if (!Array.isArray(rows) || rows.length === 0) {
+    console.log("(no rows)\n");
+    return;
+  }
+  console.log(`**Rows:** ${rows.length} (newest first)\n`);
+  console.log("| # | createdAt | action | entityType | entityId | actor | agentId | agentName | runId | details excerpt |");
+  console.log("|---|-----------|--------|------------|----------|-------|---------|-----------|-------|-----------------|");
+  rows.forEach((a, i) => {
+    const ex = snippet(a.details, 100);
+    const aid = a.agentId ?? "";
+    const an = aid && agentNames?.get(aid) ? agentNames.get(aid) : "";
+    console.log(
+      `| ${i + 1} | ${iso(a.createdAt)} | ${a.action} | ${a.entityType} | ${String(a.entityId).slice(0, 8)}… | ${a.actorType}:${String(a.actorId).slice(0, 8)}… | ${aid ? `${aid.slice(0, 8)}…` : ""} | ${an} | ${a.runId ? `${String(a.runId).slice(0, 8)}…` : ""} | ${ex} |`,
+    );
+  });
+  console.log("\n**First row (full JSON)**\n");
+  console.log(JSON.stringify(rows[0], null, 2));
+  console.log("");
+}
+
 function printIssueActivityAll(activities, issueLabel) {
   console.log(`\n## Issue activity (all rows): ${issueLabel}\n`);
   if (!Array.isArray(activities) || activities.length === 0) {
@@ -323,6 +378,19 @@ Optional:
   --prompt-chars 4000        (only for single-run --run dump)
   --prompt-excerpt 1200      (only for --reverse-last-per-run, default 1200)
 
+Company-wide activity (no --issue):
+
+  node scripts/issue-run-forensics.mjs --company … --company-activity
+  node scripts/issue-run-forensics.mjs --company … --company-activity --agent-id <uuid>
+  node scripts/issue-run-forensics.mjs --company … --company-activity --entity-type issue --entity-id <issueUuid>
+  node scripts/issue-run-forensics.mjs --company … --company-activity --with-agent-names
+
+Do not pass --issue with --company-activity.
+
+Optional (company activity):
+  --activity-limit 200          (1–500, server clamp)
+  --with-agent-names           extra GET /companies/:id/agents for display names
+
 Env: PAPERCLIP_API_BASE, PAPERCLIP_AUTH
 `);
 }
@@ -341,6 +409,46 @@ async function main() {
   const eventsLimit = Math.min(500, Math.max(1, parseInt(args.eventsLimit ?? "200", 10) || 200));
   const promptChars = Math.min(100_000, Math.max(200, parseInt(args.promptChars ?? "4000", 10) || 4000));
   const promptExcerpt = Math.min(20_000, Math.max(400, parseInt(args.promptExcerpt ?? "1200", 10) || 1200));
+  const activityLimit = Math.min(500, Math.max(1, parseInt(args.activityLimit ?? "100", 10) || 100));
+
+  if (args.companyActivity) {
+    if (!company) {
+      console.error("--company is required with --company-activity");
+      printHelp();
+      process.exit(1);
+    }
+    if (issue) {
+      console.error("Do not pass --issue with --company-activity (issue-scoped modes use --issue without --company-activity).");
+      process.exit(6);
+    }
+    if (args.run || args.runId || args.reverseLastPerRun || args.issueActivity) {
+      console.error("Do not combine --company-activity with --run, --run-id, --reverse-last-per-run, or --issue-activity.");
+      process.exit(6);
+    }
+
+    const params = new URLSearchParams();
+    params.set("limit", String(activityLimit));
+    if (args.agentIdFilter) params.set("agentId", args.agentIdFilter);
+    if (args.entityType) params.set("entityType", args.entityType);
+    if (args.entityId) params.set("entityId", args.entityId);
+
+    const url = `${base}/api/companies/${company}/activity?${params.toString()}`;
+    const rows = await requestJson(url, { auth: auth || undefined });
+
+    let agentNames = null;
+    if (args.withAgentNames) {
+      agentNames = await fetchAgentNameMap(base, auth || undefined, company);
+    }
+
+    const filters = {
+      limit: activityLimit,
+      agentId: args.agentIdFilter ?? null,
+      entityType: args.entityType ?? null,
+      entityId: args.entityId ?? null,
+    };
+    printCompanyActivity(rows, { companyId: company, filters }, agentNames);
+    return;
+  }
 
   if (!company || !issue) {
     printHelp();

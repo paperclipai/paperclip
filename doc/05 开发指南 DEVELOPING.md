@@ -78,7 +78,7 @@ pnpm dev:stop
    (Get-CimInstance Win32_Process -Filter 'ProcessId=<PID>').CommandLine
    ```
 
-4. **嵌入式 Postgres（Embedded Postgres）** — 停止 dev 未必立刻拆掉内嵌 `postgres` 子进程；若遇 `postmaster.pid` / 端口 **54329** 问题，见本文数据库清理说明及中文运维摘要 [**运维-回形针本地.md**](../docs/项目计划/最佳实践/运维-回形针本地.md)。
+4. **嵌入式 Postgres（Embedded Postgres）** — 停止 dev 未必立刻拆掉内嵌 `postgres` 子进程；若遇 `postmaster.pid` / 端口 **54329** 问题，见本文数据库清理说明及中文运维摘要 [**运维-回形针本地.md**](../docs/项目计划/最佳实践/001-运维-回形针本地.md)。
 
 `pnpm dev:once` 会跟踪后端相关文件变更与待处理迁移。当前启动已过期时，Board UI 会显示 **Restart Required**（需要重启）横幅。也可在 `Instance Settings > Experimental` 开启**有保护的自动重启**，会等队列中/运行中的本地 agent run 结束后再重启 dev 服务。
 

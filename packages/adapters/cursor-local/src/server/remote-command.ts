@@ -1,9 +1,10 @@
+import os from "node:os";
 import path from "node:path";
 import {
   runAdapterExecutionTargetShellCommand,
   type AdapterExecutionTarget,
 } from "@paperclipai/adapter-utils/execution-target";
-import { ensurePathInEnv } from "@paperclipai/adapter-utils/server-utils";
+import { ensurePathInEnv, mergeAllowlistedHostEnvWith } from "@paperclipai/adapter-utils/server-utils";
 
 const DEFAULT_CURSOR_COMMAND_BASENAMES = new Set(["agent", "cursor-agent"]);
 // `.local/bin` first because the official Cursor Agent installer drops the
@@ -32,6 +33,62 @@ function prependPosixPathEntry(pathValue: string, entry: string): string {
 
 function prependPosixPathEntries(pathValue: string, entries: string[]): string {
   return entries.reduceRight((value, entry) => prependPosixPathEntry(value, entry), pathValue);
+}
+
+function normalizePathForDedup(segment: string): string {
+  const n = path.normalize(segment.trim());
+  return process.platform === "win32" ? n.toLowerCase() : n;
+}
+
+/** Prepend entries to PATH using the platform separator (Windows `;`, POSIX `:`). */
+function prependNativePathEntries(pathValue: string, entries: string[]): string {
+  const sep = process.platform === "win32" ? ";" : ":";
+  const parts = pathValue.split(sep).filter((p) => p.trim().length > 0);
+  const seen = new Set(parts.map((p) => normalizePathForDedup(p)));
+  const out = [...parts];
+  for (const entry of [...entries].reverse()) {
+    const norm = normalizePathForDedup(entry);
+    if (seen.has(norm)) continue;
+    seen.add(norm);
+    out.unshift(entry);
+  }
+  return out.join(sep);
+}
+
+/**
+ * Directories where the Cursor Agent installer commonly drops `agent` / `cursor-agent`
+ * on the **host** OS (local runs do not get the remote-sandbox PATH injection).
+ */
+function localCursorAgentInstallDirs(): string[] {
+  const home = os.homedir();
+  const dirs: string[] = [];
+  if (process.platform === "win32") {
+    const localApp = process.env.LOCALAPPDATA?.trim();
+    if (localApp) dirs.push(path.join(localApp, "cursor-agent"));
+  }
+  dirs.push(path.join(home, ".local", "bin"));
+  dirs.push(path.join(home, ".cursor", "bin"));
+  return dirs;
+}
+
+/**
+ * When the configured command is the default Cursor CLI basename, ensure the merged
+ * process+adapter PATH includes installer-managed locations so `pnpm dev` and other
+ * minimal environments still resolve `agent` (Windows: `%LOCALAPPDATA%\\cursor-agent`).
+ */
+export function augmentEnvPathForLocalCursorAgent(
+  command: string,
+  env: Record<string, string>,
+): Record<string, string> {
+  const trimmed = command.trim();
+  if (hasPathSeparator(trimmed)) return env;
+  if (!DEFAULT_CURSOR_COMMAND_BASENAMES.has(commandBasename(trimmed))) return env;
+
+  const merged = ensurePathInEnv(mergeAllowlistedHostEnvWith(env) as NodeJS.ProcessEnv);
+  const curPath = typeof merged.PATH === "string" ? merged.PATH : "";
+  const nextPath = prependNativePathEntries(curPath, localCursorAgentInstallDirs());
+  if (nextPath === curPath) return env;
+  return { ...env, PATH: nextPath };
 }
 
 function preferredSandboxCommandBasenames(command: string): string[] {

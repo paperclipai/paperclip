@@ -6,7 +6,6 @@ import { createLocalServiceKey } from "../server/src/services/local-service-supe
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 export function createDevServiceIdentity(input: {
-  mode: "watch" | "dev";
   forwardedArgs: string[];
   networkProfile: string;
   port: number;
@@ -14,7 +13,6 @@ export function createDevServiceIdentity(input: {
   const envFingerprint = createHash("sha256")
     .update(
       JSON.stringify({
-        mode: input.mode,
         forwardedArgs: input.forwardedArgs,
         networkProfile: input.networkProfile,
         port: input.port,
@@ -22,7 +20,7 @@ export function createDevServiceIdentity(input: {
     )
     .digest("hex");
 
-  const serviceName = input.mode === "watch" ? "paperclip-dev-watch" : "paperclip-dev-once";
+  const serviceName = "paperclip-dev-once";
   const serviceKey = createLocalServiceKey({
     profileKind: "paperclip-dev",
     serviceName,
@@ -32,7 +30,6 @@ export function createDevServiceIdentity(input: {
     port: input.port,
     scope: {
       repoRoot,
-      mode: input.mode,
     },
   });
 

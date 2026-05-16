@@ -24,7 +24,7 @@ description: >
 | 任务 | 命令 |
 |------|------|
 | 启动服务（首次或日常） | `npx paperclipai run` |
-| 开发热更新 | `pnpm dev` |
+| 开发（受管 runner；Windows 优先一条龙） | `scripts/start-paperclip-dev-external.ps1` 或 `pnpm dev` |
 | 停开发服 | `pnpm dev:stop` |
 | 构建 | `pnpm build` |
 | 类型检查 | `pnpm typecheck` |

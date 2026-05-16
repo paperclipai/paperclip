@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
-import { prepareCursorSandboxCommand } from "./remote-command.js";
+import { augmentEnvPathForLocalCursorAgent, prepareCursorSandboxCommand } from "./remote-command.js";
 
 function createLocalSandboxRunner() {
   let counter = 0;
@@ -132,6 +132,47 @@ describe("prepareCursorSandboxCommand", () => {
       expect(result.env.PATH).not.toContain(path.join(managedHomeDir, ".local", "bin"));
     } finally {
       await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("augmentEnvPathForLocalCursorAgent", () => {
+  it("leaves env unchanged for absolute command paths", () => {
+    const env = { FOO: "1" };
+    const out = augmentEnvPathForLocalCursorAgent("C:\\Tools\\agent.exe", env);
+    expect(out).toBe(env);
+  });
+
+  it("leaves env unchanged for non-default command basenames", () => {
+    const env = { PATH: "/bin" };
+    const out = augmentEnvPathForLocalCursorAgent("claude", env);
+    expect(out).toEqual(env);
+  });
+
+  it("prepends ~/.local/bin and ~/.cursor/bin on POSIX for agent", () => {
+    if (process.platform === "win32") return;
+    const home = os.homedir();
+    const out = augmentEnvPathForLocalCursorAgent("agent", { PATH: "/usr/bin" });
+    expect(out.PATH?.split(":").slice(0, 2)).toEqual([
+      path.join(home, ".local", "bin"),
+      path.join(home, ".cursor", "bin"),
+    ]);
+    expect(out.PATH).toContain("/usr/bin");
+  });
+
+  it("prepends %%LOCALAPPDATA%%\\cursor-agent on Windows for agent", () => {
+    if (process.platform !== "win32") return;
+    const prev = process.env.LOCALAPPDATA;
+    const fakeLocal = path.join(os.tmpdir(), `paperclip-cursor-local-path-${Date.now()}`);
+    process.env.LOCALAPPDATA = fakeLocal;
+    try {
+      const out = augmentEnvPathForLocalCursorAgent("agent", { PATH: "C:\\Windows" });
+      const parts = out.PATH?.split(";") ?? [];
+      expect(parts[0]).toBe(path.join(fakeLocal, "cursor-agent"));
+      expect(parts).toContain("C:\\Windows");
+    } finally {
+      if (prev === undefined) delete process.env.LOCALAPPDATA;
+      else process.env.LOCALAPPDATA = prev;
     }
   });
 });

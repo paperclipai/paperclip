@@ -53,5 +53,6 @@ Notes:
 - Sessions are resumed with --resume when stored session cwd matches current cwd.
 - Paperclip auto-injects local skills into "~/.cursor/skills" when missing, so Cursor can discover "$paperclip" and related skills on local runs.
 - Paperclip auto-adds --yolo unless one of --trust/--yolo/-f is already present in extraArgs.
+- Local runs prepend standard Cursor CLI install directories to the agent process PATH when \`command\` is the default (\`agent\` / \`cursor-agent\`): on Windows \`%LOCALAPPDATA%\\cursor-agent\`, plus \`~/.local/bin\` and \`~/.cursor/bin\` on all platforms, so the server can resolve the CLI even when started from a minimal environment.
 - Remote sandbox runs prepend "~/.cursor/bin" and "~/.local/bin" to PATH and prefer the installed absolute entrypoint from one of those directories when the default Cursor command is requested, so installer-managed sandbox leases do not need hardcoded command paths.
 `;

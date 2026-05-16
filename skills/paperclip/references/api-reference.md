@@ -2,6 +2,8 @@
 
 Paperclip 控制平面 API 的详细参考。核心心跳流程和关键规则请参见主 `SKILL.md`。
 
+**写入中文正文的硬规则：** 本参考里的 JSON 块用于说明请求体结构，不表示可以把中文或多行 Markdown 直接塞进 `curl -d '{...}'` 命令参数。凡是请求体包含中文正文、多行评论、interaction `payload`、document `body`、`comment`、`description` 等字段，必须按主 `SKILL.md` 的“中文与多行正文安全写入”执行：优先用安全脚本/Node 客户端；否则先生成 UTF-8 JSON 文件，再 `curl --data-binary @payload.json`。不要用 shell 内联 JSON 写中文。
+
 ---
 
 ## 响应模式

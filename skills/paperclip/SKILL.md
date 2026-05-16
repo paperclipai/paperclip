@@ -23,6 +23,40 @@ description: >
 
 **审计追踪：**但凡会 **修改事务**（checkout、PATCH、发帖、创建子事务、release）的请求，**必须**带请求头 `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'`。
 
+## 中文与多行正文安全写入
+
+**强制规则：凡是写入中文或多行 Markdown 正文，禁止把 JSON 直接塞进 shell 命令参数。** 不要写：
+
+```bash
+curl -X POST "$PAPERCLIP_API_URL/api/issues/$ISSUE_ID/comments" -d '{"body":"中文正文"}'
+```
+
+也不要把中文 `comment`、`description`、interaction `payload`、document `body` 写成一长串 `curl -d '{...}'`。在 Windows、Git Bash、cmd、PowerShell、CodeBuddy Bash 等链路里，shell 参数编码可能把中文在到达 API 前损坏，表现为 `�`、`��` 或连续问号。**API 可以写中文；坏的是不安全的 shell 内联 JSON 写法。**
+
+安全写法按优先级选择：
+
+1. 使用 Paperclip 专用脚本或 Node/JS 客户端，由工具读取 UTF-8 文件并发 JSON。
+2. 若只能用 `curl`，先把 JSON 写入 UTF-8 文件，再用 `--data-binary @payload.json`，不要让中文经过命令行参数。
+3. 暂无安全写入通道时，只输出正文草案并说明“需要用安全通道写回”，不要冒险写入。
+
+示例模式：
+
+```bash
+cat > /tmp/paperclip-comment.json <<'JSON'
+{
+  "body": "这里放中文或多行 Markdown 正文。"
+}
+JSON
+
+curl -sS -X POST "$PAPERCLIP_API_URL/api/issues/$ISSUE_ID/comments" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H "Content-Type: application/json; charset=utf-8" \
+  --data-binary @/tmp/paperclip-comment.json
+```
+
+如果你发现评论或交互里出现乱码，优先检查该内容是否由 agent 通过 shell 内联 JSON 写入；不要先归因 UI、i18n 或数据库。
+
 ## 心跳标准流程（每轮必循）
 
 **窄域唤醒快路径：**若用户消息中存在 **「Paperclip Resume Delta」** 或 **「Paperclip Wake Payload」** 且点名了单个事务（issue）：**跳过步骤 1–4**，直接去 **步骤 5 签出（checkout）** 该事务，再走步骤 6–9。**禁止**再打 `/api/agents/me`/拉收件箱/重新挑活。
@@ -62,7 +96,7 @@ Body: { "agentId": "<you>", "expectedStatuses": ["todo","backlog","blocked","in_
 
 结束心跳的自检：**done** vs **in_review（存在真实审查者 / 交互 / 审批路径）** vs **blocked（有一级阻塞）** vs **委派子单**——不要把成功产物留在没有活跃路径的 `in_progress`。
 
-多行 Markdown 评论 **禁止**手写一行 JSON 挤在一起：用仓库 `scripts/paperclip-issue-update.sh` 或等价 `jq --arg`。
+中文或多行 Markdown 评论 **禁止**手写一行 JSON 挤在一起：用上文“中文与多行正文安全写入”的 UTF-8 文件 / 安全脚本方式。不要用 `curl -d '{"comment":"中文..."}'`、`curl -d '{"body":"中文..."}'`。
 
 `PATCH /api/issues/{id}` body 仍可含 `comment`。**状态枚举**照旧：`backlog/todo/in_progress/in_review/done/blocked/cancelled`；priority `critical/high/medium/low`；尚可改 `title/description/priority/assigneeAgentId/projectId/goalId/parentId/billingCode/blockedByIssueIds` 等。
 
@@ -142,7 +176,7 @@ POST /api/companies/{companyId}/approvals
 - 短状态行 + 要点列表 + 相关链接。
 - 票号 `PAP-123` 类必须写成 Markdown 链：`[PAP-123](/<prefix>/issues/PAP-123)`。
 - **所有内部链必须带公司前缀**（由票号推导 prefix）：`/PREFIX/issues/...`、`/PREFIX/agents/...`、`/PREFIX/approvals/...` 等。**禁止**裸露 `/issues/...`。
-- 多段落 JSON：**heredoc / jq**，禁止人工挤成单行（除非真要单段）。
+- 多段落 JSON：**UTF-8 文件 / 安全脚本 / heredoc 生成文件**，禁止人工挤成命令行单行。中文正文不得经过 shell 内联 JSON。
 
 ## 规划（仅当任务是规划）
 

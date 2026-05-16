@@ -105,6 +105,7 @@ import {
   isSuccessfulRunHandoffComment,
   isSuccessfulRunHandoffEscalationComment,
 } from "../lib/successful-run-handoff";
+import { dispositionNotice } from "../lib/i18n";
 import {
   SystemNotice,
   type SystemNoticeMetadataRow,
@@ -664,7 +665,7 @@ export function SuccessfulRunHandoffCommentCallout({
           )}
         />
         <MarkdownBody className="min-w-0 text-sm leading-6" softBreaks onImageClick={onImageClick}>
-          {text}
+          {dispositionNotice.translateBody(text)}
         </MarkdownBody>
       </div>
     </div>
@@ -2190,7 +2191,7 @@ function StaleDispositionWarningRow({
             onClick={() => setOpen((value) => !value)}
           >
             <span className="text-sm font-medium text-foreground/80">
-              Stale disposition warning
+              {dispositionNotice.missingDispositionTitle}（已失效）
             </span>
             <span className="ml-auto flex items-center gap-1.5">
               {message.createdAt ? (
@@ -2258,7 +2259,7 @@ function SystemNoticeCommentRow({
     metadata: commentMetadata,
     body: (
       <MarkdownBody className="text-sm leading-6" softBreaks onImageClick={onImageClick}>
-        {bodyText}
+        {dispositionNotice.translateBody(bodyText)}
       </MarkdownBody>
     ),
     timestamp: message.createdAt ? new Date(message.createdAt).toISOString() : undefined,

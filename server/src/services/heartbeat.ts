@@ -96,6 +96,11 @@ import {
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
 import {
+  HEARTBEAT_SKIP_ON_DEMAND_BARE_WAKE,
+  HEARTBEAT_SKIP_TIMER_NO_ASSIGNED_ISSUE,
+  RUN_CANCEL_ISSUE_TERMINAL_WHILE_RUNNING,
+} from "./orchestration-invariants.js";
+import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
   normalizeIssueExecutionPolicy,
@@ -2412,6 +2417,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .from(agents)
       .where(eq(agents.id, agentId))
       .then((rows) => rows[0] ?? null);
+  }
+
+  /** HB-007: runnable assignment = agent is assignee and issue not in backlog/done/cancelled. */
+  async function agentHasRunnableAssignedIssue(companyId: string, agentId: string) {
+    const row = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.assigneeAgentId, agentId),
+          notInArray(issues.status, ["backlog", "done", "cancelled"]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return Boolean(row);
   }
 
   async function getRun(runId: string, opts?: { unsafeFullResultJson?: boolean }) {
@@ -8694,6 +8716,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
     };
 
+    if (source === "on_demand") {
+      const trimmedReason = typeof reason === "string" ? reason.trim() : "";
+      if (!issueId && trimmedReason.length > 0) {
+        await writeSkippedRequest(HEARTBEAT_SKIP_ON_DEMAND_BARE_WAKE);
+        return null;
+      }
+    }
+
     let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
     if (!projectId && issueId) {
       projectId = await db
@@ -8740,6 +8770,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
       return null;
+    }
+
+    if (source === "timer") {
+      const hasAssignedIssue = await agentHasRunnableAssignedIssue(agent.companyId, agentId);
+      if (!hasAssignedIssue) {
+        await writeSkippedRequest(HEARTBEAT_SKIP_TIMER_NO_ASSIGNED_ISSUE);
+        return null;
+      }
     }
 
     if (issueId) {
@@ -9513,6 +9551,41 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return cancelled;
   }
 
+  /** HB-010: cancel runs still marked running when snapshot issue is done/cancelled. */
+  async function reconcileTerminalIssueRunningRuns(opts?: { limit?: number }) {
+    const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 200);
+    const rows = await db
+      .select({ runId: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .innerJoin(
+        issues,
+        and(
+          eq(issues.companyId, heartbeatRuns.companyId),
+          sql`${issues.id}::text = (${heartbeatRuns.contextSnapshot} ->> 'issueId')`,
+          inArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .where(
+        and(
+          eq(heartbeatRuns.status, "running"),
+          sql`coalesce(trim(${heartbeatRuns.contextSnapshot} ->> 'issueId'), '') <> ''`,
+        ),
+      )
+      .limit(limit);
+
+    let reconciled = 0;
+    for (const row of rows) {
+      try {
+        await cancelRunInternal(row.runId, RUN_CANCEL_ISSUE_TERMINAL_WHILE_RUNNING);
+        reconciled += 1;
+      } catch (err) {
+        logger.warn({ err, runId: row.runId }, "reconcileTerminalIssueRunningRuns: cancel failed");
+      }
+    }
+
+    return { scanned: rows.length, reconciled };
+  }
+
   async function cancelActiveForAgentInternal(agentId: string, reason = "Cancelled due to agent pause") {
     const agent = await getAgent(agentId);
     const runs = await db
@@ -9857,11 +9930,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     scanSilentActiveRuns,
 
+    reconcileTerminalIssueRunningRuns,
+
     reconcileProductivityReviews,
 
     buildRunOutputSilence,
 
     tickTimers: async (now = new Date()) => {
+      const terminalIssueRuns = await reconcileTerminalIssueRunningRuns({ limit: 100 });
+
       const allAgents = await db.select().from(agents);
       let checked = 0;
       let enqueued = 0;
@@ -9903,6 +9980,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         checked: checked + issueMonitors.checked,
         enqueued: enqueued + issueMonitors.triggered,
         skipped: skipped + issueMonitors.skipped,
+        terminalIssueRunsScanned: terminalIssueRuns.scanned,
+        terminalIssueRunsReconciled: terminalIssueRuns.reconciled,
       };
     },
 

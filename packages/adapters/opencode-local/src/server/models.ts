@@ -4,6 +4,7 @@ import type { AdapterModel } from "@paperclipai/adapter-utils";
 import {
   asString,
   ensurePathInEnv,
+  mergeAllowlistedHostEnvWith,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isValidOpenCodeModelId } from "../index.js";
@@ -130,7 +131,15 @@ export async function discoverOpenCodeModels(input: {
     // image). Fall back to process.env.HOME.
   }
   // Prevent OpenCode from writing an opencode.json into the working directory.
-  const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env, ...(resolvedHome ? { HOME: resolvedHome } : {}), OPENCODE_DISABLE_PROJECT_CONFIG: "true" }));
+  const runtimeEnv = normalizeEnv(
+    ensurePathInEnv(
+      mergeAllowlistedHostEnvWith({
+        ...env,
+        ...(resolvedHome ? { HOME: resolvedHome } : {}),
+        OPENCODE_DISABLE_PROJECT_CONFIG: "true",
+      }) as NodeJS.ProcessEnv,
+    ),
+  );
 
   const result = await runChildProcess(
     `opencode-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,

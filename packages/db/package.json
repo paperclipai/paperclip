@@ -41,7 +41,8 @@
     "typecheck": "pnpm run check:migrations && tsc --noEmit",
     "generate": "pnpm run check:migrations && tsc -p tsconfig.json && drizzle-kit generate",
     "migrate": "pnpm run check:migrations && node ./node_modules/tsx/dist/cli.mjs src/migrate.ts",
-    "seed": "node ./node_modules/tsx/dist/cli.mjs src/seed.ts"
+    "seed": "node ./node_modules/tsx/dist/cli.mjs src/seed.ts",
+    "schema:snapshot:orchestration": "node ./node_modules/tsx/dist/cli.mjs scripts/export-orchestration-schema-snapshot.ts"
   },
   "dependencies": {
     "@paperclipai/shared": "workspace:*",

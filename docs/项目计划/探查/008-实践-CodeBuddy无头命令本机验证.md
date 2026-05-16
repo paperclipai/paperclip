@@ -37,7 +37,7 @@ codebuddy -p "Output exactly ONE ascii digit 7 only." --output-format json -y --
 ```
 
 - **结果**：退出码 0 但 stdout 为 **429 额度用尽** 中文提示（非 JSON）。  
-- **结论**：**参数被接受**；失败来自 **额度/套餐**，不是「参数非法」。**若预期走火山**：须 **`CODEBUDDY_BASE_URL` + 火山 Key** + `models.json` 映射，否则常仍走腾讯/CodeBuddy 默认计费——见 [CodeBuddy-火山引擎端点与配额.md](../最佳实践/CodeBuddy-火山引擎端点与配额.md)。
+- **结论**：**参数被接受**；失败来自 **额度/套餐**，不是「参数非法」。**若预期走火山**：须 **`CODEBUDDY_BASE_URL` + 火山 Key** + `models.json` 映射，否则常仍走腾讯/CodeBuddy 默认计费——见 [CodeBuddy-火山引擎端点与配额.md](../最佳实践/007-CodeBuddy-火山引擎端点与配额.md)。
 
 ---
 

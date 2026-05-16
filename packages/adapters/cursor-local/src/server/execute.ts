@@ -43,10 +43,11 @@ import {
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   joinPromptSections,
+  mergeAllowlistedHostEnvWith,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_CURSOR_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { parseCursorJsonl, isCursorUnknownSessionError } from "./parse.js";
-import { prepareCursorSandboxCommand } from "./remote-command.js";
+import { augmentEnvPathForLocalCursorAgent, prepareCursorSandboxCommand } from "./remote-command.js";
 import { normalizeCursorStreamLine } from "../shared/stream.js";
 import { hasCursorTrustBypassArg } from "../shared/trust.js";
 
@@ -344,6 +345,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const sandboxSystemHomeDir = initialSandboxCommand.remoteSystemHomeDir;
   command = initialSandboxCommand.command;
   env = initialSandboxCommand.env;
+  if (!executionTargetIsRemote) {
+    env = augmentEnvPathForLocalCursorAgent(command, env);
+  }
 
   const extraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
@@ -441,7 +445,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
   const effectiveEnv = Object.fromEntries(
-    Object.entries({ ...process.env, ...env }).filter(
+    Object.entries(mergeAllowlistedHostEnvWith(env)).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
@@ -470,7 +474,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (paperclipBridge) {
       Object.assign(env, paperclipBridge.env);
       loggedEnv = buildInvocationEnvForLogs(env, {
-        runtimeEnv: ensurePathInEnv({ ...process.env, ...env }),
+        runtimeEnv: ensurePathInEnv(mergeAllowlistedHostEnvWith(env)),
         includeRuntimeKeys: ["HOME"],
         resolvedCommand,
       });

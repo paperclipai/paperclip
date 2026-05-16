@@ -5,6 +5,7 @@ import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
 import { SIDEBAR_SCROLL_RESET_STATE } from "@/lib/navigation-scroll";
 import { SidebarNavItem } from "./SidebarNavItem";
+import { sidebarNav } from "@/lib/i18n";
 
 export function InstanceSidebar() {
   const { data: plugins } = useQuery({
@@ -17,19 +18,19 @@ export function InstanceSidebar() {
       <div className="flex items-center gap-2 px-3 h-12 shrink-0">
         <Settings className="h-4 w-4 text-muted-foreground shrink-0 ml-1" />
         <span className="flex-1 text-sm font-bold text-foreground truncate">
-          Instance Settings
+          {sidebarNav.instanceSettings}
         </span>
       </div>
 
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 px-3 py-2">
         <div className="flex flex-col gap-0.5">
-          <SidebarNavItem to="/instance/settings/profile" label="Profile" icon={UserRoundPen} end />
-          <SidebarNavItem to="/instance/settings/general" label="General" icon={SlidersHorizontal} end />
-          <SidebarNavItem to="/instance/settings/access" label="Access" icon={Shield} end />
-          <SidebarNavItem to="/instance/settings/heartbeats" label="Heartbeats" icon={Clock3} end />
-          <SidebarNavItem to="/instance/settings/experimental" label="Experimental" icon={FlaskConical} />
-          <SidebarNavItem to="/instance/settings/plugins" label="Plugins" icon={Puzzle} />
-          <SidebarNavItem to="/instance/settings/adapters" label="Adapters" icon={Cpu} />
+          <SidebarNavItem to="/instance/settings/profile" label={sidebarNav.instanceProfile} icon={UserRoundPen} end />
+          <SidebarNavItem to="/instance/settings/general" label={sidebarNav.instanceGeneral} icon={SlidersHorizontal} end />
+          <SidebarNavItem to="/instance/settings/access" label={sidebarNav.instanceAccess} icon={Shield} end />
+          <SidebarNavItem to="/instance/settings/heartbeats" label={sidebarNav.instanceHeartbeats} icon={Clock3} end />
+          <SidebarNavItem to="/instance/settings/experimental" label={sidebarNav.instanceExperimental} icon={FlaskConical} />
+          <SidebarNavItem to="/instance/settings/plugins" label={sidebarNav.instancePlugins} icon={Puzzle} />
+          <SidebarNavItem to="/instance/settings/adapters" label={sidebarNav.instanceAdapters} icon={Cpu} />
           {(plugins ?? []).length > 0 ? (
             <div className="ml-4 mt-1 flex flex-col gap-0.5 border-l border-border/70 pl-3">
               {(plugins ?? []).map((plugin) => (

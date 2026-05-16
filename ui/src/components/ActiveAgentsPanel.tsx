@@ -6,7 +6,7 @@ import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import type { TranscriptEntry } from "../adapters";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
-import { activeAgentsPanel, dashboard } from "../lib/i18n";
+import { activeAgentsPanel, issueDetailUi, dashboard } from "../lib/i18n";
 import { cn, relativeTime } from "../lib/utils";
 import { ExternalLink } from "lucide-react";
 import { Identity } from "./Identity";
@@ -165,7 +165,7 @@ const AgentRunCard = memo(function AgentRunCard({
               <Identity name={run.agentName} size="sm" className="[&>span:last-child]:!text-[11px]" />
             </div>
             <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
-              <span>{isActive ? "Live now" : run.finishedAt ? `Finished ${relativeTime(run.finishedAt)}` : `Started ${relativeTime(run.createdAt)}`}</span>
+              <span>{isActive ? issueDetailUi.liveNow : run.finishedAt ? `${issueDetailUi.finishedPrefix}${relativeTime(run.finishedAt)}` : `${issueDetailUi.startedPrefix}${relativeTime(run.createdAt)}`}</span>
             </div>
           </div>
 

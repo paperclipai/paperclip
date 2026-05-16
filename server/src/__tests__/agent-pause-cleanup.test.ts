@@ -178,6 +178,52 @@ describeEmbeddedPostgres("agent pause clears checkout and wakeups", () => {
     expect(wake?.error).toContain("Cancelled due to agent pause");
   });
 
+  it("cancels deferred_issue_execution wakeups with null runId when pausing", async () => {
+    const { agentId, issueId } = await seedCompanyAgentIssueWithRun({ agentStatusBeforePause: "active" });
+
+    const deferredWakeId = randomUUID();
+    const companyIdRow = await db
+      .select({ companyId: agents.companyId })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((r) => r[0]!);
+
+    // Use a payload issueId distinct from the seeded checkout issue so releaseIssueExecutionAndPromote
+    // does not promote/fail this row while draining deferred wakes for the run being cancelled.
+    const deferredIssueId = randomUUID();
+
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId: companyIdRow.companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      payload: {
+        issueId: deferredIssueId,
+        _paperclipWakeContext: { issueId: deferredIssueId, wakeReason: "mention_wake" },
+      },
+      status: "deferred_issue_execution",
+      runId: null,
+      requestedAt: new Date(),
+    });
+
+    expect(issueId).not.toBe(deferredIssueId);
+
+    await db.update(agents).set({ status: "paused", pauseReason: "manual", pausedAt: new Date() }).where(eq(agents.id, agentId));
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.cancelActiveForAgent(agentId);
+
+    const wake = await db
+      .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0]);
+    expect(wake?.status).toBe("cancelled");
+    expect(wake?.error).toContain("Cancelled due to agent pause");
+  });
+
   it("does not create stranded recovery children when operational pause cancels the checkout run", async () => {
     const { agentId, issueId } = await seedCompanyAgentIssueWithRun({ agentStatusBeforePause: "active" });
 

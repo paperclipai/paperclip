@@ -11,6 +11,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { ActivityRow } from "../components/ActivityRow";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { activityPage } from "../lib/i18n";
 import {
   Select,
   SelectContent,
@@ -39,7 +40,13 @@ function activityEntityName(event: ActivityEvent) {
 }
 
 function activityEntityTitle(event: ActivityEvent) {
-  if (event.entityType === "issue") return detailString(event, "issueTitle", "title");
+  if (event.entityType === "issue") {
+    const title = detailString(event, "issueTitle", "title");
+    if (title && title.startsWith("Recover missing next step")) {
+      return title.replace("Recover missing next step", "恢复缺失下一步");
+    }
+    return title;
+  }
   return null;
 }
 
@@ -49,7 +56,7 @@ export function Activity() {
   const [filter, setFilter] = useState("all");
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Activity" }]);
+    setBreadcrumbs([{ label: activityPage.breadcrumb }]);
   }, [setBreadcrumbs]);
 
   const { data, isLoading, error } = useQuery({
@@ -101,7 +108,7 @@ export function Activity() {
   }, [data]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={History} message="Select a company to view activity." />;
+    return <EmptyState icon={History} message={activityPage.selectCompany} />;
   }
 
   if (isLoading) {
@@ -122,13 +129,14 @@ export function Activity() {
       <div className="flex items-center justify-end">
         <Select value={filter} onValueChange={setFilter}>
           <SelectTrigger className="w-[140px] h-8 text-xs">
-            <SelectValue placeholder="Filter by type" />
+            <SelectValue placeholder={activityPage.filterPlaceholder} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All types</SelectItem>
+            <SelectItem value="all">{activityPage.allTypes}</SelectItem>
             {entityTypes.map((type) => (
               <SelectItem key={type} value={type}>
-                {type.charAt(0).toUpperCase() + type.slice(1)}
+                {activityPage.entityTypeLabels[type as keyof typeof activityPage.entityTypeLabels]
+                  ?? type.charAt(0).toUpperCase() + type.slice(1)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -138,7 +146,7 @@ export function Activity() {
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {filtered && filtered.length === 0 && (
-        <EmptyState icon={History} message="No activity yet." />
+        <EmptyState icon={History} message={activityPage.noActivity} />
       )}
 
       {filtered && filtered.length > 0 && (

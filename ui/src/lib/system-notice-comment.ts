@@ -9,14 +9,12 @@ import type {
   SystemNoticeProps,
   SystemNoticeTone,
 } from "../components/SystemNotice";
+import { systemNoticeLabels, systemNoticeMetaLabels } from "../lib/i18n";
 
-const TONE_LABEL: Record<SystemNoticeTone, string> = {
-  neutral: "System notice",
-  info: "System notice",
-  success: "System notice",
-  warning: "System warning",
-  danger: "System alert",
-};
+function translateLabel(label: string | undefined | null): string {
+  if (!label) return "";
+  return systemNoticeMetaLabels[label] ?? label;
+}
 
 function metadataRowText(row: { label?: string | null }, fallback: string) {
   const label = row.label?.trim();
@@ -33,15 +31,15 @@ function mapMetadataRow(
     case "code":
       return { kind: "code", label: metadataRowText(row, "Code"), value: row.code };
     case "key_value":
-      return { kind: "text", label: row.label, value: row.value };
+      return { kind: "text", label: translateLabel(row.label), value: row.value };
     case "issue_link": {
       const identifier = row.identifier ?? null;
       if (!identifier) {
-        return { kind: "text", label: metadataRowText(row, "Issue"), value: row.title ?? "unknown" };
+        return { kind: "text", label: translateLabel(row.label), value: row.title ?? "unknown" };
       }
       return {
         kind: "issue",
-        label: metadataRowText(row, "Issue"),
+        label: translateLabel(row.label),
         identifier,
         href: `/issues/${identifier}`,
         title: row.title ?? undefined,
@@ -51,7 +49,7 @@ function mapMetadataRow(
       const name = row.name?.trim() || row.agentId.slice(0, 8);
       return {
         kind: "agent",
-        label: metadataRowText(row, "Agent"),
+        label: translateLabel(row.label),
         name,
         href: `/agents/${row.agentId}`,
       };
@@ -61,7 +59,7 @@ function mapMetadataRow(
       const href = runAgentId ? `/agents/${runAgentId}/runs/${row.runId}` : undefined;
       return {
         kind: "run",
-        label: metadataRowText(row, "Run"),
+        label: translateLabel(row.label),
         runId: row.runId,
         href,
         status: row.title ?? undefined,
@@ -81,10 +79,11 @@ export function mapCommentMetadataToSystemNoticeSections(
     .map((section) => {
       const rows = section.rows
         .map((row) => mapMetadataRow(row, ctx))
-        .filter((r): r is SystemNoticeMetadataRow => r !== null);
+        .filter((r): r is SystemNoticeMetadataRow => r !== null)
+        .map((r) => ({ ...r, label: translateLabel(r.label) }));
       if (rows.length === 0) return null;
       const out: SystemNoticeMetadataSection = { rows };
-      if (section.title) out.title = section.title;
+      if (section.title) out.title = translateLabel(section.title);
       return out;
     })
     .filter((s): s is SystemNoticeMetadataSection => s !== null);
@@ -96,7 +95,7 @@ export function systemNoticeLabelForTone(
 ): string {
   const trimmed = presentationTitle?.trim();
   if (trimmed && trimmed.length > 0) return trimmed;
-  return TONE_LABEL[tone];
+  return systemNoticeLabels[tone];
 }
 
 export function buildSystemNoticeProps(input: {

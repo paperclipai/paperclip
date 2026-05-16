@@ -1,7 +1,7 @@
 #!/usr/bin/env -S node --import tsx
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -24,19 +24,46 @@ type BindMode = (typeof BIND_MODES)[number];
 const worktreeEnvBootstrap = bootstrapDevRunnerWorktreeEnv(repoRoot, process.env);
 if (worktreeEnvBootstrap.missingEnv) {
   console.error(
-    `[paperclip] linked git worktree at ${repoRoot} is missing ${path.relative(repoRoot, worktreeEnvBootstrap.envPath)}. Run \`paperclipai worktree init\` in this worktree before \`pnpm dev\`.`,
+    `[paperclip] linked git worktree at ${repoRoot} is missing ${path.relative(repoRoot, worktreeEnvBootstrap.envPath)}. Run \`paperclipai worktree init\` in this worktree before starting the dev server.`,
   );
   process.exit(1);
 }
 
-const mode = process.argv[2] === "watch" ? "watch" : "dev";
-const cliArgs = process.argv.slice(3);
+function readRootEnvFileValue(key: string): string | undefined {
+  const envPath = path.join(repoRoot, ".env");
+  if (!existsSync(envPath)) return undefined;
+  const lines = readFileSync(envPath, "utf8").split(/\r?\n/);
+  const prefix = `${key}=`;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    if (!trimmed.startsWith(prefix)) continue;
+    let value = trimmed.slice(prefix.length).trim();
+    if (
+      (value.startsWith("\"") && value.endsWith("\"")) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    return value;
+  }
+  return undefined;
+}
+
+if (process.argv[2] === "watch") {
+  console.error(
+    "[paperclip] Removed: tsx file-watch dev (unreliable on Windows NTFS). Use `pnpm dev` (same entry as `dev:once`) or `scripts/start-paperclip-dev-external.ps1`.",
+  );
+  process.exit(1);
+}
+
+const cliArgs = process.argv.slice(2);
 const scanIntervalMs = 1500;
 const autoRestartPollIntervalMs = 2500;
 const gracefulShutdownTimeoutMs = 10_000;
 const changedPathSampleLimit = 5;
 const devServerStatusFilePath = path.join(repoRoot, ".paperclip", "dev-server-status.json");
-const devServerStatusToken = mode === "dev" ? randomUUID() : null;
+const devServerStatusToken = randomUUID();
 const devServerStatusTokenHeader = "x-paperclip-dev-server-status-token";
 
 const watchedDirectories = [
@@ -134,17 +161,19 @@ const env: NodeJS.ProcessEnv = {
   PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
 };
 
-if (mode === "dev") {
-  env.PAPERCLIP_DEV_SERVER_STATUS_FILE = devServerStatusFilePath;
-  env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN = devServerStatusToken ?? "";
-  env.PAPERCLIP_MIGRATION_AUTO_APPLY ??= "true";
+if (env.PAPERCLIP_STRICT_PORTS === undefined) {
+  const fromRootDotenv = readRootEnvFileValue("PAPERCLIP_STRICT_PORTS");
+  if (fromRootDotenv !== undefined) {
+    env.PAPERCLIP_STRICT_PORTS = fromRootDotenv;
+  }
+}
+if (env.PAPERCLIP_STRICT_PORTS === undefined) {
+  env.PAPERCLIP_STRICT_PORTS = "true";
 }
 
-if (mode === "watch") {
-  delete env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN;
-  env.PAPERCLIP_MIGRATION_PROMPT ??= "never";
-  env.PAPERCLIP_MIGRATION_AUTO_APPLY ??= "true";
-}
+env.PAPERCLIP_DEV_SERVER_STATUS_FILE = devServerStatusFilePath;
+env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN = devServerStatusToken;
+env.PAPERCLIP_MIGRATION_AUTO_APPLY ??= "true";
 
 if (tailscaleAuth || bindMode) {
   const effectiveBind = bindMode ?? "lan";
@@ -181,7 +210,6 @@ if (tailscaleAuth || bindMode) {
 
 const serverPort = Number.parseInt(env.PORT ?? process.env.PORT ?? "3100", 10) || 3100;
 const devService = createDevServiceIdentity({
-  mode,
   forwardedArgs,
   networkProfile: tailscaleAuth ? `legacy:${bindMode ?? "lan"}` : (bindMode ?? "default"),
   port: serverPort,
@@ -327,8 +355,6 @@ function ensureDevStatusDirectory() {
 }
 
 function writeDevServerStatus() {
-  if (mode !== "dev") return;
-
   ensureDevStatusDirectory();
   const changedPaths = [...dirtyPaths].sort();
   writeFileSync(
@@ -346,7 +372,6 @@ function writeDevServerStatus() {
 }
 
 function clearDevServerStatus() {
-  if (mode !== "dev") return;
   rmSync(devServerStatusFilePath, { force: true });
 }
 
@@ -370,7 +395,6 @@ async function updateDevServiceRecord(extra?: Record<string, unknown>) {
     lastSeenAt: new Date().toISOString(),
     metadata: {
       repoRoot,
-      mode,
       childPid: child?.pid ?? null,
       url: `http://127.0.0.1:${serverPort}`,
       ...extra,
@@ -456,9 +480,9 @@ async function refreshPendingMigrations() {
 }
 
 async function maybePreflightMigrations(options: { interactive?: boolean; autoApply?: boolean; exitOnDecline?: boolean } = {}) {
-  const interactive = options.interactive ?? mode === "watch";
+  const interactive = options.interactive ?? false;
   const autoApply = options.autoApply ?? env.PAPERCLIP_MIGRATION_AUTO_APPLY === "true";
-  const exitOnDecline = options.exitOnDecline ?? mode === "watch";
+  const exitOnDecline = options.exitOnDecline ?? false;
 
   const payload = await refreshPendingMigrations();
   if (payload.status !== "needsMigrations" || pendingMigrations.length === 0) {
@@ -490,7 +514,7 @@ async function maybePreflightMigrations(options: { interactive?: boolean; autoAp
   if (!shouldApply) {
     if (exitOnDecline) {
       process.stderr.write(
-        `[paperclip] Pending migrations detected (${formatPendingMigrationSummary(pendingMigrations)}). Refusing to start watch mode against a stale schema.\n`,
+        `[paperclip] Pending migrations detected (${formatPendingMigrationSummary(pendingMigrations)}). Refusing to start dev server against a stale schema.\n`,
       );
       process.exit(1);
     }
@@ -539,7 +563,7 @@ async function markChildAsCurrent() {
 }
 
 async function scanForBackendChanges() {
-  if (mode !== "dev" || scanInFlight || restartInFlight) return;
+  if (scanInFlight || restartInFlight) return;
   scanInFlight = true;
   try {
     const nextSnapshot = collectWatchedSnapshot();
@@ -593,7 +617,7 @@ async function stopChildForRestart() {
 async function startServerChild() {
   await buildPluginSdk();
 
-  const serverScript = mode === "watch" ? "dev:watch" : "dev";
+  const serverScript = "dev";
   child = spawn(
     pnpmBin,
     ["--filter", "@paperclipai/server", serverScript, ...forwardedArgs],
@@ -610,7 +634,6 @@ async function startServerChild() {
       void touchLocalServiceRegistryRecord(devService.serviceKey, {
         metadata: {
           repoRoot,
-          mode,
           childPid: null,
           url: `http://127.0.0.1:${serverPort}`,
         },
@@ -632,7 +655,7 @@ async function startServerChild() {
 }
 
 async function maybeAutoRestartChild() {
-  if (mode !== "dev" || restartInFlight || !child) return;
+  if (restartInFlight || !child) return;
   if (dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
 
   restartInFlight = true;
@@ -672,8 +695,6 @@ async function maybeAutoRestartChild() {
 }
 
 function installDevIntervals() {
-  if (mode !== "dev") return;
-
   scanTimer = setInterval(() => {
     void scanForBackendChanges();
   }, scanIntervalMs);
@@ -725,12 +746,3 @@ process.on("SIGTERM", () => {
 await maybePreflightMigrations();
 await startServerChild();
 installDevIntervals();
-
-if (mode === "watch") {
-  const exit = await waitForChildExit();
-  await removeLocalServiceRegistryRecord(devService.serviceKey);
-  if (exit.signal) {
-    exitForSignal(exit.signal);
-  }
-  process.exit(exit.code ?? 0);
-}

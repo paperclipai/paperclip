@@ -16,8 +16,8 @@ updated: "2004-05-14"
 |------|------|
 | 负责人 | AI（本地）+ Board 复核 |
 | 状态 | 已完成 |
-| 下一步 | A→F 已跑并写入 [`探查/探查-ROU-21-完成后反复唤醒.md`](../探查/探查-ROU-21-完成后反复唤醒.md) **§011 取证执行记录**；ROU-21 上 **`issue_assigned` 仅 1 次**（非关单后 burst）；`live-runs` 空；Board 若换数据可重跑对照 |
-| 证据 | 见本文与 [`../探查/探查-ROU-21-完成后反复唤醒.md`](../探查/探查-ROU-21-完成后反复唤醒.md) **§011 取证执行记录**；代码 `server/src/services/issue-assignment-wakeup.ts`。 |
+| 下一步 | A→F 已跑并写入 [`探查/003-探查-ROU-21-完成后反复唤醒.md`](../探查/003-探查-ROU-21-完成后反复唤醒.md) **§011 取证执行记录**；ROU-21 上 **`issue_assigned` 仅 1 次**（非关单后 burst）；`live-runs` 空；Board 若换数据可重跑对照 |
+| 证据 | 见本文与 [`../探查/003-探查-ROU-21-完成后反复唤醒.md`](../探查/003-探查-ROU-21-完成后反复唤醒.md) **§011 取证执行记录**；代码 `server/src/services/issue-assignment-wakeup.ts`。 |
 
 ## 说明
 

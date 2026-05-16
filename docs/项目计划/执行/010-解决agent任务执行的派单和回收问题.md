@@ -2,7 +2,7 @@
 id: exec-010-agent-dispatch-reclaim
 status: 待办
 ledger: ./任务执行台账.md
-updated: "2004-05-13T23:10"
+updated: "2026-05-16T12:00"
 ---
 
 # 任务 010 — 解决 agent 任务执行的派单和回收问题
@@ -64,16 +64,33 @@ Cursor agent `b064fe96`（Composer 2 Fast），routic 公司 `cc098628`，Paperc
 
 ## 3. 执行方案
 
-（待分析——需要阅读以下代码路径）
+### 本轮已落地（编排层，无 UI、无适配器）
 
-- `server/src/services/heartbeat.ts` — executeRun / claimQueuedRun 逻辑
-- `server/src/services/issue-assignment-wakeup.ts` — assign 时的自动 issue 创建
-- `server/src/routes/agents.ts` — on_demand wakeup 请求处理
-- `server/src/services/run-liveness.ts` — run 生命期回收
-- `packages/adapters/cursor-local/src/server/execute.ts` — 进程退出后 run 状态更新
+1. **裸唤醒（无 issue）** — **HB-010 bare wake**  
+   - **`source === "on_demand"`** 且 **`reason` 非空**（trim 后）且 **解析不到 `issueId`**（payload / snapshot / resume 覆盖均无效）→ **不入队**，`agent_wakeup_requests.reason = heartbeat.on_demand_bare_wake`。  
+   - **例外**：传统空 body `/heartbeat/invoke`（无 `reason`）仍可入队，避免破坏既有探测/E2E。  
+   - 代码：`heartbeat.ts` → `enqueueWakeup`。
+
+2. **僵尸 run（issue 已终态，run 仍 running）** — **HB-010 terminal reconcile**  
+   - `heartbeat.reconcileTerminalIssueRunningRuns`：`running` 且 snapshot `issueId` 指向 **`done`/`cancelled`** 的 issue → `cancelRunInternal`（释放执行锁逻辑沿用既有路径）。  
+   - **调度**：每次 **`tickTimers`** 开头调用（与定时心跳同节奏）。  
+   - 常量消息：`RUN_CANCEL_ISSUE_TERMINAL_WHILE_RUNNING`（`orchestration-invariants.ts`）。
+
+3. **最小验证**：`server/src/__tests__/orchestration-heartbeat-guards.test.ts`。
+
+### 仍未在本轮落地
+
+- **重复 issue（标题完全一致）**：需在 `POST /issues` 或产品策略层单独定幂等规则（避免误伤合法同名）；保留为后续单。
+
+### 参考路径（继续排查时）
+
+- `server/src/services/heartbeat.ts` — `enqueueWakeup` / `claimQueuedRun` / `tickTimers`
+- `server/src/services/issue-assignment-wakeup.ts`
+- `server/src/routes/agents.ts` — wakeup / invoke
+- `server/src/services/run-liveness.ts`
 
 ---
 
 ## 4. 执行回写
 
-（待执行）
+- 2026-05-16：已落地裸唤醒闸门 + 终态 issue 对 running run 的编排回收；Vitest 证据见 `orchestration-heartbeat-guards.test.ts`。**重复 issue** 未改。

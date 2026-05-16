@@ -1,4 +1,4 @@
-# 默认只启动 Postgres，供宿主机 `pnpm dev` 通过 DATABASE_URL 连接。
+# 默认只启动 Postgres，供宿主机受管 `pnpm dev`（dev-runner）通过 DATABASE_URL 连接。
 # 需要「容器内跑完整回形针」时：`docker compose -f docker/docker-compose.yml --profile container-server up --build -d`
 services:
   db:

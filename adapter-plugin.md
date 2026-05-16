@@ -130,10 +130,7 @@
   - first couple of UI consumers
 
    One note
-   There was already an unrelated dirty change in:
-  - server/scripts/dev-watch.ts
-
-   I left that alone and did not make phase-1 changes there.
+   Historical reference only; `server/scripts/dev-watch.ts` has been removed from this fork (NTFS / watch reliability).
 
    Recommended next move
    I should keep going on this same branch and do the stabilization pass:

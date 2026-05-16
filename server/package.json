@@ -33,7 +33,6 @@
   ],
   "scripts": {
     "dev": "node ./node_modules/tsx/dist/cli.mjs src/index.ts",
-    "dev:watch": "cross-env PAPERCLIP_MIGRATION_PROMPT=never PAPERCLIP_MIGRATION_AUTO_APPLY=true node ./node_modules/tsx/dist/cli.mjs ./scripts/dev-watch.ts",
     "prepare:ui-dist": "bash ../scripts/prepare-server-ui-dist.sh",
     "build": "tsc && mkdir -p dist/onboarding-assets && cp -R src/onboarding-assets/. dist/onboarding-assets/",
     "prepack": "pnpm run prepare:ui-dist",
@@ -89,7 +88,6 @@
     "@types/sharp": "^0.32.0",
     "@types/supertest": "^6.0.2",
     "@types/ws": "^8.18.1",
-    "cross-env": "^10.1.0",
     "supertest": "^7.0.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",

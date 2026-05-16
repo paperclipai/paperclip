@@ -82,7 +82,7 @@ pnpm issue:forensics -- --company <companyUuid> --issue ROU-20 --run 4
 
 **硬规则**：`--company` 必须与 `GET /api/issues/{ref}` 返回的 **`companyId`** 一致，否则脚本直接退出（防串租户）。
 
-更多踩坑见 **`../最佳实践/实践-工单运行记录API取证路径.md`**。
+更多踩坑见 **`../最佳实践/002-实践-工单运行记录API取证路径.md`**。
 
 ---
 
@@ -150,6 +150,6 @@ pnpm issue:forensics -- --company <companyUuid> --issue ROU-20 --run 4
 
 - `探查-ROU-20-运行记录.md`  
 - `探查-process_lost_retry.md`  
-- `../最佳实践/实践-工单运行记录API取证路径.md`  
+- `../最佳实践/002-实践-工单运行记录API取证路径.md`  
 
 **最后更新**：与脚本 `issue-run-forensics.mjs` 本轮增强同步。

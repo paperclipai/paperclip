@@ -1,0 +1,1056 @@
+{
+  "generatedAt": "2026-05-16T11:45:27.120Z",
+  "description": "Orchestration-plane tables only; column names match Postgres. Regenerate: pnpm schema:snapshot:orchestration",
+  "schemaSource": "packages/db/src/schema/*.ts",
+  "tables": [
+    {
+      "pgTable": "companies",
+      "columns": [
+        {
+          "jsName": "id",
+          "dbName": "id",
+          "notNull": true,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "name",
+          "dbName": "name",
+          "notNull": true,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "description",
+          "dbName": "description",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "status",
+          "dbName": "status",
+          "notNull": true,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "pauseReason",
+          "dbName": "pause_reason",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "pausedAt",
+          "dbName": "paused_at",
+          "notNull": false,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "issuePrefix",
+          "dbName": "issue_prefix",
+          "notNull": true,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "issueCounter",
+          "dbName": "issue_counter",
+          "notNull": true,
+          "drizzleColumnType": "PgInteger"
+        },
+        {
+          "jsName": "budgetMonthlyCents",
+          "dbName": "budget_monthly_cents",
+          "notNull": true,
+          "drizzleColumnType": "PgInteger"
+        },
+        {
+          "jsName": "spentMonthlyCents",
+          "dbName": "spent_monthly_cents",
+          "notNull": true,
+          "drizzleColumnType": "PgInteger"
+        },
+        {
+          "jsName": "attachmentMaxBytes",
+          "dbName": "attachment_max_bytes",
+          "notNull": true,
+          "drizzleColumnType": "PgInteger"
+        },
+        {
+          "jsName": "requireBoardApprovalForNewAgents",
+          "dbName": "require_board_approval_for_new_agents",
+          "notNull": true,
+          "drizzleColumnType": "PgBoolean"
+        },
+        {
+          "jsName": "feedbackDataSharingEnabled",
+          "dbName": "feedback_data_sharing_enabled",
+          "notNull": true,
+          "drizzleColumnType": "PgBoolean"
+        },
+        {
+          "jsName": "feedbackDataSharingConsentAt",
+          "dbName": "feedback_data_sharing_consent_at",
+          "notNull": false,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "feedbackDataSharingConsentByUserId",
+          "dbName": "feedback_data_sharing_consent_by_user_id",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "feedbackDataSharingTermsVersion",
+          "dbName": "feedback_data_sharing_terms_version",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "brandColor",
+          "dbName": "brand_color",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "createdAt",
+          "dbName": "created_at",
+          "notNull": true,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "updatedAt",
+          "dbName": "updated_at",
+          "notNull": true,
+          "drizzleColumnType": "PgTimestamp"
+        }
+      ]
+    },
+    {
+      "pgTable": "agents",
+      "columns": [
+        {
+          "jsName": "id",
+          "dbName": "id",
+          "notNull": true,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "companyId",
+          "dbName": "company_id",
+          "notNull": true,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "name",
+          "dbName": "name",
+          "notNull": true,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "role",
+          "dbName": "role",
+          "notNull": true,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "title",
+          "dbName": "title",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "icon",
+          "dbName": "icon",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "status",
+          "dbName": "status",
+          "notNull": true,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "reportsTo",
+          "dbName": "reports_to",
+          "notNull": false,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "capabilities",
+          "dbName": "capabilities",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "adapterType",
+          "dbName": "adapter_type",
+          "notNull": true,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "adapterConfig",
+          "dbName": "adapter_config",
+          "notNull": true,
+          "drizzleColumnType": "PgJsonb"
+        },
+        {
+          "jsName": "runtimeConfig",
+          "dbName": "runtime_config",
+          "notNull": true,
+          "drizzleColumnType": "PgJsonb"
+        },
+        {
+          "jsName": "defaultEnvironmentId",
+          "dbName": "default_environment_id",
+          "notNull": false,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "budgetMonthlyCents",
+          "dbName": "budget_monthly_cents",
+          "notNull": true,
+          "drizzleColumnType": "PgInteger"
+        },
+        {
+          "jsName": "spentMonthlyCents",
+          "dbName": "spent_monthly_cents",
+          "notNull": true,
+          "drizzleColumnType": "PgInteger"
+        },
+        {
+          "jsName": "pauseReason",
+          "dbName": "pause_reason",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "pausedAt",
+          "dbName": "paused_at",
+          "notNull": false,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "permissions",
+          "dbName": "permissions",
+          "notNull": true,
+          "drizzleColumnType": "PgJsonb"
+        },
+        {
+          "jsName": "lastHeartbeatAt",
+          "dbName": "last_heartbeat_at",
+          "notNull": false,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "metadata",
+          "dbName": "metadata",
+          "notNull": false,
+          "drizzleColumnType": "PgJsonb"
+        },
+        {
+          "jsName": "createdAt",
+          "dbName": "created_at",
+          "notNull": true,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "updatedAt",
+          "dbName": "updated_at",
+          "notNull": true,
+          "drizzleColumnType": "PgTimestamp"
+        }
+      ]
+    },
+    {
+      "pgTable": "issues",
+      "columns": [
+        {
+          "jsName": "id",
+          "dbName": "id",
+          "notNull": true,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "companyId",
+          "dbName": "company_id",
+          "notNull": true,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "projectId",
+          "dbName": "project_id",
+          "notNull": false,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "projectWorkspaceId",
+          "dbName": "project_workspace_id",
+          "notNull": false,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "goalId",
+          "dbName": "goal_id",
+          "notNull": false,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "parentId",
+          "dbName": "parent_id",
+          "notNull": false,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "title",
+          "dbName": "title",
+          "notNull": true,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "description",
+          "dbName": "description",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "status",
+          "dbName": "status",
+          "notNull": true,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "workMode",
+          "dbName": "work_mode",
+          "notNull": true,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "priority",
+          "dbName": "priority",
+          "notNull": true,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "assigneeAgentId",
+          "dbName": "assignee_agent_id",
+          "notNull": false,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "assigneeUserId",
+          "dbName": "assignee_user_id",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "checkoutRunId",
+          "dbName": "checkout_run_id",
+          "notNull": false,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "executionRunId",
+          "dbName": "execution_run_id",
+          "notNull": false,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "executionAgentNameKey",
+          "dbName": "execution_agent_name_key",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "executionLockedAt",
+          "dbName": "execution_locked_at",
+          "notNull": false,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "createdByAgentId",
+          "dbName": "created_by_agent_id",
+          "notNull": false,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "createdByUserId",
+          "dbName": "created_by_user_id",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "issueNumber",
+          "dbName": "issue_number",
+          "notNull": false,
+          "drizzleColumnType": "PgInteger"
+        },
+        {
+          "jsName": "identifier",
+          "dbName": "identifier",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "originKind",
+          "dbName": "origin_kind",
+          "notNull": true,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "originId",
+          "dbName": "origin_id",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "originRunId",
+          "dbName": "origin_run_id",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "originFingerprint",
+          "dbName": "origin_fingerprint",
+          "notNull": true,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "requestDepth",
+          "dbName": "request_depth",
+          "notNull": true,
+          "drizzleColumnType": "PgInteger"
+        },
+        {
+          "jsName": "billingCode",
+          "dbName": "billing_code",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "assigneeAdapterOverrides",
+          "dbName": "assignee_adapter_overrides",
+          "notNull": false,
+          "drizzleColumnType": "PgJsonb"
+        },
+        {
+          "jsName": "executionPolicy",
+          "dbName": "execution_policy",
+          "notNull": false,
+          "drizzleColumnType": "PgJsonb"
+        },
+        {
+          "jsName": "executionState",
+          "dbName": "execution_state",
+          "notNull": false,
+          "drizzleColumnType": "PgJsonb"
+        },
+        {
+          "jsName": "monitorNextCheckAt",
+          "dbName": "monitor_next_check_at",
+          "notNull": false,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "monitorWakeRequestedAt",
+          "dbName": "monitor_wake_requested_at",
+          "notNull": false,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "monitorLastTriggeredAt",
+          "dbName": "monitor_last_triggered_at",
+          "notNull": false,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "monitorAttemptCount",
+          "dbName": "monitor_attempt_count",
+          "notNull": true,
+          "drizzleColumnType": "PgInteger"
+        },
+        {
+          "jsName": "monitorNotes",
+          "dbName": "monitor_notes",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "monitorScheduledBy",
+          "dbName": "monitor_scheduled_by",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "executionWorkspaceId",
+          "dbName": "execution_workspace_id",
+          "notNull": false,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "executionWorkspacePreference",
+          "dbName": "execution_workspace_preference",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "executionWorkspaceSettings",
+          "dbName": "execution_workspace_settings",
+          "notNull": false,
+          "drizzleColumnType": "PgJsonb"
+        },
+        {
+          "jsName": "startedAt",
+          "dbName": "started_at",
+          "notNull": false,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "completedAt",
+          "dbName": "completed_at",
+          "notNull": false,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "cancelledAt",
+          "dbName": "cancelled_at",
+          "notNull": false,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "hiddenAt",
+          "dbName": "hidden_at",
+          "notNull": false,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "createdAt",
+          "dbName": "created_at",
+          "notNull": true,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "updatedAt",
+          "dbName": "updated_at",
+          "notNull": true,
+          "drizzleColumnType": "PgTimestamp"
+        }
+      ]
+    },
+    {
+      "pgTable": "issue_comments",
+      "columns": [
+        {
+          "jsName": "id",
+          "dbName": "id",
+          "notNull": true,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "companyId",
+          "dbName": "company_id",
+          "notNull": true,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "issueId",
+          "dbName": "issue_id",
+          "notNull": true,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "authorAgentId",
+          "dbName": "author_agent_id",
+          "notNull": false,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "authorUserId",
+          "dbName": "author_user_id",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "authorType",
+          "dbName": "author_type",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "createdByRunId",
+          "dbName": "created_by_run_id",
+          "notNull": false,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "body",
+          "dbName": "body",
+          "notNull": true,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "presentation",
+          "dbName": "presentation",
+          "notNull": false,
+          "drizzleColumnType": "PgJsonb"
+        },
+        {
+          "jsName": "metadata",
+          "dbName": "metadata",
+          "notNull": false,
+          "drizzleColumnType": "PgJsonb"
+        },
+        {
+          "jsName": "createdAt",
+          "dbName": "created_at",
+          "notNull": true,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "updatedAt",
+          "dbName": "updated_at",
+          "notNull": true,
+          "drizzleColumnType": "PgTimestamp"
+        }
+      ]
+    },
+    {
+      "pgTable": "activity_log",
+      "columns": [
+        {
+          "jsName": "id",
+          "dbName": "id",
+          "notNull": true,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "companyId",
+          "dbName": "company_id",
+          "notNull": true,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "actorType",
+          "dbName": "actor_type",
+          "notNull": true,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "actorId",
+          "dbName": "actor_id",
+          "notNull": true,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "action",
+          "dbName": "action",
+          "notNull": true,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "entityType",
+          "dbName": "entity_type",
+          "notNull": true,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "entityId",
+          "dbName": "entity_id",
+          "notNull": true,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "agentId",
+          "dbName": "agent_id",
+          "notNull": false,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "runId",
+          "dbName": "run_id",
+          "notNull": false,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "details",
+          "dbName": "details",
+          "notNull": false,
+          "drizzleColumnType": "PgJsonb"
+        },
+        {
+          "jsName": "createdAt",
+          "dbName": "created_at",
+          "notNull": true,
+          "drizzleColumnType": "PgTimestamp"
+        }
+      ]
+    },
+    {
+      "pgTable": "heartbeat_runs",
+      "columns": [
+        {
+          "jsName": "id",
+          "dbName": "id",
+          "notNull": true,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "companyId",
+          "dbName": "company_id",
+          "notNull": true,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "agentId",
+          "dbName": "agent_id",
+          "notNull": true,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "invocationSource",
+          "dbName": "invocation_source",
+          "notNull": true,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "triggerDetail",
+          "dbName": "trigger_detail",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "status",
+          "dbName": "status",
+          "notNull": true,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "startedAt",
+          "dbName": "started_at",
+          "notNull": false,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "finishedAt",
+          "dbName": "finished_at",
+          "notNull": false,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "error",
+          "dbName": "error",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "wakeupRequestId",
+          "dbName": "wakeup_request_id",
+          "notNull": false,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "exitCode",
+          "dbName": "exit_code",
+          "notNull": false,
+          "drizzleColumnType": "PgInteger"
+        },
+        {
+          "jsName": "signal",
+          "dbName": "signal",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "usageJson",
+          "dbName": "usage_json",
+          "notNull": false,
+          "drizzleColumnType": "PgJsonb"
+        },
+        {
+          "jsName": "resultJson",
+          "dbName": "result_json",
+          "notNull": false,
+          "drizzleColumnType": "PgJsonb"
+        },
+        {
+          "jsName": "sessionIdBefore",
+          "dbName": "session_id_before",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "sessionIdAfter",
+          "dbName": "session_id_after",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "logStore",
+          "dbName": "log_store",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "logRef",
+          "dbName": "log_ref",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "logBytes",
+          "dbName": "log_bytes",
+          "notNull": false,
+          "drizzleColumnType": "PgBigInt53"
+        },
+        {
+          "jsName": "logSha256",
+          "dbName": "log_sha256",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "logCompressed",
+          "dbName": "log_compressed",
+          "notNull": true,
+          "drizzleColumnType": "PgBoolean"
+        },
+        {
+          "jsName": "stdoutExcerpt",
+          "dbName": "stdout_excerpt",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "stderrExcerpt",
+          "dbName": "stderr_excerpt",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "errorCode",
+          "dbName": "error_code",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "externalRunId",
+          "dbName": "external_run_id",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "processPid",
+          "dbName": "process_pid",
+          "notNull": false,
+          "drizzleColumnType": "PgInteger"
+        },
+        {
+          "jsName": "processGroupId",
+          "dbName": "process_group_id",
+          "notNull": false,
+          "drizzleColumnType": "PgInteger"
+        },
+        {
+          "jsName": "processStartedAt",
+          "dbName": "process_started_at",
+          "notNull": false,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "lastOutputAt",
+          "dbName": "last_output_at",
+          "notNull": false,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "lastOutputSeq",
+          "dbName": "last_output_seq",
+          "notNull": true,
+          "drizzleColumnType": "PgInteger"
+        },
+        {
+          "jsName": "lastOutputStream",
+          "dbName": "last_output_stream",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "lastOutputBytes",
+          "dbName": "last_output_bytes",
+          "notNull": false,
+          "drizzleColumnType": "PgBigInt53"
+        },
+        {
+          "jsName": "retryOfRunId",
+          "dbName": "retry_of_run_id",
+          "notNull": false,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "processLossRetryCount",
+          "dbName": "process_loss_retry_count",
+          "notNull": true,
+          "drizzleColumnType": "PgInteger"
+        },
+        {
+          "jsName": "scheduledRetryAt",
+          "dbName": "scheduled_retry_at",
+          "notNull": false,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "scheduledRetryAttempt",
+          "dbName": "scheduled_retry_attempt",
+          "notNull": true,
+          "drizzleColumnType": "PgInteger"
+        },
+        {
+          "jsName": "scheduledRetryReason",
+          "dbName": "scheduled_retry_reason",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "issueCommentStatus",
+          "dbName": "issue_comment_status",
+          "notNull": true,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "issueCommentSatisfiedByCommentId",
+          "dbName": "issue_comment_satisfied_by_comment_id",
+          "notNull": false,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "issueCommentRetryQueuedAt",
+          "dbName": "issue_comment_retry_queued_at",
+          "notNull": false,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "livenessState",
+          "dbName": "liveness_state",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "livenessReason",
+          "dbName": "liveness_reason",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "continuationAttempt",
+          "dbName": "continuation_attempt",
+          "notNull": true,
+          "drizzleColumnType": "PgInteger"
+        },
+        {
+          "jsName": "lastUsefulActionAt",
+          "dbName": "last_useful_action_at",
+          "notNull": false,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "nextAction",
+          "dbName": "next_action",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "contextSnapshot",
+          "dbName": "context_snapshot",
+          "notNull": false,
+          "drizzleColumnType": "PgJsonb"
+        },
+        {
+          "jsName": "createdAt",
+          "dbName": "created_at",
+          "notNull": true,
+          "drizzleColumnType": "PgTimestamp"
+        },
+        {
+          "jsName": "updatedAt",
+          "dbName": "updated_at",
+          "notNull": true,
+          "drizzleColumnType": "PgTimestamp"
+        }
+      ]
+    },
+    {
+      "pgTable": "heartbeat_run_events",
+      "columns": [
+        {
+          "jsName": "id",
+          "dbName": "id",
+          "notNull": true,
+          "drizzleColumnType": "PgBigSerial53"
+        },
+        {
+          "jsName": "companyId",
+          "dbName": "company_id",
+          "notNull": true,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "runId",
+          "dbName": "run_id",
+          "notNull": true,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "agentId",
+          "dbName": "agent_id",
+          "notNull": true,
+          "drizzleColumnType": "PgUUID"
+        },
+        {
+          "jsName": "seq",
+          "dbName": "seq",
+          "notNull": true,
+          "drizzleColumnType": "PgInteger"
+        },
+        {
+          "jsName": "eventType",
+          "dbName": "event_type",
+          "notNull": true,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "stream",
+          "dbName": "stream",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "level",
+          "dbName": "level",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "color",
+          "dbName": "color",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "message",
+          "dbName": "message",
+          "notNull": false,
+          "drizzleColumnType": "PgText"
+        },
+        {
+          "jsName": "payload",
+          "dbName": "payload",
+          "notNull": false,
+          "drizzleColumnType": "PgJsonb"
+        },
+        {
+          "jsName": "createdAt",
+          "dbName": "created_at",
+          "notNull": true,
+          "drizzleColumnType": "PgTimestamp"
+        }
+      ]
+    }
+  ]
+}

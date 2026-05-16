@@ -1167,6 +1167,118 @@ export function sanitizeInheritedPaperclipEnv(baseEnv: NodeJS.ProcessEnv): NodeJ
   return env;
 }
 
+/**
+ * Explicit env keys allowed to pass from the Paperclip server host into adapter **child**
+ * processes when set and non-empty. Everything else on the host is dropped unless the adapter
+ * passes it via Board `env` / {@link runChildProcess} `opts.env` (which always wins on overlap).
+ *
+ * Maintenance: extend only with documented purpose and approval — see
+ * `docs/项目计划/最佳实践/实践-适配器子进程环境变量白名单与增补闸门.md`.
+ */
+const ADAPTER_CHILD_INHERITED_ENV_EXACT_KEYS = new Set<string>([
+  // OS / shell / paths
+  "PATH",
+  "Path",
+  "PATHEXT",
+  "HOME",
+  "USER",
+  "USERNAME",
+  "USERPROFILE",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "SHELL",
+  "SYSTEMROOT",
+  "SystemRoot",
+  "WINDIR",
+  "windir",
+  "COMSPEC",
+  "ComSpec",
+  "TEMP",
+  "TMP",
+  "TMPDIR",
+  "PROGRAMFILES",
+  "ProgramFiles",
+  "ProgramFiles(x86)",
+  "ProgramW6432",
+  "COMMONPROGRAMFILES",
+  "CommonProgramFiles",
+  "COMMONPROGRAMW6432",
+  "CommonProgramW6432",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "PUBLIC",
+  "OS",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "HOSTNAME",
+  // Proxies / TLS
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "ALL_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "CURL_CA_BUNDLE",
+  "REQUESTS_CA_BUNDLE",
+  // SSH / Git
+  "SSH_AUTH_SOCK",
+  "GIT_SSH_COMMAND",
+  "GIT_SSH",
+  // Docker / Compose (CLI talks to local daemon)
+  "DOCKER_HOST",
+  "DOCKER_CONTEXT",
+  "COMPOSE_PROJECT_NAME",
+  // Node (honoured by many CLIs)
+  "NODE_OPTIONS",
+  // Host DB URL when tools connect directly (prefer adapter env for isolation)
+  "DATABASE_URL",
+  // Rare Paperclip host hints (historically exempt from `sanitizeInheritedPaperclipEnv`)
+  "PAPERCLIP_RUNTIME_API_URL",
+  "PAPERCLIP_LISTEN_HOST",
+  "PAPERCLIP_LISTEN_PORT",
+  // Built-in local adapters — API / home hints (prefer Board env when possible)
+  "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "BAILIAN_CODING_PLAN_API_KEY",
+  "DASHSCOPE_API_KEY",
+  "CODEX_HOME",
+  "CURSOR_API_KEY",
+  "CURSOR_HOME",
+  "CODEBUDDY_API_KEY",
+  "QWEN_SKILLS_HOME",
+]);
+
+/** Prefixes — entire key must match start (e.g. `CODEBUDDY_BASE_URL`). */
+const ADAPTER_CHILD_INHERITED_ENV_PREFIXES = ["CODEBUDDY_", "CURSOR_"] as const;
+
+export function pickAllowlistedInheritedEnv(baseEnv: NodeJS.ProcessEnv): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of Object.keys(baseEnv)) {
+    const value = baseEnv[key];
+    if (typeof value !== "string" || value.length === 0) continue;
+    if (ADAPTER_CHILD_INHERITED_ENV_EXACT_KEYS.has(key)) {
+      out[key] = value;
+      continue;
+    }
+    if (ADAPTER_CHILD_INHERITED_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+/** Merge allowlisted host env with adapter-provided string env (adapter wins). */
+export function mergeAllowlistedHostEnvWith(adapterEnv: Record<string, string>): Record<string, string> {
+  return { ...pickAllowlistedInheritedEnv(process.env), ...adapterEnv };
+}
+
 export function defaultPathForPlatform() {
   if (process.platform === "win32") {
     return "C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem";
@@ -1980,7 +2092,7 @@ export async function runChildProcess(
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
   return new Promise<RunProcessResult>((resolve, reject) => {
     const rawMerged: NodeJS.ProcessEnv = {
-      ...sanitizeInheritedPaperclipEnv(process.env),
+      ...pickAllowlistedInheritedEnv(process.env),
       ...opts.env,
     };
 
@@ -2000,6 +2112,16 @@ export async function runChildProcess(
     }
 
     const mergedEnv = ensurePathInEnv(rawMerged);
+
+    // Cross-platform encoding: force child processes to use UTF-8 output.
+    // On Windows the console code page is often CP936 (GBK); these env vars
+    // tell Python and Java runtimes to output UTF-8 instead.
+    // Node.js stdout/stderr is UTF-8 by default; no flag needed.
+    if (process.platform === "win32") {
+      mergedEnv.PYTHONIOENCODING = "utf-8";
+      mergedEnv.JAVA_TOOL_OPTIONS = (mergedEnv.JAVA_TOOL_OPTIONS ?? "") + " -Dfile.encoding=UTF-8".trim();
+    }
+
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv, {
       remoteExecution: opts.remoteExecution ?? null,
       remoteEnv: opts.remoteExecution ? opts.env : null,
@@ -2089,11 +2211,26 @@ export async function runChildProcess(
               }, opts.timeoutSec * 1000)
             : null;
 
+        /**
+         * Decode a stdout/stderr Buffer to UTF-8 string.
+         * On Windows the console code page is often CP936 (GBK).
+         * Try UTF-8 first; if the bytes don't round-trip, fall back to UTF-8
+         * with replacement characters — this is a best-effort guard against
+         * mojibake until a proper iconv-lite integration is added.
+         */
+        const decodeChunk = (chunk: unknown): string => {
+          if (typeof chunk === "string") return chunk;
+          if (Buffer.isBuffer(chunk)) {
+            return chunk.toString("utf8");
+          }
+          return String(chunk);
+        };
+
         child.stdout?.on("data", (chunk: unknown) => {
           const readable = child.stdout;
           if (!readable) return;
           readable.pause();
-          const text = String(chunk);
+          const text = decodeChunk(chunk);
           stdout = appendWithCap(stdout, text);
           maybeArmTerminalResultCleanup();
           logChain = logChain
@@ -2109,7 +2246,7 @@ export async function runChildProcess(
           const readable = child.stderr;
           if (!readable) return;
           readable.pause();
-          const text = String(chunk);
+          const text = decodeChunk(chunk);
           stderr = appendWithCap(stderr, text);
           maybeArmTerminalResultCleanup();
           logChain = logChain

@@ -38,7 +38,7 @@
 ## 3. 与三层 `settings.json` 的关系
 
 - **项目级** `.codebuddy/settings.json`：**不要**把真 Key 写进 Git；团队约定用 **`settings.local.json`** 或各操作者本机环境 + Paperclip **per-agent `env`**。  
-- 详见：[CodeBuddy-配置分层与仓库项目设置.md](CodeBuddy-配置分层与仓库项目设置.md)
+- 详见：[008-CodeBuddy-配置分层与仓库项目设置.md](008-CodeBuddy-配置分层与仓库项目设置.md)
 
 ---
 
@@ -52,7 +52,7 @@ codebuddy -p "只回复一个字：H" --output-format json -y --model custom-loc
 ```
 
 - 若仍 429：检查 **BASE_URL 末尾路径**、Key 是否 **Ark 控制台启用**、**`models.json` 是否把 `glm-5.1` 指到正确 ep**。  
-- 实践样例（不含密钥）：[实践-CodeBuddy无头命令本机验证.md](../探查/实践-CodeBuddy无头命令本机验证.md)
+- 实践样例（不含密钥）：[实践-CodeBuddy无头命令本机验证.md](../探查/008-实践-CodeBuddy无头命令本机验证.md)
 
 ---
 

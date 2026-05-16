@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import type { AdapterModel } from "@paperclipai/adapter-utils";
 import { models as cursorFallbackModels } from "../model-catalog.js";
+import { mergeAllowlistedHostEnvWith } from "@paperclipai/adapter-utils/server-utils";
+import { augmentEnvPathForLocalCursorAgent } from "./remote-command.js";
 
 const CURSOR_MODELS_TIMEOUT_MS = 5_000;
 const CURSOR_MODELS_CACHE_TTL_MS = 60_000;
@@ -110,10 +112,12 @@ function mergedWithFallback(models: AdapterModel[]): AdapterModel[] {
 }
 
 function defaultCursorModelsRunner(): CursorModelsCommandResult {
+  const pathAugment = augmentEnvPathForLocalCursorAgent("agent", {});
   const result = spawnSync("agent", ["models"], {
     encoding: "utf8",
     timeout: CURSOR_MODELS_TIMEOUT_MS,
     maxBuffer: MAX_BUFFER_BYTES,
+    env: mergeAllowlistedHostEnvWith(pathAugment),
   });
   return {
     status: result.status,

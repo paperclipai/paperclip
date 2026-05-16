@@ -4,6 +4,7 @@ import { Link } from "@/lib/router";
 import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
 import { IssueLinkQuicklook } from "./IssueLinkQuicklook";
 import { isAssignedBacklogBlocker } from "../lib/issue-blockers";
+import { issueBlockedNotice } from "../lib/i18n";
 
 export function IssueBlockedNotice({
   issueStatus,
@@ -95,19 +96,19 @@ export function IssueBlockedNotice({
         <div className="min-w-0 space-y-1.5">
           {showSuccessfulRunHandoff ? (
             <>
-              <p className="font-medium leading-5">This issue still needs a next step.</p>
+              <p className="font-medium leading-5">{issueBlockedNotice.needsNextTitle}</p>
               <p className="leading-5">
-                A run finished successfully, but this issue is still open in{" "}
+                一次运行已成功完成，但该事务仍处于{" "}
                 <code className="rounded bg-amber-100 px-1 py-0.5 text-[12px] dark:bg-amber-400/15">
                   in_progress
-                </code>{" "}
-                with no clear owner for the next action.
+                </code>
+                {" "}状态，且没有明确的下一步负责人。
               </p>
               <ul className="list-disc space-y-1 pl-5 text-xs leading-5 text-amber-900 dark:text-amber-100">
-                <li>Mark it done or cancelled.</li>
-                <li>Send it for review or ask for input.</li>
-                <li>Mark it blocked with a blocker owner.</li>
-                <li>Delegate follow-up work or queue a continuation.</li>
+                <li>{issueBlockedNotice.markDoneOrCancelled}</li>
+                <li>{issueBlockedNotice.sendForReviewOrAskInput}</li>
+                <li>{issueBlockedNotice.markBlockedWithOwner}</li>
+                <li>{issueBlockedNotice.delegateOrQueueContinuation}</li>
               </ul>
               <div className="flex flex-wrap gap-1.5 text-xs">
                 {successfulRunHandoff.sourceRunId && successfulRunHandoff.assigneeAgentId ? (
@@ -123,12 +124,14 @@ export function IssueBlockedNotice({
                   </span>
                 ) : null}
                 <span className="rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 text-amber-900 dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100">
-                  Corrective wake queued for {agentName ?? "the assignee"}
+                  {agentName
+                    ? issueBlockedNotice.correctiveWakeQueued(agentName)
+                    : issueBlockedNotice.correctiveWakeQueuedFallback}
                 </span>
               </div>
               {successfulRunHandoff.detectedProgressSummary ? (
                 <p className="text-xs leading-5 text-amber-800 dark:text-amber-200">
-                  Detected progress: {successfulRunHandoff.detectedProgressSummary}
+                  {issueBlockedNotice.detectedProgress(successfulRunHandoff.detectedProgressSummary)}
                 </p>
               ) : null}
             </>
@@ -142,10 +145,10 @@ export function IssueBlockedNotice({
                 {blockers.length > 0
                   ? isStalled
                     ? stalledLeafBlockers.length > 1
-                      ? <>Work on this issue is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled reviews below or remove them as blockers.</>
-                      : <>Work on this issue is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled review below or remove it as a blocker.</>
-                    : <>Work on this issue is blocked by {blockerLabel} until {blockers.length === 1 ? "it is" : "they are"} complete. Comments still wake the assignee for questions or triage.</>
-                  : <>Work on this issue is blocked until it is moved back to todo. Comments still wake the assignee for questions or triage.</>}
+                      ? issueBlockedNotice.stalledInReview(stalledLeafBlockers.length)
+                      : issueBlockedNotice.stalledInReview(1)
+                    : issueBlockedNotice.blockedByLinked(blockers.length, blockers.length === 1 ? "it is" : "they are")
+                  : issueBlockedNotice.blockedUntilMoved}
               </p>
               {blockers.length > 0 ? (
                 <div className="flex flex-wrap gap-1.5">
@@ -155,14 +158,14 @@ export function IssueBlockedNotice({
               {showStalledRow ? (
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
                   <span className="text-xs font-medium text-amber-800 dark:text-amber-200">
-                    Stalled in review
+                    {issueBlockedNotice.stalledInReviewLabel}
                   </span>
                   {stalledLeafBlockers.map(renderBlockerChip)}
                 </div>
               ) : terminalBlockers.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
                   <span className="text-xs font-medium text-amber-800 dark:text-amber-200">
-                    Ultimately waiting on
+                    {issueBlockedNotice.ultimatelyWaitingOn}
                   </span>
                   {terminalBlockers.map(renderBlockerChip)}
                 </div>
@@ -174,7 +177,7 @@ export function IssueBlockedNotice({
                 >
                   <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-800 dark:text-amber-200">
                     <Flag className="h-3 w-3" aria-hidden />
-                    Blocked by parked work
+                    {issueBlockedNotice.blockedByParkedWork}
                   </span>
                   {parkedBlockers.map(renderBlockerChip)}
                 </div>

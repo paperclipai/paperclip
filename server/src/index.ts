@@ -86,6 +86,11 @@ export interface StartedServer {
   databaseUrl: string;
 }
 
+function isStrictPortsEnabled(): boolean {
+  const v = process.env.PAPERCLIP_STRICT_PORTS?.trim().toLowerCase();
+  return v === "true" || v === "1" || v === "yes";
+}
+
 export async function startServer(): Promise<StartedServer> {
   let config = loadConfig();
   initTelemetry({ enabled: config.telemetryEnabled });
@@ -397,11 +402,17 @@ export async function startServer(): Promise<StartedServer> {
           `Embedded PostgreSQL appears to already be reachable without a pid file; reusing existing server on configured port ${configuredPort}`,
         );
       } catch {
-        const detectedPort = await detectPort(configuredPort);
-        if (detectedPort !== configuredPort) {
-          logger.warn(`Embedded PostgreSQL port is in use; using next free port (requestedPort=${configuredPort}, selectedPort=${detectedPort})`);
+        if (isStrictPortsEnabled()) {
+          port = configuredPort;
+        } else {
+          const detectedPort = await detectPort(configuredPort);
+          if (detectedPort !== configuredPort) {
+            logger.warn(
+              `Embedded PostgreSQL port is in use; using next free port (requestedPort=${configuredPort}, selectedPort=${detectedPort})`,
+            );
+          }
+          port = detectedPort;
         }
-        port = detectedPort;
         logger.info(`Using embedded PostgreSQL because no DATABASE_URL set (dataDir=${dataDir}, port=${port})`);
         embeddedPostgres = new EmbeddedPostgres({
           databaseDir: dataDir,
@@ -505,7 +516,9 @@ export async function startServer(): Promise<StartedServer> {
   }
 
   const requestedListenPort = config.port;
-  const listenPort = await detectPort(requestedListenPort);
+  const listenPort = isStrictPortsEnabled()
+    ? requestedListenPort
+    : await detectPort(requestedListenPort);
   if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
     config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
   }

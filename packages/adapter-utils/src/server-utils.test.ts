@@ -10,6 +10,7 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   ensurePathInEnv,
   materializePaperclipSkillCopy,
+  pickAllowlistedInheritedEnv,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
   runningProcesses,
@@ -201,6 +202,64 @@ describe("materializePaperclipSkillCopy", () => {
       await expect(fs.readFile(path.join(target, "SKILL.md"), "utf8")).resolves.toBe("# skill\n");
     } finally {
       await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("pickAllowlistedInheritedEnv", () => {
+  it("keeps allowlisted keys and drops unrelated host secrets", () => {
+    const base = {
+      PATH: "/usr/bin",
+      OPENAI_API_KEY: "sk-test",
+      MY_OTHER_PROJECT_SECRET: "nope",
+      CODEBUDDY_BASE_URL: "https://example",
+      UNRELATED: "x",
+    } as NodeJS.ProcessEnv;
+    const picked = pickAllowlistedInheritedEnv(base);
+    expect(picked.PATH).toBe("/usr/bin");
+    expect(picked.OPENAI_API_KEY).toBe("sk-test");
+    expect(picked.CODEBUDDY_BASE_URL).toBe("https://example");
+    expect(picked.MY_OTHER_PROJECT_SECRET).toBeUndefined();
+    expect(picked.UNRELATED).toBeUndefined();
+  });
+
+  it("ignores empty strings", () => {
+    const base = { PATH: "", OPENAI_API_KEY: "ok" } as NodeJS.ProcessEnv;
+    const picked = pickAllowlistedInheritedEnv(base);
+    expect(picked.PATH).toBeUndefined();
+    expect(picked.OPENAI_API_KEY).toBe("ok");
+  });
+});
+
+describe("runChildProcess inherited env allowlist", () => {
+  it("does not forward arbitrary host env; adapter opts.env still passes through", async () => {
+    const leakKey = `PAPERCLIP_TEST_HOST_LEAK_${randomUUID().replace(/-/g, "")}`;
+    const explicitKey = `PAPERCLIP_TEST_EXPLICIT_${randomUUID().replace(/-/g, "")}`;
+    const prevLeak = process.env[leakKey];
+    process.env[leakKey] = "should-not-appear-in-child";
+    try {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        [
+          "-e",
+          `process.stdout.write(JSON.stringify({ leak: process.env[${JSON.stringify(leakKey)}] ?? null, ex: process.env[${JSON.stringify(explicitKey)}] ?? null }))`,
+        ],
+        {
+          cwd: process.cwd(),
+          env: { [explicitKey]: "from-adapter" },
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+        },
+      );
+      expect(result.exitCode).toBe(0);
+      const parsed = JSON.parse(result.stdout) as { leak: string | null; ex: string | null };
+      expect(parsed.leak).toBeNull();
+      expect(parsed.ex).toBe("from-adapter");
+    } finally {
+      if (prevLeak === undefined) delete process.env[leakKey];
+      else process.env[leakKey] = prevLeak;
     }
   });
 });

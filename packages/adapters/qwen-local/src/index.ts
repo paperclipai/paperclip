@@ -43,7 +43,7 @@ Adapter: qwen_local
 
 Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process
-- instructionsFilePath (string, optional): absolute path to a markdown instructions file injected via --system-prompt
+- instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
 - model (string, optional): model id configured in Qwen Code settings (default: qwen3.6-plus)
 - promptTemplate (string, optional): run prompt template
 - maxSessionTurns (number, optional): max turns for one run (passed as --max-session-turns, default: 1)
@@ -62,7 +62,8 @@ Notes:
 - Qwen Code 0.15+ reads models/providers from ~/.qwen/settings.json and optional project .qwen/settings.json.
 - The model selected here must match a modelProviders entry visible to the child qwen process.
 - Coding Plan usually requires security.auth.selectedType=openai, baseUrl=https://coding.dashscope.aliyuncs.com/v1, and BAILIAN_CODING_PLAN_API_KEY available via settings.json env, process env, or adapter config env.
-- This adapter uses headless mode with positional prompt argument and --approval-mode yolo for non-interactive execution.
+- This adapter uses headless mode with stdin prompt input and --approval-mode yolo for non-interactive execution.
+- Paperclip runtime env, API usage hints, and selected runtime skills are prepended to the run prompt for heartbeat runs.
 - Session resume is supported via -c (--continue) when the previous run produced a session_id.
 `;
 

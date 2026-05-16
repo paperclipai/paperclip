@@ -19,6 +19,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { instanceExperimentalPage } from "@/lib/i18n";
 
 function issueHref(identifier: string | null, issueId: string) {
   if (!identifier) return `/issues/${issueId}`;
@@ -50,19 +51,18 @@ function RecoveryPreviewDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle>Confirm auto-recovery</DialogTitle>
+          <DialogTitle>{instanceExperimentalPage.recoveryDialogTitle}</DialogTitle>
           <DialogDescription>
             {preview
-              ? `${count} recovery ${count === 1 ? "task" : "tasks"} match the last ${preview.lookbackHours} hours.`
-              : "Checking recovery candidates before enabling."}
+              ? instanceExperimentalPage.recoveryDialogDesc(count, preview.lookbackHours)
+              : instanceExperimentalPage.recoveryDialogChecking}
           </DialogDescription>
         </DialogHeader>
 
         <div className="max-h-[min(28rem,65vh)] space-y-3 overflow-y-auto pr-1">
           {preview && preview.items.length === 0 ? (
             <div className="rounded-md border border-border bg-muted/30 px-3 py-4 text-sm text-muted-foreground">
-              No recovery tasks would be created right now. Auto-recovery can still run for future liveness incidents in
-              this window.
+              {instanceExperimentalPage.recoveryEmptyState}
             </div>
           ) : null}
 
@@ -82,7 +82,7 @@ function RecoveryPreviewDialog({
               <p className="mt-1 text-sm text-foreground">{item.title}</p>
               <p className="mt-1 text-xs text-muted-foreground">{item.reason}</p>
               <div className="mt-2 text-xs text-muted-foreground">
-                Recovery target:{" "}
+                {instanceExperimentalPage.recoveryTargetPrefix}{" "}
                 <a
                   href={issueHref(item.recoveryIdentifier, item.recoveryIssueId)}
                   className="text-primary underline-offset-2 hover:underline"
@@ -96,21 +96,19 @@ function RecoveryPreviewDialog({
 
         {preview && preview.skippedOutsideLookback > 0 ? (
           <p className="text-xs text-muted-foreground">
-            {preview.skippedOutsideLookback} current{" "}
-            {preview.skippedOutsideLookback === 1 ? "finding is" : "findings are"} outside the configured lookback and
-            will not be touched.
+            {instanceExperimentalPage.recoverySkipped(preview.skippedOutsideLookback)}
           </p>
         ) : null}
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isPending}>
-            Cancel
+            {instanceExperimentalPage.cancel}
           </Button>
           <Button variant="outline" onClick={onEnableOnly} disabled={isPending || !preview}>
-            Enable only
+            {instanceExperimentalPage.enableOnly}
           </Button>
           <Button onClick={onEnableAndRun} disabled={isPending || !preview}>
-            {count > 0 ? `Enable and create ${count}` : "Enable"}
+            {count > 0 ? instanceExperimentalPage.enableAndCreate(count) : instanceExperimentalPage.enable}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -131,8 +129,8 @@ export function InstanceExperimentalSettings() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Instance Settings" },
-      { label: "Experimental" },
+      { label: "实例设置" },
+      { label: instanceExperimentalPage.breadcrumbExperimental },
     ]);
   }, [setBreadcrumbs]);
 
@@ -152,7 +150,7 @@ export function InstanceExperimentalSettings() {
       ]);
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to update experimental settings.");
+      setActionError(error instanceof Error ? error.message : instanceExperimentalPage.errorUpdateFallback);
     },
   });
 
@@ -201,7 +199,7 @@ export function InstanceExperimentalSettings() {
   }, [experimentalQuery.data]);
 
   if (experimentalQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading experimental settings...</div>;
+    return <div className="text-sm text-muted-foreground">{instanceExperimentalPage.loading}</div>;
   }
 
   if (experimentalQuery.error) {
@@ -209,7 +207,7 @@ export function InstanceExperimentalSettings() {
       <div className="text-sm text-destructive">
         {experimentalQuery.error instanceof Error
           ? experimentalQuery.error.message
-          : "Failed to load experimental settings."}
+          : instanceExperimentalPage.errorLoading}
       </div>
     );
   }
@@ -229,7 +227,7 @@ export function InstanceExperimentalSettings() {
 
   function previewForEnable() {
     if (!lookbackHoursIsValid) {
-      setActionError("Lookback hours must be a whole number from 1 to 720.");
+      setActionError(instanceExperimentalPage.errorLookbackRange);
       return;
     }
     previewMutation.mutate(parsedLookbackHours);
@@ -260,10 +258,10 @@ export function InstanceExperimentalSettings() {
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <FlaskConical className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Experimental</h1>
+          <h1 className="text-lg font-semibold">{instanceExperimentalPage.title}</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Opt into features that are still being evaluated before they become default behavior.
+          {instanceExperimentalPage.subtitle}
         </p>
       </div>
 
@@ -276,10 +274,9 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Enable Environments</h2>
+            <h2 className="text-sm font-semibold">{instanceExperimentalPage.enableEnvironmentsTitle}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Show environment management in company settings and allow project and agent environment assignment
-              controls.
+              {instanceExperimentalPage.enableEnvironmentsDesc}
             </p>
           </div>
           <ToggleSwitch
@@ -294,10 +291,9 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Enable Isolated Workspaces</h2>
+            <h2 className="text-sm font-semibold">{instanceExperimentalPage.enableIsolatedWorkspacesTitle}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Show execution workspace controls in project configuration and allow isolated workspace behavior for new
-              and existing issue runs.
+              {instanceExperimentalPage.enableIsolatedWorkspacesDesc}
             </p>
           </div>
           <ToggleSwitch
@@ -312,10 +308,9 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Auto-Restart Dev Server When Idle</h2>
+            <h2 className="text-sm font-semibold">{instanceExperimentalPage.autoRestartDevServerTitle}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              In `pnpm dev:once`, wait for all queued and running local agent runs to finish, then restart the server
-              automatically when backend changes or migrations make the current boot stale.
+              {instanceExperimentalPage.autoRestartDevServerDesc}
             </p>
           </div>
           <ToggleSwitch
@@ -331,16 +326,15 @@ export function InstanceExperimentalSettings() {
         <div className="flex items-start gap-2 mb-3">
           <Heart className="h-5 w-5 text-muted-foreground shrink-0 mt-0.5" />
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Timer heartbeat policy</h2>
+            <h2 className="text-sm font-semibold">{instanceExperimentalPage.timerHeartbeatTitle}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Which agent roles may receive scheduled (interval) heartbeats from the server. Others still wake on
-              assignment and manual invoke. Adjust while experimenting without redeploying code.
+              {instanceExperimentalPage.timerHeartbeatDesc}
             </p>
           </div>
         </div>
         <div className="grid gap-4 sm:max-w-xl">
           <label className="space-y-1.5">
-            <span className="text-xs font-medium text-muted-foreground">Eligible roles (comma-separated)</span>
+            <span className="text-xs font-medium text-muted-foreground">{instanceExperimentalPage.eligibleRolesLabel}</span>
             <Input
               value={timerRolesDraft}
               onChange={(e) => setTimerRolesDraft(e.target.value)}
@@ -349,7 +343,7 @@ export function InstanceExperimentalSettings() {
             />
           </label>
           <label className="space-y-1.5">
-            <span className="text-xs font-medium text-muted-foreground">Default interval (seconds, min 30)</span>
+            <span className="text-xs font-medium text-muted-foreground">{instanceExperimentalPage.intervalLabel}</span>
             <Input
               type="number"
               min={30}
@@ -362,10 +356,9 @@ export function InstanceExperimentalSettings() {
           </label>
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
-              <p className="text-sm font-medium">Enable timer by default for eligible roles</p>
+              <p className="text-sm font-medium">{instanceExperimentalPage.enableByDefault}</p>
               <p className="text-xs text-muted-foreground">
-                New and imported agents in eligible roles get <code className="text-xs">heartbeat.enabled</code> unless
-                explicitly set off in the payload.
+                {instanceExperimentalPage.enableByDefaultDesc}
               </p>
             </div>
             <ToggleSwitch
@@ -383,11 +376,11 @@ export function InstanceExperimentalSettings() {
                 .filter(Boolean);
               const interval = Number.parseInt(timerIntervalDraft, 10);
               if (roles.length === 0) {
-                setActionError("Add at least one role (e.g. ceo, cto).");
+                setActionError(instanceExperimentalPage.errorAtLeastOneRole);
                 return;
               }
               if (!Number.isFinite(interval) || interval < 30 || interval > 86400) {
-                setActionError("Interval must be a whole number from 30 to 86400 seconds.");
+                setActionError(instanceExperimentalPage.errorIntervalRange);
                 return;
               }
               toggleMutation.mutate({
@@ -398,7 +391,7 @@ export function InstanceExperimentalSettings() {
             }}
             disabled={toggleMutation.isPending}
           >
-            Save timer policy
+            {instanceExperimentalPage.saveTimerPolicy}
           </Button>
         </div>
       </section>
@@ -407,10 +400,9 @@ export function InstanceExperimentalSettings() {
         <div className="flex flex-col gap-5">
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1.5">
-              <h2 className="text-sm font-semibold">Auto-Create Issue Recovery Tasks</h2>
+              <h2 className="text-sm font-semibold">{instanceExperimentalPage.autoRecoveryTitle}</h2>
               <p className="max-w-2xl text-sm text-muted-foreground">
-                Let the heartbeat scheduler create recovery issues for issue dependency chains found inside the
-                configured lookback window.
+                {instanceExperimentalPage.autoRecoveryDesc}
               </p>
             </div>
             <ToggleSwitch
@@ -431,7 +423,7 @@ export function InstanceExperimentalSettings() {
             <label className="space-y-1.5">
               <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                 <Clock className="h-3.5 w-3.5" />
-                Lookback hours
+                {instanceExperimentalPage.lookbackHours}
               </span>
               <Input
                 type="number"
@@ -448,7 +440,7 @@ export function InstanceExperimentalSettings() {
                 variant="outline"
                 onClick={() => {
                   if (!lookbackHoursIsValid) {
-                    setActionError("Lookback hours must be a whole number from 1 to 720.");
+                    setActionError(instanceExperimentalPage.errorLookbackRange);
                     return;
                   }
                   toggleMutation.mutate({
@@ -457,7 +449,7 @@ export function InstanceExperimentalSettings() {
                 }}
                 disabled={recoveryActionPending || parsedLookbackHours === lookbackHours}
               >
-                Save hours
+                {instanceExperimentalPage.saveHours}
               </Button>
               <Button
                 variant="outline"
@@ -465,12 +457,12 @@ export function InstanceExperimentalSettings() {
                 disabled={recoveryActionPending}
               >
                 <Search className="h-4 w-4" />
-                Preview
+                {instanceExperimentalPage.preview}
               </Button>
               <Button
                 onClick={() => {
                   if (!lookbackHoursIsValid) {
-                    setActionError("Lookback hours must be a whole number from 1 to 720.");
+                    setActionError(instanceExperimentalPage.errorLookbackRange);
                     return;
                   }
                   runRecoveryMutation.mutate(parsedLookbackHours);
@@ -478,13 +470,13 @@ export function InstanceExperimentalSettings() {
                 disabled={recoveryActionPending || !enableIssueGraphLivenessAutoRecovery}
               >
                 <Play className="h-4 w-4" />
-                Run now
+                {instanceExperimentalPage.runNow}
               </Button>
             </div>
           </div>
 
           <p className="text-xs text-muted-foreground">
-            Current window: last {lookbackHours} {lookbackHours === 1 ? "hour" : "hours"}.
+            {instanceExperimentalPage.currentWindow(lookbackHours)}
           </p>
         </div>
       </section>

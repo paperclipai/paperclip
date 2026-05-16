@@ -1,6 +1,6 @@
 # CodeBuddy Fork 运维速查
 
-> Paperclip 自身启动文档已很完整：`doc/05 开发指南 DEVELOPING.md`、`docs/项目计划/运维-回形针本地.md`。
+> Paperclip 自身启动文档已很完整：`doc/05 开发指南 DEVELOPING.md`、`docs/项目计划/最佳实践/001-运维-回形针本地.md`。
 > 本文只收 **fork 特有** 和 **日常高频** 的操作速查。
 
 ---
@@ -135,7 +135,7 @@ pnpm dev:once
 ## 参考
 
 - Paperclip 开发手册：`doc/05 开发指南 DEVELOPING.md`
-- 中文运维指南：`docs/项目计划/运维-回形针本地.md`
+- 中文运维指南：`docs/项目计划/最佳实践/001-运维-回形针本地.md`
 - 完整实践记录：`C:\Users\wuhen\工具优化\02-智能体-agents\03-Paperclip配置与向导\13.Paperclip 公司创建与项目配置实践记录.md`
 - 进程泄漏需求：`C:\Users\wuhen\工具优化\02-智能体-agents\03-Paperclip配置与向导\CodeBuddy-CLI进程兜底回收机制.md`
 
