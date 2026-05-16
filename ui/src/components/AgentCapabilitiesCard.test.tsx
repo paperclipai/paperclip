@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 
-import { act, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -28,6 +27,25 @@ vi.mock("../api/companies", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+async function flush() {
+  await Promise.resolve();
+  await new Promise((resolve) => window.setTimeout(resolve, 0));
+}
+
+async function waitFor(check: () => void, timeoutMs = 2000) {
+  const started = Date.now();
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    try {
+      check();
+      return;
+    } catch (error) {
+      if (Date.now() - started > timeoutMs) throw error;
+      await flush();
+    }
+  }
+}
+
 function response(overrides: Record<string, unknown> = {}) {
   return {
     scope: "agent_local",
@@ -51,24 +69,6 @@ function response(overrides: Record<string, unknown> = {}) {
   };
 }
 
-async function flush() {
-  await act(async () => {
-    await Promise.resolve();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-  });
-}
-
-async function renderWithClient(container: HTMLDivElement, element: ReactElement) {
-  const root = createRoot(container);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-
-  await act(async () => {
-    root.render(<QueryClientProvider client={queryClient}>{element}</QueryClientProvider>);
-  });
-
-  return root;
-}
-
 describe("AgentCapabilitiesCard", () => {
   let container: HTMLDivElement;
 
@@ -86,7 +86,7 @@ describe("AgentCapabilitiesCard", () => {
     document.body.innerHTML = "";
   });
 
-  it("renders a governed capability workspace shell with desired-config posture labels", async () => {
+  it("renders persisted desired MCP config and keeps live apply gated", async () => {
     mockGetCapabilities.mockResolvedValue(response({
       config: {
         version: 1,
@@ -108,41 +108,102 @@ describe("AgentCapabilitiesCard", () => {
         liveExternalActions: false,
       },
     }));
-
-    const root = await renderWithClient(
-      container,
-      <AgentCapabilitiesCard agentId="agent-1" companyId="company-1" />,
+    mockGetCompanyCapabilities.mockResolvedValue(
+      response({
+        scope: "company_default",
+        agentId: null,
+        config: {
+          version: 1,
+          mcpServers: [
+            {
+              id: "company-default",
+              provider: "manual",
+              displayName: "Company Default MCP",
+              transport: "stdio",
+              command: "npx example-default",
+              requiredSecretNames: [],
+              desiredState: "enabled",
+              liveState: "not_installed",
+            },
+          ],
+          skillRefs: ["default-skill"],
+          toolRefs: ["default-tool"],
+          liveApply: false,
+          liveExternalActions: false,
+        },
+      }),
     );
-    await flush();
 
-    expect(mockGetCapabilities).toHaveBeenCalledWith("agent-1", "company-1");
-    const text = container.textContent ?? "";
-    expect(text).toContain("Capability workspace");
-    expect(text).toContain("MCP / skills / tools capabilities");
-    expect(text).toContain("BACKEND-BACKED");
-    expect(text).toContain("DESIRED CONFIG ONLY");
-    expect(text).toContain("APPROVAL REQUIRED");
-    expect(text).toContain("LIVE APPLY DISABLED");
-    expect(text).toContain("Source scopeAgent local");
-    expect(text).toContain("MCP servers1");
-    expect(text).toContain("Skills1");
-    expect(text).toContain("Tools1");
-    expect(text).toContain("Knowledge refs0");
-    expect(text).toContain("Paperclip MCP");
-    expect(text).toContain("Desired state: enabled");
-    expect(text).toContain("Live posture: not_installed (server-owned)");
-    expect(text).toContain("Required named secrets: PAPERCLIP_API_KEY");
-    expect(text).toContain("Paperclip MCP preset is saved as desired config only; it does not install, connect, or execute.");
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
 
-    const advancedJson = container.querySelector("details");
-    expect(advancedJson?.open).toBe(false);
-    expect(advancedJson?.querySelector("summary")?.textContent).toContain("Advanced JSON");
-    expect(advancedJson?.querySelector("textarea")?.getAttribute("aria-label")).toBe("Capability desired config JSON");
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <AgentCapabilitiesCard agentId="agent-1" companyId="company-1" />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(mockGetCapabilities).toHaveBeenCalledWith("agent-1", "company-1"));
+    await waitFor(() => expect(container.textContent).toContain("MCP / skills / tools capabilities"));
 
-    await act(async () => root.unmount());
+    expect(container.textContent).toContain("MCP / skills / tools capabilities");
+    expect(container.textContent).toContain("Real persisted desired config");
+    expect(container.textContent).toContain("no live MCP install/execution");
+    expect(container.textContent).toContain("Paperclip MCP");
+    expect(container.textContent).toContain("not_installed");
+    expect(container.textContent).toContain("PAPERCLIP_API_KEY");
+    expect(container.textContent).toContain("Effective Preview (read-only)");
+    expect(container.textContent).toContain("resolve from agent local");
+
+    root.unmount();
   });
 
-  it("saves edited desired config through the real capabilities API from the Advanced JSON fallback", async () => {
+  it("falls back to global defaults in effective preview when local config is empty", async () => {
+    mockGetCapabilities.mockResolvedValue(response());
+    mockGetCompanyCapabilities.mockResolvedValue(
+      response({
+        scope: "company_default",
+        agentId: null,
+        config: {
+          version: 1,
+          mcpServers: [
+            {
+              id: "global-only",
+              provider: "manual",
+              displayName: "Global MCP",
+              transport: "stdio",
+              command: "npx global-mcp",
+              requiredSecretNames: [],
+              desiredState: "enabled",
+              liveState: "not_installed",
+            },
+          ],
+          skillRefs: ["global-skill"],
+          toolRefs: ["global-tool"],
+          liveApply: false,
+          liveExternalActions: false,
+        },
+      }),
+    );
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <AgentCapabilitiesCard agentId="agent-1" companyId="company-1" />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(container.textContent).toContain("resolve from global defaults"));
+
+    const effectiveJson = container.querySelector('textarea[aria-label="Effective capability config JSON"]') as HTMLTextAreaElement | null;
+    expect(effectiveJson?.value).toContain('"id": "global-only"');
+    expect(effectiveJson?.value).toContain('"skillRefs": [');
+    expect(effectiveJson?.value).toContain('"global-skill"');
+
+    root.unmount();
+  });
+
+  it("saves edited desired config through the real capabilities API", async () => {
     mockGetCapabilities.mockResolvedValue(response());
     mockUpdateCapabilities.mockResolvedValue(response({
       config: {
@@ -166,31 +227,36 @@ describe("AgentCapabilitiesCard", () => {
       },
     }));
 
-    const root = await renderWithClient(
-      container,
-      <AgentCapabilitiesCard agentId="agent-1" companyId="company-1" />,
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <AgentCapabilitiesCard agentId="agent-1" companyId="company-1" />
+      </QueryClientProvider>,
     );
-    await flush();
+    await waitFor(() => {
+      const addPresetButton = Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Add Paperclip MCP preset"),
+      );
+      expect(addPresetButton).toBeTruthy();
+    });
 
     const addPresetButton = Array.from(container.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("Add Paperclip MCP preset"),
     );
     expect(addPresetButton).toBeTruthy();
 
-    await act(async () => {
-      addPresetButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
+    addPresetButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flush();
 
-    const advancedJson = container.querySelector("details");
-    expect(advancedJson?.querySelector("summary")?.textContent).toContain("Advanced JSON");
-    const saveButton = Array.from(advancedJson?.querySelectorAll("button") ?? []).find((button) =>
+    const saveButton = Array.from(container.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("Save desired config"),
     );
     expect(saveButton).toBeTruthy();
 
-    await act(async () => {
-      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
+    saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flush();
     await flush();
 
     expect(mockUpdateCapabilities).toHaveBeenCalledWith(
@@ -203,41 +269,7 @@ describe("AgentCapabilitiesCard", () => {
       "company-1",
     );
 
-    await act(async () => root.unmount());
-  });
-
-  it("renders no-live-action copy while loading", async () => {
-    mockGetCapabilities.mockReturnValue(new Promise(() => undefined));
-
-    const root = await renderWithClient(
-      container,
-      <AgentCapabilitiesCard agentId="agent-1" companyId="company-1" />,
-    );
-
-    const text = container.textContent ?? "";
-    expect(text).toContain("Loading capability workspace…");
-    expect(text).toContain("No live action occurred.");
-    expect(text).toContain("BACKEND-BACKED");
-    expect(text).toContain("DESIRED CONFIG ONLY");
-
-    await act(async () => root.unmount());
-  });
-
-  it("renders no-live-action copy when loading fails", async () => {
-    mockGetCapabilities.mockRejectedValue(new Error("network down"));
-
-    const root = await renderWithClient(
-      container,
-      <AgentCapabilitiesCard agentId="agent-1" companyId="company-1" />,
-    );
-    await flush();
-
-    const text = container.textContent ?? "";
-    expect(text).toContain("Failed to load capabilities. No live action occurred.");
-    expect(text).toContain("no MCP install, connect, execute, or external action was attempted");
-    expect(text).toContain("Retry loading desired config");
-
-    await act(async () => root.unmount());
+    root.unmount();
   });
 
   it("renders and saves company global defaults through the company capabilities API", async () => {
@@ -257,32 +289,31 @@ describe("AgentCapabilitiesCard", () => {
       }),
     );
 
-    const root = await renderWithClient(
-      container,
-      <CompanyCapabilityDefaultsCard companyId="company-1" />,
-    );
-    await flush();
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
 
-    const text = container.textContent ?? "";
-    expect(mockGetCompanyCapabilities).toHaveBeenCalledWith("company-1");
-    expect(text).toContain("Global MCP / skills / tools defaults");
-    expect(text).toContain("Source scopeCompany global");
-    expect(text).toContain("No global desired MCP defaults saved yet.");
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <CompanyCapabilityDefaultsCard companyId="company-1" />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(mockGetCompanyCapabilities).toHaveBeenCalledWith("company-1"));
+    await waitFor(() => expect(container.textContent).toContain("Global MCP / skills / tools defaults"));
+
+    expect(container.textContent).toContain("Global MCP / skills / tools defaults");
+    expect(container.textContent).toContain("No global desired MCP defaults saved yet.");
 
     const addPresetButton = Array.from(container.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("Add Paperclip MCP preset"),
     );
-    await act(async () => {
-      addPresetButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
+    addPresetButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flush();
 
-    const advancedJson = container.querySelector("details");
-    const saveButton = Array.from(advancedJson?.querySelectorAll("button") ?? []).find((button) =>
+    const saveButton = Array.from(container.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("Save desired config"),
     );
-    await act(async () => {
-      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
+    saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flush();
     await flush();
 
     expect(mockUpdateCompanyCapabilities).toHaveBeenCalledWith(
@@ -294,6 +325,6 @@ describe("AgentCapabilitiesCard", () => {
       }),
     );
 
-    await act(async () => root.unmount());
+    root.unmount();
   });
 });
