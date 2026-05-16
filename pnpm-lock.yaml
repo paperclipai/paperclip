@@ -574,6 +574,9 @@ importers:
       '@aws-sdk/client-s3':
         specifier: ^3.888.0
         version: 3.994.0
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@3.25.76)
       '@paperclipai/adapter-acpx-local':
         specifier: workspace:*
         version: link:../packages/adapters/acpx-local
@@ -607,6 +610,9 @@ importers:
       '@paperclipai/db':
         specifier: workspace:*
         version: link:../packages/db
+      '@paperclipai/mcp-server':
+        specifier: workspace:^
+        version: link:../packages/mcp-server
       '@paperclipai/plugin-sdk':
         specifier: workspace:*
         version: link:../packages/plugins/sdk
