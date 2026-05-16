@@ -26,6 +26,30 @@ import { Link, Navigate } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 import { usePluginSlots } from "@/plugins/slots";
 
+const permissionLabels: Record<PermissionKey, string> = {
+  "agents:create": "Create agents",
+  "users:invite": "Invite humans and agents",
+  "users:manage_permissions": "Manage members and grants",
+  "tasks:assign": "Assign tasks",
+  "tasks:assign_scope": "Assign scoped tasks",
+  "tasks:manage_active_checkouts": "Manage active task checkouts",
+  "joins:approve": "Approve join requests",
+  "environments:manage": "Manage environments",
+  "documents:manage": "Manage company documents",
+};
+
+function formatGrantSummary(member: CompanyMember) {
+  if (member.grants.length === 0) return "No explicit grants";
+  return member.grants.map((grant) => permissionLabels[grant.permissionKey]).join(", ");
+}
+
+const implicitRoleGrantMap: Record<NonNullable<CompanyMember["membershipRole"]>, PermissionKey[]> = {
+  owner: ["agents:create", "users:invite", "users:manage_permissions", "tasks:assign", "joins:approve"],
+  admin: ["agents:create", "users:invite", "tasks:assign", "joins:approve"],
+  operator: ["tasks:assign"],
+  viewer: [],
+};
+
 const reassignmentIssueStatuses = "backlog,todo,in_progress,in_review,blocked,failed,timed_out";
 type EditableMemberStatus = "pending" | "active" | "suspended";
 
