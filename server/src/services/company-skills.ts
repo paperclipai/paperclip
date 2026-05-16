@@ -801,6 +801,7 @@ export function readInlineSkillImports(companyId: string, files: Record<string, 
   const skillPaths = Object.keys(normalizedFiles).filter(
     (entry) => path.posix.basename(entry).toLowerCase() === "skill.md",
   );
+  const siblingSkillDirs = skillPaths.map((p) => path.posix.dirname(p)).filter((d) => d !== ".");
   const imports: ImportedSkill[] = [];
 
   for (const skillPath of skillPaths) {
@@ -812,7 +813,7 @@ export function readInlineSkillImports(companyId: string, files: Record<string, 
     const slug = deriveImportedSkillSlug(parsed.frontmatter, slugFallback);
     const source = deriveImportedSkillSource(parsed.frontmatter, slug);
     const inventory = Object.keys(normalizedFiles)
-      .filter((entry) => entry === skillPath || (!skillDir || entry.startsWith(`${skillDir}/`)))
+      .filter((entry) => entry === skillPath || (!skillDir ? !siblingSkillDirs.some((d) => entry.startsWith(`${d}/`) || entry === `${d}/SKILL.md`) : entry.startsWith(`${skillDir}/`)))
       .map((entry) => {
         const relative = entry === skillPath ? "SKILL.md" : (skillDir ? entry.slice(skillDir.length + 1) : entry);
         return {
@@ -1024,12 +1025,13 @@ export async function readLocalSkillImports(companyId: string, sourcePath: strin
     throw unprocessable("No SKILL.md files were found in the provided path.");
   }
 
+  const siblingSkillDirs = skillPaths.map((p) => path.posix.dirname(p)).filter((d) => d !== ".");
   const imports: ImportedSkill[] = [];
   for (const skillPath of skillPaths) {
     const skillDir = path.posix.dirname(skillPath);
     const isRootSkill = skillDir === ".";
     const inventory = allFiles
-      .filter((entry) => entry === skillPath || (isRootSkill ? true : entry.startsWith(`${skillDir}/`)))
+      .filter((entry) => entry === skillPath || (isRootSkill ? !siblingSkillDirs.some((d) => entry.startsWith(`${d}/`) || entry === `${d}/SKILL.md`) : entry.startsWith(`${skillDir}/`)))
       .map((entry) => {
         const relative = entry === skillPath ? "SKILL.md" : (isRootSkill ? entry : entry.slice(skillDir.length + 1));
         return {
@@ -1092,6 +1094,7 @@ async function readUrlSkillImports(
         "No SKILL.md files were found in the provided GitHub source.",
       );
     }
+    const siblingSkillDirs = skillPaths.map((p) => path.posix.dirname(p)).filter((d) => d !== ".");
     const skills: ImportedSkill[] = [];
     for (const relativeSkillPath of skillPaths) {
       const repoSkillPath = basePrefix ? `${basePrefix}${relativeSkillPath}` : relativeSkillPath;
@@ -1121,7 +1124,7 @@ async function readUrlSkillImports(
       };
       const isRootSkill = skillDir === ".";
       const inventory = filteredPaths
-        .filter((entry) => entry === relativeSkillPath || (isRootSkill ? true : entry.startsWith(`${skillDir}/`)))
+        .filter((entry) => entry === relativeSkillPath || (isRootSkill ? !siblingSkillDirs.some((d) => entry.startsWith(`${d}/`) || entry === `${d}/SKILL.md`) : entry.startsWith(`${skillDir}/`)))
         .map((entry) => {
           const relative = entry === relativeSkillPath ? "SKILL.md" : (isRootSkill ? entry : entry.slice(skillDir.length + 1));
           return {

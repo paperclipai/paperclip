@@ -255,10 +255,13 @@ describe("local directory skill imports", () => {
     const rootPaths = new Set(rootSkill.fileInventory.map((e) => e.path));
     expect(rootPaths).toContain("SKILL.md");
     expect(rootPaths).toContain("references/root-ref.md");
+    expect(rootPaths).not.toContain("sub-skill/SKILL.md");
+    expect(rootPaths).not.toContain("sub-skill/scripts/sub.sh");
 
     const subPaths = new Set(subSkill.fileInventory.map((e) => e.path));
     expect(subPaths).toContain("SKILL.md");
     expect(subPaths).toContain("scripts/sub.sh");
+    expect(subPaths).not.toContain("references/root-ref.md");
   });
 });
 
