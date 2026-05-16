@@ -89,4 +89,75 @@ describe("assignee selection helpers", () => {
       ),
     ).toBe("agent:agent-123");
   });
+
+  it("keeps the current assignee when the caller holds the in-review stage (user participant)", () => {
+    // Reproduces the board-approval trap: the policy engine rejects a reassign
+    // patch from the current participant without a stage decision, so the UI
+    // must not pre-seed a different assignee here.
+    expect(
+      suggestedCommentAssigneeValue(
+        {
+          assigneeUserId: "local-board",
+          status: "in_review",
+          executionState: {
+            currentParticipant: { type: "user", userId: "local-board", agentId: null },
+          },
+        },
+        [
+          { authorAgentId: "qa-agent" },
+          { authorAgentId: "backend-dev-agent" },
+        ],
+        "local-board",
+      ),
+    ).toBe("user:local-board");
+  });
+
+  it("keeps the current assignee when the caller holds the in-review stage (agent participant)", () => {
+    expect(
+      suggestedCommentAssigneeValue(
+        {
+          assigneeAgentId: "qa-agent",
+          status: "in_review",
+          executionState: {
+            currentParticipant: { type: "agent", userId: null, agentId: "qa-agent" },
+          },
+        },
+        [{ authorAgentId: "backend-dev-agent" }],
+        null,
+        "qa-agent",
+      ),
+    ).toBe("agent:qa-agent");
+  });
+
+  it("still suggests when in_review but the caller is not the current stage participant", () => {
+    expect(
+      suggestedCommentAssigneeValue(
+        {
+          assigneeUserId: "local-board",
+          status: "in_review",
+          executionState: {
+            currentParticipant: { type: "user", userId: "local-board", agentId: null },
+          },
+        },
+        [{ authorAgentId: "qa-agent" }],
+        "some-other-user",
+      ),
+    ).toBe("agent:qa-agent");
+  });
+
+  it("still suggests when the caller is currentParticipant but the issue is not in_review", () => {
+    expect(
+      suggestedCommentAssigneeValue(
+        {
+          assigneeUserId: "local-board",
+          status: "in_progress",
+          executionState: {
+            currentParticipant: { type: "user", userId: "local-board", agentId: null },
+          },
+        },
+        [{ authorAgentId: "qa-agent" }],
+        "local-board",
+      ),
+    ).toBe("agent:qa-agent");
+  });
 });

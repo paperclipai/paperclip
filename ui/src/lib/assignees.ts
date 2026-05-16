@@ -9,9 +9,21 @@ export interface AssigneeOption {
   searchText?: string;
 }
 
+interface CommentAssigneeSuggestionParticipant {
+  type?: string | null;
+  userId?: string | null;
+  agentId?: string | null;
+}
+
+interface CommentAssigneeSuggestionExecutionState {
+  currentParticipant?: CommentAssigneeSuggestionParticipant | null;
+}
+
 interface CommentAssigneeSuggestionInput {
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
+  status?: string | null;
+  executionState?: CommentAssigneeSuggestionExecutionState | null;
 }
 
 interface CommentAssigneeSuggestionComment {
@@ -25,12 +37,41 @@ export function assigneeValueFromSelection(selection: Partial<AssigneeSelection>
   return "";
 }
 
+function isCurrentStageParticipant(
+  participant: CommentAssigneeSuggestionParticipant | null | undefined,
+  currentUserId: string | null | undefined,
+  currentAgentId: string | null | undefined,
+): boolean {
+  if (!participant) return false;
+  if (participant.userId) {
+    return Boolean(currentUserId && participant.userId === currentUserId);
+  }
+  if (participant.agentId) {
+    return Boolean(currentAgentId && participant.agentId === currentAgentId);
+  }
+  return false;
+}
+
 export function suggestedCommentAssigneeValue(
   issue: CommentAssigneeSuggestionInput,
   comments: CommentAssigneeSuggestionComment[] | null | undefined,
   currentUserId: string | null | undefined,
   currentAgentId?: string | null | undefined,
 ): string {
+  // When the ticket is actively in review/approval AND the caller holds the
+  // current stage, skip the "last non-me commenter" hint. Auto-suggesting a
+  // different assignee here would make the composer silently send a reassign
+  // PATCH, which the execution-policy engine rejects with
+  // "Only the active reviewer or approver can advance the current execution
+  // stage" (see server/src/services/issue-execution-policy.ts).
+  // Non-participants opening the same ticket still get the normal suggestion.
+  if (
+    issue.status === "in_review" &&
+    isCurrentStageParticipant(issue.executionState?.currentParticipant, currentUserId, currentAgentId)
+  ) {
+    return assigneeValueFromSelection(issue);
+  }
+
   if (comments && comments.length > 0 && (currentUserId || currentAgentId)) {
     for (let i = comments.length - 1; i >= 0; i--) {
       const comment = comments[i];
