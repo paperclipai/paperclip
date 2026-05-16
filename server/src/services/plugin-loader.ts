@@ -87,6 +87,31 @@ const DEV_TSX_LOADER_PATH = path.resolve(__dirname, "../../../cli/node_modules/t
  */
 const MONOREPO_NODE_MODULES = path.resolve(__dirname, "../../../node_modules/.pnpm/node_modules");
 
+/**
+ * Boot-time race window: when paperclip-0 starts, the plugin store's npm install
+ * runs concurrently with `loadAll()` spawning plugin workers. Workers importing
+ * `@paperclipai/plugin-sdk` submodules (bundlers.js, define-plugin.js, etc.) can
+ * race the npm-write and crash with ERR_MODULE_NOT_FOUND. Files land within
+ * seconds, so a bounded retry recovers without operator intervention. Delays
+ * sum to ~28s — comfortably above observed install completion times (<5s) and
+ * below npm install's own 120s timeout.
+ */
+const SDK_INSTALL_RACE_RETRY_DELAYS_MS = [500, 1500, 3500, 7500, 15500];
+const SDK_INSTALL_RACE_PACKAGE_MARKER = "@paperclipai/plugin-sdk";
+const SDK_INSTALL_RACE_ERR_MARKER = "ERR_MODULE_NOT_FOUND";
+
+function isSdkInstallRaceError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    msg.includes(SDK_INSTALL_RACE_ERR_MARKER) &&
+    msg.includes(SDK_INSTALL_RACE_PACKAGE_MARKER)
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 const ADAPTER_ENV_PASSTHROUGH = [
   "ANTHROPIC_API_KEY",
   "OPENAI_API_KEY",
@@ -1919,7 +1944,40 @@ export function pluginLoader(
         };
       }
 
-      await workerManager.startWorker(pluginId, workerOptions);
+      for (let attempt = 0; ; attempt++) {
+        try {
+          if (workerManager.getWorker(pluginId)) {
+            await workerManager.stopWorker(pluginId);
+          }
+          await workerManager.startWorker(pluginId, workerOptions);
+          if (attempt > 0) {
+            log.info(
+              { pluginId, pluginKey, attempt },
+              "plugin-loader: worker started after SDK install race retry",
+            );
+          }
+          break;
+        } catch (err) {
+          if (
+            !isSdkInstallRaceError(err) ||
+            attempt >= SDK_INSTALL_RACE_RETRY_DELAYS_MS.length
+          ) {
+            throw err;
+          }
+          const delay = SDK_INSTALL_RACE_RETRY_DELAYS_MS[attempt]!;
+          log.warn(
+            {
+              pluginId,
+              pluginKey,
+              attempt: attempt + 1,
+              delayMs: delay,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "plugin-loader: SDK install race detected, retrying worker spawn",
+          );
+          await sleep(delay);
+        }
+      }
       registered.worker = true;
 
       log.info(
