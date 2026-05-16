@@ -29,7 +29,7 @@ import type {
 import { normalizeAgentUrlKey } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
-import { ghFetch, gitHubApiBase, inferGitHostFamily, resolveRawGitHubUrl } from "./github-fetch.js";
+import { openRepoSnapshot, parseGitSourceUrl, resolveGitRef, type ParsedGitSource, type RepoSnapshot } from "./git-source.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { secretService } from "./secrets.js";
@@ -541,104 +541,18 @@ function parseFrontmatterMarkdown(raw: string): { frontmatter: Record<string, un
   };
 }
 
-async function fetchText(url: string, authToken?: string) {
-  const response = await ghFetch(url, undefined, authToken);
+async function fetchPlainText(url: string) {
+  let response: Response;
+  try {
+    response = await fetch(url);
+  } catch {
+    const hostname = (() => { try { return new URL(url).hostname; } catch { return url; } })();
+    throw unprocessable(`Could not connect to ${hostname}`);
+  }
   if (!response.ok) {
     throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
   }
   return response.text();
-}
-
-async function fetchJson<T>(url: string, authToken?: string): Promise<T> {
-  const response = await ghFetch(url, {
-    headers: {
-      accept: "application/vnd.github+json",
-    },
-  }, authToken);
-  if (!response.ok) {
-    throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
-  }
-  return response.json() as Promise<T>;
-}
-
-
-async function resolveGitHubDefaultBranch(owner: string, repo: string, apiBase: string, authToken?: string) {
-  const response = await fetchJson<{ default_branch?: string }>(
-    `${apiBase}/repos/${owner}/${repo}`,
-    authToken,
-  );
-  return asString(response.default_branch) ?? "main";
-}
-
-async function resolveGitHubCommitSha(owner: string, repo: string, ref: string, apiBase: string, authToken?: string) {
-  const response = await fetchJson<{ sha?: string }>(
-    `${apiBase}/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`,
-    authToken,
-  );
-  const sha = asString(response.sha);
-  if (!sha) {
-    throw unprocessable(`Failed to resolve ref ${ref}`);
-  }
-  return sha;
-}
-
-function parseGitHubSourceUrl(rawUrl: string) {
-  const url = new URL(rawUrl);
-  if (url.protocol !== "https:") {
-    throw unprocessable("Source URL must use HTTPS");
-  }
-  const parts = url.pathname.split("/").filter(Boolean);
-  if (parts.length < 2) {
-    throw unprocessable("Invalid git source URL");
-  }
-  const owner = parts[0]!;
-  const repo = parts[1]!.replace(/\.git$/i, "");
-  const family = inferGitHostFamily(url.hostname);
-  let ref = "main";
-  let basePath = "";
-  let filePath: string | null = null;
-  let explicitRef = false;
-  if (family === "github") {
-    if (parts[2] === "tree") {
-      ref = parts[3] ?? "main";
-      basePath = parts.slice(4).join("/");
-      explicitRef = true;
-    } else if (parts[2] === "blob") {
-      ref = parts[3] ?? "main";
-      filePath = parts.slice(4).join("/");
-      basePath = filePath ? path.posix.dirname(filePath) : "";
-      explicitRef = true;
-    }
-  } else if (parts[2] === "src" && (parts[3] === "branch" || parts[3] === "commit" || parts[3] === "tag")) {
-    // Gitea/Forgejo web URLs: /{owner}/{repo}/src/{branch|commit|tag}/{ref}/{path}
-    ref = parts[4] ?? "main";
-    const tail = parts.slice(5);
-    const tailJoined = tail.join("/");
-    if (tail.length > 0 && /\.[A-Za-z0-9]+$/.test(tail[tail.length - 1]!)) {
-      filePath = tailJoined;
-      basePath = path.posix.dirname(tailJoined);
-    } else {
-      basePath = tailJoined;
-    }
-    explicitRef = true;
-  }
-  return { hostname: url.hostname, owner, repo, ref, basePath, filePath, explicitRef };
-}
-
-async function resolveGitHubPinnedRef(parsed: ReturnType<typeof parseGitHubSourceUrl>, authToken?: string) {
-  const apiBase = gitHubApiBase(parsed.hostname);
-  if (/^[0-9a-f]{40}$/i.test(parsed.ref.trim())) {
-    return {
-      pinnedRef: parsed.ref,
-      trackingRef: parsed.explicitRef ? parsed.ref : null,
-    };
-  }
-
-  const trackingRef = parsed.explicitRef
-    ? parsed.ref
-    : await resolveGitHubDefaultBranch(parsed.owner, parsed.repo, apiBase, authToken);
-  const pinnedRef = await resolveGitHubCommitSha(parsed.owner, parsed.repo, trackingRef, apiBase, authToken);
-  return { pinnedRef, trackingRef };
 }
 
 
@@ -1081,20 +995,12 @@ async function readUrlSkillImports(
     return segments.length >= 2 && !parsed.pathname.endsWith(".md");
   } catch { return false; } })();
   if (looksLikeRepoUrl) {
-    const parsed = parseGitHubSourceUrl(url);
-    const apiBase = gitHubApiBase(parsed.hostname);
-    const { pinnedRef, trackingRef } = await resolveGitHubPinnedRef(parsed, authToken);
-    let ref = pinnedRef;
-    const tree = await fetchJson<{ tree?: Array<{ path: string; type: string }> }>(
-      `${apiBase}/repos/${parsed.owner}/${parsed.repo}/git/trees/${ref}?recursive=1`,
-      authToken,
-    ).catch(() => {
-      throw unprocessable(`Failed to read GitHub tree for ${url}`);
-    });
-    const allPaths = (tree.tree ?? [])
-      .filter((entry) => entry.type === "blob")
-      .map((entry) => entry.path)
-      .filter((entry): entry is string => typeof entry === "string");
+    const parsed = parseGitSourceUrl(url);
+    const resolved = await resolveGitRef(parsed, authToken);
+    const snapshot = await openRepoSnapshot(parsed, resolved.trackingRef, resolved.pinnedSha, authToken);
+    const ref = snapshot.sha;
+    const trackingRef = resolved.trackingRef;
+    const allPaths = await snapshot.listFiles();
     const basePrefix = parsed.basePath ? `${parsed.basePath.replace(/^\/+|\/+$/g, "")}/` : "";
     const scopedPaths = basePrefix
       ? allPaths.filter((entry) => entry.startsWith(basePrefix))
@@ -1108,13 +1014,13 @@ async function readUrlSkillImports(
     );
     if (skillPaths.length === 0) {
       throw unprocessable(
-        "No SKILL.md files were found in the provided GitHub source.",
+        "No SKILL.md files were found in the provided source.",
       );
     }
     const skills: ImportedSkill[] = [];
     for (const relativeSkillPath of skillPaths) {
       const repoSkillPath = basePrefix ? `${basePrefix}${relativeSkillPath}` : relativeSkillPath;
-      const markdown = await fetchText(resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, repoSkillPath), authToken);
+      const markdown = await snapshot.readFile(repoSkillPath);
       const parsedMarkdown = parseFrontmatterMarkdown(markdown);
       const skillDir = path.posix.dirname(relativeSkillPath);
       const slug = deriveImportedSkillSlug(parsedMarkdown.frontmatter, path.posix.basename(skillDir));
@@ -1168,15 +1074,15 @@ async function readUrlSkillImports(
     if (skills.length === 0) {
       throw unprocessable(
         requestedSkillSlug
-          ? `Skill ${requestedSkillSlug} was not found in the provided GitHub source.`
-          : "No SKILL.md files were found in the provided GitHub source.",
+          ? `Skill ${requestedSkillSlug} was not found in the provided source.`
+          : "No SKILL.md files were found in the provided source.",
       );
     }
     return { skills, warnings };
   }
 
   if (url.startsWith("http://") || url.startsWith("https://")) {
-    const markdown = await fetchText(url, authToken);
+    const markdown = await fetchPlainText(url);
     const parsedMarkdown = parseFrontmatterMarkdown(markdown);
     const urlObj = new URL(url);
     const fileName = path.posix.basename(urlObj.pathname);
@@ -1801,9 +1707,18 @@ export function companySkillService(db: Db) {
     }
 
     const hostname = asString(metadata.hostname) || "github.com";
-    const apiBase = gitHubApiBase(hostname);
     const authToken = await resolveSkillAuthToken(companyId, skill);
-    const latestRef = await resolveGitHubCommitSha(owner, repo, trackingRef, apiBase, authToken);
+    const parsed: ParsedGitSource = {
+      cloneUrl: `https://${hostname}/${owner}/${repo}.git`,
+      hostname,
+      owner,
+      repo,
+      ref: trackingRef,
+      basePath: "",
+      filePath: null,
+      explicitRef: true,
+    };
+    const { pinnedSha: latestRef } = await resolveGitRef(parsed, authToken);
     return {
       supported: true,
       reason: null,
@@ -1843,13 +1758,25 @@ export function companySkillService(db: Db) {
       const repo = asString(metadata.repo);
       const hostname = asString(metadata.hostname) || "github.com";
       const ref = skill.sourceRef ?? asString(metadata.ref) ?? "main";
+      const trackingRef = asString(metadata.trackingRef);
       const repoSkillDir = normalizeGitHubSkillDirectory(asString(metadata.repoSkillDir), skill.slug);
       if (!owner || !repo) {
         throw unprocessable("Skill source metadata is incomplete.");
       }
       const authToken = await resolveSkillAuthToken(companyId, skill);
       const repoPath = normalizePortablePath(path.posix.join(repoSkillDir, normalizedPath));
-      content = await fetchText(resolveRawGitHubUrl(hostname, owner, repo, ref, repoPath), authToken);
+      const parsedSource: ParsedGitSource = {
+        cloneUrl: `https://${hostname}/${owner}/${repo}.git`,
+        hostname,
+        owner,
+        repo,
+        ref,
+        basePath: repoSkillDir,
+        filePath: null,
+        explicitRef: true,
+      };
+      const snapshot: RepoSnapshot = await openRepoSnapshot(parsedSource, trackingRef ?? null, ref, authToken);
+      content = await snapshot.readFile(repoPath);
     } else if (skill.sourceType === "url") {
       if (normalizedPath !== "SKILL.md") {
         throw notFound("This skill source only exposes SKILL.md");
