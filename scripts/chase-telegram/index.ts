@@ -5,7 +5,7 @@ import { isPaperclipConfigured, PAPERCLIP_API_URL, paperclipPost, COMPANY_ID } f
 import { escapeHtml } from "./lib/html.ts";
 import { formatNotification, isAiConfigured, aiProvider } from "./lib/llm.ts";
 import { routeQuery, routeVenue, routeLocation } from "./router.ts";
-import { refreshFromStorage } from "./lib/pending-tasks.ts";
+import { clearPendingTask, refreshFromStorage } from "./lib/pending-tasks.ts";
 import { isFastLaneMessage } from "./lib/fast-lane.ts";
 import { CHASE_TELEGRAM_BUILD_SHA, CHASE_TELEGRAM_BUILD_TIME } from "./build.ts";
 
@@ -196,6 +196,10 @@ export async function handleWebhook(update: TelegramUpdate): Promise<Response> {
   // interactions. Complex/action queries still go through the full agent flow.
   if (isFastLaneMessage(text)) {
     await refreshFromStorage(chatId);
+    // Clear any stale pending task — fast lane messages (greetings, simple
+    // lookups) should never be blocked by an expired or unrelated pending
+    // task preview. The user is clearly starting a fresh interaction.
+    await clearPendingTask(chatId);
     const { handler } = routeQuery(text, firstName, chatId);
     try {
       const result = await handler();
