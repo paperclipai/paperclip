@@ -1817,7 +1817,7 @@ function enrichWakeContextSnapshot(input: {
   }
   // Pass through arbitrary payload fields that agents need in their context
   // snapshot for downstream workflows (e.g. chaseApiKey for Telegram /notify auth).
-  for (const passthroughKey of ["chaseApiKey"] as const) {
+  for (const passthroughKey of ["chaseApiKey", "telegramFunctionUrl"] as const) {
     const val = readNonEmptyString(payload?.[passthroughKey]);
     if (val && !readNonEmptyString(contextSnapshot[passthroughKey])) {
       contextSnapshot[passthroughKey] = val;
