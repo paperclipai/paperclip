@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
@@ -165,6 +166,7 @@ import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { maybeDeliverKatailystLearnerRunComplete } from "./katailyst-learner-bridge.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -3747,7 +3749,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   function publishRunLifecyclePluginEvent(run: typeof heartbeatRuns.$inferSelect) {
-    const eventType =
+    const eventType: PluginEvent["eventType"] | null =
       run.status === "running"
         ? "agent.run.started"
         : run.status === "succeeded"
@@ -3758,7 +3760,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ? "agent.run.cancelled"
               : null;
     if (!eventType) return;
-    publishPluginDomainEvent({
+    const event: PluginEvent = {
       eventId: randomUUID(),
       eventType,
       occurredAt: new Date().toISOString(),
@@ -3781,7 +3783,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
         finishedAt: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
       },
-    });
+    };
+    publishPluginDomainEvent(event);
+    void maybeDeliverKatailystLearnerRunComplete(event);
   }
 
   async function setWakeupStatus(
