@@ -77,6 +77,7 @@ import { parseIssueGraphLivenessIncidentKey } from "./recovery/origins.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+const ACTIONABLE_ISSUE_STATUSES = new Set(["todo", "in_progress"]);
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
@@ -447,6 +448,31 @@ async function listUnresolvedBlockerIssueIds(
     )
     .then((rows) => rows.map((row) => row.id));
 }
+
+async function assertNoUnresolvedBlockersForActionableStatus(input: {
+  dbOrTx: Pick<Db, "select">;
+  companyId: string;
+  issueId?: string | null;
+  blockedByIssueIds?: string[];
+  status: string | null | undefined;
+}) {
+  if (!input.status || !ACTIONABLE_ISSUE_STATUSES.has(input.status)) return;
+
+  const unresolvedBlockerIssueIds = input.blockedByIssueIds !== undefined
+    ? await listUnresolvedBlockerIssueIds(input.dbOrTx, input.companyId, input.blockedByIssueIds)
+    : (
+        await listIssueDependencyReadinessMap(
+          input.dbOrTx,
+          input.companyId,
+          input.issueId ? [input.issueId] : [],
+        )
+      ).get(input.issueId ?? "")?.unresolvedBlockerIssueIds ?? [];
+
+  if (unresolvedBlockerIssueIds.length > 0) {
+    throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
+  }
+}
+
 async function getProjectDefaultGoalId(
   db: ProjectGoalReader,
   companyId: string,
@@ -3914,6 +3940,10 @@ export function issueService(db: Db) {
       if (!children.every((child) => child.status === "done" || child.status === "cancelled")) {
         return null;
       }
+      const dependencyReadiness = await listIssueDependencyReadinessMap(db, parent.companyId, [parentIssueId]);
+      if ((dependencyReadiness.get(parentIssueId)?.unresolvedBlockerIssueIds ?? []).length > 0) {
+        return null;
+      }
 
       const childIdsForSummaries = children.slice(0, MAX_CHILD_COMPLETION_SUMMARIES).map((child) => child.id);
       const commentRows = childIdsForSummaries.length > 0
@@ -4034,6 +4064,12 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
+      await assertNoUnresolvedBlockersForActionableStatus({
+        dbOrTx: db,
+        companyId,
+        blockedByIssueIds,
+        status: issueData.status ?? "backlog",
+      });
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
@@ -4293,15 +4329,15 @@ export function issueService(db: Db) {
       if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      if (patch.status === "in_progress") {
-        const unresolvedBlockerIssueIds = blockedByIssueIds !== undefined
-          ? await listUnresolvedBlockerIssueIds(dbOrTx, existing.companyId, blockedByIssueIds)
-          : (
-              await listIssueDependencyReadinessMap(dbOrTx, existing.companyId, [id])
-            ).get(id)?.unresolvedBlockerIssueIds ?? [];
-        if (unresolvedBlockerIssueIds.length > 0) {
-          throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
-        }
+      const nextStatus = issueData.status ?? existing.status;
+      if (issueData.status !== undefined || blockedByIssueIds !== undefined) {
+        await assertNoUnresolvedBlockersForActionableStatus({
+          dbOrTx,
+          companyId: existing.companyId,
+          issueId: id,
+          blockedByIssueIds,
+          status: nextStatus,
+        });
       }
       if (issueData.assigneeAgentId) {
         await assertAssignableAgent(existing.companyId, issueData.assigneeAgentId);
@@ -4593,6 +4629,12 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
       await assertAssignableAgent(issueCompany.companyId, agentId);
+      await assertNoUnresolvedBlockersForActionableStatus({
+        dbOrTx: db,
+        companyId: issueCompany.companyId,
+        issueId: id,
+        status: "in_progress",
+      });
 
       const now = new Date();
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issueCompany.companyId, id);
@@ -4610,12 +4652,6 @@ export function issueService(db: Db) {
       }
 
       await clearExecutionRunIfTerminal(id);
-
-      const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
-      const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
-      if (unresolvedBlockerIssueIds.length > 0) {
-        throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
-      }
 
       const sameRunAssigneeCondition = checkoutRunId
         ? and(

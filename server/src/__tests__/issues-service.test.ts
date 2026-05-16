@@ -2307,8 +2307,8 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     const issueA = randomUUID();
     const issueB = randomUUID();
     await db.insert(issues).values([
-      { id: issueA, companyId, title: "Issue A", status: "todo", priority: "medium" },
-      { id: issueB, companyId, title: "Issue B", status: "todo", priority: "medium" },
+      { id: issueA, companyId, title: "Issue A", status: "blocked", priority: "medium" },
+      { id: issueB, companyId, title: "Issue B", status: "blocked", priority: "medium" },
     ]);
 
     await svc.update(issueA, { blockedByIssueIds: [issueB] });
@@ -2383,7 +2383,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     const blockedId = randomUUID();
     await db.insert(issues).values([
       { id: blockerId, companyId, title: "Blocker", status: "todo", priority: "medium" },
-      { id: blockedId, companyId, title: "Blocked", status: "todo", priority: "medium" },
+      { id: blockedId, companyId, title: "Blocked", status: "blocked", priority: "medium" },
     ]);
     await svc.update(blockedId, { blockedByIssueIds: [blockerId] });
 
@@ -2408,7 +2408,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     });
   });
 
-  it("rejects execution when unresolved blockers remain", async () => {
+  it("rejects actionable states when unresolved blockers remain", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
     await db.insert(companies).values({
@@ -2437,7 +2437,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         id: blockedId,
         companyId,
         title: "Blocked",
-        status: "todo",
+        status: "blocked",
         priority: "medium",
         assigneeAgentId,
       },
@@ -2445,11 +2445,25 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await svc.update(blockedId, { blockedByIssueIds: [blockerId] });
 
     await expect(
+      svc.update(blockedId, { status: "todo" }),
+    ).rejects.toMatchObject({ status: 422 });
+
+    await expect(
       svc.update(blockedId, { status: "in_progress" }),
     ).rejects.toMatchObject({ status: 422 });
 
     await expect(
       svc.checkout(blockedId, assigneeAgentId, ["todo", "blocked"], null),
+    ).rejects.toMatchObject({ status: 422 });
+
+    await expect(
+      svc.create(companyId, {
+        title: "Blocked at creation",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId,
+        blockedByIssueIds: [blockerId],
+      }),
     ).rejects.toMatchObject({ status: 422 });
   });
 
@@ -2517,6 +2531,72 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         expect.objectContaining({ id: childB, title: "Child B", status: "cancelled" }),
       ],
       childIssueSummaryTruncated: false,
+    });
+  });
+
+  it("does not wake a blocked parent after child completion while unresolved blockers remain", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const blockerId = randomUUID();
+    const parentId = randomUUID();
+    const childA = randomUUID();
+    const childB = randomUUID();
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Active blocker", status: "todo", priority: "medium" },
+      {
+        id: parentId,
+        companyId,
+        title: "Parent issue",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId,
+      },
+      {
+        id: childA,
+        companyId,
+        parentId,
+        title: "Child A",
+        status: "done",
+        priority: "medium",
+      },
+      {
+        id: childB,
+        companyId,
+        parentId,
+        title: "Child B",
+        status: "cancelled",
+        priority: "medium",
+      },
+    ]);
+
+    await svc.update(parentId, { blockedByIssueIds: [blockerId] });
+
+    expect(await svc.getWakeableParentAfterChildCompletion(parentId)).toBeNull();
+
+    await svc.update(blockerId, { status: "done" });
+
+    expect(await svc.getWakeableParentAfterChildCompletion(parentId)).toMatchObject({
+      id: parentId,
+      assigneeAgentId,
+      childIssueIds: [childA, childB],
     });
   });
 });

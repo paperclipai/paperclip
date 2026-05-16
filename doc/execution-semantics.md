@@ -150,7 +150,11 @@ Use it for:
 
 Blocked issues should stay idle while blockers remain unresolved. Paperclip should not create a queued heartbeat run for that issue until the final blocker is done and the `issue_blockers_resolved` wake can start real work.
 
+An issue with unresolved first-class blockers is not actionable. Paperclip should reject create/update attempts that place that issue in `todo` or `in_progress`, and checkout should reject reclaim attempts until every blocker is `done`.
+
 If a parent is truly waiting on a child, model that with blockers. Do not rely on the parent/child relationship alone.
+
+Parent/child completion wakeups do not override blockers. `issue_children_completed` should only wake a parent when every direct child is terminal and the parent itself has no unresolved `blockedByIssueIds`.
 
 ## 7. Non-Terminal Issue Liveness Contract
 

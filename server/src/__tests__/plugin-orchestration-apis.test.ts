@@ -132,7 +132,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     const issue = await services.issues.create({
       companyId,
       title: "Plugin child issue",
-      status: "todo",
+      status: "blocked",
       assigneeAgentId: agentId,
       billingCode: "mission:alpha",
       originId: "mission-alpha",
@@ -145,6 +145,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     expect(stored?.originKind).toBe("plugin:paperclip.missions");
     expect(stored?.originId).toBe("mission-alpha");
     expect(stored?.billingCode).toBe("mission:alpha");
+    expect(stored?.status).toBe("blocked");
     expect(stored?.assigneeAgentId).toBe(agentId);
     expect(stored?.createdByAgentId).toBe(agentId);
     expect(stored?.originRunId).toBe(originRunId);
