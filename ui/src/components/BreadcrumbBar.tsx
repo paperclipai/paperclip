@@ -63,7 +63,7 @@ function useScrollCollapse() {
 
 export function BreadcrumbBar() {
   const { breadcrumbs, mobileToolbar } = useBreadcrumbs();
-  const { toggleSidebar, isMobile } = useSidebar();
+  const { toggleSidebar, isMobile, isNarrow } = useSidebar();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const scrollCollapsed = useScrollCollapse();
 
@@ -77,6 +77,21 @@ export function BreadcrumbBar() {
 
   const globalToolbarSlots = <GlobalToolbarPlugins context={globalToolbarSlotContext} />;
 
+  // Show the hamburger any time the sidebar is off-canvas (phone + tablet,
+  // <lg). isMobile alone would skip tablets and strand users with no way to
+  // open the sidebar.
+  const menuButton = isNarrow && (
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      className="mr-2 shrink-0"
+      onClick={toggleSidebar}
+      aria-label="Open sidebar"
+    >
+      <Menu className="h-5 w-5" />
+    </Button>
+  );
+
   if (isMobile && mobileToolbar) {
     return (
       <div
@@ -89,6 +104,7 @@ export function BreadcrumbBar() {
           scrollCollapsed ? "-translate-y-full opacity-0 pointer-events-none" : "translate-y-0 opacity-100",
         )}
       >
+        {menuButton}
         {mobileToolbar}
       </div>
     );
@@ -98,27 +114,16 @@ export function BreadcrumbBar() {
     return (
       <div
         className={cn(
-          "border-b border-border/60 px-4 md:px-6 h-12 shrink-0 flex items-center justify-end",
+          "border-b border-border/60 px-4 md:px-6 h-12 shrink-0 flex items-center",
           isMobile && "glass-surface transition-[transform,opacity] duration-200 ease-out",
           isMobile && scrollCollapsed ? "-translate-y-full opacity-0 pointer-events-none" : "translate-y-0 opacity-100",
         )}
       >
-        {globalToolbarSlots}
+        {menuButton}
+        <div className="ml-auto flex items-center">{globalToolbarSlots}</div>
       </div>
     );
   }
-
-  const menuButton = isMobile && (
-    <Button
-      variant="ghost"
-      size="icon-sm"
-      className="mr-2 shrink-0"
-      onClick={toggleSidebar}
-      aria-label="Open sidebar"
-    >
-      <Menu className="h-5 w-5" />
-    </Button>
-  );
 
   // Single breadcrumb = page title (uppercase)
   if (breadcrumbs.length === 1) {
