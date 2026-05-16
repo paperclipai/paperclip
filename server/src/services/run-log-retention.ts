@@ -40,7 +40,7 @@ const DEFAULT_POLICY: RunLogRetentionPolicy = {
 function parsePositiveNumber(raw: string | undefined, fallback: number): number {
   if (!raw) return fallback;
   const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return parsed;
 }
 
@@ -62,12 +62,21 @@ export function resolveDefaultRunLogBasePath(): string {
  * Disk-pressure / permission / vanished-file conditions hit during a scan are
  * always logged but never escalate — the run-logs tree must not crash Paperclip.
  */
-const RECOVERABLE_FS_CODES = new Set(["ENOSPC", "EROFS", "EACCES", "EPERM", "ENOENT", "EBUSY", "EIO"]);
+export const RECOVERABLE_RUN_LOG_RETENTION_FS_CODES = new Set([
+  "ENOSPC",
+  "EROFS",
+  "EDQUOT",
+  "EACCES",
+  "EPERM",
+  "ENOENT",
+  "EBUSY",
+  "EIO",
+]);
 
 function isRecoverableFsError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   const code = (err as { code?: unknown }).code;
-  return typeof code === "string" && RECOVERABLE_FS_CODES.has(code);
+  return typeof code === "string" && RECOVERABLE_RUN_LOG_RETENTION_FS_CODES.has(code);
 }
 
 async function gzipFileAtomic(srcPath: string): Promise<{ srcBytes: number }> {
@@ -179,12 +188,29 @@ export async function rotateRunLogs(opts: RotateRunLogsOptions = {}): Promise<Ru
       }
       result.scannedFiles += 1;
       const age = now - stat.mtimeMs;
-      const ext = entry.name.endsWith(".ndjson.gz")
+      const ext = entry.name.endsWith(".ndjson.gz.tmp")
+        ? "tmp"
+        : entry.name.endsWith(".ndjson.gz")
         ? "gz"
         : entry.name.endsWith(".ndjson")
           ? "ndjson"
           : "other";
       if (ext === "other") continue;
+
+      if (ext === "tmp") {
+        if (age < graceMs) continue;
+        try {
+          await fs.unlink(fullPath);
+          result.deletedFiles += 1;
+        } catch (err) {
+          if (isRecoverableFsError(err)) {
+            reportWarn(fullPath, err);
+            continue;
+          }
+          throw err;
+        }
+        continue;
+      }
 
       // Retention: delete files past the compressed-window age regardless of form.
       if (age > compressedMs) {

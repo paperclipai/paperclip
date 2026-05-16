@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   formatRunLogRetentionSummary,
+  RECOVERABLE_RUN_LOG_RETENTION_FS_CODES,
   resolveRunLogRetentionPolicyFromEnv,
   rotateRunLogs,
 } from "../services/run-log-retention.js";
@@ -43,6 +44,22 @@ async function writeGzipPlaceholder(
   await fs.mkdir(agentDir, { recursive: true });
   const filePath = path.join(agentDir, `${runId}.ndjson.gz`);
   // Empty gz placeholder; rotator only checks extension + mtime for deletion.
+  await fs.writeFile(filePath, Buffer.alloc(16));
+  const mtimeSec = mtimeMs / 1000;
+  await fs.utimes(filePath, mtimeSec, mtimeSec);
+  return filePath;
+}
+
+async function writeGzipTmpPlaceholder(
+  basePath: string,
+  companyId: string,
+  agentId: string,
+  runId: string,
+  mtimeMs: number,
+): Promise<string> {
+  const agentDir = path.join(basePath, companyId, agentId);
+  await fs.mkdir(agentDir, { recursive: true });
+  const filePath = path.join(agentDir, `${runId}.ndjson.gz.tmp`);
   await fs.writeFile(filePath, Buffer.alloc(16));
   const mtimeSec = mtimeMs / 1000;
   await fs.utimes(filePath, mtimeSec, mtimeSec);
@@ -168,6 +185,22 @@ describe("rotateRunLogs", () => {
     expect(result.deletedFiles).toBe(1);
   });
 
+  it("deletes stale orphaned gzip temp files but leaves fresh temp files alone", async () => {
+    const now = new Date("2026-05-10T12:00:00.000Z");
+    const stale = now.getTime() - 2 * 60 * 60 * 1000;
+    const fresh = now.getTime() - 5 * 60 * 1000;
+    const staleTmp = await writeGzipTmpPlaceholder(workDir, "co-1", "agent-1", "run-stale", stale);
+    const freshTmp = await writeGzipTmpPlaceholder(workDir, "co-1", "agent-1", "run-fresh", fresh);
+
+    const result = await rotateRunLogs({ basePath: workDir, policy, now });
+
+    await expect(fs.access(staleTmp)).rejects.toThrow();
+    await expect(fs.access(freshTmp)).resolves.toBeUndefined();
+    expect(result.scannedFiles).toBe(2);
+    expect(result.deletedFiles).toBe(1);
+    expect(result.gzippedFiles).toBe(0);
+  });
+
   it("no-ops cleanly when the base path does not exist", async () => {
     const missing = path.join(workDir, "missing");
     const result = await rotateRunLogs({
@@ -225,5 +258,24 @@ describe("resolveRunLogRetentionPolicyFromEnv", () => {
     });
     expect(policy.uncompressedDays).toBe(3);
     expect(policy.compressedDays).toBe(7);
+  });
+
+  it("ignores zero env values because retention windows must be strictly positive", () => {
+    const policy = resolveRunLogRetentionPolicyFromEnv({
+      PAPERCLIP_RUN_LOG_UNCOMPRESSED_DAYS: "0",
+      PAPERCLIP_RUN_LOG_COMPRESSED_DAYS: "0",
+      PAPERCLIP_RUN_LOG_MAX_FILE_BYTES: "0",
+      PAPERCLIP_RUN_LOG_ROTATE_GRACE_MINUTES: "0",
+    });
+    expect(policy).toEqual({
+      uncompressedDays: 3,
+      compressedDays: 7,
+      maxFileBytes: 500 * 1024 * 1024,
+      graceMinutes: 60,
+    });
+  });
+
+  it("treats disk quota errors as recoverable during retention scans", () => {
+    expect(RECOVERABLE_RUN_LOG_RETENTION_FS_CODES.has("EDQUOT")).toBe(true);
   });
 });
