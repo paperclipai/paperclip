@@ -6,6 +6,7 @@ import { escapeHtml } from "./lib/html.ts";
 import { formatNotification, isAiConfigured, aiProvider } from "./lib/llm.ts";
 import { routeQuery, routeVenue, routeLocation } from "./router.ts";
 import { refreshFromStorage } from "./lib/pending-tasks.ts";
+import { isFastLaneMessage } from "./lib/fast-lane.ts";
 import { CHASE_TELEGRAM_BUILD_SHA, CHASE_TELEGRAM_BUILD_TIME } from "./build.ts";
 
 // ─── Build Information ────────────────────────────────────────────────
@@ -189,6 +190,28 @@ export async function handleWebhook(update: TelegramUpdate): Promise<Response> {
 
   const text = msg.text;
 
+  // Fast lane: greetings, acknowledgments, and simple lookup questions go
+  // directly through the old router — no Paperclip issue created, no agent
+  // wakeup queue delay. This avoids heavyweight task processing for trivial
+  // interactions. Complex/action queries still go through the full agent flow.
+  if (isFastLaneMessage(text)) {
+    await refreshFromStorage(chatId);
+    const { handler } = routeQuery(text, firstName, chatId);
+    try {
+      const result = await handler();
+      await sendTelegram(chatId, result.text);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const snippet = text.length > 80 ? text.slice(0, 80) + "..." : text;
+      console.error(`Fast lane failed [chatId=${chatId}, query="${snippet}"]: ${message}`);
+      await sendTelegram(
+        chatId,
+        "Sorry, I ran into an issue looking that up. Please try again shortly.",
+      );
+    }
+    return respondJson({ ok: true, fastLane: true });
+  }
+
   // Try the Paperclip agent runtime first (Chase — Dispatcher)
   const wakeupResult = await tryAgentWakeup(text, chatId, firstName, msg.message_id);
   if (wakeupResult === "accepted") {
@@ -318,6 +341,7 @@ export function handleHealth(): Response {
     botConfigured: isBotConfigured(),
     paperclipConfigured: isPaperclipConfigured(),
     agentRoutingConfigured: isAgentRoutingConfigured(),
+    fastLaneEnabled: true,
     chaseAgentId: CHASE_AGENT_ID || null,
     aiConfigured: isAiConfigured(),
     aiProvider: aiProvider(),
