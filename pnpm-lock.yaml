@@ -15,6 +15,10 @@ patchedDependencies:
 importers:
 
   .:
+    dependencies:
+      hermes-paperclip-adapter:
+        specifier: 0.2.0
+        version: 0.2.0
     devDependencies:
       '@playwright/test':
         specifier: ^1.58.2
@@ -211,6 +215,19 @@ importers:
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
+    devDependencies:
+      '@types/node':
+        specifier: ^24.6.0
+        version: 24.12.0
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
+  packages/adapters/hermes-local:
+    dependencies:
+      '@paperclipai/adapter-utils':
+        specifier: workspace:*
+        version: link:../../adapter-utils
     devDependencies:
       '@types/node':
         specifier: ^24.6.0
@@ -592,6 +609,9 @@ importers:
       '@paperclipai/adapter-gemini-local':
         specifier: workspace:*
         version: link:../packages/adapters/gemini-local
+      '@paperclipai/adapter-hermes-local':
+        specifier: file:../packages/adapters/hermes-local
+        version: file:packages/adapters/hermes-local
       '@paperclipai/adapter-openclaw-gateway':
         specifier: workspace:*
         version: link:../packages/adapters/openclaw-gateway
@@ -2436,6 +2456,9 @@ packages:
 
   '@open-draft/deferred-promise@2.2.0':
     resolution: {integrity: sha512-CecwLWx3rhxVQF6V4bAgPS5t+So2sTbPgAzafKkVizyi7tlwpcFpdFqq+wqF2OwNBmqFuu6tOyouTuxgpMfzmA==}
+
+  '@paperclipai/adapter-hermes-local@file:packages/adapters/hermes-local':
+    resolution: {directory: packages/adapters/hermes-local, type: directory}
 
   '@paperclipai/adapter-utils@2026.325.0':
     resolution: {integrity: sha512-YDVSAgjkeJ0PvxXDJVN9MZDX7oYRzidLtGHmGgRGd6gSk/bF2ygAKvND4FI1YxDc/cRLQjqAFCpCYaC/9wqIEA==}
@@ -9268,6 +9291,10 @@ snapshots:
     optional: true
 
   '@open-draft/deferred-promise@2.2.0': {}
+
+  '@paperclipai/adapter-hermes-local@file:packages/adapters/hermes-local':
+    dependencies:
+      '@paperclipai/adapter-utils': link:packages/adapter-utils
 
   '@paperclipai/adapter-utils@2026.325.0': {}
 

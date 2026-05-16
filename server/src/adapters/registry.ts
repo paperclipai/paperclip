@@ -123,8 +123,10 @@ import {
 } from "hermes-paperclip-adapter/server";
 import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
-  models as hermesModels,
 } from "hermes-paperclip-adapter";
+import {
+  models as hermesModels,
+} from "@paperclipai/adapter-hermes-local";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
