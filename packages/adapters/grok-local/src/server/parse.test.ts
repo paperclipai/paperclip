@@ -28,6 +28,37 @@ describe("parseGrokJsonl", () => {
 
     expect(parsed.errorMessage).toBe("Authentication required");
   });
+
+  it("separates reasoning turns that grok streaming-json glues together", () => {
+    // PAPA-349: at turn boundaries grok drops the newline between turns; the
+    // aggregated thought should still read as two paragraphs.
+    const parsed = parseGrokJsonl([
+      JSON.stringify({ type: "thought", data: "The user uses `" }),
+      JSON.stringify({ type: "thought", data: "ls" }),
+      JSON.stringify({ type: "thought", data: "`" }),
+      JSON.stringify({ type: "thought", data: "The" }),
+      JSON.stringify({ type: "thought", data: " `" }),
+      JSON.stringify({ type: "thought", data: "ls" }),
+      JSON.stringify({ type: "thought", data: "`" }),
+      JSON.stringify({ type: "thought", data: " returned" }),
+      JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "sess-1" }),
+    ].join("\n"));
+
+    expect(parsed.thought).toBe("The user uses `ls`\nThe `ls` returned");
+  });
+
+  it("preserves assistant `text` chunks verbatim (no boundary heuristic)", () => {
+    // PAPA-349 review feedback: the turn-boundary helper is scoped to the
+    // reasoning stream only. Final assistant text is stored unmodified so
+    // user-visible responses cannot be reshaped by the heuristic.
+    const parsed = parseGrokJsonl([
+      JSON.stringify({ type: "text", data: "Done." }),
+      JSON.stringify({ type: "text", data: "Next" }),
+      JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "sess-1" }),
+    ].join("\n"));
+
+    expect(parsed.summary).toBe("Done.Next");
+  });
 });
 
 describe("isGrokUnknownSessionError", () => {

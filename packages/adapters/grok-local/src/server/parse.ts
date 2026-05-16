@@ -1,4 +1,5 @@
 import { asString, parseJson, parseObject } from "@paperclipai/adapter-utils/server-utils";
+import { applyTurnBoundary, createTurnBoundaryState } from "../shared/turn-boundary.js";
 
 export interface ParsedGrokJsonl {
   sessionId: string | null;
@@ -32,6 +33,7 @@ export function parseGrokJsonl(stdout: string): ParsedGrokJsonl {
   let errorMessage: string | null = null;
   const thoughtParts: string[] = [];
   const textParts: string[] = [];
+  const thoughtBoundary = createTurnBoundaryState();
 
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -43,7 +45,7 @@ export function parseGrokJsonl(stdout: string): ParsedGrokJsonl {
     const type = asString(event.type, "").trim();
     if (type === "thought") {
       const text = asString(event.data, "");
-      if (text) thoughtParts.push(text);
+      if (text) thoughtParts.push(applyTurnBoundary(thoughtBoundary, text));
       continue;
     }
 
