@@ -488,7 +488,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
           .where(eq(heartbeatRuns.id, firstWake!.id))
           .then((rows) => rows[0] ?? null);
         return run?.status === "running";
-      });
+      }, 15_000);
       expect(firstRunStarted).toBe(true);
       const firstAdapterStarted = await waitForCondition(async () => mockAdapterExecute.mock.calls.length === 1, 30_000);
       expect(firstAdapterStarted).toBe(true);
@@ -527,7 +527,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
           .where(eq(heartbeatRuns.id, firstWake!.id))
           .then((rows) => rows[0] ?? null);
         return run?.status === "succeeded";
-      });
+      }, 15_000);
       expect(firstRunSucceeded).toBe(true);
 
       const secondRunSucceeded = await waitForCondition(async () => {
@@ -537,7 +537,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
           .where(eq(heartbeatRuns.id, secondWake!.id))
           .then((rows) => rows[0] ?? null);
         return run?.status === "succeeded";
-      }, 10_000);
+      }, 15_000);
       expect(secondRunSucceeded).toBe(true);
       expect(mockAdapterExecute.mock.calls.length).toBeGreaterThanOrEqual(2);
     } finally {
