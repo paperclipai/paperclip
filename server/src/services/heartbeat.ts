@@ -3782,6 +3782,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : null,
         startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
         finishedAt: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
+        usage: run.usageJson ?? null,
       },
     };
     publishPluginDomainEvent(event);

@@ -23,6 +23,7 @@ type PaperclipRunEventPayload = {
   issueId?: unknown;
   startedAt?: unknown;
   finishedAt?: unknown;
+  usage?: unknown;
 };
 
 function stringField(value: unknown): string | null {
@@ -42,6 +43,12 @@ function asRunPayload(payload: unknown): PaperclipRunEventPayload {
   return payload && typeof payload === "object" && !Array.isArray(payload)
     ? payload as PaperclipRunEventPayload
     : {};
+}
+
+function asObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 function buildPaperclipRunUrl(baseUrl: string | null, runId: string | null): string | null {
@@ -113,6 +120,7 @@ async function deliverRunComplete(ctx: PluginContext, event: PluginEvent) {
     started_at: stringField(payload.startedAt),
     finished_at: stringField(payload.finishedAt),
     paperclip_url: buildPaperclipRunUrl(config.paperclipBaseUrl, runId),
+    usage: asObject(payload.usage),
   };
 
   const response = await ctx.http.fetch(config.endpointUrl, {

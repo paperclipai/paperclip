@@ -44,6 +44,14 @@ describe("Katailyst Learner plugin", () => {
         issueId: "issue_1",
         startedAt: "2026-05-16T01:00:00.000Z",
         finishedAt: "2026-05-16T01:02:00.000Z",
+        usage: {
+          inputTokens: 100,
+          cachedInputTokens: 25,
+          outputTokens: 40,
+          costUsd: 0.12,
+          provider: "openai",
+          model: "gpt-test",
+        },
       },
       {
         companyId: COMPANY_ID,
@@ -76,6 +84,14 @@ describe("Katailyst Learner plugin", () => {
         issue_id: "issue_1",
         status: "succeeded",
         paperclip_url: "https://paperclip.example/heartbeat-runs/run_1",
+        usage: {
+          inputTokens: 100,
+          cachedInputTokens: 25,
+          outputTokens: 40,
+          costUsd: 0.12,
+          provider: "openai",
+          model: "gpt-test",
+        },
       }),
     );
     expect(harness.activity.at(-1)?.message).toBe(

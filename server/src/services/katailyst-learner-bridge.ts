@@ -19,6 +19,12 @@ function asPayload(payload: unknown): Record<string, unknown> {
     : {};
 }
 
+function asObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
 function buildPaperclipRunUrl(baseUrl: string | null, runId: string | null): string | null {
   if (!baseUrl || !runId) return null;
   try {
@@ -103,6 +109,7 @@ export async function maybeDeliverKatailystLearnerRunComplete(event: PluginEvent
         started_at: stringField(payload.startedAt),
         finished_at: stringField(payload.finishedAt),
         paperclip_url: buildPaperclipRunUrl(config.paperclipBaseUrl, runId),
+        usage: asObject(payload.usage),
       }),
       signal: controller.signal,
     });

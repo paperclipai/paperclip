@@ -23,6 +23,14 @@ function runFinishedEvent(overrides: Partial<PluginEvent> = {}): PluginEvent {
       issueId: "issue_1",
       startedAt: "2026-05-15T23:59:00.000Z",
       finishedAt: "2026-05-16T00:00:00.000Z",
+      usage: {
+        inputTokens: 100,
+        cachedInputTokens: 25,
+        outputTokens: 40,
+        costUsd: 0.12,
+        provider: "openai",
+        model: "gpt-test",
+      },
     },
     ...overrides,
   };
@@ -67,6 +75,14 @@ describe("Katailyst Learner bridge", () => {
       invocation_source: "manual",
       trigger_detail: "operator",
       paperclip_url: "https://paperclip.example/heartbeat-runs/run_1",
+      usage: {
+        inputTokens: 100,
+        cachedInputTokens: 25,
+        outputTokens: 40,
+        costUsd: 0.12,
+        provider: "openai",
+        model: "gpt-test",
+      },
     });
   });
 
