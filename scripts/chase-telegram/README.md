@@ -48,7 +48,7 @@ Telegram message → routeQuery(text) → regex dispatch (fast path)
 
 ### Routing Pipeline
 
-1. **Slash commands** — `/overview`, `/blocked`, `/detail`, `/metar`, etc. (fastest path, no AI)
+1. **Slash commands** — `/help`, `/commands`, `/about`, `/blocked`, `/overview`, `/status`, etc. (fastest path, no AI)
 2. **Natural language patterns** — Regex-based routing for common phrases like "what is X working on?", "have X do Y"
 3. **LLM intent classifier** — For unmatched queries, uses DeepSeek/Claude to classify intent (greeting, paperclip_query, agent_action, aviation_weather, location_search, web_search, chat)
 4. **AI chat fallback** — Free-text conversation using Chase's system prompt
@@ -146,19 +146,20 @@ curl -X POST https://api.telegram.org/bot<BOT_TOKEN>/setWebhook \
 
 | Command | Description |
 |---|---|
-| `/start`, `hello`, `hi` | Welcome message |
-| `/help`, `/commands` | Show available commands |
-| `/overview`, `/status` | Company overview |
+| `/start` | Welcome message |
+| `/help` | What Chase can do |
+| `/commands` | Show shortcut commands |
+| `/about` | What Chase is |
+| `/ping` | Bot health check |
+| `/version` | Current deployed version |
+| `/overview`, `/status` | Paperclip system status |
 | `/blocked` | Blocked issues |
 | `/approvals` | Pending approvals |
 | `/agents` | List agents |
 | `/detail <ID>` | Issue details (e.g. `/detail CRE-123`) |
 | `/search <query>` | Search issues |
-| `/metar <ICAO>` | Current METAR weather report (e.g. `/metar KJFK`) |
-| `/taf <ICAO>` | TAF weather forecast (e.g. `/taf KJFK`) |
-| `/movies <location>` | Find cinemas near a location (e.g. `/movies downtown Austin`) |
-| `/restaurants <location>` | Find restaurants near a location (e.g. `/restaurants Brooklyn`) |
-| `/hotels <location>` | Find hotels near a location (e.g. `/hotels Soho London`) |
+| `/spend` | Monthly spend and budget |
+| `/recent` | Recent completed work |
 | Free text | Natural language routing to queries |
 
 ## API Endpoints
