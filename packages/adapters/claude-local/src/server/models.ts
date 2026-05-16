@@ -84,10 +84,13 @@ function pickCheapBedrockModelId(prefix: BedrockRegionPrefix): string {
 
 /**
  * Return the model profiles appropriate for the current auth mode.
- * When Bedrock env vars are detected, rewrites each profile's `adapterConfig.model`
- * to a region-correct Bedrock inference-profile id. Without this, the resolver
- * picks an Anthropic-direct id like `claude-sonnet-4-6`, which Bedrock rejects
- * with `400 The provided model identifier is invalid.`
+ * When Bedrock env vars are detected, rewrites the `cheap` profile's
+ * `adapterConfig.model` to a region-correct Bedrock inference-profile id.
+ * Without this, the resolver picks an Anthropic-direct id like `claude-sonnet-4-6`,
+ * which Bedrock rejects with `400 The provided model identifier is invalid.`
+ *
+ * Only the `cheap` profile is rewritten; any other profiles added in the future
+ * should either be given Bedrock-native IDs in DIRECT_MODEL_PROFILES or handled here.
  */
 export async function listClaudeModelProfiles(): Promise<AdapterModelProfileDefinition[]> {
   if (!isBedrockEnv()) return DIRECT_MODEL_PROFILES;
