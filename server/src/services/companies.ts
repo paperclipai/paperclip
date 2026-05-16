@@ -124,17 +124,14 @@ export function companyService(db: Db) {
     return "A".repeat(attempt - 1);
   }
 
-  function isIssuePrefixConflict(error: unknown) {
-    const constraint = typeof error === "object" && error !== null && "constraint" in error
-      ? (error as { constraint?: string }).constraint
-      : typeof error === "object" && error !== null && "constraint_name" in error
-        ? (error as { constraint_name?: string }).constraint_name
-        : undefined;
-    return typeof error === "object"
-      && error !== null
-      && "code" in error
-      && (error as { code?: string }).code === "23505"
-      && constraint === "companies_issue_prefix_idx";
+  function isIssuePrefixConflict(error: unknown): boolean {
+    if (typeof error !== "object" || error === null) return false;
+    const e = error as { code?: string; constraint?: string; constraint_name?: string; cause?: unknown };
+    const constraint = e.constraint ?? e.constraint_name;
+    if (e.code === "23505" && constraint === "companies_issue_prefix_idx") return true;
+    // drizzle wraps PostgresError in DrizzleQueryError; check cause chain.
+    if (e.cause) return isIssuePrefixConflict(e.cause);
+    return false;
   }
 
   async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
