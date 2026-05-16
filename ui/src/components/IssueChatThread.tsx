@@ -16,6 +16,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useImperativeHandle,
   useLayoutEffect,
   useMemo,
@@ -35,8 +36,10 @@ import type {
   FeedbackVoteValue,
   IssueAttachment,
   IssueBlockerAttention,
+  IssueRecoveryAction,
   IssueRelationIssueSummary,
   SuccessfulRunHandoffState,
+  IssueWorkMode,
 } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
@@ -60,7 +63,12 @@ import type {
 } from "../lib/issue-thread-interactions";
 import { buildIssueThreadInteractionSummary, isIssueThreadInteraction } from "../lib/issue-thread-interactions";
 import { resolveIssueChatTranscriptRuns } from "../lib/issueChatTranscriptRuns";
-import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
+import {
+  formatTimelineWorkspaceLabel,
+  type IssueTimelineAssignee,
+  type IssueTimelineEvent,
+  type IssueTimelineWorkspace,
+} from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -98,8 +106,15 @@ import {
   isSuccessfulRunHandoffComment,
   isSuccessfulRunHandoffEscalationComment,
 } from "../lib/successful-run-handoff";
-import { SystemNotice } from "./SystemNotice";
-import { buildSystemNoticeProps } from "../lib/system-notice-comment";
+import {
+  SystemNotice,
+  type SystemNoticeMetadataRow,
+  type SystemNoticeMetadataSection,
+} from "./SystemNotice";
+import {
+  buildSystemNoticeProps,
+  mapCommentMetadataToSystemNoticeSections,
+} from "../lib/system-notice-comment";
 import type {
   IssueCommentMetadata,
   IssueCommentPresentation,
@@ -117,8 +132,10 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
-import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
+import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ClipboardList, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
+import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
+import { IssueRecoveryActionCard, type RecoveryResolveOutcome } from "./IssueRecoveryActionCard";
 
 interface IssueChatMessageContext {
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
@@ -154,11 +171,15 @@ interface IssueChatMessageContext {
   onCancelInteraction?: (
     interaction: AskUserQuestionsInteraction,
   ) => Promise<void> | void;
+  issueStatus?: string;
+  successfulRunHandoff?: SuccessfulRunHandoffState | null;
 }
 
 const IssueChatCtx = createContext<IssueChatMessageContext>({
   feedbackDataSharingPreference: "prompt",
   feedbackTermsUrl: null,
+  issueStatus: undefined,
+  successfulRunHandoff: null,
 });
 
 export function resolveAssistantMessageFoldedState(args: {
@@ -261,6 +282,8 @@ interface IssueChatComposerProps {
   composerDisabledReason?: string | null;
   composerHint?: string | null;
   issueStatus?: string;
+  issueWorkMode?: IssueWorkMode;
+  onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
 }
 
 interface IssueChatThreadProps {
@@ -276,6 +299,17 @@ interface IssueChatThreadProps {
   blockedBy?: IssueRelationIssueSummary[];
   blockerAttention?: IssueBlockerAttention | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  recoveryAction?: IssueRecoveryAction | null;
+  onResolveRecoveryAction?: (outcome: RecoveryResolveOutcome) => void;
+  canFalsePositiveRecoveryAction?: boolean;
+  legacyRecoverySourceIssue?: {
+    identifier: string | null;
+    href: string;
+    title?: string | null;
+  } | null;
+  assigneeUserId?: string | null;
+  onResumeFromBacklog?: () => Promise<void> | void;
+  resumeFromBacklogPending?: boolean;
   companyId?: string | null;
   projectId?: string | null;
   issueStatus?: string;
@@ -304,9 +338,11 @@ interface IssueChatThreadProps {
   mentions?: MentionOption[];
   composerDisabledReason?: string | null;
   composerHint?: string | null;
+  onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
   showComposer?: boolean;
   showJumpToLatest?: boolean;
   emptyMessage?: string;
+  footer?: ReactNode;
   variant?: "full" | "embedded";
   enableLiveTranscriptPolling?: boolean;
   transcriptsByRunId?: ReadonlyMap<string, readonly IssueChatTranscriptEntry[]>;
@@ -333,6 +369,7 @@ interface IssueChatThreadProps {
     interaction: AskUserQuestionsInteraction,
   ) => Promise<void> | void;
   composerRef?: Ref<IssueChatComposerHandle>;
+  issueWorkMode?: IssueWorkMode;
   /**
    * Hook for the parent to refetch comments when the user explicitly asks
    * to jump to the latest comment. Used to make sure the absolute newest
@@ -1963,6 +2000,227 @@ function isIssueCommentMetadata(value: unknown): value is IssueCommentMetadata {
   return v.version === 1 && Array.isArray(v.sections);
 }
 
+function issueStatusIsTerminalDisposition(issueStatus: string | undefined) {
+  return issueStatus === "done" || issueStatus === "cancelled";
+}
+
+function sourceRunIdFromSuccessfulRunHandoffMetadata(metadata: IssueCommentMetadata | null) {
+  if (metadata?.sourceRunId) return metadata.sourceRunId;
+  const runLinks = [];
+  for (const section of metadata?.sections ?? []) {
+    for (const row of section.rows) {
+      if (row.type === "run_link") runLinks.push(row.runId);
+    }
+  }
+  return runLinks.length === 1 ? runLinks[0] : null;
+}
+
+function isStaleSuccessfulRunHandoffNotice(input: {
+  bodyText: string;
+  issueStatus?: string;
+  successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  runId?: string | null;
+  metadata: IssueCommentMetadata | null;
+}) {
+  if (!isSuccessfulRunHandoffComment(input.bodyText)) return false;
+
+  const currentHandoff = input.successfulRunHandoff ?? null;
+  if (currentHandoff?.state === "resolved") return true;
+  if (issueStatusIsTerminalDisposition(input.issueStatus)) return true;
+
+  const noticeSourceRunId = sourceRunIdFromSuccessfulRunHandoffMetadata(input.metadata) ?? input.runId ?? null;
+  if (
+    noticeSourceRunId
+    && currentHandoff?.sourceRunId
+    && noticeSourceRunId !== currentHandoff.sourceRunId
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function StaleDispositionWarningMetadataRow({ row }: { row: SystemNoticeMetadataRow }) {
+  const label = (
+    <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+      {row.label}
+    </span>
+  );
+  const value = (() => {
+    switch (row.kind) {
+      case "text":
+        return <span>{row.value}</span>;
+      case "code":
+        return (
+          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground/80">
+            {row.value}
+          </code>
+        );
+      case "issue": {
+        const content = (
+          <>
+            <span>{row.identifier}</span>
+            {row.title ? <span className="text-muted-foreground"> - {row.title}</span> : null}
+          </>
+        );
+        return row.href ? (
+          <a href={row.href} className="font-medium text-foreground underline-offset-2 hover:underline">
+            {content}
+          </a>
+        ) : (
+          <span className="font-medium text-foreground">{content}</span>
+        );
+      }
+      case "agent":
+        return row.href ? (
+          <a href={row.href} className="font-medium text-foreground underline-offset-2 hover:underline">
+            {row.name}
+          </a>
+        ) : (
+          <span className="font-medium text-foreground">{row.name}</span>
+        );
+      case "run": {
+        const runShort = row.runId.length > 12 ? `${row.runId.slice(0, 8)}...` : row.runId;
+        const content = (
+          <>
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground/80">
+              {runShort}
+            </code>
+            {row.status ? <span>{row.status}</span> : null}
+          </>
+        );
+        return row.href ? (
+          <a href={row.href} className="inline-flex items-center gap-1.5 underline-offset-2 hover:underline">
+            {content}
+          </a>
+        ) : (
+          <span className="inline-flex items-center gap-1.5">{content}</span>
+        );
+      }
+    }
+  })();
+
+  return (
+    <div className="grid grid-cols-[7.5rem_minmax(0,1fr)] gap-2 text-xs leading-5">
+      {label}
+      <div className="min-w-0 break-words text-foreground/80">{value}</div>
+    </div>
+  );
+}
+
+function metadataRowKey(row: SystemNoticeMetadataRow) {
+  switch (row.kind) {
+    case "issue":
+      return `issue:${row.label}:${row.identifier}:${row.href ?? ""}:${row.title ?? ""}`;
+    case "agent":
+      return `agent:${row.label}:${row.name}:${row.href ?? ""}`;
+    case "run":
+      return `run:${row.label}:${row.runId}:${row.href ?? ""}:${row.status ?? ""}`;
+    default:
+      return `${row.kind}:${row.label}:${row.value}`;
+  }
+}
+
+function metadataSectionKey(section: SystemNoticeMetadataSection) {
+  return `${section.title ?? "details"}:${section.rows.map(metadataRowKey).join("|")}`;
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function isTimelineWorkspace(value: unknown): value is IssueTimelineWorkspace {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const workspace = value as Record<string, unknown>;
+  return isNullableString(workspace.label)
+    && isNullableString(workspace.projectWorkspaceId)
+    && isNullableString(workspace.executionWorkspaceId)
+    && isNullableString(workspace.mode);
+}
+
+function isTimelineWorkspaceChange(value: unknown): value is NonNullable<IssueTimelineEvent["workspaceChange"]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const change = value as Record<string, unknown>;
+  return isTimelineWorkspace(change.from) && isTimelineWorkspace(change.to);
+}
+
+function StaleDispositionWarningDetails({
+  sections,
+}: {
+  sections: SystemNoticeMetadataSection[];
+}) {
+  if (sections.length === 0) {
+    return <div className="text-xs leading-5 text-muted-foreground">No additional details.</div>;
+  }
+
+  return (
+    <div className="space-y-3 text-left">
+      {sections.map((section) => (
+        <div key={metadataSectionKey(section)} className="space-y-1.5">
+          {section.title ? (
+            <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+              {section.title}
+            </div>
+          ) : null}
+          <div className="space-y-1">
+            {section.rows.map((row) => (
+              <StaleDispositionWarningMetadataRow key={metadataRowKey(row)} row={row} />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function StaleDispositionWarningRow({
+  anchorId,
+  message,
+  metadata,
+  runAgentId,
+}: {
+  anchorId?: string;
+  message: ThreadMessage;
+  metadata: IssueCommentMetadata | null;
+  runAgentId?: string | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const detailsId = useId();
+  const sections = mapCommentMetadataToSystemNoticeSections(metadata, { runAgentId });
+
+  return (
+    <div id={anchorId} data-testid="stale-disposition-warning">
+      <div className="flex items-start gap-2.5 py-1.5">
+        <span className="size-6 shrink-0" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-controls={detailsId}
+            className="group flex w-full items-center gap-2 py-0.5 text-left"
+            onClick={() => setOpen((value) => !value)}
+          >
+            <span className="text-sm font-medium text-foreground/80">
+              Stale disposition warning
+            </span>
+            <span className="ml-auto flex items-center gap-1.5">
+              {message.createdAt ? (
+                <span data-testid="stale-disposition-warning-time" className="text-[11px] text-muted-foreground/50">
+                  {commentDateLabel(message.createdAt)}
+                </span>
+              ) : null}
+              <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground/40 transition-transform", open && "rotate-180")} />
+            </span>
+          </button>
+          <div id={detailsId} hidden={!open} className="space-y-1 py-1">
+            <StaleDispositionWarningDetails sections={sections} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SystemNoticeCommentRow({
   message,
   anchorId,
@@ -1970,7 +2228,7 @@ function SystemNoticeCommentRow({
   message: ThreadMessage;
   anchorId?: string;
 }) {
-  const { onImageClick, agentMap } = useContext(IssueChatCtx);
+  const { onImageClick, agentMap, issueStatus, successfulRunHandoff } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const presentation = isIssueCommentPresentation(custom.presentation) ? custom.presentation : null;
   const commentMetadata = isIssueCommentMetadata(custom.commentMetadata) ? custom.commentMetadata : null;
@@ -1982,6 +2240,13 @@ function SystemNoticeCommentRow({
     .filter((p): p is { type: "text"; text: string } => p.type === "text")
     .map((p) => p.text)
     .join("\n\n");
+  const staleSuccessfulRunHandoffNotice = isStaleSuccessfulRunHandoffNotice({
+    bodyText,
+    issueStatus,
+    successfulRunHandoff,
+    runId,
+    metadata: commentMetadata,
+  });
   const [copied, setCopied] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
 
@@ -2027,6 +2292,17 @@ function SystemNoticeCommentRow({
       setTimeout(() => setCopiedLink(false), 2000);
     });
   };
+
+  if (staleSuccessfulRunHandoffNotice) {
+    return (
+      <StaleDispositionWarningRow
+        anchorId={anchorId}
+        message={message}
+        metadata={commentMetadata}
+        runAgentId={runAgentId}
+      />
+    );
+  }
 
   return (
     <div id={anchorId} className="group">
@@ -2100,6 +2376,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
         to: IssueTimelineAssignee;
       }
     : null;
+  const workspaceChange = isTimelineWorkspaceChange(custom.workspaceChange) ? custom.workspaceChange : null;
   const interaction = isIssueThreadInteraction(custom.interaction)
     ? custom.interaction
     : null;
@@ -2184,6 +2461,21 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
             <ArrowRight className="h-3 w-3 text-muted-foreground" />
             <span className="font-medium text-foreground">
               {formatTimelineAssigneeLabel(assigneeChange.to, agentMap, currentUserId, userLabelMap)}
+            </span>
+          </div>
+        ) : null}
+
+        {workspaceChange ? (
+          <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
+            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Workspace
+            </span>
+            <span className="text-muted-foreground">
+              {formatTimelineWorkspaceLabel(workspaceChange.from)}
+            </span>
+            <ArrowRight className="h-3 w-3 text-muted-foreground" />
+            <span className="font-medium text-foreground">
+              {formatTimelineWorkspaceLabel(workspaceChange.to)}
             </span>
           </div>
         ) : null}
@@ -2816,6 +3108,8 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   composerDisabledReason = null,
   composerHint = null,
   issueStatus,
+  issueWorkMode,
+  onWorkModeChange,
 }, forwardedRef) {
   const api = useAui();
   const toastActions = useOptionalToastActions();
@@ -2828,6 +3122,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
   const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
   const [unassignedConfirmed, setUnassignedConfirmed] = useState(false);
+  const resolvedIssueWorkMode: IssueWorkMode = issueWorkMode ?? "standard";
+  const [pendingWorkMode, setPendingWorkMode] = useState<IssueWorkMode>(resolvedIssueWorkMode);
+  const [workModeMenuOpen, setWorkModeMenuOpen] = useState(false);
+  const canToggleWorkMode = typeof onWorkModeChange === "function";
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const editorRef = useRef<MarkdownEditorRef>(null);
   const composerContainerRef = useRef<HTMLDivElement | null>(null);
@@ -2878,6 +3176,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     setUnassignedConfirmed(false);
   }, [reassignTarget]);
 
+  useEffect(() => {
+    setPendingWorkMode(resolvedIssueWorkMode);
+  }, [resolvedIssueWorkMode]);
+
   useImperativeHandle(forwardedRef, () => ({
     focus: focusComposer,
     restoreDraft: (submittedBody: string) => {
@@ -2920,10 +3222,14 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     const submittedBody = trimmed;
     const viewportSnapshot = captureComposerViewportSnapshot(composerContainerRef.current);
 
+    const workModeChanged = pendingWorkMode !== resolvedIssueWorkMode;
     setSubmitting(true);
     setBody("");
     setUnassignedConfirmed(false);
     try {
+      if (workModeChanged && onWorkModeChange) {
+        await onWorkModeChange(pendingWorkMode);
+      }
       const appendPromise = api.thread().append({
         role: "user",
         content: [{ type: "text", text: submittedBody }],
@@ -3081,12 +3387,16 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     );
   }
 
+  const isPlanning = pendingWorkMode === "planning";
+
   return (
     <div
       ref={composerContainerRef}
       data-testid="issue-chat-composer"
+      data-pending-work-mode={pendingWorkMode}
       className={cn(
         "relative rounded-md border border-border/70 bg-background/95 p-[15px] shadow-[0_-12px_28px_rgba(15,23,42,0.08)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-150 supports-[backdrop-filter]:bg-background/85 dark:shadow-[0_-12px_28px_rgba(0,0,0,0.28)]",
+        isPlanning && "border-amber-500/60 bg-amber-50/60 supports-[backdrop-filter]:bg-amber-50/40 dark:border-amber-500/50 dark:bg-amber-500/[0.07] dark:supports-[backdrop-filter]:bg-amber-500/[0.07]",
         isDragOver && "border-primary/45 bg-background shadow-[0_-12px_28px_rgba(15,23,42,0.08),0_0_0_1px_hsl(var(--primary)/0.16)]",
       )}
       onDragEnterCapture={handleFileDragEnter}
@@ -3178,25 +3488,77 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       ) : null}
 
       <div className="flex flex-wrap items-center justify-end gap-3">
-        {(onImageUpload || onAttachImage) ? (
-          <div className="mr-auto flex items-center gap-3">
-            <input
-              ref={attachInputRef}
-              type="file"
-              className="hidden"
-              onChange={handleAttachFile}
-            />
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              onClick={() => attachInputRef.current?.click()}
-              disabled={attaching}
-              title="Attach file"
+        <div className="mr-auto flex items-center gap-2">
+          {(onImageUpload || onAttachImage) ? (
+            <>
+              <input
+                ref={attachInputRef}
+                type="file"
+                className="hidden"
+                onChange={handleAttachFile}
+              />
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => attachInputRef.current?.click()}
+                disabled={attaching}
+                title="Attach file"
+              >
+                <Paperclip className="h-4 w-4" />
+              </Button>
+            </>
+          ) : null}
+          {canToggleWorkMode ? (
+            <Popover open={workModeMenuOpen} onOpenChange={setWorkModeMenuOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  data-testid="issue-chat-composer-work-mode-menu"
+                  title="More composer options"
+                >
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-44 p-1" align="start">
+                <button
+                  type="button"
+                  data-testid="issue-chat-composer-work-mode-menu-toggle"
+                  data-pending-work-mode={pendingWorkMode}
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
+                    isPlanning ? "text-amber-700 dark:text-amber-300" : "text-foreground",
+                  )}
+                  onClick={() => {
+                    setPendingWorkMode((prev) => (prev === "planning" ? "standard" : "planning"));
+                    setWorkModeMenuOpen(false);
+                  }}
+                >
+                  {isPlanning ? (
+                    <Hammer className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                  ) : (
+                    <ClipboardList className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" aria-hidden />
+                  )}
+                  <span>{isPlanning ? "Switch to standard" : "Switch to planning"}</span>
+                </button>
+              </PopoverContent>
+            </Popover>
+          ) : null}
+          {canToggleWorkMode && isPlanning ? (
+            <button
+              type="button"
+              data-testid="issue-chat-composer-work-mode-toggle"
+              data-pending-work-mode={pendingWorkMode}
+              aria-pressed
+              title="Planning mode is on for this submission. Click to switch to Standard."
+              onClick={() => setPendingWorkMode("standard")}
+              className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/60 bg-amber-500/15 px-2 py-1 text-xs text-amber-800 transition-colors hover:bg-amber-500/25 dark:border-amber-500/50 dark:bg-amber-500/15 dark:text-amber-200 dark:hover:bg-amber-500/25"
             >
-              <Paperclip className="h-4 w-4" />
-            </Button>
-          </div>
-        ) : null}
+              <ClipboardList className="h-3.5 w-3.5" aria-hidden />
+              <span>Planning</span>
+            </button>
+          ) : null}
+        </div>
 
         {enableReassign && reassignOptions.length > 0 ? (
           <InlineEntitySelector
@@ -3258,6 +3620,10 @@ export function IssueChatThread({
   blockedBy = [],
   blockerAttention = null,
   successfulRunHandoff = null,
+  recoveryAction = null,
+  onResolveRecoveryAction,
+  canFalsePositiveRecoveryAction = false,
+  legacyRecoverySourceIssue = null,
   companyId,
   projectId,
   issueStatus,
@@ -3285,6 +3651,7 @@ export function IssueChatThread({
   showComposer = true,
   showJumpToLatest,
   emptyMessage,
+  footer,
   variant = "full",
   enableLiveTranscriptPolling = true,
   transcriptsByRunId,
@@ -3300,7 +3667,12 @@ export function IssueChatThread({
   onSubmitInteractionAnswers,
   onCancelInteraction,
   composerRef,
+  issueWorkMode,
+  onWorkModeChange,
   onRefreshLatestComments,
+  assigneeUserId = null,
+  onResumeFromBacklog,
+  resumeFromBacklogPending = false,
 }: IssueChatThreadProps) {
   const location = useLocation();
   const lastScrolledHashRef = useRef<string | null>(null);
@@ -3778,6 +4150,8 @@ export function IssueChatThread({
       onRejectInteraction: stableOnRejectInteraction,
       onSubmitInteractionAnswers: stableOnSubmitInteractionAnswers,
       onCancelInteraction: stableOnCancelInteraction,
+      issueStatus,
+      successfulRunHandoff,
     }),
     [
       feedbackDataSharingPreference,
@@ -3798,6 +4172,8 @@ export function IssueChatThread({
       stableOnRejectInteraction,
       stableOnSubmitInteractionAnswers,
       stableOnCancelInteraction,
+      issueStatus,
+      successfulRunHandoff,
     ],
   );
 
@@ -3873,15 +4249,60 @@ export function IssueChatThread({
                     stoppingRunId={stoppingRunId}
                     interruptingQueuedRunId={interruptingQueuedRunId}
                   />
-                ))
-              )}
+              ))
+            )}
               {showComposer ? (
                 <div data-testid="issue-chat-thread-notices" className="space-y-2">
+                  <IssueAssignedBacklogNotice
+                    issueStatus={issueStatus ?? ""}
+                    assigneeAgent={assignedAgent}
+                    assigneeUserId={assigneeUserId}
+                    onResume={onResumeFromBacklog}
+                    resuming={resumeFromBacklogPending}
+                  />
+                  {recoveryAction ? (
+                    <IssueRecoveryActionCard
+                      action={recoveryAction}
+                      agentMap={agentMap}
+                      onResolve={onResolveRecoveryAction}
+                      canFalsePositive={canFalsePositiveRecoveryAction}
+                    />
+                  ) : null}
+                  {legacyRecoverySourceIssue ? (
+                    <SystemNotice
+                      tone="info"
+                      label="Legacy recovery issue"
+                      body={
+                        <span>
+                          Legacy recovery issue. Newer recovery actions live on the source issue
+                          {legacyRecoverySourceIssue.identifier ? (
+                            <>
+                              {" — "}
+                              <Link
+                                to={legacyRecoverySourceIssue.href}
+                                className="underline-offset-2 hover:underline"
+                              >
+                                {legacyRecoverySourceIssue.identifier}
+                                {legacyRecoverySourceIssue.title ? (
+                                  <span className="text-muted-foreground">
+                                    {" "}
+                                    — {legacyRecoverySourceIssue.title}
+                                  </span>
+                                ) : null}
+                              </Link>
+                            </>
+                          ) : (
+                            "."
+                          )}
+                        </span>
+                      }
+                    />
+                  ) : null}
                   <IssueBlockedNotice
                     issueStatus={issueStatus}
                     blockers={unresolvedBlockers}
                     blockerAttention={blockerAttention}
-                    successfulRunHandoff={successfulRunHandoff}
+                    successfulRunHandoff={recoveryAction ? null : successfulRunHandoff}
                     agentName={
                       successfulRunHandoff?.assigneeAgentId
                         ? agentMap?.get(successfulRunHandoff.assigneeAgentId)?.name ?? null
@@ -3891,6 +4312,7 @@ export function IssueChatThread({
                   <IssueAssigneePausedNotice agent={assignedAgent} />
                 </div>
               ) : null}
+              {footer ? <div data-testid="issue-chat-thread-footer">{footer}</div> : null}
               <div ref={bottomAnchorRef} />
               {showComposer ? (
                 <div
@@ -3923,6 +4345,8 @@ export function IssueChatThread({
               composerDisabledReason={composerDisabledReason}
               composerHint={composerHint}
               issueStatus={issueStatus}
+              issueWorkMode={issueWorkMode}
+              onWorkModeChange={onWorkModeChange}
             />
           </div>
         ) : null}

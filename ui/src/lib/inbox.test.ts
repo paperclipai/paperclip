@@ -13,6 +13,7 @@ import type {
 import {
   DEFAULT_INBOX_ISSUE_COLUMNS,
   buildGroupedInboxSections,
+  buildInboxIssueGroupCreateDefaults,
   buildInboxKeyboardNavEntries,
   buildInboxDismissedAtByKey,
   computeInboxBadgeData,
@@ -184,6 +185,7 @@ function makeIssue(id: string, isUnreadForMe: boolean): Issue {
     title: `Issue ${id}`,
     description: null,
     status: "todo",
+    workMode: "standard",
     priority: "medium",
     assigneeAgentId: null,
     assigneeUserId: null,
@@ -1003,6 +1005,12 @@ describe("inbox helpers", () => {
     expect(loadLastInboxTab()).toBe("all");
   });
 
+  it("persists the blocked inbox tab", () => {
+    localStorage.clear();
+    saveLastInboxTab("blocked");
+    expect(loadLastInboxTab()).toBe("blocked");
+  });
+
   it("persists inbox filters per company", () => {
     saveInboxFilterPreferences("company-1", {
       allCategoryFilter: "approvals",
@@ -1384,6 +1392,61 @@ describe("inbox helpers", () => {
       { key: "project:project-2", label: "Onboarding", items: [items[1]] },
       { key: "project:none", label: "No project", items: [items[3]] },
     ]);
+  });
+
+  it("builds new issue defaults from inbox project, assignee, and workspace groups", () => {
+    const projectIssue = makeIssue("project", true);
+    projectIssue.projectId = "project-1";
+
+    const executionIssue = makeIssue("exec", false);
+    executionIssue.projectId = "project-1";
+    executionIssue.projectWorkspaceId = "project-workspace-1";
+    executionIssue.executionWorkspaceId = "execution-workspace-1";
+
+    const agentIssue = makeIssue("agent", false);
+    agentIssue.assigneeAgentId = "agent-1";
+
+    const options = {
+      executionWorkspaceById: new Map([
+        [
+          "execution-workspace-1",
+          {
+            name: "Feature Branch",
+            mode: "isolated_workspace" as const,
+            projectWorkspaceId: "project-workspace-1",
+          },
+        ],
+      ]),
+      projectWorkspaceById: new Map([
+        ["project-workspace-1", { name: "Primary workspace", projectId: "project-1" }],
+      ]),
+    };
+
+    expect(buildInboxIssueGroupCreateDefaults(
+      "project:project-1",
+      "project",
+      [{ kind: "issue", timestamp: 1, issue: projectIssue }],
+      options,
+    )).toEqual({ projectId: "project-1" });
+
+    expect(buildInboxIssueGroupCreateDefaults(
+      "workspace:execution:execution-workspace-1",
+      "workspace",
+      [{ kind: "issue", timestamp: 1, issue: executionIssue }],
+      options,
+    )).toEqual({
+      executionWorkspaceId: "execution-workspace-1",
+      executionWorkspaceMode: "reuse_existing",
+      projectId: "project-1",
+      projectWorkspaceId: "project-workspace-1",
+    });
+
+    expect(buildInboxIssueGroupCreateDefaults(
+      "assignee:agent:agent-1",
+      "assignee",
+      [{ kind: "issue", timestamp: 1, issue: agentIssue }],
+      options,
+    )).toEqual({ assigneeAgentId: "agent-1" });
   });
 
   it("persists inbox grouping preferences", () => {

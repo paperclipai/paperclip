@@ -51,6 +51,7 @@ export interface ExecutionWorkspaceIssueRef {
   id: string;
   identifier: string | null;
   title: string | null;
+  workMode?: string | null;
 }
 
 export interface ExecutionWorkspaceAgentRef {
@@ -712,6 +713,7 @@ function buildWorkspaceCommandEnv(input: {
   env.PAPERCLIP_ISSUE_ID = input.issue?.id ?? "";
   env.PAPERCLIP_ISSUE_IDENTIFIER = input.issue?.identifier ?? "";
   env.PAPERCLIP_ISSUE_TITLE = input.issue?.title ?? "";
+  env.PAPERCLIP_ISSUE_WORK_MODE = input.issue?.workMode ?? "";
   return env;
 }
 

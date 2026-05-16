@@ -19,9 +19,17 @@ const mockOpenOnboarding = vi.hoisted(() => vi.fn());
 const mockSetSelectedCompanyId = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
 const mockLocation = vi.hoisted(() => ({ pathname: "/PAP/dashboard" }));
+const mockSidebarPreferencesApi = vi.hoisted(() => ({
+  getCompanyOrder: vi.fn(),
+  updateCompanyOrder: vi.fn(),
+}));
 
 vi.mock("@/api/auth", () => ({
   authApi: mockAuthApi,
+}));
+
+vi.mock("@/api/sidebarPreferences", () => ({
+  sidebarPreferencesApi: mockSidebarPreferencesApi,
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -112,6 +120,14 @@ describe("SidebarCompanyMenu", () => {
       },
     });
     mockAuthApi.signOut.mockResolvedValue(undefined);
+    mockSidebarPreferencesApi.getCompanyOrder.mockResolvedValue({
+      orderedIds: ["company-1", "company-2", "company-3"],
+      updatedAt: null,
+    });
+    mockSidebarPreferencesApi.updateCompanyOrder.mockResolvedValue({
+      orderedIds: ["company-1", "company-2", "company-3"],
+      updatedAt: null,
+    });
     mockLocation.pathname = "/PAP/dashboard";
   });
 
@@ -149,6 +165,7 @@ describe("SidebarCompanyMenu", () => {
     await flushReact();
 
     expect(document.body.textContent).toContain("Switch workspace");
+    expect(document.body.textContent).toContain("Edit");
     expect(document.body.textContent).toContain("Strata");
     expect(document.body.textContent).toContain("ANA");
     expect(document.body.textContent).toContain("Add company...");
@@ -166,6 +183,62 @@ describe("SidebarCompanyMenu", () => {
     await flushReact();
 
     expect(mockAuthApi.signOut).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("toggles company order editing without selecting a workspace", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarCompanyMenu />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const trigger = container.querySelector('button[aria-label="Open Acme Labs workspace switcher"]');
+    expect(trigger).not.toBeNull();
+
+    await act(async () => {
+      trigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const editButton = Array.from(document.body.querySelectorAll("button"))
+      .find((element) => element.textContent === "Edit");
+    expect(editButton).toBeTruthy();
+
+    await act(async () => {
+      editButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("Done");
+    expect(document.body.textContent).not.toContain("PAP");
+    expect(document.body.textContent).not.toContain("ANA");
+    expect(document.body.querySelector('button[aria-label="Reorder Strata"]')).toBeTruthy();
+
+    const strataItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
+      .find((element) => element.textContent?.includes("Strata"));
+    expect(strataItem).toBeTruthy();
+
+    await act(async () => {
+      strataItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockSetSelectedCompanyId).not.toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
 
     await act(async () => {
       root.unmount();

@@ -576,7 +576,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           : adapterType === "opencode_local"
             ? eff("adapterConfig", "variant", String(config.variant ?? ""))
             : eff("adapterConfig", "effort", String(config.effort ?? ""));
-  const showThinkingEffort = adapterType !== "gemini_local";
+  const showThinkingEffort = adapterType !== "gemini_local" && adapterType !== "cursor_cloud";
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;

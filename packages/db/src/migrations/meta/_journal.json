@@ -568,6 +568,41 @@
       "when": 1777849000000,
       "tag": "0080_company_search_fuzzystrmatch",
       "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1778067785040,
+      "tag": "0081_optimal_dormammu",
+      "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1778067785041,
+      "tag": "0082_dry_vision",
+      "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1778074536410,
+      "tag": "0083_company_secret_provider_configs",
+      "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1778355326070,
+      "tag": "0084_issue_recovery_actions",
+      "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1778787362162,
+      "tag": "0085_tranquil_the_executioner",
+      "breakpoints": true
     }
   ]
 }

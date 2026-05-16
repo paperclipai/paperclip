@@ -15,6 +15,11 @@ import type {
   IssueExecutionStateStatus,
   IssueOriginKind,
   IssuePriority,
+  IssueRecoveryActionKind,
+  IssueRecoveryActionOutcome,
+  IssueRecoveryActionOwnerType,
+  IssueRecoveryActionStatus,
+  IssueWorkMode,
   ModelProfileKey,
   IssueThreadInteractionContinuationPolicy,
   IssueThreadInteractionKind,
@@ -25,6 +30,8 @@ import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
 import type { IssueWorkProduct } from "./work-product.js";
+
+export type { IssueWorkMode };
 
 export interface IssueAncestorProject {
   id: string;
@@ -89,6 +96,9 @@ export interface IssueDocumentSummary {
   createdByUserId: string | null;
   updatedByAgentId: string | null;
   updatedByUserId: string | null;
+  lockedAt: Date | null;
+  lockedByAgentId: string | null;
+  lockedByUserId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -128,6 +138,7 @@ export interface IssueRelationIssueSummary {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   terminalBlockers?: IssueRelationIssueSummary[];
+  activeRecoveryAction?: IssueRecoveryAction | null;
 }
 
 export type IssueBlockerAttentionState = "none" | "covered" | "stalled" | "needs_attention";
@@ -150,6 +161,75 @@ export interface IssueBlockerAttention {
   sampleStalledBlockerIdentifier: string | null;
 }
 
+export type IssueInboxAttentionKind = "blocked";
+
+export type IssueBlockedInboxState =
+  | "needs_attention"
+  | "awaiting_decision"
+  | "external_wait"
+  | "recovery_open"
+  | "missing_disposition";
+
+export type IssueBlockedInboxSeverity = "critical" | "high" | "medium" | "low";
+
+export type IssueBlockedInboxReason =
+  | "blocked_by_unassigned_issue"
+  | "blocked_by_assigned_backlog_issue"
+  | "blocked_by_uninvokable_assignee"
+  | "blocked_by_cancelled_issue"
+  | "blocked_chain_stalled"
+  | "invalid_review_participant"
+  | "in_review_without_action_path"
+  | "missing_successful_run_disposition"
+  | "pending_board_decision"
+  | "pending_user_decision"
+  | "external_owner_action"
+  | "open_recovery_issue";
+
+export type IssueBlockedInboxOwnerType = "agent" | "user" | "board" | "external" | "unknown";
+
+export interface IssueBlockedInboxIssueRef {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+  priority: IssuePriority;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+}
+
+export interface IssueBlockedInboxOwner {
+  type: IssueBlockedInboxOwnerType;
+  agentId: string | null;
+  userId: string | null;
+  label: string | null;
+}
+
+export interface IssueBlockedInboxAction {
+  label: string;
+  detail: string | null;
+}
+
+export interface IssueBlockedInboxAttention {
+  kind: IssueInboxAttentionKind;
+  state: IssueBlockedInboxState;
+  reason: IssueBlockedInboxReason;
+  severity: IssueBlockedInboxSeverity;
+  stoppedSinceAt: string | null;
+  owner: IssueBlockedInboxOwner;
+  action: IssueBlockedInboxAction;
+  sourceIssue: IssueBlockedInboxIssueRef | null;
+  leafIssue: IssueBlockedInboxIssueRef | null;
+  recoveryIssue: IssueBlockedInboxIssueRef | null;
+  approvalId: string | null;
+  interactionId: string | null;
+  sampleIssueIdentifier: string | null;
+  redaction: {
+    externalDetailsRedacted: boolean;
+    secretFieldsOmitted: true;
+  };
+}
+
 export type IssueProductivityReviewTrigger =
   | "no_comment_streak"
   | "long_active_duration"
@@ -164,6 +244,35 @@ export interface IssueProductivityReview {
   noCommentStreak: number | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface IssueRecoveryAction {
+  id: string;
+  companyId: string;
+  sourceIssueId: string;
+  recoveryIssueId: string | null;
+  kind: IssueRecoveryActionKind;
+  status: IssueRecoveryActionStatus;
+  ownerType: IssueRecoveryActionOwnerType;
+  ownerAgentId: string | null;
+  ownerUserId: string | null;
+  previousOwnerAgentId: string | null;
+  returnOwnerAgentId: string | null;
+  cause: string;
+  fingerprint: string;
+  evidence: Record<string, unknown>;
+  nextAction: string;
+  wakePolicy: Record<string, unknown> | null;
+  monitorPolicy: Record<string, unknown> | null;
+  attemptCount: number;
+  maxAttempts: number | null;
+  timeoutAt: Date | string | null;
+  lastAttemptAt: Date | string | null;
+  outcome: IssueRecoveryActionOutcome | null;
+  resolutionNote: string | null;
+  resolvedAt: Date | string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
 }
 
 export type SuccessfulRunHandoffStateKind = "required" | "resolved" | "escalated";
@@ -223,6 +332,34 @@ export interface IssueNeedsBoardUnblockImpact {
   transitiveBlockedCount: number;
   highestPriorityBlockedIssue: IssueNeedsBoardImpactIssue | null;
   blockedParentLink: IssueNeedsBoardParentLink | null;
+}
+
+export type IssueScheduledRetryStatus = "scheduled_retry" | "queued" | "running" | "cancelled";
+
+export interface IssueScheduledRetry {
+  runId: string;
+  status: IssueScheduledRetryStatus;
+  agentId: string;
+  agentName: string | null;
+  retryOfRunId: string | null;
+  scheduledRetryAt: Date | string | null;
+  scheduledRetryAttempt: number;
+  scheduledRetryReason: string | null;
+  retryExhaustedReason?: string | null;
+  error?: string | null;
+  errorCode?: string | null;
+}
+
+export type IssueRetryNowOutcome =
+  | "promoted"
+  | "already_promoted"
+  | "no_scheduled_retry"
+  | "gate_suppressed";
+
+export interface IssueRetryNowResponse {
+  outcome: IssueRetryNowOutcome;
+  message: string;
+  scheduledRetry: IssueScheduledRetry | null;
 }
 
 export interface IssueRelation {
@@ -349,6 +486,7 @@ export interface Issue {
   title: string;
   description: string | null;
   status: IssueStatus;
+  workMode: IssueWorkMode;
   priority: IssuePriority;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -386,12 +524,15 @@ export interface Issue {
   blockedBy?: IssueRelationIssueSummary[];
   blocks?: IssueRelationIssueSummary[];
   blockerAttention?: IssueBlockerAttention;
+  blockedInboxAttention?: IssueBlockedInboxAttention | null;
   productivityReview?: IssueProductivityReview | null;
+  activeRecoveryAction?: IssueRecoveryAction | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   needsBoard?: boolean;
   needsBoardActionable?: boolean;
   needsBoardReasons?: IssueNeedsBoardReason[];
   needsBoardUnblockImpact?: IssueNeedsBoardUnblockImpact | null;
+  scheduledRetry?: IssueScheduledRetry | null;
   relatedWork?: IssueRelatedWorkSummary;
   referencedIssueIdentifiers?: string[];
   planDocument?: IssueDocument | null;
@@ -417,6 +558,10 @@ export interface IssueComment {
   authorType: IssueCommentAuthorType;
   authorAgentId: string | null;
   authorUserId: string | null;
+  createdByRunId?: string | null;
+  derivedAuthorAgentId?: string | null;
+  derivedCreatedByRunId?: string | null;
+  derivedAuthorSource?: "run_log_comment_post" | null;
   body: string;
   presentation: IssueCommentPresentation | null;
   metadata: IssueCommentMetadata | null;
@@ -481,6 +626,7 @@ export interface IssueCommentMetadataSection {
 
 export interface IssueCommentMetadata {
   version: 1;
+  sourceRunId?: string | null;
   sections: IssueCommentMetadataSection[];
 }
 
@@ -505,6 +651,7 @@ export interface SuggestedTaskDraft {
   title: string;
   description?: string | null;
   priority?: IssuePriority | null;
+  workMode?: IssueWorkMode | null;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
   projectId?: string | null;

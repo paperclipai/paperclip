@@ -68,6 +68,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     lastExternalCommentAt: null,
     isUnreadForMe: false,
     ...overrides,
+    workMode: overrides.workMode ?? "standard",
   };
 }
 
@@ -227,6 +228,22 @@ describe("IssueRow", () => {
     });
   });
 
+  it("renders planning mode marker for planning work mode issues", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue({ workMode: "planning" })} />);
+    });
+
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+    expect(link).not.toBeNull();
+    expect(link?.textContent).toContain("Planning");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders without error when titleSuffix is omitted", () => {
     const root = createRoot(container);
 
@@ -236,6 +253,62 @@ describe("IssueRow", () => {
 
     const titleEl = container.querySelector(".line-clamp-2, .truncate");
     expect(titleEl?.textContent).toContain("Inbox item");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("flags rows blocked by an assigned-backlog leaf with a parked-work badge", () => {
+    const root = createRoot(container);
+    const issue = createIssue({
+      blockedBy: [
+        {
+          id: "blocker-1",
+          identifier: "PAP-2",
+          title: "Parked child",
+          status: "backlog",
+          priority: "high",
+          assigneeAgentId: "agent-99",
+          assigneeUserId: null,
+        },
+      ],
+    });
+
+    act(() => {
+      root.render(<IssueRow issue={issue} />);
+    });
+
+    const badges = container.querySelectorAll('[data-testid="issue-row-parked-blocker"]');
+    expect(badges.length).toBeGreaterThan(0);
+    expect(badges[0]?.textContent).toContain("Blocked by parked work");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not show the parked-work badge when assigned blocker is not in backlog", () => {
+    const root = createRoot(container);
+    const issue = createIssue({
+      blockedBy: [
+        {
+          id: "blocker-1",
+          identifier: "PAP-2",
+          title: "Active child",
+          status: "in_progress",
+          priority: "high",
+          assigneeAgentId: "agent-99",
+          assigneeUserId: null,
+        },
+      ],
+    });
+
+    act(() => {
+      root.render(<IssueRow issue={issue} />);
+    });
+
+    expect(container.querySelector('[data-testid="issue-row-parked-blocker"]')).toBeNull();
 
     act(() => {
       root.unmount();

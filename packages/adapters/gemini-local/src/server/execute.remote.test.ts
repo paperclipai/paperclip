@@ -33,7 +33,7 @@ const {
   })),
   ensureCommandResolvable: vi.fn(async () => undefined),
   resolveCommandForLogs: vi.fn(async () => "ssh://fixture@127.0.0.1:2222/remote/workspace :: gemini"),
-  prepareWorkspaceForSshExecution: vi.fn(async () => undefined),
+  prepareWorkspaceForSshExecution: vi.fn(async () => ({ gitBacked: false })),
   restoreWorkspaceFromSshExecution: vi.fn(async () => undefined),
   runSshCommand: vi.fn(async () => ({
     stdout: "/home/agent",
@@ -105,6 +105,7 @@ describe("gemini remote execution", () => {
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
     const alternateWorkspaceDir = path.join(rootDir, "workspace-other");
+    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-1/workspace";
     await mkdir(workspaceDir, { recursive: true });
     await mkdir(alternateWorkspaceDir, { recursive: true });
 
@@ -163,19 +164,19 @@ describe("gemini remote execution", () => {
 
     expect(result.sessionParams).toMatchObject({
       sessionId: "gemini-session-1",
-      cwd: "/remote/workspace",
+      cwd: managedRemoteWorkspace,
       remoteExecution: {
         transport: "ssh",
         host: "127.0.0.1",
         port: 2222,
         username: "fixture",
-        remoteCwd: "/remote/workspace",
+        remoteCwd: managedRemoteWorkspace,
       },
     });
     expect(prepareWorkspaceForSshExecution).toHaveBeenCalledTimes(1);
     expect(syncDirectoryToSsh).toHaveBeenCalledTimes(1);
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
-      remoteDir: "/remote/workspace/.paperclip-runtime/gemini/skills",
+      remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/gemini/skills`,
       followSymlinks: true,
     }));
     expect(runSshCommand).toHaveBeenCalledWith(
@@ -186,11 +187,11 @@ describe("gemini remote execution", () => {
     const call = runChildProcess.mock.calls[0] as unknown as
       | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
-    expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe("/remote/workspace");
+    expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
     expect(JSON.parse(call?.[3].env.PAPERCLIP_WORKSPACES_JSON ?? "[]")).toEqual([
       {
         workspaceId: "workspace-1",
-        cwd: "/remote/workspace",
+        cwd: managedRemoteWorkspace,
         repoUrl: "https://github.com/paperclipai/paperclip.git",
         repoRef: "main",
       },
@@ -202,7 +203,8 @@ describe("gemini remote execution", () => {
     ]);
     expect(call?.[3].env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:4310");
     expect(call?.[3].env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
-    expect(call?.[3].remoteExecution?.remoteCwd).toBe("/remote/workspace");
+    expect(call?.[3].env.GEMINI_CLI_TRUST_WORKSPACE).toBe("true");
+    expect(call?.[3].remoteExecution?.remoteCwd).toBe(managedRemoteWorkspace);
     expect(startAdapterExecutionTargetPaperclipBridge).toHaveBeenCalledTimes(1);
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
   });
@@ -211,6 +213,7 @@ describe("gemini remote execution", () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-remote-resume-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
+    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-ssh-resume/workspace";
     await mkdir(workspaceDir, { recursive: true });
 
     await execute({
@@ -226,13 +229,13 @@ describe("gemini remote execution", () => {
         sessionId: "session-123",
         sessionParams: {
           sessionId: "session-123",
-          cwd: "/remote/workspace",
+          cwd: managedRemoteWorkspace,
           remoteExecution: {
             transport: "ssh",
             host: "127.0.0.1",
             port: 2222,
             username: "fixture",
-            remoteCwd: "/remote/workspace",
+            remoteCwd: managedRemoteWorkspace,
           },
         },
         sessionDisplayId: "session-123",

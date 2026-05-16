@@ -5,6 +5,7 @@ describe("issue-reference", () => {
   it("extracts issue ids from company-scoped issue paths", () => {
     expect(parseIssuePathIdFromPath("/PAP/issues/PAP-1271")).toBe("PAP-1271");
     expect(parseIssuePathIdFromPath("/PAP/issues/pap-1272")).toBe("PAP-1272");
+    expect(parseIssuePathIdFromPath("/issues/pc1a2-7")).toBe("PC1A2-7");
     expect(parseIssuePathIdFromPath("/PC1A2/issues/pc1a2-7")).toBe("PC1A2-7");
     expect(parseIssuePathIdFromPath("/issues/PAP-1179")).toBe("PAP-1179");
     expect(parseIssuePathIdFromPath("/issues/:id")).toBeNull();

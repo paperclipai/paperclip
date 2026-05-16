@@ -4633,9 +4633,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           if (comment.authorType === "agent" && comment.authorAgentSlug && !authorAgentId) {
             warnings.push(`Comment on task ${manifestIssue.slug} was imported as a system comment because author agent ${comment.authorAgentSlug} was not imported.`);
           }
+          if (comment.authorType === "user" && !actorUserId) {
+            warnings.push(`Comment on task ${manifestIssue.slug} was imported as a system comment because no importing user was available.`);
+          }
           const authorType = authorAgentId
             ? "agent"
-            : comment.authorType === "user"
+            : comment.authorType === "user" && actorUserId
               ? "user"
               : "system";
           await issues.addComment(createdIssue.id, comment.body, {

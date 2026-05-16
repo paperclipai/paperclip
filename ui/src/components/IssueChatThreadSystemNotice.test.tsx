@@ -7,7 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueChatThread } from "./IssueChatThread";
 import type { IssueChatComment } from "../lib/issue-chat-messages";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, SuccessfulRunHandoffState } from "@paperclipai/shared";
 
 vi.mock("@assistant-ui/react", () => ({
   AssistantRuntimeProvider: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -70,7 +70,14 @@ afterEach(() => {
   container.remove();
 });
 
-function renderThread(comments: IssueChatComment[], agentMap?: Map<string, Agent>) {
+function renderThread(
+  comments: IssueChatComment[],
+  options: {
+    agentMap?: Map<string, Agent>;
+    issueStatus?: string;
+    successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  } = {},
+) {
   act(() => {
     root.render(
       <MemoryRouter>
@@ -82,7 +89,9 @@ function renderThread(comments: IssueChatComment[], agentMap?: Map<string, Agent
           onAdd={async () => {}}
           showComposer={false}
           enableLiveTranscriptPolling={false}
-          agentMap={agentMap}
+          agentMap={options.agentMap}
+          issueStatus={options.issueStatus}
+          successfulRunHandoff={options.successfulRunHandoff}
         />
       </MemoryRouter>,
     );
@@ -265,7 +274,7 @@ describe("IssueChatThread system notice routing", () => {
       ...baseTimestamps,
     };
 
-    renderThread([comment], agentMap);
+    renderThread([comment], { agentMap });
 
     const status = container.querySelector('[role="status"]');
     expect(status).not.toBeNull();
@@ -394,5 +403,81 @@ describe("IssueChatThread system notice routing", () => {
 
     expect(container.querySelector('[role="status"]')).toBeNull();
     expect(container.querySelector('[data-message-role="assistant"]')).not.toBeNull();
+  });
+
+  it("folds stale successful-run disposition warnings into the activity log disclosure style", () => {
+    const comment: IssueChatComment = {
+      id: "comment-stale-disposition-warning",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorType: "system",
+      authorAgentId: null,
+      authorUserId: null,
+      runId: "run-stale",
+      runAgentId: "agent-codex",
+      body: "Paperclip needs a disposition before this issue can continue.",
+      presentation: {
+        kind: "system_notice",
+        tone: "warning",
+        title: "Missing issue disposition",
+        detailsDefaultOpen: false,
+      },
+      metadata: {
+        version: 1,
+        sourceRunId: "run-stale",
+        sections: [
+          {
+            title: "Run evidence",
+            rows: [
+              { type: "run_link", label: "Completed run", runId: "run-stale", title: "succeeded" },
+              { type: "key_value", label: "Normalized cause", value: "successful_run_missing_state" },
+            ],
+          },
+        ],
+      },
+      ...baseTimestamps,
+    };
+
+    renderThread([comment], {
+      issueStatus: "done",
+      successfulRunHandoff: {
+        state: "resolved",
+        required: false,
+        sourceRunId: "run-stale",
+        correctiveRunId: "run-corrective",
+        assigneeAgentId: "agent-codex",
+        detectedProgressSummary: null,
+        createdAt: new Date("2026-05-04T17:00:00.000Z"),
+      },
+    });
+
+    const row = container.querySelector('[data-testid="stale-disposition-warning"]');
+    expect(row).not.toBeNull();
+    expect(row?.querySelector('span[aria-hidden="true"]')?.className).toContain("size-6");
+    const toggle = row?.querySelector("button[aria-expanded]") as HTMLButtonElement;
+    expect(toggle.className).toContain("w-full");
+    expect(toggle.className).toContain("py-0.5");
+    expect(row?.querySelector('[role="status"]')).toBeNull();
+    expect(row?.querySelector(".lucide-triangle-alert")).toBeNull();
+    expect(row?.querySelector(".lucide-chevron-down")).not.toBeNull();
+    expect(row?.querySelector('[data-testid="stale-disposition-warning-time"]')?.parentElement?.className).toContain("ml-auto");
+    expect(row?.textContent).toContain("Stale disposition warning");
+    expect(row?.textContent).not.toContain("This disposition warning is stale because the issue now has a newer disposition.");
+    expect(row?.textContent).not.toContain("Paperclip needs a disposition before this issue can continue.");
+
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    const detailsId = toggle.getAttribute("aria-controls");
+    expect(detailsId).toBeTruthy();
+    const details = detailsId ? container.ownerDocument.getElementById(detailsId) : null;
+    expect(details).not.toBeNull();
+    expect(details?.textContent).toContain("run-stale");
+    expect(details).toHaveProperty("hidden", true);
+    act(() => {
+      toggle.click();
+    });
+
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(details).toHaveProperty("hidden", false);
+    expect(container.textContent).toContain("run-stale");
   });
 });

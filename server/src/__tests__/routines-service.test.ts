@@ -1,6 +1,6 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -26,10 +26,12 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { issueService } from "../services/issues.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import * as providerRegistry from "../secrets/provider-registry.ts";
 import { routineService } from "../services/routines.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const originalSecretsProviderEnv = process.env.PAPERCLIP_SECRETS_PROVIDER;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -47,6 +49,11 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   }, 20_000);
 
   afterEach(async () => {
+    if (originalSecretsProviderEnv === undefined) {
+      delete process.env.PAPERCLIP_SECRETS_PROVIDER;
+    } else {
+      process.env.PAPERCLIP_SECRETS_PROVIDER = originalSecretsProviderEnv;
+    }
     await db.delete(activityLog);
     await db.delete(issueInboxArchives);
     await db.delete(issueReadStates);
@@ -1270,6 +1277,82 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.source).toBe("webhook");
     expect(run.status).toBe("issue_created");
     expect(run.linkedIssueId).toBeTruthy();
+  });
+
+  it("uses the configured provider for generated webhook trigger secrets", async () => {
+    process.env.PAPERCLIP_SECRETS_PROVIDER = "aws_secrets_manager";
+    const originalGetSecretProvider = providerRegistry.getSecretProvider;
+    const getSecretProviderSpy = vi.spyOn(providerRegistry, "getSecretProvider").mockImplementation((provider) => {
+      if (provider !== "aws_secrets_manager") {
+        return originalGetSecretProvider(provider);
+      }
+      return {
+        id: "aws_secrets_manager",
+        descriptor: () => ({
+          id: "aws_secrets_manager",
+          label: "AWS Secrets Manager",
+          supportsManaged: true,
+          supportsExternalReference: true,
+        }),
+        validateConfig: async () => ({ ok: true, warnings: [] }),
+        createSecret: async ({ value }) => ({
+          material: { source: "managed", secretId: "arn:aws:secretsmanager:stub", versionId: "v1" },
+          valueSha256: `sha:${value}`,
+          fingerprintSha256: `sha:${value}`,
+          externalRef: "arn:aws:secretsmanager:stub",
+          providerVersionRef: "v1",
+        }),
+        createVersion: async ({ value }) => ({
+          material: { source: "managed", secretId: "arn:aws:secretsmanager:stub", versionId: "v2" },
+          valueSha256: `sha:${value}`,
+          fingerprintSha256: `sha:${value}`,
+          externalRef: "arn:aws:secretsmanager:stub",
+          providerVersionRef: "v2",
+        }),
+        linkExternalSecret: async ({ externalRef, providerVersionRef }) => ({
+          material: { source: "external", secretId: externalRef, versionId: providerVersionRef ?? null },
+          valueSha256: "external",
+          fingerprintSha256: "external",
+          externalRef,
+          providerVersionRef: providerVersionRef ?? null,
+        }),
+        resolveVersion: async () => "resolved-secret",
+        deleteOrArchive: async () => undefined,
+        healthCheck: async () => ({
+          provider: "aws_secrets_manager",
+          status: "ok",
+          message: "stubbed",
+        }),
+      };
+    });
+
+    try {
+      const { routine, svc } = await seedFixture();
+      const { trigger } = await svc.createTrigger(
+        routine.id,
+        {
+          kind: "webhook",
+          signingMode: "hmac_sha256",
+          replayWindowSec: 300,
+        },
+        {},
+      );
+
+      const [secret] = await db
+        .select({
+          id: companySecrets.id,
+          provider: companySecrets.provider,
+        })
+        .from(companySecrets)
+        .where(eq(companySecrets.id, trigger.secretId!));
+
+      expect(secret).toMatchObject({
+        id: trigger.secretId,
+        provider: "aws_secrets_manager",
+      });
+    } finally {
+      getSecretProviderSpy.mockRestore();
+    }
   });
 
   it("accepts GitHub-style X-Hub-Signature-256 with github_hmac signing mode", async () => {

@@ -17,6 +17,17 @@ describe("resolveExecutionRunAdapterConfig", () => {
         other: "value",
       },
       secretKeys: new Set(["AGENT_SECRET"]),
+      manifest: [
+        {
+          configPath: "env.AGENT_SECRET",
+          envKey: "AGENT_SECRET",
+          secretId: "secret-agent",
+          secretKey: "agent-secret",
+          version: 1,
+          provider: "local_encrypted",
+          outcome: "success",
+        },
+      ],
     });
     const resolveEnvBindings = vi.fn().mockResolvedValue({
       env: {
@@ -24,6 +35,17 @@ describe("resolveExecutionRunAdapterConfig", () => {
         PROJECT_ONLY: "project-only",
       },
       secretKeys: new Set(["PROJECT_SECRET"]),
+      manifest: [
+        {
+          configPath: "env.PROJECT_SECRET",
+          envKey: "PROJECT_SECRET",
+          secretId: "secret-project",
+          secretKey: "project-secret",
+          version: 1,
+          provider: "local_encrypted",
+          outcome: "success",
+        },
+      ],
     });
 
     const result = await resolveExecutionRunAdapterConfig({
@@ -45,12 +67,19 @@ describe("resolveExecutionRunAdapterConfig", () => {
       },
     });
     expect(Array.from(result.secretKeys).sort()).toEqual(["AGENT_SECRET", "PROJECT_SECRET"]);
+    expect(result.secretManifest.map((entry) => entry.secretId).sort()).toEqual([
+      "secret-agent",
+      "secret-project",
+    ]);
+    expect(JSON.stringify(result.secretManifest)).not.toContain("agent-only");
+    expect(JSON.stringify(result.secretManifest)).not.toContain("project-only");
   });
 
   it("skips project env resolution when the project has no bindings", async () => {
     const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
       config: { env: { AGENT_ONLY: "agent-only" } },
       secretKeys: new Set<string>(),
+      manifest: [],
     });
     const resolveEnvBindings = vi.fn();
 
@@ -65,6 +94,7 @@ describe("resolveExecutionRunAdapterConfig", () => {
     });
 
     expect(result.resolvedConfig.env).toEqual({ AGENT_ONLY: "agent-only" });
+    expect(result.secretManifest).toEqual([]);
     expect(resolveEnvBindings).not.toHaveBeenCalled();
   });
 });

@@ -3,6 +3,7 @@ import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, not, or, sql }
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  companySecretBindings,
   companySecretVersions,
   companySecrets,
   executionWorkspaces,
@@ -49,6 +50,7 @@ import { trackRoutineRun } from "@paperclipai/shared/telemetry";
 import { conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { issueService } from "./issues.js";
 import { secretService } from "./secrets.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
@@ -79,6 +81,10 @@ type RoutineTriggerRow = typeof routineTriggers.$inferSelect;
 
 interface RoutineTriggerSecretRestoreMaterial extends RoutineTriggerSecretMaterial {
   triggerId: string;
+}
+
+function routineWebhookSecretConfigPath(secretId: string) {
+  return `webhookSecret:${secretId}`;
 }
 
 function assertTimeZone(timeZone: string) {
@@ -950,16 +956,23 @@ export function routineService(
     executor?: Db,
   ) {
     const secretValue = crypto.randomBytes(24).toString("hex");
+    const providerId = getConfiguredSecretProvider();
     const input = {
       name: `routine-${routineId}-${crypto.randomBytes(6).toString("hex")}`,
-      provider: "local_encrypted" as const,
+      provider: providerId,
       value: secretValue,
       description: `Webhook auth for routine ${routineId}`,
     };
     const provider = getSecretProvider(input.provider);
-    const prepared = await provider.createVersion({
+    const prepared = await provider.createSecret({
       value: input.value,
       externalRef: null,
+      context: {
+        companyId,
+        secretKey: input.name,
+        secretName: input.name,
+        version: 1,
+      },
     });
 
     const insertSecret = async (secretDb: Db) => {
@@ -967,11 +980,16 @@ export function routineService(
         .insert(companySecrets)
         .values({
           companyId,
+          key: input.name,
           name: input.name,
           provider: input.provider,
+          status: "active",
+          managedMode: "paperclip_managed",
           externalRef: prepared.externalRef,
+          providerMetadata: null,
           latestVersion: 1,
           description: input.description,
+          lastRotatedAt: new Date(),
           createdByAgentId: actor.agentId ?? null,
           createdByUserId: actor.userId ?? null,
         })
@@ -983,8 +1001,19 @@ export function routineService(
         version: 1,
         material: prepared.material,
         valueSha256: prepared.valueSha256,
+        fingerprintSha256: prepared.fingerprintSha256 ?? prepared.valueSha256,
+        providerVersionRef: prepared.providerVersionRef ?? null,
+        status: "current",
         createdByAgentId: actor.agentId ?? null,
         createdByUserId: actor.userId ?? null,
+      });
+
+      await secretDb.insert(companySecretBindings).values({
+        companyId,
+        secretId: secret.id,
+        targetType: "routine",
+        targetId: routineId,
+        configPath: routineWebhookSecretConfigPath(secret.id),
       });
 
       return secret;
@@ -1004,7 +1033,13 @@ export function routineService(
       .where(eq(companySecrets.id, trigger.secretId))
       .then((rows) => rows[0] ?? null);
     if (!secret || secret.companyId !== companyId) throw notFound("Routine trigger secret not found");
-    const value = await secretsSvc.resolveSecretValue(companyId, trigger.secretId, "latest");
+    const value = await secretsSvc.resolveSecretValue(companyId, trigger.secretId, "latest", {
+      consumerType: "routine",
+      consumerId: trigger.routineId,
+      actorType: "system",
+      actorId: null,
+      configPath: routineWebhookSecretConfigPath(trigger.secretId),
+    });
     return value;
   }
 

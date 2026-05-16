@@ -1,8 +1,38 @@
-import type { IssueBlockerAttention, IssueRelationIssueSummary, SuccessfulRunHandoffState } from "@paperclipai/shared";
-import { AlertTriangle } from "lucide-react";
+import type {
+  IssueBlockerAttention,
+  IssueRecoveryAction,
+  IssueRelationIssueSummary,
+  SuccessfulRunHandoffState,
+} from "@paperclipai/shared";
+import { AlertTriangle, Flag } from "lucide-react";
 import { Link } from "@/lib/router";
 import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
 import { IssueLinkQuicklook } from "./IssueLinkQuicklook";
+import { isAssignedBacklogBlocker } from "../lib/issue-blockers";
+import {
+  deriveActiveRecoveryDisplayState,
+  RECOVERY_CHIP_DEFAULT_TONE,
+} from "../lib/recovery-display";
+
+function BlockerRecoveryIndicator({ action }: { action: IssueRecoveryAction }) {
+  const state = deriveActiveRecoveryDisplayState(action);
+  if (!state) return null;
+  const tone = RECOVERY_CHIP_DEFAULT_TONE[state];
+  const Icon = tone.icon;
+  return (
+    <span
+      data-testid="issue-blocked-notice-recovery-indicator"
+      data-recovery-state={state}
+      role="status"
+      aria-label={tone.label}
+      title={`${tone.label} — open the source issue to act.`}
+      className={`inline-flex shrink-0 items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${tone.className}`}
+    >
+      <Icon className="h-2.5 w-2.5" aria-hidden />
+      {tone.label}
+    </span>
+  );
+}
 
 export function IssueBlockedNotice({
   issueStatus,
@@ -27,6 +57,24 @@ export function IssueBlockedNotice({
     .filter((blocker, index, all) => all.findIndex((candidate) => candidate.id === blocker.id) === index);
 
   const isStalled = blockerAttention?.state === "stalled";
+  const parkedBlockers = (() => {
+    const seen = new Set<string>();
+    const collected: IssueRelationIssueSummary[] = [];
+    const sources: IssueRelationIssueSummary[] = [...blockers];
+    for (const blocker of blockers) {
+      for (const terminal of blocker.terminalBlockers ?? []) {
+        sources.push(terminal);
+      }
+    }
+    for (const blocker of sources) {
+      if (!isAssignedBacklogBlocker(blocker)) continue;
+      if (seen.has(blocker.id)) continue;
+      seen.add(blocker.id);
+      collected.push(blocker);
+    }
+    return collected;
+  })();
+  const showParkedRow = parkedBlockers.length > 0;
   const stalledLeafIdentifier =
     blockerAttention?.sampleStalledBlockerIdentifier ?? blockerAttention?.sampleBlockerIdentifier ?? null;
   const stalledLeafBlockers = (() => {
@@ -50,6 +98,7 @@ export function IssueBlockedNotice({
 
   const renderBlockerChip = (blocker: IssueRelationIssueSummary) => {
     const issuePathId = blocker.identifier ?? blocker.id;
+    const recoveryAction = blocker.activeRecoveryAction ?? null;
     return (
       <IssueLinkQuicklook
         key={blocker.id}
@@ -61,6 +110,7 @@ export function IssueBlockedNotice({
         <span className="max-w-[18rem] truncate font-sans text-[11px] text-amber-800 dark:text-amber-200">
           {blocker.title}
         </span>
+        {recoveryAction ? <BlockerRecoveryIndicator action={recoveryAction} /> : null}
       </IssueLinkQuicklook>
     );
   };
@@ -146,6 +196,18 @@ export function IssueBlockedNotice({
                     Ultimately waiting on
                   </span>
                   {terminalBlockers.map(renderBlockerChip)}
+                </div>
+              ) : null}
+              {showParkedRow ? (
+                <div
+                  data-testid="issue-blocked-notice-parked-row"
+                  className="flex flex-wrap items-center gap-1.5 pt-0.5"
+                >
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-800 dark:text-amber-200">
+                    <Flag className="h-3 w-3" aria-hidden />
+                    Blocked by parked work
+                  </span>
+                  {parkedBlockers.map(renderBlockerChip)}
                 </div>
               ) : null}
             </>

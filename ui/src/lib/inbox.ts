@@ -25,7 +25,7 @@ export const INBOX_NESTING_KEY = "paperclip:inbox:nesting";
 export const INBOX_GROUP_BY_KEY = "paperclip:inbox:group-by";
 export const INBOX_FILTER_PREFERENCES_KEY_PREFIX = "paperclip:inbox:filters";
 export const INBOX_COLLAPSED_GROUPS_KEY_PREFIX = "paperclip:inbox:collapsed-groups";
-export type InboxTab = "mine" | "recent" | "unread" | "all";
+export type InboxTab = "mine" | "recent" | "unread" | "blocked" | "all";
 export type InboxCategoryFilter =
   | "everything"
   | "issues_i_touched"
@@ -126,12 +126,14 @@ export type InboxKeyboardNavEntry =
 
 export interface InboxProjectWorkspaceLookup {
   name: string;
+  projectId?: string | null;
 }
 
 export interface InboxExecutionWorkspaceLookup {
   name: string;
   mode: "shared_workspace" | "isolated_workspace" | "operator_branch" | "adapter_managed" | "cloud_sandbox";
   projectWorkspaceId: string | null;
+  projectId?: string | null;
 }
 
 export interface InboxWorkspaceGroupingOptions {
@@ -142,6 +144,15 @@ export interface InboxWorkspaceGroupingOptions {
   agentById?: ReadonlyMap<string, string | null | undefined>;
   userLabelById?: ReadonlyMap<string, string>;
   currentUserId?: string | null;
+}
+
+export interface InboxIssueGroupCreateDefaults {
+  projectId?: string;
+  projectWorkspaceId?: string;
+  executionWorkspaceId?: string;
+  executionWorkspaceMode?: string;
+  assigneeAgentId?: string;
+  assigneeUserId?: string;
 }
 
 const defaultInboxFilterPreferences: InboxFilterPreferences = {
@@ -619,7 +630,13 @@ export function resolveInboxNestingEnabled(preferenceEnabled: boolean, isMobile:
 export function loadLastInboxTab(): InboxTab {
   try {
     const raw = localStorage.getItem(INBOX_LAST_TAB_KEY);
-    if (raw === "all" || raw === "unread" || raw === "recent" || raw === "mine") return raw;
+    if (
+      raw === "all"
+      || raw === "unread"
+      || raw === "recent"
+      || raw === "mine"
+      || raw === "blocked"
+    ) return raw;
     if (raw === "new") return "mine";
     return "mine";
   } catch {
@@ -929,6 +946,85 @@ export function groupInboxWorkItems(
     });
   }
   return orderedGroups;
+}
+
+function stripInboxSearchGroupPrefix(groupKey: string) {
+  return groupKey
+    .replace(/^archived-search:/, "")
+    .replace(/^other-search:/, "");
+}
+
+function firstIssueFromInboxWorkItems(items: InboxWorkItem[]): Issue | null {
+  return items.find((item): item is InboxWorkItem & { kind: "issue" } => item.kind === "issue")?.issue ?? null;
+}
+
+function projectIdForProjectWorkspace(
+  projectWorkspaceId: string | null | undefined,
+  options: InboxWorkspaceGroupingOptions,
+  fallbackIssue: Issue | null,
+) {
+  if (!projectWorkspaceId) return fallbackIssue?.projectId ?? null;
+  return options.projectWorkspaceById?.get(projectWorkspaceId)?.projectId
+    ?? (fallbackIssue?.projectWorkspaceId === projectWorkspaceId ? fallbackIssue.projectId : null);
+}
+
+export function buildInboxIssueGroupCreateDefaults(
+  groupKey: string,
+  groupBy: InboxWorkItemGroupBy,
+  items: InboxWorkItem[],
+  options: InboxWorkspaceGroupingOptions = {},
+): InboxIssueGroupCreateDefaults | null {
+  const fallbackIssue = firstIssueFromInboxWorkItems(items);
+  if (!fallbackIssue) return null;
+
+  const key = stripInboxSearchGroupPrefix(groupKey);
+  if (groupBy === "project") {
+    if (!key.startsWith("project:")) return {};
+    const projectId = key.slice("project:".length);
+    return projectId && projectId !== "none" ? { projectId } : {};
+  }
+
+  if (groupBy === "assignee") {
+    if (key.startsWith("assignee:agent:")) {
+      const assigneeAgentId = key.slice("assignee:agent:".length);
+      return assigneeAgentId ? { assigneeAgentId } : {};
+    }
+    if (key.startsWith("assignee:user:")) {
+      const assigneeUserId = key.slice("assignee:user:".length);
+      return assigneeUserId ? { assigneeUserId } : {};
+    }
+    return {};
+  }
+
+  if (groupBy === "workspace") {
+    if (key.startsWith("workspace:execution:")) {
+      const executionWorkspaceId = key.slice("workspace:execution:".length);
+      if (!executionWorkspaceId) return {};
+      const executionWorkspace = options.executionWorkspaceById?.get(executionWorkspaceId) ?? null;
+      const projectWorkspaceId = executionWorkspace?.projectWorkspaceId
+        ?? (fallbackIssue.executionWorkspaceId === executionWorkspaceId ? fallbackIssue.projectWorkspaceId : null);
+      const projectId = executionWorkspace?.projectId
+        ?? projectIdForProjectWorkspace(projectWorkspaceId, options, fallbackIssue);
+      return {
+        executionWorkspaceId,
+        executionWorkspaceMode: "reuse_existing",
+        ...(projectId ? { projectId } : {}),
+        ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
+      };
+    }
+
+    if (key.startsWith("workspace:project:")) {
+      const projectWorkspaceId = key.slice("workspace:project:".length);
+      if (!projectWorkspaceId) return {};
+      const projectId = projectIdForProjectWorkspace(projectWorkspaceId, options, fallbackIssue);
+      return {
+        ...(projectId ? { projectId } : {}),
+        projectWorkspaceId,
+      };
+    }
+  }
+
+  return {};
 }
 
 /**

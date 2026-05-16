@@ -67,6 +67,9 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
+const mockIssueRecoveryActionService = vi.hoisted(() => ({
+  getActiveForIssue: vi.fn(async () => null),
+}));
 const mockIssueTreeControlService = vi.hoisted(() => ({
   getActivePauseHoldGate: vi.fn(async () => null),
 }));
@@ -125,6 +128,7 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => mockHeartbeatService,
   instanceSettingsService: () => mockInstanceSettingsService,
   issueApprovalService: () => ({}),
+  issueRecoveryActionService: () => mockIssueRecoveryActionService,
   issueReferenceService: () => ({
     deleteDocumentSource: async () => undefined,
     diffIssueReferenceSummary: () => ({
@@ -238,6 +242,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockInstanceSettingsService.get.mockReset();
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockRoutineService.syncRunStatusForIssue.mockReset();
+    mockIssueRecoveryActionService.getActiveForIssue.mockReset();
     mockIssueTreeControlService.getActivePauseHoldGate.mockReset();
     mockTxInsertValues.mockReset();
     mockTxInsert.mockReset();
@@ -274,6 +279,7 @@ describe.sequential("issue comment reopen routes", () => {
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(null);
     mockIssueTreeControlService.getActivePauseHoldGate.mockResolvedValue(null);
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
@@ -603,6 +609,25 @@ describe.sequential("issue comment reopen routes", () => {
         metadata,
       },
     );
+  });
+
+  it("rejects structured comment presentation fields from agent-authenticated writes", async () => {
+    const app = await installActor(createApp(), agentActor());
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({
+        body: "Hidden details",
+        presentation: { kind: "system_notice", tone: "warning" },
+        metadata: {
+          version: 1,
+          sections: [{ rows: [{ type: "key_value", label: "Cause", value: "covert_channel_attempt" }] }],
+        },
+      });
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
   it("rejects invalid comment metadata before writing a comment", async () => {
