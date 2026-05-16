@@ -35,6 +35,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/adapters/grok-local",
+    "name": "@paperclipai/adapter-grok-local",
+    "publishFromCi": false
+  },
+  {
     "dir": "packages/adapters/opencode-local",
     "name": "@paperclipai/adapter-opencode-local",
     "publishFromCi": true

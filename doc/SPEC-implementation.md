@@ -376,6 +376,10 @@ Operational policy:
   - `created_by_user_id` uuid/text fk null
   - `updated_by_agent_id` uuid fk null
   - `updated_by_user_id` uuid/text fk null
+  - `locked_at` timestamptz null
+  - `locked_by_agent_id` uuid fk null
+  - `locked_by_user_id` uuid/text fk null
+  - Locked documents are immutable until unlocked. Board operators can lock/unlock; agent writes to a locked key create a new issue document with a derived key instead of overwriting the locked document.
 - `document_revisions` stores append-only history:
   - `id` uuid pk
   - `company_id` uuid fk not null
@@ -524,6 +528,8 @@ All endpoints are under `/api` and return JSON.
 - `GET /issues/:issueId/documents`
 - `GET /issues/:issueId/documents/:key`
 - `PUT /issues/:issueId/documents/:key`
+- `POST /issues/:issueId/documents/:key/lock`
+- `POST /issues/:issueId/documents/:key/unlock`
 - `GET /issues/:issueId/documents/:key/revisions`
 - `DELETE /issues/:issueId/documents/:key`
 - `POST /issues/:issueId/checkout`
