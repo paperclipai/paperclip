@@ -3,6 +3,7 @@ import {
   buildRuntimeApiCandidateUrls,
   choosePrimaryRuntimeApiUrl,
   collectReachableInterfaceHosts,
+  isPrivateOrLoopbackHost,
 } from "../runtime-api.js";
 
 describe("runtime API discovery", () => {
@@ -95,6 +96,51 @@ describe("runtime API discovery", () => {
     ]);
   });
 
+  it("prefers serverPublicBaseUrl over allowedHostnames for the primary runtime URL", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        serverPublicBaseUrl: "https://webhook.tiknas.com/api/v1",
+        authPublicBaseUrl: null,
+        allowedHostnames: ["198.51.100.10"],
+        bindHost: "0.0.0.0",
+        port: 3100,
+      }),
+    ).toBe("https://webhook.tiknas.com");
+  });
+
+  it("returns https origin without port for an external allowed hostname", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: null,
+        allowedHostnames: ["webhook.tiknas.com"],
+        bindHost: "0.0.0.0",
+        port: 3100,
+      }),
+    ).toBe("https://webhook.tiknas.com");
+  });
+
+  it("returns http origin with port for a private RFC1918 allowed hostname", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: null,
+        allowedHostnames: ["192.168.1.10"],
+        bindHost: "0.0.0.0",
+        port: 3100,
+      }),
+    ).toBe("http://192.168.1.10:3100");
+  });
+
+  it("returns http origin with port when only a loopback bindHost is configured", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: null,
+        allowedHostnames: [],
+        bindHost: "127.0.0.1",
+        port: 3100,
+      }),
+    ).toBe("http://127.0.0.1:3100");
+  });
+
   it("prefers usable interface hosts and skips link-local addresses", () => {
     expect(
       collectReachableInterfaceHosts({
@@ -143,5 +189,41 @@ describe("runtime API discovery", () => {
       "192.168.6.178",
       "fd7a:115c:a1e0::8a3a:a11d",
     ]);
+  });
+});
+
+describe("isPrivateOrLoopbackHost", () => {
+  it("returns true for RFC1918 and loopback addresses", () => {
+    expect(isPrivateOrLoopbackHost("10.0.0.1")).toBe(true);
+    expect(isPrivateOrLoopbackHost("10.255.255.255")).toBe(true);
+    expect(isPrivateOrLoopbackHost("172.16.0.1")).toBe(true);
+    expect(isPrivateOrLoopbackHost("172.31.255.255")).toBe(true);
+    expect(isPrivateOrLoopbackHost("192.168.1.10")).toBe(true);
+    expect(isPrivateOrLoopbackHost("192.168.0.1")).toBe(true);
+    expect(isPrivateOrLoopbackHost("127.0.0.1")).toBe(true);
+    expect(isPrivateOrLoopbackHost("localhost")).toBe(true);
+    expect(isPrivateOrLoopbackHost("::1")).toBe(true);
+  });
+
+  it("returns true for link-local addresses", () => {
+    expect(isPrivateOrLoopbackHost("169.254.1.1")).toBe(true);
+    expect(isPrivateOrLoopbackHost("169.254.255.255")).toBe(true);
+    expect(isPrivateOrLoopbackHost("fe80::1")).toBe(true);
+  });
+
+  it("returns true for IPv6 unique local addresses (ULA, fc00::/7)", () => {
+    expect(isPrivateOrLoopbackHost("fc00::1")).toBe(true);
+    expect(isPrivateOrLoopbackHost("fd00::1")).toBe(true);
+    expect(isPrivateOrLoopbackHost("fd7a:115c::1")).toBe(true);
+    // Tailscale CGNAT IPv6 from TIK-1329 audit finding
+    expect(isPrivateOrLoopbackHost("fd7a:115c:a1e0::8a3a:a11d")).toBe(true);
+  });
+
+  it("returns false for public internet addresses and external hostnames", () => {
+    expect(isPrivateOrLoopbackHost("webhook.tiknas.com")).toBe(false);
+    expect(isPrivateOrLoopbackHost("198.51.100.10")).toBe(false);
+    expect(isPrivateOrLoopbackHost("8.8.8.8")).toBe(false);
+    expect(isPrivateOrLoopbackHost("203.0.113.42")).toBe(false);
+    expect(isPrivateOrLoopbackHost("2001:db8::1")).toBe(false);
   });
 });

@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { goalsApi } from "../api/goals";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -10,11 +10,14 @@ import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Target, Plus } from "lucide-react";
+import type { Goal } from "@paperclipai/shared";
 
 export function Goals() {
   const { selectedCompanyId } = useCompany();
   const { openNewGoal } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const queryClient = useQueryClient();
+  const [confirmDeleteGoal, setConfirmDeleteGoal] = useState<Goal | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Goals" }]);
@@ -24,6 +27,14 @@ export function Goals() {
     queryKey: queryKeys.goals.list(selectedCompanyId!),
     queryFn: () => goalsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+  });
+
+  const deleteGoal = useMutation({
+    mutationFn: (id: string) => goalsApi.remove(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.goals.list(selectedCompanyId!) });
+      setConfirmDeleteGoal(null);
+    },
   });
 
   if (!selectedCompanyId) {
@@ -55,7 +66,34 @@ export function Goals() {
               New Goal
             </Button>
           </div>
-          <GoalTree goals={goals} goalLink={(goal) => `/goals/${goal.id}`} />
+          <GoalTree
+            goals={goals}
+            goalLink={(goal) => `/goals/${goal.id}`}
+            onDelete={(goal) => setConfirmDeleteGoal(goal)}
+          />
+          {confirmDeleteGoal && (
+            <div className="flex items-center gap-2 pt-2 border-t border-border">
+              <span className="text-xs text-destructive flex-1">
+                Delete "{confirmDeleteGoal.title}" and all sub-goals?
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setConfirmDeleteGoal(null)}
+                disabled={deleteGoal.isPending}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => deleteGoal.mutate(confirmDeleteGoal.id)}
+                disabled={deleteGoal.isPending}
+              >
+                {deleteGoal.isPending ? "Deleting..." : "Delete"}
+              </Button>
+            </div>
+          )}
         </>
       )}
     </div>

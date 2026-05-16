@@ -166,6 +166,7 @@ function nextResultText(status: string, issueId?: string | null) {
   if (status === "skipped") return "Skipped because a live execution issue already exists";
   if (status === "completed") return "Execution issue completed";
   if (status === "failed") return "Execution failed";
+  if (status === "gated_skip") return "Skipped by pre-gate predicate";
   return status;
 }
 
@@ -1080,6 +1081,87 @@ export function routineService(
       );
   }
 
+  const PREGATE_TABLE_MAP: Record<string, string> = {
+    agents: "agents",
+    issues: "issues",
+    routines: "routines",
+    routine_runs: "routine_runs",
+    heartbeat_runs: "heartbeat_runs",
+  };
+
+  const PREGATE_SAFE_COLUMNS = new Set([
+    "created_at", "updated_at", "status", "company_id",
+    "assignee_agent_id", "origin_kind", "last_triggered_at", "last_enqueued_at",
+  ]);
+
+  // Allowlist prevents sql.raw() injection — extend only with valid SQL comparison operators
+  const PREGATE_SAFE_OPERATORS = new Set([">", "<", "=", ">=", "<=", "!="]);
+
+  const PREGATE_REFERENCE_RESOLVERS: Record<string, (routine: typeof routines.$inferSelect) => Date | null> = {
+    lastTriggeredAt: (r) => r.lastTriggeredAt,
+    lastEnqueuedAt: (r) => r.lastEnqueuedAt,
+    now: () => new Date(),
+  };
+
+  async function evaluatePreGate(
+    executor: Db,
+    routine: typeof routines.$inferSelect,
+  ): Promise<boolean> {
+    const gate = routine.preGate;
+    if (!gate) return true;
+
+    if (gate.kind === "sql_count") {
+      if (!PREGATE_TABLE_MAP[gate.table]) {
+        logger.warn({ routineId: routine.id, table: gate.table }, "preGate: unknown table");
+        return false;
+      }
+
+      const condMatch = gate.condition.trim().match(
+        /^([a-z_]+)\s*(>|<|=|>=|<=|!=)\s*(\S+)$/,
+      );
+      if (!condMatch) {
+        logger.warn({ routineId: routine.id, condition: gate.condition }, "preGate: invalid condition format");
+        return false;
+      }
+      const [, column, operator, reference] = condMatch;
+
+      if (!PREGATE_SAFE_COLUMNS.has(column)) {
+        logger.warn({ routineId: routine.id, column }, "preGate: disallowed column");
+        return false;
+      }
+      if (!PREGATE_SAFE_OPERATORS.has(operator)) {
+        logger.warn({ routineId: routine.id, operator }, "preGate: disallowed operator");
+        return false;
+      }
+
+      let refValue: Date | null;
+      const resolver = PREGATE_REFERENCE_RESOLVERS[reference];
+      if (resolver) {
+        refValue = resolver(routine);
+      } else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(reference)) {
+        refValue = new Date(reference);
+      } else {
+        logger.warn({ routineId: routine.id, reference }, "preGate: disallowed reference");
+        return false;
+      }
+
+      if (refValue == null) {
+        return true;
+      }
+
+      const tableName = PREGATE_TABLE_MAP[gate.table];
+      const rows = await executor.execute(
+        sql`SELECT count(*)::int AS cnt FROM ${sql.identifier(tableName)} WHERE ${sql.identifier(column)} ${sql.raw(operator)} ${refValue.toISOString()}::timestamptz AND company_id = ${routine.companyId}`,
+      );
+      const first = Array.isArray(rows) ? rows[0] : null;
+      const count = (typeof first === "object" && first !== null ? (first as { cnt: number }).cnt : null) ?? 0;
+      return count >= gate.minCount;
+    }
+
+    logger.warn({ routineId: routine.id, kind: (gate as { kind: string }).kind }, "preGate: unknown kind");
+    return false;
+  }
+
   async function dispatchRoutineRun(input: {
     routine: typeof routines.$inferSelect;
     trigger: typeof routineTriggers.$inferSelect | null;
@@ -1531,6 +1613,7 @@ export function routineService(
             concurrencyPolicy: input.concurrencyPolicy,
             catchUpPolicy: input.catchUpPolicy,
             variables,
+            preGate: input.preGate ?? null,
             createdByAgentId: actor.agentId ?? null,
             createdByUserId: actor.userId ?? null,
             updatedByAgentId: actor.agentId ?? null,
@@ -1611,6 +1694,7 @@ export function routineService(
           concurrencyPolicy: patch.concurrencyPolicy ?? locked.concurrencyPolicy,
           catchUpPolicy: patch.catchUpPolicy ?? locked.catchUpPolicy,
           variables: nextVariables,
+          preGate: patch.preGate === undefined ? existing.preGate : (patch.preGate ?? null),
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
         };
@@ -2282,6 +2366,30 @@ export function routineService(
           .returning({ id: routineTriggers.id })
           .then((rows) => rows[0] ?? null);
         if (!claimed) continue;
+
+        const gatePass = await evaluatePreGate(db, row.routine);
+        if (!gatePass) {
+          const triggeredAt = new Date();
+          const nextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, triggeredAt);
+          await db.insert(routineRuns).values({
+            companyId: row.routine.companyId,
+            routineId: row.routine.id,
+            triggerId: row.trigger.id,
+            source: "schedule",
+            status: "gated_skip",
+            triggeredAt,
+            completedAt: triggeredAt,
+          });
+          await updateRoutineTouchedState({
+            routineId: row.routine.id,
+            triggerId: row.trigger.id,
+            triggeredAt,
+            status: "gated_skip",
+            issueId: null,
+            nextRunAt,
+          }, db);
+          continue;
+        }
 
         for (let i = 0; i < runCount; i += 1) {
           await dispatchRoutineRun({

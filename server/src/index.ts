@@ -632,6 +632,7 @@ export async function startServer(): Promise<StartedServer> {
   
   const runtimeListenHost = config.host;
   const runtimeApiUrl = choosePrimaryRuntimeApiUrl({
+    serverPublicBaseUrl: config.serverPublicBaseUrl ?? null,
     authPublicBaseUrl: config.authPublicBaseUrl ?? null,
     allowedHostnames: config.allowedHostnames,
     bindHost: runtimeListenHost,
@@ -640,6 +641,7 @@ export async function startServer(): Promise<StartedServer> {
   const configuredApiUrl = process.env.PAPERCLIP_API_URL?.trim() || runtimeApiUrl;
   const runtimeApiCandidates = buildRuntimeApiCandidateUrls({
     preferredApiUrl: configuredApiUrl,
+    serverPublicBaseUrl: config.serverPublicBaseUrl ?? null,
     authPublicBaseUrl: config.authPublicBaseUrl ?? null,
     allowedHostnames: config.allowedHostnames,
     bindHost: runtimeListenHost,
@@ -676,7 +678,19 @@ export async function startServer(): Promise<StartedServer> {
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
     void heartbeat
-      .reapOrphanedRuns()
+      .releaseDueProviderRateLimitBlocks(new Date())
+      .then((released) => {
+        if (released.released > 0 || released.wakeupsQueued > 0) {
+          logger.warn({ ...released }, "startup provider rate-limit catch-up released blocks");
+        }
+      })
+      .then(() => heartbeat.recoverLegacyProviderRateLimitBlocks(new Date()))
+      .then((recovered) => {
+        if (recovered.recoveredIssues > 0 || recovered.wakeupsQueued > 0) {
+          logger.warn({ ...recovered }, "startup provider rate-limit legacy recovery queued wakeups");
+        }
+      })
+      .then(() => heartbeat.reapOrphanedRuns())
       .then(() => heartbeat.promoteDueScheduledRetries())
       .then(async (promotion) => {
         await heartbeat.resumeQueuedRuns();

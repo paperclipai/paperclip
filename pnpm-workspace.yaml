@@ -12,3 +12,9 @@ packages:
   - server
   - ui
   - cli
+allowBuilds:
+  '@embedded-postgres/darwin-arm64': true
+  es5-ext: true
+  esbuild: true
+  sharp: true
+  sqlite3: true

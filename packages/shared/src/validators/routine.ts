@@ -48,6 +48,24 @@ export const routineVariableSchema = z.object({
   }
 });
 
+const PREGATE_SAFE_TABLES = ["agents", "issues", "routines", "routine_runs", "heartbeat_runs"] as const;
+
+const routinePreGateSqlCountSchema = z.object({
+  kind: z.literal("sql_count"),
+  table: z.enum(PREGATE_SAFE_TABLES),
+  condition: z.string().trim().min(1).max(500).regex(
+    /^[a-z_]+\s*(>|<|=|>=|<=|!=)\s*(lastTriggeredAt|lastEnqueuedAt|now|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)$/,
+    "condition must be: column operator reference (e.g. created_at > lastTriggeredAt)",
+  ),
+  minCount: z.number().int().min(1).max(100000),
+});
+
+export const routinePreGateSchema = z.discriminatedUnion("kind", [
+  routinePreGateSqlCountSchema,
+]).nullable().optional();
+
+export type RoutinePreGateInput = z.infer<typeof routinePreGateSchema>;
+
 export const createRoutineSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
@@ -60,6 +78,7 @@ export const createRoutineSchema = z.object({
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES).optional().default("coalesce_if_active"),
   catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES).optional().default("skip_missed"),
   variables: z.array(routineVariableSchema).optional().default([]),
+  preGate: routinePreGateSchema,
 });
 
 export type CreateRoutine = z.infer<typeof createRoutineSchema>;

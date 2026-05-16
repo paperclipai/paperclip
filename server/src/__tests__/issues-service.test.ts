@@ -146,6 +146,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -1164,6 +1165,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
+    const runId = randomUUID();
     const commentId = randomUUID();
 
     await db.insert(companies).values({
@@ -1194,9 +1196,12 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
 
     await db.insert(heartbeatRuns).values({
-      id: randomUUID(),
+      id: runId,
       companyId,
       agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "succeeded",
       contextSnapshot: { issueId },
       createdAt: new Date("2026-05-12T22:58:00.000Z"),
       startedAt: new Date("2026-05-12T22:58:00.000Z"),

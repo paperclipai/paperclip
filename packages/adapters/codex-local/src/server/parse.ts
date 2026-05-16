@@ -11,6 +11,9 @@ const CODEX_REMOTE_COMPACTION_RE = /remote\s+compact\s+task/i;
 const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
 
+// Hard limit: the Codex weekly usage window is exhausted — no transient retry.
+export const CODEX_HARD_LIMIT_RE = CODEX_USAGE_LIMIT_RE;
+
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
   let finalMessage: string | null = null;
@@ -245,17 +248,26 @@ export function extractCodexRetryNotBefore(input: {
   return parseLocalClockTime(usageLimitMatch[1] ?? "", now);
 }
 
+export function extractCodexHardLimitBlock(input: {
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): { limitKind: string; modelFamily: string | null; resetsAt: string | null; message: string } | null {
+  const haystack = buildCodexErrorHaystack(input);
+  if (!CODEX_HARD_LIMIT_RE.test(haystack)) return null;
+  const resetsAt = extractCodexRetryNotBefore(input)?.toISOString() ?? null;
+  const raw = input.errorMessage ?? input.stderr ?? input.stdout ?? "";
+  return { limitKind: "weekly", modelFamily: null, resetsAt, message: raw.slice(0, 1000) };
+}
+
 export function isCodexTransientUpstreamError(input: {
   stdout?: string | null;
   stderr?: string | null;
   errorMessage?: string | null;
 }): boolean {
+  // Usage-limit hits are hard limits, not transient — handled by extractCodexHardLimitBlock.
+  if (extractCodexHardLimitBlock(input) != null) return false;
   const haystack = buildCodexErrorHaystack(input);
-
-  if (extractCodexRetryNotBefore(input) != null) return true;
   if (!CODEX_TRANSIENT_UPSTREAM_RE.test(haystack)) return false;
-  // Keep automatic retries scoped to the observed remote-compaction/high-demand
-  // failure shape, plus explicit usage-limit windows that tell us when retrying
-  // becomes safe again.
   return CODEX_REMOTE_COMPACTION_RE.test(haystack) || /high\s+demand|temporary\s+errors/i.test(haystack);
 }

@@ -45,6 +45,15 @@ export interface RoutineVariable {
   options: string[];
 }
 
+export interface RoutinePreGateSqlCount {
+  kind: "sql_count";
+  table: "agents" | "issues" | "routines" | "routine_runs" | "heartbeat_runs";
+  condition: string;
+  minCount: number;
+}
+
+export type RoutinePreGate = RoutinePreGateSqlCount;
+
 export interface Routine {
   id: string;
   companyId: string;
@@ -61,6 +70,7 @@ export interface Routine {
   variables: RoutineVariable[];
   latestRevisionId: string | null;
   latestRevisionNumber: number;
+  preGate: RoutinePreGate | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
   updatedByAgentId: string | null;

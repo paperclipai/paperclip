@@ -584,6 +584,8 @@ export type {
   RoutineRevisionSnapshotV1,
   RoutineRevisionSnapshot,
   RoutineRevision,
+  RoutinePreGateSqlCount,
+  RoutinePreGate,
   RoutineTrigger,
   RoutineRun,
   RoutineTriggerSecretMaterial,
@@ -632,6 +634,7 @@ export type {
   PluginWebhookDeliveryRecord,
   QuotaWindow,
   ProviderQuotaResult,
+  ProviderRateLimitBlock,
 } from "./types/index.js";
 export { COMPANY_SEARCH_SCOPES } from "./types/index.js";
 export {
@@ -899,6 +902,7 @@ export {
   createRoutineTriggerSchema,
   updateRoutineTriggerSchema,
   routineVariableSchema,
+  routinePreGateSchema,
   runRoutineSchema,
   rotateRoutineTriggerSecretSchema,
   routineRevisionSnapshotRoutineV1Schema,
@@ -917,6 +921,7 @@ export {
   type UpdateRoutine,
   type CreateRoutineTrigger,
   type UpdateRoutineTrigger,
+  type RoutinePreGateInput,
   type RunRoutine,
   type RotateRoutineTriggerSecret,
   createCostEventSchema,

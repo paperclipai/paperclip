@@ -14,6 +14,23 @@ function isWildcardHost(host: string): boolean {
   return normalized === "0.0.0.0" || normalized === "::";
 }
 
+export function isPrivateOrLoopbackHost(host: string): boolean {
+  const normalized = normalizeHost(host).toLowerCase();
+  if (isLoopbackHost(normalized)) return true;
+  if (isLinkLocalHost(normalized)) return true;
+  // IPv6 unique local addresses (RFC 4193, fc00::/7 → fcXX:... and fdXX:...)
+  if (/^f[cd][0-9a-f]{2}:/.test(normalized)) return true;
+  const parts = normalized.split(".");
+  if (parts.length === 4 && parts.every((p) => /^\d+$/.test(p))) {
+    const [a, b] = parts.map(Number);
+    if (a === 10) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 127) return true;
+  }
+  return false;
+}
+
 function isLinkLocalHost(host: string): boolean {
   const normalized = normalizeHost(host).toLowerCase();
   if (normalized.startsWith("169.254.")) return true;
@@ -47,15 +64,25 @@ function pushCandidate(
 }
 
 export function choosePrimaryRuntimeApiUrl(input: {
+  serverPublicBaseUrl?: string | null;
   authPublicBaseUrl?: string | null;
   allowedHostnames: string[];
   bindHost: string;
   port: number;
 }): string {
-  const explicitPublicBaseUrl = input.authPublicBaseUrl?.trim();
-  if (explicitPublicBaseUrl) {
+  const serverPublicBaseUrl = input.serverPublicBaseUrl?.trim();
+  if (serverPublicBaseUrl) {
     try {
-      return new URL(explicitPublicBaseUrl).origin;
+      return new URL(serverPublicBaseUrl).origin;
+    } catch {
+      // Fall through.
+    }
+  }
+
+  const authPublicBaseUrl = input.authPublicBaseUrl?.trim();
+  if (authPublicBaseUrl) {
+    try {
+      return new URL(authPublicBaseUrl).origin;
     } catch {
       // Fall through to derived candidates if config parsing drifted.
     }
@@ -65,6 +92,13 @@ export function choosePrimaryRuntimeApiUrl(input: {
     .map((value) => value.trim())
     .find(Boolean);
   if (allowedHostname) {
+    if (!isPrivateOrLoopbackHost(allowedHostname)) {
+      try {
+        return new URL(`https://${allowedHostname}`).origin;
+      } catch {
+        // Fall through to http:port for malformed hostnames.
+      }
+    }
     return formatOrigin("http:", allowedHostname, input.port);
   }
 
@@ -106,6 +140,7 @@ export function collectReachableInterfaceHosts(input: {
 
 export function buildRuntimeApiCandidateUrls(input: {
   preferredApiUrl?: string | null;
+  serverPublicBaseUrl?: string | null;
   authPublicBaseUrl?: string | null;
   allowedHostnames: string[];
   bindHost: string;
@@ -114,6 +149,11 @@ export function buildRuntimeApiCandidateUrls(input: {
 }): string[] {
   const candidates: string[] = [];
   const seen = new Set<string>();
+  const serverPublicOrigin = (() => {
+    const raw = input.serverPublicBaseUrl?.trim();
+    if (!raw) return null;
+    try { return new URL(raw).origin; } catch { return null; }
+  })();
   const explicitPublicBaseUrl = input.authPublicBaseUrl?.trim() ?? "";
   const explicitOrigin = (() => {
     if (!explicitPublicBaseUrl) return null;
@@ -123,9 +163,12 @@ export function buildRuntimeApiCandidateUrls(input: {
       return null;
     }
   })();
-  const protocol = explicitOrigin ? new URL(explicitOrigin).protocol : "http:";
+  const protocol = (serverPublicOrigin ?? explicitOrigin)
+    ? new URL((serverPublicOrigin ?? explicitOrigin)!).protocol
+    : "http:";
 
   pushCandidate(candidates, seen, input.preferredApiUrl);
+  pushCandidate(candidates, seen, serverPublicOrigin);
   pushCandidate(candidates, seen, explicitOrigin);
 
   for (const rawHost of input.allowedHostnames) {
@@ -155,6 +198,7 @@ export function buildRuntimeApiCandidateUrls(input: {
       candidates,
       seen,
       choosePrimaryRuntimeApiUrl({
+        serverPublicBaseUrl: input.serverPublicBaseUrl,
         authPublicBaseUrl: input.authPublicBaseUrl,
         allowedHostnames: input.allowedHostnames,
         bindHost: input.bindHost,

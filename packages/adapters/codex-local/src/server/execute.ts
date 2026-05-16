@@ -41,6 +41,7 @@ import {
 import {
   parseCodexJsonl,
   extractCodexRetryNotBefore,
+  extractCodexHardLimitBlock,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
 } from "./parse.js";
@@ -774,21 +775,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       parsedError ||
       stderrLine ||
       `Codex exited with code ${attempt.proc.exitCode ?? -1}`;
-    const transientRetryNotBefore =
+    const codexErrorInput = { stdout: attempt.proc.stdout, stderr: attempt.proc.stderr, errorMessage: fallbackErrorMessage };
+    const hardLimitBlock =
       (attempt.proc.exitCode ?? 0) !== 0
-        ? extractCodexRetryNotBefore({
-            stdout: attempt.proc.stdout,
-            stderr: attempt.proc.stderr,
-            errorMessage: fallbackErrorMessage,
-          })
+        ? extractCodexHardLimitBlock(codexErrorInput)
+        : null;
+    const transientRetryNotBefore =
+      !hardLimitBlock && (attempt.proc.exitCode ?? 0) !== 0
+        ? extractCodexRetryNotBefore(codexErrorInput)
         : null;
     const transientUpstream =
+      !hardLimitBlock &&
       (attempt.proc.exitCode ?? 0) !== 0 &&
-      isCodexTransientUpstreamError({
-        stdout: attempt.proc.stdout,
-        stderr: attempt.proc.stderr,
-        errorMessage: fallbackErrorMessage,
-      });
+      isCodexTransientUpstreamError(codexErrorInput);
 
     return {
       exitCode: attempt.proc.exitCode,
@@ -799,11 +798,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ? null
           : fallbackErrorMessage,
       errorCode:
-        transientUpstream
+        hardLimitBlock
+          ? "codex_hard_limit"
+          : transientUpstream
           ? "codex_transient_upstream"
           : null,
-      errorFamily: transientUpstream ? "transient_upstream" : null,
+      errorFamily: hardLimitBlock ? "provider_rate_limit" : transientUpstream ? "transient_upstream" : null,
       retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
+      rateLimitBlock: hardLimitBlock ?? null,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
@@ -816,6 +818,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       resultJson: {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
+        ...(hardLimitBlock ? { errorFamily: "provider_rate_limit" } : {}),
         ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
         ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
         ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),

@@ -1177,7 +1177,7 @@ export interface PluginBudgetIncidentSummary {
 export interface PluginIssueInvocationBlockSummary {
   issueId: string;
   agentId: string;
-  scopeType: "company" | "agent" | "project";
+  scopeType: "company" | "agent" | "project" | "provider";
   scopeId: string;
   scopeName: string;
   reason: string;
@@ -1279,6 +1279,7 @@ export interface PluginIssuesClient {
     title: string;
     description?: string;
     status?: Issue["status"];
+    workMode?: Issue["workMode"];
     priority?: Issue["priority"];
     assigneeAgentId?: string;
     assigneeUserId?: string | null;
@@ -1303,6 +1304,7 @@ export interface PluginIssuesClient {
       | "title"
       | "description"
       | "status"
+      | "workMode"
       | "priority"
       | "assigneeAgentId"
       | "assigneeUserId"

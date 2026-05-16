@@ -1,7 +1,7 @@
 import type { Goal } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { StatusBadge } from "./StatusBadge";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, Trash2 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useState } from "react";
 
@@ -9,6 +9,7 @@ interface GoalTreeProps {
   goals: Goal[];
   goalLink?: (goal: Goal) => string;
   onSelect?: (goal: Goal) => void;
+  onDelete?: (goal: Goal) => void;
 }
 
 interface GoalNodeProps {
@@ -18,9 +19,10 @@ interface GoalNodeProps {
   depth: number;
   goalLink?: (goal: Goal) => string;
   onSelect?: (goal: Goal) => void;
+  onDelete?: (goal: Goal) => void;
 }
 
-function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalNodeProps) {
+function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect, onDelete }: GoalNodeProps) {
   const [expanded, setExpanded] = useState(true);
   const hasChildren = children.length > 0;
   const link = goalLink?.(goal);
@@ -46,11 +48,25 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
       <span className="text-xs text-muted-foreground capitalize">{goal.level}</span>
       <span className="flex-1 truncate">{goal.title}</span>
       <StatusBadge status={goal.status} />
+      {onDelete && (
+        <button
+          type="button"
+          className="opacity-0 group-hover:opacity-100 p-0.5 hover:text-destructive transition-opacity shrink-0"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onDelete(goal);
+          }}
+          title="Delete goal"
+        >
+          <Trash2 className="h-3 w-3" />
+        </button>
+      )}
     </>
   );
 
   const classes = cn(
-    "flex items-center gap-2 px-3 py-1.5 text-sm transition-colors cursor-pointer hover:bg-accent/50",
+    "group flex items-center gap-2 px-3 py-1.5 text-sm transition-colors cursor-pointer hover:bg-accent/50",
   );
 
   return (
@@ -83,6 +99,7 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
               depth={depth + 1}
               goalLink={goalLink}
               onSelect={onSelect}
+              onDelete={onDelete}
             />
           ))}
         </div>
@@ -91,7 +108,7 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
   );
 }
 
-export function GoalTree({ goals, goalLink, onSelect }: GoalTreeProps) {
+export function GoalTree({ goals, goalLink, onSelect, onDelete }: GoalTreeProps) {
   const goalIds = new Set(goals.map((g) => g.id));
   const roots = goals.filter((g) => !g.parentId || !goalIds.has(g.parentId));
 
@@ -110,6 +127,7 @@ export function GoalTree({ goals, goalLink, onSelect }: GoalTreeProps) {
           depth={0}
           goalLink={goalLink}
           onSelect={onSelect}
+          onDelete={onDelete}
         />
       ))}
     </div>

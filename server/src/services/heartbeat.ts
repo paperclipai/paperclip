@@ -61,6 +61,7 @@ import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
+import { providerRateLimitService } from "./provider-rate-limits.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
@@ -159,7 +160,7 @@ import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
-import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
+import { extractSkillMentionIds } from "@paperclipai/shared";
 import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
@@ -1777,7 +1778,7 @@ function enrichWakeContextSnapshot(input: {
   payload: Record<string, unknown> | null;
 }) {
   const { contextSnapshot, reason, source, triggerDetail, payload } = input;
-  const issueIdFromPayload = readNonEmptyString(payload?.["issueId"]) ?? readNonEmptyString(payload?.["taskId"]);
+  const issueIdFromPayload = readNonEmptyString(payload?.["issueId"]);
   const commentIdFromPayload = readNonEmptyString(payload?.["commentId"]);
   const taskKey = deriveTaskKey(contextSnapshot, payload);
   const wakeCommentId = deriveCommentId(contextSnapshot, payload);
@@ -2337,6 +2338,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
+  const providerRateLimits = providerRateLimitService(db);
   const recovery = recoveryService(db, { enqueueWakeup });
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
@@ -3419,7 +3421,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     previousSessionParams: Record<string, unknown> | null,
     opts?: { useProjectWorkspace?: boolean | null },
   ): Promise<ResolvedWorkspaceForRun> {
-    const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    const issueId = readNonEmptyString(context.issueId);
     const contextProjectId = readNonEmptyString(context.projectId);
     const contextProjectWorkspaceId = readNonEmptyString(context.projectWorkspaceId);
     const issueProjectRef = issueId
@@ -3865,6 +3867,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? await budgets.getInvocationBlock(issue.companyId, agent.id, {
           issueId: issue.id,
           projectId: issue.projectId,
+          contextSnapshot: context,
         })
         : null;
     if (issue) {
@@ -4170,6 +4173,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? budgets.getInvocationBlock(issue.companyId, run.agentId, {
           issueId: issue.id,
           projectId: issue.projectId,
+          contextSnapshot: context,
         })
         : Promise.resolve(null),
       issue
@@ -4769,6 +4773,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
       issueId,
       projectId,
+      contextSnapshot,
     });
     if (budgetBlock) {
       return {
@@ -5781,6 +5786,66 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  async function claimQueuedRunWithConcurrencyGuard(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    claimedAt: Date,
+  ) {
+    const policy = parseHeartbeatPolicy(agent);
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`
+        select pg_advisory_xact_lock(hashtextextended(${`heartbeat-run-claim:${run.agentId}`}, 0))
+      `);
+
+      const [{ count }] = await tx
+        .select({ count: sql<number>`count(*)::int` })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.status, "running")));
+      const runningCount = Number(count ?? 0);
+      if (runningCount >= policy.maxConcurrentRuns) {
+        return null;
+      }
+
+      const claimed = await tx
+        .update(heartbeatRuns)
+        .set({
+          status: "running",
+          startedAt: run.startedAt ?? claimedAt,
+          updatedAt: claimedAt,
+        })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!claimed) return null;
+
+      const claimedContext = parseObject(claimed.contextSnapshot);
+      const claimedIssueId = readNonEmptyString(claimedContext.issueId);
+      const claimedWakeReason = readNonEmptyString(claimedContext.wakeReason);
+      if (claimedIssueId && claimedWakeReason !== "source_scoped_recovery_action") {
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: claimed.id,
+            executionAgentNameKey: normalizeAgentNameKey(agent.name),
+            executionLockedAt: claimedAt,
+            updatedAt: claimedAt,
+          })
+          .where(
+            and(
+              eq(issues.id, claimedIssueId),
+              eq(issues.companyId, claimed.companyId),
+              // Mention/context runs can touch an issue, but only the current assignee
+              // owns the issue execution lock shown as the active run.
+              eq(issues.assigneeAgentId, claimed.agentId),
+              or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
+            ),
+          );
+      }
+
+      return claimed;
+    });
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -5797,6 +5862,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
       issueId: readNonEmptyString(context.issueId),
       projectId: readNonEmptyString(context.projectId),
+      contextSnapshot: context,
     });
     if (budgetBlock) {
       await cancelRunInternal(run.id, budgetBlock.reason);
@@ -5857,17 +5923,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const claimedAt = new Date();
-    const claimed = await db
-      .update(heartbeatRuns)
-      .set({
-        status: "running",
-        startedAt: run.startedAt ?? claimedAt,
-        updatedAt: claimedAt,
-      })
-      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-    if (!claimed) return null;
+    const claimed = await claimQueuedRunWithConcurrencyGuard(run, agent, claimedAt);
+    if (!claimed) {
+      logger.info({ runId: run.id, agentId: run.agentId }, "claimQueuedRun: max concurrent runs reached or run no longer queued");
+      return null;
+    }
 
     publishLiveEvent({
       companyId: claimed.companyId,
@@ -5887,33 +5947,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     publishRunLifecyclePluginEvent(claimed);
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
-
-    // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
-    // not at queue time. Guard is idempotent — safe if called more than once.
-    const claimedContext = parseObject(claimed.contextSnapshot);
-    const claimedIssueId = readNonEmptyString(claimedContext.issueId);
-    const claimedWakeReason = readNonEmptyString(claimedContext.wakeReason);
-    if (claimedIssueId && claimedWakeReason !== "source_scoped_recovery_action") {
-      const claimedAgent = await getAgent(claimed.agentId);
-      await db
-        .update(issues)
-        .set({
-          executionRunId: claimed.id,
-          executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
-          executionLockedAt: claimedAt,
-          updatedAt: claimedAt,
-        })
-        .where(
-          and(
-            eq(issues.id, claimedIssueId),
-            eq(issues.companyId, claimed.companyId),
-            // Mention/context runs can touch an issue, but only the current assignee
-            // owns the issue execution lock shown as the active run.
-            eq(issues.assigneeAgentId, claimed.agentId),
-            or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
-          ),
-        );
-    }
 
     return claimed;
   }
@@ -6587,6 +6620,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     for (const agentId of agentIds) {
       await startNextQueuedRunForAgent(agentId);
     }
+  }
+
+  async function resumeQueuedRunsForAgent(agentId: string) {
+    await startNextQueuedRunForAgent(agentId);
   }
 
   async function reconcileStrandedAssignedIssues() {
@@ -7920,6 +7957,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             });
           }
+        } else if (outcome === "failed" && adapterResult.rateLimitBlock) {
+          const rlb = adapterResult.rateLimitBlock;
+          const scope = await providerRateLimits.deriveBlockScope(agent.adapterType, {
+            limitKind: rlb.limitKind,
+            modelFamily: rlb.modelFamily ?? null,
+            resetsAt: rlb.resetsAt ?? null,
+          });
+          const contextSnapshot = parseObject(livenessRun.contextSnapshot);
+          const issueId = readNonEmptyString(contextSnapshot.issueId) ?? readNonEmptyString(contextSnapshot.taskId);
+          const block = await providerRateLimits.upsertBlock({
+            companyId: agent.companyId,
+            adapterType: agent.adapterType,
+            limitKind: scope.limitKind,
+            modelFamily: scope.modelFamily,
+            message: rlb.message,
+            resetsAt: scope.resetsAt,
+            agentId: agent.id,
+            issueId,
+            runId: livenessRun.id,
+          });
+          const pausedAgents = await providerRateLimits.pauseAgentsForBlock(
+            agent.companyId,
+            agent.adapterType,
+            scope.modelFamily,
+            {
+              blockId: block.id,
+              issueId,
+              runId: livenessRun.id,
+            },
+          );
+          for (const pausedAgent of pausedAgents) {
+            await cancelActiveForAgentInternal(
+              pausedAgent.id,
+              `Cancelled due to provider rate limit (${scope.limitKind})`,
+            );
+          }
         } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
@@ -8606,42 +8679,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
     if (!projectId && issueId) {
-      // Look up by either UUID or identifier (e.g. "ENV-13"), but always scope
-      // by companyId so a row from another tenant can never be returned even
-      // when identifiers collide across companies. Guard the UUID arm because
-      // issues.id is a Postgres uuid column — passing "ENV-13" into eq(issues.id, …)
-      // would fail with an invalid-input-syntax cast error before the OR is
-      // evaluated.
-      const lookupIsUuid = isUuidLike(issueId);
-      const idMatch = lookupIsUuid
-        ? or(eq(issues.id, issueId), eq(issues.identifier, issueId.toUpperCase()))
-        : eq(issues.identifier, issueId.toUpperCase());
-      const resolvedIssue = await db
-        .select({ id: issues.id, projectId: issues.projectId })
+      projectId = await db
+        .select({ projectId: issues.projectId })
         .from(issues)
-        .where(and(eq(issues.companyId, agent.companyId), idMatch))
-        .then((rows) => rows[0] ?? null);
-      if (resolvedIssue) {
-        projectId = resolvedIssue.projectId ?? null;
-        // Canonicalize context to the UUID so downstream lookups always use UUID
-        if (resolvedIssue.id !== issueId) {
-          issueId = resolvedIssue.id;
-          enrichedContextSnapshot.issueId = issueId;
-          if (readNonEmptyString(enrichedContextSnapshot.taskId)) {
-            enrichedContextSnapshot.taskId = issueId;
-          }
-        }
-      }
-    }
-    // Propagate projectId into context so resolveWorkspaceForRun can bind the
-    // project workspace even when context.projectId wasn't set by the caller.
-    if (projectId && !readNonEmptyString(enrichedContextSnapshot.projectId)) {
-      enrichedContextSnapshot.projectId = projectId;
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
+        .then((rows) => rows[0]?.projectId ?? null);
     }
 
     const budgetBlock = await budgets.getInvocationBlock(agent.companyId, agentId, {
       issueId,
       projectId,
+      contextSnapshot: enrichedContextSnapshot,
     });
     if (budgetBlock) {
       await writeSkippedRequest("budget.blocked");
@@ -9724,6 +9772,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     retryScheduledRetryNow,
 
     resumeQueuedRuns,
+    resumeQueuedRunsForAgent,
 
     scheduleBoundedRetry: async (
       runId: string,
@@ -9755,7 +9804,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     buildRunOutputSilence,
 
+    releaseDueProviderRateLimitBlocks: (now = new Date()) =>
+      providerRateLimits.releaseDueBlocks(now, "system"),
+
+    recoverLegacyProviderRateLimitBlocks: (now = new Date()) =>
+      providerRateLimits.recoverLegacyResolvedBlocks(now),
+
     tickTimers: async (now = new Date()) => {
+      const providerReleases = await providerRateLimits.releaseDueBlocks(now, "system");
       const allAgents = await db.select().from(agents);
       let checked = 0;
       let enqueued = 0;
@@ -9791,8 +9847,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       return {
         checked: checked + issueMonitors.checked,
-        enqueued: enqueued + issueMonitors.triggered,
-        skipped: skipped + issueMonitors.skipped,
+        enqueued: enqueued + issueMonitors.triggered + providerReleases.wakeupsQueued,
+        skipped: skipped + issueMonitors.skipped + providerReleases.wakeupsSkipped,
       };
     },
 

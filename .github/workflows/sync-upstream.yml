@@ -1,0 +1,25 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Upstream rebasen
+        run: |
+          git config user.email "btiknas@gmail.com"
+          git config user.name "Bülent Tiknas"
+          git remote add upstream https://github.com/paperclipai/paperclip.git
+          git fetch upstream master
+          git rebase upstream/master
+          git push origin master --force-with-lease

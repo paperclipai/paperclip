@@ -1076,6 +1076,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             variables: declaration.variables ?? [],
             latestRevisionId: null,
             latestRevisionNumber: 1,
+            preGate: null,
             createdByAgentId: null,
             createdByUserId: null,
             updatedByAgentId: null,
