@@ -267,6 +267,9 @@ function redactForLog(value: unknown, keyPath: string[] = [], depth = 0): unknow
   const currentKey = keyPath[keyPath.length - 1] ?? "";
   if (typeof value === "string") {
     if (isSensitiveLogKey(currentKey)) return redactSecretForLog(value);
+    if (currentKey === "message" && value.includes("PAPERCLIP_API_KEY=")) {
+      return truncateForLog(value.replace(/(PAPERCLIP_API_KEY=)(\S+)/g, "$1[redacted]"));
+    }
     return truncateForLog(value);
   }
   if (typeof value === "number" || typeof value === "boolean" || value == null) {
@@ -365,8 +368,10 @@ function buildWakeText(
   payload: WakePayload,
   paperclipEnv: Record<string, string>,
   structuredWakePrompt: string,
+  opts: { claimedApiKeyPath?: unknown; paperclipApiKey?: string | null } = {},
 ): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+  const claimedApiKeyPath = resolveClaimedApiKeyPath(opts.claimedApiKeyPath);
+  const runScopedApiKey = nonEmpty(opts.paperclipApiKey);
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
@@ -397,9 +402,17 @@ function buildWakeText(
     "",
     "Set these values in your run context:",
     ...envLines,
-    `PAPERCLIP_API_KEY=<token from ${claimedApiKeyPath}>`,
-    "",
-    `Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token you saved after claim-api-key).`,
+    ...(runScopedApiKey
+      ? [
+          `PAPERCLIP_API_KEY=${runScopedApiKey}`,
+          "",
+          "Use this PAPERCLIP_API_KEY for this wake only. Never print it, echo it, or include it in issue comments.",
+        ]
+      : [
+          `PAPERCLIP_API_KEY=<token from ${claimedApiKeyPath}>`,
+          "",
+          `Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token you saved after claim-api-key).`,
+        ]),
     "",
     `api_base=${apiBaseHint}`,
     `task_id=${payload.taskId ?? ""}`,
@@ -1110,12 +1123,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
   const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
   const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
+  const claimedApiKeyPath = resolveClaimedApiKeyPath(ctx.config.claimedApiKeyPath);
+  const paperclipApiKey = nonEmpty(ctx.authToken);
   const wakeText = buildWakeText(
     wakePayload,
     paperclipEnv,
     structuredWakeJson
       ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
       : structuredWakePrompt,
+    { claimedApiKeyPath, paperclipApiKey },
   );
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
