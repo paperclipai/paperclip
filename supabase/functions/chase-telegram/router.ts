@@ -59,7 +59,7 @@ export function routeVenue(
     text: [
       `Location noted${name}! You're at <b>${escapeHtml(title)}</b> — ${escapeHtml(address)}.`,
       "",
-      "Want me to find restaurants, movies, or hotels nearby? Just ask!",
+      "Let me know what Paperclip operations help you need!",
     ].join("\n"),
   });
 }
@@ -106,7 +106,7 @@ export function routeLocation(
     text: [
       `Location received${name}! I've noted your coordinates (${formatLocationDisplay({ latitude: lat, longitude: lon, updatedAt: Date.now() })}).`,
       "",
-      "Want me to find nearby restaurants, movies, or hotels? Just ask, or share a venue for more context!",
+      "Let me know what Paperclip operations help you need!",
     ].join("\n"),
   });
 }
@@ -456,7 +456,7 @@ export function routeQuery(
           `Coordinates: ${formatLocationDisplay(loc)}`,
           loc.venueTitle ? `Venue: ${escapeHtml(loc.venueTitle)}${loc.venueAddress ? ` — ${escapeHtml(loc.venueAddress)}` : ""}` : null,
           "",
-          "Want me to find nearby restaurants, movies, or hotels? Just ask!",
+          "Let me know what Paperclip operations help you need!",
         ].filter(Boolean).join("\n"),
       };
     });
