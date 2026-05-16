@@ -3,29 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execute } from "@paperclipai/adapter-gemini-local/server";
-
-async function writeFakeGeminiCommand(commandPath: string): Promise<void> {
-  const script = `#!/usr/bin/env node
-console.log(JSON.stringify({
-  type: "system",
-  subtype: "init",
-  session_id: "test-session",
-  model: "gemini-2.5-pro",
-}));
-console.log(JSON.stringify({
-  type: "assistant",
-  message: { content: [{ type: "output_text", text: "hello" }] },
-}));
-console.log(JSON.stringify({
-  type: "result",
-  subtype: "success",
-  session_id: "test-session",
-  result: "ok",
-}));
-`;
-  await fs.writeFile(commandPath, script, "utf8");
-  await fs.chmod(commandPath, 0o755);
-}
+import { writeFakeGeminiCommand } from "./test-helpers.js";
 
 describe("gemini session truncation", () => {
   let root: string;
@@ -101,5 +79,50 @@ describe("gemini session truncation", () => {
     const archives = await fs.readdir(archiveDir);
     expect(archives.length).toBe(1);
     expect(archives[0]).toContain(sessionId);
+  });
+
+  it("truncates sessions with few but very large events", async () => {
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "gemini");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeGeminiCommand(commandPath);
+
+    const agentId = "agent-s";
+    const companyId = "company-s";
+    const sessionId = "dense-session";
+    const sharedDir = path.join(root, ".gemini", "companies", companyId, "chats");
+    const sessionFile = path.join(sharedDir, `${sessionId}.jsonl`);
+
+    await fs.mkdir(sharedDir, { recursive: true });
+
+    // 1. Create a session with only 10 lines but 15MB total
+    const header = JSON.stringify({ sessionId, kind: "main" });
+    const mission = JSON.stringify({ id: "mission-1", type: "user", content: [{ text: "Mission" }] });
+    const hugeFiller = "X".repeat(2 * 1024 * 1024); // 2MB lines
+    const largeEvents = Array.from({ length: 7 }, (_, i) => 
+      JSON.stringify({ id: `event-${i}`, type: "assistant", content: [{ text: `Huge ${i} ${hugeFiller}` }] })
+    );
+
+    const fullContent = [header, mission, ...largeEvents].join("\n") + "\n";
+    await fs.writeFile(sessionFile, fullContent, "utf8");
+    const originalSize = (await fs.stat(sessionFile)).size;
+    expect(originalSize).toBeGreaterThan(10 * 1024 * 1024);
+    expect(fullContent.split("\n").filter(Boolean).length).toBeLessThan(100);
+
+    // 2. Execute
+    await execute({
+      runId: "run-s",
+      agent: { id: agentId, companyId, name: "G", adapterType: "gemini_local", adapterConfig: {} },
+      runtime: { sessionId, sessionParams: { sessionId, cwd: workspace }, sessionDisplayId: sessionId, taskKey: null },
+      config: { command: commandPath, cwd: workspace },
+      context: {},
+      authToken: "t",
+      onLog: async () => {},
+    });
+
+    // 3. Verify truncation happened
+    const truncatedContent = await fs.readFile(sessionFile, "utf8");
+    expect(truncatedContent.length).toBeLessThan(originalSize);
+    expect(truncatedContent).toContain("Session truncated for performance");
   });
 });

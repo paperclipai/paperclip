@@ -188,7 +188,7 @@ async function ensureGeminiChatsShared(
         const entries = await fs.readdir(agentChatsDir);
         if (entries.length > 0) {
           await onLog(
-            "stdout",
+            "stderr",
             `[paperclip] Migrating existing Gemini chats from agent ${agentId} to shared company storage.\n`,
           );
           let migrationFailed = false;
@@ -235,7 +235,7 @@ async function ensureGeminiChatsShared(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await onLog(
-      "stdout",
+      "stderr",
       `[paperclip] Warning: failed to set up shared Gemini chat storage: ${message}\n`,
     );
   }
@@ -259,13 +259,13 @@ async function truncateGeminiSession(
     if (stats.size < thresholdBytes) return;
 
     await onLog(
-      "stdout",
+      "stderr",
       `[paperclip] Session ${sessionId} is large (${(stats.size / 1024 / 1024).toFixed(1)}MB); truncating for performance.\n`,
     );
 
     const content = await fs.readFile(sessionFile, "utf8");
     const lines = content.split("\n").filter((l) => l.trim().length > 0);
-    if (lines.length < 100) return;
+    if (lines.length === 0) return;
 
     const header = lines[0];
     let firstMission: string | null = null;
@@ -320,7 +320,7 @@ async function truncateGeminiSession(
     await fs.rename(tmpFile, sessionFile);
 
     await onLog(
-      "stdout",
+      "stderr",
       `[paperclip] Truncated session ${sessionId} to ${truncatedLines.length} events (${(truncatedContent.length / 1024).toFixed(1)}KB). Archive: ${path.basename(archiveFile)}\n`,
     );
   } catch (err) {
