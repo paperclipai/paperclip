@@ -459,6 +459,64 @@ export function preflightDispositionRequest(
  */
 const DISPOSITION_ISSUE_LOCK_MARKER = 0x44495350; // "DISP"
 
+export interface AssertDispositionSourceRunAuthorizedInput {
+  issueId: string;
+  issueCompanyId: string;
+  sourceRunId: string;
+  actor: DispositionWriterActor;
+}
+
+/**
+ * DB-backed sourceRun authorization. Verifies the heartbeat run referenced by
+ * the disposition exists, belongs to the issue's company, and (for agent
+ * actors) is owned by that agent. Callers run this BEFORE any mutation-shaped
+ * route-side side effect (checkout-lock assertion, stale-run adoption, etc.)
+ * so a rejection-bound request cannot leave behind pre-validation state
+ * mutations.
+ *
+ * The writer keeps the equivalent check inside its transaction so direct
+ * service callers cannot bypass it; the route-side call is a defense-in-depth
+ * ordering fix.
+ */
+export async function assertDispositionSourceRunAuthorized(
+  db: Db,
+  input: AssertDispositionSourceRunAuthorizedInput,
+): Promise<void> {
+  const sourceRun = await db
+    .select({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+    })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, input.sourceRunId))
+    .then((rows: Array<{ id: string; companyId: string; agentId: string }>) => rows[0] ?? null);
+  if (!sourceRun) {
+    throw unprocessable("Disposition sourceRunId does not reference a known heartbeat run", {
+      code: DISPOSITION_ERROR_CODES.SOURCE_RUN_NOT_FOUND,
+    });
+  }
+  if (sourceRun.companyId !== input.issueCompanyId) {
+    throw unprocessable("Disposition sourceRunId belongs to a different company than the target issue", {
+      code: DISPOSITION_ERROR_CODES.SOURCE_RUN_FOREIGN_COMPANY,
+    });
+  }
+  if (
+    input.actor.actorType === "agent"
+    && input.actor.agentId
+    && sourceRun.agentId !== input.actor.agentId
+  ) {
+    throw unprocessable(
+      "Disposition sourceRunId must reference a heartbeat run owned by the authenticated agent actor.",
+      {
+        code: DISPOSITION_ERROR_CODES.SOURCE_RUN_ACTOR_MISMATCH,
+        actorAgentId: input.actor.agentId,
+        sourceRunAgentId: sourceRun.agentId,
+      },
+    );
+  }
+}
+
 export function issueDispositionService(db: Db) {
   return {
     extractDispositionRowFromMetadata,
@@ -466,6 +524,8 @@ export function issueDispositionService(db: Db) {
     dispositionBodyEquivalent,
     validateWorkerSelfAttest,
     preflightDispositionRequest,
+    assertDispositionSourceRunAuthorized: (input: AssertDispositionSourceRunAuthorizedInput) =>
+      assertDispositionSourceRunAuthorized(db, input),
 
     /**
      * Atomically write a comment that carries a disposition row and apply the

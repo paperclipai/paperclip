@@ -41,6 +41,7 @@ export { issueTreeControlService } from "./issue-tree-control.js";
 export { issueApprovalService } from "./issue-approvals.js";
 export {
   DISPOSITION_ERROR_CODES,
+  assertDispositionSourceRunAuthorized,
   countDispositionRows,
   dispositionBodyEquivalent,
   extractDispositionRowFromMetadata,
@@ -49,6 +50,7 @@ export {
   validateWorkerSelfAttest,
   type AppliedCommentDispositionResult,
   type ApplyCommentDispositionInput,
+  type AssertDispositionSourceRunAuthorizedInput,
   type DispositionErrorCode,
   type DispositionWriterActor,
   type IssueDispositionService,

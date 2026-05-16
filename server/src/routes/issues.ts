@@ -4347,19 +4347,38 @@ export function issueRoutes(
     }
     if (dispositionMatchPreflight) {
       const preflightActor = getActorInfo(req);
+      const preflightActorPayload = {
+        actorType: (preflightActor.actorType === "agent"
+          ? "agent"
+          : preflightActor.actorType === "user" ? "user" : "system") as "agent" | "user" | "system",
+        agentId: preflightActor.agentId ?? null,
+        userId: preflightActor.actorType === "user" ? preflightActor.actorId ?? null : null,
+        runId: preflightActor.runId ?? null,
+      };
       try {
-        dispositionSvc.preflightDispositionRequest({
+        const preflightResult = dispositionSvc.preflightDispositionRequest({
           issueId: id,
           metadata: req.body.metadata,
           presentation: req.body.presentation ?? null,
-          actor: {
-            actorType: preflightActor.actorType === "agent"
-              ? "agent"
-              : preflightActor.actorType === "user" ? "user" : "system",
-            agentId: preflightActor.agentId ?? null,
-            userId: preflightActor.actorType === "user" ? preflightActor.actorId ?? null : null,
-            runId: preflightActor.runId ?? null,
-          },
+          actor: preflightActorPayload,
+        });
+        // Structured-fields authorization must run before assertAgentIssueMutationAllowed
+        // for the disposition path: that helper can clear terminal execution-run state and
+        // adopt stale checkout locks (mutating checkoutRunId/executionRunId/activity), and
+        // a forbidden structured-metadata payload that survives only the disposition
+        // preflight would otherwise trigger those side effects before this guard rejects.
+        if (!assertStructuredCommentFieldsAllowed(req, res, {
+          presentation: req.body.presentation,
+          metadata: req.body.metadata,
+        })) return;
+        // DB-backed sourceRun authorization: existence + company + agent ownership. Must
+        // run before assertAgentIssueMutationAllowed for the same reason; the writer's
+        // in-tx check remains authoritative for direct service callers.
+        await dispositionSvc.assertDispositionSourceRunAuthorized({
+          issueId: id,
+          issueCompanyId: issue.companyId,
+          sourceRunId: preflightResult.sourceRunId,
+          actor: preflightActorPayload,
         });
       } catch (err) {
         if (err instanceof HttpError) {

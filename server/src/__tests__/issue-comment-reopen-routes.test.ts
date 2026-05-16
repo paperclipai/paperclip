@@ -74,9 +74,11 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
 }));
 const mockApplyCommentDisposition = vi.hoisted(() => vi.fn());
 const mockPreflightDispositionRequest = vi.hoisted(() => vi.fn());
+const mockAssertDispositionSourceRunAuthorized = vi.hoisted(() => vi.fn());
 const mockIssueDispositionService = vi.hoisted(() => ({
   applyCommentDisposition: mockApplyCommentDisposition,
   preflightDispositionRequest: mockPreflightDispositionRequest,
+  assertDispositionSourceRunAuthorized: mockAssertDispositionSourceRunAuthorized,
 }));
 const mockExtractDispositionRowFromMetadata = vi.hoisted(() => vi.fn(() => null));
 const mockIssueFinalDeliveryService = vi.hoisted(() => ({
@@ -274,7 +276,15 @@ describe.sequential("issue comment reopen routes", () => {
     mockIssueTreeControlService.getActivePauseHoldGate.mockReset();
     mockApplyCommentDisposition.mockReset();
     mockPreflightDispositionRequest.mockReset();
-    mockPreflightDispositionRequest.mockImplementation(() => undefined);
+    mockPreflightDispositionRequest.mockImplementation((input: { metadata?: { sourceRunId?: string } | null; actor?: { runId?: string | null } } = {}) => ({
+      row: { type: "disposition", value: "done" },
+      idempotencyKey: "preflight-key",
+      sourceRunId: input.metadata?.sourceRunId ?? input.actor?.runId ?? null,
+      validatedMetadata: input.metadata ?? null,
+      validatedPresentation: null,
+    }));
+    mockAssertDispositionSourceRunAuthorized.mockReset();
+    mockAssertDispositionSourceRunAuthorized.mockResolvedValue(undefined);
     mockExtractDispositionRowFromMetadata.mockReset();
     mockExtractDispositionRowFromMetadata.mockImplementation(() => null);
     mockTxInsertValues.mockReset();
@@ -1998,6 +2008,111 @@ describe.sequential("issue comment reopen routes", () => {
       ).not.toHaveBeenCalled();
       // Wakeup should not be enqueued for a noop retry either.
       expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
+    it("rejects a disposition with an unknown sourceRunId before assertCheckoutOwner runs", async () => {
+      // Reproduces the QA blocker: assertAgentIssueMutationAllowed used to run
+      // ahead of the writer's DB-backed sourceRun validation, so a request that
+      // references an unknown/foreign/mismatched sourceRunId could still
+      // trigger checkout-lock adoption / clearExecutionRunIfTerminal side
+      // effects before the writer ultimately rejected. The route now invokes
+      // the DB-backed sourceRun authorization (existence + company + agent
+      // ownership) BEFORE assertCheckoutOwner, so the rejection leaves zero
+      // pre-validation state mutations behind.
+      setupBaseStubs();
+      mockIssueService.getById.mockResolvedValue({
+        ...makeIssue("in_progress"),
+        checkoutRunId: "stale-run",
+      });
+      const { HttpError } = await import("../errors.js");
+      mockAssertDispositionSourceRunAuthorized.mockRejectedValue(
+        new HttpError(422, "Disposition sourceRunId does not reference a known heartbeat run", {
+          code: "disposition_source_run_not_found",
+        }),
+      );
+
+      const res = await request(await installActor(createApp(), agentActor()))
+        .post(`/api/issues/${ISSUE_ID}/comments`)
+        .send({
+          body: "Marking done",
+          metadata: dispositionMetadata,
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body).toMatchObject({
+        details: { code: "disposition_source_run_not_found" },
+      });
+      // The DB-backed sourceRun authorization rejected the request before
+      // assertCheckoutOwner could adopt or clear any execution-run state.
+      expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+      expect(mockApplyCommentDisposition).not.toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      // No checkout_lock_adopted activity row could have been written.
+      const adoptionActivity = mockLogActivity.mock.calls.find(
+        ([, input]) => (input as { action: string }).action === "issue.checkout_lock_adopted",
+      );
+      expect(adoptionActivity).toBeUndefined();
+    });
+
+    it("rejects forbidden structured metadata before assertCheckoutOwner runs", async () => {
+      // Reproduces the second ordering blocker: a disposition row plus a
+      // forbidden extra structured-metadata row (e.g. a key_value row that
+      // only board users may set) used to slip past the disposition-only
+      // preflight, trigger checkout-lock adoption / terminal-run clearing,
+      // and only THEN get rejected by assertStructuredCommentFieldsAllowed.
+      // The route now runs the structured-fields guard before
+      // assertAgentIssueMutationAllowed on the disposition path, so the
+      // rejection cannot leave behind checkout/run mutations.
+      mockIssueService.getById.mockResolvedValue({
+        ...makeIssue("in_progress"),
+        checkoutRunId: "stale-run",
+      });
+      mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+      const forbiddenDispositionRow = {
+        type: "disposition" as const,
+        value: "done" as const,
+        reason: "All done",
+        evidenceRefs: [],
+        idempotencyKey: `disposition:${ISSUE_ID}:${RUN_ID}:done`,
+      };
+      const forbiddenKeyValueRow = {
+        type: "key_value" as const,
+        label: "agent-only-disallowed",
+        value: "should be rejected",
+      };
+      const forbiddenMetadata = {
+        version: 1,
+        sourceRunId: RUN_ID,
+        sections: [{ rows: [forbiddenDispositionRow, forbiddenKeyValueRow] }],
+      };
+      // The route only consults extractDispositionRowFromMetadata to decide
+      // whether to enter the disposition path; it does NOT use it to determine
+      // whether the rest of the metadata is disposition-only. The structured-
+      // fields guard inspects metadata directly.
+      mockExtractDispositionRowFromMetadata.mockImplementation(() => ({
+        row: forbiddenDispositionRow,
+        sectionIndex: 0,
+        rowIndex: 0,
+      }));
+
+      const res = await request(await installActor(createApp(), agentActor()))
+        .post(`/api/issues/${ISSUE_ID}/comments`)
+        .send({
+          body: "Marking done",
+          metadata: forbiddenMetadata,
+        });
+
+      expect(res.status).toBe(403);
+      // Critically: the structured-fields rejection short-circuited before
+      // assertCheckoutOwner could run.
+      expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+      expect(mockAssertDispositionSourceRunAuthorized).not.toHaveBeenCalled();
+      expect(mockApplyCommentDisposition).not.toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      const adoptionActivity = mockLogActivity.mock.calls.find(
+        ([, input]) => (input as { action: string }).action === "issue.checkout_lock_adopted",
+      );
+      expect(adoptionActivity).toBeUndefined();
     });
   });
 });
