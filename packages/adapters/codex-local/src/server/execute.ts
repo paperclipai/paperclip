@@ -37,6 +37,7 @@ import {
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   joinPromptSectionsLabeled,
+  buildStdinPromptCacheCorrelation,
   mergeAllowlistedHostEnvWith,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
@@ -692,6 +693,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ? commandNotes
         : [...commandNotes, execArgs.fastModeIgnoredReason];
     if (onMeta) {
+      const suppressAgentInstructions =
+        Boolean(resumeSessionId) &&
+        instructionsFilePath.trim().length > 0 &&
+        promptInstructionsPrefix.length <= 0;
+      const promptCacheCorrelation = buildStdinPromptCacheCorrelation({
+        resumedSession: Boolean(resumeSessionId),
+        bootstrapTemplateConfigured: bootstrapPromptTemplate.trim().length > 0,
+        bootstrapStdinEmittedChars: renderedBootstrapPrompt.length,
+        heartbeatTemplateConfigured: promptTemplate.trim().length > 0,
+        heartbeatStdinEmittedChars: renderedPrompt.length,
+        suppressedStdinExtraIds: suppressAgentInstructions ? (["agent_instructions"] as const) : undefined,
+      });
       await onMeta({
         adapterType: "codex_local",
         command: resolvedCommand,
@@ -705,6 +718,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         prompt,
         promptSections,
         promptMetrics,
+        promptCacheCorrelation,
         context,
       });
     }

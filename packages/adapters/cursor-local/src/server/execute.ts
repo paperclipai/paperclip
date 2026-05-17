@@ -43,6 +43,7 @@ import {
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   joinPromptSectionsLabeled,
+  buildStdinPromptCacheCorrelation,
   mergeAllowlistedHostEnvWith,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_CURSOR_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -613,6 +614,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runAttempt = async (resumeSessionId: string | null) => {
     const args = buildArgs(resumeSessionId);
     if (onMeta) {
+      const promptCacheCorrelation = buildStdinPromptCacheCorrelation({
+        resumedSession: Boolean(resumeSessionId),
+        bootstrapTemplateConfigured: bootstrapPromptTemplate.trim().length > 0,
+        bootstrapStdinEmittedChars: renderedBootstrapPrompt.length,
+        heartbeatTemplateConfigured: promptTemplate.trim().length > 0,
+        heartbeatStdinEmittedChars: renderedPrompt.length,
+      });
       await onMeta({
         adapterType: "cursor",
         command: resolvedCommand,
@@ -623,6 +631,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         prompt,
         promptSections,
         promptMetrics,
+        promptCacheCorrelation,
         context,
       });
     }

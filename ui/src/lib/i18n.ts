@@ -308,6 +308,11 @@ export const orchestrationInjectionPage = {
   eventUnavailable: "这次运行没有 adapter.invoke 事件。",
   promptCombinationHint:
     "以下为控制面拼装块（折叠展示）；块顺序及内容与上报的整块最终提示词一致。仅在 adapter.invoke 携带 promptSections 时显示分块。",
+  promptCacheCorrelationTitle: "提示词与缓存对齐（invoke 语义）",
+  promptCacheModeCold: "冷启动：stdin 按拼装块完整下发；模型侧 token 缓存是否命中以计费/用量回执为准。",
+  promptCacheModeResumed: "续会话：此前缀多由模型或 CLI 会话承接；下列块本次未再随 stdin 下发（不等同于 KV 命中计数）。",
+  promptCacheStabilityKeyLabel: "稳定键（materialization）",
+  promptCacheSuppressedLabel: "本轮 stdin 省略的拼装块",
   promptSectionTitles: {
     agent_instructions: "智能体说明（instructions）",
     bootstrap: "首轮引导（bootstrap）",
@@ -3578,7 +3583,6 @@ export const issuePropertiesPage = {
   retry: "重试",
   dueNow: " 到期",
   scheduledContinuation: "计划继续执行",
-  scheduledRetry: "计划重试",
   reason: "原因",
   nextAttempt: "下次尝试",
   replacesRun: "替换运行",
@@ -3691,7 +3695,7 @@ export const thinkingEffortOptions = {
   forAdapter: (adapterType: string | null | undefined) => {
     const isCodex = adapterType?.includes("codex");
     const isOpenCode = adapterType === "opencode_local";
-    const options = [thinkingEffortOptions.default];
+    const options: string[] = [thinkingEffortOptions.default];
     if (!isCodex) {
       // claude_local: low, medium, high
       options.push(thinkingEffortOptions.low, thinkingEffortOptions.medium, thinkingEffortOptions.high);

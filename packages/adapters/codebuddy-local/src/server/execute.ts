@@ -11,6 +11,7 @@ import {
   buildPaperclipEnv,
   applyPaperclipWorkspaceEnv,
   joinPromptSectionsLabeled,
+  buildStdinPromptCacheCorrelation,
   ensureAbsoluteDirectory,
   renderTemplate,
   renderPaperclipWakePrompt,
@@ -367,6 +368,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   // ---- Log invocation meta ----
   if (onMeta) {
+    const promptCacheCorrelation = buildStdinPromptCacheCorrelation({
+      resumedSession: Boolean(sessionId),
+      bootstrapTemplateConfigured: bootstrapPromptTemplate.trim().length > 0,
+      bootstrapStdinEmittedChars: renderedBootstrapPrompt.length,
+      heartbeatTemplateConfigured: promptTemplate.trim().length > 0,
+      heartbeatStdinEmittedChars: renderedPrompt.length,
+    });
     await onMeta({
       adapterType: "codebuddy_local",
       command,
@@ -384,6 +392,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         taskContextChars: taskContextNote.length,
         heartbeatPromptChars: renderedPrompt.length,
       },
+      promptCacheCorrelation,
       context,
     });
   }

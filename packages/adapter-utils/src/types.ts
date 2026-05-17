@@ -113,6 +113,23 @@ export interface AdapterPromptSection {
   body: string;
 }
 
+/**
+ * Correlate stdin prompt slices with prompt-cache/session semantics so the UI can explain hits/miss expectations.
+ *
+ * Focus: **invoke-time** layering (cold vs resumed, stable filesystem bundle identity, stdin chunks intentionally
+ * skipped because earlier context already resides in provider session cache).
+ */
+export interface PromptCacheCorrelation {
+  mode: "cold" | "resumed";
+  /** Stable filesystem materialization key when the adapter emits one (e.g. Claude prompt bundle SHA). */
+  stabilityKey?: string | null;
+  /**
+   * Section ids belonging to stdin assembly that deliberately carried no body on this invocation
+   * (typically because the provider/session already caches that prefix).
+   */
+  suppressedSectionIds?: string[];
+}
+
 export interface AdapterInvocationMeta {
   adapterType: string;
   command: string;
@@ -124,6 +141,7 @@ export interface AdapterInvocationMeta {
   promptMetrics?: Record<string, number>;
   /** When present, each non-empty chunk that was joined (\\n\\n) into `prompt` for stdin. */
   promptSections?: AdapterPromptSection[];
+  promptCacheCorrelation?: PromptCacheCorrelation;
   context?: Record<string, unknown>;
 }
 

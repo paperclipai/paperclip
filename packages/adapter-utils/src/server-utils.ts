@@ -11,6 +11,7 @@ import type {
   AdapterSkillEntry,
   AdapterSkillSnapshot,
   AdapterPromptSection,
+  PromptCacheCorrelation,
 } from "./types.js";
 
 export interface RunProcessResult {
@@ -353,6 +354,46 @@ export function joinPromptSectionsLabeled(
   return {
     prompt: promptSections.map((s) => s.body).join(separator),
     promptSections,
+  };
+}
+
+/**
+ * Summarize stdin prompt assembly vs resumed provider session caches (observability; not billable KV cache totals).
+ *
+ * Typical pattern: resumed sessions omit bootstrap + full heartbeat replay while prior context stays in-provider.
+ */
+export function buildStdinPromptCacheCorrelation(opts: {
+  resumedSession: boolean;
+  bootstrapTemplateConfigured?: boolean | null;
+  bootstrapStdinEmittedChars: number;
+  heartbeatTemplateConfigured?: boolean | null;
+  heartbeatStdinEmittedChars: number;
+  stabilityKey?: string | null | undefined;
+  /** Extra suppressed stdin section ids (adapter-specific layering beyond bootstrap/heuristic replay). */
+  suppressedStdinExtraIds?: readonly string[] | undefined;
+}): PromptCacheCorrelation {
+  const stabilityKeyRaw = opts.stabilityKey;
+  const stabilityKey =
+    typeof stabilityKeyRaw === "string" && stabilityKeyRaw.trim().length > 0 ? stabilityKeyRaw.trim() : null;
+  const mode: PromptCacheCorrelation["mode"] = opts.resumedSession ? "resumed" : "cold";
+  const suppressedSectionIds: string[] = [];
+  if (opts.resumedSession && opts.bootstrapTemplateConfigured && opts.bootstrapStdinEmittedChars <= 0) {
+    suppressedSectionIds.push("bootstrap");
+  }
+  if (opts.resumedSession && opts.heartbeatTemplateConfigured && opts.heartbeatStdinEmittedChars <= 0) {
+    suppressedSectionIds.push("heartbeat_template");
+  }
+  if (opts.suppressedStdinExtraIds) {
+    for (const sid of opts.suppressedStdinExtraIds) {
+      if (typeof sid === "string" && sid.trim().length > 0) suppressedSectionIds.push(sid.trim());
+    }
+  }
+  const uniqueSuppressed =
+    suppressedSectionIds.length > 0 ? [...new Set(suppressedSectionIds)] : undefined;
+  return {
+    mode,
+    ...(stabilityKey ? { stabilityKey } : {}),
+    ...(uniqueSuppressed ? { suppressedSectionIds: uniqueSuppressed } : {}),
   };
 }
 

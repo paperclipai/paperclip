@@ -36,6 +36,7 @@ export type {
   CLIAdapterModule,
   CreateConfigValues,
   AdapterPromptSection,
+  PromptCacheCorrelation,
 } from "./types.js";
 export type {
   SessionCompactionPolicy,

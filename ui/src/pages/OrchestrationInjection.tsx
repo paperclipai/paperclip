@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Activity, Braces, Check, ChevronDown, Copy, FileText, Terminal, Workflow } from "lucide-react";
 import type { Agent, HeartbeatRun, HeartbeatRunEvent } from "@paperclipai/shared";
+import type { PromptCacheCorrelation } from "@paperclipai/adapter-utils";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -63,6 +64,28 @@ function JsonBlock({ value }: { value: unknown }) {
       {prettyJson(value)}
     </pre>
   );
+}
+
+function parsePromptCacheCorrelation(raw: unknown): PromptCacheCorrelation | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const rec = raw as Record<string, unknown>;
+  const mode = rec.mode === "cold" || rec.mode === "resumed" ? rec.mode : null;
+  if (!mode) return null;
+  const stabilityKey =
+    typeof rec.stabilityKey === "string" && rec.stabilityKey.trim().length > 0 ? rec.stabilityKey.trim() : null;
+  let suppressedSectionIds: string[] | undefined;
+  const idsRaw = rec.suppressedSectionIds;
+  if (Array.isArray(idsRaw)) {
+    const ids = idsRaw
+      .filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+      .map((s) => s.trim());
+    suppressedSectionIds = ids.length > 0 ? ids : undefined;
+  }
+  return {
+    mode,
+    ...(stabilityKey ? { stabilityKey } : {}),
+    ...(suppressedSectionIds ? { suppressedSectionIds } : {}),
+  };
 }
 
 function parsePromptSections(raw: unknown): Array<{ id: string; body: string }> | null {
@@ -352,6 +375,7 @@ export function OrchestrationInjection() {
     .map(([key, value]) => ({ key, value: asNumber(value) }))
     .filter((entry): entry is { key: string; value: number } => entry.value !== null);
   const parsedPromptSections = parsePromptSections(payload?.promptSections);
+  const promptCacheCorrelation = parsePromptCacheCorrelation(payload?.promptCacheCorrelation);
   const promptRawUnknown = payload?.prompt;
   const fullPromptForCopy = useMemo(() => {
     if (typeof promptRawUnknown === "string" && promptRawUnknown.length > 0) return promptRawUnknown;
@@ -701,6 +725,34 @@ export function OrchestrationInjection() {
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-3">
+                  {promptCacheCorrelation ? (
+                    <div className="space-y-2 rounded-md border border-border bg-muted/15 p-3 text-xs leading-relaxed">
+                      <div className="font-medium text-foreground">{orchestrationInjectionPage.promptCacheCorrelationTitle}</div>
+                      <div className="text-muted-foreground">
+                        {promptCacheCorrelation.mode === "cold"
+                          ? orchestrationInjectionPage.promptCacheModeCold
+                          : orchestrationInjectionPage.promptCacheModeResumed}
+                      </div>
+                      {promptCacheCorrelation.stabilityKey ? (
+                        <div>
+                          <span className="text-muted-foreground">{orchestrationInjectionPage.promptCacheStabilityKeyLabel}：</span>
+                          <code className="break-all font-mono text-[11px]">{promptCacheCorrelation.stabilityKey}</code>
+                        </div>
+                      ) : null}
+                      {promptCacheCorrelation.suppressedSectionIds?.length ? (
+                        <div>
+                          <div className="mb-1 font-medium text-foreground">
+                            {orchestrationInjectionPage.promptCacheSuppressedLabel}
+                          </div>
+                          <ul className="list-inside list-disc space-y-0.5">
+                            {promptCacheCorrelation.suppressedSectionIds.map((id) => (
+                              <li key={id}>{promptSectionLabel(id)}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {metricEntries.length > 0 ? (
                     <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                       {metricEntries.map((entry) => (

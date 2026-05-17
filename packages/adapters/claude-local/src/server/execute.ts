@@ -34,6 +34,7 @@ import {
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
   joinPromptSectionsLabeled,
+  buildStdinPromptCacheCorrelation,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensurePathInEnv,
@@ -659,6 +660,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     taskContextChars: taskContextNote.length,
     heartbeatPromptChars: renderedPrompt.length,
   };
+  const promptCacheCorrelation = buildStdinPromptCacheCorrelation({
+    resumedSession: Boolean(sessionId),
+    bootstrapTemplateConfigured: bootstrapPromptTemplate.trim().length > 0,
+    bootstrapStdinEmittedChars: renderedBootstrapPrompt.length,
+    heartbeatTemplateConfigured: promptTemplate.trim().length > 0,
+    heartbeatStdinEmittedChars: renderedPrompt.length,
+    stabilityKey: promptBundle.bundleKey,
+  });
 
   const buildClaudeArgs = (
     resumeSessionId: string | null,
@@ -734,6 +743,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         prompt,
         promptSections,
         promptMetrics,
+        promptCacheCorrelation,
         context,
       });
     }
