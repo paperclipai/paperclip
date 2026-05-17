@@ -3,7 +3,12 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIssueService = vi.hoisted(() => ({
+  create: vi.fn(),
   getByIdentifier: vi.fn(),
+}));
+
+const mockProjectService = vi.hoisted(() => ({
+  getById: vi.fn(),
 }));
 
 vi.mock("@paperclipai/shared/telemetry", () => ({
@@ -88,9 +93,7 @@ function registerModuleMocks() {
       listForIssue: vi.fn(async () => []),
     }),
     logActivity: vi.fn(async () => undefined),
-    projectService: () => ({
-      getById: vi.fn(async () => null),
-    }),
+    projectService: () => mockProjectService,
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
@@ -149,6 +152,7 @@ describe.sequential("legacy issue identifier lookup routes", () => {
     vi.doUnmock("../services/issue-assignment-wakeup.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockProjectService.getById.mockResolvedValue(null);
   });
 
   it("supports agent lookup paths that use issue identifiers without a company path", async () => {
@@ -187,5 +191,70 @@ describe.sequential("legacy issue identifier lookup routes", () => {
     expect(response.body).toMatchObject({
       error: "Missing companyId in path. Use /api/companies/{companyId}/issues.",
     });
+  });
+
+  it("creates issues through legacy project-scoped create paths", async () => {
+    const projectId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const createdIssue = {
+      id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      companyId: "company-1",
+      identifier: "CHRA-1104",
+      projectId,
+      priority: "high",
+      status: "todo",
+      title: "Investigate agent create path",
+    };
+    mockProjectService.getById.mockResolvedValue({
+      id: projectId,
+      companyId: "company-1",
+      goalIds: [],
+    });
+    mockIssueService.create.mockResolvedValue(createdIssue);
+    const app = await createApp();
+
+    const byProjectPath = await request(app)
+      .post(`/api/projects/${projectId}/issues`)
+      .send({
+        title: createdIssue.title,
+        description: "Created from a legacy project issue path.",
+        priority: "high",
+        status: "todo",
+      });
+
+    expect(byProjectPath.status, JSON.stringify(byProjectPath.body)).toBe(201);
+    expect(byProjectPath.body).toMatchObject(createdIssue);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        projectId,
+        title: createdIssue.title,
+        priority: "high",
+        status: "todo",
+      }),
+    );
+
+    mockIssueService.create.mockClear();
+
+    const byCreateAlias = await request(app)
+      .post("/api/issues/create")
+      .send({
+        title: createdIssue.title,
+        description: "Created from a legacy issue create path.",
+        priority: "high",
+        projectId,
+        status: "todo",
+      });
+
+    expect(byCreateAlias.status, JSON.stringify(byCreateAlias.body)).toBe(201);
+    expect(byCreateAlias.body).toMatchObject(createdIssue);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        projectId,
+        title: createdIssue.title,
+        priority: "high",
+        status: "todo",
+      }),
+    );
   });
 });

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { Router, type Request, type Response } from "express";
+import { Router, type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
 import { and, desc, eq, inArray, notInArray } from "drizzle-orm";
@@ -2682,8 +2682,53 @@ export function issueRoutes(
     res.json({ ok: true });
   });
 
-  router.post("/companies/:companyId/issues", applyCreateIssueStatusDefault, validate(createIssueSchema), async (req, res) => {
-    const companyId = req.params.companyId as string;
+  function captureLegacyIssueCreateCompanyId(req: Request, res: Response, next: NextFunction) {
+    const companyId = typeof req.body?.companyId === "string" ? req.body.companyId.trim() : "";
+    if (companyId) res.locals.legacyIssueCreateCompanyId = companyId;
+    next();
+  }
+
+  function applyProjectIdFromPath(req: Request, res: Response, next: NextFunction) {
+    const projectId = req.params.projectId as string;
+    const bodyProjectId = typeof req.body?.projectId === "string" ? req.body.projectId.trim() : "";
+    if (bodyProjectId && bodyProjectId !== projectId) {
+      res.status(400).json({ error: "Body projectId must match path projectId" });
+      return;
+    }
+    req.body = { ...(req.body ?? {}), projectId };
+    next();
+  }
+
+  async function resolveLegacyIssueCreateCompanyId(req: Request, res: Response) {
+    const projectId = typeof req.body?.projectId === "string" ? req.body.projectId.trim() : "";
+    const bodyCompanyId =
+      typeof res.locals.legacyIssueCreateCompanyId === "string"
+        ? res.locals.legacyIssueCreateCompanyId.trim()
+        : "";
+    if (projectId) {
+      const project = await projectsSvc.getById(projectId);
+      if (!project) {
+        res.status(404).json({ error: "Project not found" });
+        return null;
+      }
+      if (bodyCompanyId && bodyCompanyId !== project.companyId) {
+        res.status(400).json({ error: "Body companyId must match project companyId" });
+        return null;
+      }
+      return project.companyId;
+    }
+    if (bodyCompanyId) return bodyCompanyId;
+    if (req.actor.type === "agent" && req.actor.companyId) return req.actor.companyId;
+    if (req.actor.type === "board" && Array.isArray(req.actor.companyIds) && req.actor.companyIds.length === 1) {
+      return req.actor.companyIds[0];
+    }
+    res.status(400).json({
+      error: "Missing companyId. Use /api/companies/{companyId}/issues or include projectId.",
+    });
+    return null;
+  }
+
+  async function createIssueForCompany(req: Request, res: Response, companyId: string) {
     assertCompanyAccess(req, companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
@@ -2770,6 +2815,38 @@ export function issueRoutes(
       relatedWork: referenceSummary,
       referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
     });
+  }
+
+  router.post(
+    "/issues/create",
+    captureLegacyIssueCreateCompanyId,
+    applyCreateIssueStatusDefault,
+    validate(createIssueSchema),
+    async (req, res) => {
+      const companyId = await resolveLegacyIssueCreateCompanyId(req, res);
+      if (!companyId) return;
+      await createIssueForCompany(req, res, companyId);
+    },
+  );
+
+  router.post(
+    "/projects/:projectId/issues",
+    applyProjectIdFromPath,
+    applyCreateIssueStatusDefault,
+    validate(createIssueSchema),
+    async (req, res) => {
+      const projectId = req.params.projectId as string;
+      const project = await projectsSvc.getById(projectId);
+      if (!project) {
+        res.status(404).json({ error: "Project not found" });
+        return;
+      }
+      await createIssueForCompany(req, res, project.companyId);
+    },
+  );
+
+  router.post("/companies/:companyId/issues", applyCreateIssueStatusDefault, validate(createIssueSchema), async (req, res) => {
+    await createIssueForCompany(req, res, req.params.companyId as string);
   });
 
   router.post("/issues/:id/children", applyCreateIssueStatusDefault, validate(createChildIssueSchema), async (req, res) => {
