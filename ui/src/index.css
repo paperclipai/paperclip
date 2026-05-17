@@ -1,12 +1,10 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
-/* Nothing-Phone-inspired display fonts. Silkscreen is a bitmap/dot-pixel
-   font that approximates the NDot look used on NothingOS clocks and big
-   numerals. Loaded via Google Fonts CDN. Used for page titles, empty-state
-   headlines, and prominent counters via the .font-display utility. Body
-   text continues to use the system stack. */
-@import url('https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&display=swap');
+/* Nothing-Phone-inspired display font (Silkscreen — bitmap/dot pixel, NDot-ish)
+   is loaded via a <link rel="stylesheet"> in index.html (Vite's CSS pipeline
+   strips bare `@import url(https://…)` after `@import "tailwindcss"`). Used
+   here only as the value of the --font-display var. Body uses system stack. */
 
 @custom-variant dark (&:is(.dark *));
 
