@@ -1122,3 +1122,23 @@ export type {
   EnvironmentProviderCapability,
   EnvironmentSupportStatus,
 } from "./environment-support.js";
+
+export {
+  waitlistSignupSchema,
+  waitlistSignupResponseSchema,
+  referralTrackSchema,
+  emailTriggerSchema,
+  emailTemplates,
+  crewbriefEnvSchema,
+} from "./crewbrief.js";
+
+export type {
+  WaitlistSignupInput,
+  WaitlistSignupResponse,
+  ReferralTrackInput,
+  EmailTriggerInput,
+  EmailTemplateName,
+  WaitlistStatus,
+  ReferralTier,
+  CrewbriefConfig,
+} from "./crewbrief.js";

@@ -603,6 +603,13 @@
       "when": 1778938245000,
       "tag": "0086_budget_thresholds",
       "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1747526400000,
+      "tag": "0087_crewbrief_tables",
+      "breakpoints": true
     }
   ]
 }
