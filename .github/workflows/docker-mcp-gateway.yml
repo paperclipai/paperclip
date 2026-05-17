@@ -71,7 +71,7 @@ jobs:
           push: true
           provenance: false
           sbom: false
-          cache-from: type=registry,ref=${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip-mcp-gateway:buildcache
-          cache-to: type=registry,ref=${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip-mcp-gateway:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
+          cache-from: type=registry,ref=${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip-mcp-gateway:buildcache-v6
+          cache-to: type=registry,ref=${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip-mcp-gateway:buildcache-v6,mode=max,image-manifest=true,oci-mediatypes=true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
