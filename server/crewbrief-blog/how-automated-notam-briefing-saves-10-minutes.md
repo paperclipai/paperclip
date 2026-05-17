@@ -88,4 +88,4 @@ The cost of the missed item — a runway closed, an approach not available, a na
 
 *CrewBrief's NOTAM engine ingests FAA and international sources and delivers filtered, prioritized briefings. [See it in action](https://crewbrief.avva.aero).*
 
-*This article is part of our series on aviation automation. Read: [Deterministic First, AI Second](/doc/crewbrief/blog/deterministic-first-ai-second.md) — Why aviation software needs a safety-first AI philosophy.*
+*This article is part of our series on aviation automation. Read: [Deterministic First, AI Second](/blog/deterministic-first-ai-second) — Why aviation software needs a safety-first AI philosophy.*
