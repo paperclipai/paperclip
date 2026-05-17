@@ -1,0 +1,31 @@
+services:
+  umami_db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: umami
+      POSTGRES_USER: umami
+      POSTGRES_PASSWORD: umami_crewbrief_2026
+    volumes:
+      - umami_db_data:/var/lib/postgresql/data
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U umami"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  umami:
+    image: ghcr.io/umami-software/umami:latest
+    ports:
+      - "127.0.0.1:3456:3000"
+    environment:
+      DATABASE_URL: postgresql://umami:umami_crewbrief_2026@umami_db:5432/umami
+      DATABASE_TYPE: postgresql
+      HASH_SALT: crewbrief_umami_salt_20260517
+    depends_on:
+      umami_db:
+        condition: service_healthy
+    restart: always
+
+volumes:
+  umami_db_data:

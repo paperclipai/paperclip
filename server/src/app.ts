@@ -309,7 +309,8 @@ export async function createApp(
     CREWBRIEF_HUBSPOT_EMAIL_SENDING: process.env.CREWBRIEF_HUBSPOT_EMAIL_SENDING === "true",
     CREWBRIEF_POSTHOG_API_KEY: process.env.CREWBRIEF_POSTHOG_API_KEY,
     CREWBRIEF_POSTHOG_HOST: process.env.CREWBRIEF_POSTHOG_HOST || "https://app.posthog.com",
-    CREWBRIEF_POSTHOG_CLIENT_KEY: process.env.CREWBRIEF_POSTHOG_CLIENT_KEY,
+    CREWBRIEF_UMAMI_URL: process.env.CREWBRIEF_UMAMI_URL || "http://127.0.0.1:3456",
+    CREWBRIEF_UMAMI_WEBSITE_ID: process.env.CREWBRIEF_UMAMI_WEBSITE_ID || "e69396ab-6b76-4d2b-8e4a-778337f8bca4",
     CREWBRIEF_LINKEDIN_PARTNER_ID: process.env.CREWBRIEF_LINKEDIN_PARTNER_ID,
     CREWBRIEF_FROM_EMAIL: process.env.CREWBRIEF_FROM_EMAIL || "nurture@crewbrief.avva.aero",
     CREWBRIEF_FROM_NAME: process.env.CREWBRIEF_FROM_NAME || "CrewBrief Team",
@@ -322,7 +323,7 @@ export async function createApp(
     CREWBRIEF_RESEND_API_KEY: process.env.CREWBRIEF_RESEND_API_KEY,
   };
   const cbHubspot = crewbriefHubspotService(crewbriefCfg.CREWBRIEF_HUBSPOT_ACCESS_TOKEN);
-  const cbPosthog = crewbriefPosthogService(crewbriefCfg.CREWBRIEF_POSTHOG_API_KEY, crewbriefCfg.CREWBRIEF_POSTHOG_HOST);
+  const cbPosthog = crewbriefPosthogService(crewbriefCfg.CREWBRIEF_POSTHOG_API_KEY, crewbriefCfg.CREWBRIEF_POSTHOG_HOST, crewbriefCfg.CREWBRIEF_UMAMI_URL, crewbriefCfg.CREWBRIEF_UMAMI_WEBSITE_ID);
   const cbEmail = crewbriefEmailService(crewbriefCfg);
   const cbNurture = crewbriefNurtureService(db, crewbriefCfg, cbHubspot, cbPosthog, cbEmail);
   const cbWebhooks = crewbriefWebhookService(cbPosthog, cbNurture);
@@ -362,16 +363,18 @@ export async function createApp(
   if (crewbriefLandingHtmlTemplate) {
     const injectedHtml = crewbriefLandingHtmlTemplate
       .replace("__LINKEDIN_PARTNER_ID__", crewbriefCfg.CREWBRIEF_LINKEDIN_PARTNER_ID ?? "")
+      .replace("__UMAMI_WEBSITE_ID__", crewbriefCfg.CREWBRIEF_UMAMI_WEBSITE_ID ?? "e69396ab-6b76-4d2b-8e4a-778337f8bca4")
       .replace(
         "<!-- __CONFIG_INJECT__ -->",
         `<script>window.CREWBRIEF_CONFIG = ${JSON.stringify({
           apiBaseUrl: "",
           linkedinConversionId: "",
+          umamiWebsiteId: crewbriefCfg.CREWBRIEF_UMAMI_WEBSITE_ID,
         })}</script>`,
       );
 
     // Umami analytics proxy
-    const UMAMI_ORIGIN = "http://127.0.0.1:3456";
+    const UMAMI_ORIGIN = crewbriefCfg.CREWBRIEF_UMAMI_URL || "http://127.0.0.1:3456";
 
     app.use(async (req, res, next) => {
       if (req.hostname !== crewbriefHost && !req.hostname.endsWith("." + crewbriefHost)) {

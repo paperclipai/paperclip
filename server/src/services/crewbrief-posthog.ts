@@ -1,9 +1,12 @@
-let UMAMI_URL = "http://127.0.0.1:3456";
-let UMAMI_WEBSITE_ID = "e69396ab-6b76-4d2b-8e4a-778337f8bca4";
-
-export function crewbriefPosthogService(apiKey?: string, host?: string) {
-  const baseUrl = host || "https://app.posthog.com";
-  const enabled = !!apiKey || !!UMAMI_URL;
+export function crewbriefPosthogService(
+  apiKey?: string,
+  host?: string,
+  umamiUrl?: string,
+  umamiWebsiteId?: string,
+) {
+  const url = umamiUrl || "http://127.0.0.1:3456";
+  const websiteId = umamiWebsiteId || "e69396ab-6b76-4d2b-8e4a-778337f8bca4";
+  const enabled = !!apiKey || !!url;
 
   async function capture(
     event: string,
@@ -11,13 +14,13 @@ export function crewbriefPosthogService(apiKey?: string, host?: string) {
     properties?: Record<string, unknown>,
   ): Promise<void> {
     try {
-      await fetch(`${UMAMI_URL}/api/send`, {
+      await fetch(`${url}/api/send`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           type: "event",
           payload: {
-            website: UMAMI_WEBSITE_ID,
+            website: websiteId,
             url: "/api/capture",
             event_name: event,
             hostname: "crewbrief.avva.aero",
@@ -35,13 +38,13 @@ export function crewbriefPosthogService(apiKey?: string, host?: string) {
     properties: Record<string, unknown>,
   ): Promise<void> {
     try {
-      await fetch(`${UMAMI_URL}/api/send`, {
+      await fetch(`${url}/api/send`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           type: "identify",
           payload: {
-            website: UMAMI_WEBSITE_ID,
+            website: websiteId,
             user: { id: distinctId },
             data: properties,
           },
