@@ -50,6 +50,19 @@ describe("isClaudeTransientUpstreamError", () => {
     ).toBe(true);
   });
 
+  it("classifies the 'You've hit your limit' session-cap wording", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        errorMessage: "You've hit your limit · resets 9:20am (UTC)",
+      }),
+    ).toBe(true);
+    expect(
+      isClaudeTransientUpstreamError({
+        errorMessage: "Claude run failed: subtype=success: You've hit your limit · resets 9:20am (UTC)",
+      }),
+    ).toBe(true);
+  });
+
   it("classifies the subscription 5-hour / weekly limit wording", () => {
     expect(
       isClaudeTransientUpstreamError({
@@ -113,6 +126,27 @@ describe("extractClaudeRetryNotBefore", () => {
       now,
     );
     expect(extracted?.toISOString()).toBe("2026-04-23T03:15:00.000Z");
+  });
+
+  it("parses the 'You've hit your limit' reset time in UTC", () => {
+    const now = new Date("2026-05-17T08:00:00.000Z");
+    const extracted = extractClaudeRetryNotBefore(
+      { errorMessage: "You've hit your limit · resets 9:20am (UTC)" },
+      now,
+    );
+    expect(extracted?.toISOString()).toBe("2026-05-17T09:20:00.000Z");
+  });
+
+  it("parses the 'You've hit your limit' reset time when embedded in a run-failed message", () => {
+    const now = new Date("2026-05-17T08:00:00.000Z");
+    const extracted = extractClaudeRetryNotBefore(
+      {
+        errorMessage:
+          "Claude run failed: subtype=success: You've hit your limit · resets 9:20am (UTC)",
+      },
+      now,
+    );
+    expect(extracted?.toISOString()).toBe("2026-05-17T09:20:00.000Z");
   });
 
   it("returns null when no reset hint is present", () => {
