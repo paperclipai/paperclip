@@ -131,6 +131,25 @@ describe("evaluateEgressIntent", () => {
     }
   });
 
+  it("ALWAYS denies AWS IPv6 IMDS literal [fd00:ec2::254] (LET-323 QA)", () => {
+    // QA fixture LET-323: URL-bracketed IPv6 must still classify as
+    // metadata_service, not public_internet/private_network. Prior bug:
+    // Node's URL parser leaves brackets on hostname → METADATA_HOSTS miss
+    // → host was reported as DENY_HOST_NOT_ALLOWLISTED instead of the
+    // metadata-service invariant deny code.
+    const policy = parseSandboxNetworkPolicy({
+      mode: "egress_allowlist",
+      egressAllowlist: ["example.com"],
+    });
+    const decision = evaluateEgressIntent(
+      { method: "GET", url: "http://[fd00:ec2::254]/latest/meta-data/" },
+      policy,
+    );
+    expect(decision.decision).toBe("deny");
+    expect(decision.reasonCode).toBe("DENY_METADATA_SERVICE");
+    expect(decision.classification).toBe("metadata_service");
+  });
+
   it("denies invalid URLs with DENY_INVALID_TARGET", () => {
     const decision = evaluateEgressIntent(
       { method: "GET", url: "not a url at all" },
@@ -179,6 +198,35 @@ describe("evaluateEgressIntent", () => {
     expect(egressTesting.classifyHost("100.64.0.1")).toBe("private_network");
     // Metadata still trumps
     expect(egressTesting.classifyHost("169.254.169.254")).toBe("metadata_service");
+  });
+
+  it("denies DNS intent under mode=none even if dnsAllowlist matches", () => {
+    const policy = parseSandboxNetworkPolicy({
+      mode: "none",
+      dnsAllowlist: ["dns.example.com"],
+    });
+    const decision = evaluateEgressIntent(
+      { method: "GET", url: "dns://dns.example.com/", targetKind: "dns" },
+      policy,
+    );
+    expect(decision.decision).toBe("deny");
+    expect(decision.reasonCode).toBe("DENY_NETWORK_MODE_NONE");
+    expect(decision.classification).toBe("dns");
+  });
+
+  it("denies DNS intent under mode=host_loopback even if dnsAllowlist matches", () => {
+    const policy = parseSandboxNetworkPolicy({
+      mode: "host_loopback",
+      allowLoopback: true,
+      dnsAllowlist: ["dns.example.com"],
+    });
+    const decision = evaluateEgressIntent(
+      { method: "GET", url: "dns://dns.example.com/", targetKind: "dns" },
+      policy,
+    );
+    expect(decision.decision).toBe("deny");
+    expect(decision.reasonCode).toBe("DENY_HOST_NOT_ALLOWLISTED");
+    expect(decision.classification).toBe("dns");
   });
 
   it("dns intent only allows dnsAllowlist hits", () => {
