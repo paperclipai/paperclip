@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="en" prefix="og: https://ogp.me/ns#">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CrewBrief — Your flight, briefed.</title>
+<meta name="description" content="Premium aviation briefings — weather, NOTAMs, route data, fuel calculations, and crew notices — delivered automatically before every duty." />
+<link rel="canonical" href="https://crewbrief.avva.aero" />
+
+<meta property="og:title" content="CrewBrief — Your flight, briefed." />
+<meta property="og:description" content="Premium aviation briefings — weather, NOTAMs, route data, fuel calculations, and crew notices — delivered automatically before every duty." />
+<meta property="og:url" content="https://crewbrief.avva.aero" />
+<meta property="og:type" content="website" />
+
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✈️</text></svg>" />
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: {
+        brand: {
+          50: '#eff6ff',
+          100: '#dbeafe',
+          200: '#bfdbfe',
+          300: '#93c5fd',
+          400: '#60a5fa',
+          500: '#2563eb',
+          600: '#1d4ed8',
+          700: '#1e40af',
+          800: '#1e3a8a',
+          900: '#172554',
+        }
+      },
+      fontFamily: {
+        sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+      }
+    }
+  }
+}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+<!-- __CONFIG_INJECT__ -->
+<!-- LinkedIn Insight Tag -->
+<script type="text/javascript">
+_linkedin_partner_id = "__LINKEDIN_PARTNER_ID__";
+window._linkedin_data_partner_ids = window._linkedin_data_partner_ids || [];
+window._linkedin_data_partner_ids.push(_linkedin_partner_id);
+</script>
+<script type="text/javascript">
+(function(l) {
+if (!l){window.lintrk = function(a,b){window.lintrk.q.push([a,b])};
+window.lintrk.q=[]}
+var s = document.getElementsByTagName("script")[0];
+var b = document.createElement("script");
+b.type = "text/javascript";b.async = true;
+b.src = "https://snap.licdn.com/li.lms-analytics/insight.min.js";
+s.parentNode.insertBefore(b, s);})(window.lintrk);
+</script>
+<noscript>
+<img height="1" width="1" style="display:none;" alt="" src="https://px.ads.linkedin.com/collect/?pid=__LINKEDIN_PARTNER_ID__&fmt=gif" />
+</noscript>
+<!-- End LinkedIn Insight Tag -->
+
+<!-- PostHog -->
+<script>
+!function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.async=!0,p.src=s.api_host+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.toString(1)+".people (stub)"},o="capture identify alias people.set people.set_once set_config register register_once unregister opt_out_capturing has_opted_out_capturing opt_in_capturing reset isFeatureEnabled onFeatureFlags getFeatureFlag getFeatureFlagPayload reloadFeatureFlags group updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures getActiveMatchingSurveys getSurveys onSessionId".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=!0)}(document,window.posthog||[]);
+posthog.init('__POSTHOG_CLIENT_KEY__', {
+  api_host: '__POSTHOG_HOST__' || 'https://app.posthog.com',
+  person_profiles: 'identified_only',
+  loaded: function(ph) {
+    if (window.CREWBRIEF_CONFIG && window.CREWBRIEF_CONFIG.distinctId) {
+      ph.identify(window.CREWBRIEF_CONFIG.distinctId);
+    }
+  }
+});
+</script>
+<!-- End PostHog -->
+<style>
+html { scroll-behavior: smooth; }
+.hero-gradient { background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 50%, #172554 100%); }
+.card-hover { transition: all 0.2s ease; }
+.card-hover:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(37, 99, 235, 0.12); }
+.form-input { transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+.form-input:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15); }
+@keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+.fade-in-up { animation: fadeInUp 0.6s ease forwards; }
+.fade-in-up-delay-1 { animation-delay: 0.1s; }
+.fade-in-up-delay-2 { animation-delay: 0.2s; }
+.fade-in-up-delay-3 { animation-delay: 0.3s; }
+.toast { transition: all 0.3s ease; }
+</style>
+</head>
+<body class="bg-white text-slate-900 font-sans antialiased">
+
+<!-- Navigation -->
+<nav class="fixed top-0 left-0 right-0 z-50 bg-white/90 backdrop-blur-md border-b border-slate-100">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <div class="flex items-center justify-between h-16">
+      <div class="flex items-center gap-2">
+        <span class="text-xl font-bold text-brand-600">CrewBrief</span>
+      </div>
+      <div class="hidden md:flex items-center gap-8 text-sm font-medium text-slate-600">
+        <a href="#problem" class="hover:text-brand-600 transition-colors">Problem</a>
+        <a href="#solution" class="hover:text-brand-600 transition-colors">Solution</a>
+        <a href="#how-it-works" class="hover:text-brand-600 transition-colors">How It Works</a>
+        <a href="#pricing" class="hover:text-brand-600 transition-colors">Pricing</a>
+        <a href="#waitlist" class="inline-flex items-center px-4 py-2 rounded-lg bg-brand-600 text-white font-semibold hover:bg-brand-700 transition-colors text-sm">Join Waitlist</a>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<!-- Hero -->
+<section class="hero-gradient min-h-screen flex items-center pt-16">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 lg:py-32">
+    <div class="max-w-3xl">
+      <h1 class="text-4xl sm:text-5xl lg:text-6xl font-extrabold text-white leading-tight mb-6 fade-in-up">
+        Your flight, briefed.
+      </h1>
+      <p class="text-lg sm:text-xl text-blue-200 leading-relaxed mb-10 fade-in-up fade-in-up-delay-1 max-w-2xl">
+        CrewBrief delivers polished, operationally complete aviation briefings — weather, NOTAMs, route, fuel, and risk — straight to your device before every duty. Stop hunting through five apps. Fly informed.
+      </p>
+      <div class="flex flex-col sm:flex-row gap-4 fade-in-up fade-in-up-delay-2">
+        <a href="#waitlist" class="inline-flex items-center justify-center px-8 py-4 rounded-xl bg-white text-brand-700 font-bold text-lg hover:bg-blue-50 transition-colors shadow-lg">
+          Join the Beta Waitlist →
+        </a>
+        <a href="#briefing" class="inline-flex items-center justify-center px-8 py-4 rounded-xl border-2 border-blue-400/40 text-blue-200 font-semibold text-lg hover:bg-white/10 transition-colors">
+          See Sample Briefing
+        </a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Problem -->
+<section id="problem" class="py-20 lg:py-28 bg-slate-50">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <div class="max-w-3xl mx-auto text-center mb-16">
+      <h2 class="text-3xl sm:text-4xl font-bold text-slate-900 mb-6">Too many sources. Not enough time.</h2>
+      <p class="text-lg text-slate-600 leading-relaxed">
+        Every briefing today means juggling Jeppesen, ForeFlight, paper NOTAMs, weather sites, and scheduling systems. Critical details slip through the cracks. Crews spend more time assembling data than flying safely.
+      </p>
+    </div>
+    <div class="grid md:grid-cols-3 gap-8">
+      <div class="bg-white rounded-2xl p-8 card-hover border border-slate-100">
+        <div class="w-12 h-12 rounded-xl bg-red-100 flex items-center justify-center mb-5">
+          <svg class="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
+        </div>
+        <h3 class="text-lg font-semibold text-slate-900 mb-2">Fragmented Data</h3>
+        <p class="text-slate-600 leading-relaxed">Weather on one app, NOTAMs on another, fuel calculations in a spreadsheet. No single source of truth.</p>
+      </div>
+      <div class="bg-white rounded-2xl p-8 card-hover border border-slate-100">
+        <div class="w-12 h-12 rounded-xl bg-amber-100 flex items-center justify-center mb-5">
+          <svg class="w-6 h-6 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        </div>
+        <h3 class="text-lg font-semibold text-slate-900 mb-2">Time-Consuming</h3>
+        <p class="text-slate-600 leading-relaxed">Assembling a complete briefing takes 20-30 minutes per duty. Time you don't have before a flight.</p>
+      </div>
+      <div class="bg-white rounded-2xl p-8 card-hover border border-slate-100">
+        <div class="w-12 h-12 rounded-xl bg-red-100 flex items-center justify-center mb-5">
+          <svg class="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/></svg>
+        </div>
+        <h3 class="text-lg font-semibold text-slate-900 mb-2">Missed Details</h3>
+        <p class="text-slate-600 leading-relaxed">Critical NOTAMs, weather changes, and risk factors slip through when you're manually switching between tools.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Solution -->
+<section id="solution" class="py-20 lg:py-28">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <div class="max-w-3xl mx-auto text-center mb-16">
+      <h2 class="text-3xl sm:text-4xl font-bold text-slate-900 mb-6">Everything you need. Nothing you don't.</h2>
+      <p class="text-lg text-slate-600">CrewBrief changes that. One integrated briefing, automatically assembled and delivered before your duty starts.</p>
+    </div>
+    <div class="grid md:grid-cols-3 gap-8">
+      <div class="text-center p-8">
+        <div class="w-16 h-16 rounded-2xl bg-brand-100 flex items-center justify-center mx-auto mb-5">
+          <svg class="w-8 h-8 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+        </div>
+        <h3 class="text-xl font-semibold text-slate-900 mb-3">Automated Delivery</h3>
+        <p class="text-slate-600 leading-relaxed">Push, email, SMS, and PDF — delivered on your schedule. No manual check required.</p>
+      </div>
+      <div class="text-center p-8">
+        <div class="w-16 h-16 rounded-2xl bg-brand-100 flex items-center justify-center mx-auto mb-5">
+          <svg class="w-8 h-8 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+        </div>
+        <h3 class="text-xl font-semibold text-slate-900 mb-3">Complete Briefing</h3>
+        <p class="text-slate-600 leading-relaxed">Weather, NOTAMs, route data, fuel calculations, risk assessment, and crew notices in one place.</p>
+      </div>
+      <div class="text-center p-8">
+        <div class="w-16 h-16 rounded-2xl bg-brand-100 flex items-center justify-center mx-auto mb-5">
+          <svg class="w-8 h-8 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+        </div>
+        <h3 class="text-xl font-semibold text-slate-900 mb-3">Crew-Specific</h3>
+        <p class="text-slate-600 leading-relaxed">Flight crew and cabin crew get the right level of detail for their role. No information overload.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- The Briefing -->
+<section id="briefing" class="py-20 lg:py-28 bg-slate-50">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <div class="max-w-3xl mx-auto text-center mb-16">
+      <h2 class="text-3xl sm:text-4xl font-bold text-slate-900 mb-6">From raw data to ready-to-fly.</h2>
+    </div>
+    <div class="grid md:grid-cols-2 gap-12 items-center">
+      <div>
+        <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+          <div class="aspect-[4/3] bg-gradient-to-br from-slate-100 to-slate-200 rounded-xl flex items-center justify-center text-slate-400">
+            <svg class="w-16 h-16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+          </div>
+        </div>
+      </div>
+      <div class="space-y-6">
+        <div class="flex items-start gap-4">
+          <div class="w-8 h-8 rounded-lg bg-brand-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+            <svg class="w-4 h-4 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+          </div>
+          <div>
+            <h4 class="font-semibold text-slate-900">Executive-grade presentation</h4>
+            <p class="text-slate-600">Premium HTML formatting, mobile-optimized for quick review.</p>
+          </div>
+        </div>
+        <div class="flex items-start gap-4">
+          <div class="w-8 h-8 rounded-lg bg-brand-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+            <svg class="w-4 h-4 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+          </div>
+          <div>
+            <h4 class="font-semibold text-slate-900">Built-in FRAT</h4>
+            <p class="text-slate-600">Fatigue Risk Assessment Tool in every briefing — no extra step.</p>
+          </div>
+        </div>
+        <div class="flex items-start gap-4">
+          <div class="w-8 h-8 rounded-lg bg-brand-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+            <svg class="w-4 h-4 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+          </div>
+          <div>
+            <h4 class="font-semibold text-slate-900">100+ warning codes</h4>
+            <p class="text-slate-600">Proactive alerts for hazards, airspace, and weather conditions.</p>
+          </div>
+        </div>
+        <div class="flex items-start gap-4">
+          <div class="w-8 h-8 rounded-lg bg-brand-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+            <svg class="w-4 h-4 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+          </div>
+          <div>
+            <h4 class="font-semibold text-slate-900">Zero runtime dependencies</h4>
+            <p class="text-slate-600">Fast, reliable, always available — no internet required after delivery.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- How It Works -->
+<section id="how-it-works" class="py-20 lg:py-28">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <h2 class="text-3xl sm:text-4xl font-bold text-slate-900 text-center mb-16">How It Works</h2>
+    <div class="grid md:grid-cols-4 gap-8">
+      <div class="text-center">
+        <div class="w-14 h-14 rounded-full bg-brand-600 text-white flex items-center justify-center mx-auto mb-5 text-xl font-bold">1</div>
+        <h3 class="font-semibold text-slate-900 mb-2">Sign up</h3>
+        <p class="text-slate-600 text-sm">Create your free account in 30 seconds. No credit card required.</p>
+      </div>
+      <div class="text-center">
+        <div class="w-14 h-14 rounded-full bg-brand-600 text-white flex items-center justify-center mx-auto mb-5 text-xl font-bold">2</div>
+        <h3 class="font-semibold text-slate-900 mb-2">Connect</h3>
+        <p class="text-slate-600 text-sm">Link your schedule or enter your flight details for the next duty.</p>
+      </div>
+      <div class="text-center">
+        <div class="w-14 h-14 rounded-full bg-brand-600 text-white flex items-center justify-center mx-auto mb-5 text-xl font-bold">3</div>
+        <h3 class="font-semibold text-slate-900 mb-2">Get briefed</h3>
+        <p class="text-slate-600 text-sm">Receive your first comprehensive briefing before duty starts.</p>
+      </div>
+      <div class="text-center">
+        <div class="w-14 h-14 rounded-full bg-brand-600 text-white flex items-center justify-center mx-auto mb-5 text-xl font-bold">4</div>
+        <h3 class="font-semibold text-slate-900 mb-2">Fly informed</h3>
+        <p class="text-slate-600 text-sm">Briefings update automatically as conditions change throughout your duty.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Social Proof -->
+<section class="py-20 bg-slate-50">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+    <h2 class="text-3xl sm:text-4xl font-bold text-slate-900 mb-6">Join 20+ operators already testing CrewBrief.</h2>
+    <p class="text-lg text-slate-600 max-w-2xl mx-auto mb-10">Professional-grade data sources, FAA-standard NOTAM parsing, and secure cloud infrastructure trusted by aviation professionals.</p>
+    <div class="grid sm:grid-cols-3 gap-6 max-w-2xl mx-auto">
+      <div class="bg-white rounded-xl p-6 border border-slate-100">
+        <div class="text-3xl font-bold text-brand-600 mb-1">FAA</div>
+        <div class="text-sm text-slate-500">Standard NOTAM Parsing</div>
+      </div>
+      <div class="bg-white rounded-xl p-6 border border-slate-100">
+        <div class="text-3xl font-bold text-brand-600 mb-1">100+</div>
+        <div class="text-sm text-slate-500">Warning Codes</div>
+      </div>
+      <div class="bg-white rounded-xl p-6 border border-slate-100">
+        <div class="text-3xl font-bold text-brand-600 mb-1">FRAT</div>
+        <div class="text-sm text-slate-500">Built-in Risk Assessment</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Waitlist Signup -->
+<section id="waitlist" class="py-20 lg:py-28 hero-gradient">
+  <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+    <h2 class="text-3xl sm:text-4xl font-bold text-white mb-4">Be first in line.</h2>
+    <p class="text-lg text-blue-200 mb-12">CrewBrief is launching in private beta. Join the waitlist to get early access, exclusive features, and priority support.</p>
+    <form id="waitlistForm" class="bg-white rounded-2xl p-8 sm:p-10 shadow-xl text-left">
+      <div id="formSuccess" class="hidden text-center py-8">
+        <div class="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-4">
+          <svg class="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+        </div>
+        <h3 class="text-2xl font-bold text-slate-900 mb-2">You're on the list!</h3>
+        <p class="text-slate-600 mb-6">Check your email for confirmation and your referral link. Share it to move up the waitlist.</p>
+        <div class="bg-slate-50 rounded-xl p-4 border border-slate-200">
+          <p class="text-sm text-slate-500 mb-2">Your referral link</p>
+          <p id="referralLinkDisplay" class="text-brand-600 font-medium text-sm break-all"></p>
+        </div>
+        <p class="text-xs text-slate-400 mt-4">Refer 3 people for Priority access · Refer 5 for Insider status</p>
+      </div>
+      <div id="formFields">
+        <div class="grid sm:grid-cols-2 gap-4 mb-4">
+          <div>
+            <label for="name" class="block text-sm font-medium text-slate-700 mb-1">Full Name</label>
+            <input type="text" id="name" name="name" required class="form-input w-full rounded-lg border border-slate-300 px-4 py-3 text-sm" placeholder="John Smith" />
+          </div>
+          <div>
+            <label for="email" class="block text-sm font-medium text-slate-700 mb-1">Email</label>
+            <input type="email" id="email" name="email" required class="form-input w-full rounded-lg border border-slate-300 px-4 py-3 text-sm" placeholder="john@example.com" />
+          </div>
+        </div>
+        <div class="grid sm:grid-cols-2 gap-4 mb-4">
+          <div>
+            <label for="role" class="block text-sm font-medium text-slate-700 mb-1">Role</label>
+            <select id="role" name="role" required class="form-input w-full rounded-lg border border-slate-300 px-4 py-3 text-sm bg-white">
+              <option value="">Select role</option>
+              <option value="captain">Captain</option>
+              <option value="first_officer">First Officer</option>
+              <option value="chief_pilot">Chief Pilot</option>
+              <option value="dispatch">Dispatcher</option>
+              <option value="ops_manager">Ops Director</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <div>
+            <label for="organization" class="block text-sm font-medium text-slate-700 mb-1">Organization <span class="text-slate-400">(optional)</span></label>
+            <input type="text" id="organization" name="organization" class="form-input w-full rounded-lg border border-slate-300 px-4 py-3 text-sm" placeholder="Delta Air Lines" />
+          </div>
+        </div>
+        <div class="mb-6">
+          <label for="source" class="block text-sm font-medium text-slate-700 mb-1">How did you hear about us? <span class="text-slate-400">(optional)</span></label>
+          <select id="source" name="source" class="form-input w-full rounded-lg border border-slate-300 px-4 py-3 text-sm bg-white">
+            <option value="">Select</option>
+            <option value="linkedin">LinkedIn</option>
+            <option value="aviation_forum">Aviation Forum</option>
+            <option value="colleague">Colleague</option>
+            <option value="search">Search</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <input type="hidden" id="utmSource" name="utmSource" />
+        <input type="hidden" id="utmMedium" name="utmMedium" />
+        <input type="hidden" id="utmCampaign" name="utmCampaign" />
+        <input type="hidden" id="utmTerm" name="utmTerm" />
+        <input type="hidden" id="utmContent" name="utmContent" />
+        <input type="hidden" id="referralCode" name="referralCode" />
+        <button type="submit" id="submitBtn" class="w-full py-4 rounded-xl bg-brand-600 text-white font-bold text-lg hover:bg-brand-700 transition-colors shadow-lg shadow-brand-600/25 disabled:opacity-50 disabled:cursor-not-allowed">
+          Get Early Access →
+        </button>
+        <div id="formError" class="hidden mt-4 p-4 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm"></div>
+      </div>
+    </form>
+  </div>
+</section>
+
+<!-- Pricing -->
+<section id="pricing" class="py-20 lg:py-28 bg-white">
+  <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+    <h2 class="text-3xl sm:text-4xl font-bold text-slate-900 mb-6">Professional briefings at a software price.</h2>
+    <p class="text-lg text-slate-600 mb-12 max-w-2xl mx-auto">CrewBrief is a low-cost software product — not a high-priced concierge service. No per-briefing fees, no contracts, no surprises.</p>
+    <div class="grid sm:grid-cols-2 gap-8 max-w-2xl mx-auto">
+      <div class="rounded-2xl border border-slate-200 p-8 card-hover">
+        <h3 class="text-lg font-semibold text-slate-900 mb-2">One-Time</h3>
+        <p class="text-4xl font-bold text-brand-600 mb-2">$9.99</p>
+        <p class="text-sm text-slate-500 mb-6">own it forever</p>
+        <ul class="text-left text-sm text-slate-600 space-y-3 mb-8">
+          <li class="flex items-start gap-2"><svg class="w-4 h-4 text-green-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> Lifetime access</li>
+          <li class="flex items-start gap-2"><svg class="w-4 h-4 text-green-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> All briefing sections</li>
+          <li class="flex items-start gap-2"><svg class="w-4 h-4 text-green-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> Automatic delivery</li>
+          <li class="flex items-start gap-2"><svg class="w-4 h-4 text-green-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> All future updates</li>
+        </ul>
+        <a href="#waitlist" class="block w-full py-3 rounded-xl border-2 border-brand-600 text-brand-600 font-semibold hover:bg-brand-50 transition-colors">Join Beta Waitlist</a>
+      </div>
+      <div class="rounded-2xl border-2 border-brand-600 p-8 card-hover relative">
+        <div class="absolute -top-3 left-1/2 -translate-x-1/2 bg-brand-600 text-white text-xs font-semibold px-4 py-1 rounded-full">Beta Pricing</div>
+        <h3 class="text-lg font-semibold text-slate-900 mb-2">Subscription</h3>
+        <p class="text-4xl font-bold text-brand-600 mb-2">$4.99</p>
+        <p class="text-sm text-slate-500 mb-6">/month</p>
+        <ul class="text-left text-sm text-slate-600 space-y-3 mb-8">
+          <li class="flex items-start gap-2"><svg class="w-4 h-4 text-green-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> Always up to date</li>
+          <li class="flex items-start gap-2"><svg class="w-4 h-4 text-green-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> All briefing sections</li>
+          <li class="flex items-start gap-2"><svg class="w-4 h-4 text-green-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> Automatic delivery</li>
+          <li class="flex items-start gap-2"><svg class="w-4 h-4 text-green-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> Cancel anytime</li>
+        </ul>
+        <a href="#waitlist" class="block w-full py-3 rounded-xl bg-brand-600 text-white font-semibold hover:bg-brand-700 transition-colors">Join Beta Waitlist</a>
+      </div>
+    </div>
+    <p class="text-sm text-slate-500 mt-8">Beta testers lock in the lowest rate we'll ever offer. Final model TBD after launch.</p>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer class="bg-slate-900 text-slate-400 py-16">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <div class="grid sm:grid-cols-4 gap-8 mb-12">
+      <div>
+        <h4 class="text-white font-semibold mb-4">Product</h4>
+        <ul class="space-y-2 text-sm">
+          <li><a href="#briefing" class="hover:text-white transition-colors">Sample Briefing</a></li>
+          <li><a href="#pricing" class="hover:text-white transition-colors">Pricing</a></li>
+          <li><a href="/faq" class="hover:text-white transition-colors">FAQ</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4 class="text-white font-semibold mb-4">Company</h4>
+        <ul class="space-y-2 text-sm">
+          <li><a href="/about" class="hover:text-white transition-colors">About</a></li>
+          <li><a href="/blog" class="hover:text-white transition-colors">Blog</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4 class="text-white font-semibold mb-4">Legal</h4>
+        <ul class="space-y-2 text-sm">
+          <li><a href="/privacy" class="hover:text-white transition-colors">Privacy Policy</a></li>
+          <li><a href="/terms" class="hover:text-white transition-colors">Terms of Service</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4 class="text-white font-semibold mb-4">Contact</h4>
+        <ul class="space-y-2 text-sm">
+          <li><a href="mailto:help@crewbrief.com" class="hover:text-white transition-colors">help@crewbrief.com</a></li>
+          <li><a href="https://linkedin.com/company/crewbrief" class="hover:text-white transition-colors" target="_blank" rel="noopener">LinkedIn</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="border-t border-slate-800 pt-8 text-sm text-center">
+      &copy; 2026 CrewBrief Operations
+    </div>
+  </div>
+</footer>
+
+<script>
+(function() {
+  'use strict';
+
+  var CONFIG = window.CREWBRIEF_CONFIG || {};
+
+  function getUrlParam(name) {
+    var params = new URLSearchParams(window.location.search);
+    return params.get(name) || '';
+  }
+
+  function captureUtm() {
+    var utmParams = {
+      utm_source: getUrlParam('utm_source'),
+      utm_medium: getUrlParam('utm_medium'),
+      utm_campaign: getUrlParam('utm_campaign'),
+      utm_term: getUrlParam('utm_term'),
+      utm_content: getUrlParam('utm_content'),
+    };
+
+    try {
+      var stored = JSON.parse(localStorage.getItem('crewbrief_utm') || '{}');
+      var hasNew = utmParams.utm_source || utmParams.utm_medium || utmParams.utm_campaign;
+      if (hasNew) {
+        localStorage.setItem('crewbrief_utm', JSON.stringify(utmParams));
+        return utmParams;
+      }
+      return stored;
+    } catch (e) {
+      return utmParams;
+    }
+  }
+
+  function captureRef() {
+    var ref = getUrlParam('ref');
+    if (ref) {
+      try { localStorage.setItem('crewbrief_ref', ref); } catch (e) {}
+      return ref;
+    }
+    try { return localStorage.getItem('crewbrief_ref') || ''; } catch (e) { return ''; }
+  }
+
+  function setHiddenFields() {
+    var utm = captureUtm();
+    document.getElementById('utmSource').value = utm.utm_source || '';
+    document.getElementById('utmMedium').value = utm.utm_medium || '';
+    document.getElementById('utmCampaign').value = utm.utm_campaign || '';
+    document.getElementById('utmTerm').value = utm.utm_term || '';
+    document.getElementById('utmContent').value = utm.utm_content || '';
+
+    var ref = captureRef();
+    document.getElementById('referralCode').value = ref || '';
+  }
+
+  setHiddenFields();
+
+  if (window.posthog) {
+    posthog.capture('$pageview', {
+      utm_source: document.getElementById('utmSource').value,
+      utm_medium: document.getElementById('utmMedium').value,
+      utm_campaign: document.getElementById('utmCampaign').value,
+    });
+  }
+
+  document.getElementById('waitlistForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    var btn = document.getElementById('submitBtn');
+    var errorEl = document.getElementById('formError');
+    var formFields = document.getElementById('formFields');
+    var formSuccess = document.getElementById('formSuccess');
+    var referralLinkDisplay = document.getElementById('referralLinkDisplay');
+
+    btn.disabled = true;
+    btn.textContent = 'Submitting...';
+    errorEl.classList.add('hidden');
+
+    var payload = {
+      name: document.getElementById('name').value.trim(),
+      email: document.getElementById('email').value.trim(),
+      role: document.getElementById('role').value,
+      organization: document.getElementById('organization').value.trim() || undefined,
+      source: document.getElementById('source').value || undefined,
+      utmSource: document.getElementById('utmSource').value || undefined,
+      utmMedium: document.getElementById('utmMedium').value || undefined,
+      utmCampaign: document.getElementById('utmCampaign').value || undefined,
+      utmTerm: document.getElementById('utmTerm').value || undefined,
+      utmContent: document.getElementById('utmContent').value || undefined,
+      referralCode: document.getElementById('referralCode').value || undefined,
+    };
+
+    var apiUrl = CONFIG.apiBaseUrl || '/api';
+
+    fetch(apiUrl + '/crewbrief/waitlist/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    .then(function(res) { return res.json().then(function(data) { return { status: res.status, data: data }; }); })
+    .then(function(result) {
+      if (result.status === 201 || result.status === 200) {
+        if (window.posthog) {
+          posthog.identify(result.data.email);
+          posthog.capture('waitlist_signup', {
+            email: result.data.email,
+            role: payload.role,
+            source: payload.source,
+            referral_code: result.data.referralCode,
+            queue_position: result.data.queuePosition,
+          });
+        }
+
+        if (window.lintrk) {
+          window.lintrk('track', 'conversion', {
+            conversion_id: CONFIG.linkedinConversionId || undefined,
+          });
+        }
+
+        formFields.classList.add('hidden');
+        formSuccess.classList.remove('hidden');
+        var refUrl = 'https://crewbrief.avva.aero/?ref=' + encodeURIComponent(result.data.referralCode);
+        referralLinkDisplay.textContent = refUrl;
+      } else {
+        throw new Error(result.data.error || 'Something went wrong. Please try again.');
+      }
+    })
+    .catch(function(err) {
+      errorEl.textContent = err.message || 'Network error. Please check your connection and try again.';
+      errorEl.classList.remove('hidden');
+    })
+    .finally(function() {
+      btn.disabled = false;
+      btn.textContent = 'Get Early Access →';
+    });
+  });
+})();
+</script>
+</body>
+</html>
