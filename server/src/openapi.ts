@@ -110,6 +110,9 @@ import {
   // Instance settings
   patchInstanceGeneralSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
+  issueGraphLivenessAutoRecoveryRequestSchema,
+  // Issue interactions (cancel)
+  cancelIssueThreadInteractionSchema,
 } from "@paperclipai/shared";
 
 extendZodWithOpenApi(z);
@@ -902,6 +905,15 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/adapters/{type}/model-profiles",
+  tags: ["adapters"],
+  summary: "List model profiles for an adapter type",
+  request: { params: z.object({ companyId: z.string(), type: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/adapters/{type}/test-environment",
   tags: ["adapters"],
@@ -1422,6 +1434,26 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/routines/{id}/revisions",
+  tags: ["routines"],
+  summary: "List revisions for a routine",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/routines/{id}/revisions/{revisionId}/restore",
+  tags: ["routines"],
+  summary: "Restore a routine from a prior revision",
+  request: {
+    params: z.object({ id: z.string(), revisionId: z.string() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/routines/{id}/runs",
   tags: ["routines"],
   summary: "List runs for a routine",
@@ -1743,6 +1775,15 @@ for (const segment of costSummaryPaths) {
 }
 
 registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/cost-summary",
+  tags: ["costs"],
+  summary: "Get the rolled-up cost summary for an issue tree",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/cost-events",
   tags: ["costs"],
@@ -2000,6 +2041,24 @@ registry.registerPath({
   summary: "Update experimental instance settings",
   request: { body: jsonBody(patchInstanceExperimentalSettingsSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/instance/settings/experimental/issue-graph-liveness-auto-recovery/preview",
+  tags: ["instance"],
+  summary: "Preview the issue-graph liveness auto-recovery sweep",
+  request: { body: jsonBody(issueGraphLivenessAutoRecoveryRequestSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/instance/settings/experimental/issue-graph-liveness-auto-recovery/run",
+  tags: ["instance"],
+  summary: "Run the issue-graph liveness auto-recovery sweep",
+  request: { body: jsonBody(issueGraphLivenessAutoRecoveryRequestSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── Access / invites / members ───────────────────────────────────────────────
@@ -2485,6 +2544,27 @@ registry.registerPath({
     body: jsonBody(respondIssueThreadInteractionSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/interactions/{interactionId}/cancel",
+  tags: ["issues"],
+  summary: "Cancel an issue thread interaction",
+  request: {
+    params: z.object({ id: z.string(), interactionId: z.string() }),
+    body: jsonBody(cancelIssueThreadInteractionSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/monitor/check-now",
+  tags: ["issues"],
+  summary: "Trigger an immediate issue monitor check",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
 
 registry.registerPath({
@@ -3262,6 +3342,59 @@ registry.registerPath({
     })),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+// ─── Plugin company-scoped local folders ──────────────────────────────────────
+
+const pluginLocalFolderBodySchema = z.object({
+  path: z.string().min(1),
+  access: z.enum(["read", "readWrite"]).optional(),
+  requiredDirectories: z.array(z.string()).optional(),
+  requiredFiles: z.array(z.string()).optional(),
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/plugins/{pluginId}/companies/{companyId}/local-folders",
+  tags: ["plugins"],
+  summary: "List a plugin's trusted local folders for a company",
+  request: { params: z.object({ pluginId: z.string(), companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/plugins/{pluginId}/companies/{companyId}/local-folders/{folderKey}/status",
+  tags: ["plugins"],
+  summary: "Get the status of a plugin's trusted local folder",
+  request: {
+    params: z.object({ pluginId: z.string(), companyId: z.string(), folderKey: z.string() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/plugins/{pluginId}/companies/{companyId}/local-folders/{folderKey}/validate",
+  tags: ["plugins"],
+  summary: "Validate a candidate path for a plugin's local folder",
+  request: {
+    params: z.object({ pluginId: z.string(), companyId: z.string(), folderKey: z.string() }),
+    body: jsonBody(pluginLocalFolderBodySchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/plugins/{pluginId}/companies/{companyId}/local-folders/{folderKey}",
+  tags: ["plugins"],
+  summary: "Set the path for a plugin's trusted local folder",
+  request: {
+    params: z.object({ pluginId: z.string(), companyId: z.string(), folderKey: z.string() }),
+    body: jsonBody(pluginLocalFolderBodySchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
 });
 
 // ─── Instance database backups ────────────────────────────────────────────────
