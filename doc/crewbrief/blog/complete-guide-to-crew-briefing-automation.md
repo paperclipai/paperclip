@@ -145,7 +145,7 @@ The format a briefing is delivered in is not a cosmetic choice — it determines
 
 The PDF briefing was a reasonable standard in 2005. Today it is the single largest source of briefing staleness, poor mobile experience, and missed delta awareness.
 
-We've covered this in depth in our article [The End of the PDF Briefing: Why HTML-First Won in Every Other Industry and Aviation Is Next](/blog/the-end-of-the-pdf-briefing). The key points:
+We've covered this in depth in our article [The End of the PDF Briefing: Why HTML-First Won in Every Other Industry and Aviation Is Next](/blog/end-of-the-pdf-briefing). The key points:
 
 ### Why HTML Wins
 
@@ -319,5 +319,5 @@ The shift from manual to automated briefings mirrors the shift from paper to ele
 ## Further Reading
 
 - [Deterministic First, AI Second: Why Aviation Software Needs a Safety-First AI Philosophy](/blog/deterministic-first-ai-second) — deep dive on our safety architecture
-- [The End of the PDF Briefing: Why HTML-First Won in Every Other Industry](/blog/the-end-of-the-pdf-briefing) — why format matters for operational effectiveness
+- [The End of the PDF Briefing: Why HTML-First Won in Every Other Industry](/blog/end-of-the-pdf-briefing) — why format matters for operational effectiveness
 - [The 90/10 Risk Rule: How Automated FRATs Can Reduce Pilot Burden Without Reducing Safety](/blog/the-90-10-risk-rule) — the design philosophy behind automated risk assessment
