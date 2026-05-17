@@ -6249,7 +6249,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // No agent-status guard here: the agent is "running" (not "error") at this
     // point because the run start already transitioned it; only the exit code
     // tells us whether the subprocess actually succeeded.
-    if (nextStatus === "error" && outcome === "failed" && opts?.subprocessExitCode === 0) {
+    if (
+      (nextStatus === "error" || nextStatus === "running") &&
+      outcome === "failed" &&
+      opts?.subprocessExitCode === 0
+    ) {
       nextStatus = "idle";
     }
 
