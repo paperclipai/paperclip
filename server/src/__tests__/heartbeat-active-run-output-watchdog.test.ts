@@ -547,4 +547,84 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     });
     expect(decision.createdByRunId).toBe(managerRunId);
   });
+
+  it("suppresses stale-run evaluation when source issue is done (POE-490 idempotency)", async () => {
+    // Regression test: closing a false-positive evaluation resets the DB unique
+    // constraint, allowing a second evaluation for the same runId. The fix adds
+    // an explicit terminal-status guard before any DB write.
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, issueId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    // Mark the source issue as done (work completed before detector fired).
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    const second = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(first.created).toBe(0);
+    expect(first.skipped).toBeGreaterThanOrEqual(1);
+    expect(second.created).toBe(0);
+
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
+  });
+
+  it("suppresses stale-run evaluation when source issue is cancelled (POE-490 idempotency)", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, issueId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, issueId));
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
+  });
+
+  it("re-fires after false-positive close only if source issue is still active (POE-490 idempotency)", async () => {
+    // Closing the evaluation for an active run must NOT suppress future firings.
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first.created).toBe(1);
+    const evaluationId = first.evaluationIssueIds[0];
+    expect(evaluationId).toBeTruthy();
+
+    // Close the first evaluation as a false positive — source issue still active.
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, evaluationId!));
+
+    // Second scan: source issue still in_progress → must fire again.
+    const second = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(second.created).toBe(1);
+    expect(second.evaluationIssueIds[0]).not.toBe(evaluationId);
+
+    const allEvaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(allEvaluations).toHaveLength(2);
+    expect(allEvaluations.filter((e) => !["done", "cancelled"].includes(e.status))).toHaveLength(1);
+  });
 });

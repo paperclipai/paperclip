@@ -2008,6 +2008,11 @@ export async function runChildProcess(
             terminalCleanupKillTimer = setTimeout(() => {
               terminalCleanupKillTimer = null;
               signalRunningProcess({ child, processGroupId }, "SIGKILL");
+              // Force-close stdio streams so the 'close' event fires even when
+              // child subprocesses hold the pipe write-ends open (Windows has no
+              // process-group kill, so orphan subprocesses delay the event).
+              child.stdout?.destroy();
+              child.stderr?.destroy();
             }, Math.max(1, opts.graceSec) * 1000);
           }, graceMs);
         };
