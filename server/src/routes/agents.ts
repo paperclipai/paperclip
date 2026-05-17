@@ -3469,30 +3469,6 @@ export function agentRoutes(
     );
   });
 
-  router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {
-    assertBoard(req);
-    const runId = req.params.runId as string;
-    const existing = await heartbeat.getRun(runId);
-    if (existing) {
-      assertCompanyAccess(req, existing.companyId);
-    }
-    const run = await heartbeat.cancelRun(runId);
-
-    if (run) {
-      await logActivity(db, {
-        companyId: run.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
-        action: "heartbeat.cancelled",
-        entityType: "heartbeat_run",
-        entityId: run.id,
-        details: { agentId: run.agentId },
-      });
-    }
-
-    res.json(run);
-  });
-
   router.post("/heartbeat-runs/stale/cancel", async (req, res) => {
     assertBoard(req);
     const companyId = typeof req.body?.companyId === "string" ? req.body.companyId : null;
@@ -3519,6 +3495,30 @@ export function agentRoutes(
     }
 
     res.json(result);
+  });
+
+  router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {
+    assertBoard(req);
+    const runId = req.params.runId as string;
+    const existing = await heartbeat.getRun(runId);
+    if (existing) {
+      assertCompanyAccess(req, existing.companyId);
+    }
+    const run = await heartbeat.cancelRun(runId);
+
+    if (run) {
+      await logActivity(db, {
+        companyId: run.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "heartbeat.cancelled",
+        entityType: "heartbeat_run",
+        entityId: run.id,
+        details: { agentId: run.agentId },
+      });
+    }
+
+    res.json(run);
   });
 
   router.post("/heartbeat-runs/:runId/watchdog-decisions", async (req, res) => {
