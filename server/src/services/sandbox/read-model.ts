@@ -48,6 +48,19 @@ export interface SandboxLeaseReadModel {
   capabilities: Record<string, unknown> | null;
   quotas: Record<string, unknown> | null;
   network: Record<string, unknown> | null;
+  /**
+   * Preview-only summary of the egress proxy policy that this lease would
+   * apply. Counts only — never raw hosts. `truth` is always `preview`
+   * because no proxy traffic is actually routed in this phase.
+   */
+  egressPreview: {
+    mode: string | null;
+    allowLoopback: boolean | null;
+    egressAllowlistCount: number;
+    dnsAllowlistCount: number;
+    allowInboundPortCount: number;
+    truth: "preview";
+  } | null;
   policyHash: string | null;
 
   /** Redacted artifact summary (boolean + count only, never raw paths). */
@@ -142,6 +155,24 @@ function projectAllowlisted(
   return out;
 }
 
+function countArrayEntries(value: unknown): number {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function summarizeEgressPreview(networkSource: Record<string, unknown>): SandboxLeaseReadModel["egressPreview"] {
+  const mode = typeof networkSource.mode === "string" ? networkSource.mode : null;
+  const allowLoopback =
+    typeof networkSource.allowLoopback === "boolean" ? networkSource.allowLoopback : null;
+  return {
+    mode,
+    allowLoopback,
+    egressAllowlistCount: countArrayEntries(networkSource.egressAllowlist),
+    dnsAllowlistCount: countArrayEntries(networkSource.dnsAllowlist),
+    allowInboundPortCount: countArrayEntries(networkSource.allowInboundPorts),
+    truth: "preview" as const,
+  };
+}
+
 function readPolicyHash(
   leaseColumn: string | null,
   metadata: Record<string, unknown> | null,
@@ -226,6 +257,7 @@ export function toSandboxLeaseReadModel(
     capabilities: projectAllowlisted(capabilitiesSource, CAPABILITY_ALLOWLIST),
     quotas: projectAllowlisted(quotasSource, QUOTA_ALLOWLIST),
     network: projectAllowlisted(networkSource, NETWORK_ALLOWLIST),
+    egressPreview: networkSource ? summarizeEgressPreview(networkSource) : null,
     policyHash: readPolicyHash(null, metadata),
     artifacts: readArtifactSummary(metadata),
     truth,
