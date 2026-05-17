@@ -770,7 +770,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           isNull(issues.hiddenAt),
           isNull(issues.assigneeUserId),
           inArray(issues.status, ["todo", "in_progress"]),
-          inArray(issues.priority, PRODUCTIVITY_REVIEW_ELIGIBLE_SOURCE_PRIORITIES),
+          inArray(issues.priority, [...PRODUCTIVITY_REVIEW_ELIGIBLE_SOURCE_PRIORITIES]),
           sql`${issues.assigneeAgentId} is not null`,
           sql`${issues.originKind} <> ${PRODUCTIVITY_REVIEW_ORIGIN_KIND}`,
         ),
