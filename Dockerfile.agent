@@ -1,4 +1,4 @@
-# syntax=registry.blockcast.net/dockerfile:1.20
+# syntax=harbor.blockcast.net/dockerfile/dockerfile:1.20
 #
 # paperclip-agent base image — extends the paperclip server image with the
 # build/devops toolchain that technical agents need to actually do work in
@@ -14,7 +14,7 @@
 # Tagged separately as `paperclip-agent:sha-…-k8s-vendored` so the heavy
 # toolchain doesn't bloat the paperclip-server image.
 
-ARG BASE_IMAGE=registry.blockcast.net/paperclip:latest-k8s-vendored
+ARG BASE_IMAGE=harbor.blockcast.net/paperclip/paperclip:latest-k8s-vendored
 FROM ${BASE_IMAGE}
 
 USER root

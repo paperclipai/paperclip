@@ -87,7 +87,7 @@ spec:
           # adds method/url/cause to request-handler error log so the
           # SSE-style HeadersTimeoutErrors that show up every ~5min
           # become attributable to a specific upstream).
-          image: registry.blockcast.net/paperclip-mcp-gateway:sha-11e28a6
+          image: harbor.blockcast.net/paperclip-mcp-gateway/paperclip-mcp-gateway:sha-11e28a6
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

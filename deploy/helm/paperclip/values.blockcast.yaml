@@ -8,7 +8,7 @@
 # `paperclip-database-url` Secrets are pre-created out of band.
 
 image:
-  repository: registry.blockcast.net/paperclip
+  repository: harbor.blockcast.net/paperclip/paperclip
   tag: sha-64076ef7-k8s-vendored
   pullPolicy: Always
   # Bump this to the kkroo image tag built from this repo when deploying.
