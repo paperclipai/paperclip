@@ -1823,6 +1823,38 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("does not stack assigned todo dispatches for the same agent during one recovery sweep", async () => {
+    const { companyId, agentId, issueId } = await seedAssignedTodoNoRunFixture();
+    const secondIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: secondIssueId,
+      companyId,
+      title: "Second assigned todo work without a heartbeat",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.assignmentDispatched).toBe(1);
+    expect(result.skipped).toBe(1);
+    expect(result.issueIds).toHaveLength(1);
+    expect([issueId, secondIssueId]).toContain(result.issueIds[0]);
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(1);
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    if (runs[0]?.id) {
+      await waitForRunToSettle(heartbeat, runs[0].id);
+    }
+  });
+
   it("does not duplicate initial assigned todo dispatch when a queued wake already exists", async () => {
     const { companyId, agentId, issueId } = await seedAssignedTodoNoRunFixture();
     await db.insert(agentWakeupRequests).values({
@@ -1967,6 +1999,78 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     if (retryRun) {
       await waitForRunToSettle(heartbeat, retryRun.id);
     }
+  });
+
+  it("quarantines assigned in-progress work after repeated timeouts instead of requeueing it", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "timed_out",
+      runErrorCode: "timeout",
+      runError: "Timed out after 600s",
+    });
+    const now = Date.now();
+    const timeoutRunIds = [randomUUID(), randomUUID(), randomUUID()];
+    await db.insert(heartbeatRuns).values(timeoutRunIds.map((id, index) => ({
+      id,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "timed_out",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+      },
+      startedAt: new Date(now - (index + 1) * 10 * 60 * 1000),
+      finishedAt: new Date(now - (index + 1) * 10 * 60 * 1000 + 5 * 60 * 1000),
+      createdAt: new Date(now - (index + 1) * 10 * 60 * 1000),
+      updatedAt: new Date(now - (index + 1) * 10 * 60 * 1000 + 5 * 60 * 1000),
+      errorCode: "timeout",
+      error: "Timed out after 600s",
+    })));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.timeoutQuarantined).toBe(1);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    const recovery = await waitForValue(async () =>
+      db.select().from(issues).where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "stranded_issue_recovery"),
+          eq(issues.originId, issueId),
+        ),
+      ).then((rows) => rows[0] ?? null),
+    );
+    if (!recovery) throw new Error("Expected stranded issue recovery issue to be created");
+    expect(recovery).toMatchObject({
+      companyId,
+      parentId: issueId,
+      assigneeAgentId: agentId,
+      originKind: "stranded_issue_recovery",
+      originId: issueId,
+      priority: "medium",
+      assigneeAdapterOverrides: { modelProfile: "cheap" },
+    });
+    expect([runId, ...timeoutRunIds]).toContain(recovery.originRunId ?? runId);
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([recovery.id]);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("Paperclip quarantined this assigned `in_progress` issue");
+    expect(comments[0]?.body).toContain(timeoutRunIds[0]);
+    expect(comments[0]?.body).toContain(`Recovery issue: [${recovery.identifier}]`);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    const sourceIssueRuns = runs.filter((run) => (run.contextSnapshot as Record<string, unknown> | null)?.issueId === issueId);
+    expect(sourceIssueRuns).toHaveLength(4);
   });
 
   it.each([
