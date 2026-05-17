@@ -42,6 +42,7 @@ import {
   getBuiltinRoutineVariableValues,
   extractRoutineVariableNames,
   interpolateRoutineTemplate,
+  isUuidLike,
   pluginOperationIssueOriginKind,
   stringifyRoutineVariableValue,
   syncRoutineVariablesWithTemplate,
@@ -476,6 +477,7 @@ export function routineService(
   });
 
   async function getRoutineById(id: string) {
+    if (!isUuidLike(id)) return null;
     return db
       .select()
       .from(routines)
@@ -911,7 +913,7 @@ export function routineService(
       .then((rows) => rows[0]?.issues ?? null);
     if (executionBoundIssue) return executionBoundIssue;
 
-    return executor
+    const activeHeartbeatContextIssue = await executor
       .select()
       .from(issues)
       .innerJoin(
@@ -935,6 +937,26 @@ export function routineService(
       .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
       .limit(1)
       .then((rows) => rows[0]?.issues ?? null);
+    if (activeHeartbeatContextIssue) return activeHeartbeatContextIssue;
+
+    // Some execution surfaces intentionally park work in blocked/todo without
+    // pinning an active execution run; coalesce these blocked issues to avoid reflooding.
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, originKind),
+          eq(issues.originId, originId),
+          eq(issues.status, "blocked"),
+          isNull(issues.hiddenAt),
+          ...(fingerprintCondition ? [fingerprintCondition] : []),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
   }
 
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {

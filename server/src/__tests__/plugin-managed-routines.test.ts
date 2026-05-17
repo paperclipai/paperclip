@@ -7,6 +7,10 @@ import {
   agents,
   companies,
   createDb,
+  issueComments,
+  issueInboxArchives,
+  issueReadStates,
+  issueThreadInteractions,
   issues,
   pluginManagedResources,
   plugins,
@@ -109,6 +113,10 @@ describeEmbeddedPostgres("plugin-managed routines", () => {
     await db.delete(routineRuns);
     await db.delete(routineTriggers);
     await db.delete(routines);
+    await db.delete(issueComments);
+    await db.delete(issueReadStates);
+    await db.delete(issueThreadInteractions);
+    await db.delete(issueInboxArchives);
     await db.delete(issues);
     await db.delete(agentConfigRevisions);
     await db.delete(activityLog);
@@ -245,5 +253,37 @@ describeEmbeddedPostgres("plugin-managed routines", () => {
     expect(wakeup).toHaveBeenCalledWith(agent.agentId, expect.objectContaining({
       reason: "issue_assigned",
     }));
+  });
+
+  it("coalesces to existing blocked plugin-operation issues without execution run linkage", async () => {
+    const { companyId, services } = await seedCompanyAndPlugin();
+    await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
+    await services.projects.reconcileManaged({ companyId, projectKey: "operations" });
+    const routine = await services.routines.managedReconcile({ companyId, routineKey: "nightly-lint" });
+    const wakeup = vi.fn(async () => ({ id: randomUUID() }));
+    const routinesSvc = routineService(db, { heartbeat: { wakeup } });
+
+    const firstRun = await routinesSvc.runRoutine(routine.routineId!, { source: "manual" }, { userId: "board-user" });
+    expect(firstRun.status).toBe("issue_created");
+
+    await db
+      .update(issues)
+      .set({
+        status: "blocked",
+        executionRunId: null,
+        executionLockedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, firstRun.linkedIssueId!));
+
+    const secondRun = await routinesSvc.runRoutine(routine.routineId!, { source: "manual" }, { userId: "board-user" });
+    expect(secondRun.status).toBe("coalesced");
+    expect(secondRun.linkedIssueId).toBe(firstRun.linkedIssueId);
+
+    const operationIssues = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.originId, "operation:nightly-lint"));
+    expect(operationIssues).toHaveLength(1);
   });
 });

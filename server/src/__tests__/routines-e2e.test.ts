@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +14,10 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   instanceSettings,
+  issueComments,
+  issueInboxArchives,
+  issueReadStates,
+  issueThreadInteractions,
   issues,
   principalPermissionGrants,
   projectWorkspaces,
@@ -101,6 +105,10 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(issueComments);
+    await db.delete(issueReadStates);
+    await db.delete(issueThreadInteractions);
+    await db.delete(issueInboxArchives);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -326,6 +334,78 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       ]),
     );
   }, 15_000);
+
+  it("coalesces routine_execution runs to an existing blocked issue to avoid reflood", async () => {
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const app = await createApp({
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Blocked routine coalescing test",
+        description: "Verify blocked execution issue coalescing",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      });
+    expect([200, 201], JSON.stringify(createRes.body)).toContain(createRes.status);
+    const routineId = createRes.body.id;
+
+    const firstRunRes = await postRoutineRun(app, routineId, {
+      source: "manual",
+      payload: { origin: "blocked-coalesce-test" },
+    });
+    expect(firstRunRes.status).toBe(202);
+    expect(firstRunRes.body.status).toBe("issue_created");
+    expect(firstRunRes.body.linkedIssueId).toBeTruthy();
+
+    await db
+      .update(issues)
+      .set({
+        status: "blocked",
+        executionRunId: null,
+        executionLockedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, firstRunRes.body.linkedIssueId));
+
+    const secondRunRes = await postRoutineRun(app, routineId, {
+      source: "manual",
+      payload: { origin: "blocked-coalesce-test" },
+    });
+    expect(secondRunRes.status).toBe(202);
+    expect(secondRunRes.body.status).toBe("coalesced");
+    expect(secondRunRes.body.linkedIssueId).toBe(firstRunRes.body.linkedIssueId);
+
+    const routineExecutionIssues = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(eq(issues.originKind, "routine_execution"), eq(issues.originId, routineId), isNull(issues.hiddenAt)));
+    expect(routineExecutionIssues).toHaveLength(1);
+  });
+
+  it("returns 404 for malformed routine ids on detail lookups", async () => {
+    const { companyId, userId } = await seedFixture();
+    const app = await createApp({
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app).get("/api/routines/not-a-uuid");
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Routine not found" });
+  });
 
   it("runs routines with variable inputs and interpolates the execution issue description", async () => {
     const { companyId, agentId, projectId, userId } = await seedFixture();
