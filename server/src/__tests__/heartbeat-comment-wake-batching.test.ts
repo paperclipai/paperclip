@@ -947,7 +947,7 @@ describe("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
 
       await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
-      const reopenedIssue = await waitFor(async () => {
+      await waitFor(async () => {
         const reopened = await db
           .select({
             status: issues.status,
@@ -956,8 +956,17 @@ describe("heartbeat comment wake batching", () => {
           .from(issues)
           .where(eq(issues.id, issueId))
           .then((rows) => rows[0] ?? null);
-        return reopened?.status === "in_progress" && reopened.completedAt === null ? reopened : null;
+        return reopened?.status === "in_progress" && reopened.completedAt === null;
       }, 90_000);
+
+      const reopenedIssue = await db
+        .select({
+          status: issues.status,
+          completedAt: issues.completedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
 
       expect(reopenedIssue).toMatchObject({
         status: "in_progress",
