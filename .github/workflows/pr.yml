@@ -129,7 +129,12 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: |
+          if [[ "${{ github.head_ref }}" == chore/dependency-refresh-* ]]; then
+            pnpm install --no-frozen-lockfile
+          else
+            pnpm install --frozen-lockfile
+          fi
 
       - name: Run grouped general test suites
         run: pnpm test:run:general -- --group '${{ matrix.group }}'
@@ -175,7 +180,12 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: |
+          if [[ "${{ github.head_ref }}" == chore/dependency-refresh-* ]]; then
+            pnpm install --no-frozen-lockfile
+          else
+            pnpm install --frozen-lockfile
+          fi
 
       - name: Build
         run: pnpm build
