@@ -56,3 +56,7 @@ export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
+export { crewbriefHubspotService } from "./crewbrief-hubspot.js";
+export { crewbriefPosthogService } from "./crewbrief-posthog.js";
+export { crewbriefEmailService } from "./crewbrief-email.js";
+export { crewbriefNurtureService } from "./crewbrief-nurture.js";

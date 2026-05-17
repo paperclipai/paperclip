@@ -10,6 +10,7 @@ import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { healthRoutes } from "./routes/health.js";
+import { crewbriefRoutes } from "./routes/crewbrief.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { agentRoutes } from "./routes/agents.js";
@@ -59,6 +60,12 @@ import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
+import {
+  crewbriefHubspotService,
+  crewbriefPosthogService,
+  crewbriefEmailService,
+  crewbriefNurtureService,
+} from "./services/index.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -293,6 +300,30 @@ export async function createApp(
       allowedHostnames: opts.allowedHostnames,
     }),
   );
+
+  const crewbriefCfg = {
+    CREWBRIEF_HUBSPOT_ACCESS_TOKEN: process.env.CREWBRIEF_HUBSPOT_ACCESS_TOKEN,
+    CREWBRIEF_HUBSPOT_EMAIL_SENDING: process.env.CREWBRIEF_HUBSPOT_EMAIL_SENDING === "true",
+    CREWBRIEF_POSTHOG_API_KEY: process.env.CREWBRIEF_POSTHOG_API_KEY,
+    CREWBRIEF_POSTHOG_HOST: process.env.CREWBRIEF_POSTHOG_HOST || "https://app.posthog.com",
+    CREWBRIEF_POSTHOG_CLIENT_KEY: process.env.CREWBRIEF_POSTHOG_CLIENT_KEY,
+    CREWBRIEF_LINKEDIN_PARTNER_ID: process.env.CREWBRIEF_LINKEDIN_PARTNER_ID,
+    CREWBRIEF_FROM_EMAIL: process.env.CREWBRIEF_FROM_EMAIL || "nurture@crewbrief.avva.aero",
+    CREWBRIEF_FROM_NAME: process.env.CREWBRIEF_FROM_NAME || "CrewBrief Team",
+    CREWBRIEF_BASE_URL: process.env.CREWBRIEF_BASE_URL || "https://crewbrief.avva.aero",
+    CREWBRIEF_EMAIL_PROVIDER: (process.env.CREWBRIEF_EMAIL_PROVIDER as "console" | "smtp" | "resend") || "console",
+    CREWBRIEF_SMTP_HOST: process.env.CREWBRIEF_SMTP_HOST,
+    CREWBRIEF_SMTP_PORT: Number(process.env.CREWBRIEF_SMTP_PORT) || 587,
+    CREWBRIEF_SMTP_USER: process.env.CREWBRIEF_SMTP_USER,
+    CREWBRIEF_SMTP_PASS: process.env.CREWBRIEF_SMTP_PASS,
+    CREWBRIEF_RESEND_API_KEY: process.env.CREWBRIEF_RESEND_API_KEY,
+  };
+  const cbHubspot = crewbriefHubspotService(crewbriefCfg.CREWBRIEF_HUBSPOT_ACCESS_TOKEN);
+  const cbPosthog = crewbriefPosthogService(crewbriefCfg.CREWBRIEF_POSTHOG_API_KEY, crewbriefCfg.CREWBRIEF_POSTHOG_HOST);
+  const cbEmail = crewbriefEmailService(crewbriefCfg);
+  const cbNurture = crewbriefNurtureService(db, crewbriefCfg, cbHubspot, cbPosthog, cbEmail);
+  api.use("/crewbrief", crewbriefRoutes(db, crewbriefCfg, cbNurture));
+
   app.use("/api", api);
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
@@ -300,6 +331,40 @@ export async function createApp(
   app.use(pluginUiStaticRoutes(db, {
     localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
   }));
+
+  const crewbriefHost = crewbriefCfg.CREWBRIEF_BASE_URL
+    ? new URL(crewbriefCfg.CREWBRIEF_BASE_URL).hostname
+    : "crewbrief.avva.aero";
+  const crewbriefLandingHtmlPath = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../crewbrief-landing/index.html",
+  );
+  let crewbriefLandingHtmlTemplate: string | null = null;
+  try {
+    crewbriefLandingHtmlTemplate = fs.readFileSync(crewbriefLandingHtmlPath, "utf-8");
+  } catch {
+    logger.warn({ path: crewbriefLandingHtmlPath }, "CrewBrief landing page not found");
+  }
+  if (crewbriefLandingHtmlTemplate) {
+    const injectedHtml = crewbriefLandingHtmlTemplate
+      .replace("__POSTHOG_CLIENT_KEY__", crewbriefCfg.CREWBRIEF_POSTHOG_CLIENT_KEY ?? "")
+      .replace("__POSTHOG_HOST__", crewbriefCfg.CREWBRIEF_POSTHOG_HOST)
+      .replace("__LINKEDIN_PARTNER_ID__", crewbriefCfg.CREWBRIEF_LINKEDIN_PARTNER_ID ?? "")
+      .replace(
+        "<!-- __CONFIG_INJECT__ -->",
+        `<script>window.CREWBRIEF_CONFIG = ${JSON.stringify({
+          apiBaseUrl: "",
+          linkedinConversionId: "",
+        })}</script>`,
+      );
+    app.use((req, res, next) => {
+      if (req.hostname === crewbriefHost || req.hostname.endsWith("." + crewbriefHost)) {
+        res.set("Content-Type", "text/html").status(200).end(injectedHtml);
+        return;
+      }
+      next();
+    });
+  }
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   if (opts.uiMode === "static") {
