@@ -83,4 +83,7 @@ cookies.txt
 Thumbs.db
 *.md.tmp
 .tmp/
-.gitignore.local
+
+# --- 本地目录联接 → 外挂「工具优化」等仓库外资源（仅存 README 说明入库） ---
+docs/项目计划/_externals/*
+!docs/项目计划/_externals/README.md
