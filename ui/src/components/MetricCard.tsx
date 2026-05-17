@@ -19,26 +19,27 @@ export function MetricCard({ icon: Icon, value, label, description, to, onClick 
   const inner = (
     <div
       className={cn(
-        "relative h-full overflow-hidden rounded-lg border border-border/60 bg-background/55 px-4 py-4 transition-colors sm:px-5 sm:py-5",
-        "before:pointer-events-none before:absolute before:inset-0 before:bg-[radial-gradient(circle,currentColor_1px,transparent_1px)] before:bg-[length:12px_12px] before:opacity-[0.035]",
+        "relative h-full overflow-hidden rounded-lg border border-border/60 bg-background/55 px-4 py-4 shadow-sm transition-colors sm:px-5 sm:py-5",
+        "before:pointer-events-none before:absolute before:inset-0 before:bg-[radial-gradient(circle_at_85%_10%,rgb(52_191_240/0.20),transparent_30%),radial-gradient(circle,currentColor_1px,transparent_1px)] before:bg-[length:100%_100%,12px_12px] before:opacity-[0.06]",
         "after:pointer-events-none after:absolute after:inset-x-0 after:top-0 after:h-px after:bg-foreground/15",
-        isClickable && "cursor-pointer hover:bg-accent/45",
+        "dark:border-[#2C94EE]/25 dark:bg-[#030A19]/70 dark:shadow-[inset_0_1px_0_rgb(252_250_254/0.08),0_0_32px_rgb(31_132_233/0.08)]",
+        isClickable && "cursor-pointer hover:bg-accent/45 dark:hover:border-[#34BFF0]/40 dark:hover:bg-[#05122E]/75",
       )}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
-          <DotMatrixText className="block text-2xl leading-none text-foreground sm:text-3xl">
+          <DotMatrixText className="block text-2xl leading-none text-foreground sm:text-3xl dark:text-[#FCFAFE]">
             {value}
           </DotMatrixText>
-          <p className="mt-2 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground sm:text-xs">
+          <p className="mt-2 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground sm:text-xs dark:text-[#E1E5EA]/75">
             {label}
           </p>
           {description && (
             <div className="text-xs text-muted-foreground/70 mt-1.5 hidden sm:block">{description}</div>
           )}
         </div>
-        <span className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center border border-border/70 bg-background/70">
-          <Icon className="h-4 w-4 text-muted-foreground/65" />
+        <span className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-md border border-border/70 bg-background/70 dark:border-[#6CBDFD]/25 dark:bg-[#071B45]/50">
+          <Icon className="h-4 w-4 text-muted-foreground/65 dark:text-[#6CBDFD]" />
         </span>
       </div>
     </div>

@@ -21,15 +21,15 @@ export function QuotaBar({
   className,
 }: QuotaBarProps) {
   const clampedPct = Math.min(100, Math.max(0, percentUsed));
-  const tone = clampedPct > 90 ? "danger" : clampedPct > 70 ? "warning" : "default";
+  const tone = clampedPct > 90 ? "danger" : clampedPct > 70 ? "warning" : "success";
 
   return (
     <div className={cn("space-y-1.5", className)}>
       {/* row header */}
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs text-muted-foreground">{label}</span>
+        <span className="text-xs text-muted-foreground dark:text-[#E1E5EA]/75">{label}</span>
         <div className="flex items-center gap-2 shrink-0">
-          <span className="text-xs font-medium tabular-nums">{leftLabel}</span>
+          <span className="text-xs font-medium tabular-nums dark:text-[#FCFAFE]">{leftLabel}</span>
           {rightLabel && (
             <span className="text-xs text-muted-foreground tabular-nums">{rightLabel}</span>
           )}

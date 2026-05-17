@@ -87,7 +87,9 @@ export function LedProgress({
       ? "bg-red-500"
       : tone === "warning"
         ? "bg-amber-400"
-        : "bg-foreground";
+        : tone === "success"
+          ? "bg-green-500"
+          : "bg-[#2C94EE]";
 
   return (
     <div className={cn("grid h-3 grid-cols-[repeat(24,minmax(0,1fr))] gap-px", className)}>
@@ -128,9 +130,11 @@ export function DotBar({
       ? "bg-red-500"
       : tone === "warning"
         ? "bg-amber-400"
+        : tone === "success"
+          ? "bg-green-500"
         : tone === "muted"
           ? "bg-muted-foreground/45"
-          : "bg-foreground";
+          : "bg-[#2C94EE]";
 
   return (
     <div className={cn("grid h-full grid-rows-12 gap-[2px]", className)} title={title}>
@@ -176,6 +180,8 @@ export function DotStack({
             ? "bg-red-500"
             : dot?.tone === "warning"
               ? "bg-amber-400"
+              : dot?.tone === "success"
+                ? "bg-green-500"
               : dot
                 ? "bg-[var(--dot-color)]"
                 : "bg-muted/40";
