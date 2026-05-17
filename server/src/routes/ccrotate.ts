@@ -35,6 +35,7 @@
 import { spawn } from "node:child_process";
 import { Router } from "express";
 import { logger } from "../middleware/logger.js";
+import { assertAuthenticated } from "./authz.js";
 
 const TARGETS = ["claude", "codex"] as const;
 type Target = (typeof TARGETS)[number];
@@ -179,7 +180,8 @@ async function getTargetStatus(target: Target): Promise<TargetStatus> {
 export function ccrotateRoutes() {
   const router = Router();
 
-  router.get("/status", async (_req, res) => {
+  router.get("/status", async (req, res) => {
+    assertAuthenticated(req);
     const [claude, codex] = await Promise.all([
       getTargetStatus("claude"),
       getTargetStatus("codex"),
