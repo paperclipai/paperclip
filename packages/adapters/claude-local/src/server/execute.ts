@@ -55,6 +55,7 @@ import {
   isClaudeUnknownSessionError,
 } from "./parse.js";
 import { prepareClaudeConfigSeed } from "./claude-config.js";
+import { validatePluginCacheManifests } from "./plugin-cache-validation.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
@@ -647,6 +648,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     taskContextChars: taskContextNote.length,
     heartbeatPromptChars: renderedPrompt.length,
   };
+
+  const pluginManifestResults = await validatePluginCacheManifests(process.env);
+  for (const result of pluginManifestResults) {
+    if (!result.valid) {
+      const keys = result.foundKeys && result.foundKeys.length > 0
+        ? ` (found top-level keys: ${result.foundKeys.join(", ")})`
+        : "";
+      await onLog(
+        "stderr",
+        `[paperclip] Warning: plugin cache manifest "${result.filePath}" is missing the required "mcpServers" top-level key${keys}. This manifest will be skipped by Claude and may cause missing MCP tools. Fix or remove the file to clear this warning.\n`,
+      );
+    }
+  }
 
   const buildClaudeArgs = (
     resumeSessionId: string | null,
