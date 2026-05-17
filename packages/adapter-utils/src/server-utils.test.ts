@@ -53,13 +53,14 @@ describe("buildInvocationEnvForLogs", () => {
     const loggedEnv = buildInvocationEnvForLogs(
       { SAFE_VALUE: "visible" },
       {
-        resolvedCommand: "env OPENAI_API_KEY=sk-live-example custom-acp --token ghp_example_secret",
+        resolvedCommand:
+          "env OPENAI_API_KEY=sk-live-example PAPERCLIP_API_KEY='paperclip-quoted-secret' custom-acp --paperclip-api-key=paperclip-flag-secret --token ghp_example_secret",
       },
     );
 
     expect(loggedEnv.SAFE_VALUE).toBe("visible");
     expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(
-      "env OPENAI_API_KEY=***REDACTED*** custom-acp --token ***REDACTED***",
+      "env OPENAI_API_KEY=***REDACTED*** PAPERCLIP_API_KEY='***REDACTED***' custom-acp --paperclip-api-key=***REDACTED*** --token ***REDACTED***",
     );
   });
 });

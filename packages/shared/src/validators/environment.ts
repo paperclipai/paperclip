@@ -97,8 +97,8 @@ const environmentFields = {
   description: z.string().optional().nullable(),
   driver: environmentDriverSchema,
   status: environmentStatusSchema.optional().default("active"),
-  config: z.record(z.unknown()).optional().default({}),
-  metadata: z.record(z.unknown()).optional().nullable(),
+  config: z.record(z.string(), z.unknown()).optional().default({}),
+  metadata: z.record(z.string(), z.unknown()).optional().nullable(),
 };
 
 export const createEnvironmentSchema = z
@@ -115,8 +115,8 @@ export const updateEnvironmentSchema = z
     description: z.string().optional().nullable(),
     driver: environmentDriverSchema.optional(),
     status: environmentStatusSchema.optional(),
-    config: z.record(z.unknown()).optional(),
-    metadata: z.record(z.unknown()).optional().nullable(),
+    config: z.record(z.string(), z.unknown()).optional(),
+    metadata: z.record(z.string(), z.unknown()).optional().nullable(),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -129,8 +129,8 @@ export const probeEnvironmentConfigSchema = z
     name: z.string().min(1).optional(),
     description: z.string().optional().nullable(),
     driver: environmentDriverSchema,
-    config: z.record(z.unknown()).optional().default({}),
-    metadata: z.record(z.unknown()).optional().nullable(),
+    config: z.record(z.string(), z.unknown()).optional().default({}),
+    metadata: z.record(z.string(), z.unknown()).optional().nullable(),
   })
   .strict()
   .superRefine((value, ctx) => {

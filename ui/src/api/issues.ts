@@ -131,7 +131,7 @@ export const issuesApi = {
     data: {
       actionId?: string;
       outcome: "restored" | "false_positive" | "blocked" | "cancelled";
-      sourceIssueStatus: "done" | "in_review" | "blocked";
+      sourceIssueStatus: "todo" | "done" | "in_review" | "blocked";
       resolutionNote?: string | null;
     },
   ) => api.post<ResolveRecoveryActionResponse>(`/issues/${id}/recovery-actions/resolve`, data),

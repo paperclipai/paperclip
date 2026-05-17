@@ -28,6 +28,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { useInboxBadge } from "../hooks/useInboxBadge";
 import { Button } from "@/components/ui/button";
 import { PluginSlotOutlet } from "@/plugins/slots";
+import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
 
 export function Sidebar() {
@@ -62,8 +63,8 @@ export function Sidebar() {
           variant="ghost"
           size="icon-sm"
           className="text-muted-foreground shrink-0"
-          aria-label="Search"
-          title="Search"
+          aria-label="Open search"
+          title="Open search"
         >
           <NavLink to="/search">
             <Search className="h-4 w-4" />
@@ -103,6 +104,12 @@ export function Sidebar() {
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
+          <PluginLauncherOutlet
+            placementZones={["sidebar"]}
+            context={pluginContext}
+            className="flex flex-col gap-0.5"
+            itemClassName="text-[13px] font-medium"
+          />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
           {showWorkspacesLink ? (
             <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />

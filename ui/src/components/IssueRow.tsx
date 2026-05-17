@@ -126,7 +126,6 @@ export function IssueRow({
       <span className="flex shrink-0 items-center gap-1 pt-px sm:hidden">
         {mobileLeading ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} className={selectedStatusClass} />}
         {productivityReviewIndicator}
-        {planningModeIndicator}
         {parkedBlockerIndicator}
         {recoveryIndicator}
       </span>
@@ -153,11 +152,11 @@ export function IssueRow({
               <span className="shrink-0 font-mono text-xs text-muted-foreground">
                 {identifier}
               </span>
-              {planningModeIndicator}
               {parkedBlockerIndicator}
               {recoveryIndicator}
             </>
           )}
+          {planningModeIndicator}
           {mobileMeta ? (
             <>
               <span className="text-xs text-muted-foreground sm:hidden" aria-hidden="true">
