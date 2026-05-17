@@ -23,6 +23,7 @@ import {
   E2B_SANDBOX_PROVIDER_KEY,
   E2BSandboxProvider,
   MANAGED_SANDBOX_LIVE_ENV,
+  isManagedSandboxLiveAllowed,
   type ManagedSandboxProviderConfig,
 } from "./managed-provider-spikes.js";
 import { PreProviderRedactionRegistry } from "./pre-provider-redaction.js";
@@ -387,6 +388,61 @@ describe("LET-366 E2BSandboxProvider live transport gating", () => {
       { method: "POST", path: "/sandboxes" },
       { method: "POST", path: "/sandboxes/e2b-sandbox-pause/pause" },
     ]);
+  });
+});
+
+describe("LET-366 SANDBOX_PROVIDER_ALLOW_LIVE env-gate strict equality", () => {
+  afterEach(() => {
+    restoreLiveFlag();
+  });
+
+  it("returns false when the env flag is unset", () => {
+    delete process.env.SANDBOX_PROVIDER_ALLOW_LIVE;
+    expect(isManagedSandboxLiveAllowed()).toBe(false);
+  });
+
+  it("returns true only for the exact string 'true'", () => {
+    process.env.SANDBOX_PROVIDER_ALLOW_LIVE = "true";
+    expect(isManagedSandboxLiveAllowed()).toBe(true);
+  });
+
+  // Regression: prior implementation also accepted "1" and case-insensitive
+  // variants. The LET-366 acceptance criterion requires the literal value
+  // "true". Any other value must fail closed so an operator cannot accidentally
+  // half-enable the live transport with a non-canonical flag value.
+  it.each(["1", "TRUE", "True", "yes", "on", " true", "true ", ""])(
+    "fails closed for non-canonical flag value %j",
+    (value) => {
+      process.env.SANDBOX_PROVIDER_ALLOW_LIVE = value;
+      expect(isManagedSandboxLiveAllowed()).toBe(false);
+    },
+  );
+
+  it("does not initialise the live transport when the env flag is '1' even with all other gates passing", async () => {
+    process.env.SANDBOX_PROVIDER_ALLOW_LIVE = "1";
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const liveTransportFactory = vi.fn();
+    const resolveApiKey = vi.fn(async () => RESOLVED_API_KEY_CANARY);
+    const provider = new E2BSandboxProvider({
+      isProviderEnabled: () => true,
+      resolveApiKey,
+      fetchImpl: globalThis.fetch.bind(globalThis),
+      liveTransportFactory,
+    });
+    await expect(
+      provider.acquireLease({
+        config: e2bLiveConfig,
+        environmentId: "env-strict",
+        heartbeatRunId: "run-strict",
+        issueId: "issue-strict",
+      }),
+    ).rejects.toMatchObject({
+      code: "PROVIDER_DISABLED",
+      details: expect.objectContaining({ gate: "env_flag", liveFlagSet: false }),
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(liveTransportFactory).not.toHaveBeenCalled();
+    expect(resolveApiKey).not.toHaveBeenCalled();
   });
 });
 

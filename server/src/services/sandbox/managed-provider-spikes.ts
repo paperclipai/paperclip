@@ -186,10 +186,14 @@ const DAYTONA_SURFACE: ManagedSandboxProviderSurface = Object.freeze({
   destroyPath: (sandboxId: string) => `/sandbox/${encodeURIComponent(sandboxId)}`,
 });
 
+/**
+ * LET-366 acceptance criterion 1: the live transport only initialises when
+ * `SANDBOX_PROVIDER_ALLOW_LIVE === "true"`. Any other value (including "1",
+ * "TRUE", "yes", whitespace, etc.) fails closed. This is deliberately exact —
+ * the operator must opt in with the literal value approved in the runbook.
+ */
 export function isManagedSandboxLiveAllowed(): boolean {
-  const flag = process.env[MANAGED_SANDBOX_LIVE_ENV];
-  if (!flag) return false;
-  return flag === "1" || flag.toLowerCase() === "true";
+  return process.env[MANAGED_SANDBOX_LIVE_ENV] === "true";
 }
 
 function assertManagedConfig(
