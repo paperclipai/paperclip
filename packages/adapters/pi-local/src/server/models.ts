@@ -16,32 +16,32 @@ function firstNonEmptyLine(text: string): string {
 function parseModelsOutput(stdout: string): AdapterModel[] {
   const parsed: AdapterModel[] = [];
   const lines = stdout.split(/\r?\n/);
-  
+
   // Skip header line if present
   let startIndex = 0;
   if (lines.length > 0 && (lines[0].includes("provider") || lines[0].includes("model"))) {
     startIndex = 1;
   }
-  
+
   for (let i = startIndex; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
-    
+
     // Parse format: "provider   model   context  max-out  thinking  images"
     // Split by 2+ spaces to handle the columnar format
     const parts = line.split(/\s{2,}/);
     if (parts.length < 2) continue;
-    
+
     const provider = parts[0].trim();
     const model = parts[1].trim();
-    
+
     if (!provider || !model) continue;
     if (provider === "provider" && model === "model") continue; // Skip header
-    
+
     const id = `${provider}/${model}`;
     parsed.push({ id, label: id });
   }
-  
+
   return parsed;
 }
 

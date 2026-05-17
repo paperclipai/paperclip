@@ -1,7 +1,7 @@
 # CEO Agent Creation and Hiring Governance Plan (V1.1)
 
-Status: Proposed  
-Date: 2026-02-19  
+Status: Proposed
+Date: 2026-02-19
 Owner: Product + Server + UI + Skills
 
 ## 1. Goal

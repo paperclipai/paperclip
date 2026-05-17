@@ -209,7 +209,7 @@ for (const packageName of packageNames) {
   } catch {
     versions = [];
   }
- 
+
   for (const version of versions) {
     const match = version.match(pattern);
     if (!match) continue;

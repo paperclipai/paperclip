@@ -1768,7 +1768,7 @@ export function buildInviteOnboardingTextDocument(
     And set the PAPERCLIP_API_KEY and PAPERCLIP_API_URL in your environment variables as specified here:
     https://docs.openclaw.ai/help/environment
 
-    e.g. 
+    e.g.
 
     {
       env: {

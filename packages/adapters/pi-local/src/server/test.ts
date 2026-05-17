@@ -239,8 +239,8 @@ export async function testEnvironment(
 
   if (canRunProbe && configuredModel) {
     // Parse model for probe
-    const provider = configuredModel.includes("/") 
-      ? configuredModel.slice(0, configuredModel.indexOf("/")) 
+    const provider = configuredModel.includes("/")
+      ? configuredModel.slice(0, configuredModel.indexOf("/"))
       : "";
     const modelId = configuredModel.includes("/")
       ? configuredModel.slice(configuredModel.indexOf("/") + 1)

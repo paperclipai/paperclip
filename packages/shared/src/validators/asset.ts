@@ -11,4 +11,3 @@ export const createAssetImageMetadataSchema = z.object({
 });
 
 export type CreateAssetImageMetadata = z.infer<typeof createAssetImageMetadataSchema>;
-

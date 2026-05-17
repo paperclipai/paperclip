@@ -1,6 +1,6 @@
 # Deployment Modes
 
-Status: Canonical deployment and auth mode model  
+Status: Canonical deployment and auth mode model
 Date: 2026-02-23
 
 ## 1. Purpose
