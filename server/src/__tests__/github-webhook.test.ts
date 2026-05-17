@@ -259,48 +259,6 @@ describeEmbeddedPostgres("github-webhook route", () => {
     expect(res.body).toMatchObject({ ignored: "issue_comment" });
   });
 
-  it("drives a wake on check_run.completed when the PR head_branch references a paperclip issue (CI completion)", async () => {
-    const { agentId, issueId } = await seedIssueWithIdentifier("BLO-3182");
-    const app = buildApp();
-    const payload = {
-      action: "completed",
-      check_run: {
-        head_branch: "fix/BLO-3182-webflow",
-        pull_requests: [{ number: 117, head: { ref: "fix/BLO-3182-webflow" } }],
-      },
-      repository: { full_name: "Blockcast/paperclip" },
-    };
-    const { body, signature } = signedRequest(payload);
-    const res = await request(app)
-      .post("/api/webhooks/github")
-      .set("x-github-event", "check_run")
-      .set("x-hub-signature-256", signature)
-      .set("x-github-delivery", "delivery-abc-123")
-      .set("content-type", "application/json")
-      .send(body);
-    expect(res.status).toBe(200);
-    expect(res.body.wakes).toHaveLength(1);
-    expect(res.body.wakes[0]).toMatchObject({
-      issueIdentifier: "BLO-3182",
-      agentId,
-    });
-    const wakes = await db
-      .select()
-      .from(agentWakeupRequests)
-      .where(eq(agentWakeupRequests.agentId, agentId));
-    expect(wakes).toHaveLength(1);
-    const payload0 = wakes[0]!.payload as Record<string, unknown>;
-    expect(payload0).toMatchObject({
-      issueId,
-      source: "github",
-      event: "check_run",
-      deliveryId: "delivery-abc-123",
-      prNumber: 117,
-      repoFullName: "Blockcast/paperclip",
-    });
-    expect(wakes[0]!.reason).toBe("github_check_completed");
-  });
-
   it("skips terminal-status issues -- a stale CI ping shouldn't reopen done work", async () => {
     const { agentId } = await seedIssueWithIdentifier("BLO-3000", { status: "done" });
     const app = buildApp();
@@ -349,5 +307,54 @@ describeEmbeddedPostgres("github-webhook route", () => {
       .send(body);
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ ignored: "no_matching_issue", identifiers: ["UNKNOWN-1234"] });
+  });
+
+  // Kept LAST in the describe block on purpose: this test triggers a
+  // fire-and-forget `void executeRun(claimedRun.id)` in services/heartbeat.ts
+  // that can outlive the test under CI load. If any test ran after it, that
+  // test's beforeEach TRUNCATE would block on ACCESS EXCLUSIVE waiting for
+  // executeRun's row locks to drain — eventually tripping the 60s hook
+  // timeout. afterAll tears down the whole temp db so leftover background
+  // work is harmless once this is the final test.
+  it("drives a wake on check_run.completed when the PR head_branch references a paperclip issue (CI completion)", async () => {
+    const { agentId, issueId } = await seedIssueWithIdentifier("BLO-3182");
+    const app = buildApp();
+    const payload = {
+      action: "completed",
+      check_run: {
+        head_branch: "fix/BLO-3182-webflow",
+        pull_requests: [{ number: 117, head: { ref: "fix/BLO-3182-webflow" } }],
+      },
+      repository: { full_name: "Blockcast/paperclip" },
+    };
+    const { body, signature } = signedRequest(payload);
+    const res = await request(app)
+      .post("/api/webhooks/github")
+      .set("x-github-event", "check_run")
+      .set("x-hub-signature-256", signature)
+      .set("x-github-delivery", "delivery-abc-123")
+      .set("content-type", "application/json")
+      .send(body);
+    expect(res.status).toBe(200);
+    expect(res.body.wakes).toHaveLength(1);
+    expect(res.body.wakes[0]).toMatchObject({
+      issueIdentifier: "BLO-3182",
+      agentId,
+    });
+    const wakes = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakes).toHaveLength(1);
+    const payload0 = wakes[0]!.payload as Record<string, unknown>;
+    expect(payload0).toMatchObject({
+      issueId,
+      source: "github",
+      event: "check_run",
+      deliveryId: "delivery-abc-123",
+      prNumber: 117,
+      repoFullName: "Blockcast/paperclip",
+    });
+    expect(wakes[0]!.reason).toBe("github_check_completed");
   });
 });
