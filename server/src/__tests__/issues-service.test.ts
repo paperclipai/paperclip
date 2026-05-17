@@ -3113,3 +3113,184 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     expect(row).toEqual({ executionRunId: null, executionLockedAt: null });
   });
 });
+
+
+describeEmbeddedPostgres("issueService.findMentionedAgents", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  let companyId!: string;
+  let cooId!: string;
+  let designId!: string;
+  let pmId!: string;
+  let banksAgentId!: string;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-find-mentioned-agents-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  // Each test seeds a company plus agents that exercise the mention parser:
+  //  - single-token name (COO)
+  //  - multi-word name (Director of Design)
+  //  - multi-word name with punctuation (Director of Project/Team Management)
+  //  - generic short name (Banks) used for the markdown-link path.
+  const seed = async () => {
+    companyId = randomUUID();
+    cooId = randomUUID();
+    designId = randomUUID();
+    pmId = randomUUID();
+    banksAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: cooId,
+        companyId,
+        name: "COO",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: designId,
+        companyId,
+        name: "Director of Design",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: pmId,
+        companyId,
+        name: "Director of Project/Team Management",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: banksAgentId,
+        companyId,
+        name: "Banks",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+  };
+
+  it("resolves a single-token mention (regression)", async () => {
+    await seed();
+    const result = await svc.findMentionedAgents(companyId, "@COO please review");
+    expect(new Set(result)).toEqual(new Set([cooId]));
+  });
+
+  it("resolves a multi-word agent name", async () => {
+    await seed();
+    const result = await svc.findMentionedAgents(
+      companyId,
+      "@Director of Design please review",
+    );
+    expect(new Set(result)).toEqual(new Set([designId]));
+  });
+
+  it("resolves a multi-word name with slash and mixed-case capitalisation", async () => {
+    await seed();
+    const result = await svc.findMentionedAgents(
+      companyId,
+      "@Director of Project/Team Management please review",
+    );
+    expect(new Set(result)).toEqual(new Set([pmId]));
+  });
+
+  it("does not resolve mentions when the body has no @", async () => {
+    await seed();
+    const result = await svc.findMentionedAgents(companyId, "Ready for COO review");
+    expect(result).toEqual([]);
+  });
+
+  it("does not resolve email-like @ inside a domain", async () => {
+    await seed();
+    const result = await svc.findMentionedAgents(
+      companyId,
+      "Reach me at user@example.com please",
+    );
+    expect(result).toEqual([]);
+  });
+
+  it("fails closed on a bare ambiguous prefix that matches no agent name exactly", async () => {
+    await seed();
+    // No agent is exactly named "Director"; longest-match-wins means none of the
+    // multi-word "Director of …" agents match a bare "@Director" alone.
+    const result = await svc.findMentionedAgents(
+      companyId,
+      "@Director and others please respond",
+    );
+    expect(result).toEqual([]);
+  });
+
+  it("resolves markdown-link mentions via extractAgentMentionIds (regression)", async () => {
+    await seed();
+    const result = await svc.findMentionedAgents(
+      companyId,
+      `Hi [@Banks](agent://${banksAgentId}) take a look`,
+    );
+    expect(new Set(result)).toEqual(new Set([banksAgentId]));
+  });
+
+  it("resolves both plain-text and markdown-link mentions in the same body", async () => {
+    await seed();
+    const result = await svc.findMentionedAgents(
+      companyId,
+      `@Director of Design ping; also [@Banks](agent://${banksAgentId}) please review`,
+    );
+    expect(new Set(result)).toEqual(new Set([designId, banksAgentId]));
+  });
+
+  it("matches multi-word agent names case-insensitively", async () => {
+    await seed();
+    const result = await svc.findMentionedAgents(
+      companyId,
+      "@director of design please review",
+    );
+    expect(new Set(result)).toEqual(new Set([designId]));
+  });
+
+  it("resolves multiple distinct mentions in one body", async () => {
+    await seed();
+    const result = await svc.findMentionedAgents(
+      companyId,
+      "@COO and @Director of Design and @Banks please review",
+    );
+    expect(new Set(result)).toEqual(new Set([cooId, designId, banksAgentId]));
+  });
+});

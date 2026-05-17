@@ -5267,22 +5267,39 @@ export function issueService(db: Db) {
       }),
 
     findMentionedAgents: async (companyId: string, body: string) => {
-      const re = /\B@([^\s@,!?.]+)/g;
-      const tokens = new Set<string>();
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(body)) !== null) {
-        const normalized = normalizeAgentMentionToken(m[1]);
-        if (normalized) tokens.add(normalized.toLowerCase());
-      }
-
       const explicitAgentMentionIds = extractAgentMentionIds(body);
-      if (tokens.size === 0 && explicitAgentMentionIds.length === 0) return [];
+      if (!body.includes("@") && explicitAgentMentionIds.length === 0) return [];
+
+      // Decode HTML entities up-front so UI-encoded bodies match agent names verbatim.
+      const normalizedBody = normalizeAgentMentionToken(body);
+
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
+
       const resolved = new Set<string>(explicitAgentMentionIds);
-      for (const agent of rows) {
-        if (tokens.has(agent.name.toLowerCase())) {
-          resolved.add(agent.id);
+      if (rows.length === 0) return [...resolved];
+
+      // Longest-name first so multi-word agent names (e.g. "Director of Design")
+      // win over any shorter name that is a prefix of another.
+      const sortedAgents = rows
+        .slice()
+        .sort((a, b) => b.name.length - a.name.length);
+
+      const atRe = /\B@/g;
+      let atMatch: RegExpExecArray | null;
+      while ((atMatch = atRe.exec(normalizedBody)) !== null) {
+        const start = atMatch.index + 1;
+        const window = normalizedBody.slice(start);
+        for (const agent of sortedAgents) {
+          if (window.length < agent.name.length) continue;
+          const candidate = window.slice(0, agent.name.length);
+          if (candidate.toLowerCase() === agent.name.toLowerCase()) {
+            const nextChar = window[agent.name.length];
+            if (nextChar === undefined || /[\s,.!?;:()[\]]/.test(nextChar)) {
+              resolved.add(agent.id);
+              break;
+            }
+          }
         }
       }
       return [...resolved];
