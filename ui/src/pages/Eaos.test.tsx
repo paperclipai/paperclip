@@ -1,10 +1,23 @@
 // @vitest-environment jsdom
 
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// React 19 only exports `act` from `react` when the development bundle is
+// loaded — i.e. when `process.env.NODE_ENV !== "production"`. Some QA
+// environments pin NODE_ENV to "production" before vitest starts, which
+// causes `import { act } from "react"` to resolve to `undefined`. Force a
+// non-production NODE_ENV *before* any React import is evaluated. This
+// uses `vi.hoisted` so it runs ahead of the hoisted ESM imports below.
+vi.hoisted(() => {
+  if (process.env.NODE_ENV === "production") {
+    process.env.NODE_ENV = "test";
+  }
+});
+
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Eaos } from "./Eaos";
 
 const breadcrumbState = vi.hoisted(() => ({ setBreadcrumbs: vi.fn() }));
