@@ -21,6 +21,39 @@ Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on comment-driven wakes.
 
 Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
 
+## Local Execution Context
+
+When running as a local adapter (`claude_local`, `codex_local`), you are executing inside a local codebase — **not** via `npx paperclipai`. Do **not** use `npx paperclipai` commands for API operations during heartbeats. Instead, use `curl` directly against `$PAPERCLIP_API_URL` with `$PAPERCLIP_API_KEY` for all API calls.
+
+**Primary method — curl:**
+
+```bash
+# GET request
+curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$PAPERCLIP_API_URL/api/agents/me"
+
+# POST/PATCH request (include run ID on mutating calls)
+curl -s -X POST "$PAPERCLIP_API_URL/api/issues/{issueId}/checkout" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"agentId":"...","expectedStatuses":["todo","backlog","blocked"]}'
+```
+
+**Fallback — Python urllib (if curl is blocked by sandbox):**
+
+```python
+python3 -c "
+import os, urllib.request, json
+req = urllib.request.Request(
+    os.environ['PAPERCLIP_API_URL'] + '/api/agents/me',
+    headers={'Authorization': 'Bearer ' + os.environ['PAPERCLIP_API_KEY']}
+)
+with urllib.request.urlopen(req) as r: print(r.read().decode())
+"
+```
+
+The `npx paperclipai` CLI is only for **manual operator use** outside of heartbeat runs (e.g., `paperclipai agent local-cli`, `paperclipai heartbeat run`). Agents must never depend on `npx` being available or working inside their sandboxed execution environment.
+
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
 ## The Heartbeat Procedure
@@ -302,8 +335,6 @@ If the issue identifier is available, prefer the document deep link over a plain
 If you're asked to make a plan, _do not mark the issue as done_. When the plan is ready for review, leave the issue in `in_review` and make the reviewer/decision path explicit. If the requester specifically asked to take the issue back, reassign it to that user; otherwise keep the assignee in place so the accepted confirmation can wake the right agent.
 
 If the plan needs explicit approval before implementation, update the `plan` document, create a `request_confirmation` issue-thread interaction bound to the latest plan revision, then update the source issue to `in_review` with a comment that links the plan and names the pending confirmation. This is a deliberate waiting path, not an abandoned productive run. Wait for acceptance before creating implementation subtasks. See `references/api-reference.md` for the interaction payload.
-
-When asked to convert a plan into executable Paperclip tasks — depth, assignment, dependencies, parallelization — use the companion skill `paperclip-converting-plans-to-tasks`.
 
 When asked to convert a plan into executable Paperclip tasks — depth, assignment, dependencies, parallelization — use the companion skill `paperclip-converting-plans-to-tasks`.
 
