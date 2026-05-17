@@ -59,6 +59,10 @@ export function nicheOpportunityRoutes(db: Db) {
       discoveredAt: discoveredAt ? new Date(discoveredAt) : undefined,
     });
 
+    if (!opp) {
+      return res.status(409).json({ error: "Niche opportunity with this category and keyword already exists" });
+    }
+
     res.status(201).json(opp);
   });
 

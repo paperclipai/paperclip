@@ -119,20 +119,35 @@ Every keyword evaluation must produce one activity-log entry (see Activity Log s
 
 **3d. Persist opportunity if score ≥ threshold**
 - Threshold: composite score ≥ 50 (configurable via `nda_config.score_threshold`).
-- Insert or upsert into `niche_opportunities`:
-  - `category_path` (array)
-  - `category_id`
-  - `head_keyword`
-  - `composite_score`
-  - `demand_score`, `competition_score`, `monetization_score`, `defensibility_score`, `risk_score`
-  - `bsr_median`, `estimated_monthly_sales`, `keyword_search_volume`
-  - `review_gap_excerpts` (JSON array)
-  - `pricing_data` (JSON)
-  - `competitor_snapshot` (JSON array, top-10 titles with BSR/reviews/price/pages/pub_date)
-  - `status = 'unreviewed'`
-  - `discovered_at = NOW()`
-  - `cycle_id` (current cycle UUID)
-  - `nda_run_id` (current Paperclip run ID)
+- **REQUIRED**: Call `POST /api/companies/{PAPERCLIP_COMPANY_ID}/niche-opportunities` with the following JSON body. This is the ONLY way niches appear in the Niches subtab UI. Writing to local JSON files alone is NOT sufficient.
+
+```json
+{
+  "headKeyword": "<head_keyword>",
+  "categoryPath": "<category_path joined with ' > '>",
+  "tier": "S|A|B",
+  "compositeScore": 0,
+  "discoveredAt": "<ISO-8601>",
+  "metadata": "{\"scoring\":{\"demand\":0,\"competition\":0,\"monetization\":0,\"defensibility\":0,\"risk\":0,\"royaltyPerUnit\":0},\"signals\":{\"bsrMedianTop30\":0,\"estimatedMonthlySales\":0,\"keywordSearchVolume\":0,\"medianPrice\":0,\"competitivenessIndex\":0,\"longTailVariants\":0},\"reviewGaps\":[],\"hardGuardTriggered\":null,\"cycleId\":\"...\",\"ndaRunId\":\"...\"}"
+}
+```
+
+The server enforces a unique constraint on `(companyId, categoryPath, headKeyword)` — duplicates return 409 and should be silently skipped. Also write to the local `niche_opportunities.json` as a backup/audit trail.
+
+Fields for the API call:
+  - `headKeyword` — head keyword string
+  - `categoryPath` — category path joined with " > " (e.g., "Books > Health, Fitness & Dieting > Mental Health")
+  - `tier` — S/A/B based on composite score
+  - `compositeScore` — 0–100 composite score
+  - `discoveredAt` — ISO-8601 timestamp
+  - `metadata` — JSON string containing:
+    - `scoring.demand`, `scoring.competition`, `scoring.monetization`, `scoring.defensibility`, `scoring.risk`
+    - `scoring.royaltyPerUnit` — royalty per unit in USD
+    - `signals.bsrMedianTop30`, `signals.estimatedMonthlySales`, `signals.keywordSearchVolume`
+    - `signals.medianPrice`, `signals.competitivenessIndex`, `signals.longTailVariants`
+    - `reviewGaps` — array of review gap excerpt strings
+    - `hardGuardTriggered` — guard name or null
+    - `cycleId`, `ndaRunId`
 
 ### 4. Update the cursor
 
@@ -218,12 +233,6 @@ Apply these when evaluating data. Cite the lens name in the activity log.
 
 ---
 
-## Continuous-Mode Criteria (Board Gate)
+## Continuous Mode — Active (Board Approved 2026-05-16)
 
-Before NDA is set to continuous mode, the CTO must confirm:
-1. One full test cycle completed with correct output.
-2. Monthly compute cost estimate submitted and approved by the board.
-3. Dashboard board-actions (Approve / Defer / Reject) verified to work correctly.
-4. MIA assignment auto-creation on approval verified end-to-end.
-
-Until the board approves continuous mode, NDA runs only on explicit API trigger or manual run.
+The board approved all four continuous-mode criteria on 2026-05-16. Continuous mode is **active**. NDA runs on the scheduled routine (every 10 minutes, 09:00–22:00 US/Eastern). Do **not** block on board approval — it is already granted. Proceed immediately with the heartbeat execution procedure.

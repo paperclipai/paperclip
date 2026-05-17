@@ -101,7 +101,7 @@ export function nicheOpportunityService(db: Db) {
         metadata?: string;
         discoveredAt?: Date;
       },
-    ): Promise<NicheOpportunity> => {
+    ): Promise<NicheOpportunity | null> => {
       const [row] = await db
         .insert(nicheOpportunities)
         .values({
@@ -113,8 +113,9 @@ export function nicheOpportunityService(db: Db) {
           metadata: data.metadata ?? null,
           discoveredAt: data.discoveredAt ?? new Date(),
         })
+        .onConflictDoNothing()
         .returning();
-      return toRow(row);
+      return row ? toRow(row) : null;
     },
   };
 }
