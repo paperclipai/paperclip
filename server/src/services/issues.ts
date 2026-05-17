@@ -9,7 +9,10 @@ import {
   assets,
   companies,
   companyMemberships,
+  costEvents,
   documents,
+  feedbackVotes,
+  financeEvents,
   goals,
   heartbeatRuns,
   executionWorkspaces,
@@ -44,6 +47,7 @@ import {
   clampIssueRequestDepth,
   extractAgentMentionIds,
   extractProjectMentionIds,
+  isProjectExemptAgentRole,
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
@@ -2939,12 +2943,17 @@ export function issueService(db: Db) {
     });
   }
 
-  async function assertAssignableAgent(companyId: string, agentId: string) {
+  async function assertAssignableAgent(
+    companyId: string,
+    agentId: string,
+    issueProjectId?: string | null,
+  ) {
     const assignee = await db
       .select({
         id: agents.id,
         companyId: agents.companyId,
         status: agents.status,
+        role: agents.role,
       })
       .from(agents)
       .where(eq(agents.id, agentId))
@@ -2959,6 +2968,18 @@ export function issueService(db: Db) {
     }
     if (assignee.status === "terminated") {
       throw conflict("Cannot assign work to terminated agents");
+    }
+    // Only enforce the project-required rule when the caller provided the issue's
+    // project context (issueProjectId !== undefined). Omitting the argument is how
+    // callers that don't know the project state (legacy paths) opt out of the check.
+    if (
+      issueProjectId !== undefined &&
+      issueProjectId === null &&
+      !isProjectExemptAgentRole(assignee.role)
+    ) {
+      throw unprocessable(
+        "Issue must be assigned to a project before a non-C-suite agent can pick it up",
+      );
     }
   }
 
@@ -4026,13 +4047,54 @@ export function issueService(db: Db) {
         throw unprocessable("Issue can only have one assignee");
       }
       if (data.assigneeAgentId) {
-        await assertAssignableAgent(companyId, data.assigneeAgentId);
+        await assertAssignableAgent(companyId, data.assigneeAgentId, data.projectId ?? null);
       }
       if (data.assigneeUserId) {
         await assertAssignableUser(companyId, data.assigneeUserId);
       }
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
+      }
+      // Velocity cap: agent may not have more than 4 active root issues
+      if (data.assigneeAgentId && !data.parentId) {
+        const { count: activeRootCount } = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, companyId),
+              eq(issues.assigneeAgentId, data.assigneeAgentId),
+              isNull(issues.parentId),
+              inArray(issues.status, ["todo", "in_progress", "in_review"]),
+            ),
+          )
+          .then((rows) => rows[0] ?? { count: 0 });
+        if (activeRootCount >= 4) {
+          throw unprocessable(
+            `Agent already has ${activeRootCount} active root issues. Complete or reassign existing work before creating more.`,
+          );
+        }
+      }
+      // Dedup: reject if a similar-titled issue already exists under the same goal
+      if (data.goalId && data.title) {
+        const similar = await db
+          .select({ id: issues.id, identifier: issues.identifier, title: issues.title })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, companyId),
+              eq(issues.goalId, data.goalId),
+              notInArray(issues.status, ["done", "cancelled"]),
+              sql`similarity(${issues.title}, ${data.title}) > 0.6`,
+            ),
+          )
+          .limit(3);
+        if (similar.length > 0) {
+          const first = similar[0];
+          throw unprocessable(
+            `Similar issue already exists: ${first.identifier} "${first.title}". Create a sub-issue under it instead, or use a clearly distinct title.`,
+          );
+        }
       }
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
@@ -4303,13 +4365,19 @@ export function issueService(db: Db) {
           throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
         }
       }
-      if (issueData.assigneeAgentId) {
-        await assertAssignableAgent(existing.companyId, issueData.assigneeAgentId);
+      const nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
+      // Re-validate assignment whenever either the assignee or the project changed.
+      // Running the check against the merged (nextAssigneeAgentId, nextProjectId) ensures
+      // that un-setting the project on an issue assigned to a non-C-suite agent is also
+      // rejected, not just the obvious "assign engineer to project-less issue" case.
+      const assignmentRuleNeedsRecheck =
+        issueData.assigneeAgentId !== undefined || issueData.projectId !== undefined;
+      if (assignmentRuleNeedsRecheck && nextAssigneeAgentId) {
+        await assertAssignableAgent(existing.companyId, nextAssigneeAgentId, nextProjectId);
       }
       if (issueData.assigneeUserId) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
       }
-      const nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
       const nextProjectWorkspaceId =
         issueData.projectWorkspaceId !== undefined ? issueData.projectWorkspaceId : existing.projectWorkspaceId;
       const nextExecutionWorkspaceId =
@@ -4562,6 +4630,15 @@ export function issueService(db: Db) {
           .from(issueDocuments)
           .where(eq(issueDocuments.issueId, id));
 
+        // Delete all rows referencing this issue (NO ACTION FK constraints)
+        await tx.delete(issueComments).where(eq(issueComments.issueId, id));
+        await tx.delete(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, id));
+        await tx.delete(issueInboxArchives).where(eq(issueInboxArchives.issueId, id));
+        await tx.delete(issueReadStates).where(eq(issueReadStates.issueId, id));
+        await tx.delete(costEvents).where(eq(costEvents.issueId, id));
+        await tx.delete(financeEvents).where(eq(financeEvents.issueId, id));
+        await tx.delete(feedbackVotes).where(eq(feedbackVotes.issueId, id));
+
         const removedIssue = await tx
           .delete(issues)
           .where(eq(issues.id, id))
@@ -4587,14 +4664,13 @@ export function issueService(db: Db) {
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
       const issueCompany = await db
-        .select({ companyId: issues.companyId })
+        .select({ companyId: issues.companyId, projectId: issues.projectId })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
-      await assertAssignableAgent(issueCompany.companyId, agentId);
+      await assertAssignableAgent(issueCompany.companyId, agentId, issueCompany.projectId);
 
-      const now = new Date();
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issueCompany.companyId, id);
       if (
         activePauseHold &&
@@ -4609,132 +4685,201 @@ export function issueService(db: Db) {
         });
       }
 
-      await clearExecutionRunIfTerminal(id);
+      // VAS-27 fix: Serialize the ENTIRE checkout critical section per-issue with
+      // SELECT ... FOR UPDATE. Previously only the staleness pre-check held the row
+      // lock; the main conditional UPDATE and the adoptStaleCheckoutRun fallback ran
+      // outside any lock, leaving a TOCTOU window where two agent runs could both
+      // resolve as winners (the loser would see the winner's checkoutRunId, re-read
+      // heartbeat_runs before that row was visible as queued/running, treat the lock
+      // as stale, and hijack the claim). Holding a row-level lock for the whole
+      // procedure makes "one-agent-per-task" a hard database-enforced invariant.
+      const result = await db.transaction(async (tx) => {
+        // Take an exclusive row lock on this issue for the duration of the tx.
+        // If another checkout is in flight for the same issue, this blocks until
+        // that tx commits, then we re-read post-commit state below.
+        await tx.execute(sql`select id from issues where id = ${id} for update`);
 
-      const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
-      const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
-      if (unresolvedBlockerIssueIds.length > 0) {
-        throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
-      }
+        const now = new Date();
 
-      const sameRunAssigneeCondition = checkoutRunId
-        ? and(
-          eq(issues.assigneeAgentId, agentId),
-          or(isNull(issues.checkoutRunId), eq(issues.checkoutRunId, checkoutRunId)),
-        )
-        : and(eq(issues.assigneeAgentId, agentId), isNull(issues.checkoutRunId));
-      const executionLockCondition = checkoutRunId
-        ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
-        : isNull(issues.executionRunId);
-      const updated = await db
-        .update(issues)
-        .set({
-          assigneeAgentId: agentId,
-          assigneeUserId: null,
-          checkoutRunId,
-          executionRunId: checkoutRunId,
-          status: "in_progress",
-          startedAt: now,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(issues.id, id),
-            inArray(issues.status, expectedStatuses),
-            or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
-            executionLockCondition,
-          ),
-        )
-        .returning()
-        .then((rows) => rows[0] ?? null);
+        // Clear stale execution locks inside the same tx so staleness detection
+        // and the conditional UPDATE observe consistent state.
+        const preCheckRow = await tx
+          .select({ executionRunId: issues.executionRunId })
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (preCheckRow?.executionRunId) {
+          const lockRun = await tx
+            .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, preCheckRow.executionRunId))
+            .then((rows) => rows[0] ?? null);
+          if (!lockRun || (lockRun.status !== "queued" && lockRun.status !== "running")) {
+            await tx
+              .update(issues)
+              .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt: now })
+              .where(
+                and(
+                  eq(issues.id, id),
+                  eq(issues.executionRunId, preCheckRow.executionRunId),
+                ),
+              );
+          }
+        }
 
-      if (updated) {
-        const [enriched] = await withIssueLabels(db, [updated]);
-        return enriched;
-      }
+        // Check dependency blockers before allowing checkout.
+        const dependencyReadiness = await listIssueDependencyReadinessMap(tx, issueCompany.companyId, [id]);
+        const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
+        if (unresolvedBlockerIssueIds.length > 0) {
+          throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
+        }
 
-      const current = await db
-        .select({
-          id: issues.id,
-          status: issues.status,
-          assigneeAgentId: issues.assigneeAgentId,
-          checkoutRunId: issues.checkoutRunId,
-          executionRunId: issues.executionRunId,
-        })
-        .from(issues)
-        .where(eq(issues.id, id))
-        .then((rows) => rows[0] ?? null);
-
-      if (!current) throw notFound("Issue not found");
-
-      if (
-        current.assigneeAgentId === agentId &&
-        current.status === "in_progress" &&
-        current.checkoutRunId == null &&
-        (current.executionRunId == null || current.executionRunId === checkoutRunId) &&
-        checkoutRunId
-      ) {
-        const adopted = await db
+        const sameRunAssigneeCondition = checkoutRunId
+          ? and(
+            eq(issues.assigneeAgentId, agentId),
+            or(isNull(issues.checkoutRunId), eq(issues.checkoutRunId, checkoutRunId)),
+          )
+          : and(eq(issues.assigneeAgentId, agentId), isNull(issues.checkoutRunId));
+        const executionLockCondition = checkoutRunId
+          ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
+          : isNull(issues.executionRunId);
+        const updated = await tx
           .update(issues)
           .set({
+            assigneeAgentId: agentId,
+            assigneeUserId: null,
             checkoutRunId,
             executionRunId: checkoutRunId,
-            updatedAt: new Date(),
+            status: "in_progress",
+            startedAt: now,
+            updatedAt: now,
           })
           .where(
             and(
               eq(issues.id, id),
-              eq(issues.status, "in_progress"),
-              eq(issues.assigneeAgentId, agentId),
-              isNull(issues.checkoutRunId),
-              or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId)),
+              inArray(issues.status, expectedStatuses),
+              or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+              executionLockCondition,
             ),
           )
           .returning()
           .then((rows) => rows[0] ?? null);
-        if (adopted) return adopted;
-      }
 
-      if (
-        checkoutRunId &&
-        current.assigneeAgentId === agentId &&
-        current.status === "in_progress" &&
-        current.checkoutRunId &&
-        current.checkoutRunId !== checkoutRunId
-      ) {
-        const adopted = await adoptStaleCheckoutRun({
-          issueId: id,
-          actorAgentId: agentId,
-          actorRunId: checkoutRunId,
-          expectedCheckoutRunId: current.checkoutRunId,
-        });
-        if (adopted) {
-          const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
-          if (!row) throw notFound("Issue not found");
-          const [enriched] = await withIssueLabels(db, [row]);
-          return enriched;
+        if (updated) {
+          return { kind: "updated" as const, row: updated };
         }
-      }
 
-      // If this run already owns it and it's in_progress, return it (no self-409)
-      if (
-        current.assigneeAgentId === agentId &&
-        current.status === "in_progress" &&
-        sameRunLock(current.checkoutRunId, checkoutRunId)
-      ) {
-        const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
-        if (!row) throw notFound("Issue not found");
-        const [enriched] = await withIssueLabels(db, [row]);
-        return enriched;
-      }
+        const current = await tx
+          .select({
+            id: issues.id,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows) => rows[0] ?? null);
 
-      throw conflict("Issue checkout conflict", {
-        issueId: current.id,
-        status: current.status,
-        assigneeAgentId: current.assigneeAgentId,
-        checkoutRunId: current.checkoutRunId,
-        executionRunId: current.executionRunId,
+        if (!current) throw notFound("Issue not found");
+
+        // Adopt a checkout slot that has a matching assignee but no run id yet.
+        if (
+          current.assigneeAgentId === agentId &&
+          current.status === "in_progress" &&
+          current.checkoutRunId == null &&
+          (current.executionRunId == null || current.executionRunId === checkoutRunId) &&
+          checkoutRunId
+        ) {
+          const adopted = await tx
+            .update(issues)
+            .set({
+              checkoutRunId,
+              executionRunId: checkoutRunId,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(issues.id, id),
+                eq(issues.status, "in_progress"),
+                eq(issues.assigneeAgentId, agentId),
+                isNull(issues.checkoutRunId),
+                or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId)),
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (adopted) return { kind: "adopted" as const, row: adopted };
+        }
+
+        // Adopt only if the incumbent checkoutRunId refers to a heartbeat run that
+        // is definitively terminal or missing. Inlined here so the stale check and
+        // the adopting UPDATE share the outer row lock — no TOCTOU window.
+        if (
+          checkoutRunId &&
+          current.assigneeAgentId === agentId &&
+          current.status === "in_progress" &&
+          current.checkoutRunId &&
+          current.checkoutRunId !== checkoutRunId
+        ) {
+          const lockRun = await tx
+            .select({ status: heartbeatRuns.status })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, current.checkoutRunId))
+            .then((rows) => rows[0] ?? null);
+          const stale = !lockRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(lockRun.status);
+          if (stale) {
+            const adopted = await tx
+              .update(issues)
+              .set({
+                checkoutRunId,
+                executionRunId: checkoutRunId,
+                executionLockedAt: new Date(),
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(issues.id, id),
+                  eq(issues.status, "in_progress"),
+                  eq(issues.assigneeAgentId, agentId),
+                  eq(issues.checkoutRunId, current.checkoutRunId),
+                ),
+              )
+              .returning()
+              .then((rows) => rows[0] ?? null);
+            if (adopted) return { kind: "adopted" as const, row: adopted };
+          }
+        }
+
+        // If this run already owns it and it's in_progress, return it (no self-409)
+        if (
+          current.assigneeAgentId === agentId &&
+          current.status === "in_progress" &&
+          sameRunLock(current.checkoutRunId, checkoutRunId)
+        ) {
+          const row = await tx.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
+          if (!row) throw notFound("Issue not found");
+          return { kind: "self" as const, row };
+        }
+
+        return {
+          kind: "conflict" as const,
+          current,
+        };
       });
+
+      if (result.kind === "conflict") {
+        throw conflict("Issue checkout conflict", {
+          issueId: result.current.id,
+          status: result.current.status,
+          assigneeAgentId: result.current.assigneeAgentId,
+          checkoutRunId: result.current.checkoutRunId,
+          executionRunId: result.current.executionRunId,
+        });
+      }
+
+      const [enriched] = await withIssueLabels(db, [result.row]);
+      return enriched;
     },
 
     assertCheckoutOwner: async (id: string, actorAgentId: string, actorRunId: string | null) => {
@@ -5031,6 +5176,34 @@ export function issueService(db: Db) {
       if (!comment) return null;
       const [enrichedComment] = await enrichCommentsWithDerivedAgentAttribution([comment]);
       return redactIssueComment(enrichedComment ?? comment, censorUsernameInLogs);
+    },
+
+    patchCommentAttachments: async (
+      commentId: string,
+      attachments: Array<{ kind: "local_file"; path: string; label?: string; mimeType?: string; preview?: string | null }>,
+    ) => {
+      const { censorUsernameInLogs } = await instanceSettings.getGeneral();
+      const existing = await db
+        .select()
+        .from(issueComments)
+        .where(eq(issueComments.id, commentId))
+        .then((rows) => rows[0] ?? null);
+      if (!existing) return null;
+
+      const prevAttachments: typeof attachments = (existing.metadata as { attachments?: typeof attachments } | null)?.attachments ?? [];
+      const merged = [...prevAttachments, ...attachments];
+      const updatedMetadata = existing.metadata
+        ? { ...existing.metadata, attachments: merged }
+        : { version: 1 as const, sections: [], attachments: merged };
+
+      const [updated] = await db
+        .update(issueComments)
+        .set({ metadata: updatedMetadata as typeof existing.metadata, updatedAt: new Date() })
+        .where(eq(issueComments.id, commentId))
+        .returning();
+      if (!updated) return null;
+      const [enrichedComment] = await enrichCommentsWithDerivedAgentAttribution([updated]);
+      return redactIssueComment(enrichedComment ?? updated, censorUsernameInLogs);
     },
 
     removeComment: async (commentId: string) => {

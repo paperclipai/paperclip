@@ -379,6 +379,37 @@ export function registerIssueCommands(program: Command): void {
         }
       }),
   );
+
+  issue.addCommand(
+    addCommonClientOptions(
+      new Command()
+        .command("delete")
+        .description("Permanently delete an issue by ID or identifier")
+        .argument("<issueId>", "Issue ID or identifier (e.g. VAS-353)")
+        .option("--yes", "Skip confirmation prompt")
+        .action(async (issueId: string, opts: BaseClientOptions & { yes?: boolean }) => {
+          try {
+            const ctx = resolveCommandContext(opts);
+            if (!opts.yes) {
+              const readline = await import("node:readline");
+              const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+              const answer = await new Promise<string>((resolve) =>
+                rl.question(`Delete issue ${issueId}? This cannot be undone. (yes/N): `, resolve),
+              );
+              rl.close();
+              if (answer.trim().toLowerCase() !== "yes") {
+                console.log("Aborted.");
+                process.exit(0);
+              }
+            }
+            const deleted = await ctx.api.delete<Issue>(`/api/issues/${issueId}`);
+            printOutput(deleted, { json: ctx.json });
+          } catch (err) {
+            handleCommandError(err);
+          }
+        }),
+    ),
+  );
 }
 
 function parseCsv(value: string | undefined): string[] {

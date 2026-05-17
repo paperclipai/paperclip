@@ -74,7 +74,7 @@ import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import { statusBadge } from "../lib/status-colors";
 import { workflowSort } from "../lib/workflow-sort";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
-import { ISSUE_STATUSES, type Issue, type IssueStatus, type Project } from "@paperclipai/shared";
+import { ISSUE_STATUSES, isProjectExemptAgentRole, type Issue, type IssueStatus, type Project } from "@paperclipai/shared";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
 const ISSUE_BOARD_COLUMN_RESULT_LIMIT = 200;
@@ -370,6 +370,9 @@ function shouldSuppressSinglePreviousSiblingBlockerChip(
 interface Agent {
   id: string;
   name: string;
+  // Optional: if present, the inline assignee picker honors the project-required
+  // rule and blocks non-C-suite agents from taking project-less issues.
+  role?: string;
 }
 
 type CreatorOption = {
@@ -1911,27 +1914,43 @@ export function IssuesList({
                                           <span>Me</span>
                                         </button>
                                       )}
+                                      {!issue.projectId && (
+                                        <div className="px-2 py-1 text-[11px] text-amber-900 dark:text-amber-200 bg-amber-500/10 border border-amber-500/25 rounded">
+                                          No project set — only C-suite agents can take this issue.
+                                        </div>
+                                      )}
                                       {(agents ?? [])
                                         .filter((agent) => {
                                           if (!assigneeSearch.trim()) return true;
                                           return agent.name.toLowerCase().includes(assigneeSearch.toLowerCase());
                                         })
-                                        .map((agent) => (
-                                          <button
-                                            key={agent.id}
-                                            className={cn(
-                                              "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50",
-                                              issue.assigneeAgentId === agent.id && "bg-accent",
-                                            )}
-                                            onClick={(e) => {
-                                              e.preventDefault();
-                                              e.stopPropagation();
-                                              assignIssue(issue.id, agent.id, null);
-                                            }}
-                                          >
-                                            <Identity name={agent.name} size="sm" className="min-w-0" />
-                                          </button>
-                                        ))}
+                                        .map((agent) => {
+                                          const blockedByProjectRule =
+                                            !issue.projectId &&
+                                            !!agent.role &&
+                                            !isProjectExemptAgentRole(agent.role);
+                                          return (
+                                            <button
+                                              key={agent.id}
+                                              className={cn(
+                                                "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs",
+                                                !blockedByProjectRule && "hover:bg-accent/50",
+                                                issue.assigneeAgentId === agent.id && "bg-accent",
+                                                blockedByProjectRule && "opacity-50 cursor-not-allowed",
+                                              )}
+                                              disabled={blockedByProjectRule}
+                                              title={blockedByProjectRule ? "Set a project on this issue first" : undefined}
+                                              onClick={(e) => {
+                                                e.preventDefault();
+                                                e.stopPropagation();
+                                                if (blockedByProjectRule) return;
+                                                assignIssue(issue.id, agent.id, null);
+                                              }}
+                                            >
+                                              <Identity name={agent.name} size="sm" className="min-w-0" />
+                                            </button>
+                                          );
+                                        })}
                                     </div>
                                   </PopoverContent>
                                 </Popover>

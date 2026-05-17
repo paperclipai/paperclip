@@ -9887,6 +9887,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
 
+        // Skip timer wake if the agent has no actionable issues assigned.
+        // Advances lastHeartbeatAt so the interval resets — prevents immediate re-check next tick.
+        const actionableCount = await db
+          .select({ id: issues.id })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, agent.companyId),
+              eq(issues.assigneeAgentId, agent.id),
+              inArray(issues.status, ["todo", "in_progress"]),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows.length);
+
+        if (actionableCount === 0) {
+          await db
+            .update(agents)
+            .set({ lastHeartbeatAt: now })
+            .where(eq(agents.id, agent.id));
+          skipped += 1;
+          continue;
+        }
+
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
           triggerDetail: "system",

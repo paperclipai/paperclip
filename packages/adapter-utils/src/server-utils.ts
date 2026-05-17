@@ -110,6 +110,18 @@ export function resolvePaperclipInstanceRootForAdapter(input: {
   return path.resolve(homeDir, "instances", instanceId);
 }
 
+const PAPERCLIP_SKILL_ENTRIES_CACHE_TTL_MS = 10_000;
+const paperclipSkillEntriesCache = new Map<
+  string,
+  { entries: PaperclipSkillEntry[]; expiresAt: number }
+>();
+
+const INSTALLED_SKILL_TARGETS_CACHE_TTL_MS = 10_000;
+const installedSkillTargetsCache = new Map<
+  string,
+  { targets: Map<string, InstalledSkillTarget>; expiresAt: number }
+>();
+
 export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
   "",
@@ -119,6 +131,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
   "- Final disposition checklist: mark `done` when complete; use `in_review` only with a real reviewer, approval, interaction, or monitor path; use `blocked` only with first-class blockers or a named unblock owner/action; create delegated follow-up issues with blockers when another agent owns the next step; keep `in_progress` only when a live continuation path exists.",
   "- Prefer the smallest verification that proves the change; do not default to full workspace typecheck/build/test on every heartbeat unless the task scope warrants it.",
+  "- Leave a structured handoff comment on every issue you touch (schema: STATE / RUN / PENDING / BLOCK / NEXT — bullets and values only, no prose, no re-explaining prior comments). Critical IDs, paths, and timestamps belong in the comment. Narrative detail belongs in MemPalace drawers.",
   "- Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.",
   "- If woken by a human comment on a dependency-blocked issue, respond or triage the comment without treating the blocked deliverable work as unblocked.",
   "- Create child issues directly when you know what needs to be done; use issue-thread interactions when the board/user must choose suggested tasks, answer structured questions, or confirm a proposal.",
@@ -127,6 +140,8 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
   "- If blocked, mark the issue blocked and name the unblock owner and action.",
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
+  "- Before exiting, comment on any in_progress issue you touched with status and next action.",
+  "- Include the `X-Paperclip-Run-Id` header on every mutating API call.",
 ].join("\n");
 
 export interface PaperclipSkillEntry {
@@ -1346,13 +1361,19 @@ export async function listPaperclipSkillEntries(
   moduleDir: string,
   additionalCandidates: string[] = [],
 ): Promise<PaperclipSkillEntry[]> {
+  const cacheKey = `${moduleDir}:${additionalCandidates.join(",")}`;
+  const cached = paperclipSkillEntriesCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.entries;
+  }
+
   const root = await resolvePaperclipSkillsDir(moduleDir, additionalCandidates);
   if (!root) return [];
 
   try {
     const entries = await fs.readdir(root, { withFileTypes: true });
     const dirs = entries.filter((entry) => entry.isDirectory());
-    return Promise.all(dirs.map(async (entry) => {
+    const result = await Promise.all(dirs.map(async (entry) => {
       const skillDir = path.join(root, entry.name);
       const required = await readSkillRequired(skillDir);
       return {
@@ -1365,12 +1386,23 @@ export async function listPaperclipSkillEntries(
           : null,
       };
     }));
+    paperclipSkillEntriesCache.set(cacheKey, {
+      entries: result,
+      expiresAt: Date.now() + PAPERCLIP_SKILL_ENTRIES_CACHE_TTL_MS,
+    });
+    return result;
   } catch {
     return [];
   }
 }
 
 export async function readInstalledSkillTargets(skillsHome: string): Promise<Map<string, InstalledSkillTarget>> {
+  const cacheKey = skillsHome;
+  const cached = installedSkillTargetsCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return new Map(cached.targets);
+  }
+
   const entries = await fs.readdir(skillsHome, { withFileTypes: true }).catch(() => []);
   const out = new Map<string, InstalledSkillTarget>();
   for (const entry of entries) {
@@ -1378,6 +1410,11 @@ export async function readInstalledSkillTargets(skillsHome: string): Promise<Map
     const linkedPath = entry.isSymbolicLink() ? await fs.readlink(fullPath).catch(() => null) : null;
     out.set(entry.name, resolveInstalledEntryTarget(skillsHome, entry.name, entry, linkedPath));
   }
+
+  installedSkillTargetsCache.set(cacheKey, {
+    targets: new Map(out),
+    expiresAt: Date.now() + INSTALLED_SKILL_TARGETS_CACHE_TTL_MS,
+  });
   return out;
 }
 

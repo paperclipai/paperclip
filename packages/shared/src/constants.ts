@@ -73,6 +73,17 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   general: "General",
 };
 
+/**
+ * Roles that can be assigned to issues without a project (org-level work).
+ * All other roles must own project-scoped issues only. Source of truth for both
+ * server enforcement (services/issues.ts) and UI hinting.
+ */
+export const PROJECT_EXEMPT_AGENT_ROLES = ["ceo", "cto", "cmo", "cfo"] as const satisfies ReadonlyArray<AgentRole>;
+
+export function isProjectExemptAgentRole(role: string): boolean {
+  return (PROJECT_EXEMPT_AGENT_ROLES as ReadonlyArray<string>).includes(role);
+}
+
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
 
@@ -154,7 +165,7 @@ export const MAX_ISSUE_REQUEST_DEPTH = 1024;
 export const ISSUE_COMMENT_AUTHOR_TYPES = ["user", "agent", "system"] as const;
 export type IssueCommentAuthorType = (typeof ISSUE_COMMENT_AUTHOR_TYPES)[number];
 
-export const ISSUE_COMMENT_PRESENTATION_KINDS = ["message", "system_notice"] as const;
+export const ISSUE_COMMENT_PRESENTATION_KINDS = ["message", "system_notice", "progress_note"] as const;
 export type IssueCommentPresentationKind = (typeof ISSUE_COMMENT_PRESENTATION_KINDS)[number];
 
 export const ISSUE_COMMENT_PRESENTATION_TONES = ["neutral", "info", "success", "warning", "danger"] as const;

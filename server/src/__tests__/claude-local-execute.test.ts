@@ -1116,4 +1116,60 @@ describe("claude execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  /**
+   * Project-local `.claude/skills/<name>/SKILL.md` directories in the workspace
+   * cwd must be mounted into the managed prompt bundle so Claude CLI sees them
+   * alongside Paperclip-managed skills.
+   */
+  it("materializes project-local .claude/skills into the prompt bundle", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-project-skills-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    const projectSkillsDir = path.join(workspace, ".claude", "skills");
+    await fs.mkdir(path.join(projectSkillsDir, "broll-extract-clip"), { recursive: true });
+    await fs.writeFile(
+      path.join(projectSkillsDir, "broll-extract-clip", "SKILL.md"),
+      "# broll-extract-clip\nExtracts a clip from a b-roll source.\n",
+      "utf-8",
+    );
+    await fs.mkdir(path.join(projectSkillsDir, "ffmpeg-concat"), { recursive: true });
+    await fs.writeFile(
+      path.join(projectSkillsDir, "ffmpeg-concat", "SKILL.md"),
+      "# ffmpeg-concat\nConcatenates video clips.\n",
+      "utf-8",
+    );
+    // A directory without SKILL.md must be ignored.
+    await fs.mkdir(path.join(projectSkillsDir, "not-a-skill"), { recursive: true });
+    await fs.writeFile(
+      path.join(projectSkillsDir, "not-a-skill", "readme.md"),
+      "just a folder",
+      "utf-8",
+    );
+    const logs: string[] = [];
+    try {
+      await execute({
+        runId: "run-project-skills",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async (_stream, chunk) => { logs.push(chunk); },
+        onMeta: async () => {},
+      });
+      const captured = JSON.parse(await fs.readFile(capturePath, "utf-8")) as CapturePayload;
+      expect(captured.skillEntries).toContain("broll-extract-clip");
+      expect(captured.skillEntries).toContain("ffmpeg-concat");
+      expect(captured.skillEntries).not.toContain("not-a-skill");
+      expect(logs.join("")).toContain("mounted 2 project skill(s)");
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });

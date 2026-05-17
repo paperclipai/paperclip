@@ -514,6 +514,7 @@ export interface IssueComment {
   body: string;
   presentation: IssueCommentPresentation | null;
   metadata: IssueCommentMetadata | null;
+  attachments?: IssueCommentAttachment[];
   followUpRequested?: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -577,7 +578,16 @@ export interface IssueCommentMetadata {
   version: 1;
   sourceRunId?: string | null;
   sections: IssueCommentMetadataSection[];
+  attachments?: IssueCommentAttachment[];
 }
+
+export type IssueCommentAttachment = {
+  kind: "local_file";
+  path: string;
+  label?: string;
+  mimeType?: string;
+  preview?: string; // first 500 chars of text content
+};
 
 export interface IssueCommentPresentation {
   kind: IssueCommentPresentationKind;

@@ -59,6 +59,7 @@ import { prepareClaudeConfigSeed } from "./claude-config.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
+import { readProjectWorkspaceSkills } from "./project-skills.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
@@ -455,9 +456,36 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
   }
+  const desiredManagedSkills = claudeSkillEntries.filter((entry) => desiredSkillNames.has(entry.key));
+  const projectSkills = await readProjectWorkspaceSkills(cwd);
+  const bundleSkills = [...desiredManagedSkills];
+  const reservedRuntimeNames = new Set(desiredManagedSkills.map((entry) => entry.runtimeName));
+  let mergedProjectSkillCount = 0;
+  const skippedProjectSkills: string[] = [];
+  for (const entry of projectSkills) {
+    if (reservedRuntimeNames.has(entry.runtimeName)) {
+      skippedProjectSkills.push(entry.runtimeName);
+      continue;
+    }
+    reservedRuntimeNames.add(entry.runtimeName);
+    bundleSkills.push(entry);
+    mergedProjectSkillCount += 1;
+  }
+  if (mergedProjectSkillCount > 0 || skippedProjectSkills.length > 0) {
+    const parts: string[] = [];
+    if (mergedProjectSkillCount > 0) {
+      parts.push(`mounted ${mergedProjectSkillCount} project skill(s) from ${path.join(cwd, ".claude", "skills")}`);
+    }
+    if (skippedProjectSkills.length > 0) {
+      parts.push(
+        `skipped ${skippedProjectSkills.length} due to name collision with managed skills (${skippedProjectSkills.join(", ")})`,
+      );
+    }
+    await onLog("stdout", `[paperclip] ${parts.join("; ")}.\n`);
+  }
   const promptBundle = await prepareClaudePromptBundle({
     companyId: agent.companyId,
-    skills: claudeSkillEntries.filter((entry) => desiredSkillNames.has(entry.key)),
+    skills: bundleSkills,
     instructionsContents: combinedInstructionsContents,
     onLog,
   });

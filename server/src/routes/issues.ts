@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
@@ -7,6 +8,7 @@ import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   executionWorkspaces,
+  heartbeatRuns,
   issueExecutionDecisions,
   issueRelations,
   issues as issueRows,
@@ -857,6 +859,17 @@ export function issueRoutes(
   };
   const feedbackExportService = opts?.feedbackExportService;
   const environmentsSvc = environmentService(db);
+  // Resolves the agentId that owns a given run ID. Used to detect self-comments posted
+  // by agent runs that were mis-attributed to local-board due to missing Bearer token
+  // in local_trusted deployment mode.
+  async function getRunAgentId(runId: string): Promise<string | null> {
+    return db
+      .select({ agentId: heartbeatRuns.agentId })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]?.agentId ?? null);
+  }
+
   function withContentPath<T extends { id: string }>(attachment: T) {
     return {
       ...attachment,
@@ -4481,6 +4494,19 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    // In local_trusted mode, agent requests without a Bearer token fall through to local-board
+    // actor type. Detect this case by checking whether the run ID header maps to the assignee
+    // agent, and promote the actor type to "agent" so downstream logic correctly treats the
+    // comment as a self-comment (no implicit reopen, no self-wake).
+    let resolvedActorType = actor.actorType;
+    let resolvedActorId = actor.actorId;
+    if (actor.actorType === "user" && actor.runId && issue.assigneeAgentId) {
+      const runAgentId = await getRunAgentId(actor.runId).catch(() => null);
+      if (runAgentId && runAgentId === issue.assigneeAgentId) {
+        resolvedActorType = "agent";
+        resolvedActorId = runAgentId;
+      }
+    }
     const reopenRequested = req.body.reopen === true;
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;
@@ -4496,8 +4522,8 @@ export function issueRoutes(
       shouldImplicitlyMoveCommentedIssueToTodo({
         issueStatus: issue.status,
         assigneeAgentId: issue.assigneeAgentId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
+        actorType: resolvedActorType,
+        actorId: resolvedActorId,
       });
     const hasUnresolvedFirstClassBlockers =
       isBlocked && effectiveMoveToTodoRequested
@@ -4525,9 +4551,9 @@ export function issueRoutes(
 
       await logActivity(db, {
         companyId: currentIssue.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
+        actorType: resolvedActorType,
+        actorId: resolvedActorId,
+        agentId: resolvedActorType === "agent" ? resolvedActorId : undefined,
         runId: actor.runId,
         action: "issue.updated",
         entityType: "issue",
@@ -4570,8 +4596,8 @@ export function issueRoutes(
     }
 
     const comment = await svc.addComment(id, req.body.body, {
-      agentId: actor.agentId ?? undefined,
-      userId: actor.actorType === "user" ? actor.actorId : undefined,
+      agentId: resolvedActorType === "agent" ? resolvedActorId : undefined,
+      userId: resolvedActorType === "user" ? resolvedActorId : undefined,
       runId: actor.runId,
     }, {
       authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
@@ -4592,9 +4618,9 @@ export function issueRoutes(
 
     await logActivity(db, {
       companyId: currentIssue.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
+      actorType: resolvedActorType,
+      actorId: resolvedActorId,
+      agentId: resolvedActorType === "agent" ? resolvedActorId : undefined,
       runId: actor.runId,
       action: "issue.comment_added",
       entityType: "issue",
@@ -4619,8 +4645,8 @@ export function issueRoutes(
       currentIssue,
       comment,
       {
-        agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
+        agentId: resolvedActorType === "agent" ? resolvedActorId : undefined,
+        userId: resolvedActorType === "user" ? resolvedActorId : null,
       },
     );
     await logExpiredRequestConfirmations({
@@ -4634,8 +4660,9 @@ export function issueRoutes(
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
       const assigneeId = currentIssue.assigneeAgentId;
-      const actorIsAgent = actor.actorType === "agent";
-      const selfComment = actorIsAgent && actor.actorId === assigneeId;
+      // Use resolvedActorType/Id (which corrects local_trusted mis-attribution) for self-comment detection.
+      const actorIsAgent = resolvedActorType === "agent";
+      const selfComment = actorIsAgent && resolvedActorId === assigneeId;
       const skipWake = selfComment || isClosed;
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
@@ -5004,6 +5031,63 @@ export function issueRoutes(
     });
 
     res.json({ ok: true });
+  });
+
+  // PATCH /issue-comments/:commentId — attach local files to an existing comment
+  router.patch("/issue-comments/:commentId", async (req, res) => {
+    const commentId = req.params.commentId as string;
+    const comment = await svc.getComment(commentId);
+    if (!comment) {
+      res.status(404).json({ error: "Comment not found" });
+      return;
+    }
+    assertCompanyAccess(req, comment.companyId);
+
+    const rawAttachments = req.body.attachments;
+    if (!Array.isArray(rawAttachments) || rawAttachments.length === 0) {
+      res.status(400).json({ error: "attachments must be a non-empty array" });
+      return;
+    }
+
+    const patchAttachmentSchema = z.object({
+      kind: z.literal("local_file"),
+      path: z.string().min(1),
+      label: z.string().optional(),
+      mimeType: z.string().optional(),
+      preview: z.string().optional(),
+    });
+
+    const enriched: Array<{ kind: "local_file"; path: string; label?: string; mimeType?: string; preview?: string | null }> = [];
+    for (const raw of rawAttachments) {
+      const parsed = patchAttachmentSchema.safeParse(raw);
+      if (!parsed.success) {
+        res.status(400).json({ error: "Invalid attachment", details: parsed.error.issues });
+        return;
+      }
+      const att = parsed.data;
+      // Reject path traversal attempts
+      if (att.path.split("/").includes("..") || att.path.includes("..\\")) {
+        res.status(400).json({ error: "Attachment path must not contain traversal components" });
+        return;
+      }
+      let preview: string | null = att.preview ?? null;
+      if (!preview) {
+        try {
+          preview = readFileSync(att.path, "utf8").slice(0, 500);
+        } catch {
+          // binary or missing — no preview
+          preview = null;
+        }
+      }
+      enriched.push({ kind: "local_file", path: att.path, label: att.label, mimeType: att.mimeType, preview });
+    }
+
+    const updated = await svc.patchCommentAttachments(commentId, enriched);
+    if (!updated) {
+      res.status(404).json({ error: "Comment not found" });
+      return;
+    }
+    res.json(updated);
   });
 
   return router;

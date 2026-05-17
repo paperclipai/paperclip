@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
-import type { Issue, IssueLabel, Project, WorkspaceRuntimeService } from "@paperclipai/shared";
+import type { Issue, IssueLabel, IssueRelationIssueSummary, Project, WorkspaceRuntimeService } from "@paperclipai/shared";
+import { isProjectExemptAgentRole } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterModel } from "../api/agents";
 import { accessApi } from "../api/access";
@@ -764,6 +765,9 @@ export function IssueProperties({
       </button>
     </div>
   );
+  // When the issue has no project, only C-suite agents can be assigned (server-side
+  // rule — mirrored here so the UI reflects what the API will accept).
+  const issueRequiresProjectExemption = !issue.projectId;
   const reviewerValues = stageParticipantValues(issue.executionPolicy, "review");
   const approverValues = stageParticipantValues(issue.executionPolicy, "approval");
   const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId, userLabelMap);
@@ -1322,6 +1326,11 @@ export function IssueProperties({
         onChange={(e) => setAssigneeSearch(e.target.value)}
         autoFocus={!inline}
       />
+      {issueRequiresProjectExemption && (
+        <div className="px-2 py-1.5 text-[11px] text-amber-900 dark:text-amber-200 bg-amber-500/10 border border-amber-500/25 rounded mb-1">
+          This issue has no project. Only C-suite agents (CEO/CTO/CMO/CFO) can be assigned until a project is set.
+        </div>
+      )}
       <div className="max-h-48 overflow-y-auto overscroll-contain">
         {assigneePickerOptions
           .filter((option) => {
@@ -1329,34 +1338,45 @@ export function IssueProperties({
             const q = assigneeSearch.toLowerCase();
             return `${option.label} ${option.searchText}`.toLowerCase().includes(q);
           })
-          .map((option) => (
-            <button
-              key={option.id || "__none__"}
-              className={cn(
-                "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                option.id === selectedAssigneeValue && "bg-accent",
-              )}
-              onClick={() => {
-                if (option.kind === "agent") {
-                  trackRecentAssignee(option.agent.id);
-                  onUpdate({ assigneeAgentId: option.agent.id, assigneeUserId: null });
-                } else if (option.kind === "user") {
-                  trackRecentAssigneeUser(option.userId);
-                  onUpdate({ assigneeAgentId: null, assigneeUserId: option.userId });
-                } else {
-                  onUpdate({ assigneeAgentId: null, assigneeUserId: null });
-                }
-                setAssigneeOpen(false);
-              }}
-            >
-              {option.kind === "agent" ? (
-                <AgentIcon icon={option.agent.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
-              ) : option.kind === "user" ? (
-                <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-              ) : null}
-              {option.label}
-            </button>
-          ))}
+          .map((option) => {
+            const agentBlockedByProjectRule =
+              option.kind === "agent" &&
+              issueRequiresProjectExemption &&
+              !isProjectExemptAgentRole(option.agent.role);
+            return (
+              <button
+                key={option.id || "__none__"}
+                className={cn(
+                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded",
+                  !agentBlockedByProjectRule && "hover:bg-accent/50",
+                  option.id === selectedAssigneeValue && "bg-accent",
+                  agentBlockedByProjectRule && "opacity-50 cursor-not-allowed",
+                )}
+                disabled={agentBlockedByProjectRule}
+                title={agentBlockedByProjectRule ? "Set a project on this issue first" : undefined}
+                onClick={() => {
+                  if (agentBlockedByProjectRule) return;
+                  if (option.kind === "agent") {
+                    trackRecentAssignee(option.agent.id);
+                    onUpdate({ assigneeAgentId: option.agent.id, assigneeUserId: null });
+                  } else if (option.kind === "user") {
+                    trackRecentAssigneeUser(option.userId);
+                    onUpdate({ assigneeAgentId: null, assigneeUserId: option.userId });
+                  } else {
+                    onUpdate({ assigneeAgentId: null, assigneeUserId: null });
+                  }
+                  setAssigneeOpen(false);
+                }}
+              >
+                {option.kind === "agent" ? (
+                  <AgentIcon icon={option.agent.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
+                ) : option.kind === "user" ? (
+                  <User className="h-3 w-3 shrink-0 text-muted-foreground" />
+                ) : null}
+                {option.label}
+              </button>
+            );
+          })}
       </div>
     </>
   );
@@ -1482,6 +1502,12 @@ export function IssueProperties({
     recentProjectIds,
   );
 
+  // Un-setting the project is only safe when the current assignee is C-suite (or none).
+  // If an engineer/designer/etc. currently owns the issue, the server will reject the
+  // patch — disable the "No project" option to surface that up front.
+  const currentAssigneeIsProjectLocked =
+    !!assignee && !isProjectExemptAgentRole(assignee.role);
+
   const projectContent = (
     <>
       <input
@@ -1498,14 +1524,26 @@ export function IssueProperties({
             const q = projectSearch.toLowerCase();
             return option.name.toLowerCase().includes(q);
           })
-          .map((option) => (
+          .map((option) => {
+            const unsetBlockedByAssignee =
+              option.kind === "none" && currentAssigneeIsProjectLocked;
+            return (
             <button
               key={option.id || "__none__"}
               className={cn(
-                "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 whitespace-nowrap",
+                "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded whitespace-nowrap",
+                !unsetBlockedByAssignee && "hover:bg-accent/50",
                 option.id === (issue.projectId ?? "") && "bg-accent",
+                unsetBlockedByAssignee && "opacity-50 cursor-not-allowed",
               )}
+              disabled={unsetBlockedByAssignee}
+              title={
+                unsetBlockedByAssignee
+                  ? `Reassign to a C-suite agent before clearing the project (current assignee ${assignee?.name ?? ""} is ${assignee?.role ?? "a non-exempt role"})`
+                  : undefined
+              }
               onClick={() => {
+                if (unsetBlockedByAssignee) return;
                 if (option.kind === "project") {
                   const defaultMode = defaultExecutionWorkspaceModeForProject(option.project);
                   trackRecentProject(option.project.id);
@@ -1538,7 +1576,8 @@ export function IssueProperties({
               ) : null}
               {option.name}
             </button>
-          ))}
+            );
+          })}
       </div>
     </>
   );

@@ -39,6 +39,7 @@ import { EntityRow } from "../components/EntityRow";
 import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { RunButton, PauseResumeButton } from "../components/AgentActionButtons";
+import { AgentChatTab } from "../components/AgentChatTab";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { FileTree, buildFileTree } from "../components/FileTree";
 import { ScrollToBottom } from "../components/ScrollToBottom";
@@ -235,7 +236,7 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "runs" | "budget";
+type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "runs" | "budget" | "chat";
 
 function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "instructions" || value === "prompts") return "instructions";
@@ -243,6 +244,7 @@ function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "skills") return "skills";
   if (value === "budget") return "budget";
   if (value === "runs") return value;
+  if (value === "chat") return "chat";
   return "dashboard";
 }
 
@@ -761,6 +763,8 @@ export function AgentDetail() {
               ? "runs"
               : activeView === "budget"
                 ? "budget"
+                : activeView === "chat"
+                  ? "chat"
               : "dashboard";
     if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
       navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
@@ -1025,6 +1029,7 @@ export function AgentDetail() {
               { value: "configuration", label: "Configuration" },
               { value: "runs", label: "Runs" },
               { value: "budget", label: "Budget" },
+              { value: "chat", label: "Chat" },
             ]}
             value={activeView}
             onValueChange={(value) => navigate(`/agents/${canonicalAgentRef}/${value}`)}
@@ -1150,6 +1155,10 @@ export function AgentDetail() {
           adapterType={agent.adapterType}
           adapterConfig={agent.adapterConfig}
         />
+      )}
+
+      {activeView === "chat" && (
+        <AgentChatTab agentId={agent.id} agentName={agent.name} />
       )}
 
       {activeView === "budget" && resolvedCompanyId ? (
