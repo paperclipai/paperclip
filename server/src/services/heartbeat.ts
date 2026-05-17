@@ -2173,24 +2173,84 @@ async function terminateHeartbeatRunProcess(input: {
   pid: number | null | undefined;
   processGroupId: number | null | undefined;
   graceMs?: number;
+  run?: typeof heartbeatRuns.$inferSelect;
+  reason?: string;
+  db?: Db;
 }) {
   const pid = input.pid ?? null;
   const processGroupId = input.processGroupId ?? null;
   if (typeof pid !== "number" && typeof processGroupId !== "number") return;
 
-  await terminateLocalService(
-    {
-      pid:
-        typeof pid === "number" && Number.isInteger(pid) && pid > 0
-          ? pid
-          : (processGroupId ?? 0),
-      processGroupId:
-        typeof processGroupId === "number" && Number.isInteger(processGroupId) && processGroupId > 0
-          ? processGroupId
-          : null,
-    },
-    input.graceMs ? { forceAfterMs: input.graceMs } : undefined,
-  );
+  // Log termination for observability
+  if (input.run && input.db) {
+    await logActivity(input.db, {
+      companyId: input.run.companyId,
+      actorType: "system",
+      actorId: "heartbeat-service",
+      action: "run.process.termination_triggered",
+      entityType: "heartbeat_run",
+      entityId: input.run.id,
+      agentId: input.run.agentId,
+      runId: input.run.id,
+      details: {
+        pid,
+        processGroupId,
+        graceMs: input.graceMs,
+        reason: input.reason,
+      },
+    }).catch(() => {
+      // Don't let logging errors prevent process termination
+    });
+  }
+
+  const terminationStart = Date.now();
+  let terminationSuccess = false;
+  let terminationError: Error | null = null;
+
+  try {
+    await terminateLocalService(
+      {
+        pid:
+          typeof pid === "number" && Number.isInteger(pid) && pid > 0
+            ? pid
+            : (processGroupId ?? 0),
+        processGroupId:
+          typeof processGroupId === "number" && Number.isInteger(processGroupId) && processGroupId > 0
+            ? processGroupId
+            : null,
+      },
+      input.graceMs ? { forceAfterMs: input.graceMs } : undefined,
+    );
+    terminationSuccess = true;
+  } catch (error) {
+    terminationError = error instanceof Error ? error : new Error(String(error));
+    throw error;
+  } finally {
+    // Log termination outcome for observability
+    if (input.run && input.db) {
+      const durationMs = Date.now() - terminationStart;
+      await logActivity(input.db, {
+        companyId: input.run.companyId,
+        actorType: "system",
+        actorId: "heartbeat-service",
+        action: terminationSuccess ? "run.process.terminated" : "run.process.termination_failed",
+        entityType: "heartbeat_run",
+        entityId: input.run.id,
+        agentId: input.run.agentId,
+        runId: input.run.id,
+        details: {
+          pid,
+          processGroupId,
+          durationMs,
+          success: terminationSuccess,
+          error: terminationError?.message,
+          reason: input.reason,
+        },
+      }).catch(() => {
+        // Don't let logging errors prevent termination cleanup
+      });
+    }
+  }
 }
 
 function buildProcessLossMessage(run: {
@@ -8133,6 +8193,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       : null;
     const recoveryAgentNameKey = normalizeAgentNameKey(recoveryAgent?.name);
 
+    // Log cleanup triggered for observability
+    await logActivity(db, {
+      companyId: run.companyId,
+      actorType: "system",
+      actorId: "heartbeat-service",
+      action: "run.cleanup.triggered",
+      entityType: "heartbeat_run",
+      entityId: run.id,
+      agentId: run.agentId,
+      runId: run.id,
+      details: {
+        runStatus: run.status,
+        issueId: contextIssueId,
+        processPid: run.processPid,
+        processGroupId: run.processGroupId,
+      },
+    });
+
     const promotionResult = await db.transaction(async (tx) => {
       if (contextIssueId) {
         await tx.execute(
@@ -8510,6 +8588,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         latestRun: run,
         comment: promotionResult.comment,
       });
+      // Log cleanup completed - escalated to recovery
+      await logActivity(db, {
+        companyId: run.companyId,
+        actorType: "system",
+        actorId: "heartbeat-service",
+        action: "run.cleanup.completed",
+        entityType: "heartbeat_run",
+        entityId: run.id,
+        agentId: run.agentId,
+        runId: run.id,
+        details: {
+          outcome: "escalated_blocked",
+          issueId: promotionResult.issue.id,
+        },
+      });
       return;
     }
 
@@ -8519,15 +8612,64 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         previousStatus: promotionResult.previousStatus as "todo" | "in_progress",
         latestRun: run,
       });
+      // Log cleanup completed - escalated recovery in place
+      await logActivity(db, {
+        companyId: run.companyId,
+        actorType: "system",
+        actorId: "heartbeat-service",
+        action: "run.cleanup.completed",
+        entityType: "heartbeat_run",
+        entityId: run.id,
+        agentId: run.agentId,
+        runId: run.id,
+        details: {
+          outcome: "escalated_recovery_in_place",
+          issueId: promotionResult.issue.id,
+        },
+      });
       return;
     }
 
     const promotedRun = promotionResult?.run ?? null;
-    if (!promotedRun) return;
+    if (!promotedRun) {
+      // Log cleanup success - no promotion needed
+      await logActivity(db, {
+        companyId: run.companyId,
+        actorType: "system",
+        actorId: "heartbeat-service",
+        action: "run.cleanup.completed",
+        entityType: "heartbeat_run",
+        entityId: run.id,
+        agentId: run.agentId,
+        runId: run.id,
+        details: {
+          outcome: "no_promotion_needed",
+          issueId: contextIssueId,
+        },
+      });
+      return;
+    }
 
     if (promotionResult?.kind === "promoted" && promotionResult.reopenedActivity) {
       await logActivity(db, promotionResult.reopenedActivity);
     }
+
+    // Log cleanup success - run promoted
+    await logActivity(db, {
+      companyId: run.companyId,
+      actorType: "system",
+      actorId: "heartbeat-service",
+      action: "run.cleanup.completed",
+      entityType: "heartbeat_run",
+      entityId: run.id,
+      agentId: run.agentId,
+      runId: run.id,
+      details: {
+        outcome: "promoted",
+        promotedRunId: promotedRun.id,
+        issueId: contextIssueId,
+      },
+    });
 
     publishLiveEvent({
       companyId: promotedRun.companyId,
