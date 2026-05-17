@@ -87,13 +87,13 @@ export function CircularStatWidget({
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5">
           <Icon className="h-3.5 w-3.5 text-muted-foreground/60" />
-          <DotMatrixText className={cn("text-2xl leading-none sm:text-3xl", valueClass)}>
+          <DotMatrixText className={cn("text-3xl leading-none sm:text-4xl", valueClass)}>
             {value}
           </DotMatrixText>
         </div>
       </div>
       <div className="text-center min-w-0 w-full">
-        <p className="font-display text-[11px] text-muted-foreground truncate">{label}</p>
+        <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground truncate">{label}</p>
         {description && (
           <div className="text-[11px] text-muted-foreground/70 mt-1.5 hidden sm:block">
             {description}

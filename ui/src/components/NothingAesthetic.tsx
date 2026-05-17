@@ -5,7 +5,7 @@ type GlyphTone = "default" | "muted" | "success" | "warning" | "danger" | "live"
 
 const toneClasses: Record<GlyphTone, string> = {
   default: "text-[#2C94EE]",
-  muted: "text-muted-foreground dark:text-[#6CBDFD]/65",
+  muted: "text-muted-foreground",
   success: "text-current",
   warning: "text-amber-500",
   danger: "text-red-500",
@@ -20,7 +20,7 @@ export function DotMatrixText({
   className?: string;
 }) {
   return (
-    <span className={cn("font-display tabular-nums tracking-[0.08em]", className)}>
+    <span className={cn("font-display tabular-nums tracking-normal", className)}>
       {children}
     </span>
   );

@@ -95,6 +95,14 @@ function renderedDotColors() {
     .map((node) => node.style.getPropertyValue("--dot-color"));
 }
 
+function hexToRgb(hex: string) {
+  const normalized = hex.replace("#", "");
+  const red = Number.parseInt(normalized.slice(0, 2), 16);
+  const green = Number.parseInt(normalized.slice(2, 4), 16);
+  const blue = Number.parseInt(normalized.slice(4, 6), 16);
+  return `rgb(${red}, ${green}, ${blue})`;
+}
+
 describe("ActivityCharts", () => {
   it("renders empty run charts when dashboard aggregate data is temporarily missing", () => {
     render(<RunActivityChart activity={undefined} />);
@@ -168,13 +176,20 @@ describe("ActivityCharts", () => {
       />,
     );
 
-    const colors = renderedDotColors();
-    expect(colors).toContain(chartSemanticColors.info);
-    expect(colors).toContain(chartSemanticColors.warning);
-    expect(colors).toContain(chartSemanticColors.review);
-    expect(colors).toContain(chartSemanticColors.success);
-    expect(colors).toContain(chartSemanticColors.danger);
-    expect(colors).toContain(chartSemanticColors.cancelled);
-    expect(colors).toContain(chartSemanticColors.backlog);
+    expect(renderedDotColors()).toHaveLength(0);
+    expect(container.querySelector<HTMLElement>("[data-status-segment='todo']")?.style.backgroundColor)
+      .toBe(hexToRgb(chartSemanticColors.info));
+    expect(container.querySelector<HTMLElement>("[data-status-segment='in_progress']")?.style.backgroundColor)
+      .toBe(hexToRgb(chartSemanticColors.warning));
+    expect(container.querySelector<HTMLElement>("[data-status-segment='in_review']")?.style.backgroundColor)
+      .toBe(hexToRgb(chartSemanticColors.review));
+    expect(container.querySelector<HTMLElement>("[data-status-segment='done']")?.style.backgroundColor)
+      .toBe(hexToRgb(chartSemanticColors.success));
+    expect(container.querySelector<HTMLElement>("[data-status-segment='blocked']")?.style.backgroundColor)
+      .toBe(hexToRgb(chartSemanticColors.danger));
+    expect(container.querySelector<HTMLElement>("[data-status-segment='cancelled']")?.style.backgroundColor)
+      .toBe(hexToRgb(chartSemanticColors.cancelled));
+    expect(container.querySelector<HTMLElement>("[data-status-segment='backlog']")?.style.backgroundColor)
+      .toBe(hexToRgb(chartSemanticColors.backlog));
   });
 });

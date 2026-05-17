@@ -50,11 +50,7 @@ function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
     <div className="flex flex-wrap gap-x-2.5 gap-y-0.5 mt-2">
       {items.map(item => (
         <span key={item.label} className="flex items-center gap-1 text-[9px] uppercase tracking-[0.08em] text-muted-foreground">
-          <span className="grid grid-cols-2 gap-px shrink-0" aria-hidden="true">
-            {Array.from({ length: 4 }, (_, index) => (
-              <span key={index} className="h-1 w-1 rounded-full" style={{ backgroundColor: item.color }} />
-            ))}
-          </span>
+          <span className="h-1.5 w-3 shrink-0 rounded-[1px]" style={{ backgroundColor: item.color }} aria-hidden="true" />
           {item.label}
         </span>
       ))}
@@ -64,11 +60,10 @@ function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
 
 export function ChartCard({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {
   return (
-    <div className="relative overflow-hidden rounded-md border border-border/70 bg-background/55 p-4 shadow-sm space-y-3 dark:border-[#2C94EE]/30 dark:bg-[#030A19]/78 dark:shadow-[inset_0_1px_0_rgb(252_250_254/0.09),inset_0_0_0_1px_rgb(108_189_253/0.05),0_0_30px_rgb(31_132_233/0.09)]">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_0%,rgb(52_191_240/0.16),transparent_34%),radial-gradient(circle_at_92%_18%,rgb(44_148_238/0.10),transparent_28%)]" />
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle,rgb(108_189_253/0.18)_1px,transparent_1px)] bg-[length:14px_14px] opacity-[0.18] dark:opacity-[0.16]" />
+    <div className="relative overflow-hidden rounded-md border border-border/70 bg-background/55 p-4 shadow-sm space-y-3 dark:border-white/10 dark:bg-[#050914]/88 dark:shadow-[inset_0_1px_0_rgb(252_250_254/0.08),0_10px_30px_rgb(0_0_0/0.18)]">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle,rgb(255_255_255/0.14)_1px,transparent_1px)] bg-[length:16px_16px] opacity-[0.12]" />
       <div className="relative">
-        <h3 className="font-display text-[11px] text-muted-foreground dark:text-[#E1E5EA]/80">{title}</h3>
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground dark:text-[#E1E5EA]/80">{title}</h3>
         {subtitle && <span className="text-[10px] text-muted-foreground/60">{subtitle}</span>}
       </div>
       <div className="relative">{children}</div>
@@ -253,15 +248,25 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
           return (
             <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} issues`}>
               {total > 0 ? (
-                <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
-                  <DotStack
-                    title={`${day}: ${total} issues`}
-                    values={statusOrder.map((status) => ({
-                        key: status,
-                        value: entry[status] ?? 0,
-                        color: statusColors[status] ?? "#737373",
-                      }))}
-                  />
+                <div
+                  className="flex flex-col-reverse gap-px overflow-hidden rounded-[2px]"
+                  style={{ height: `${heightPct}%`, minHeight: 2 }}
+                >
+                  {statusOrder.map((status) => {
+                    const value = entry[status] ?? 0;
+                    if (value <= 0) return null;
+                    return (
+                      <span
+                        key={status}
+                        data-status-segment={status}
+                        className="block w-full min-h-px"
+                        style={{
+                          height: `${Math.max(8, (value / total) * 100)}%`,
+                          backgroundColor: statusColors[status] ?? "#737373",
+                        }}
+                      />
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="mx-auto h-1.5 w-1.5 rounded-full bg-muted/50" />

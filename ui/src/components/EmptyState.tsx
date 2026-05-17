@@ -20,7 +20,7 @@ export function EmptyState({ icon: Icon, message, action, onAction }: EmptyState
         <span className="absolute inset-6 rounded-full border border-dotted border-muted-foreground/20" aria-hidden="true" />
         <Icon className="h-9 w-9 text-muted-foreground/60" />
       </div>
-      <p className="font-display text-base text-muted-foreground mb-5">{message}</p>
+      <p className="text-base font-medium text-muted-foreground mb-5">{message}</p>
       {action && onAction && (
         <Button onClick={onAction}>
           <Plus className="h-4 w-4 mr-1.5" />
