@@ -198,6 +198,156 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
   };
 }
 
+const DIRTY_DONE_IGNORED_PATH_PREFIXES = [".paperclip/worktrees/"] as const;
+const DIRTY_DONE_SAMPLE_LIMIT = 10;
+
+export type ExecutionWorkspaceDirtyDoneStatus = "clean" | "dirty" | "skipped";
+
+export type ExecutionWorkspaceDirtyDoneSkipReason =
+  | "no_local_path"
+  | "path_missing"
+  | "shared_workspace"
+  | "provider_unsupported"
+  | "git_error";
+
+export interface ExecutionWorkspaceDirtyDoneInspection {
+  status: ExecutionWorkspaceDirtyDoneStatus;
+  reason: ExecutionWorkspaceDirtyDoneSkipReason | null;
+  workspacePath: string | null;
+  dirtyEntries: Array<{ path: string; statusCode: string }>;
+  untrackedEntries: Array<{ path: string }>;
+  totalRelevantEntries: number;
+  errorMessage: string | null;
+}
+
+function isIgnoredDirtyDonePath(relativePath: string): boolean {
+  const normalized = relativePath.replace(/\\/g, "/").replace(/^\.\//, "");
+  return DIRTY_DONE_IGNORED_PATH_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+}
+
+function parseRenamePorcelainPath(rawPath: string): string {
+  const arrowIndex = rawPath.indexOf(" -> ");
+  return arrowIndex >= 0 ? rawPath.slice(arrowIndex + 4) : rawPath;
+}
+
+function unquotePorcelainPath(rawPath: string): string {
+  if (rawPath.length < 2 || rawPath[0] !== "\"" || rawPath[rawPath.length - 1] !== "\"") {
+    return rawPath;
+  }
+  const inner = rawPath.slice(1, -1);
+  return inner.replace(/\\(.)/g, (_, ch: string) => ch);
+}
+
+export async function inspectExecutionWorkspaceDirtyForDoneTransition(
+  workspace: ExecutionWorkspace,
+): Promise<ExecutionWorkspaceDirtyDoneInspection> {
+  const empty: Omit<ExecutionWorkspaceDirtyDoneInspection, "status" | "reason" | "errorMessage" | "workspacePath"> = {
+    dirtyEntries: [],
+    untrackedEntries: [],
+    totalRelevantEntries: 0,
+  };
+
+  if (workspace.mode === "shared_workspace") {
+    return {
+      status: "skipped",
+      reason: "shared_workspace",
+      workspacePath: null,
+      errorMessage: null,
+      ...empty,
+    };
+  }
+
+  if (workspace.providerType !== "git_worktree" && workspace.providerType !== "local_fs") {
+    return {
+      status: "skipped",
+      reason: "provider_unsupported",
+      workspacePath: null,
+      errorMessage: null,
+      ...empty,
+    };
+  }
+
+  const workspacePath = readNullableString(workspace.providerRef) ?? readNullableString(workspace.cwd);
+  if (!workspacePath) {
+    return {
+      status: "skipped",
+      reason: "no_local_path",
+      workspacePath: null,
+      errorMessage: null,
+      ...empty,
+    };
+  }
+
+  if (!(await pathExists(workspacePath))) {
+    return {
+      status: "skipped",
+      reason: "path_missing",
+      workspacePath,
+      errorMessage: null,
+      ...empty,
+    };
+  }
+
+  let statusOutput: string;
+  try {
+    statusOutput = (await runGit(["status", "--porcelain=v1", "--untracked-files=all"], workspacePath)).stdout;
+  } catch (error) {
+    return {
+      status: "skipped",
+      reason: "git_error",
+      workspacePath,
+      errorMessage: error instanceof Error ? error.message : String(error),
+      ...empty,
+    };
+  }
+
+  const dirtyEntries: Array<{ path: string; statusCode: string }> = [];
+  const untrackedEntries: Array<{ path: string }> = [];
+  let totalRelevantEntries = 0;
+
+  for (const rawLine of statusOutput.split(/\r?\n/)) {
+    if (!rawLine) continue;
+    const statusCode = rawLine.slice(0, 2);
+    const rest = rawLine.slice(3);
+    const targetPath = parseRenamePorcelainPath(rest);
+    const relativePath = unquotePorcelainPath(targetPath);
+    if (!relativePath) continue;
+    if (isIgnoredDirtyDonePath(relativePath)) continue;
+    totalRelevantEntries += 1;
+    if (statusCode === "??") {
+      if (untrackedEntries.length < DIRTY_DONE_SAMPLE_LIMIT) {
+        untrackedEntries.push({ path: relativePath });
+      }
+    } else {
+      if (dirtyEntries.length < DIRTY_DONE_SAMPLE_LIMIT) {
+        dirtyEntries.push({ path: relativePath, statusCode });
+      }
+    }
+  }
+
+  if (totalRelevantEntries === 0) {
+    return {
+      status: "clean",
+      reason: null,
+      workspacePath,
+      dirtyEntries: [],
+      untrackedEntries: [],
+      totalRelevantEntries: 0,
+      errorMessage: null,
+    };
+  }
+
+  return {
+    status: "dirty",
+    reason: null,
+    workspacePath,
+    dirtyEntries,
+    untrackedEntries,
+    totalRelevantEntries,
+    errorMessage: null,
+  };
+}
+
 export function readExecutionWorkspaceConfig(metadata: Record<string, unknown> | null | undefined): ExecutionWorkspaceConfig | null {
   const raw = isRecord(metadata?.config) ? metadata.config : null;
   if (!raw) return null;
