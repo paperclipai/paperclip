@@ -1111,9 +1111,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
   const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
   const configuredAgentId = nonEmpty(ctx.config.agentId);
-  const claimedApiKeyPath = configuredAgentId
+  const claimedApiKeyPath = nonEmpty(ctx.config.claimedApiKeyPath) ?? (configuredAgentId
     ? `~/.openclaw/agents/${configuredAgentId}/paperclip-claimed-api-key.json`
-    : "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+    : "~/.openclaw/workspace/paperclip-claimed-api-key.json");
   const wakeText = buildWakeText(
     wakePayload,
     paperclipEnv,
