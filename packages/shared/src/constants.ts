@@ -79,13 +79,9 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
 };
 
 /** Default `heartbeat.maxConcurrentRuns` when unset (clamped by `AGENT_MAX_CONCURRENT_RUNS_CAP`). */
-export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 1;
+export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
 /** Default interval (seconds) for CEO/CTO timer heartbeats when unset or invalid. */
 export const AGENT_DEFAULT_TIMER_HEARTBEAT_INTERVAL_SEC = 300;
-/** Hard ceiling for `heartbeat.maxConcurrentRuns` (per-agent concurrent runs). */
-export const AGENT_MAX_CONCURRENT_RUNS_CAP = 1;
-/** Max distinct agents that may each have ≥1 running heartbeat run in one company at the same time. */
-export const COMPANY_MAX_CONCURRENT_ACTIVE_AGENTS = 4;
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
 
 export const MODEL_PROFILE_KEYS = ["cheap"] as const;
@@ -226,6 +222,40 @@ export type PluginIssueOriginKind = `plugin:${string}`;
 export type IssueOriginKind = BuiltInIssueOriginKind | PluginIssueOriginKind;
 export const ISSUE_SURFACE_VISIBILITIES = ["default", "plugin_operation"] as const;
 export type IssueSurfaceVisibility = (typeof ISSUE_SURFACE_VISIBILITIES)[number];
+
+export const ISSUE_RECOVERY_ACTION_KINDS = [
+  "missing_disposition",
+  "stranded_assigned_issue",
+  "active_run_watchdog",
+  "issue_graph_liveness",
+] as const;
+export type IssueRecoveryActionKind = (typeof ISSUE_RECOVERY_ACTION_KINDS)[number];
+
+export const ISSUE_RECOVERY_ACTION_STATUSES = [
+  "active",
+  "escalated",
+  "resolved",
+  "cancelled",
+] as const;
+export type IssueRecoveryActionStatus = (typeof ISSUE_RECOVERY_ACTION_STATUSES)[number];
+
+export const ISSUE_RECOVERY_ACTION_OWNER_TYPES = [
+  "agent",
+  "user",
+  "board",
+  "system",
+] as const;
+export type IssueRecoveryActionOwnerType = (typeof ISSUE_RECOVERY_ACTION_OWNER_TYPES)[number];
+
+export const ISSUE_RECOVERY_ACTION_OUTCOMES = [
+  "restored",
+  "delegated",
+  "false_positive",
+  "blocked",
+  "escalated",
+  "cancelled",
+] as const;
+export type IssueRecoveryActionOutcome = (typeof ISSUE_RECOVERY_ACTION_OUTCOMES)[number];
 
 export function pluginOperationIssueOriginKind(pluginKey: string): PluginIssueOriginKind {
   return `plugin:${pluginKey}:operation`;
