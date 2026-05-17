@@ -2032,8 +2032,11 @@ export function issueRoutes(
       createdByAgentId: actor.agentId ?? null,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
       createdByRunId: actor.runId ?? null,
+      lockedDocumentStrategy: req.actor.type === "agent" ? "create_new_document" : "conflict",
     });
     const doc = result.document;
+    const redirectedFromLockedDocument =
+      "redirectedFromLockedDocument" in result ? result.redirectedFromLockedDocument : null;
     await issueReferencesSvc.syncDocument(doc.id);
     const referenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
     const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(referenceSummaryBefore, referenceSummaryAfter);
@@ -2053,6 +2056,7 @@ export function issueRoutes(
         title: doc.title,
         format: doc.format,
         revisionNumber: doc.latestRevisionNumber,
+        redirectedFromLockedDocument,
         ...summarizeIssueReferenceActivityDetails({
           addedReferencedIssues: referenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
           removedReferencedIssues: referenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
@@ -2084,6 +2088,96 @@ export function issueRoutes(
     }
 
     res.status(result.created ? 201 : 200).json(doc);
+  });
+
+  router.post("/issues/:id/documents/:key/lock", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    if (!keyParsed.success) {
+      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const result = await documentsSvc.lockIssueDocument({
+      issueId: issue.id,
+      key: keyParsed.data,
+      lockedByAgentId: actor.agentId ?? null,
+      lockedByUserId: actor.actorType === "user" ? actor.actorId : null,
+    });
+
+    if (result.changed) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.document_locked",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          key: result.document.key,
+          documentId: result.document.id,
+          title: result.document.title,
+          lockedAt: result.document.lockedAt,
+        },
+      });
+    }
+
+    res.json(result.document);
+  });
+
+  router.post("/issues/:id/documents/:key/unlock", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    if (!keyParsed.success) {
+      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const result = await documentsSvc.unlockIssueDocument(issue.id, keyParsed.data);
+
+    if (result.changed) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.document_unlocked",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          key: result.document.key,
+          documentId: result.document.id,
+          title: result.document.title,
+        },
+      });
+    }
+
+    res.json(result.document);
   });
 
   router.get("/issues/:id/documents/:key/revisions", async (req, res) => {

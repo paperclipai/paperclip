@@ -4,6 +4,14 @@
   "type": "module",
   "private": true,
   "description": "Local-file LLM Wiki plugin for source ingestion, wiki browsing, query, lint, and maintenance workflows.",
+  "files": [
+    "agents",
+    "dist",
+    "migrations",
+    "skills",
+    "templates",
+    "README.md"
+  ],
   "scripts": {
     "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
     "build": "node ./esbuild.config.mjs",
