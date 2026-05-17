@@ -21,12 +21,80 @@ async function createTempDatabase(): Promise<string> {
   return db.connectionString;
 }
 
+async function createEmptyTempDatabase(): Promise<string> {
+  const db = await startEmbeddedPostgresTestDatabase("paperclip-db-client-empty-", {
+    applyMigrations: false,
+  });
+  cleanups.push(db.cleanup);
+  return db.connectionString;
+}
+
 async function migrationHash(migrationFile: string): Promise<string> {
   const content = await fs.promises.readFile(
     new URL(`./migrations/${migrationFile}`, import.meta.url),
     "utf8",
   );
   return createHash("sha256").update(content).digest("hex");
+}
+
+async function migrationJournalCreatedAt(migrationFile: string): Promise<number> {
+  const raw = await fs.promises.readFile(
+    new URL("./migrations/meta/_journal.json", import.meta.url),
+    "utf8",
+  );
+  const journal = JSON.parse(raw) as { entries?: Array<{ tag?: string; when?: number }> };
+  const tag = migrationFile.replace(/\.sql$/, "");
+  const entry = journal.entries?.find((candidate) => candidate.tag === tag);
+  if (typeof entry?.when !== "number") {
+    throw new Error(`Missing migration journal timestamp for ${migrationFile}`);
+  }
+  return entry.when;
+}
+
+async function listMigrationFilesThrough(lastMigrationFile: string): Promise<string[]> {
+  const entries = await fs.promises.readdir(new URL("./migrations", import.meta.url));
+  return entries
+    .filter((entry) => entry.endsWith(".sql"))
+    .sort((left, right) => left.localeCompare(right))
+    .filter((entry) => entry <= lastMigrationFile);
+}
+
+function splitMigrationStatements(content: string): string[] {
+  return content
+    .split("--> statement-breakpoint")
+    .map((statement) => statement.trim())
+    .filter((statement) => statement.length > 0);
+}
+
+async function applyMigrationFile(sql: ReturnType<typeof postgres>, migrationFile: string): Promise<void> {
+  const content = await fs.promises.readFile(
+    new URL(`./migrations/${migrationFile}`, import.meta.url),
+    "utf8",
+  );
+  for (const statement of splitMigrationStatements(content)) {
+    await sql.unsafe(statement);
+  }
+}
+
+async function seedForkMigrationStateThrough0051(connectionString: string): Promise<void> {
+  const migrationFiles = await listMigrationFilesThrough("0051_calm_puff_adder.sql");
+  const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+  try {
+    await sql.unsafe(`CREATE SCHEMA IF NOT EXISTS "drizzle"`);
+    await sql.unsafe(
+      `CREATE TABLE "drizzle"."__drizzle_migrations" (id SERIAL PRIMARY KEY, hash text NOT NULL, created_at bigint)`,
+    );
+
+    for (const migrationFile of migrationFiles) {
+      await applyMigrationFile(sql, migrationFile);
+      await sql`
+        INSERT INTO "drizzle"."__drizzle_migrations" (hash, created_at)
+        VALUES (${await migrationHash(migrationFile)}, ${await migrationJournalCreatedAt(migrationFile)})
+      `;
+    }
+  } finally {
+    await sql.end();
+  }
 }
 
 afterEach(async () => {
@@ -43,6 +111,73 @@ if (!embeddedPostgresSupport.supported) {
 }
 
 describeEmbeddedPostgres("applyPendingMigrations", () => {
+  it(
+    "applies shifted upstream migrations after the fork standup migrations already applied on mini",
+    async () => {
+      const connectionString = await createEmptyTempDatabase();
+
+      await seedForkMigrationStateThrough0051(connectionString);
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        reason: "pending-migrations",
+      });
+      if (pendingState.status !== "needsMigrations") {
+        throw new Error("Expected mini-like fork state to need shifted upstream migrations");
+      }
+      expect(pendingState.appliedMigrations.at(-2)).toBe("0050_tiresome_gambit.sql");
+      expect(pendingState.appliedMigrations.at(-1)).toBe("0051_calm_puff_adder.sql");
+      expect(pendingState.pendingMigrations[0]).toBe("0052_stiff_luckman.sql");
+      expect(pendingState.pendingMigrations.at(-1)).toBe("0087_tranquil_the_executioner.sql");
+
+      await applyPendingMigrations(connectionString);
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const tables = await verifySql.unsafe<{ table_name: string }[]>(
+          `
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name IN (
+                'standup_sessions',
+                'standup_responses',
+                'issue_execution_decisions',
+                'inbox_dismissals',
+                'company_secret_provider_configs'
+              )
+            ORDER BY table_name
+          `,
+        );
+        expect(tables.map((row) => row.table_name)).toEqual([
+          "company_secret_provider_configs",
+          "inbox_dismissals",
+          "issue_execution_decisions",
+          "standup_responses",
+          "standup_sessions",
+        ]);
+
+        const projectColumns = await verifySql.unsafe<{ column_name: string }[]>(
+          `
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'projects'
+              AND column_name = 'env'
+          `,
+        );
+        expect(projectColumns).toHaveLength(1);
+      } finally {
+        await verifySql.end();
+      }
+    },
+    60_000,
+  );
+
   it(
     "applies an inserted earlier migration without replaying later legacy migrations",
     async () => {
@@ -395,6 +530,146 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
             data_type: "jsonb",
           }),
         ]);
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "replays migration 0052 safely when projects.env already exists",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+      const stiffLuckmanHash = await migrationHash("0052_stiff_luckman.sql");
+
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${stiffLuckmanHash}'`,
+        );
+
+        const columns = await sql.unsafe<{ column_name: string }[]>(
+          `
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'projects'
+              AND column_name = 'env'
+          `,
+        );
+        expect(columns).toHaveLength(1);
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+      pendingMigrations: ["0052_stiff_luckman.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const columns = await verifySql.unsafe<{ column_name: string; is_nullable: string; data_type: string }[]>(
+          `
+            SELECT column_name, is_nullable, data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'projects'
+              AND column_name = 'env'
+          `,
+        );
+        expect(columns).toEqual([
+          expect.objectContaining({
+            column_name: "env",
+            is_nullable: "YES",
+            data_type: "jsonb",
+          }),
+        ]);
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "replays migration 0061 safely when plugin_database_namespaces already exists",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const pluginNamespacesHash = await migrationHash(
+          "0061_plugin_database_namespaces.sql",
+        );
+
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${pluginNamespacesHash}'`,
+        );
+
+        const tables = await sql.unsafe<{ table_name: string }[]>(
+          `
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name IN ('plugin_database_namespaces', 'plugin_migrations')
+            ORDER BY table_name
+          `,
+        );
+        expect(tables.map((row) => row.table_name)).toEqual([
+          "plugin_database_namespaces",
+          "plugin_migrations",
+        ]);
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+      pendingMigrations: ["0061_plugin_database_namespaces.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const indexes = await verifySql.unsafe<{ indexname: string }[]>(
+          `
+            SELECT indexname
+            FROM pg_indexes
+            WHERE schemaname = 'public'
+              AND tablename IN ('plugin_database_namespaces', 'plugin_migrations')
+            ORDER BY indexname
+          `,
+        );
+        expect(indexes.map((row) => row.indexname)).toEqual(
+          expect.arrayContaining([
+            "plugin_database_namespaces_namespace_idx",
+            "plugin_database_namespaces_plugin_idx",
+            "plugin_database_namespaces_status_idx",
+            "plugin_migrations_plugin_idx",
+            "plugin_migrations_plugin_key_idx",
+            "plugin_migrations_status_idx",
+          ]),
+        );
       } finally {
         await verifySql.end();
       }

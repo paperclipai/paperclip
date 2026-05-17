@@ -124,14 +124,14 @@ If the connection drops, the UI reconnects automatically.
 
 1. Enable timer wakeups (for example every 300s)
 2. Keep assignment wakeups on
-3. Use a focused prompt template
+3. Use a focused prompt template that tells agents to act in the same heartbeat, leave durable progress, and mark blocked work with an owner/action
 4. Watch run logs and adjust prompt/config over time
 
 ## 7.2 Event-driven loop (less constant polling)
 
 1. Disable timer or set a long interval
 2. Keep wake-on-assignment enabled
-3. Use on-demand wakeups for manual nudges
+3. Use child issues, comments, and on-demand wakeups for handoffs instead of loops that poll agents, sessions, or processes
 
 ## 7.3 Safety-first loop
 

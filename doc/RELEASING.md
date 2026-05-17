@@ -63,6 +63,8 @@ It:
 - verifies the pushed commit
 - computes the canary version for the current UTC date
 - publishes under npm dist-tag `canary`
+- verifies that `canary` resolves to the just-published version and that published internal dependencies exist on npm
+- fails by default if npm leaves `latest` pointing at a canary; use `--allow-canary-latest` only when that state is intentional
 - creates a git tag `canary/vYYYY.MDD.P-canary.N`
 
 Users install canaries with:

@@ -172,9 +172,15 @@ async function sweepRunLogFiles(basePath: string, cutoffMs: number): Promise<num
  * Main retention function: prune expired data from all operational tables
  * in FK-safe order (plan spec T3.2), then clean up associated files.
  */
-export async function pruneRunData(db: Db, config: Config): Promise<void> {
+export async function pruneRunData(
+  db: Db,
+  config: Config,
+  options?: { runLogBasePath?: string },
+): Promise<void> {
   logger.info("Retention sweep started");
-  const runLogBasePath = path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
+  const runLogBasePath = options?.runLogBasePath
+    ? path.resolve(options.runLogBasePath)
+    : path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
 
   // 1. finance_events (occurredAt, financeEventsDays)
   const financeCutoff = cutoffDate(config.retentionFinanceEventsDays);

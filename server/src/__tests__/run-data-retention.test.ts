@@ -473,14 +473,8 @@ describeEmbedded("run-data-retention", () => {
       finishedAt: daysAgo(20),
     });
 
-    const origHome = process.env.PAPERCLIP_HOME;
-    try {
-      process.env.PAPERCLIP_HOME = tmpHome;
-      const config = makeConfig();
-      await pruneRunData(db, config);
-    } finally {
-      process.env.PAPERCLIP_HOME = origHome;
-    }
+    const config = makeConfig();
+    await pruneRunData(db, config, { runLogBasePath: runLogsDir });
 
     // Run should be deleted
     const remainingRuns = await db.select().from(heartbeatRuns);
@@ -598,14 +592,8 @@ describeEmbedded("orphan file sweep", () => {
     const txtFile = path.join(subDir, "notes.txt");
     await fs.writeFile(txtFile, "notes\n");
 
-    const origHome = process.env.PAPERCLIP_HOME;
-    try {
-      process.env.PAPERCLIP_HOME = tmpHome;
-      const config = makeConfig();
-      await pruneRunData(sweepDb, config);
-    } finally {
-      process.env.PAPERCLIP_HOME = origHome;
-    }
+    const config = makeConfig();
+    await pruneRunData(sweepDb, config, { runLogBasePath: runLogsDir });
 
     // Old ndjson should be deleted
     let oldExists = true;
@@ -669,14 +657,8 @@ describeEmbedded("symlink safety during sweep", () => {
     const oldTime = Date.now() - 20 * 24 * 60 * 60 * 1000;
     await fs.utimes(realOldFile, oldTime / 1000, oldTime / 1000);
 
-    const origHome = process.env.PAPERCLIP_HOME;
-    try {
-      process.env.PAPERCLIP_HOME = tmpHome;
-      const config = makeConfig();
-      await pruneRunData(symlinkDb, config);
-    } finally {
-      process.env.PAPERCLIP_HOME = origHome;
-    }
+    const config = makeConfig();
+    await pruneRunData(symlinkDb, config, { runLogBasePath: runLogsDir });
 
     // Real old file should be deleted by sweep
     let realOldExists = true;

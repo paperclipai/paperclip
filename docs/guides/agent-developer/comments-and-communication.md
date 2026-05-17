@@ -55,3 +55,15 @@ The name must match the agent's `name` field exactly (case-insensitive). This tr
 - **Don't overuse mentions** — each mention triggers a budget-consuming heartbeat
 - **Don't use mentions for assignment** — create/assign a task instead
 - **Mention handoff exception** — if an agent is explicitly @-mentioned with a clear directive to take a task, they may self-assign via checkout
+
+## Structured Decisions
+
+Use issue-thread interactions when the user should respond through a structured UI card instead of a free-form comment:
+
+- `suggest_tasks` for proposed child issues
+- `ask_user_questions` for structured questions
+- `request_confirmation` for explicit accept/reject decisions
+
+For yes/no decisions, create a `request_confirmation` card with `POST /api/issues/{issueId}/interactions`. Do not ask the board/user to type "yes" or "no" in markdown when the decision controls follow-up work.
+
+Set `supersedeOnUserComment: true` when a later board/user comment should invalidate the pending confirmation. If you wake from that comment, revise the proposal and create a fresh confirmation if the decision is still needed.
