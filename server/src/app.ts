@@ -60,6 +60,7 @@ import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
+
 import {
   crewbriefHubspotService,
   crewbriefPosthogService,
@@ -67,6 +68,7 @@ import {
   crewbriefNurtureService,
   crewbriefWebhookService,
 } from "./services/index.js";
+import { createBlogService } from "./services/crewbrief-blog.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -326,7 +328,7 @@ export async function createApp(
   const cbWebhooks = crewbriefWebhookService(cbPosthog, cbNurture);
   api.use("/crewbrief", crewbriefRoutes(db, crewbriefCfg, cbNurture, cbHubspot, cbWebhooks));
 
-  if (process.env.NODE_ENV === "production") {
+  if (process.env.NODE_ENV === "production" || process.env.CREWBRIEF_ENABLE_NURTURE === "true") {
     const NURTURE_POLL_MS = 60_000;
     logger.info({ intervalMs: NURTURE_POLL_MS }, "Starting CrewBrief nurture email scheduler");
     setInterval(() => {
@@ -359,8 +361,6 @@ export async function createApp(
   }
   if (crewbriefLandingHtmlTemplate) {
     const injectedHtml = crewbriefLandingHtmlTemplate
-      .replace("__POSTHOG_CLIENT_KEY__", crewbriefCfg.CREWBRIEF_POSTHOG_CLIENT_KEY ?? "")
-      .replace("__POSTHOG_HOST__", crewbriefCfg.CREWBRIEF_POSTHOG_HOST)
       .replace("__LINKEDIN_PARTNER_ID__", crewbriefCfg.CREWBRIEF_LINKEDIN_PARTNER_ID ?? "")
       .replace(
         "<!-- __CONFIG_INJECT__ -->",
@@ -369,6 +369,68 @@ export async function createApp(
           linkedinConversionId: "",
         })}</script>`,
       );
+
+    // Umami analytics proxy
+    const UMAMI_ORIGIN = "http://127.0.0.1:3456";
+
+    app.use(async (req, res, next) => {
+      if (req.hostname !== crewbriefHost && !req.hostname.endsWith("." + crewbriefHost)) {
+        return next();
+      }
+      if (req.path.startsWith("/umami/")) {
+        const targetPath = req.path.replace("/umami", "");
+        try {
+          const r = await fetch(UMAMI_ORIGIN + targetPath, {
+            method: req.method,
+            headers: { "Content-Type": "application/json" },
+            body: req.method === "POST" ? JSON.stringify(req.body) : undefined,
+          });
+          const h: Record<string, string> = {};
+          for (const [k, v] of r.headers) {
+            if (["content-type", "cache-control", "content-encoding"].includes(k)) h[k] = v;
+          }
+          res.set(h);
+          return res.status(r.status).send(await r.text());
+        } catch {
+          return res.status(502).end();
+        }
+      }
+      if (req.path === "/static/array.js") {
+        return res.status(404).end();
+      }
+      if (req.method === "POST" && (req.path === "/capture/" || req.path === "/capture")) {
+        res.json({ status: "ok" });
+        return;
+      }
+      next();
+    });
+
+    const crewbriefBlog = createBlogService();
+
+    app.use(async (req, res, next) => {
+      if (req.hostname !== crewbriefHost && !req.hostname.endsWith("." + crewbriefHost)) {
+        return next();
+      }
+      if (!req.path.startsWith("/blog")) {
+        return next();
+      }
+      if (req.path === "/blog" || req.path === "/blog/") {
+        res.set("Content-Type", "text/html").status(200).end(crewbriefBlog.generateBlogIndexHtml());
+        return;
+      }
+      const slug = req.path.replace("/blog/", "").split("/")[0];
+      if (!slug) {
+        res.set("Content-Type", "text/html").status(200).end(crewbriefBlog.generateBlogIndexHtml());
+        return;
+      }
+      const postHtml = crewbriefBlog.generateBlogPostHtml(slug);
+      if (postHtml) {
+        res.set("Content-Type", "text/html").status(200).end(postHtml);
+      } else {
+        res.set("Content-Type", "text/html").status(404).end(crewbriefBlog.generateBlogNotFoundHtml());
+      }
+    });
+
     app.use((req, res, next) => {
       if (req.hostname === crewbriefHost || req.hostname.endsWith("." + crewbriefHost)) {
         res.set("Content-Type", "text/html").status(200).end(injectedHtml);
