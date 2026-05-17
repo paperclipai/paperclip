@@ -62,6 +62,20 @@ env:
         secretKeyRef:
           name: paperclip-alertmanager-webhook-token
           key: bearer-token
+    # ccrotate-serve verifier bearer for the heartbeat tier-gate active-verify
+    # path. heartbeat.ts builds the CcrotateServeVerifier from
+    # CCROTATE_SERVE_BASE_URL (or auto-injected CCROTATE_SERVE_SERVICE_HOST +
+    # _PORT_SERVE from the ccrotate-serve Service) + this token. When the env
+    # is missing the gate logs ccrotate.verifier_disabled and falls back to
+    # the pre-T6 deny behavior. The Secret is the same one ccrotate-serve
+    # reads on its end (single source of truth for the bearer).
+    # See [[ccrotate-active-verify-tier-gate]] + spec
+    # .planning/2026-05-17-active-verify-tier-gate-design.md §3.
+    - name: CCROTATE_SERVE_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: paperclip-ccrotate-serve-secrets
+          key: serveToken
     # PAPERCLIP_PUBLIC_URL pins the auth base so plugin UIs do not fall back
     # to window.location.origin (which would break behind cloudflared / when
     # iframed). PAPERCLIP_AUTH_BASE_URL_MODE=explicit makes the server treat
