@@ -1006,3 +1006,209 @@ describe("readDefaultCcrotateTierCache", () => {
     expect(snap?.accounts[0]?.serviceTier).toBe("available");
   });
 });
+
+// T6 — verifier branch on the deny path.
+import type { CcrotateVerifier } from "../services/ccrotate-serve-verifier.js";
+import { VerifierError } from "../services/ccrotate-serve-verifier.js";
+
+function makeVerifier(impl: CcrotateVerifier["probeOne"]): CcrotateVerifier {
+  return { probeOne: impl };
+}
+
+describe("tier-gate — verifier branch", () => {
+  const allExhausted = {
+    updatedAt: new Date().toISOString(),
+    accounts: [
+      {
+        email: "a@x.com",
+        status: "success",
+        serviceTier: "exhausted",
+        rateLimits: { snapshotCapturedAt: new Date().toISOString() },
+      },
+      {
+        email: "b@x.com",
+        status: "success",
+        serviceTier: "exhausted",
+        rateLimits: { snapshotCapturedAt: new Date().toISOString() },
+      },
+      {
+        email: "c@x.com",
+        status: "success",
+        serviceTier: "exhausted",
+        rateLimits: { snapshotCapturedAt: new Date().toISOString() },
+      },
+    ],
+  };
+
+  it("allows when verifier returns usable", async () => {
+    const verifier = makeVerifier(async (_t, email) => ({
+      email,
+      status: "success",
+      serviceTier: "base",
+      rateLimits: {},
+    }) as any);
+    const gate = createCcrotateTierGate({
+      readCache: async () => allExhausted as any,
+      log: { info: vi.fn(), warn: vi.fn() } as any,
+      verifier,
+    });
+    const result = await gate.checkAdapter({
+      adapterType: "claude_k8s",
+      agentId: "a1",
+      now: new Date(),
+    });
+    expect(result.allow).toBe(true);
+  });
+
+  it("denies when verifier confirms exhausted", async () => {
+    const verifier = makeVerifier(async (_t, email) => ({
+      email,
+      status: "success",
+      serviceTier: "exhausted",
+      rateLimits: {},
+    }) as any);
+    const gate = createCcrotateTierGate({
+      readCache: async () => allExhausted as any,
+      log: { info: vi.fn(), warn: vi.fn() } as any,
+      verifier,
+    });
+    const result = await gate.checkAdapter({
+      adapterType: "claude_k8s",
+      agentId: "a1",
+      now: new Date(),
+    });
+    expect(result.allow).toBe(false);
+  });
+
+  it("optimistic-allow on transport error", async () => {
+    const verifier = makeVerifier(async () => {
+      throw new VerifierError("transport", "boom");
+    });
+    const gate = createCcrotateTierGate({
+      readCache: async () => allExhausted as any,
+      log: { info: vi.fn(), warn: vi.fn() } as any,
+      verifier,
+    });
+    const result = await gate.checkAdapter({
+      adapterType: "claude_k8s",
+      agentId: "a1",
+      now: new Date(),
+    });
+    expect(result.allow).toBe(true);
+  });
+
+  it("fail-closed deny on auth error", async () => {
+    const verifier = makeVerifier(async () => {
+      throw new VerifierError("auth", "401");
+    });
+    const gate = createCcrotateTierGate({
+      readCache: async () => allExhausted as any,
+      log: { info: vi.fn(), warn: vi.fn() } as any,
+      verifier,
+    });
+    const result = await gate.checkAdapter({
+      adapterType: "claude_k8s",
+      agentId: "a1",
+      now: new Date(),
+    });
+    expect(result.allow).toBe(false);
+  });
+
+  it("optimistic-allow on circuit_open error", async () => {
+    const verifier = makeVerifier(async () => {
+      throw new VerifierError("circuit_open", "ccrotate-serve unreachable");
+    });
+    const gate = createCcrotateTierGate({
+      readCache: async () => allExhausted as any,
+      log: { info: vi.fn(), warn: vi.fn() } as any,
+      verifier,
+    });
+    const result = await gate.checkAdapter({
+      adapterType: "claude_k8s",
+      agentId: "a1",
+      now: new Date(),
+    });
+    expect(result.allow).toBe(true);
+  });
+
+  it("verifier NOT called when cache shows usable account", async () => {
+    const probe = vi.fn(async () =>
+      ({
+        email: "x",
+        status: "success",
+        serviceTier: "base",
+        rateLimits: {},
+      }) as any,
+    );
+    const verifier = makeVerifier(probe);
+    const usable = {
+      updatedAt: new Date().toISOString(),
+      accounts: [
+        {
+          email: "a@x.com",
+          status: "success",
+          serviceTier: "base",
+          rateLimits: { utilization5h: 4, utilization7d: 5 },
+        },
+      ],
+    };
+    const gate = createCcrotateTierGate({
+      readCache: async () => usable as any,
+      log: { info: vi.fn(), warn: vi.fn() } as any,
+      verifier,
+    });
+    await gate.checkAdapter({
+      adapterType: "claude_k8s",
+      agentId: "a1",
+      now: new Date(),
+    });
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("regression: no verifier → existing deny on all-exhausted cache", async () => {
+    const gate = createCcrotateTierGate({
+      readCache: async () => allExhausted as any,
+      log: { info: vi.fn(), warn: vi.fn() } as any,
+    });
+    const result = await gate.checkAdapter({
+      adapterType: "claude_k8s",
+      agentId: "a1",
+      now: new Date(),
+    });
+    expect(result.allow).toBe(false);
+  });
+
+  it("invalidates in-process cache after verifier call so next checkAdapter re-reads", async () => {
+    let readCount = 0;
+    const probe = vi.fn(
+      async (_t, email) =>
+        ({
+          email,
+          status: "success",
+          serviceTier: "base",
+          rateLimits: {},
+        }) as any,
+    );
+    const verifier = makeVerifier(probe);
+    const gate = createCcrotateTierGate({
+      readCache: async () => {
+        readCount++;
+        return allExhausted as any;
+      },
+      log: { info: vi.fn(), warn: vi.fn() } as any,
+      verifier,
+      cacheTtlMs: 60_000,
+    });
+    await gate.checkAdapter({
+      adapterType: "claude_k8s",
+      agentId: "a1",
+      now: new Date(),
+    });
+    await gate.checkAdapter({
+      adapterType: "claude_k8s",
+      agentId: "a2",
+      now: new Date(),
+    });
+    expect(readCount).toBe(2);
+  });
+});

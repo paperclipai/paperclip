@@ -205,6 +205,37 @@ Configure storage provider/settings:
 pnpm paperclipai configure --section storage
 ```
 
+## Optional ccrotate-serve active verifier (ccrotate tier-gate)
+
+The ccrotate tier-gate can active-verify a stale cache snapshot against a
+live `ccrotate-serve` HTTP probe before denying a heartbeat for "no usable
+account". Without it, a `ccrotate refresh` cron that throws false-flag
+"exhausted" labels (e.g. per-org Usage API throttling) leaves the gate
+denying agents on a stale snapshot until the next refresh cycle.
+
+To enable, point the gate at a running `ccrotate-serve`:
+
+```sh
+CCROTATE_SERVE_BASE_URL=http://ccrotate-serve.svc.cluster.local:3000  # required
+CCROTATE_SERVE_TOKEN=<bearer>                                          # required
+```
+
+In-cluster, the k8s-injected pair `CCROTATE_SERVE_SERVICE_HOST` +
+`CCROTATE_SERVE_SERVICE_PORT_SERVE` are also recognized as a fallback for
+`CCROTATE_SERVE_BASE_URL` when the explicit env var is unset.
+
+Notes:
+
+- Verifier is **off by default** — without `CCROTATE_SERVE_TOKEN` the tier
+  gate keeps its original deny-on-stale-snapshot behavior and logs a single
+  `ccrotate.verifier_disabled` line at boot.
+- The verifier fails **closed on auth errors** (401/403 short-circuit and
+  count toward circuit-breaker budget) and **open on transport errors**
+  (timeouts / 5xx degrade to "allow if cache snapshot was inconclusive").
+  This matches the existing snapshot-fallback policy.
+- Bursts are bounded by a 3-error circuit breaker: a ccrotate-serve outage
+  sees at most ~3 probes per cooldown window per (target, email) pair.
+
 ## Optional Slack stakeholder progress notifications
 
 To emit Slack notifications when issues move to `done`, `blocked`, or get handed back to the requesting user, set a Slack Incoming Webhook in local env/runtime config:

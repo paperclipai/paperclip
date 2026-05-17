@@ -142,6 +142,7 @@ import {
   readDefaultCcrotateTierCache,
   type CcrotateTierGate,
 } from "./ccrotate-tier-gate.js";
+import { createCcrotateServeVerifier } from "./ccrotate-serve-verifier.js";
 import {
   RECOVERY_ORIGIN_KINDS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
@@ -2643,6 +2644,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const budgets = budgetService(db, budgetHooks);
   const recovery = recoveryService(db, { enqueueWakeup });
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
+  const ccrotateServeBaseUrl =
+    process.env.CCROTATE_SERVE_BASE_URL ??
+    (process.env.CCROTATE_SERVE_SERVICE_HOST && process.env.CCROTATE_SERVE_SERVICE_PORT_SERVE
+      ? `http://${process.env.CCROTATE_SERVE_SERVICE_HOST}:${process.env.CCROTATE_SERVE_SERVICE_PORT_SERVE}`
+      : undefined);
+  const ccrotateServeToken = process.env.CCROTATE_SERVE_TOKEN;
+  const ccrotateVerifier = ccrotateServeBaseUrl && ccrotateServeToken
+    ? createCcrotateServeVerifier({
+        baseUrl: ccrotateServeBaseUrl,
+        token: ccrotateServeToken,
+        timeoutMs: 3_000,
+        retries: 1,
+        circuitBreakerThreshold: 3,
+        circuitBreakerCooldownMs: 30_000,
+        memoTtlMs: 30_000,
+        log: {
+          info: (payload, msg) => logger.info(payload, msg),
+          warn: (payload, msg) => logger.warn(payload, msg),
+          error: (payload, msg) => logger.warn(payload, msg),
+        },
+      })
+    : undefined;
+  if (ccrotateVerifier) {
+    logger.info({ baseUrl: ccrotateServeBaseUrl }, "ccrotate.verifier_enabled");
+  } else {
+    logger.warn(
+      {},
+      "ccrotate.verifier_disabled — set CCROTATE_SERVE_BASE_URL + CCROTATE_SERVE_TOKEN to enable",
+    );
+  }
   const ccrotateGate: CcrotateTierGate = options.ccrotateGate ?? createCcrotateTierGate({
     readCache: readDefaultCcrotateTierCache,
     switcher: createDefaultCcrotateSwitcher(),
@@ -2650,6 +2681,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       info: (payload, msg) => logger.info(payload, msg),
       warn: (payload, msg) => logger.warn(payload, msg),
     },
+    verifier: ccrotateVerifier,
   });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 

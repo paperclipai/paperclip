@@ -25,6 +25,9 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
+import { VerifierError } from "./ccrotate-serve-verifier.js";
+import type { CcrotateVerifier } from "./ccrotate-serve-verifier.js";
+
 const execFileAsync = promisify(execFile);
 
 export type CcrotateTarget = "claude" | "codex";
@@ -100,6 +103,15 @@ export interface CcrotateTierGateOptions {
    * hours. Defaults to 15 min.
    */
   maxDeferralMs?: number;
+  /**
+   * Optional verifier — when set, the gate calls `verifier.probeOne` on the
+   * deny path to live-probe one random exhausted candidate before deferring.
+   * Defends against burst-poisoned tier-cache labels by getting a fresh
+   * answer from ccrotate-serve before committing to a quota-based skip.
+   * T6 (2026-05-17). See [[ccrotate-burst-probe-false-positive]] and
+   * `.planning/2026-05-17-active-verify-tier-gate-design.md`.
+   */
+  verifier?: CcrotateVerifier;
 }
 
 export interface CcrotateGateAllowResult {
@@ -488,6 +500,120 @@ export function createCcrotateTierGate(opts: CcrotateTierGateOptions): CcrotateT
         return email
           ? { allow: true, switchedTo: { target, email } }
           : { allow: true };
+      }
+
+      // T6 verifier branch (2026-05-17): when the cache says deny but a
+      // verifier is wired, probe ONE random exhausted candidate live before
+      // committing to deferral. Defends against burst-poisoned `exhausted`
+      // labels written by the periodic probe-all cron — those labels are
+      // FRESH (so the stale-snapshot fallback above doesn't catch them) but
+      // were produced by per-org-throttled Usage API calls returning 429,
+      // not by actual account exhaustion. See
+      // [[ccrotate-burst-probe-false-positive]].
+      if (opts.verifier) {
+        const exhaustedCandidates = snapshot.accounts.filter(
+          (a) => a.status === "success" && a.serviceTier === "exhausted",
+        );
+        if (exhaustedCandidates.length > 0) {
+          // T2: random pick. Burst-poison writes mark accounts FRESHEST
+          // (the cron just wrote them), so sort-by-stale doesn't target
+          // false positives. Random sidesteps the sort question; memo +
+          // write-through in the verifier amortize across agents in the
+          // same heartbeat tick.
+          // Non-null asserted: `exhaustedCandidates.length > 0` is checked
+          // above, so the random-index access is provably safe. The
+          // assertion appeases `noUncheckedIndexedAccess` without adding
+          // an unreachable branch.
+          const picked = exhaustedCandidates[
+            Math.floor(Math.random() * exhaustedCandidates.length)
+          ]!;
+          try {
+            const result = await opts.verifier.probeOne(target, picked.email);
+            // T4: invalidate the in-process tier-cache regardless of the
+            // verifier's outcome so the next checkAdapter for any agent
+            // re-reads disk and picks up the write-through label the
+            // verifier just persisted.
+            cache.delete(target);
+            const usable = USABLE_TIERS[target].has(result.serviceTier ?? "");
+            if (usable) {
+              // Best-effort switcher path mirrors the allow-from-cache
+              // branch above so the kernel hands the agent an active
+              // account that actually matches the just-verified label.
+              if (
+                opts.switcher &&
+                lastSwitchedEmail.get(target) !== picked.email
+              ) {
+                const sw = await opts.switcher.switchTo(target, picked.email);
+                if (sw.ok) {
+                  lastSwitchedEmail.set(target, picked.email);
+                  opts.log.info(
+                    { target, email: picked.email },
+                    "ccrotate.verifier_allow_after_switch",
+                  );
+                } else {
+                  opts.log.warn(
+                    {
+                      target,
+                      email: picked.email,
+                      err: sw.error ?? "unknown",
+                    },
+                    "ccrotate.verifier_allow_switch_failed",
+                  );
+                }
+              } else {
+                opts.log.info(
+                  { target, email: picked.email },
+                  "ccrotate.verifier_allow",
+                );
+              }
+              deferrals.delete(key);
+              return {
+                allow: true,
+                switchedTo: { target, email: picked.email },
+              };
+            }
+            opts.log.info(
+              { target, email: picked.email },
+              "ccrotate.verifier_confirmed_exhausted",
+            );
+            // Fall through to the existing deny path below.
+          } catch (err) {
+            const ve = err as VerifierError;
+            if (ve && ve.kind === "auth") {
+              // T3 fail-closed: a misconfigured verifier (401/403) must
+              // NOT bypass quota gating — silently optimistic-allowing
+              // every dispatch would mask the auth misconfig with a
+              // flood of out_of_credits failures.
+              opts.log.warn(
+                {
+                  target,
+                  email: picked.email,
+                  err: ve.message,
+                },
+                "ccrotate.verifier_auth_failure_fail_closed",
+              );
+              // Fall through to the existing deny path below.
+            } else {
+              // T3 optimistic-allow on transport/timeout/circuit_open.
+              // Matches the existing inconclusive-snapshot fallback
+              // policy: when we can't tell, prefer letting one run try
+              // and rely on quotaExhaustedHook + the verifier circuit
+              // breaker to recover. Cost of being wrong: one failed run
+              // vs. cluster deadlock.
+              opts.log.warn(
+                {
+                  target,
+                  email: picked.email,
+                  kind: ve?.kind ?? "unknown",
+                  err: ve?.message ?? String(err),
+                },
+                "ccrotate.verifier_transport_error_optimistic_allow",
+              );
+              deferrals.delete(key);
+              return { allow: true };
+            }
+          }
+        }
       }
 
       const resumeAtMs =
