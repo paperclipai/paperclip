@@ -17,7 +17,8 @@ import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { parseEffectiveTrigger } from "../lib/wake-attribution";
 import { agentUrl, formatDateTime } from "../lib/utils";
-import { Link, useParams } from "@/lib/router";
+import { Link, useParams, useSearchParams } from "@/lib/router";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { nav, orchestrationInjectionPage } from "../lib/i18n";
 
 type JsonRecord = Record<string, unknown>;
@@ -279,8 +280,16 @@ function DetailRow({ label, value }: { label: string; value: string | null }) {
     </div>
   );
 }
+const DETAIL_TAB_VALUES = ["enqueue", "input", "execution", "record"] as const;
+type DetailTab = (typeof DETAIL_TAB_VALUES)[number];
+
 export function OrchestrationInjectionRunDetail() {
   const { runId } = useParams<{ runId: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab");
+  const activeTab: DetailTab = DETAIL_TAB_VALUES.includes(tabParam as DetailTab)
+    ? (tabParam as DetailTab)
+    : "input";
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
@@ -602,267 +611,319 @@ export function OrchestrationInjectionRunDetail() {
         </div>
       </div>
 
-      <div className="space-y-4">
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Activity className="h-4 w-4 text-muted-foreground" aria-hidden />
-                {orchestrationInjectionPage.run}
-              </CardTitle>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="w-full shrink-0 sm:w-auto"
-                disabled={!runCardCopyText}
-                aria-label={orchestrationInjectionPage.copyRunCardAria}
-                onClick={() => void copyRunCard()}
-              >
-                {runCardCopied ? <Check className="mr-1.5 h-3.5 w-3.5" aria-hidden /> : <Copy className="mr-1.5 h-3.5 w-3.5" aria-hidden />}
-                {runCardCopied ? orchestrationInjectionPage.copyFinalPromptDone : orchestrationInjectionPage.copyFinalPrompt}
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            <DetailRow label={orchestrationInjectionPage.runRowIdLabel} value={run.id} />
-            <DetailRow label={orchestrationInjectionPage.status} value={runStatusLabel(run.status)} />
-            <DetailRow label={orchestrationInjectionPage.source} value={runReason(run)} />
-            <DetailRow label={orchestrationInjectionPage.startedAt} value={run.startedAt ? formatDateTime(run.startedAt) : null} />
-            <DetailRow label={orchestrationInjectionPage.createdAt} value={formatDateTime(run.createdAt)} />
-            <DetailRow label={orchestrationInjectionPage.agent} value={agentsById.get(run.agentId)?.name ?? run.agentId} />
-            {agentsById.get(run.agentId) ? (
-              <Link to={agentUrl(agentsById.get(run.agentId)!)} className="text-sm text-primary hover:underline">
-                {agentsById.get(run.agentId)!.name}
-              </Link>
-            ) : null}
-          </CardContent>
-        </Card>
+      <Tabs
+        value={activeTab}
+        onValueChange={(v) => {
+          setSearchParams(
+            (prev) => {
+              const next = new URLSearchParams(prev);
+              next.set("tab", v);
+              return next;
+            },
+            { replace: true },
+          );
+        }}
+      >
+        <TabsList className="mb-1 flex h-auto min-h-10 w-full flex-wrap justify-start gap-1 sm:w-fit">
+          <TabsTrigger value="enqueue">{orchestrationInjectionPage.detailTabEnqueue}</TabsTrigger>
+          <TabsTrigger value="input">{orchestrationInjectionPage.detailTabInput}</TabsTrigger>
+          <TabsTrigger value="execution">{orchestrationInjectionPage.detailTabExecution}</TabsTrigger>
+          <TabsTrigger value="record">{orchestrationInjectionPage.detailTabRecord}</TabsTrigger>
+        </TabsList>
 
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <TabsContent value="enqueue" className="mt-4">
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">{orchestrationInjectionPage.detailTabEnqueue}</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm leading-relaxed text-muted-foreground">
+              <p>{orchestrationInjectionPage.detailTabEnqueueIntro}</p>
+              <div className="flex flex-wrap gap-x-4 gap-y-2">
+                <Link to="/orchestration-gates" className="text-primary hover:underline">
+                  {orchestrationInjectionPage.detailTabLinkGates}
+                </Link>
+                <Link to="/heartbeat-tasks" className="text-primary hover:underline">
+                  {orchestrationInjectionPage.detailTabLinkHeartbeatTasks}
+                </Link>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="input" className="mt-4 space-y-4">
+          <Card>
+            <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-base">
-                <Terminal className="h-4 w-4 text-muted-foreground" aria-hidden />
-                {orchestrationInjectionPage.adapterInvocation}
+                <ListTree className="h-4 w-4 text-muted-foreground" aria-hidden />
+                {orchestrationInjectionPage.wakeAttributionTitle}
               </CardTitle>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="w-full shrink-0 sm:w-auto"
-                disabled={!adapterInvocationCardCopyText}
-                aria-label={orchestrationInjectionPage.copyAdapterInvocationCardAria}
-                onClick={() => void copyAdapterInvocationCard()}
-              >
-                {adapterInvocationCardCopied ? <Check className="mr-1.5 h-3.5 w-3.5" aria-hidden /> : <Copy className="mr-1.5 h-3.5 w-3.5" aria-hidden />}
-                {adapterInvocationCardCopied ? orchestrationInjectionPage.copyFinalPromptDone : orchestrationInjectionPage.copyFinalPrompt}
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {!adapterEvent ? (
-              <div className="border border-dashed border-border p-3 text-sm text-muted-foreground">{orchestrationInjectionPage.eventUnavailable}</div>
-            ) : (
-              <>
-                <DetailRow label={orchestrationInjectionPage.adapterType} value={asString(payload?.adapterType)} />
-                <DetailRow label={orchestrationInjectionPage.command} value={asString(payload?.command)} />
-                <DetailRow label={orchestrationInjectionPage.cwd} value={asString(payload?.cwd)} />
-                {commandNotes.length > 0 ? (
-                  <div>
-                    <div className="mb-2 text-xs text-muted-foreground">{orchestrationInjectionPage.commandNotes}</div>
-                    <ul className="space-y-1 text-sm">
-                      {commandNotes.map((note, index) => (
-                        <li key={`${index}-${note}`} className="border-l border-border pl-3">
-                          {note}
-                        </li>
-                      ))}
-                    </ul>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {parsedEffectiveTrigger ? (
+                <>
+                  <DetailRow
+                    label={orchestrationInjectionPage.wakeAttributionWinningLabel}
+                    value={`${wakeAttributionSourceLabel(parsedEffectiveTrigger.winning.source)} · ${wakeAttributionReasonLabel(parsedEffectiveTrigger.winning.reason)}`}
+                  />
+                  {parsedEffectiveTrigger.winning.triggerDetail ? (
+                    <DetailRow
+                      label={orchestrationInjectionPage.wakeAttributionTriggerDetailLabel}
+                      value={parsedEffectiveTrigger.winning.triggerDetail}
+                    />
+                  ) : null}
+                  {parsedEffectiveTrigger.lastMergeAt ? (
+                    <DetailRow
+                      label={orchestrationInjectionPage.wakeAttributionLastMergeLabel}
+                      value={formatDateTime(parsedEffectiveTrigger.lastMergeAt)}
+                    />
+                  ) : null}
+                  {parsedEffectiveTrigger.absorbed.length > 0 ? (
+                    <div>
+                      <div className="mb-2 text-xs font-medium text-muted-foreground">
+                        {orchestrationInjectionPage.wakeAttributionAbsorbedTitle}
+                      </div>
+                      <ul className="space-y-2">
+                        {parsedEffectiveTrigger.absorbed.map((row, index) => (
+                          <li
+                            key={`${row.absorbedAt}-${row.source}-${row.reason}-${index}`}
+                            className="border-l border-border pl-3 text-sm leading-relaxed"
+                          >
+                            <div>
+                              {wakeAttributionSourceLabel(row.source)} · {wakeAttributionReasonLabel(row.reason)}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              {orchestrationInjectionPage.wakeAttributionAbsorbedAtLabel}： {formatDateTime(row.absorbedAt)}
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <p className="text-xs leading-relaxed text-muted-foreground">{orchestrationInjectionPage.wakeAttributionFallbackHint}</p>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <FileText className="h-4 w-4 text-muted-foreground" aria-hidden />
+                  {orchestrationInjectionPage.finalPrompt}
+                </CardTitle>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="w-full shrink-0 sm:w-auto"
+                  disabled={!fullPromptForCopy}
+                  aria-label={orchestrationInjectionPage.copyFinalPromptAria}
+                  onClick={() => void copyFullFinalPrompt()}
+                >
+                  {finalPromptCopied ? <Check className="mr-1.5 h-3.5 w-3.5" aria-hidden /> : <Copy className="mr-1.5 h-3.5 w-3.5" aria-hidden />}
+                  {finalPromptCopied ? orchestrationInjectionPage.copyFinalPromptDone : orchestrationInjectionPage.copyFinalPrompt}
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {promptCacheCorrelation ? (
+                <div className="space-y-2 rounded-md border border-border bg-muted/15 p-3 text-xs leading-relaxed">
+                  <div className="font-medium text-foreground">{orchestrationInjectionPage.promptCacheCorrelationTitle}</div>
+                  <div className="text-muted-foreground">
+                    {promptCacheCorrelation.mode === "cold"
+                      ? orchestrationInjectionPage.promptCacheModeCold
+                      : orchestrationInjectionPage.promptCacheModeResumed}
                   </div>
-                ) : null}
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <CardTitle className="flex items-center gap-2 text-base">
-                <FileText className="h-4 w-4 text-muted-foreground" aria-hidden />
-                {orchestrationInjectionPage.finalPrompt}
-              </CardTitle>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="w-full shrink-0 sm:w-auto"
-                disabled={!fullPromptForCopy}
-                aria-label={orchestrationInjectionPage.copyFinalPromptAria}
-                onClick={() => void copyFullFinalPrompt()}
-              >
-                {finalPromptCopied ? <Check className="mr-1.5 h-3.5 w-3.5" aria-hidden /> : <Copy className="mr-1.5 h-3.5 w-3.5" aria-hidden />}
-                {finalPromptCopied ? orchestrationInjectionPage.copyFinalPromptDone : orchestrationInjectionPage.copyFinalPrompt}
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {promptCacheCorrelation ? (
-              <div className="space-y-2 rounded-md border border-border bg-muted/15 p-3 text-xs leading-relaxed">
-                <div className="font-medium text-foreground">{orchestrationInjectionPage.promptCacheCorrelationTitle}</div>
-                <div className="text-muted-foreground">
-                  {promptCacheCorrelation.mode === "cold"
-                    ? orchestrationInjectionPage.promptCacheModeCold
-                    : orchestrationInjectionPage.promptCacheModeResumed}
+                  {promptCacheCorrelation.stabilityKey ? (
+                    <div>
+                      <span className="text-muted-foreground">{orchestrationInjectionPage.promptCacheStabilityKeyLabel}：</span>
+                      <code className="break-all font-mono text-[11px]">{promptCacheCorrelation.stabilityKey}</code>
+                    </div>
+                  ) : null}
+                  {promptCacheCorrelation.suppressedSectionIds?.length ? (
+                    <div>
+                      <div className="mb-1 font-medium text-foreground">{orchestrationInjectionPage.promptCacheSuppressedLabel}</div>
+                      <ul className="list-inside list-disc space-y-0.5">
+                        {promptCacheCorrelation.suppressedSectionIds.map((id) => (
+                          <li key={id}>{promptSectionLabel(id)}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
                 </div>
-                {promptCacheCorrelation.stabilityKey ? (
-                  <div>
-                    <span className="text-muted-foreground">{orchestrationInjectionPage.promptCacheStabilityKeyLabel}：</span>
-                    <code className="break-all font-mono text-[11px]">{promptCacheCorrelation.stabilityKey}</code>
-                  </div>
-                ) : null}
-                {promptCacheCorrelation.suppressedSectionIds?.length ? (
-                  <div>
-                    <div className="mb-1 font-medium text-foreground">{orchestrationInjectionPage.promptCacheSuppressedLabel}</div>
-                    <ul className="list-inside list-disc space-y-0.5">
-                      {promptCacheCorrelation.suppressedSectionIds.map((id) => (
-                        <li key={id}>{promptSectionLabel(id)}</li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-            {metricEntries.length > 0 ? (
-              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                {metricEntries.map((entry) => (
-                  <MetricPill key={entry.key} label={entry.key} value={entry.value} />
-                ))}
-              </div>
-            ) : null}
-            {parsedPromptSections ? (
-              <div className="space-y-2">
-                <p className="text-xs text-muted-foreground">{orchestrationInjectionPage.promptCombinationHint}</p>
-                <PromptSectionsList key={run.id} sections={parsedPromptSections} />
-              </div>
-            ) : paragraphSplitChunks.length > 1 ? (
-              <div className="space-y-2">
-                <p className="text-xs text-muted-foreground">{orchestrationInjectionPage.promptParagraphFallbackHint}</p>
-                <ParagraphSplitChunksList key={run.id} chunks={paragraphSplitChunks} />
-              </div>
-            ) : (
-              <PromptBlock prompt={displayPromptForBlock} />
-            )}
-          </CardContent>
-        </Card>
+              ) : null}
+              {metricEntries.length > 0 ? (
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                  {metricEntries.map((entry) => (
+                    <MetricPill key={entry.key} label={entry.key} value={entry.value} />
+                  ))}
+                </div>
+              ) : null}
+              {parsedPromptSections ? (
+                <div className="space-y-2">
+                  <p className="text-xs text-muted-foreground">{orchestrationInjectionPage.promptCombinationHint}</p>
+                  <PromptSectionsList key={run.id} sections={parsedPromptSections} />
+                </div>
+              ) : paragraphSplitChunks.length > 1 ? (
+                <div className="space-y-2">
+                  <p className="text-xs text-muted-foreground">{orchestrationInjectionPage.promptParagraphFallbackHint}</p>
+                  <ParagraphSplitChunksList key={run.id} chunks={paragraphSplitChunks} />
+                </div>
+              ) : (
+                <PromptBlock prompt={displayPromptForBlock} />
+              )}
+            </CardContent>
+          </Card>
 
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <ListTree className="h-4 w-4 text-muted-foreground" aria-hidden />
-              {orchestrationInjectionPage.wakeAttributionTitle}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {parsedEffectiveTrigger ? (
-              <>
-                <DetailRow
-                  label={orchestrationInjectionPage.wakeAttributionWinningLabel}
-                  value={`${wakeAttributionSourceLabel(parsedEffectiveTrigger.winning.source)} · ${wakeAttributionReasonLabel(parsedEffectiveTrigger.winning.reason)}`}
-                />
-                {parsedEffectiveTrigger.winning.triggerDetail ? (
-                  <DetailRow
-                    label={orchestrationInjectionPage.wakeAttributionTriggerDetailLabel}
-                    value={parsedEffectiveTrigger.winning.triggerDetail}
-                  />
-                ) : null}
-                {parsedEffectiveTrigger.lastMergeAt ? (
-                  <DetailRow
-                    label={orchestrationInjectionPage.wakeAttributionLastMergeLabel}
-                    value={formatDateTime(parsedEffectiveTrigger.lastMergeAt)}
-                  />
-                ) : null}
-                {parsedEffectiveTrigger.absorbed.length > 0 ? (
-                  <div>
-                    <div className="mb-2 text-xs font-medium text-muted-foreground">{orchestrationInjectionPage.wakeAttributionAbsorbedTitle}</div>
-                    <ul className="space-y-2">
-                      {parsedEffectiveTrigger.absorbed.map((row, index) => (
-                        <li
-                          key={`${row.absorbedAt}-${row.source}-${row.reason}-${index}`}
-                          className="border-l border-border pl-3 text-sm leading-relaxed"
-                        >
-                          <div>
-                            {wakeAttributionSourceLabel(row.source)} · {wakeAttributionReasonLabel(row.reason)}
-                          </div>
-                          <div className="text-xs text-muted-foreground">
-                            {orchestrationInjectionPage.wakeAttributionAbsorbedAtLabel}： {formatDateTime(row.absorbedAt)}
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
-              </>
-            ) : (
-              <p className="text-xs leading-relaxed text-muted-foreground">{orchestrationInjectionPage.wakeAttributionFallbackHint}</p>
-            )}
-          </CardContent>
-        </Card>
+          <div className="grid gap-4 xl:grid-cols-2">
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Braces className="h-4 w-4 text-muted-foreground" aria-hidden />
+                    {orchestrationInjectionPage.contextSnapshot}
+                  </CardTitle>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="w-full shrink-0 sm:w-auto"
+                    disabled={!contextSnapshotCopyText}
+                    aria-label={orchestrationInjectionPage.copyContextSnapshotCardAria}
+                    onClick={() => void copyContextSnapshotCard()}
+                  >
+                    {contextSnapshotCardCopied ? <Check className="mr-1.5 h-3.5 w-3.5" aria-hidden /> : <Copy className="mr-1.5 h-3.5 w-3.5" aria-hidden />}
+                    {contextSnapshotCardCopied ? orchestrationInjectionPage.copyFinalPromptDone : orchestrationInjectionPage.copyFinalPrompt}
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <JsonBlock value={run.contextSnapshot} />
+              </CardContent>
+            </Card>
 
-        <div className="grid gap-4 xl:grid-cols-2">
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Workflow className="h-4 w-4 text-muted-foreground" aria-hidden />
+                    {orchestrationInjectionPage.wakePayload}
+                  </CardTitle>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="w-full shrink-0 sm:w-auto"
+                    disabled={!wakePayloadCopyText}
+                    aria-label={orchestrationInjectionPage.copyWakePayloadCardAria}
+                    onClick={() => void copyWakePayloadCard()}
+                  >
+                    {wakePayloadCardCopied ? <Check className="mr-1.5 h-3.5 w-3.5" aria-hidden /> : <Copy className="mr-1.5 h-3.5 w-3.5" aria-hidden />}
+                    {wakePayloadCardCopied ? orchestrationInjectionPage.copyFinalPromptDone : orchestrationInjectionPage.copyFinalPrompt}
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <JsonBlock value={context?.paperclipWake ?? null} />
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="execution" className="mt-4 space-y-4">
+          <p className="text-sm text-muted-foreground">
+            {orchestrationInjectionPage.executionPromptCrossRef}{" "}
+            <Link to="?tab=input" replace className="text-primary hover:underline">
+              {orchestrationInjectionPage.detailTabInput}
+            </Link>
+          </p>
           <Card>
             <CardHeader className="pb-3">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <CardTitle className="flex items-center gap-2 text-base">
-                  <Braces className="h-4 w-4 text-muted-foreground" aria-hidden />
-                  {orchestrationInjectionPage.contextSnapshot}
+                  <Terminal className="h-4 w-4 text-muted-foreground" aria-hidden />
+                  {orchestrationInjectionPage.adapterInvocation}
                 </CardTitle>
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
                   className="w-full shrink-0 sm:w-auto"
-                  disabled={!contextSnapshotCopyText}
-                  aria-label={orchestrationInjectionPage.copyContextSnapshotCardAria}
-                  onClick={() => void copyContextSnapshotCard()}
+                  disabled={!adapterInvocationCardCopyText}
+                  aria-label={orchestrationInjectionPage.copyAdapterInvocationCardAria}
+                  onClick={() => void copyAdapterInvocationCard()}
                 >
-                  {contextSnapshotCardCopied ? <Check className="mr-1.5 h-3.5 w-3.5" aria-hidden /> : <Copy className="mr-1.5 h-3.5 w-3.5" aria-hidden />}
-                  {contextSnapshotCardCopied ? orchestrationInjectionPage.copyFinalPromptDone : orchestrationInjectionPage.copyFinalPrompt}
+                  {adapterInvocationCardCopied ? <Check className="mr-1.5 h-3.5 w-3.5" aria-hidden /> : <Copy className="mr-1.5 h-3.5 w-3.5" aria-hidden />}
+                  {adapterInvocationCardCopied ? orchestrationInjectionPage.copyFinalPromptDone : orchestrationInjectionPage.copyFinalPrompt}
                 </Button>
               </div>
             </CardHeader>
-            <CardContent>
-              <JsonBlock value={run.contextSnapshot} />
+            <CardContent className="space-y-3">
+              {!adapterEvent ? (
+                <div className="border border-dashed border-border p-3 text-sm text-muted-foreground">{orchestrationInjectionPage.eventUnavailable}</div>
+              ) : (
+                <>
+                  <DetailRow label={orchestrationInjectionPage.adapterType} value={asString(payload?.adapterType)} />
+                  <DetailRow label={orchestrationInjectionPage.command} value={asString(payload?.command)} />
+                  <DetailRow label={orchestrationInjectionPage.cwd} value={asString(payload?.cwd)} />
+                  {commandNotes.length > 0 ? (
+                    <div>
+                      <div className="mb-2 text-xs text-muted-foreground">{orchestrationInjectionPage.commandNotes}</div>
+                      <ul className="space-y-1 text-sm">
+                        {commandNotes.map((note, index) => (
+                          <li key={`${index}-${note}`} className="border-l border-border pl-3">
+                            {note}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </>
+              )}
             </CardContent>
           </Card>
+        </TabsContent>
 
+        <TabsContent value="record" className="mt-4">
           <Card>
             <CardHeader className="pb-3">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <CardTitle className="flex items-center gap-2 text-base">
-                  <Workflow className="h-4 w-4 text-muted-foreground" aria-hidden />
-                  {orchestrationInjectionPage.wakePayload}
+                  <Activity className="h-4 w-4 text-muted-foreground" aria-hidden />
+                  {orchestrationInjectionPage.run}
                 </CardTitle>
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
                   className="w-full shrink-0 sm:w-auto"
-                  disabled={!wakePayloadCopyText}
-                  aria-label={orchestrationInjectionPage.copyWakePayloadCardAria}
-                  onClick={() => void copyWakePayloadCard()}
+                  disabled={!runCardCopyText}
+                  aria-label={orchestrationInjectionPage.copyRunCardAria}
+                  onClick={() => void copyRunCard()}
                 >
-                  {wakePayloadCardCopied ? <Check className="mr-1.5 h-3.5 w-3.5" aria-hidden /> : <Copy className="mr-1.5 h-3.5 w-3.5" aria-hidden />}
-                  {wakePayloadCardCopied ? orchestrationInjectionPage.copyFinalPromptDone : orchestrationInjectionPage.copyFinalPrompt}
+                  {runCardCopied ? <Check className="mr-1.5 h-3.5 w-3.5" aria-hidden /> : <Copy className="mr-1.5 h-3.5 w-3.5" aria-hidden />}
+                  {runCardCopied ? orchestrationInjectionPage.copyFinalPromptDone : orchestrationInjectionPage.copyFinalPrompt}
                 </Button>
               </div>
             </CardHeader>
-            <CardContent>
-              <JsonBlock value={context?.paperclipWake ?? null} />
+            <CardContent className="space-y-2">
+              <DetailRow label={orchestrationInjectionPage.runRowIdLabel} value={run.id} />
+              <DetailRow label={orchestrationInjectionPage.status} value={runStatusLabel(run.status)} />
+              <DetailRow label={orchestrationInjectionPage.source} value={runReason(run)} />
+              <DetailRow label={orchestrationInjectionPage.startedAt} value={run.startedAt ? formatDateTime(run.startedAt) : null} />
+              <DetailRow label={orchestrationInjectionPage.createdAt} value={formatDateTime(run.createdAt)} />
+              <DetailRow label={orchestrationInjectionPage.agent} value={agentsById.get(run.agentId)?.name ?? run.agentId} />
+              {agentsById.get(run.agentId) ? (
+                <Link to={agentUrl(agentsById.get(run.agentId)!)} className="text-sm text-primary hover:underline">
+                  {agentsById.get(run.agentId)!.name}
+                </Link>
+              ) : null}
             </CardContent>
           </Card>
-        </div>
-      </div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

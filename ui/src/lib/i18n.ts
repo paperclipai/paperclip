@@ -528,6 +528,15 @@ export const orchestrationGatesRows: ReadonlyArray<OrchestrationGatesTableRow> =
 export const orchestrationInjectionPage = {
   title: "运行清单",
   runDetailTitle: "运行详情",
+  detailTabEnqueue: "唤起入队",
+  detailTabInput: "输入编排",
+  detailTabExecution: "执行回传",
+  detailTabRecord: "运行记录",
+  detailTabEnqueueIntro:
+    "本栏说明「入执行队列之前」的门控与排队语义。当前条目对应的一次运行**已经落库**，历史上若在入队前曾被预算、审批等拦截，需结合活动日志或实例策略查看。下列入口可对照调度与闸门说明。",
+  detailTabLinkGates: "编排闸门",
+  detailTabLinkHeartbeatTasks: "心跳任务",
+  executionPromptCrossRef: "完整提示词拼装、分块与控制面指标见「输入编排」标签。",
   backToList: "返回运行列表",
   runNotFound: "未找到该运行，可能已清理或不属于当前团队。",
   subtitle: "对照最近运行：看调度上下文、唤醒载荷与适配器提示词如何拼装，和事务侧现象是否对得上。",
@@ -636,7 +645,7 @@ export const orchestrationInjectionPage = {
   command: "命令",
   cwd: "工作目录",
   adapterType: "适配器",
-  noSelection: "选择一条运行查看排障细节。",
+  noSelection: "选择一条运行查看详情。",
   noData: "无",
   chars: (count: number) => `${count.toLocaleString()} 字符`,
 } as const;
