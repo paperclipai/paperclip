@@ -83,9 +83,12 @@ export function dashboardService(db: Db) {
       const monthStart = getUtcMonthStart(now);
       const runActivityDays = getRecentUtcDateKeys(now, DASHBOARD_RUN_ACTIVITY_DAYS);
       const runActivityStart = new Date(`${runActivityDays[0]}T00:00:00.000Z`);
-      const [{ monthSpend }] = await db
+      const [{ monthSpend, monthInputTokens, monthOutputTokens, monthCachedInputTokens }] = await db
         .select({
           monthSpend: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
+          monthInputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::double precision`,
+          monthOutputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::double precision`,
+          monthCachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::double precision`,
         })
         .from(costEvents)
         .where(
@@ -147,6 +150,9 @@ export function dashboardService(db: Db) {
           monthSpendCents,
           monthBudgetCents: company.budgetMonthlyCents,
           monthUtilizationPercent: Number(utilization.toFixed(2)),
+          monthInputTokens: Number(monthInputTokens),
+          monthOutputTokens: Number(monthOutputTokens),
+          monthCachedInputTokens: Number(monthCachedInputTokens),
         },
         pendingApprovals,
         budgets: {

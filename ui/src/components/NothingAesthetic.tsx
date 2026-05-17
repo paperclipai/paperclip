@@ -1,5 +1,53 @@
 import type { CSSProperties, ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "../lib/utils";
+
+function easeOutCubic(t: number): number {
+  return 1 - Math.pow(1 - t, 3);
+}
+
+/**
+ * Smoothly tweens between integer values whenever `value` changes.
+ * Renders via the formatter so the consumer controls display (e.g., `formatTokens`).
+ */
+export function AnimatedNumber({
+  value,
+  durationMs = 900,
+  format = (n) => Math.round(n).toLocaleString("en-US"),
+  className,
+}: {
+  value: number;
+  durationMs?: number;
+  format?: (n: number) => string;
+  className?: string;
+}) {
+  const [display, setDisplay] = useState(value);
+  const fromRef = useRef(value);
+  const startRef = useRef<number | null>(null);
+  const frameRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (value === display) return;
+    fromRef.current = display;
+    startRef.current = null;
+    if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+    const tick = (ts: number) => {
+      if (startRef.current === null) startRef.current = ts;
+      const progress = Math.min(1, (ts - startRef.current) / durationMs);
+      const next = fromRef.current + (value - fromRef.current) * easeOutCubic(progress);
+      setDisplay(next);
+      if (progress < 1) frameRef.current = requestAnimationFrame(tick);
+      else frameRef.current = null;
+    };
+    frameRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, durationMs]);
+
+  return <span className={className}>{format(display)}</span>;
+}
 
 type GlyphTone = "default" | "muted" | "success" | "warning" | "danger" | "live";
 

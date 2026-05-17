@@ -11,7 +11,7 @@ interface CircularStatWidgetProps {
   description?: ReactNode;
   /** Arc fill, 0..1 — clamped. Defaults to 0 (empty ring). */
   percent?: number;
-  tone?: "default" | "danger" | "success";
+  tone?: "default" | "danger" | "success" | "info";
   to?: string;
   onClick?: () => void;
 }
@@ -40,7 +40,9 @@ export function CircularStatWidget({
       ? "stroke-red-500"
       : tone === "success"
         ? "stroke-emerald-500"
-        : "stroke-foreground";
+        : tone === "info"
+          ? "stroke-[#2C94EE]"
+          : "stroke-foreground";
   const valueClass =
     tone === "danger"
       ? "text-red-500"
@@ -61,16 +63,16 @@ export function CircularStatWidget({
           className="-rotate-90"
           aria-hidden="true"
         >
-          {/* Dashed background track — Nothing-Phone LED-ring feel */}
+          {/* Dashed background track — Nothing-Phone LED-ring feel, chunky pixelated dots */}
           <circle
             cx={SIZE / 2}
             cy={SIZE / 2}
             r={RADIUS}
             fill="none"
-            strokeWidth={2}
-            strokeDasharray="1 5"
+            strokeWidth={4}
+            strokeDasharray="3 10"
             strokeLinecap="round"
-            className="stroke-muted-foreground/40"
+            className="stroke-muted-foreground/50"
           />
           {/* Filled arc */}
           <circle

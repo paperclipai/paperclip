@@ -19,9 +19,10 @@ import { StatusIcon } from "../components/StatusIcon";
 import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
-import { cn, formatCents } from "../lib/utils";
+import { cn, formatCents, formatTokens } from "../lib/utils";
 import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
+import { AnimatedNumber, DotMatrixText } from "../components/NothingAesthetic";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import type { Agent, Issue } from "@paperclipai/shared";
@@ -57,6 +58,7 @@ export function Dashboard() {
     queryKey: queryKeys.dashboard(selectedCompanyId!),
     queryFn: () => dashboardApi.summary(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+    refetchInterval: 15_000,
   });
 
   const { data: activity } = useQuery({
@@ -214,7 +216,27 @@ export function Dashboard() {
         </div>
       )}
 
-      <ActiveAgentsPanel companyId={selectedCompanyId!} />
+      <ActiveAgentsPanel
+        companyId={selectedCompanyId!}
+        headerExtra={
+          data ? (
+            <div className="flex items-baseline gap-1.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+              <span className="h-1.5 w-1.5 rounded-full bg-[#34BFF0] animate-pulse" aria-hidden />
+              <span>Tokens this month</span>
+              <DotMatrixText className="text-[15px] leading-none text-foreground">
+                <AnimatedNumber
+                  value={
+                    data.costs.monthInputTokens
+                    + data.costs.monthOutputTokens
+                    + data.costs.monthCachedInputTokens
+                  }
+                  format={formatTokens}
+                />
+              </DotMatrixText>
+            </div>
+          ) : null
+        }
+      />
 
       {data && (
         <>
@@ -259,6 +281,7 @@ export function Dashboard() {
                   value={agentsTotal}
                   label="Agents Enabled"
                   percent={agentsPercent}
+                  tone="info"
                   to="/agents"
                   description={
                     <span>
@@ -273,6 +296,7 @@ export function Dashboard() {
                   value={data.tasks.inProgress}
                   label="Tasks In Progress"
                   percent={tasksPercent}
+                  tone="info"
                   to="/issues"
                   description={
                     <span>
@@ -281,21 +305,35 @@ export function Dashboard() {
                     </span>
                   }
                 />
-                <CircularStatWidget
-                  icon={DollarSign}
-                  value={formatCents(data.costs.monthSpendCents)}
-                  label="Month Spend"
-                  percent={costsPercent}
-                  tone={costsTone}
-                  to="/costs"
-                  description={
-                    <span>
-                      {data.costs.monthBudgetCents > 0
-                        ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
-                        : "Unlimited budget"}
-                    </span>
-                  }
-                />
+                {(() => {
+                  const tokensTotal =
+                    data.costs.monthInputTokens
+                    + data.costs.monthOutputTokens
+                    + data.costs.monthCachedInputTokens;
+                  const tokensLabel = formatTokens(tokensTotal);
+                  const hasCost = data.costs.monthSpendCents > 0;
+                  return (
+                    <CircularStatWidget
+                      icon={DollarSign}
+                      value={hasCost ? formatCents(data.costs.monthSpendCents) : tokensLabel}
+                      label={hasCost ? "Month Spend" : "Month Tokens"}
+                      percent={costsPercent}
+                      tone={costsTone}
+                      to="/costs"
+                      description={
+                        <span>
+                          {hasCost
+                            ? (data.costs.monthBudgetCents > 0
+                                ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget · ${tokensLabel} tokens`
+                                : `${tokensLabel} tokens · unlimited budget`)
+                            : (data.costs.monthBudgetCents > 0
+                                ? `${formatCents(data.costs.monthSpendCents)} cost · ${formatCents(data.costs.monthBudgetCents)} budget`
+                                : "Subscription plan — $0 metered")}
+                        </span>
+                      }
+                    />
+                  );
+                })()}
                 <CircularStatWidget
                   icon={ShieldCheck}
                   value={approvalsCount}

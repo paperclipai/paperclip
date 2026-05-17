@@ -145,7 +145,7 @@ const priorityColors: Record<string, string> = {
   critical: chartSemanticColors.danger,
   high: chartSemanticColors.high,
   medium: chartSemanticColors.warning,
-  low: chartSemanticColors.info,
+  low: "var(--foreground)",
 };
 
 const priorityOrder = ["critical", "high", "medium", "low"] as const;

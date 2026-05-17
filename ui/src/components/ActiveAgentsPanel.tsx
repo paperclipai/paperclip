@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, useMemo, type ReactNode } from "react";
 import { Link } from "@/lib/router";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import type { Issue, IssueRecoveryAction } from "@paperclipai/shared";
@@ -61,6 +61,7 @@ interface ActiveAgentsPanelProps {
   emptyMessage?: string;
   queryScope?: string;
   showMoreLink?: boolean;
+  headerExtra?: ReactNode;
 }
 
 export function ActiveAgentsPanel({
@@ -74,6 +75,7 @@ export function ActiveAgentsPanel({
   emptyMessage = "No recent agent runs.",
   queryScope = "dashboard",
   showMoreLink = true,
+  headerExtra,
 }: ActiveAgentsPanelProps) {
   const { data: liveRuns } = useQuery({
     queryKey: [...queryKeys.liveRuns(companyId), queryScope, { minRunCount, fetchLimit }],
@@ -117,9 +119,12 @@ export function ActiveAgentsPanel({
 
   return (
     <div>
-      <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-        {title}
-      </h3>
+      <div className="mb-3 flex items-baseline justify-between gap-3">
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          {title}
+        </h3>
+        {headerExtra}
+      </div>
       {runs.length === 0 ? (
         <div className="rounded-xl border border-border p-4">
           <p className="text-sm text-muted-foreground">{emptyMessage}</p>
