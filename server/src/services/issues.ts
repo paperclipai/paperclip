@@ -3909,7 +3909,7 @@ export function issueService(db: Db) {
         })
         .from(issues)
         .where(and(eq(issues.companyId, parent.companyId), eq(issues.parentId, parentIssueId)))
-        .orderBy(asc(issues.issueNumber), asc(issues.createdAt));
+        .orderBy(asc(issues.issueNumber), asc(issues.createdAt), asc(issues.id));
       if (children.length === 0) return null;
       if (!children.every((child) => child.status === "done" || child.status === "cancelled")) {
         return null;

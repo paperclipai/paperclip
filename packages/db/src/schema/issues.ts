@@ -69,7 +69,25 @@ export const issues = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    companyStatusIdx: index("issues_company_status_idx").on(table.companyId, table.status),
+    companyStatusUpdatedIdx: index("issues_company_status_updated_idx").on(
+      table.companyId,
+      table.status,
+      table.updatedAt.desc(),
+    ),
+    companyHiddenPriorityUpdatedIdx: index("issues_company_hidden_priority_updated_idx").on(
+      table.companyId,
+      table.hiddenAt,
+      sql`(
+        CASE ${table.priority}
+          WHEN 'critical' THEN 0
+          WHEN 'high' THEN 1
+          WHEN 'medium' THEN 2
+          WHEN 'low' THEN 3
+          ELSE 4
+        END
+      )`,
+      table.updatedAt.desc(),
+    ),
     assigneeStatusIdx: index("issues_company_assignee_status_idx").on(
       table.companyId,
       table.assigneeAgentId,
@@ -80,7 +98,22 @@ export const issues = pgTable(
       table.assigneeUserId,
       table.status,
     ),
-    parentIdx: index("issues_company_parent_idx").on(table.companyId, table.parentId),
+    companyParentStatusHiddenPriorityUpdatedIdx: index("issues_company_parent_status_hidden_priority_updated_idx").on(
+      table.companyId,
+      table.parentId,
+      table.status,
+      table.hiddenAt,
+      sql`(
+        CASE ${table.priority}
+          WHEN 'critical' THEN 0
+          WHEN 'high' THEN 1
+          WHEN 'medium' THEN 2
+          WHEN 'low' THEN 3
+          ELSE 4
+        END
+      )`,
+      table.updatedAt.desc(),
+    ),
     projectIdx: index("issues_company_project_idx").on(table.companyId, table.projectId),
     originIdx: index("issues_company_origin_idx").on(table.companyId, table.originKind, table.originId),
     projectWorkspaceIdx: index("issues_company_project_workspace_idx").on(table.companyId, table.projectWorkspaceId),
