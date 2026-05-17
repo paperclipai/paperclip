@@ -106,6 +106,15 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
+    if (looksLikeJwt(token)) {
+      const jwtActor = await resolveAgentJwtActor(db, token, runIdHeader);
+      if (jwtActor) {
+        req.actor = jwtActor;
+        next();
+        return;
+      }
+    }
+
     const boardKey = await boardAuth.findBoardApiKeyByToken(token);
     if (boardKey) {
       const access = await boardAuth.resolveBoardAccess(boardKey.userId);
@@ -136,36 +145,8 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .then((rows) => rows[0] ?? null);
 
     if (!key) {
-      const claims = verifyLocalAgentJwt(token);
-      if (!claims) {
-        next();
-        return;
-      }
-
-      const agentRecord = await db
-        .select()
-        .from(agents)
-        .where(eq(agents.id, claims.sub))
-        .then((rows) => rows[0] ?? null);
-
-      if (!agentRecord || agentRecord.companyId !== claims.company_id) {
-        next();
-        return;
-      }
-
-      if (agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
-        next();
-        return;
-      }
-
-      req.actor = {
-        type: "agent",
-        agentId: claims.sub,
-        companyId: claims.company_id,
-        keyId: undefined,
-        runId: runIdHeader || claims.run_id || undefined,
-        source: "agent_jwt",
-      };
+      const jwtActor = await resolveAgentJwtActor(db, token, runIdHeader);
+      if (jwtActor) req.actor = jwtActor;
       next();
       return;
     }
@@ -196,6 +177,42 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     };
 
     next();
+  };
+}
+
+function looksLikeJwt(token: string) {
+  return token.split(".").length === 3;
+}
+
+async function resolveAgentJwtActor(
+  db: Db,
+  token: string,
+  runIdHeader: string | undefined,
+): Promise<Express.Request["actor"] | null> {
+  const claims = verifyLocalAgentJwt(token);
+  if (!claims) return null;
+
+  const agentRecord = await db
+    .select()
+    .from(agents)
+    .where(eq(agents.id, claims.sub))
+    .then((rows) => rows[0] ?? null);
+
+  if (!agentRecord || agentRecord.companyId !== claims.company_id) {
+    return null;
+  }
+
+  if (agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
+    return null;
+  }
+
+  return {
+    type: "agent",
+    agentId: claims.sub,
+    companyId: claims.company_id,
+    keyId: undefined,
+    runId: runIdHeader || claims.run_id || undefined,
+    source: "agent_jwt",
   };
 }
 

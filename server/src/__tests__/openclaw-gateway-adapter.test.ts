@@ -8,6 +8,13 @@ import {
 } from "@paperclipai/adapter-openclaw-gateway/ui";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 
+function extractPaperclipWakePayload(payload: Record<string, unknown>) {
+  const message = String(payload.message ?? "");
+  const match = message.match(/Structured wake payload JSON:\s*```json\s*([\s\S]*?)\s*```/);
+  expect(match?.[1]).toBeTruthy();
+  return JSON.parse(match![1]!) as Record<string, unknown>;
+}
+
 function buildContext(
   config: Record<string, unknown>,
   overrides?: Partial<AdapterExecutionContext>,
@@ -502,11 +509,9 @@ describe("openclaw gateway adapter execute", () => {
       );
       expect(String(payload?.message ?? "")).toContain("First comment");
       expect(String(payload?.message ?? "")).toContain("\"commentIds\":[\"comment-1\",\"comment-2\"]");
-      expect(payload?.paperclip).toMatchObject({
-        wake: {
-          latestCommentId: "comment-2",
-          commentIds: ["comment-1", "comment-2"],
-        },
+      expect(extractPaperclipWakePayload(payload ?? {})).toMatchObject({
+        latestCommentId: "comment-2",
+        commentIds: ["comment-1", "comment-2"],
       });
 
       expect(logs.some((entry) => entry.includes("[openclaw-gateway:event] run=run-123 stream=assistant"))).toBe(true);
