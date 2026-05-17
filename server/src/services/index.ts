@@ -32,6 +32,7 @@ export { budgetService } from "./budgets.js";
 export { secretService } from "./secrets.js";
 export { routineService } from "./routines.js";
 export { costService } from "./costs.js";
+export { clipService } from "./clips.js";
 export { financeService } from "./finance.js";
 export { heartbeatService } from "./heartbeat.js";
 export {

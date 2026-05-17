@@ -18,6 +18,7 @@ import { Search } from "./pages/Search";
 import { IssueDetail } from "./pages/IssueDetail";
 import { IssueChatLongThreadPerf } from "./pages/IssueChatLongThreadPerf";
 import { Routines } from "./pages/Routines";
+import { Clips } from "./pages/Clips";
 import { RoutineDetail } from "./pages/RoutineDetail";
 import { UserProfile } from "./pages/UserProfile";
 import { ExecutionWorkspaceDetail } from "./pages/ExecutionWorkspaceDetail";
@@ -110,6 +111,7 @@ function boardRoutes() {
         <Route path="tests/perf/long-thread" element={<IssueChatLongThreadPerf />} />
       ) : null}
       <Route path="routines" element={<Routines />} />
+      <Route path="clips" element={<Clips />} />
       <Route path="routines/:routineId" element={<RoutineDetail />} />
       <Route path="execution-workspaces/:workspaceId" element={<ExecutionWorkspaceDetail />} />
       <Route path="execution-workspaces/:workspaceId/services" element={<ExecutionWorkspaceDetail />} />
