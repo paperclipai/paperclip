@@ -3,6 +3,7 @@
   由 start-paperclip-dev-external.ps1 用 -File 拉起（勿手填参数）。
   依赖进程环境：PAPERCLIP_REPO_ROOT、PAPERCLIP_START_WITH_COMPOSE、PAPERCLIP_COMPOSE_FILE、
   PAPERCLIP_CHILD_SAME_WINDOW、PAPERCLIP_SKIP_DEV_PREREQ、PAPERCLIP_COMPOSE_WAIT、PAPERCLIP_SKIP_DB_URL_CHECK。
+  末尾执行 pnpm dev:once（dev-runner 子进程一次拉起；不安装变更扫描 / 空闲自动重启）。等价于向 dev-runner 传参 once，或设 PAPERCLIP_DEV_RUNNER_ONCE=1。
 #>
 $ErrorActionPreference = "Continue"
 if (-not $env:PAPERCLIP_REPO_ROOT) { throw "PAPERCLIP_REPO_ROOT is not set" }
@@ -28,5 +29,5 @@ if ($env:PAPERCLIP_START_WITH_COMPOSE -eq "1") {
   & $preCompose -RepoRoot $env:PAPERCLIP_REPO_ROOT -ComposeFileRel $cf -NoWait:$noWait -SkipDatabaseUrlCheck:$skipDbUrl
 }
 
-Write-Host "pnpm dev" -ForegroundColor DarkGray
-& pnpm dev
+Write-Host "pnpm dev:once (no dev-runner change scan / idle auto-restart)" -ForegroundColor DarkGray
+& pnpm dev:once

@@ -1,13 +1,12 @@
 #requires -Version 5.1
 <#
-  在**新的外置 PowerShell 窗口**（-NoExit）中启动本仓库开发服：可选先起 Compose Postgres，再受管 `pnpm dev`（dev-runner，单次 tsx + 空闲时受控重启，无 tsx file-watch）。
+  本地起 Paperclip 的**唯一推荐入口**：本脚本（一条龙）。
+  在新外置 PowerShell 窗口（-NoExit）中：端口预检 → 可选 Compose Postgres 预检 → **`pnpm dev:once`**
+  （`dev-runner.ts` 子进程 + **不**安装源码变更轮询 / 空闲自动重启；无 tsx file-watch）。
 
-  重要：`pwsh -File scripts\...` 里的相对路径是相对**当前终端所在目录**，不是脚本所在目录。
-  - 任选其一：
-    A) 先进入仓库根再跑相对路径；
-    B) 从任意目录用**脚本绝对路径**（推荐从资源管理器/快捷方式拷贝路径）。
+  相对路径提示：`pwsh -File scripts\...` 的相对路径是相对于**当前目录**；不在仓库根时改用脚本**绝对路径**。
 
-  用法示例 — 先入仓库根（相对路径生效）：
+  示例：
     cd C:\path\to\paperclip-latest-20260512
     pwsh -NoProfile -File .\scripts\start-paperclip-dev-external.ps1
     pwsh -NoProfile -File .\scripts\start-paperclip-dev-external.ps1 -NoCompose
@@ -16,20 +15,18 @@
     pwsh -NoProfile -File .\scripts\start-paperclip-dev-external.ps1 -SkipPrereq
     pwsh -NoProfile -File .\scripts\start-paperclip-dev-external.ps1 -NoComposeWait
     pwsh -NoProfile -File .\scripts\start-paperclip-dev-external.ps1 -SkipDatabaseUrlCheck
-
-  用法示例 — 人在 `C:\Users\...\` 等任意目录（绝对路径）：
     pwsh -NoProfile -File "C:\path\to\paperclip-latest-20260512\scripts\start-paperclip-dev-external.ps1" -NoCompose
 
-  只看到父终端一行提示、没找到服务：**任务栏 Alt+Tab 找新建的 pwsh 窗口**，或直接用本机当前终端前台跑：
-    pwsh -NoProfile -File .\scripts\start-paperclip-dev-external.ps1 -SameWindow
+  若只在本终端看到一行 "Started external..."：**任务栏 Alt+Tab** 找新 pwsh，或加 **-SameWindow** 在同一窗口阻塞输出。
 
-  收尾：在外置窗口里 Ctrl+C（`-SameWindow` 则在本终端 Ctrl+C），再在仓库根执行 `pnpm dev:stop` / `pnpm dev:nuke`（见 docs/项目计划/最佳实践/001-运维-回形针本地.md）。
+  收尾：运行 dev 的窗口里 Ctrl+C，再在仓库根 `pnpm dev:stop` / `pnpm dev:nuke`（见 docs/项目计划/最佳实践/001-运维-回形针本地.md）。
 
-  起服顺序：**监听口预检** → **Compose 预检**（读根目录 `.env` 校验 `DATABASE_URL` 是否对得上本 Compose 映射；`db` 已在跑且健康则**不再** `docker compose up`；否则 `up -d --wait`；compose 失败**直接退出**）→ **`pnpm dev`**。就绪仍以日志横幅与 **`/api/health`** 为准。
-  外置窗用 **`pwsh -NoExit -File scripts/run-paperclip-dev-session.ps1`** 拉起，避免 **`-Command` 塞多行脚本**在 Windows 上断句、窗口只闪光标。
-  1) `scripts/ensure-paperclip-ports-free.ps1`（占用则失败，与 `PAPERCLIP_STRICT_PORTS` 对齐）
-  2) `scripts/paperclip-dev-compose-preflight.ps1`（容器已健康则不再 `docker compose up`；校验 DATABASE_URL；失败则退出）
-  3) `pnpm dev`，见 `scripts/run-paperclip-dev-session.ps1`
+  顺序：**监听口预检** → **Compose 预检**（`.env` 校验 `DATABASE_URL`；`db` 已健康则不再 `up`；否则 `up -d --wait`）→ **`pnpm dev:once`**。就绪以日志横幅与 `/api/health` 为准。
+
+  外置窗用 `pwsh -NoExit -File scripts/run-paperclip-dev-session.ps1` 拉起。
+  1) scripts/ensure-paperclip-ports-free.ps1
+  2) scripts/paperclip-dev-compose-preflight.ps1
+  3) pnpm dev:once（见 run-paperclip-dev-session.ps1）
 #>
 param(
   [switch]$NoCompose,
@@ -73,7 +70,7 @@ $env:PAPERCLIP_SKIP_DB_URL_CHECK = if ($SkipDatabaseUrlCheck) { "1" } else { "0"
 
 try {
   if ($SameWindow) {
-    Write-Host "SameWindow: running docker + pnpm here (blocking). Ctrl+C to stop." -ForegroundColor Green
+    Write-Host "SameWindow: running docker + pnpm dev:once here (blocking). Ctrl+C to stop." -ForegroundColor Green
     & $sessionScript
   }
   else {

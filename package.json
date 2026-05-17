@@ -5,7 +5,7 @@
   "scripts": {
     "preflight:workspace-links": "node cli/node_modules/tsx/dist/cli.mjs scripts/ensure-workspace-package-links.ts",
     "dev": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts",
-    "dev:once": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts",
+    "dev:once": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts once",
     "dev:list": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-service.ts list",
     "dev:stop": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-service.ts stop",
     "dev:nuke": "node scripts/run-kill-dev.mjs",

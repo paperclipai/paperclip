@@ -40,7 +40,7 @@ Paperclip 是面向 AI Agent 公司的控制平面。
 
 ## 4. 开发环境
 
-**本地运维（停止、`dev:nuke`、`.env` 加载顺序、外链库端口与内嵌 `embeddedPostgresPort`）：[`docs/项目计划/最佳实践/001-运维-回形针本地.md`](docs/项目计划/最佳实践/001-运维-回形针本地.md)。**Cursor 默认还会加载 [`.cursor/rules/paperclip-environment.mdc`](.cursor/rules/paperclip-environment.mdc) 作环境常量速查。**若在 Cursor 里用助手：首选**由仓库 **入口脚本**（如 **`scripts/start-paperclip-dev-external.ps1`**）**弹系统外置终端**跑 **`docker compose`** + **`pnpm dev`**（助手只需执行脚本一次）；**无外置脚本时暂退** Cursor **可见前台**。收尾仍在本节 **`Ctrl+C` + `dev:stop`/nuke**。**不要**把开发服只挂在看不见的会话后台。细则：**[`.cursor/rules/routic-project.mdc`](.cursor/rules/routic-project.mdc)**「起服」节。
+**本地运维（停止、`dev:nuke`、`.env` 加载顺序、外链库端口与内嵌 `embeddedPostgresPort`）：[`docs/项目计划/最佳实践/001-运维-回形针本地.md`](docs/项目计划/最佳实践/001-运维-回形针本地.md)。**Cursor 默认还会加载 [`.cursor/rules/paperclip-environment.mdc`](.cursor/rules/paperclip-environment.mdc) 作环境常量速查。**若在 Cursor 里用助手：只使用**仓库 **一条龙入口** **`scripts/start-paperclip-dev-external.ps1`**（内部为 Compose 预检 + **`pnpm dev:once`**；助手只需执行脚本一次）；**无外置脚本时暂退** Cursor **可见前台**跑同脚本 **`-SameWindow`**。收尾仍在本节 **`Ctrl+C` + `dev:stop`/nuke**。**不要**把开发服只挂在看不见的会话后台。细则：**[`.cursor/rules/routic-project.mdc`](.cursor/rules/routic-project.mdc)**「起服」节。
 
 **数据库（本仓库约定）**：日常开发**默认不用内嵌 PostgreSQL**，也**不把本机独立安装的 Postgres 当作默认**（在 Windows 上易出现锁文件、残留进程难以清干净）。请先起 **[`docker/docker-compose.yml`](docker/docker-compose.yml)** 里的 **`db`**（Postgres 容器），仓库根 **`.env`** 写明 **`DATABASE_URL`**（与 **[`.env.example`](.env.example)** 一致，指向映射到宿主机的端口，通常为 `localhost:5432`）。需要「控制面也在容器里」时用 Compose profile **`container-server`**（见 compose 文件内注释）。
 
@@ -49,10 +49,12 @@ Paperclip 是面向 AI Agent 公司的控制平面。
 ```sh
 docker compose -f docker/docker-compose.yml up -d
 pnpm install
-pnpm dev
+pnpm dev:once
 ```
 
-**Windows / NTFS（本 fork 常见工作区）**：不要依赖 **`tsx`/Node 对仓库树做 file-watch**（易卡死）。日常在本机用 **`scripts/start-paperclip-dev-external.ps1`** 一条龙起服，或仓库根 **`pnpm dev`**（受管 runner，单次 `tsx` 启动 `server`；改代码常需**手动重启**）。说明与停止流程见 [`doc/05 开发指南 DEVELOPING.md`](doc/05%20开发指南%20DEVELOPING.md)「启动开发」；同源提醒见下文 **Fork 特定说明 → 本地开发**。
+（`pnpm dev:once` 为 dev-runner **`once` 模式**：无源码变更轮询与空闲自动重启。Windows 日常更推荐一条龙 **`pwsh -NoProfile -File scripts/start-paperclip-dev-external.ps1`**（含端口/Compose 预检，内部同样 `dev:once`）。需要变更检测与空闲自动重启时用 **`pnpm dev`**。）
+
+**Windows / NTFS（本 fork 常见工作区）**：不要依赖 **`tsx`/Node 对仓库树做 file-watch**（易卡死）。日常在本机**只**用 **`scripts/start-paperclip-dev-external.ps1`** 一条龙（内部 **`pnpm dev:once`**）；需要 dev-runner 变更扫描与空闲自动重启时再在仓库根用 **`pnpm dev`**。说明与停止流程见 [`doc/05 开发指南 DEVELOPING.md`](doc/05%20开发指南%20DEVELOPING.md)「启动开发」；同源提醒见下文 **Fork 特定说明 → 本地开发**。
 
 启动后：
 
@@ -263,9 +265,9 @@ pnpm build
 
 ### 本地开发
 
-- 默认监听 **3100**（`PORT`）。仓库根 **`pnpm dev`**（经 dev-runner）默认 **`PAPERCLIP_STRICT_PORTS=true`**：口被占时**不会**自动改 **3101+**，应 `dev:stop` 或设 **`PAPERCLIP_STRICT_PORTS=false`** 恢复旧的自动腾挪；**`pnpm --filter @paperclipai/server dev`** 等不经 dev-runner 的路径仍可能自动换口，除非同样显式设置该变量。
+- 默认监听 **3100**（`PORT`）。一条龙 **`scripts/start-paperclip-dev-external.ps1`** 与仓库根 **`pnpm dev:once`** 均走 dev-runner 的 **`once`** 分支（无变更轮询/空闲自动重启），默认 **`PAPERCLIP_STRICT_PORTS=true`**。仓库根 **`pnpm dev`** 为完整 dev-runner（含变更检测与空闲自动重启）。**`pnpm --filter @paperclipai/server dev`** 等不经 dev-runner 的路径仍可能在口冲突时自动换口，除非同样显式设置 **`PAPERCLIP_STRICT_PORTS`**。
 - `npx vite build` 在 NTFS 上会挂起 — 改用 `node node_modules/vite/bin/vite.js build`
-- **已移除 `tsx file-watch` 开发路径**（NTFS 易挂）。Windows 日常用 **`scripts/start-paperclip-dev-external.ps1`** 或仓库根 **`pnpm dev`**（单次 `tsx` 起 `server`，改代码常需手动重启；runner 可在**空闲**时自动再起，见实现）。
+- **已移除 `tsx file-watch` 开发路径**（NTFS 易挂）。Windows 日常一条龙 **`scripts/start-paperclip-dev-external.ps1`**；需 runner 全功能时用 **`pnpm dev`**。
 - 启动前杀掉所有 paperclip 进程：`pkill -f "paperclip"; pkill -f "tsx.*index.ts"`
 - Vite 缓存在 `rm -rf dist` 后仍保留 — 需同时删除：`rm -rf ui/dist ui/node_modules/.vite`
 

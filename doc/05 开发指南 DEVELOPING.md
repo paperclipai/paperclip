@@ -33,7 +33,7 @@
 
 ```sh
 pnpm install
-pnpm dev
+pnpm dev:once
 ```
 
 将启动：
@@ -41,9 +41,9 @@ pnpm dev
 - API：`http://localhost:3100`  
 - UI：由 API 在 dev **middleware（中间件）** 模式同机提供（与 API 同源）
 
-`pnpm dev` 以 watch 模式运行，仓库包（含 adapter 包）变更会重启。若不要文件监听，用 `pnpm dev:once`。
+**dev-runner 两种入口：** 仓库根 **`pnpm dev:once`**（以及 Windows **`pwsh -NoProfile -File scripts/start-paperclip-dev-external.ps1`** 一条龙，内部同为 `dev:once`）**不**安装后端目录轮询与空闲自动重启；改代码后需**自行**在前台停止再启动。需要「检测后端变更 / 待处理迁移并在空闲时自动重启子服务」时用 **`pnpm dev`**（仍**无**基于 tsx 的 file-watch，详见实现）。
 
-`pnpm dev:once` 默认在启动开发服务器**前**自动应用待处理本地迁移。
+二者默认在启动开发服务器**前**尝试应用待处理本地迁移。
 
 对应当前仓库与实例，`pnpm dev` / `pnpm dev:once` 具**幂等**：若匹配的 Paperclip dev runner 已在运行，会报告已有进程而不是再起一份。
 
@@ -80,7 +80,7 @@ pnpm dev:stop
 
 4. **嵌入式 Postgres（Embedded Postgres）** — 停止 dev 未必立刻拆掉内嵌 `postgres` 子进程；若遇 `postmaster.pid` / 端口 **54329** 问题，见本文数据库清理说明及中文运维摘要 [**运维-回形针本地.md**](../docs/项目计划/最佳实践/001-运维-回形针本地.md)。
 
-`pnpm dev:once` 会跟踪后端相关文件变更与待处理迁移。当前启动已过期时，Board UI 会显示 **Restart Required**（需要重启）横幅。也可在 `Instance Settings > Experimental` 开启**有保护的自动重启**，会等队列中/运行中的本地 agent run 结束后再重启 dev 服务。
+`pnpm dev` 会跟踪后端相关文件变更与待处理迁移。当前启动已过期时，Board UI 会显示 **Restart Required**（需要重启）横幅。也可在 `Instance Settings > Experimental` 开启**有保护的自动重启**，会等队列中/运行中的本地 agent run 结束后再重启 dev 服务。`pnpm dev:once` 与一条龙脚本不启用上述轮询与空闲自动重启。
 
 Tailscale / private-auth 开发模式：
 

@@ -52,12 +52,17 @@ function readRootEnvFileValue(key: string): string | undefined {
 
 if (process.argv[2] === "watch") {
   console.error(
-    "[paperclip] Removed: tsx file-watch dev (unreliable on Windows NTFS). Use `pnpm dev` (same entry as `dev:once`) or `scripts/start-paperclip-dev-external.ps1`.",
+    "[paperclip] Removed: tsx file-watch dev (unreliable on Windows NTFS). Use `pnpm dev`, `pnpm dev:once`, or `scripts/start-paperclip-dev-external.ps1` (prefers `dev:once`).",
   );
   process.exit(1);
 }
 
 const cliArgs = process.argv.slice(2);
+const devRunnerOnceMode =
+  cliArgs.includes("once") ||
+  process.env.PAPERCLIP_DEV_RUNNER_ONCE === "1" ||
+  process.env.PAPERCLIP_DEV_RUNNER_ONCE === "true";
+const runnerCliArgs = cliArgs.filter((arg) => arg !== "once");
 const scanIntervalMs = 1500;
 const autoRestartPollIntervalMs = 2500;
 const gracefulShutdownTimeoutMs = 10_000;
@@ -110,14 +115,14 @@ let bindMode: BindMode | null = null;
 let bindHost: string | null = null;
 const forwardedArgs: string[] = [];
 
-for (let index = 0; index < cliArgs.length; index += 1) {
-  const arg = cliArgs[index];
+for (let index = 0; index < runnerCliArgs.length; index += 1) {
+  const arg = runnerCliArgs[index];
   if (tailscaleAuthFlagNames.has(arg)) {
     tailscaleAuth = true;
     continue;
   }
   if (arg === "--bind") {
-    const value = cliArgs[index + 1];
+    const value = runnerCliArgs[index + 1];
     if (!value || value.startsWith("--") || !BIND_MODES.includes(value as BindMode)) {
       console.error(`[paperclip] invalid --bind value. Use one of: ${BIND_MODES.join(", ")}`);
       process.exit(1);
@@ -127,7 +132,7 @@ for (let index = 0; index < cliArgs.length; index += 1) {
     continue;
   }
   if (arg === "--bind-host") {
-    const value = cliArgs[index + 1];
+    const value = runnerCliArgs[index + 1];
     if (!value || value.startsWith("--")) {
       console.error("[paperclip] --bind-host requires a value");
       process.exit(1);
@@ -745,4 +750,8 @@ process.on("SIGTERM", () => {
 
 await maybePreflightMigrations();
 await startServerChild();
-installDevIntervals();
+if (devRunnerOnceMode) {
+  console.log("[paperclip] dev runner once: change scan and idle auto-restart are disabled");
+} else {
+  installDevIntervals();
+}
