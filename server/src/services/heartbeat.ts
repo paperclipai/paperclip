@@ -7,6 +7,7 @@ import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notI
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  AGENT_DEFAULT_TIMER_HEARTBEAT_INTERVAL_SEC,
   AGENT_MAX_CONCURRENT_RUNS_CAP,
   COMPANY_MAX_CONCURRENT_ACTIVE_AGENTS,
   DEFAULT_COMPANY_COMMENT_WAKE_TIER,
@@ -115,8 +116,14 @@ import { issueService } from "./issues.js";
 import {
   HEARTBEAT_SKIP_ON_DEMAND_BARE_WAKE,
   HEARTBEAT_SKIP_TIMER_NO_ASSIGNED_ISSUE,
+  HEARTBEAT_SKIP_TIMER_NON_TIMER_PENDING,
+  HEARTBEAT_TIMER_NON_TIMER_PENDING_DEFER_SEC,
   RUN_CANCEL_ISSUE_TERMINAL_WHILE_RUNNING,
 } from "./orchestration-invariants.js";
+import {
+  computeDeferredTimerBaseline,
+  countAgentNonTimerPendingRuns,
+} from "./heartbeat-timer-yield.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
@@ -8858,6 +8865,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const hasAssignedIssue = await agentHasRunnableAssignedIssue(agent.companyId, agentId);
       if (!hasAssignedIssue) {
         await writeSkippedRequest(HEARTBEAT_SKIP_TIMER_NO_ASSIGNED_ISSUE);
+        return null;
+      }
+    }
+
+    // HB-043: avoid enqueueing scheduler timer wakes while heavier sources still hold backlog slots.
+    if (source === "timer") {
+      const nonTimerPending = await countAgentNonTimerPendingRuns(db, agentId);
+      if (nonTimerPending > 0) {
+        await writeSkippedRequest(HEARTBEAT_SKIP_TIMER_NON_TIMER_PENDING);
+        const deferBaseline = computeDeferredTimerBaseline(
+          Date.now(),
+          policy.intervalSec > 0 ? policy.intervalSec : AGENT_DEFAULT_TIMER_HEARTBEAT_INTERVAL_SEC,
+          HEARTBEAT_TIMER_NON_TIMER_PENDING_DEFER_SEC,
+        );
+        await db
+          .update(agents)
+          .set({
+            lastHeartbeatAt: deferBaseline,
+            updatedAt: new Date(),
+          })
+          .where(eq(agents.id, agentId));
+        logger.info(
+          {
+            agentId,
+            source,
+            nonTimerPending,
+            deferSec: HEARTBEAT_TIMER_NON_TIMER_PENDING_DEFER_SEC,
+          },
+          "enqueueWakeup.timer_yield_non_timer_pending",
+        );
         return null;
       }
     }
