@@ -75,8 +75,8 @@ import {
 } from "../services/plugin-local-folders.js";
 import {
   extractSecretRefPathsFromConfig,
-  PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
 } from "../services/plugin-secrets-handler.js";
+import { secretService } from "../services/secrets.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 
 /** UI slot declaration extracted from plugin manifest */
@@ -364,6 +364,7 @@ export function pluginRoutes(
 ) {
   const router = Router();
   const registry = pluginRegistryService(db);
+  const secrets = secretService(db);
   const lifecycle = pluginLifecycleManager(db, {
     loader,
     workerManager: bridgeDeps?.workerManager ?? webhookDeps?.workerManager,
@@ -1955,9 +1956,19 @@ export function pluginRoutes(
 
     try {
       const secretRefsByPath = extractSecretRefPathsFromConfig(body.configJson, schema);
-      if (secretRefsByPath.size > 0) {
-        res.status(422).json({ error: PLUGIN_SECRET_REFS_DISABLED_MESSAGE });
+      if (secretRefsByPath.size > 0 && !companyId) {
+        res.status(422).json({ error: "Plugin secret references require companyId" });
         return;
+      }
+      if (companyId) {
+        const refs = [...secretRefsByPath.entries()].flatMap(([secretId, paths]) =>
+          [...paths].map((configPath) => ({ secretId, configPath })),
+        );
+        await secrets.syncSecretRefsForTarget(
+          companyId,
+          { targetType: "plugin", targetId: plugin.id },
+          refs,
+        );
       }
 
       const result = await registry.upsertConfig(plugin.id, {
@@ -1971,9 +1982,9 @@ export function pluginRoutes(
       });
 
       // Notify the running worker only for legacy/global config changes
-      // (PLUGIN_SPEC §25.4.4). Company-scoped config is persisted for PR1, but
-      // runtime consumption waits for PR2 so one company's config is never sent
-      // to a process that still treats config as global.
+      // (PLUGIN_SPEC §25.4.4). Company-scoped config is read on demand through
+      // ctx.config.get() with runtime company context, so one company's config
+      // is never broadcast as process-global worker state.
       if (companyId === null && bridgeDeps?.workerManager.isRunning(plugin.id)) {
         try {
           await bridgeDeps.workerManager.call(
