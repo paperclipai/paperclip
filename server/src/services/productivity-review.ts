@@ -2,6 +2,7 @@ import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzl
 import type { Db } from "@paperclipai/db";
 import { clampIssueRequestDepth } from "@paperclipai/shared";
 import {
+  activityLog,
   agents,
   companies,
   costEvents,
@@ -76,6 +77,18 @@ type ProductivityReviewEvidence = {
   routineOnlySamplingWindow: boolean;
 };
 
+type MonitorScheduledSuppression = {
+  trigger: "long_active_duration";
+  triggerReasons: string[];
+  sourceIssue: IssueRow;
+  sourceAgent: AgentRow;
+  elapsedMs: number | null;
+  monitorNextCheckAt: Date;
+  monitorScheduledBy: string;
+  thresholds: ProductivityReviewThresholds;
+  generatedAt: Date;
+};
+
 type EnqueueWakeup = (
   agentId: string,
   opts?: {
@@ -88,6 +101,8 @@ type EnqueueWakeup = (
     contextSnapshot?: Record<string, unknown>;
   },
 ) => Promise<unknown | null>;
+
+const MONITOR_SCHEDULED_SUPPRESSION_ACTORS = new Set(["assignee", "board"]);
 
 function productivityReviewFingerprint(sourceIssueId: string) {
   return `productivity-review:${sourceIssueId}`;
@@ -133,6 +148,20 @@ function readPositiveInteger(value: number, fallback: number) {
 function coerceDate(value: Date | string | null | undefined) {
   if (!value) return null;
   return value instanceof Date ? value : new Date(value);
+}
+
+function deliberateFutureMonitor(issue: IssueRow, now: Date) {
+  const monitorNextCheckAt = coerceDate(issue.monitorNextCheckAt);
+  const monitorScheduledBy = issue.monitorScheduledBy;
+  if (!monitorNextCheckAt || monitorNextCheckAt.getTime() <= now.getTime()) return null;
+  if (!monitorScheduledBy || !MONITOR_SCHEDULED_SUPPRESSION_ACTORS.has(monitorScheduledBy)) return null;
+  return { monitorNextCheckAt, monitorScheduledBy };
+}
+
+function isMonitorScheduledSuppression(
+  value: ProductivityReviewEvidence | MonitorScheduledSuppression,
+): value is MonitorScheduledSuppression {
+  return "monitorNextCheckAt" in value;
 }
 
 function isRoutineOriginRun(run: HeartbeatRunRow): boolean {
@@ -286,6 +315,113 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       .then((rows) => rows[0] ?? null);
   }
 
+  async function recordMonitorScheduledSuppression(suppression: MonitorScheduledSuppression) {
+    const details = {
+      source: "productivity_review.reconcile",
+      sourceIssueId: suppression.sourceIssue.id,
+      trigger: suppression.trigger,
+      suppressedBy: "monitor_scheduled",
+      monitorNextCheckAt: suppression.monitorNextCheckAt.toISOString(),
+      monitorScheduledBy: suppression.monitorScheduledBy,
+      elapsedMs: suppression.elapsedMs,
+    };
+    await logActivity(db, {
+      companyId: suppression.sourceIssue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: suppression.sourceIssue.assigneeAgentId,
+      action: "issue.productivity_review_suppressed",
+      entityType: "issue",
+      entityId: suppression.sourceIssue.id,
+      details,
+    });
+    logger.info(details, "productivity review long_active_duration suppressed by scheduled monitor");
+  }
+
+  async function closeOpenSuppressedMonitorReviews(now: Date, companyId?: string) {
+    const reviewRows = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          companyId ? eq(issues.companyId, companyId) : undefined,
+          eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .orderBy(asc(issues.updatedAt), asc(issues.id))
+      .limit(MAX_CANDIDATE_ISSUES);
+
+    const sourceIssueIds = [
+      ...new Set(reviewRows.map((review) => review.originId).filter((id): id is string => Boolean(id))),
+    ];
+    const sourceIssueById = new Map<string, IssueRow>();
+    for (const chunk of sourceIssueIds.length > 0 ? [sourceIssueIds] : []) {
+      const sourceRows = await db
+        .select()
+        .from(issues)
+        .where(inArray(issues.id, chunk));
+      for (const source of sourceRows) sourceIssueById.set(source.id, source);
+    }
+
+    const reviewTriggerById = new Map<string, unknown>();
+    const reviewIds = reviewRows.map((review) => review.id);
+    for (const chunk of reviewIds.length > 0 ? [reviewIds] : []) {
+      const triggerRows = await db
+        .select({ entityId: activityLog.entityId, details: activityLog.details })
+        .from(activityLog)
+        .where(
+          and(
+            companyId ? eq(activityLog.companyId, companyId) : undefined,
+            eq(activityLog.entityType, "issue"),
+            inArray(activityLog.entityId, chunk),
+            inArray(activityLog.action, ["issue.productivity_review_created", "issue.productivity_review_updated"]),
+          ),
+        )
+        .orderBy(desc(activityLog.createdAt), desc(activityLog.id));
+      for (const row of triggerRows) {
+        if (!reviewTriggerById.has(row.entityId)) reviewTriggerById.set(row.entityId, row.details?.trigger);
+      }
+    }
+
+    let closed = 0;
+    for (const review of reviewRows) {
+      if (!review.originId) continue;
+      const trigger = reviewTriggerById.get(review.id);
+      if (trigger !== "long_active_duration") continue;
+      const sourceIssue = sourceIssueById.get(review.originId) ?? null;
+      if (!sourceIssue) continue;
+      if (sourceIssue.companyId !== review.companyId) continue;
+      const monitor = deliberateFutureMonitor(sourceIssue, now);
+      if (!monitor) continue;
+
+      await db
+        .update(issues)
+        .set({ status: "done", completedAt: now, updatedAt: now })
+        .where(eq(issues.id, review.id));
+      await logActivity(db, {
+        companyId: review.companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.productivity_review_suppressed_open_review_closed",
+        entityType: "issue",
+        entityId: review.id,
+        agentId: review.assigneeAgentId,
+        details: {
+          source: "productivity_review.reconcile",
+          sourceIssueId: sourceIssue.id,
+          trigger: "long_active_duration",
+          suppressedBy: "monitor_scheduled",
+          monitorNextCheckAt: monitor.monitorNextCheckAt.toISOString(),
+          monitorScheduledBy: monitor.monitorScheduledBy,
+        },
+      });
+      closed += 1;
+    }
+    return closed;
+  }
+
   async function countIssueRunsSince(companyId: string, agentId: string, issueId: string, since: Date) {
     return db
       .select({ count: sql<number>`count(*)::int` })
@@ -325,7 +461,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     sourceAgent: AgentRow,
     thresholds: ProductivityReviewThresholds,
     now: Date,
-  ): Promise<ProductivityReviewEvidence | null> {
+  ): Promise<ProductivityReviewEvidence | MonitorScheduledSuppression | null> {
     const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
     const sixHoursAgo = new Date(now.getTime() - 6 * 60 * 60 * 1000);
 
@@ -435,6 +571,21 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     }
 
     const routineOnlySamplingWindow = latestRuns.length > 0 && latestRuns.every(isRoutineOriginRun);
+
+    const monitor = deliberateFutureMonitor(sourceIssue, now);
+    if (trigger === "long_active_duration" && monitor) {
+      return {
+        trigger,
+        triggerReasons,
+        sourceIssue,
+        sourceAgent,
+        elapsedMs,
+        monitorNextCheckAt: monitor.monitorNextCheckAt,
+        monitorScheduledBy: monitor.monitorScheduledBy,
+        thresholds,
+        generatedAt: now,
+      };
+    }
 
     return {
       trigger,
@@ -744,11 +895,15 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       updated: 0,
       existing: 0,
       snoozed: 0,
+      monitorScheduledSuppressed: 0,
+      closedSuppressedMonitorReviews: 0,
       skipped: 0,
       failed: 0,
       reviewIssueIds: [] as string[],
       failedIssueIds: [] as string[],
     };
+
+    result.closedSuppressedMonitorReviews = await closeOpenSuppressedMonitorReviews(now, opts?.companyId);
 
     const prefixCache = new Map<string, string>();
     for (const candidate of candidates) {
@@ -772,6 +927,11 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       const evidence = await collectEvidence(candidate, sourceAgent, thresholds, now);
       if (!evidence) {
         result.skipped += 1;
+        continue;
+      }
+      if (isMonitorScheduledSuppression(evidence)) {
+        await recordMonitorScheduledSuppression(evidence);
+        result.monitorScheduledSuppressed += 1;
         continue;
       }
       let prefix = prefixCache.get(candidate.companyId);
@@ -825,7 +985,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     if (!sourceIssue || !sourceAgent || !openReview) return { held: false as const };
     if (sourceAgent.companyId !== input.companyId) return { held: false as const };
     const evidence = await collectEvidence(sourceIssue, sourceAgent, thresholds, now);
-    if (!evidence || !isSoftStopTrigger(evidence.trigger) || evidence.routineOnlySamplingWindow) {
+    if (!evidence || isMonitorScheduledSuppression(evidence)) {
+      return { held: false as const };
+    }
+    if (!isSoftStopTrigger(evidence.trigger) || evidence.routineOnlySamplingWindow) {
       return { held: false as const };
     }
     return {
