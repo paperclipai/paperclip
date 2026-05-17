@@ -29,6 +29,7 @@
     "db:backup": "./scripts/backup-db.sh",
     "paperclipai": "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts",
     "issue:forensics": "node scripts/issue-run-forensics.mjs",
+    "usage:reconcile": "node scripts/usage-token-reconcile.mjs",
     "activity:company": "node scripts/issue-run-forensics.mjs",
     "schema:snapshot:orchestration": "pnpm --filter @paperclipai/db schema:snapshot:orchestration",
     "build:npm": "./scripts/build-npm.sh",
