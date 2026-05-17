@@ -3,6 +3,7 @@ import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { instanceUserRoles } from "@paperclipai/db";
 import { actorMiddleware } from "../middleware/auth.js";
+import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 
 function createSelectChain(rows: unknown[]) {
   return {
@@ -27,10 +28,48 @@ function createDb() {
 
 describe("actorMiddleware authenticated session profile", () => {
   const originalCloudTenantToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+  const originalAgentJwtSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
 
   afterEach(() => {
     if (originalCloudTenantToken === undefined) delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
     else process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = originalCloudTenantToken;
+    if (originalAgentJwtSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    else process.env.PAPERCLIP_AGENT_JWT_SECRET = originalAgentJwtSecret;
+  });
+
+  it("accepts a local run JWT as an agent actor for route access", async () => {
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "route-jwt-secret";
+    const token = createLocalAgentJwt("agent-1", "company-1", "process", "run-1");
+    const db = {
+      select: vi
+        .fn()
+        .mockImplementationOnce(() => createSelectChain([]))
+        .mockImplementationOnce(() => createSelectChain([]))
+        .mockImplementationOnce(() => createSelectChain([{
+          id: "agent-1",
+          companyId: "company-1",
+          status: "idle",
+        }])),
+      update: vi.fn(() => ({ set: () => ({ where: () => Promise.resolve([]) }) })),
+    } as any;
+    const app = express();
+    app.use(actorMiddleware(db, { deploymentMode: "local_trusted" }));
+    app.get("/actor", (req, res) => {
+      res.json(req.actor);
+    });
+
+    const res = await request(app)
+      .get("/actor")
+      .set("authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+      source: "agent_jwt",
+    });
   });
 
   it("preserves the signed-in user name and email on the board actor", async () => {

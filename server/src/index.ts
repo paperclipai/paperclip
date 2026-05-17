@@ -55,6 +55,7 @@ import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
+import { ensureLocalTrustedAgentJwtSecret } from "./agent-auth-jwt.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
 import type {
@@ -496,6 +497,10 @@ export async function startServer(): Promise<StartedServer> {
   
   if (config.deploymentMode === "local_trusted" && config.deploymentExposure !== "private") {
     throw new Error("local_trusted mode only supports private exposure");
+  }
+
+  if (config.deploymentMode === "local_trusted") {
+    ensureLocalTrustedAgentJwtSecret();
   }
   
   if (config.deploymentMode === "authenticated") {

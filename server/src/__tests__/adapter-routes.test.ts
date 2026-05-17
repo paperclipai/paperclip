@@ -160,13 +160,14 @@ describe("adapter routes", () => {
       requiresMaterializedRuntimeSkills: false,
     });
 
-    // process adapter should have no local capabilities
+    // process adapter has no instruction/skill capabilities, but receives a scoped local JWT
+    // so simple process workers can make run-attributed Paperclip API writes.
     const processAdapter = res.body.find((a: any) => a.type === "process");
     expect(processAdapter).toBeDefined();
     expect(processAdapter.capabilities).toMatchObject({
       supportsInstructionsBundle: false,
       supportsSkills: false,
-      supportsLocalAgentJwt: false,
+      supportsLocalAgentJwt: true,
       requiresMaterializedRuntimeSkills: false,
     });
 

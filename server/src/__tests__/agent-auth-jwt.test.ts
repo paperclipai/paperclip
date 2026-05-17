@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createLocalAgentJwt, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
+import { createLocalAgentJwt, ensureLocalTrustedAgentJwtSecret, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 
 describe("agent local JWT", () => {
   const secretEnv = "PAPERCLIP_AGENT_JWT_SECRET";
@@ -82,6 +82,35 @@ describe("agent local JWT", () => {
       adapter_type: "claude_local",
       run_id: "run-1",
     });
+  });
+
+  it("seeds an ephemeral local trusted JWT secret when no auth secret exists", () => {
+    delete process.env[secretEnv];
+    delete process.env[betterAuthSecretEnv];
+
+    ensureLocalTrustedAgentJwtSecret();
+
+    expect(process.env[secretEnv]).toMatch(/^paperclip-local-[a-f0-9]{64}$/);
+    const token = createLocalAgentJwt("agent-1", "company-1", "process", "run-1");
+    expect(typeof token).toBe("string");
+    expect(verifyLocalAgentJwt(token!)).toMatchObject({
+      sub: "agent-1",
+      company_id: "company-1",
+      adapter_type: "process",
+      run_id: "run-1",
+    });
+  });
+
+  it("does not overwrite explicit JWT or Better Auth secrets", () => {
+    process.env[secretEnv] = "explicit-agent-secret";
+    ensureLocalTrustedAgentJwtSecret();
+    expect(process.env[secretEnv]).toBe("explicit-agent-secret");
+
+    delete process.env[secretEnv];
+    process.env[betterAuthSecretEnv] = "explicit-better-auth-secret";
+    ensureLocalTrustedAgentJwtSecret();
+    expect(process.env[secretEnv]).toBeUndefined();
+    expect(createLocalAgentJwt("agent-1", "company-1", "process", "run-1")).not.toBeNull();
   });
 
   it("rejects expired tokens", () => {
