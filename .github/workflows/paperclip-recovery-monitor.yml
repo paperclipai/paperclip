@@ -1,0 +1,56 @@
+name: PaperClip Recovery Monitor
+
+on:
+  schedule:
+    # Run every hour at :15 past the hour
+    - cron: '15 * * * *'
+  workflow_dispatch:
+
+jobs:
+  recovery-monitor:
+    runs-on: ubuntu-latest
+    env:
+      PAPERCLIP_COMPANY_ID: ${{ secrets.PAPERCLIP_COMPANY_ID }}
+      PAPERCLIP_API_URL: ${{ secrets.PAPERCLIP_API_URL }}
+      PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install psycopg[binary] requests
+
+      - name: Run recovery monitor (dry-run)
+        id: dry_run
+        run: |
+          python3 scripts/paperclip_recovery_monitor.py run --dry-run > /tmp/recovery-dry-run.txt 2>&1 || true
+          cat /tmp/recovery-dry-run.txt
+
+      - name: Run recovery monitor (execute)
+        id: execute
+        run: |
+          python3 scripts/paperclip_recovery_monitor.py run > /tmp/recovery-execute.txt 2>&1 || true
+          cat /tmp/recovery-execute.txt
+
+      - name: Capture execution results
+        if: always()
+        run: |
+          echo "Execution Summary:" > /tmp/recovery-summary.txt
+          cat /tmp/recovery-execute.txt >> /tmp/recovery-summary.txt || echo "No execution output" >> /tmp/recovery-summary.txt
+          cat /tmp/recovery-summary.txt
+
+      - name: Upload recovery logs
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: recovery-monitor-logs
+          path: /tmp/recovery-*.txt
+          retention-days: 30
