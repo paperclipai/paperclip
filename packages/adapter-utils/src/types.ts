@@ -270,6 +270,23 @@ export interface HireApprovedHookResult {
   detail?: Record<string, unknown>;
 }
 
+export interface AdapterRuntimeIdentityContext {
+  companyId: string;
+  companyName: string;
+  agentId: string;
+  agentName: string;
+  adapterType: string;
+  adapterConfig: Record<string, unknown>;
+  metadata: Record<string, unknown> | null;
+}
+
+export interface AdapterRuntimeIdentityResult {
+  adapterConfig: Record<string, unknown>;
+  metadata: Record<string, unknown> | null;
+  detail?: Record<string, unknown>;
+  warnings?: string[];
+}
+
 // ---------------------------------------------------------------------------
 // Quota window types — used by adapters that can report provider quota/rate-limit state
 // ---------------------------------------------------------------------------
@@ -375,6 +392,13 @@ export interface ServerAdapterModule {
     payload: HireApprovedPayload,
     adapterConfig: Record<string, unknown>,
   ) => Promise<HireApprovedHookResult>;
+  /**
+   * Optional lifecycle hook that gives an adapter one stable runtime identity
+   * per Paperclip agent. The hook must be idempotent.
+   */
+  ensureRuntimeIdentity?: (
+    ctx: AdapterRuntimeIdentityContext,
+  ) => Promise<AdapterRuntimeIdentityResult>;
   /**
    * Optional: fetch live provider quota/rate-limit windows for this adapter.
    * Returns a ProviderQuotaResult so the server can aggregate across adapters

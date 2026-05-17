@@ -480,6 +480,12 @@ describe("server adapter registry", () => {
     // Auth token is still injected.
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
   });
+
+  it("registers Hermes runtime identity support", () => {
+    const adapter = findServerAdapter("hermes_local");
+
+    expect(adapter?.ensureRuntimeIdentity).toEqual(expect.any(Function));
+  });
 });
 
 describe("resolveExternalAdapterRegistration", () => {
