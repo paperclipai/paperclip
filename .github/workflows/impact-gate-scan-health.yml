@@ -1,0 +1,113 @@
+name: Impact Gate Scan-Done Health Check
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (log only, do not create alerts)'
+        required: false
+        default: 'false'
+      stale_threshold_min:
+        description: 'Max snapshot age in minutes before alerting'
+        required: false
+        default: '15'
+      coverage_threshold_pct:
+        description: 'Minimum coverage percentage'
+        required: false
+        default: '90'
+      error_rate_threshold_pct:
+        description: 'Maximum acceptable error rate percentage'
+        required: false
+        default: '35'
+      fail_rate_threshold_pct:
+        description: 'Maximum acceptable fail rate percentage'
+        required: false
+        default: '35'
+
+concurrency:
+  group: impact-gate-scan-health
+  cancel-in-progress: false
+
+jobs:
+  health:
+    name: Check scan-done pipeline health
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run health check
+        id: health
+        run: |
+          FLAGS="--json-summary"
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            FLAGS="$FLAGS --dry-run"
+          fi
+          if [ -n "${{ github.event.inputs.stale_threshold_min }}" ]; then
+            FLAGS="$FLAGS --stale-threshold-min ${{ github.event.inputs.stale_threshold_min }}"
+          fi
+          if [ -n "${{ github.event.inputs.coverage_threshold_pct }}" ]; then
+            FLAGS="$FLAGS --coverage-threshold-pct ${{ github.event.inputs.coverage_threshold_pct }}"
+          fi
+          if [ -n "${{ github.event.inputs.error_rate_threshold_pct }}" ]; then
+            FLAGS="$FLAGS --error-rate-threshold-pct ${{ github.event.inputs.error_rate_threshold_pct }}"
+          fi
+          if [ -n "${{ github.event.inputs.fail_rate_threshold_pct }}" ]; then
+            FLAGS="$FLAGS --fail-rate-threshold-pct ${{ github.event.inputs.fail_rate_threshold_pct }}"
+          fi
+          python scripts/impact_gate_scan_health.py $FLAGS > /tmp/health-output.json
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+          cat /tmp/health-output.json
+
+      - name: Write step summary
+        if: always()
+        run: |
+          if [ -f /tmp/health-output.json ]; then
+            python3 >> $GITHUB_STEP_SUMMARY << 'PYEOF'
+import json
+with open("/tmp/health-output.json") as f:
+    d = json.load(f)
+
+icon = "OK" if d.get("healthy") else "FAIL"
+age = d.get("snapshot_age_minutes")
+age_str = f"{age:.0f}min" if age is not None else "N/A"
+
+print(f"## Impact Gate Scan-Done Health: {icon}")
+print(f"")
+print(f"| Metric | Value | Threshold | Status |")
+print(f"|---|---|---|---|")
+print(f"| Snapshot age | {age_str} | {d['thresholds']['stale_min']}min | {'OK' if age is not None and age <= d['thresholds']['stale_min'] else ':warning: STALE'} |")
+print(f"| Coverage | {d['coverage_pct']}% | {d['thresholds']['coverage_pct']}% | {'OK' if d['coverage_pct'] is not None and d['coverage_pct'] >= d['thresholds']['coverage_pct'] else ':warning:'} |")
+print(f"| Error rate | {d['error_rate_pct']}% | {d['thresholds']['error_rate_pct']}% | {'OK' if d['error_rate_pct'] is not None and d['error_rate_pct'] <= d['thresholds']['error_rate_pct'] else ':warning:'} |")
+print(f"| Fail rate | {d['fail_rate_pct']}% | {d['thresholds']['fail_rate_pct']}% | {'OK' if d['fail_rate_pct'] is not None and d['fail_rate_pct'] <= d['thresholds']['fail_rate_pct'] else ':warning:'} |")
+print(f"")
+print(f"| Detail | Value |")
+print(f"|---|---|")
+print(f"| Total done fix issues | {d.get('total_done_fix_issues', 'N/A')} |")
+print(f"| Pass | {d.get('pass_count', 'N/A')} |")
+print(f"| Fail | {d.get('fail_count', 'N/A')} |")
+print(f"| Error | {d.get('error_count', 'N/A')} |")
+print(f"| Bypassed | {d.get('bypassed_count', 'N/A')} |")
+print(f"| Skipped | {d.get('skipped_count', 'N/A')} |")
+print(f"| Ungated | {d.get('ungated_count', 'N/A')} |")
+print(f"| Snapshot file | {d.get('snapshot_path', 'N/A') or 'N/A'} |")
+PYEOF
+          else
+            echo "## Impact Gate Scan-Done Health: :warning: UNKNOWN" >> $GITHUB_STEP_SUMMARY
+            echo "**Reason:** health output file missing" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload health check artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: impact-gate-scan-health
+          path: /tmp/health-output.json
+          retention-days: 14

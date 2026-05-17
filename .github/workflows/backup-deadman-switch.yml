@@ -1,0 +1,109 @@
+# REPLACED by systemd timer (deploy/systemd/paperclip-backup-deadman-switch.{service,timer}).
+# Schedule removed to eliminate GH Actions self-hosted runner dependency.
+# Manual dispatch retained for on-demand runs.
+# See docs/runbook-backup-restore.md for systemd timer ops.
+
+name: Backup Dead-Man's-Switch
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (log only, do not create alerts)'
+        required: false
+        default: 'false'
+      grace:
+        description: 'Grace period in hours'
+        required: false
+        default: '4'
+
+permissions:
+  contents: read
+
+jobs:
+  deadman-switch:
+    name: Monitor backup pipeline liveness
+    runs-on: self-hosted
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv
+
+      - name: Run dead-man's-switch
+        id: deadman
+        env:
+          PAPERCLIP_API_URL: ${{ secrets.PAPERCLIP_API_URL }}
+          PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
+          PAPERCLIP_COMPANY_ID: ${{ secrets.PAPERCLIP_COMPANY_ID }}
+        run: |
+          FLAGS="--json-summary"
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            FLAGS="$FLAGS --dry-run"
+          fi
+          if [ -n "${{ github.event.inputs.grace }}" ]; then
+            FLAGS="$FLAGS --grace ${{ github.event.inputs.grace }}"
+          fi
+          python scripts/backup_deadman_switch.py $FLAGS > /tmp/deadman-summary.json
+
+      - name: Write step summary
+        if: always()
+        run: |
+          if [ -f /tmp/deadman-summary.json ]; then
+            python -c "
+          import json
+          d = json.load(open('/tmp/deadman-summary.json'))
+          age = d.get('backup_age_hours')
+          age_str = f'{age:.1f}h' if age is not None else 'N/A'
+          lines = []
+          lines.append('## Backup Dead-Man\\'s-Switch')
+          lines.append('')
+          lines.append('**Status:** ' + d.get('status', 'unknown'))
+          lines.append('**Backup age:** ' + age_str)
+          lines.append('**Threshold:** ' + str(d.get('threshold_hours', '?')) + 'h')
+          lines.append('**Alert fired:** ' + str(d.get('alert_fired', False)))
+          lines.append('**Alert skipped (dup):** ' + str(d.get('alert_skipped', False)))
+          lines.append('**Reason:** ' + d.get('alert_reason', 'none'))
+          lines.append('')
+          lines.append('**Self-health:**')
+          lines.append('- Total runs: ' + str(d.get('self_total_runs', '?')))
+          lines.append('- Last run: ' + str(d.get('self_last_run_utc', '?'))[:19])
+          lines.append('- Prev run: ' + str(d.get('self_prev_run_utc', '?'))[:19])
+          print('\n'.join(lines))
+          " > $GITHUB_STEP_SUMMARY
+          else
+            echo "## Backup Dead-Man's-Switch" >> $GITHUB_STEP_SUMMARY
+            echo "**Status:** unknown (summary file missing)" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload deadman logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deadman-switch-logs
+          path: ~/.paperclip/backup_deadman_switch.log
+          retention-days: 7
+
+      - name: Upload deadman state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deadman-switch-state
+          path: ~/.paperclip/backup_deadman_switch_state.json
+          retention-days: 7
+
+      - name: Upload summary artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deadman-switch-summary
+          path: /tmp/deadman-summary.json
+          retention-days: 7

@@ -1,0 +1,86 @@
+name: Impact Gate Worker
+
+on:
+  schedule:
+    # Every 15 minutes — matches the FR and Bug worker cadence
+    - cron: '*/5 * * * *'
+  repository_dispatch:
+    types: [issue_status_changed]
+  workflow_dispatch:
+    inputs:
+      issue_id:
+        description: 'Paperclip issue UUID (single-issue webhook trigger)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Dry run (log results, do not post comments or transition)'
+        required: false
+        default: 'false'
+
+concurrency:
+  group: impact-gate-worker
+  cancel-in-progress: false
+
+jobs:
+  worker:
+    name: Run Impact Gate on in_review fix issues
+    runs-on: ubuntu-latest
+
+    env:
+      PAPERCLIP_API_URL: ${{ secrets.PAPERCLIP_API_URL }}
+      PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
+      PAPERCLIP_BOARD_API_KEY: ${{ secrets.PAPERCLIP_BOARD_API_KEY }}
+      PAPERCLIP_COMPANY_ID: ${{ secrets.PAPERCLIP_COMPANY_ID }}
+      PAPERCLIP_RUN_ID: ${{ github.run_id }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install requests python-dotenv SQLAlchemy psycopg2-binary
+
+      - name: Install system dependencies (Qt headless for impact gate tests)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libxcb-xinerama0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-xkb1 \
+            xvfb libgl1-mesa-glx
+
+      - name: Ensure data directory exists
+        run: mkdir -p data
+
+      - name: Resolve issue ID (event payload)
+        id: resolve-issue
+        run: |
+          ISSUE_ID="${{ github.event.inputs.issue_id || '' }}"
+          if [ -z "$ISSUE_ID" ] && [ -n "${{ github.event.client_payload.issue_id || '' }}" ]; then
+            ISSUE_ID="${{ github.event.client_payload.issue_id }}"
+          fi
+          echo "issue_id=$ISSUE_ID" >> $GITHUB_OUTPUT
+
+      - name: Run Impact Gate worker
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONPATH: src
+        run: |
+          FLAGS=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            FLAGS="$FLAGS --dry-run"
+          fi
+          ISSUE_ID="${{ steps.resolve-issue.outputs.issue_id }}"
+          if [ -n "$ISSUE_ID" ]; then
+            python scripts/impact_gate_worker.py --issue-id "$ISSUE_ID" $FLAGS
+          else
+            python scripts/run_impact_gate_worker.py $FLAGS
+          fi

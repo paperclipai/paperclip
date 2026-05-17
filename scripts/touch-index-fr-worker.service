@@ -1,0 +1,13 @@
+[Unit]
+Description=Touch Index FR ingestion worker — upsert FDR issue file references
+Documentation=https://github.com/anomalyco/opencode
+Wants=touch-index-fr-worker.timer
+
+[Service]
+Type=oneshot
+ExecStart=%h/projects/BTC-Trade-Engine-PaperClip/venv/bin/python %h/projects/BTC-Trade-Engine-PaperClip/scripts/run_touch_index_fr_worker.py --lookback-minutes 30 --validate
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

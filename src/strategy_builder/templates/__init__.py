@@ -1,0 +1,1 @@
+"""Strategy Factory Templates"""

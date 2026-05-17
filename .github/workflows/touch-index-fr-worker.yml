@@ -1,0 +1,79 @@
+name: Touch Index FR Worker
+
+on:
+  schedule:
+    # Every 15 minutes — process newly-updated FDR issues
+    - cron: '*/15 * * * *'
+  repository_dispatch:
+    types: [issue_created, issue_updated, issue_status_changed]
+  workflow_dispatch:
+    inputs:
+      issue_id:
+        description: 'Paperclip issue UUID (single-issue webhook trigger)'
+        required: false
+        default: ''
+      lookback_minutes:
+        description: 'Process FDR issues updated within this many minutes'
+        required: false
+        default: '30'
+
+concurrency:
+  group: touch-index-fr-worker
+  cancel-in-progress: false
+
+jobs:
+  worker:
+    name: Ingest FDR issue file references
+    runs-on: ubuntu-latest
+
+    env:
+      PAPERCLIP_API_URL: ${{ secrets.PAPERCLIP_API_URL }}
+      PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
+      PAPERCLIP_BOARD_API_KEY: ${{ secrets.PAPERCLIP_BOARD_API_KEY }}
+      PAPERCLIP_COMPANY_ID: ${{ secrets.PAPERCLIP_COMPANY_ID }}
+      POSTGRES_HOST: ${{ secrets.POSTGRES_HOST || 'localhost' }}
+      POSTGRES_PORT: ${{ secrets.POSTGRES_PORT || '5432' }}
+      POSTGRES_DB: ${{ secrets.POSTGRES_DB || 'optimizer_v3' }}
+      POSTGRES_USER: ${{ secrets.POSTGRES_USER || 'optimizer_admin' }}
+      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install requests python-dotenv SQLAlchemy psycopg2-binary
+
+      - name: Resolve issue ID (event payload)
+        id: resolve-issue
+        run: |
+          ISSUE_ID="${{ github.event.inputs.issue_id || '' }}"
+          if [ -z "$ISSUE_ID" ] && [ -n "${{ github.event.client_payload.issue_id || '' }}" ]; then
+            ISSUE_ID="${{ github.event.client_payload.issue_id }}"
+          fi
+          echo "issue_id=$ISSUE_ID" >> $GITHUB_OUTPUT
+
+      - name: Run FR ingestion worker
+        run: |
+          FLAGS="--json-summary"
+          ISSUE_ID="${{ steps.resolve-issue.outputs.issue_id }}"
+          if [ -n "$ISSUE_ID" ]; then
+            python scripts/run_touch_index_fr_worker.py --issue-id "$ISSUE_ID" $FLAGS
+          elif [ -n "${{ github.event.inputs.lookback_minutes }}" ]; then
+            python scripts/run_touch_index_fr_worker.py \
+              --lookback-minutes ${{ github.event.inputs.lookback_minutes }} --validate $FLAGS
+          else
+            python scripts/run_touch_index_fr_worker.py --validate $FLAGS
+          fi
+
+      - name: Validate FR data quality
+        if: always()
+        run: |
+          python scripts/validate_touch_index_fr.py --stale-hours 168

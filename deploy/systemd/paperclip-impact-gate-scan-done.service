@@ -1,0 +1,17 @@
+[Unit]
+Description=Paperclip Impact Gate Scan-Done Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=python3 /home/sirrus/projects/BTC-Trade-Engine-PaperClip/scripts/scan_fix_issues_done.py --retroactive --json-summary
+StandardOutput=journal
+StandardError=journal
+Environment=HOME=/home/sirrus
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/home/sirrus/.local/bin
+EnvironmentFile=/home/sirrus/projects/BTC-Trade-Engine-PaperClip/.env
+WorkingDirectory=/home/sirrus/projects/BTC-Trade-Engine-PaperClip
+
+[Install]
+WantedBy=default.target

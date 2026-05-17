@@ -1,0 +1,12 @@
+[Unit]
+Description=Paperclip Backup Dead-Man's-Switch Monitor Timer (every 30 min, offset from primary)
+Requires=paperclip-backup-deadman-monitor.service
+
+[Timer]
+OnCalendar=*-*-* *:08:00
+OnCalendar=*-*-* *:38:00
+Persistent=true
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

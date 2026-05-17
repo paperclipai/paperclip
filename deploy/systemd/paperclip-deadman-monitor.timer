@@ -1,0 +1,14 @@
+[Unit]
+Description=Paperclip Dead-Man Switch Local Backup Monitor Timer (every 15 min)
+Requires=paperclip-deadman-monitor.service
+
+[Timer]
+OnCalendar=*-*-* *:05:00
+OnCalendar=*-*-* *:20:00
+OnCalendar=*-*-* *:35:00
+OnCalendar=*-*-* *:50:00
+Persistent=true
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target
