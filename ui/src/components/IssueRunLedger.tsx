@@ -16,6 +16,7 @@ import { cn, relativeTime } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
 import { describeRunRetryState } from "../lib/runRetryState";
+import { RetryNowButton } from "./RetryNowButton";
 
 type IssueRunLedgerProps = {
   issueId: string;
@@ -29,6 +30,7 @@ type IssueRunLedgerProps = {
 };
 
 type IssueRunLedgerContentProps = {
+  issueId?: string;
   runs: RunForIssue[];
   liveRuns?: LiveRunForIssue[];
   activeRun?: ActiveRunForIssue | null;
@@ -459,6 +461,7 @@ export function IssueRunLedger({
 
   return (
     <IssueRunLedgerContent
+      issueId={issueId}
       runs={runs ?? []}
       liveRuns={liveRuns}
       activeRun={activeRun}
@@ -476,6 +479,7 @@ export function IssueRunLedger({
 }
 
 export function IssueRunLedgerContent({
+  issueId,
   runs,
   liveRuns,
   activeRun,
@@ -742,6 +746,9 @@ export function IssueRunLedgerContent({
                     >
                       {retryState.badgeLabel}
                     </span>
+                  ) : null}
+                  {retryState?.kind === "scheduled" && issueId ? (
+                    <RetryNowButton issueId={issueId} />
                   ) : null}
                   {run.outputSilence && RUN_OUTPUT_SILENCE_COPY[run.outputSilence.level] ? (
                     <span

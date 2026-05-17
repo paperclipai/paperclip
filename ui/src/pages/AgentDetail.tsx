@@ -46,6 +46,7 @@ import { ScrollToBottom } from "../components/ScrollToBottom";
 import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { describeRunRetryState } from "../lib/runRetryState";
+import { RetryNowButton } from "../components/RetryNowButton";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs } from "@/components/ui/tabs";
@@ -3037,6 +3038,10 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   });
   const run = hydratedRun ?? initialRun;
   const metrics = runMetrics(run);
+  const runIssueId = useMemo(() => {
+    const context = asRecord(run.contextSnapshot);
+    return context ? asNonEmptyString(context.issueId) : null;
+  }, [run.contextSnapshot]);
   const [sessionOpen, setSessionOpen] = useState(false);
   const [claudeLoginResult, setClaudeLoginResult] = useState<ClaudeLoginResult | null>(null);
   // Codex device-auth flow runs in the background on the server and returns a
@@ -3447,6 +3452,9 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                     >
                       {retryState.retryOfRunId.slice(0, 8)}
                     </Link>
+                  ) : null}
+                  {retryState.kind === "scheduled" && runIssueId ? (
+                    <RetryNowButton issueId={runIssueId} className="ml-auto" />
                   ) : null}
                 </div>
                 {retryState.detail ? <p className="mt-2 text-muted-foreground">{retryState.detail}</p> : null}

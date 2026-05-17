@@ -175,10 +175,8 @@ const AgentRunCard = memo(function AgentRunCard({
 }) {
   return (
     <div className={cn(
-      "flex h-[320px] flex-col overflow-hidden rounded-xl border shadow-sm",
-      isActive
-        ? "border-cyan-500/25 bg-cyan-500/[0.04] shadow-[0_16px_40px_rgba(6,182,212,0.08)]"
-        : "border-border bg-background/70",
+      "flex h-[320px] flex-col overflow-hidden rounded-xl border bg-background shadow-sm",
+      isActive ? "border-cyan-500/30" : "border-border",
       className,
     )}>
       <div className="border-b border-border/60 px-3 py-3">

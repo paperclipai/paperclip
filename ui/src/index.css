@@ -1126,7 +1126,7 @@ span.paperclip-project-mention-chip {
    these just ensure the bg tokens work correctly with supports query. */
 @supports (backdrop-filter: blur(0)) {
   .glass-surface {
-    background-color: color-mix(in oklab, var(--background) 80%, transparent);
+    background-color: color-mix(in oklab, var(--background) 92%, transparent);
     backdrop-filter: blur(24px) saturate(1.6);
     -webkit-backdrop-filter: blur(24px) saturate(1.6);
   }
