@@ -1,10 +1,20 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
-/* Nothing-Phone-inspired display font (Silkscreen — bitmap/dot pixel, NDot-ish)
-   is loaded via a <link rel="stylesheet"> in index.html (Vite's CSS pipeline
-   strips bare `@import url(https://…)` after `@import "tailwindcss"`). Used
-   here only as the value of the --font-display var. Body uses system stack. */
+/* Nothing-Phone display typeface stack — circle-dot bitmap to match Nothing OS.
+   Primary: NDot-57 (Nothing's official typeface, self-hosted at /fonts/ndot-57.woff2
+   if user drops the file there). Falls back to Doto (Google Fonts variable
+   circle-dot font, loaded via <link> in index.html), then mono. Vite's CSS
+   pipeline strips bare `@import url(https://…)` after `@import "tailwindcss"`,
+   so the Google font must come from index.html, not from here. */
+@font-face {
+  font-family: "NDot";
+  src: url("/fonts/ndot-57.woff2") format("woff2"),
+       url("/fonts/ndot-57.ttf") format("truetype");
+  font-display: swap;
+  font-weight: 400 700;
+  font-style: normal;
+}
 
 @custom-variant dark (&:is(.dark *));
 
@@ -41,7 +51,7 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
-  --font-display: "Silkscreen", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-display: "NDot", "Doto", ui-monospace, SFMono-Regular, Menlo, monospace;
 
   --radius-sm: 0.375rem;
   --radius-md: 0.5rem;
@@ -183,8 +193,8 @@
     @apply border-border;
   }
   /* Display-font utility for page titles + empty-state headlines.
-     Major Mono Display is uppercase-only, so we force uppercase + wider
-     tracking to lean into the Nothing-Phone "terminal display" vibe. */
+     NDot/Doto are circle-dot bitmaps; uppercase + wider tracking leans into the
+     Nothing-Phone "terminal display" vibe. */
   .font-display {
     font-family: var(--font-display);
     text-transform: uppercase;

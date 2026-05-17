@@ -12,7 +12,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
-import { MetricCard } from "../components/MetricCard";
+import { CircularStatWidget } from "../components/CircularStatWidget";
 import { EmptyState } from "../components/EmptyState";
 import { StatusIcon } from "../components/StatusIcon";
 
@@ -237,59 +237,83 @@ export function Dashboard() {
             </div>
           ) : null}
 
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4">
-            <MetricCard
-              icon={Bot}
-              value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
-              label="Agents Enabled"
-              to="/agents"
-              description={
-                <span>
-                  {data.agents.running} running{", "}
-                  {data.agents.paused} paused{", "}
-                  {data.agents.error} errors
-                </span>
-              }
-            />
-            <MetricCard
-              icon={CircleDot}
-              value={data.tasks.inProgress}
-              label="Tasks In Progress"
-              to="/issues"
-              description={
-                <span>
-                  {data.tasks.open} open{", "}
-                  {data.tasks.blocked} blocked
-                </span>
-              }
-            />
-            <MetricCard
-              icon={DollarSign}
-              value={formatCents(data.costs.monthSpendCents)}
-              label="Month Spend"
-              to="/costs"
-              description={
-                <span>
-                  {data.costs.monthBudgetCents > 0
-                    ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
-                    : "Unlimited budget"}
-                </span>
-              }
-            />
-            <MetricCard
-              icon={ShieldCheck}
-              value={data.pendingApprovals + data.budgets.pendingApprovals}
-              label="Pending Approvals"
-              to="/approvals"
-              description={
-                <span>
-                  {data.budgets.pendingApprovals > 0
-                    ? `${data.budgets.pendingApprovals} budget overrides awaiting board review`
-                    : "Awaiting board review"}
-                </span>
-              }
-            />
-          </div>
+          {(() => {
+            const agentsTotal =
+              data.agents.active + data.agents.running + data.agents.paused + data.agents.error;
+            const agentsPercent = agentsTotal > 0 ? data.agents.running / agentsTotal : 0;
+            const tasksDenom = data.tasks.inProgress + data.tasks.open + data.tasks.blocked;
+            const tasksPercent = tasksDenom > 0 ? data.tasks.inProgress / tasksDenom : 0;
+            const costsPercent =
+              data.costs.monthBudgetCents > 0 ? data.costs.monthUtilizationPercent / 100 : 0;
+            const costsTone: "default" | "danger" =
+              data.costs.monthBudgetCents > 0 && data.costs.monthUtilizationPercent > 80
+                ? "danger"
+                : "default";
+            const approvalsCount = data.pendingApprovals + data.budgets.pendingApprovals;
+            const approvalsPercent = Math.min(approvalsCount / 10, 1);
+            const approvalsTone: "default" | "danger" = approvalsCount > 0 ? "danger" : "default";
+            return (
+              <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4">
+                <CircularStatWidget
+                  icon={Bot}
+                  value={agentsTotal}
+                  label="Agents Enabled"
+                  percent={agentsPercent}
+                  to="/agents"
+                  description={
+                    <span>
+                      {data.agents.running} running{", "}
+                      {data.agents.paused} paused{", "}
+                      {data.agents.error} errors
+                    </span>
+                  }
+                />
+                <CircularStatWidget
+                  icon={CircleDot}
+                  value={data.tasks.inProgress}
+                  label="Tasks In Progress"
+                  percent={tasksPercent}
+                  to="/issues"
+                  description={
+                    <span>
+                      {data.tasks.open} open{", "}
+                      {data.tasks.blocked} blocked
+                    </span>
+                  }
+                />
+                <CircularStatWidget
+                  icon={DollarSign}
+                  value={formatCents(data.costs.monthSpendCents)}
+                  label="Month Spend"
+                  percent={costsPercent}
+                  tone={costsTone}
+                  to="/costs"
+                  description={
+                    <span>
+                      {data.costs.monthBudgetCents > 0
+                        ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
+                        : "Unlimited budget"}
+                    </span>
+                  }
+                />
+                <CircularStatWidget
+                  icon={ShieldCheck}
+                  value={approvalsCount}
+                  label="Pending Approvals"
+                  percent={approvalsPercent}
+                  tone={approvalsTone}
+                  to="/approvals"
+                  description={
+                    <span>
+                      {data.budgets.pendingApprovals > 0
+                        ? `${data.budgets.pendingApprovals} budget overrides awaiting board review`
+                        : "Awaiting board review"}
+                    </span>
+                  }
+                />
+              </div>
+            );
+          })()}
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
             <ChartCard title="Run Activity" subtitle="Last 14 days">
