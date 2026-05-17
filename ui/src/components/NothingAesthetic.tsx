@@ -4,12 +4,12 @@ import { cn } from "../lib/utils";
 type GlyphTone = "default" | "muted" | "success" | "warning" | "danger" | "live";
 
 const toneClasses: Record<GlyphTone, string> = {
-  default: "text-foreground",
+  default: "text-current",
   muted: "text-muted-foreground",
-  success: "text-foreground",
+  success: "text-current",
   warning: "text-amber-500",
   danger: "text-red-500",
-  live: "text-foreground",
+  live: "text-current",
 };
 
 export function DotMatrixText({
