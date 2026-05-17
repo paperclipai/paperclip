@@ -1,0 +1,15 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+      - id: detect-private-key
+        exclude: '(?:^|/)(?:test|spec|__tests?__|fixtures?|mocks?)/|\.(?:test|spec)\.(?:ts|js|tsx|jsx|mjs)$'
+      - id: mixed-line-ending
+        args: [--fix=lf]

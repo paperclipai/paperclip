@@ -1,0 +1,8 @@
+[build-system]
+requires = ["setuptools>=64.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "paperclip"
+description = "Control plane for AI-agent companies"
+requires-python = ">=3.9"
