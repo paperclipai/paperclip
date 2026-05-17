@@ -19,7 +19,7 @@ export const standupResponseBodySchema = z.object({
   proofTarget: z.string().trim().min(1).max(1000),
   blockerOrAuthorityGap: z.string().trim().min(1).max(4000),
   immediateActionTaken: z.string().trim().min(1).max(4000),
-});
+}).catchall(z.unknown());
 
 export type StandupResponseBody = z.infer<typeof standupResponseBodySchema>;
 
