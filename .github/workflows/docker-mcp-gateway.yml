@@ -9,8 +9,8 @@ name: Docker (mcp-gateway)
 # another staged step.
 #
 # Trigger: any change under packages/mcp-gateway/. Master and tags only;
-# no PR builds (BLOCKCAST_REGISTRY_PASSWORD secret isn't available to
-# forks anyway, so a PR build would just 401 on push).
+# no PR builds (HARBOR_PASSWORD org secret isn't available to forks
+# anyway, so a PR build would just 401 on push).
 
 on:
   push:
@@ -41,14 +41,6 @@ jobs:
           find . -name node_modules -type d -prune -exec rm -rf {} + 2>/dev/null || true
           find . -name node_modules -type l -exec rm -f {} + 2>/dev/null || true
 
-      - name: Login to Blockcast registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ vars.BLOCKCAST_REGISTRY_HOST }}
-          username: ${{ vars.BLOCKCAST_REGISTRY_USERNAME }}
-          password: ${{ secrets.BLOCKCAST_REGISTRY_PASSWORD }}
-
-      # Harbor parallel-push login (zot → Harbor cutover bake-in).
       - name: Login to Harbor
         uses: docker/login-action@v3
         with:
@@ -66,7 +58,6 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip-mcp-gateway
             harbor.blockcast.net/paperclip-mcp-gateway/paperclip-mcp-gateway
           tags: |
             type=sha,prefix=sha-,format=short
@@ -81,7 +72,7 @@ jobs:
           push: true
           provenance: false
           sbom: false
-          cache-from: type=registry,ref=${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip-mcp-gateway:buildcache-v6
-          cache-to: type=registry,ref=${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip-mcp-gateway:buildcache-v6,mode=max,image-manifest=true,oci-mediatypes=true
+          cache-from: type=registry,ref=harbor.blockcast.net/paperclip-mcp-gateway/paperclip-mcp-gateway:buildcache-v6
+          cache-to: type=registry,ref=harbor.blockcast.net/paperclip-mcp-gateway/paperclip-mcp-gateway:buildcache-v6,mode=max,image-manifest=true,oci-mediatypes=true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

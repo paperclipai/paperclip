@@ -38,14 +38,6 @@ jobs:
           # tracks 1:1 with the matching paperclip-server tag.
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
-      - name: Login to Blockcast registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ vars.BLOCKCAST_REGISTRY_HOST }}
-          username: ${{ vars.BLOCKCAST_REGISTRY_USERNAME }}
-          password: ${{ secrets.BLOCKCAST_REGISTRY_PASSWORD }}
-
-      # Harbor parallel-push login (zot → Harbor cutover bake-in).
       - name: Login to Harbor
         uses: docker/login-action@v3
         with:
@@ -81,7 +73,6 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip-agent
             harbor.blockcast.net/paperclip-agent/paperclip-agent
           tags: |
             type=raw,value=sha-${{ steps.sha.outputs.short }}-k8s-vendored

@@ -39,23 +39,11 @@ jobs:
           find . -name node_modules -type d -prune -exec rm -rf {} + 2>/dev/null || true
           find . -name node_modules -type l -exec rm -f {} + 2>/dev/null || true
 
-      # The Blockcast private registry is the only push target. Configure
-      # via repo variable BLOCKCAST_REGISTRY_HOST + the USERNAME variable +
-      # PASSWORD secret in repo Settings. ghcr.io mirroring was removed
-      # because nothing in the deploy path consumes it — the cluster pulls
-      # exclusively from BLOCKCAST_REGISTRY_HOST and skipping the duplicate
-      # push cuts the build-and-push step's wall time roughly in half.
-      - name: Login to Blockcast registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ vars.BLOCKCAST_REGISTRY_HOST }}
-          username: ${{ vars.BLOCKCAST_REGISTRY_USERNAME }}
-          password: ${{ secrets.BLOCKCAST_REGISTRY_PASSWORD }}
-
-      # Harbor parallel-push login. Harbor is the cutover target for zot.
-      # During the bake-in window, builds push to both registries; once zot
-      # decommissions, drop the Blockcast registry login above and the dual
-      # entry in metadata-action's images: list below.
+      # Harbor is the push target. Configure via HARBOR_USERNAME +
+      # HARBOR_PASSWORD secrets in the Blockcast org Settings (org-wide
+      # visibility=all, backed by the pusher-cluster Harbor robot).
+      # Cluster pulls exclusively from harbor.blockcast.net; ghcr.io
+      # mirroring was removed because nothing in the deploy path consumes it.
       - name: Login to Harbor
         uses: docker/login-action@v3
         with:
@@ -100,7 +88,6 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip
             harbor.blockcast.net/paperclip/paperclip
           tags: |
             type=sha,prefix=sha-,suffix=-k8s-vendored,format=short
@@ -137,8 +124,8 @@ jobs:
           # context can even be hashed; v4 is empty until cache-to writes
           # to it, and the cleanup:true above ensures each run's local
           # builder starts fresh so the corruption can't be re-introduced.
-          cache-from: type=registry,ref=${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip:buildcache-v6
-          cache-to: type=registry,ref=${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip:buildcache-v6,mode=max,image-manifest=true,oci-mediatypes=true
+          cache-from: type=registry,ref=harbor.blockcast.net/paperclip/paperclip:buildcache-v6
+          cache-to: type=registry,ref=harbor.blockcast.net/paperclip/paperclip:buildcache-v6,mode=max,image-manifest=true,oci-mediatypes=true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
@@ -149,7 +136,7 @@ jobs:
   deploy:
     needs: build-and-push
     runs-on: self-hosted
-    if: ${{ vars.PAPERCLIP_CI_DEPLOY == 'true' && github.ref == 'refs/heads/master' && vars.BLOCKCAST_REGISTRY_HOST != '' }}
+    if: ${{ vars.PAPERCLIP_CI_DEPLOY == 'true' && github.ref == 'refs/heads/master' }}
     timeout-minutes: 15
     concurrency:
       # Serialize deploys to the same target so a fast-followup push doesn't
