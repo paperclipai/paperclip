@@ -373,6 +373,15 @@ function PropertyPicker({
   );
 }
 
+function useDebounced<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const handle = window.setTimeout(() => setDebounced(value), delayMs);
+    return () => window.clearTimeout(handle);
+  }, [value, delayMs]);
+  return debounced;
+}
+
 export function IssueProperties({
   issue,
   childIssues = [],
@@ -443,10 +452,27 @@ export function IssueProperties({
     enabled: !!companyId,
   });
 
-  const { data: allIssues } = useQuery({
-    queryKey: queryKeys.issues.list(companyId!),
-    queryFn: () => issuesApi.list(companyId!),
-    enabled: !!companyId && (blockedByOpen || parentOpen),
+  const debouncedBlockedBySearch = useDebounced(blockedBySearch.trim(), 200);
+  const debouncedParentSearch = useDebounced(parentSearch.trim(), 200);
+
+  const { data: blockerPickerIssues } = useQuery({
+    queryKey: queryKeys.issues.search(companyId!, debouncedBlockedBySearch, undefined, 50),
+    queryFn: () =>
+      issuesApi.list(companyId!, {
+        ...(debouncedBlockedBySearch ? { q: debouncedBlockedBySearch } : {}),
+        limit: 50,
+      }),
+    enabled: !!companyId && blockedByOpen,
+  });
+
+  const { data: parentPickerIssues } = useQuery({
+    queryKey: queryKeys.issues.search(companyId!, debouncedParentSearch, undefined, 50),
+    queryFn: () =>
+      issuesApi.list(companyId!, {
+        ...(debouncedParentSearch ? { q: debouncedParentSearch } : {}),
+        limit: 50,
+      }),
+    enabled: !!companyId && parentOpen,
   });
 
   const createLabel = useMutation({
@@ -1545,9 +1571,9 @@ export function IssueProperties({
 
   const blockedByIds = issue.blockedBy?.map((relation) => relation.id) ?? [];
   const descendantIssueIds = useMemo(() => {
-    if (!allIssues?.length) return new Set<string>();
+    if (!parentPickerIssues?.length) return new Set<string>();
     const childrenByParentId = new Map<string, string[]>();
-    for (const candidate of allIssues) {
+    for (const candidate of parentPickerIssues) {
       if (!candidate.parentId) continue;
       const children = childrenByParentId.get(candidate.parentId) ?? [];
       children.push(candidate.id);
@@ -1563,11 +1589,11 @@ export function IssueProperties({
       stack.push(...(childrenByParentId.get(candidateId) ?? []));
     }
     return descendants;
-  }, [allIssues, issue.id]);
+  }, [parentPickerIssues, issue.id]);
   const currentParentIssue = useMemo(() => {
     if (!issue.parentId) return null;
-    return allIssues?.find((candidate) => candidate.id === issue.parentId) ?? null;
-  }, [allIssues, issue.parentId]);
+    return parentPickerIssues?.find((candidate) => candidate.id === issue.parentId) ?? null;
+  }, [parentPickerIssues, issue.parentId]);
   const parentIdentifier = issue.ancestors?.[0]?.identifier ?? currentParentIssue?.identifier;
   const parentTitle = issue.ancestors?.[0]?.title ?? currentParentIssue?.title ?? issue.parentId?.slice(0, 8);
   const parentTrigger = issue.parentId ? (
@@ -1587,17 +1613,9 @@ export function IssueProperties({
       <ArrowUpRight className="h-3 w-3" />
     </Link>
   ) : undefined;
-  const parentOptions = (allIssues ?? [])
+  const parentOptions = (parentPickerIssues ?? [])
     .filter((candidate) => candidate.id !== issue.id)
     .filter((candidate) => !descendantIssueIds.has(candidate.id))
-    .filter((candidate) => {
-      if (!parentSearch.trim()) return true;
-      const query = parentSearch.toLowerCase();
-      return (
-        (candidate.identifier ?? "").toLowerCase().includes(query) ||
-        candidate.title.toLowerCase().includes(query)
-      );
-    })
     .sort((a, b) => {
       const aLabel = `${a.identifier ?? ""} ${a.title}`.trim();
       const bLabel = `${b.identifier ?? ""} ${b.title}`.trim();
@@ -1648,16 +1666,8 @@ export function IssueProperties({
     </>
   );
   const blockingIssues = issue.blocks ?? [];
-  const blockerOptions = (allIssues ?? [])
+  const blockerOptions = (blockerPickerIssues ?? [])
     .filter((candidate) => candidate.id !== issue.id)
-    .filter((candidate) => {
-      if (!blockedBySearch.trim()) return true;
-      const query = blockedBySearch.toLowerCase();
-      return (
-        (candidate.identifier ?? "").toLowerCase().includes(query) ||
-        candidate.title.toLowerCase().includes(query)
-      );
-    })
     .sort((a, b) => {
       const aLabel = `${a.identifier ?? ""} ${a.title}`.trim();
       const bLabel = `${b.identifier ?? ""} ${b.title}`.trim();
