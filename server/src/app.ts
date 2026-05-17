@@ -36,6 +36,7 @@ import {
 } from "./routes/instance-database-backups.js";
 import { llmRoutes } from "./routes/llms.js";
 import { authRoutes } from "./routes/auth.js";
+import { jadeSsoRoutes } from "./routes/jade-sso.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
@@ -132,6 +133,7 @@ export async function createApp(
     pluginMigrationDb?: Db;
     pluginWorkerManager?: PluginWorkerManager;
     betterAuthHandler?: express.RequestHandler;
+    betterAuth?: { api?: Record<string, unknown> };
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
   },
 ) {
@@ -170,6 +172,12 @@ export async function createApp(
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
   }
+  app.use(
+    jadeSsoRoutes(db, {
+      auth: opts.betterAuth,
+      resolveSession: opts.resolveSession,
+    }),
+  );
   app.use(llmRoutes(db));
 
   const hostServicesDisposers = new Map<string, () => void>();

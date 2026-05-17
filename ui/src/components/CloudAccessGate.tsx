@@ -5,6 +5,18 @@ import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
 import { queryKeys } from "@/lib/queryKeys";
 
+function JadeSsoRedirect() {
+  // Full-page nav (not SPA) so the server can set the session cookie.
+  if (typeof window !== "undefined") {
+    window.location.replace("/sso/jade");
+  }
+  return (
+    <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">
+      Signing you in…
+    </div>
+  );
+}
+
 function BootstrapPendingPage({ hasActiveInvite = false }: { hasActiveInvite?: boolean }) {
   return (
     <div className="mx-auto max-w-xl py-10">
@@ -92,8 +104,20 @@ export function CloudAccessGate() {
     );
   }
 
-  if (isAuthenticatedMode && healthQuery.data?.bootstrapStatus === "bootstrap_pending") {
-    return <BootstrapPendingPage hasActiveInvite={healthQuery.data.bootstrapInviteActive} />;
+  // jade.computer workspaces: never make the user bootstrap a CEO or
+  // sign in manually — a valid jade SSO grant means we can land them
+  // straight in as the instance admin.
+  const jadeSso = isAuthenticatedMode && healthQuery.data?.jadeSsoAvailable;
+  const pendingBootstrap =
+    isAuthenticatedMode &&
+    healthQuery.data?.bootstrapStatus === "bootstrap_pending";
+
+  if (jadeSso && (pendingBootstrap || !sessionQuery.data)) {
+    return <JadeSsoRedirect />;
+  }
+
+  if (pendingBootstrap) {
+    return <BootstrapPendingPage hasActiveInvite={healthQuery.data?.bootstrapInviteActive} />;
   }
 
   if (isAuthenticatedMode && !sessionQuery.data) {

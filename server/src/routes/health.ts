@@ -7,6 +7,7 @@ import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus } from "../dev-server-status.js";
 import { logger } from "../middleware/logger.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { jadeGrantPresent } from "../jade-sso.js";
 import { serverVersion } from "../version.js";
 
 function shouldExposeFullHealthDetails(
@@ -125,6 +126,7 @@ export function healthRoutes(
         deploymentMode: opts.deploymentMode,
         bootstrapStatus,
         bootstrapInviteActive,
+        jadeSsoAvailable: jadeGrantPresent(),
         ...(devServer ? { devServer } : {}),
       });
       return;
@@ -138,6 +140,7 @@ export function healthRoutes(
       authReady: opts.authReady,
       bootstrapStatus,
       bootstrapInviteActive,
+      jadeSsoAvailable: jadeGrantPresent(),
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
