@@ -39,6 +39,15 @@ function buildContext(
   };
 }
 
+function extractStructuredWakePayload(payload: Record<string, unknown> | null): Record<string, unknown> {
+  const message = String(payload?.message ?? "");
+  const match = message.match(/Structured wake payload JSON:\n```json\n([\s\S]*?)\n```/);
+  if (!match) {
+    throw new Error("Structured wake payload JSON block not found");
+  }
+  return JSON.parse(match[1] ?? "{}") as Record<string, unknown>;
+}
+
 async function createMockGatewayServer(options?: {
   waitPayload?: Record<string, unknown>;
 }) {
@@ -502,11 +511,9 @@ describe("openclaw gateway adapter execute", () => {
       );
       expect(String(payload?.message ?? "")).toContain("First comment");
       expect(String(payload?.message ?? "")).toContain("\"commentIds\":[\"comment-1\",\"comment-2\"]");
-      expect(payload?.paperclip).toMatchObject({
-        wake: {
-          latestCommentId: "comment-2",
-          commentIds: ["comment-1", "comment-2"],
-        },
+      expect(extractStructuredWakePayload(payload)).toMatchObject({
+        latestCommentId: "comment-2",
+        commentIds: ["comment-1", "comment-2"],
       });
 
       expect(logs.some((entry) => entry.includes("[openclaw-gateway:event] run=run-123 stream=assistant"))).toBe(true);
