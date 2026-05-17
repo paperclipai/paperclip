@@ -11,6 +11,7 @@ import {
   executionWorkspaces,
   heartbeatRuns,
   instanceSettings,
+  issueComments,
   issueInboxArchives,
   issueReadStates,
   issues,
@@ -57,6 +58,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(activityLog);
     await db.delete(issueInboxArchives);
     await db.delete(issueReadStates);
+    await db.delete(issueComments);
     await db.delete(routineRuns);
     await db.delete(routineTriggers);
     await db.delete(routines);
@@ -263,6 +265,230 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues).toHaveLength(2);
     expect(routineIssues.map((issue) => issue.id)).toContain(previousIssue.id);
     expect(routineIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
+  });
+
+  // Helper for TER-1492 / TER-1323 tests: seed a previous routine_execution
+  // issue stuck in `blocked` with a terminal heartbeat run (the production
+  // shape that TER-1488 / TER-1405 exhibited). Returns the predecessor row.
+  async function seedBlockedPredecessor(opts: {
+    companyId: string;
+    agentId: string;
+    issueSvc: ReturnType<typeof issueService>;
+    routine: { id: string; projectId: string | null; title: string; description: string | null; priority: string; assigneeAgentId: string | null };
+    triggeredAt: Date;
+    heartbeatStatus?: "completed" | "failed";
+  }) {
+    const { companyId, agentId, issueSvc, routine, triggeredAt } = opts;
+    const previousRunId = randomUUID();
+    const terminalHeartbeatRunId = randomUUID();
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "blocked",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "schedule",
+      status: "issue_created",
+      triggeredAt,
+      linkedIssueId: previousIssue.id,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: terminalHeartbeatRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: opts.heartbeatStatus ?? "completed",
+      contextSnapshot: { issueId: previousIssue.id },
+      startedAt: new Date(triggeredAt.getTime() + 60_000),
+      finishedAt: new Date(triggeredAt.getTime() + 5 * 60_000),
+    });
+
+    await db
+      .update(issues)
+      .set({
+        executionRunId: terminalHeartbeatRunId,
+        executionLockedAt: new Date(triggeredAt.getTime() + 60_000),
+      })
+      .where(eq(issues.id, previousIssue.id));
+
+    return previousIssue;
+  }
+
+  it("dedups a new dispatch into a blocked predecessor, posts a comment, and heals orphan executionRunId", async () => {
+    // TER-1492: when a previous routine_execution issue is still `blocked`,
+    // the engine must coalesce the new tick into it instead of spawning a
+    // fresh issue (which produced the TER-1405/TER-1488 duplicates). Also
+    // verifies the TER-1323 orphan-heal regression: the predecessor's
+    // executionRunId must be nulled out so it leaves the unique index.
+    const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
+    const previousIssue = await seedBlockedPredecessor({
+      companyId,
+      agentId,
+      issueSvc,
+      routine,
+      triggeredAt: new Date("2026-04-29T15:00:00.000Z"),
+      heartbeatStatus: "completed",
+    });
+
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+
+    expect(run.status).toBe("coalesced");
+    expect(run.failureReason).toBeNull();
+    expect(run.linkedIssueId).toBe(previousIssue.id);
+
+    const routineIssues = await db
+      .select({ id: issues.id, status: issues.status, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.originId, routine.id));
+
+    // No fresh issue was spawned: the predecessor remains the only routine_execution issue.
+    expect(routineIssues).toHaveLength(1);
+    expect(routineIssues[0]!.id).toBe(previousIssue.id);
+    expect(routineIssues[0]!.status).toBe("blocked");
+    // TER-1323 regression: orphan executionRunId healed to null.
+    expect(routineIssues[0]!.executionRunId).toBeNull();
+
+    // The dedup branch posts a comment on the surviving issue with the tick context.
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, previousIssue.id));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.body).toContain("Routine tick at");
+    expect(comments[0]!.body).toContain("schedule");
+    expect(comments[0]!.body).toContain("blocked");
+  });
+
+  it("collapses consecutive scheduler ticks into the same blocked predecessor without 23505", async () => {
+    // TER-1492 + TER-1323 smoke gate: two consecutive ticks against the same
+    // blocked predecessor must both succeed (no unique-index collision) and
+    // both must coalesce into the same surviving issue.
+    const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
+    const previousIssue = await seedBlockedPredecessor({
+      companyId,
+      agentId,
+      issueSvc,
+      routine,
+      triggeredAt: new Date("2026-04-29T15:00:00.000Z"),
+      heartbeatStatus: "failed",
+    });
+
+    const firstRun = await svc.runRoutine(routine.id, { source: "schedule" });
+    const secondRun = await svc.runRoutine(routine.id, { source: "schedule" });
+
+    expect(firstRun.status).toBe("coalesced");
+    expect(firstRun.failureReason).toBeNull();
+    expect(firstRun.linkedIssueId).toBe(previousIssue.id);
+
+    expect(secondRun.status).toBe("coalesced");
+    expect(secondRun.failureReason).toBeNull();
+    expect(secondRun.linkedIssueId).toBe(previousIssue.id);
+
+    const routineIssues = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.originId, routine.id));
+    expect(routineIssues).toHaveLength(1);
+
+    const comments = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, previousIssue.id));
+    expect(comments.length).toBe(2);
+  });
+
+  it("creates a fresh execution issue once the blocked predecessor transitions out of blocked", async () => {
+    // TER-1492 acceptance criterion (c): the dedup is conditional on
+    // status=blocked. Once the predecessor is resolved (done/cancelled/etc.),
+    // the next tick must produce a fresh issue rather than coalescing.
+    const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
+    const previousIssue = await seedBlockedPredecessor({
+      companyId,
+      agentId,
+      issueSvc,
+      routine,
+      triggeredAt: new Date("2026-04-29T15:00:00.000Z"),
+    });
+
+    const dedupRun = await svc.runRoutine(routine.id, { source: "schedule" });
+    expect(dedupRun.status).toBe("coalesced");
+    expect(dedupRun.linkedIssueId).toBe(previousIssue.id);
+
+    // Predecessor is unblocked and resolved.
+    await db
+      .update(issues)
+      .set({ status: "done", updatedAt: new Date() })
+      .where(eq(issues.id, previousIssue.id));
+
+    const freshRun = await svc.runRoutine(routine.id, { source: "schedule" });
+    expect(freshRun.status).toBe("issue_created");
+    expect(freshRun.failureReason).toBeNull();
+    expect(freshRun.linkedIssueId).toBeTruthy();
+    expect(freshRun.linkedIssueId).not.toBe(previousIssue.id);
+
+    const routineIssues = await db
+      .select({ id: issues.id, status: issues.status })
+      .from(issues)
+      .where(eq(issues.originId, routine.id));
+    expect(routineIssues).toHaveLength(2);
+    expect(routineIssues.find((i) => i.id === previousIssue.id)!.status).toBe("done");
+    expect(routineIssues.find((i) => i.id === freshRun.linkedIssueId)!.status).not.toBe("blocked");
+  });
+
+  it("bypasses dedup when concurrencyPolicy is always_enqueue", async () => {
+    // TER-1492 acceptance criterion (d): an explicit `always_enqueue` policy
+    // is the user opting into parallel routine execution. We must respect
+    // that even when a blocked predecessor exists, log a warning, and let
+    // the orphan-heal keep the unique index from colliding.
+    const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
+    await db
+      .update(routines)
+      .set({ concurrencyPolicy: "always_enqueue" })
+      .where(eq(routines.id, routine.id));
+    const refreshedRoutine = { ...routine, concurrencyPolicy: "always_enqueue" };
+    const previousIssue = await seedBlockedPredecessor({
+      companyId,
+      agentId,
+      issueSvc,
+      routine: refreshedRoutine,
+      triggeredAt: new Date("2026-04-29T15:00:00.000Z"),
+    });
+
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.failureReason).toBeNull();
+    expect(run.linkedIssueId).toBeTruthy();
+    expect(run.linkedIssueId).not.toBe(previousIssue.id);
+
+    const routineIssues = await db
+      .select({ id: issues.id, status: issues.status, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.originId, routine.id));
+    expect(routineIssues).toHaveLength(2);
+    // Predecessor still blocked, orphan healed.
+    const healedPrevious = routineIssues.find((i) => i.id === previousIssue.id)!;
+    expect(healedPrevious.status).toBe("blocked");
+    expect(healedPrevious.executionRunId).toBeNull();
+    // No dedup comment was posted on the predecessor.
+    const comments = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, previousIssue.id));
+    expect(comments).toHaveLength(0);
   });
 
   it("creates draft routines without a project or default assignee", async () => {
