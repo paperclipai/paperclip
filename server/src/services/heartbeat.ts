@@ -6203,10 +6203,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     // If the subprocess exited cleanly (exit code 0) but the run was pre-terminated
     // as "failed" by process-loss recovery before the subprocess finished, still
-    // transition the agent from "error" to "idle" so the successful work is recognised.
-    // The gate on existing.status === "error" prevents this from masking a first-run
-    // failure where the agent was "running" when finalizeAgentStatus was called.
-    if (nextStatus === "error" && opts?.subprocessExitCode === 0 && existing.status === "error") {
+    // transition the agent to "idle" so the successful work is recognised.
+    // Scoped to outcome === "failed" so timed-out runs are not affected.
+    // No agent-status guard here: the agent is "running" (not "error") at this
+    // point because the run start already transitioned it; only the exit code
+    // tells us whether the subprocess actually succeeded.
+    if (nextStatus === "error" && outcome === "failed" && opts?.subprocessExitCode === 0) {
       nextStatus = "idle";
     }
 
