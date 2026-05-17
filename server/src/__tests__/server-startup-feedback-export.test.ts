@@ -216,6 +216,35 @@ describe("startServer feedback export wiring", () => {
       serverPort: 3210,
     });
   });
+
+  it("refuses authenticated public startup without an external database URL", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      deploymentExposure: "public",
+      authBaseUrlMode: "explicit",
+      authPublicBaseUrl: "https://tenant.example.com",
+      databaseMode: "embedded-postgres",
+      databaseUrl: undefined,
+    }));
+
+    await expect(startServer()).rejects.toThrow(
+      "authenticated public deployments require DATABASE_URL or config.database.connectionString",
+    );
+    expect(createDbMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses authenticated public startup when DATABASE_URL is not a postgres URL", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      deploymentExposure: "public",
+      authBaseUrlMode: "explicit",
+      authPublicBaseUrl: "https://tenant.example.com",
+      databaseUrl: "secret://paperclip-cloud/stacks/alpha/database/runtime-url",
+    }));
+
+    await expect(startServer()).rejects.toThrow(
+      "authenticated public deployments require DATABASE_URL to be a postgres/postgresql connection string",
+    );
+    expect(createDbMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("startServer authenticated auth origin setup", () => {
