@@ -38,6 +38,9 @@ tmp/
 feedback-export-*
 diagnostics/
 
+# Local custom Docker/config overrides
+docker/custom-configs/
+
 # Editor / tool temp files
 *.tmp
 .vscode/

@@ -13,6 +13,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Settings, Check, Download, Upload } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
+import { ExperimentalFeaturesSettings } from "@/components/ExperimentalFeaturesSettings";
 import {
   Field,
   ToggleField,
@@ -431,6 +432,8 @@ export function CompanySettings() {
           />
         </div>
       </div>
+
+      <ExperimentalFeaturesSettings companyId={selectedCompanyId!} />
 
       {/* Invites */}
       <div className="space-y-4" data-testid="company-settings-invites-section">

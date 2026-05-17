@@ -11,6 +11,7 @@ import {
   type PatchInstanceGeneralSettings,
   type InstanceSettings,
   type PatchInstanceExperimentalSettings,
+  type CompanyExperimentalFeaturesConfig,
 } from "@paperclipai/shared";
 import { eq } from "drizzle-orm";
 
@@ -46,6 +47,7 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
       issueGraphLivenessAutoRecoveryLookbackHours:
         parsed.data.issueGraphLivenessAutoRecoveryLookbackHours ??
         DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+      companyExperimentalFeatures: parsed.data.companyExperimentalFeatures ?? {},
     };
   }
   return {
@@ -55,6 +57,7 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
     enableIssueGraphLivenessAutoRecovery: false,
     issueGraphLivenessAutoRecoveryLookbackHours:
       DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+    companyExperimentalFeatures: {},
   };
 }
 
@@ -143,6 +146,36 @@ export function instanceSettingsService(db: Db) {
       const nextExperimental = normalizeExperimentalSettings({
         ...normalizeExperimentalSettings(current.experimental),
         ...patch,
+      });
+      const now = new Date();
+      const [updated] = await db
+        .update(instanceSettings)
+        .set({
+          experimental: { ...nextExperimental },
+          updatedAt: now,
+        })
+        .where(eq(instanceSettings.id, current.id))
+        .returning();
+      return toInstanceSettings(updated ?? current);
+    },
+
+    updateCompanyExperimentalFeatures: async (
+      companyId: string,
+      config: CompanyExperimentalFeaturesConfig,
+    ): Promise<InstanceSettings> => {
+      const current = await getOrCreateRow();
+      const currentExperimental = normalizeExperimentalSettings(current.experimental);
+      const nextExperimental = normalizeExperimentalSettings({
+        ...currentExperimental,
+        companyExperimentalFeatures: {
+          ...currentExperimental.companyExperimentalFeatures,
+          [companyId]: {
+            enabledFeatures: {
+              ...(currentExperimental.companyExperimentalFeatures[companyId]?.enabledFeatures ?? {}),
+              ...(config.enabledFeatures ?? {}),
+            },
+          },
+        },
       });
       const now = new Date();
       const [updated] = await db
