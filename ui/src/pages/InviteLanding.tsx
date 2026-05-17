@@ -230,6 +230,13 @@ export function InviteLandingPage() {
   const [authFeedback, setAuthFeedback] = useState<AuthFeedback | null>(null);
   const [autoAcceptStarted, setAutoAcceptStarted] = useState(false);
 
+  // Save invite token eagerly during render (not in a useEffect) so that
+  // it persists even if the component crashes or shows an error state.
+  // This allows Auth.tsx to redirect back via getRememberedInvitePath().
+  if (token) {
+    try { rememberPendingInviteToken(token); } catch { /* best-effort */ }
+  }
+
   const healthQuery = useQuery({
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
@@ -253,10 +260,6 @@ export function InviteLandingPage() {
     enabled: !!sessionQuery.data && !!inviteQuery.data?.companyId,
     retry: false,
   });
-
-  useEffect(() => {
-    if (token) rememberPendingInviteToken(token);
-  }, [token]);
 
   useEffect(() => {
     setAutoAcceptStarted(false);

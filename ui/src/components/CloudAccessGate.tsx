@@ -1,9 +1,10 @@
-import { Navigate, Outlet, useLocation } from "@/lib/router";
+import { Link, Navigate, Outlet, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { accessApi } from "@/api/access";
 import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
 import { queryKeys } from "@/lib/queryKeys";
+import { getRememberedInvitePath } from "@/lib/invite-memory";
 
 function BootstrapPendingPage({ hasActiveInvite = false }: { hasActiveInvite?: boolean }) {
   return (
@@ -24,6 +25,7 @@ function BootstrapPendingPage({ hasActiveInvite = false }: { hasActiveInvite?: b
 }
 
 function NoBoardAccessPage() {
+  const rememberedInvitePath = getRememberedInvitePath();
   return (
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
@@ -32,9 +34,24 @@ function NoBoardAccessPage() {
           This account is signed in, but it does not have an active company membership or instance-admin access on
           this Paperclip instance.
         </p>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Use a company invite or sign in with an account that already belongs to this org.
-        </p>
+        {rememberedInvitePath ? (
+          <div className="mt-4 rounded-md border border-amber-500/40 bg-amber-500/10 p-4">
+            <p className="text-sm font-medium text-amber-50">Pending invite found</p>
+            <p className="mt-1 text-sm text-amber-200/80">
+              You have a pending invite. Use the link below to complete the sign-up process.
+            </p>
+            <Link
+              to={rememberedInvitePath}
+              className="mt-3 inline-block text-sm font-medium text-amber-200 underline underline-offset-2 hover:text-amber-100"
+            >
+              Open invite link
+            </Link>
+          </div>
+        ) : (
+          <p className="mt-2 text-sm text-muted-foreground">
+            Use a company invite or sign in with an account that already belongs to this org.
+          </p>
+        )}
       </div>
     </div>
   );
