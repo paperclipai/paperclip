@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
-import { issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { projects, projectWorkspaces } from "@paperclipai/db";
 import {
   findWorkspaceCommandDefinition,
   matchWorkspaceRuntimeServiceToCommand,
@@ -11,12 +11,11 @@ import {
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { executionWorkspaceService, logActivity, workspaceOperationService } from "../services/index.js";
-import { mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
+import { mergeExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
-  cleanupExecutionWorkspaceArtifacts,
   ensurePersistedExecutionWorkspaceAvailable,
   listConfiguredRuntimeServiceEntries,
   runWorkspaceJobForControl,
@@ -30,8 +29,8 @@ import {
 } from "./workspace-command-authz.js";
 import { assertCanManageExecutionWorkspaceRuntimeServices } from "./workspace-runtime-service-authz.js";
 import { appendWithCap } from "../adapters/utils.js";
-
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
+import { closeExecutionWorkspace } from "../services/execution-workspace-closeout.js";
 
 export function executionWorkspaceRoutes(db: Db) {
   const router = Router();
@@ -476,114 +475,29 @@ export function executionWorkspaceRoutes(db: Db) {
     }
     let workspace = existing;
     let cleanupWarnings: string[] = [];
-    const configForCleanup = readExecutionWorkspaceConfig(
-      ((patch.metadata as Record<string, unknown> | null | undefined) ?? (existing.metadata as Record<string, unknown> | null)) ?? null,
-    );
 
     if (req.body.status === "archived" && existing.status !== "archived") {
-      const readiness = await svc.getCloseReadiness(existing.id);
-      if (!readiness) {
-        res.status(404).json({ error: "Execution workspace not found" });
-        return;
-      }
-
-      if (readiness.state === "blocked") {
-        res.status(409).json({
-          error: readiness.blockingReasons[0] ?? "Execution workspace cannot be closed right now",
-          closeReadiness: readiness,
-        });
-        return;
-      }
-
-      const closedAt = new Date();
-      const archivedWorkspace = await svc.update(id, {
-        ...patch,
-        status: "archived",
-        closedAt,
-        cleanupReason: null,
+      const closeResult = await closeExecutionWorkspace(db, {
+        executionWorkspaceId: existing.id,
+        mode: "manual",
+        patch,
       });
-      if (!archivedWorkspace) {
+      if (!closeResult) {
         res.status(404).json({ error: "Execution workspace not found" });
         return;
       }
-      workspace = archivedWorkspace;
-
-      if (existing.mode === "shared_workspace") {
-        await db
-          .update(issues)
-          .set({
-            executionWorkspaceId: null,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(issues.companyId, existing.companyId),
-              eq(issues.executionWorkspaceId, existing.id),
-            ),
-          );
+      cleanupWarnings = closeResult.cleanupWarnings;
+      workspace = closeResult.workspace;
+      if (closeResult.outcome === "blocked") {
+        res.status(409).json({
+          error: closeResult.blockingReasons[0] ?? "Execution workspace cannot be closed right now",
+          closeReadiness: closeResult.closeReadiness,
+        });
+        return;
       }
-
-      try {
-        await stopRuntimeServicesForExecutionWorkspace({
-          db,
-          executionWorkspaceId: existing.id,
-          workspaceCwd: existing.cwd,
-        });
-        const projectWorkspace = existing.projectWorkspaceId
-          ? await db
-              .select({
-                cwd: projectWorkspaces.cwd,
-                cleanupCommand: projectWorkspaces.cleanupCommand,
-              })
-              .from(projectWorkspaces)
-            .where(
-                and(
-                  eq(projectWorkspaces.id, existing.projectWorkspaceId),
-                  eq(projectWorkspaces.companyId, existing.companyId),
-                ),
-              )
-              .then((rows) => rows[0] ?? null)
-          : null;
-        const projectPolicy = existing.projectId
-          ? await db
-              .select({
-                executionWorkspacePolicy: projects.executionWorkspacePolicy,
-              })
-              .from(projects)
-              .where(and(eq(projects.id, existing.projectId), eq(projects.companyId, existing.companyId)))
-              .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy))
-          : null;
-        const cleanupResult = await cleanupExecutionWorkspaceArtifacts({
-          workspace: existing,
-          projectWorkspace,
-          teardownCommand: configForCleanup?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,
-          cleanupCommand: configForCleanup?.cleanupCommand ?? null,
-          recorder: workspaceOperationsSvc.createRecorder({
-            companyId: existing.companyId,
-            executionWorkspaceId: existing.id,
-          }),
-        });
-        cleanupWarnings = cleanupResult.warnings;
-        const cleanupPatch: Record<string, unknown> = {
-          closedAt,
-          cleanupReason: cleanupWarnings.length > 0 ? cleanupWarnings.join(" | ") : null,
-        };
-        if (!cleanupResult.cleaned) {
-          cleanupPatch.status = "cleanup_failed";
-        }
-        if (cleanupResult.warnings.length > 0 || !cleanupResult.cleaned) {
-          workspace = (await svc.update(id, cleanupPatch)) ?? workspace;
-        }
-      } catch (error) {
-        const failureReason = error instanceof Error ? error.message : String(error);
-        workspace =
-          (await svc.update(id, {
-            status: "cleanup_failed",
-            closedAt,
-            cleanupReason: failureReason,
-          })) ?? workspace;
+      if (closeResult.outcome === "error") {
         res.status(500).json({
-          error: `Failed to archive execution workspace: ${failureReason}`,
+          error: `Failed to archive execution workspace: ${closeResult.failureReason ?? "Unknown cleanup error"}`,
         });
         return;
       }

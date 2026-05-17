@@ -45,12 +45,18 @@ Issues are attached to execution workspace behavior, not to automatic runtime ma
 - An issue may reuse an existing execution workspace when you choose reuse.
 - Multiple issues may intentionally share one execution workspace so they can work against the same branch and running runtime services.
 - Assigning or running an issue does not automatically start or stop workspace services for that workspace.
+- When an issue first transitions to `done`, Paperclip now attempts an automatic execution-workspace closeout if the issue is still linked to one.
+- Automatic issue-completion closeout only archives disposable isolated workspaces when the close-readiness checks are already satisfied and the workspace is clean and merged.
+- Shared project-primary sessions are archived without deleting the underlying project checkout, and Paperclip skips the automatic closeout while other linked issues are still open.
 
 ## Execution workspace lifecycle
 
-Execution workspaces are durable until a human closes them.
+Execution workspaces are durable by default, but Paperclip now has a safe automatic closeout path on issue completion.
 
-- The UI can archive an execution workspace.
+- The UI can still archive an execution workspace manually.
+- Marking an issue `done` triggers a server-side closeout attempt for its linked execution workspace.
+- Automatic closeout reuses the same cleanup logic as manual archival, including runtime shutdown, teardown commands, cleanup commands, and artifact removal when allowed.
+- If automatic closeout is unsafe, Paperclip leaves the issue `done`, keeps the workspace available, and returns an explicit blocked or failed closeout result instead of deleting anything implicitly.
 - Closing an execution workspace stops its runtime services and cleans up its workspace artifacts when allowed.
 - Shared workspaces that point at the project primary checkout are treated more conservatively during cleanup than disposable isolated workspaces.
 

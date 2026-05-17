@@ -109,6 +109,7 @@ import {
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { closeExecutionWorkspace } from "../services/execution-workspace-closeout.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -3095,7 +3096,7 @@ export function issueRoutes(
       }
     }
 
-    let issue;
+    let issue: typeof existing | null = null;
     try {
       if (transition.decision && decisionId) {
         const decision = transition.decision;
@@ -3211,14 +3212,76 @@ export function issueRoutes(
       referencedIssueIdentifiers?: string[];
     } = issue;
     let updatedRelations: Awaited<ReturnType<typeof svc.getRelationSummaries>> | null = null;
-    if (issue && Array.isArray(req.body.blockedByIssueIds)) {
+    const withUpdatedRelations = (currentIssue: typeof existing) =>
+      updatedRelations
+        ? {
+            ...currentIssue,
+            blockedBy: updatedRelations.blockedBy,
+            blocks: updatedRelations.blocks,
+          }
+        : currentIssue;
+
+    if (Array.isArray(req.body.blockedByIssueIds)) {
       updatedRelations = await svc.getRelationSummaries(issue.id);
-      issueResponse = {
-        ...issue,
-        blockedBy: updatedRelations.blockedBy,
-        blocks: updatedRelations.blocks,
-      };
     }
+    issueResponse = withUpdatedRelations(issue);
+    let executionWorkspaceCloseout:
+      | {
+          outcome: string;
+          workspace: ExecutionWorkspace;
+          closeReadiness: unknown;
+          cleanupWarnings: string[];
+          blockingReasons: string[];
+          failureReason: string | null;
+        }
+      | null = null;
+
+    const becameDone = existing.status !== "done" && issue.status === "done";
+    if (becameDone && issue.executionWorkspaceId) {
+      const closeResult = await closeExecutionWorkspace(db, {
+        executionWorkspaceId: issue.executionWorkspaceId,
+        mode: "issue_completion",
+      });
+      if (closeResult) {
+        executionWorkspaceCloseout = {
+          outcome: closeResult.outcome,
+          workspace: closeResult.workspace,
+          closeReadiness: closeResult.closeReadiness,
+          cleanupWarnings: closeResult.cleanupWarnings,
+          blockingReasons: closeResult.blockingReasons,
+          failureReason: closeResult.failureReason,
+        };
+
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: closeResult.outcome === "blocked" ? "execution_workspace.closeout_blocked" : "execution_workspace.updated",
+          entityType: "execution_workspace",
+          entityId: closeResult.workspace.id,
+          details: {
+            issueId: issue.id,
+            identifier: issue.identifier,
+            source: "issue.done.auto_close",
+            outcome: closeResult.outcome,
+            cleanupWarnings: closeResult.cleanupWarnings,
+            blockingReasons: closeResult.blockingReasons,
+            failureReason: closeResult.failureReason,
+          },
+        });
+
+        if (closeResult.outcome !== "blocked" && closeResult.outcome !== "already_archived") {
+          const refreshedIssue = await svc.getById(issue.id);
+          if (refreshedIssue) {
+            issue = refreshedIssue;
+            issueResponse = withUpdatedRelations(issue);
+          }
+        }
+      }
+    }
+
     await routinesSvc.syncRunStatusForIssue(issue.id);
 
     if (actor.runId) {
@@ -3683,7 +3746,6 @@ export function issueRoutes(
         }
       }
 
-      const becameDone = existing.status !== "done" && issue.status === "done";
       if (becameDone) {
         const dependents = await svc.listWakeableBlockedDependents(issue.id);
         for (const dependent of dependents) {
@@ -3749,7 +3811,7 @@ export function issueRoutes(
       }
     })();
 
-    res.json({ ...issueResponse, comment });
+    res.json({ ...issueResponse, comment, executionWorkspaceCloseout });
   });
 
   router.delete("/issues/:id", async (req, res) => {

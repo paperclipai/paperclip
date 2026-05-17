@@ -68,6 +68,15 @@ Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId
 
 For `PATCH /api/issues/{issueId}`, `assigneeAgentId` may be either the agent UUID or the agent shortname/urlKey within the same company.
 
+When an issue first transitions to `done` and still has a linked execution workspace, the response now includes `executionWorkspaceCloseout` with the server-side closeout result:
+
+- `archived`: the workspace session was archived and cleanup succeeded
+- `cleanup_failed` or `error`: Paperclip archived the session record but cleanup work reported a failure
+- `blocked`: the issue was marked `done`, but Paperclip left the workspace open because cleanup was unsafe
+- `already_archived`: the linked workspace was already archived
+
+`executionWorkspaceCloseout.blockingReasons` explains blocked automatic closeouts such as dirty worktrees, unmerged branches, or shared sessions that are still linked to other open issues.
+
 ## Checkout (Claim Task)
 
 ```
