@@ -63,14 +63,16 @@ describe("managed sandbox provider spikes", () => {
     delete process.env.SANDBOX_PROVIDER_ALLOW_LIVE;
     expect(isManagedSandboxLiveAllowed()).toBe(false);
 
-    for (const [provider, config] of [
-      [new E2BSandboxProvider(), e2bConfig],
-      [new DaytonaSandboxProvider(), daytonaConfig],
-    ] as const) {
+    const cases: Array<[E2BSandboxProvider | DaytonaSandboxProvider, ManagedSandboxProviderConfig, { acceptsRawSecrets: boolean }]> = [
+      [new E2BSandboxProvider(), e2bConfig, { acceptsRawSecrets: true }],
+      [new DaytonaSandboxProvider(), daytonaConfig, { acceptsRawSecrets: false }],
+    ];
+
+    for (const [provider, config, secretInjection] of cases) {
       expect(provider.status()).toMatchObject({
         enabled: false,
         previewOnly: true,
-        secretInjection: expect.objectContaining({ acceptsRawSecrets: false }),
+        secretInjection: expect.objectContaining(secretInjection),
       });
       await expect(
         provider.acquireLease({

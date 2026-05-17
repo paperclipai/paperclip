@@ -18,6 +18,7 @@ import type {
   SandboxProviderCapabilityFlags,
   SandboxProviderLogLine,
   SandboxProviderLogsResult,
+  SandboxProviderSecretInjectionContract,
   SandboxProviderStatusSnapshot,
   SandboxProviderStreamEvent,
   SandboxProviderValidationIssue,
@@ -32,6 +33,12 @@ import {
   previewSandboxProviderStatus,
   throwIfAborted,
 } from "./provider-contract.js";
+import {
+  E2BLiveHttpTransport,
+  type E2BCapturedRequest,
+  type E2BLiveReleaseMode,
+} from "./e2b-live-transport.js";
+import { PreProviderRedactionRegistry } from "./pre-provider-redaction.js";
 
 export const E2B_SANDBOX_PROVIDER_KEY = "e2b" as const;
 export const DAYTONA_SANDBOX_PROVIDER_KEY = "daytona" as const;
@@ -119,7 +126,7 @@ export interface ManagedSandboxFakeRequest {
 }
 
 interface ManagedSandboxTransport {
-  readonly mode: "mock-disabled" | "mock-http";
+  readonly mode: "mock-disabled" | "mock-http" | "live-http";
   createSandbox(input: ManagedSandboxCreateInput): Promise<ManagedSandboxRecord>;
   startSandbox(input: { sandboxId: string; signal?: AbortSignal }): Promise<ManagedSandboxRecord>;
   executeCommand(input: ManagedSandboxExecuteTransportInput): Promise<SandboxExecuteResult>;
@@ -488,8 +495,8 @@ function isStreamEvent(value: unknown): value is SandboxProviderStreamEvent {
 abstract class BaseManagedSandboxProvider implements SandboxProvider {
   readonly kind = "builtin" as const;
   readonly capabilities = MANAGED_CAPABILITIES;
-  readonly secretInjection = PREVIEW_NO_SECRET_INJECTION;
-  private readonly transport: ManagedSandboxTransport;
+  readonly secretInjection: SandboxProviderSecretInjectionContract = PREVIEW_NO_SECRET_INJECTION;
+  protected transport: ManagedSandboxTransport;
 
   protected constructor(
     protected readonly surface: ManagedSandboxProviderSurface,
@@ -547,8 +554,15 @@ abstract class BaseManagedSandboxProvider implements SandboxProvider {
         details: { provider: this.surface.provider, issues: validation.issues ?? [] },
       });
     }
+    // Mock transports get a defensive blanket-redacted view so the recorded
+    // spike fixtures cannot accidentally echo caller-supplied env values. The
+    // live transport receives the raw config and performs per-secret
+    // redaction against the pre-provider registry it was constructed with.
+    const transportConfig = this.transport.mode === "live-http"
+      ? input.config
+      : sanitizeConfigForTransport(input.config);
     const record = await this.transport.createSandbox({
-      config: sanitizeConfigForTransport(input.config),
+      config: transportConfig,
       environmentId: input.environmentId,
       heartbeatRunId: input.heartbeatRunId,
       issueId: input.issueId,
@@ -631,14 +645,18 @@ abstract class BaseManagedSandboxProvider implements SandboxProvider {
     assertManagedConfig(this.surface.provider, input.config);
     throwIfAborted(input.signal);
     const sandboxId = sandboxIdFromProviderLeaseId(this.surface, input.providerLeaseId);
+    // Live transport receives raw env/stdin and applies per-secret redaction
+    // via its pre-provider registry. Mock transports keep the blanket-redacted
+    // preview view so spike fixtures stay free of caller-supplied bytes.
+    const isLive = this.transport.mode === "live-http";
     return await this.transport.executeCommand({
       sandboxId,
-      config: sanitizeConfigForTransport(input.config),
+      config: isLive ? input.config as ManagedSandboxProviderConfig : sanitizeConfigForTransport(input.config as ManagedSandboxProviderConfig),
       command: input.command,
       args: input.args,
       cwd: input.cwd,
-      env: redactEnvMap(input.env),
-      stdin: sanitizedStdinForTransport(input.stdin),
+      env: isLive ? input.env : redactEnvMap(input.env),
+      stdin: isLive ? input.stdin : sanitizedStdinForTransport(input.stdin),
       timeoutMs: input.timeoutMs,
       signal: input.signal,
     });
@@ -722,10 +740,194 @@ abstract class BaseManagedSandboxProvider implements SandboxProvider {
   }
 }
 
+/**
+ * LET-366 live secret-injection contract for the E2B provider. The live
+ * transport receives the resolved API key as a bearer credential at the
+ * provider boundary; redaction happens BEFORE the transport so the key
+ * cannot be echoed back into command lines, env values, stdin, request
+ * bodies, or non-auth headers captured for audit/logs/tests.
+ */
+export const E2B_LIVE_SECRET_INJECTION: SandboxProviderSecretInjectionContract = Object.freeze({
+  mode: "environment",
+  acceptsRawSecrets: true,
+  requiresResolvedSecrets: true,
+  redactionBoundary: "before-provider",
+});
+
+export interface E2BSandboxProviderLiveDependencies {
+  /** Layer 1 config probe: `sandbox.providers.e2b.enabled === true`. Default off. */
+  isProviderEnabled?: () => boolean;
+  /** Per-run resolver for the E2B API key reference. Must return null when
+   *  no secret reference is configured. Never reads raw secrets from env. */
+  resolveApiKey?: () => Promise<string | null>;
+  /** Pre-provider redaction registry. Defaults to a fresh registry per provider
+   *  instance. Tests may inject a shared registry to assert canary redaction. */
+  redactionRegistry?: PreProviderRedactionRegistry;
+  /** Override fetch (used by the default live transport factory). */
+  fetchImpl?: typeof fetch;
+  /** Override base URL (used by the default live transport factory). */
+  baseUrl?: string;
+  /** Lifecycle policy for `releaseLease`. Pilot default is `delete`. */
+  releaseMode?: E2BLiveReleaseMode;
+  /** Optional outbound request hook for audit/test capture. */
+  onRequest?: (request: E2BCapturedRequest) => void;
+  /** Override the live transport factory (advanced tests only). */
+  liveTransportFactory?: (input: {
+    apiKey: string;
+    baseUrl?: string;
+    fetchImpl?: typeof fetch;
+    redactor: PreProviderRedactionRegistry;
+    releaseMode?: E2BLiveReleaseMode;
+    onRequest?: (request: E2BCapturedRequest) => void;
+  }) => ManagedSandboxTransport;
+}
+
+export interface E2BSandboxProviderOptions extends ManagedSandboxProviderOptions, E2BSandboxProviderLiveDependencies {}
+
 export class E2BSandboxProvider extends BaseManagedSandboxProvider {
-  constructor(options: ManagedSandboxProviderOptions = {}) {
+  override readonly secretInjection: SandboxProviderSecretInjectionContract = E2B_LIVE_SECRET_INJECTION;
+
+  private readonly testTransportInjected: boolean;
+  private readonly isProviderEnabled: () => boolean;
+  private readonly resolveApiKey: () => Promise<string | null>;
+  private readonly redactionRegistry: PreProviderRedactionRegistry;
+  private readonly fetchImpl: typeof fetch | undefined;
+  private readonly liveBaseUrl: string | undefined;
+  private readonly releaseMode: E2BLiveReleaseMode;
+  private readonly onRequest: ((request: E2BCapturedRequest) => void) | undefined;
+  private readonly liveTransportFactory: NonNullable<E2BSandboxProviderLiveDependencies["liveTransportFactory"]>;
+  private liveTransport: ManagedSandboxTransport | null = null;
+
+  constructor(options: E2BSandboxProviderOptions = {}) {
     super(E2B_SURFACE, options);
+    this.testTransportInjected = options.transport !== undefined;
+    this.isProviderEnabled = options.isProviderEnabled ?? (() => false);
+    this.resolveApiKey = options.resolveApiKey ?? (async () => null);
+    this.redactionRegistry = options.redactionRegistry ?? new PreProviderRedactionRegistry();
+    this.fetchImpl = options.fetchImpl;
+    this.liveBaseUrl = options.baseUrl;
+    this.releaseMode = options.releaseMode ?? "delete";
+    this.onRequest = options.onRequest;
+    this.liveTransportFactory = options.liveTransportFactory ?? defaultE2BLiveTransportFactory;
   }
+
+  /** Three-gate fail-closed evaluation. Returns the reason a gate failed,
+   *  or null when all gates pass. Never makes outbound HTTP calls. */
+  private evaluateLiveGate(): { reason: string; details: Record<string, unknown> } | null {
+    if (!isManagedSandboxLiveAllowed()) {
+      return {
+        reason: `${MANAGED_SANDBOX_LIVE_ENV} must be set to "true" to enable the E2B live transport.`,
+        details: { gate: "env_flag", liveEnv: MANAGED_SANDBOX_LIVE_ENV, liveFlagSet: false },
+      };
+    }
+    if (!this.isProviderEnabled()) {
+      return {
+        reason: `Layer 1 config sandbox.providers.e2b.enabled must be true to enable the E2B live transport.`,
+        details: { gate: "layer1_disabled", liveEnv: MANAGED_SANDBOX_LIVE_ENV, layerOneEnabled: false },
+      };
+    }
+    return null;
+  }
+
+  private providerDisabledError(reason: string, details: Record<string, unknown>): SandboxProviderError {
+    return new SandboxProviderError("PROVIDER_DISABLED", reason, {
+      details: {
+        provider: E2B_SANDBOX_PROVIDER_KEY,
+        liveEnv: MANAGED_SANDBOX_LIVE_ENV,
+        mockedTransportsOnly: true,
+        ...details,
+      },
+    });
+  }
+
+  /** Ensure the live transport is constructed AFTER the resolved API key
+   *  has been registered in the redaction registry. Returns the active
+   *  transport (live or test-injected). Throws PROVIDER_DISABLED before any
+   *  HTTP egress when any of the three gates is missing. */
+  private async ensureActiveTransport(): Promise<ManagedSandboxTransport> {
+    if (this.testTransportInjected) return this.transport;
+    if (this.liveTransport) return this.liveTransport;
+
+    const gateFailure = this.evaluateLiveGate();
+    if (gateFailure) {
+      throw this.providerDisabledError(gateFailure.reason, gateFailure.details);
+    }
+
+    const apiKey = await this.resolveApiKey();
+    if (typeof apiKey !== "string" || apiKey.length === 0) {
+      throw this.providerDisabledError(
+        "E2B API key secret reference is not configured in the platform secret store.",
+        { gate: "secret_unresolved" },
+      );
+    }
+
+    // Register the resolved value into the per-run redaction set BEFORE the
+    // transport is constructed. This is the LET-366 redaction-boundary
+    // requirement: the API key must never leak through any captured outbound
+    // payload, including command args, env values, stdin, or request bodies.
+    this.redactionRegistry.register(apiKey);
+
+    this.liveTransport = this.liveTransportFactory({
+      apiKey,
+      baseUrl: this.liveBaseUrl,
+      fetchImpl: this.fetchImpl,
+      redactor: this.redactionRegistry,
+      releaseMode: this.releaseMode,
+      onRequest: this.onRequest,
+    });
+    this.transport = this.liveTransport;
+    return this.liveTransport;
+  }
+
+  override status(): SandboxProviderStatusSnapshot {
+    const gateFailure = this.testTransportInjected ? null : this.evaluateLiveGate();
+    return previewSandboxProviderStatus({
+      provider: this.surface.provider,
+      enabled: this.testTransportInjected
+        ? (this.transport as ManagedSandboxTransport).mode === "mock-http"
+        : gateFailure === null,
+      capabilities: this.capabilities,
+      secretInjection: this.secretInjection,
+    });
+  }
+
+  override async acquireLease(input: AcquireSandboxLeaseInput): Promise<SandboxLeaseHandle> {
+    // Eagerly evaluate the three-gate condition BEFORE any HTTP egress. If
+    // any gate fails, PROVIDER_DISABLED is raised here and the live transport
+    // is never constructed (which is what makes the fetch-never-called test
+    // assertion meaningful).
+    await this.ensureActiveTransport();
+    return super.acquireLease(input);
+  }
+
+  override async releaseLease(input: ReleaseSandboxLeaseInput): Promise<void> {
+    // Pilot policy: release maps to delete (no warm reuse) so cost accounting
+    // stays trivial. The underlying transport applies the same policy at the
+    // HTTP layer; this override ensures the policy holds for the mock-disabled
+    // path too (where release would otherwise be a no-op).
+    if (this.testTransportInjected || this.releaseMode === "pause") {
+      return await super.releaseLease(input);
+    }
+    return await super.destroyLease({ config: input.config, providerLeaseId: input.providerLeaseId });
+  }
+}
+
+function defaultE2BLiveTransportFactory(input: {
+  apiKey: string;
+  baseUrl?: string;
+  fetchImpl?: typeof fetch;
+  redactor: PreProviderRedactionRegistry;
+  releaseMode?: E2BLiveReleaseMode;
+  onRequest?: (request: E2BCapturedRequest) => void;
+}): ManagedSandboxTransport {
+  return new E2BLiveHttpTransport({
+    apiKey: input.apiKey,
+    baseUrl: input.baseUrl,
+    fetchImpl: input.fetchImpl,
+    redactor: input.redactor,
+    releaseMode: input.releaseMode,
+    onRequest: input.onRequest,
+  }) as unknown as ManagedSandboxTransport;
 }
 
 export class DaytonaSandboxProvider extends BaseManagedSandboxProvider {
