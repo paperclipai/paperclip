@@ -172,6 +172,76 @@ describe("redactSandboxEventPayload", () => {
     expect(serialized).not.toContain("abcd1234");
     expect(serialized).toContain("[REDACTED]");
   });
+
+  it("redacts values under sensitive keys regardless of value content", () => {
+    const payload = {
+      token: "plain-secret-token",
+      apiKey: "plain-secret-apikey",
+      api_key: "plain-secret-snake",
+      password: "plain-secret-password",
+      secret: "plain-secret-generic",
+      credential: "plain-secret-cred",
+      authorization: "Bearer not-redacted-by-pattern",
+      proxy: { username: "u", password: "deep-secret" },
+      destinationId: "destination-secret-id",
+      env: { TOKEN: "deep-token-secret", SAFE: "ok" },
+      nested: { password: "deep-secret-pw", other: { secret: { value: "deep" } } },
+      // benign keys should pass through unchanged
+      summary: "all clear",
+      count: 42,
+    } as const;
+    const redacted = redactSandboxEventPayload(payload) as Record<string, unknown>;
+    const serialized = JSON.stringify(redacted);
+
+    // None of the plain secret literals should survive serialization.
+    expect(serialized).not.toContain("plain-secret-token");
+    expect(serialized).not.toContain("plain-secret-apikey");
+    expect(serialized).not.toContain("plain-secret-snake");
+    expect(serialized).not.toContain("plain-secret-password");
+    expect(serialized).not.toContain("plain-secret-generic");
+    expect(serialized).not.toContain("plain-secret-cred");
+    expect(serialized).not.toContain("deep-secret");
+    expect(serialized).not.toContain("deep-token-secret");
+    expect(serialized).not.toContain("destination-secret-id");
+    expect(serialized).not.toContain("not-redacted-by-pattern");
+
+    // Sensitive keys must be present but with the redaction sentinel.
+    expect(redacted.token).toBe("[REDACTED]");
+    expect(redacted.apiKey).toBe("[REDACTED]");
+    expect(redacted.api_key).toBe("[REDACTED]");
+    expect(redacted.password).toBe("[REDACTED]");
+    expect(redacted.secret).toBe("[REDACTED]");
+    expect(redacted.credential).toBe("[REDACTED]");
+    expect(redacted.authorization).toBe("[REDACTED]");
+    expect(redacted.proxy).toBe("[REDACTED]");
+    expect(redacted.destinationId).toBe("[REDACTED]");
+    expect(redacted.env).toBe("[REDACTED]");
+
+    // Benign keys are preserved.
+    expect(redacted.summary).toBe("all clear");
+    expect(redacted.count).toBe(42);
+
+    // Nested sensitive keys are scrubbed even when the parent is benign.
+    const nested = redacted.nested as Record<string, unknown>;
+    expect(nested.password).toBe("[REDACTED]");
+    const other = nested.other as Record<string, unknown>;
+    expect(other.secret).toBe("[REDACTED]");
+  });
+
+  it("redacts sensitive keys inside arrays of objects", () => {
+    const payload = {
+      entries: [
+        { name: "ok", token: "leaked-token-1" },
+        { name: "ok2", env: { SECRET_KEY: "leaked-env-1" } },
+      ],
+    };
+    const redacted = redactSandboxEventPayload(payload) as { entries: Record<string, unknown>[] };
+    const serialized = JSON.stringify(redacted);
+    expect(serialized).not.toContain("leaked-token-1");
+    expect(serialized).not.toContain("leaked-env-1");
+    expect(redacted.entries[0]!.token).toBe("[REDACTED]");
+    expect(redacted.entries[1]!.env).toBe("[REDACTED]");
+  });
 });
 
 describe("describeBuiltinSandboxProvider", () => {

@@ -152,10 +152,14 @@ function snapshotMeta(): { previewOnly: true; generatedAt: string } {
 function writeSseEvent(res: Response, event: { type: string; data: unknown; id?: number }): boolean {
   if (!res.writable) return false;
   try {
-    if (event.id !== undefined) res.write(`id: ${event.id}\n`);
-    res.write(`event: ${event.type}\n`);
-    res.write(`data: ${JSON.stringify(event.data)}\n\n`);
-    return true;
+    // Each res.write returns false when the socket buffer is full. We treat
+    // any false return as a backpressure signal so callers can cleanup the
+    // subscription instead of indefinitely buffering for a slow consumer.
+    let ok = true;
+    if (event.id !== undefined && !res.write(`id: ${event.id}\n`)) ok = false;
+    if (!res.write(`event: ${event.type}\n`)) ok = false;
+    if (!res.write(`data: ${JSON.stringify(event.data)}\n\n`)) ok = false;
+    return ok;
   } catch (err) {
     logger.warn({ err }, "sandbox sse write failed");
     return false;
@@ -302,12 +306,16 @@ export function sandboxRoutes(db: Db) {
    * callers see a typed refusal instead of guessing whether the endpoint
    * exists.
    */
-  router.all("/companies/:companyId/sandbox/leases/:leaseId/start", (_req, _res) => {
+  router.all("/companies/:companyId/sandbox/leases/:leaseId/start", (req, _res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
     throw conflict("Sandbox start is not exposed by the REST preview surface", {
       code: SANDBOX_ERROR_CODES.PREVIEW_ONLY,
     });
   });
-  router.all("/companies/:companyId/sandbox/leases/:leaseId/stop", (_req, _res) => {
+  router.all("/companies/:companyId/sandbox/leases/:leaseId/stop", (req, _res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
     throw conflict("Sandbox stop is not exposed by the REST preview surface", {
       code: SANDBOX_ERROR_CODES.PREVIEW_ONLY,
     });
@@ -385,7 +393,10 @@ export function sandboxRoutes(db: Db) {
         return;
       }
       try {
-        res.write(`:keepalive ${Date.now()}\n\n`);
+        // A false return from keepalive write also signals backpressure;
+        // unsubscribe rather than letting the kernel buffer grow.
+        const ok = res.write(`:keepalive ${Date.now()}\n\n`);
+        if (!ok) cleanup();
       } catch {
         cleanup();
       }
@@ -401,3 +412,7 @@ export function sandboxRoutes(db: Db) {
 
   return router;
 }
+
+export const __testing = {
+  writeSseEvent,
+};
