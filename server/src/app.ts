@@ -20,6 +20,17 @@ import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { routineRoutes } from "./routes/routines.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { sandboxRoutes } from "./routes/sandbox.js";
+import { sandboxBillingCapRoutes } from "./routes/sandbox-billing-cap.js";
+import {
+  BillingCapMonitor,
+  CompositeCapNotifier,
+  DrizzleBillingCapStore,
+  LeaseBasedSourceB,
+  LogCapNotifier,
+  NoopCapNotifier,
+  createBillingCapScheduler,
+  type SandboxProviderDescriptor,
+} from "./services/sandbox/billing-cap/index.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
 import { approvalRoutes } from "./routes/approvals.js";
@@ -203,6 +214,49 @@ export async function createApp(
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(environmentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(sandboxRoutes(db));
+
+  // LET-367 Phase 4A-S4 B2: billing-cap monitor + status read-model.
+  // Notifier composition: structured-log notifier is always on. Telegram and
+  // Paperclip comments stay opt-in (env-gated) so default deployments incur
+  // no external side effects.
+  const billingCapStore = new DrizzleBillingCapStore(db);
+  const billingCapMonitor = new BillingCapMonitor({
+    store: billingCapStore,
+    sourceA: null,
+    sourceB: new LeaseBasedSourceB(db),
+    notifier: new CompositeCapNotifier([
+      new LogCapNotifier(logger),
+      new NoopCapNotifier(),
+    ]),
+    logger,
+  });
+  api.use(
+    sandboxBillingCapRoutes(db, {
+      monitor: billingCapMonitor,
+      store: billingCapStore,
+      resolveProviderDescriptor: async (): Promise<SandboxProviderDescriptor> => ({
+        key: "e2b",
+        displayLabel: "E2B (Firecracker microVMs, managed)",
+        apiKeyConfigured: typeof process.env.E2B_API_KEY === "string" && process.env.E2B_API_KEY.trim().length > 0,
+        secretRefRedactedSuffix: null,
+      }),
+      isAllowLive: () => (process.env.SANDBOX_PROVIDER_ALLOW_LIVE ?? "false").trim().toLowerCase() === "true",
+    }),
+  );
+  const billingCapScheduler = createBillingCapScheduler({
+    monitor: billingCapMonitor,
+    resolveCompanyIds: async () => {
+      // Pilot-window scope: monitor only ticks when the env-gate is on. The
+      // company list is the empty set otherwise, so the scheduler is a no-op
+      // for non-pilot deployments.
+      if ((process.env.SANDBOX_PROVIDER_ALLOW_LIVE ?? "false").trim().toLowerCase() !== "true") {
+        return [];
+      }
+      const pilotCompany = process.env.SANDBOX_PILOT_COMPANY_ID?.trim();
+      return pilotCompany ? [pilotCompany] : [];
+    },
+    logger,
+  });
   api.use(executionWorkspaceRoutes(db));
   api.use(goalRoutes(db));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
@@ -408,6 +462,7 @@ export async function createApp(
 
   jobCoordinator.start();
   scheduler.start();
+  billingCapScheduler.start();
   const feedbackExportTimer = opts.feedbackExportService
     ? setInterval(() => {
       void opts.feedbackExportService?.flushPendingFeedbackTraces().catch((err) => {
@@ -442,6 +497,7 @@ export async function createApp(
   });
   process.once("exit", () => {
     if (feedbackExportTimer) clearInterval(feedbackExportTimer);
+    billingCapScheduler.stop();
     devWatcher?.close();
     viteHtmlRenderer?.dispose();
     hostServiceCleanup.disposeAll();
