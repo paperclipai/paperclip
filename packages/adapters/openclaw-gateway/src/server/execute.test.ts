@@ -49,4 +49,16 @@ describe("resolveSessionKey", () => {
       }),
     ).toBe("agent:meridian:paperclip");
   });
+
+  it("leaves session keys unprefixed when no OpenClaw agent is configured", () => {
+    expect(
+      resolveSessionKey({
+        strategy: "issue",
+        configuredSessionKey: null,
+        agentId: null,
+        runId: "run-123",
+        issueId: "issue-456",
+      }),
+    ).toBe("paperclip:issue:issue-456");
+  });
 });
