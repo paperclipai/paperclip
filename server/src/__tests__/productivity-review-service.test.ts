@@ -120,6 +120,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     count: number;
     now: Date;
     withRunComments?: boolean;
+    zeroToken?: boolean;
   }) {
     const runs: Array<typeof heartbeatRuns.$inferInsert> = [];
     for (let index = 0; index < input.count; index += 1) {
@@ -139,6 +140,9 @@ describeEmbeddedPostgres("productivity review service", () => {
         nextAction: "Continue processing the next batch.",
         createdAt,
         updatedAt: createdAt,
+        ...(input.zeroToken
+          ? { usageJson: null }
+          : { usageJson: { inputTokens: 100, outputTokens: 50 } as Record<string, unknown> }),
       });
     }
     await db.insert(heartbeatRuns).values(runs);
@@ -208,6 +212,28 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
 
     expect(await listRefreshComments(reviews[0]!.id)).toHaveLength(0);
+  });
+
+  it("does not count zero-token runs toward no-comment streak (infrastructure/bootstrap failures)", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+      zeroToken: true,
+    });
+
+    const service = productivityReviewService(db);
+    const result = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.scanned).toBe(1);
+    const reviews = await listProductivityReviews(seeded.companyId);
+    expect(reviews).toHaveLength(0);
   });
 
   it("refreshes open productivity reviews only once per interval and caps refresh comments", async () => {
