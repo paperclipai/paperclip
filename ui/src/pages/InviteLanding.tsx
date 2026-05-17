@@ -14,6 +14,7 @@ import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { clearPendingInviteToken, rememberPendingInviteToken } from "../lib/invite-memory";
 import { queryKeys } from "../lib/queryKeys";
 import { formatDate } from "../lib/utils";
+import { ApiError } from "../api/client";
 
 type AuthMode = "sign_in" | "sign_up";
 type AuthFeedback = { tone: "error" | "info"; message: string };
@@ -256,7 +257,16 @@ export function InviteLandingPage() {
 
   const companiesQuery = useQuery({
     queryKey: queryKeys.companies.all,
-    queryFn: () => companiesApi.list(),
+    queryFn: async () => {
+      try {
+        return { companies: await companiesApi.list(), unauthorized: false };
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 401) {
+          return { companies: [], unauthorized: true };
+        }
+        throw err;
+      }
+    },
     enabled: !!sessionQuery.data && !!inviteQuery.data?.companyId,
     retry: false,
   });
@@ -266,8 +276,8 @@ export function InviteLandingPage() {
   }, [token]);
 
   useEffect(() => {
-    if (!companiesQuery.data || !inviteQuery.data?.companyId) return;
-    const isMember = companiesQuery.data.some(
+    if (!companiesQuery.data?.companies || !inviteQuery.data?.companyId) return;
+    const isMember = companiesQuery.data.companies.some(
       (c) => c.id === inviteQuery.data!.companyId
     );
     if (isMember) {
@@ -284,7 +294,7 @@ export function InviteLandingPage() {
   const isCurrentMember =
     Boolean(invite?.companyId) &&
     Boolean(
-      companiesQuery.data?.some((company) => company.id === invite?.companyId),
+      companiesQuery.data?.companies?.some((company) => company.id === invite?.companyId),
     );
   const companyName = invite?.companyName?.trim() || null;
   const companyDisplayName = companyName || "this Paperclip company";
@@ -378,13 +388,22 @@ export function InviteLandingPage() {
       setAuthFeedback(null);
       rememberPendingInviteToken(token);
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
-      const companies = await queryClient.fetchQuery({
+      const companiesData = await queryClient.fetchQuery({
         queryKey: queryKeys.companies.all,
-        queryFn: () => companiesApi.list(),
+        queryFn: async () => {
+          try {
+            return { companies: await companiesApi.list(), unauthorized: false };
+          } catch (err) {
+            if (err instanceof ApiError && err.status === 401) {
+              return { companies: [], unauthorized: true };
+            }
+            throw err;
+          }
+        },
         retry: false,
       });
 
-      if (invite?.companyId && companies.some((company) => company.id === invite.companyId)) {
+      if (invite?.companyId && companiesData.companies.some((company) => company.id === invite.companyId)) {
         clearPendingInviteToken(token);
         setSelectedCompanyId(invite.companyId, { source: "manual" });
         navigate("/", { replace: true });
