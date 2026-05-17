@@ -60,3 +60,4 @@ export { crewbriefHubspotService } from "./crewbrief-hubspot.js";
 export { crewbriefPosthogService } from "./crewbrief-posthog.js";
 export { crewbriefEmailService } from "./crewbrief-email.js";
 export { crewbriefNurtureService } from "./crewbrief-nurture.js";
+export { crewbriefWebhookService } from "./crewbrief-webhooks.js";

@@ -182,6 +182,76 @@ export function crewbriefHubspotService(accessToken?: string) {
     return { messageId: data!.id, error: null };
   }
 
+  async function upsertContactProperty(
+    propertyName: string,
+    label: string,
+    type: "string" | "number" | "date" | "datetime" | "enumeration",
+    fieldType: "single_line_text" | "number" | "date" | "checkbox" | "select" = "single_line_text",
+    options?: Array<{ label: string; value: string }>,
+  ): Promise<{ error: string | null }> {
+    const body: Record<string, unknown> = {
+      name: propertyName,
+      label,
+      type,
+      fieldType,
+      groupName: "contactinformation",
+    };
+    if (options) body.options = options;
+    const { error } = await apiCall<unknown>("PUT", `/crm/v3/properties/contacts/${propertyName}`, body);
+    if (error && error.includes("404")) {
+      return apiCall<unknown>("POST", "/crm/v3/properties/contacts", body);
+    }
+    return { error };
+  }
+
+  interface ContactPropertyDef {
+    name: string;
+    label: string;
+    type: "string" | "number" | "date" | "datetime" | "enumeration";
+    fieldType: "single_line_text" | "number" | "date" | "checkbox" | "select";
+    options?: Array<{ label: string; value: string }>;
+  }
+
+  async function ensureContactProperties(): Promise<{ error: string | null }> {
+    const properties: ContactPropertyDef[] = [
+      { name: "last_active_date", label: "Last Active Date", type: "date", fieldType: "date" },
+      { name: "trial_start_date", label: "Trial Start Date", type: "date", fieldType: "date" },
+      { name: "briefing_count", label: "Briefing Count", type: "number", fieldType: "number" },
+      { name: "routes_count", label: "Routes Count", type: "number", fieldType: "number" },
+      { name: "frats_completed", label: "FRATs Completed", type: "number", fieldType: "number" },
+      { name: "time_saved", label: "Time Saved (minutes)", type: "number", fieldType: "number" },
+      { name: "sequence_1_status", label: "Seq 1: Beta Welcome Status", type: "enumeration", fieldType: "select", options: [
+        { label: "Not enrolled", value: "not_enrolled" },
+        { label: "Enrolled", value: "enrolled" },
+        { label: "Completed", value: "completed" },
+        { label: "Unenrolled", value: "unenrolled" },
+      ]},
+      { name: "sequence_2_status", label: "Seq 2: Re-engagement Status", type: "enumeration", fieldType: "select", options: [
+        { label: "Not enrolled", value: "not_enrolled" },
+        { label: "Enrolled", value: "enrolled" },
+        { label: "Completed", value: "completed" },
+        { label: "Unenrolled", value: "unenrolled" },
+      ]},
+      { name: "sequence_3_status", label: "Seq 3: Trial-to-Paid Status", type: "enumeration", fieldType: "select", options: [
+        { label: "Not enrolled", value: "not_enrolled" },
+        { label: "Enrolled", value: "enrolled" },
+        { label: "Completed", value: "completed" },
+        { label: "Unenrolled", value: "unenrolled" },
+      ]},
+      { name: "lifecyclestage", label: "Lifecycle Stage", type: "enumeration", fieldType: "select", options: [
+        { label: "Lead", value: "lead" },
+        { label: "Opportunity", value: "opportunity" },
+        { label: "Customer", value: "customer" },
+        { label: "Evangelist", value: "evangelist" },
+      ]},
+    ];
+    for (const prop of properties) {
+      const { error } = await upsertContactProperty(prop.name, prop.label, prop.type, prop.fieldType, prop.options);
+      if (error) return { error };
+    }
+    return { error: null };
+  }
+
   return {
     enabled,
     createContact,
@@ -192,6 +262,8 @@ export function crewbriefHubspotService(accessToken?: string) {
     updateDealStage,
     logNote,
     sendSingleEmail,
+    upsertContactProperty,
+    ensureContactProperties,
   };
 }
 

@@ -1,5 +1,5 @@
 import type { Db } from "@paperclipai/db";
-import { and, eq, lte } from "drizzle-orm";
+import { and, eq, lte, gte, isNull } from "drizzle-orm";
 import {
   crewbriefWaitlistEntries,
   crewbriefEmailLog,
@@ -203,6 +203,235 @@ const TEMPLATES: Record<string, EmailTemplate> = {
           <p style="color:#666;">Your feedback helps us build a better CrewBrief for everyone.</p>
         </div>`,
       text: `Help us improve\n\nWe're sorry to see you go. Tell us what went wrong:\n${v.baseUrl}/exit-survey\n\nYour feedback helps us build a better CrewBrief for everyone.`,
+    }),
+  },
+
+  /* ───────── Sequence 1: Beta Welcome & Activation ───────── */
+
+  seq1_email1: {
+    subject: "Welcome to CrewBrief — your first briefing is waiting",
+    buildBody: (v) => ({
+      html: `
+        <div style="font-family:sans-serif;max-width:600px;margin:0 auto;">
+          <h1>Welcome to CrewBrief</h1>
+          <p>Hi ${v.name},</p>
+          <p>Welcome to CrewBrief. You're now part of the beta — alongside 20+ operators already running safer, faster briefings.</p>
+          <p><strong>Here's your 3-step start:</strong></p>
+          <ol>
+            <li><strong>Log in</strong> at <a href="${v.baseUrl}">crewbrief.avva.aero</a></li>
+            <li><strong>Enter your first flight details</strong> — route, aircraft, crew</li>
+            <li><strong>Generate your briefing</strong> — weather, NOTAMs, risk score, all in one place</li>
+          </ol>
+          <p>Your first briefing takes ~2 minutes. Try it now.</p>
+          <p><a href="${v.baseUrl}" style="background:#2563eb;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;">Start My First Briefing →</a></p>
+          <p>— The CrewBrief Team</p>
+          <p style="color:#666;">P.S. Got questions? Just reply to this email. We read every one.</p>
+        </div>`,
+      text: `Welcome to CrewBrief\n\nHi ${v.name},\n\nWelcome to CrewBrief. You're now part of the beta — alongside 20+ operators already running safer, faster briefings.\n\nHere's your 3-step start:\n1. Log in at ${v.baseUrl}\n2. Enter your first flight details — route, aircraft, crew\n3. Generate your briefing — weather, NOTAMs, risk score, all in one place\n\nYour first briefing takes ~2 minutes. Try it now.\n${v.baseUrl}\n\n— The CrewBrief Team\n\nP.S. Got questions? Just reply to this email. We read every one.`,
+    }),
+  },
+  seq1_email2: {
+    subject: "3 features that make CrewBrief indispensable",
+    buildBody: (v) => ({
+      html: `
+        <div style="font-family:sans-serif;max-width:600px;margin:0 auto;">
+          <h1>3 features that make CrewBrief indispensable</h1>
+          <p>Hi ${v.name},</p>
+          <p>You've seen the basics. Here's what makes CrewBrief different:</p>
+          <p><strong>1. Integrated FRAT (Flight Risk Assessment Tool)</strong><br/>Automatically scored from your route data. No separate spreadsheet.</p>
+          <p><strong>2. Warning Catalog</strong><br/>Weather, NOTAMs, airspace restrictions — cross-referenced against your specific route.</p>
+          <p><strong>3. Separate Cabin & Cockpit Briefings</strong><br/>One click. Tailored content for each crew role.</p>
+          <p><a href="${v.baseUrl}/features" style="background:#2563eb;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;">Explore the Features →</a></p>
+          <p>— The CrewBrief Team</p>
+        </div>`,
+      text: `3 features that make CrewBrief indispensable\n\nHi ${v.name},\n\nYou've seen the basics. Here's what makes CrewBrief different:\n\n1. Integrated FRAT — automatically scored from your route data.\n2. Warning Catalog — cross-referenced against your specific route.\n3. Separate Cabin & Cockpit Briefings — tailored for each crew role.\n\nExplore the Features: ${v.baseUrl}/features\n\n— The CrewBrief Team`,
+    }),
+  },
+  seq1_email3: {
+    subject: "How [Operator] cut briefing time by 60%",
+    buildBody: (v) => ({
+      html: `
+        <div style="font-family:sans-serif;max-width:600px;margin:0 auto;">
+          <h1>How operators cut briefing time by 60%</h1>
+          <p>Hi ${v.name},</p>
+          <blockquote style="border-left:4px solid #2563eb;padding-left:16px;margin:16px 0;color:#374151;">
+            "We used to spend 20-30 minutes per leg pulling weather, NOTAMs, and fuel data from five different sources. Now it's one click and we're done."<br/>
+            — Director of Ops
+          </blockquote>
+          <p>Since switching to CrewBrief, operators have:</p>
+          <ul>
+            <li>Reduced average briefing time from 22min → 8min</li>
+            <li>Standardized risk assessment across all pilots</li>
+            <li>Eliminated missed NOTAMs</li>
+          </ul>
+          <p><a href="${v.baseUrl}" style="background:#2563eb;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;">Generate Your Next Briefing →</a></p>
+          <p>— The CrewBrief Team</p>
+        </div>`,
+      text: `How operators cut briefing time by 60%\n\nHi ${v.name},\n\n"${v.name ? `We used to spend 20-30 minutes per leg... Now it's one click and we're done." — Director of Ops` : 'CrewBrief cuts briefing time by 60%.'}"\n\nSince switching to CrewBrief, operators have:\n- Reduced average briefing time from 22min → 8min\n- Standardized risk assessment across all pilots\n- Eliminated missed NOTAMs\n\n${v.baseUrl}\n\n— The CrewBrief Team`,
+    }),
+  },
+  seq1_email4: {
+    subject: "Your first week with CrewBrief — here's what to try",
+    buildBody: (v) => ({
+      html: `
+        <div style="font-family:sans-serif;max-width:600px;margin:0 auto;">
+          <h1>Your first week with CrewBrief</h1>
+          <p>Hi ${v.name},</p>
+          <p>You're a week in. Here's the checklist for getting the most out of your beta trial:</p>
+          <ul>
+            <li><input type="checkbox" disabled/> Generate 3 briefings for different route types</li>
+            <li><input type="checkbox" disabled/> Invite a colleague — see the crew view together</li>
+            <li><input type="checkbox" disabled/> Review your FRAT scores — compare with your current process</li>
+          </ul>
+          <p><a href="${v.baseUrl}/dashboard" style="background:#2563eb;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;">Open CrewBrief →</a></p>
+          <p>Each one takes ~2 minutes. You'll see the full picture by briefing #3.</p>
+          <p>— The CrewBrief Team</p>
+        </div>`,
+      text: `Your first week with CrewBrief\n\nHi ${v.name},\n\nYou're a week in. Here's the checklist:\n- Generate 3 briefings for different route types\n- Invite a colleague — see the crew view together\n- Review your FRAT scores — compare with your current process\n\n${v.baseUrl}/dashboard\n\n— The CrewBrief Team`,
+    }),
+  },
+  seq1_email5: {
+    subject: "Your beta trial is ready to upgrade",
+    buildBody: (v) => ({
+      html: `
+        <div style="font-family:sans-serif;max-width:600px;margin:0 auto;">
+          <h1>Your beta trial is ready to upgrade</h1>
+          <p>Hi ${v.name},</p>
+          <p>You've had a week to experience CrewBrief. Now it's time to make it permanent.</p>
+          <p><strong>Pro plan unlocks:</strong></p>
+          <ul>
+            <li>Unlimited briefings</li>
+            <li>Priority email & phone support</li>
+            <li>Advanced FRAT configuration</li>
+            <li>Multi-crew coordination</li>
+            <li>Custom briefing templates</li>
+          </ul>
+          <p><a href="${v.baseUrl}/pricing" style="background:#2563eb;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;">Upgrade to Pro →</a></p>
+          <p>Still have questions? Reply to this email — happy to hop on a quick call.</p>
+          <p>— The CrewBrief Team</p>
+        </div>`,
+      text: `Your beta trial is ready to upgrade\n\nHi ${v.name},\n\nYou've had a week to experience CrewBrief. Now it's time to make it permanent.\n\nPro plan unlocks:\n- Unlimited briefings\n- Priority email & phone support\n- Advanced FRAT configuration\n- Multi-crew coordination\n- Custom briefing templates\n\n${v.baseUrl}/pricing\n\n— The CrewBrief Team`,
+    }),
+  },
+
+  /* ───────── Sequence 2: Cold Lead Re-engagement ───────── */
+
+  seq2_email1: {
+    subject: "We've been busy — here's what's new at CrewBrief",
+    buildBody: (v) => ({
+      html: `
+        <div style="font-family:sans-serif;max-width:600px;margin:0 auto;">
+          <h1>We've been busy</h1>
+          <p>Hi ${v.name},</p>
+          <p>It's been a couple of weeks. Since your last visit, we've shipped:</p>
+          <ul>
+            <li><strong>Faster briefings</strong> — load times cut in half</li>
+            <li><strong>Improved NOTAM filtering</strong> — only what's relevant to your route</li>
+            <li><strong>New integrations</strong> — more data sources added</li>
+          </ul>
+          <p>Come see what's changed. Your account is still active.</p>
+          <p><a href="${v.baseUrl}" style="background:#2563eb;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;">Log In →</a></p>
+          <p>— The CrewBrief Team</p>
+        </div>`,
+      text: `We've been busy\n\nHi ${v.name},\n\nIt's been a couple of weeks. Since your last visit, we've shipped:\n- Faster briefings — load times cut in half\n- Improved NOTAM filtering — only what's relevant to your route\n- New integrations — more data sources added\n\nCome see what's changed. Your account is still active.\n${v.baseUrl}\n\n— The CrewBrief Team`,
+    }),
+  },
+  seq2_email2: {
+    subject: "This one feature saves pilots 10+ minutes per briefing",
+    buildBody: (v) => ({
+      html: `
+        <div style="font-family:sans-serif;max-width:600px;margin:0 auto;">
+          <h1>Automated FRAT Scoring</h1>
+          <p>Hi ${v.name},</p>
+          <p>The most popular CrewBrief feature? <strong>Automated FRAT scoring.</strong></p>
+          <p>Instead of manually filling out a risk matrix, CrewBrief calculates your flight risk score automatically — pulling from route data, weather, crew experience, and aircraft type.</p>
+          <blockquote style="border-left:4px solid #2563eb;padding-left:16px;margin:16px 0;color:#374151;">
+            "I used to dread FRAT paperwork. Now it's done before I finish my coffee." — Captain
+          </blockquote>
+          <p><a href="${v.baseUrl}/features/frat" style="background:#2563eb;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;">Try FRAT Now →</a></p>
+          <p>— The CrewBrief Team</p>
+        </div>`,
+      text: `Automated FRAT Scoring\n\nHi ${v.name},\n\nThe most popular CrewBrief feature? Automated FRAT scoring.\n\nInstead of manually filling out a risk matrix, CrewBrief calculates your flight risk score automatically — pulling from route data, weather, crew experience, and aircraft type.\n\n"${v.name ? `I used to dread FRAT paperwork. Now it's done before I finish my coffee." — Captain` : ''}"\n\nTry FRAT Now: ${v.baseUrl}/features/frat\n\n— The CrewBrief Team`,
+    }),
+  },
+  seq2_email3: {
+    subject: "Don't lose access — extend your trial",
+    buildBody: (v) => ({
+      html: `
+        <div style="font-family:sans-serif;max-width:600px;margin:0 auto;">
+          <h1>Don't lose access</h1>
+          <p>Hi ${v.name},</p>
+          <p>We noticed you haven't logged in recently. We'd hate for you to miss out on what CrewBrief can do for your operation.</p>
+          <p><strong>Here's a one-click trial extension</strong> — 14 more days, no commitment.</p>
+          <p><a href="${v.baseUrl}/reactivate" style="background:#2563eb;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;">Extend My Trial →</a></p>
+          <p>If CrewBrief isn't the right fit right now, no hard feelings. Just unsubscribe below.</p>
+          <p>— The CrewBrief Team</p>
+        </div>`,
+      text: `Don't lose access\n\nHi ${v.name},\n\nWe noticed you haven't logged in recently. We'd hate for you to miss out.\n\nHere's a one-click trial extension — 14 more days, no commitment.\n${v.baseUrl}/reactivate\n\nIf CrewBrief isn't the right fit right now, no hard feelings.\n\n— The CrewBrief Team`,
+    }),
+  },
+
+  /* ───────── Sequence 3: Trial-to-Paid Conversion ───────── */
+
+  seq3_email1: {
+    subject: "You've generated {briefingCount} briefings — nice work",
+    buildBody: (v) => ({
+      html: `
+        <div style="font-family:sans-serif;max-width:600px;margin:0 auto;">
+          <h1>Your trial progress</h1>
+          <p>Hi ${v.name},</p>
+          <p>Quick check-in: you've generated <strong>${v.briefingCount || 0} briefings</strong> so far.</p>
+          <p>Here's what you've accomplished:</p>
+          <ul>
+            <li>Routes briefed: ${v.routesCount || 0}</li>
+            <li>Risk assessments completed: ${v.fratsCompleted || 0}</li>
+            <li>Time saved: ~${v.timeSaved || 0} minutes (vs. manual briefing)</li>
+          </ul>
+          <p><strong>You're halfway through your trial.</strong> The Pro plan unlocks everything you've been using — plus priority support, custom templates, and crew management.</p>
+          <p><a href="${v.baseUrl}/pricing" style="background:#2563eb;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;">See Pro Plan Details →</a></p>
+          <p>— The CrewBrief Team</p>
+        </div>`,
+      text: `Your trial progress\n\nHi ${v.name},\n\nQuick check-in: you've generated ${v.briefingCount || 0} briefings so far.\n\nRoutes briefed: ${v.routesCount || 0}\nRisk assessments completed: ${v.fratsCompleted || 0}\nTime saved: ~${v.timeSaved || 0} minutes\n\nYou're halfway through your trial. The Pro plan unlocks everything you've been using.\n\n${v.baseUrl}/pricing\n\n— The CrewBrief Team`,
+    }),
+  },
+  seq3_email2: {
+    subject: "Your trial ends in 4 days — here's what changes",
+    buildBody: (v) => ({
+      html: `
+        <div style="font-family:sans-serif;max-width:600px;margin:0 auto;">
+          <h1>Your trial ends in 4 days</h1>
+          <p>Hi ${v.name},</p>
+          <p>Your CrewBrief trial ends in <strong>4 days</strong>. After that:</p>
+          <table style="width:100%;border-collapse:collapse;margin:16px 0;">
+            <tr style="background:#f3f4f6;"><th style="padding:8px;border:1px solid #d1d5db;">Feature</th><th style="padding:8px;border:1px solid #d1d5db;">Trial</th><th style="padding:8px;border:1px solid #d1d5db;">Pro</th></tr>
+            <tr><td style="padding:8px;border:1px solid #d1d5db;">Briefings</td><td style="padding:8px;border:1px solid #d1d5db;">10 total</td><td style="padding:8px;border:1px solid #d1d5db;">Unlimited</td></tr>
+            <tr><td style="padding:8px;border:1px solid #d1d5db;">FRAT scoring</td><td style="padding:8px;border:1px solid #d1d5db;">✓</td><td style="padding:8px;border:1px solid #d1d5db;">✓ Advanced config</td></tr>
+            <tr><td style="padding:8px;border:1px solid #d1d5db;">Crew accounts</td><td style="padding:8px;border:1px solid #d1d5db;">1</td><td style="padding:8px;border:1px solid #d1d5db;">Unlimited</td></tr>
+            <tr><td style="padding:8px;border:1px solid #d1d5db;">Support</td><td style="padding:8px;border:1px solid #d1d5db;">Email</td><td style="padding:8px;border:1px solid #d1d5db;">Priority + Phone</td></tr>
+            <tr><td style="padding:8px;border:1px solid #d1d5db;">Templates</td><td style="padding:8px;border:1px solid #d1d5db;">Default</td><td style="padding:8px;border:1px solid #d1d5db;">Custom</td></tr>
+          </table>
+          <p><a href="${v.baseUrl}/upgrade" style="background:#2563eb;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;">Keep My Access →</a></p>
+          <p>— The CrewBrief Team</p>
+        </div>`,
+      text: `Your trial ends in 4 days\n\nHi ${v.name},\n\nYour CrewBrief trial ends in 4 days. After that: briefings limited, crew accounts limited, and custom templates disabled.\n\nDon't lose access to your briefings. Upgrade keeps everything intact.\n${v.baseUrl}/upgrade\n\n— The CrewBrief Team`,
+    }),
+  },
+  seq3_email3: {
+    subject: "Your CrewBrief trial has ended — but here's a backup plan",
+    buildBody: (v) => ({
+      html: `
+        <div style="font-family:sans-serif;max-width:600px;margin:0 auto;">
+          <h1>Your trial has ended</h1>
+          <p>Hi ${v.name},</p>
+          <p>Your trial has ended, and your Pro features have been paused.</p>
+          <p><strong>But here's the thing:</strong> we want you to succeed with CrewBrief. If you need more time to evaluate, we're happy to grant a <strong>7-day extension</strong> — just click below.</p>
+          <p><a href="${v.baseUrl}/extend" style="background:#2563eb;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;">Extend Trial 7 Days →</a></p>
+          <p>Or, if you're ready:</p>
+          <p><a href="${v.baseUrl}/upgrade" style="background:#10b981;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;">Upgrade to Pro →</a></p>
+          <p>Questions? Reply to this email. We'll get back to you within 2 hours.</p>
+          <p>— The CrewBrief Team</p>
+        </div>`,
+      text: `Your trial has ended\n\nHi ${v.name},\n\nYour trial has ended, and your Pro features have been paused.\n\nBut here's the thing: we want you to succeed. If you need more time, click for a 7-day extension:\n${v.baseUrl}/extend\n\nOr upgrade to Pro:\n${v.baseUrl}/upgrade\n\n— The CrewBrief Team`,
     }),
   },
 };
@@ -514,6 +743,229 @@ export function crewbriefNurtureService(
     return sent;
   }
 
+  /* ───────── Sequence Definitions ───────── */
+
+  const SEQUENCES: Array<{
+    id: string;
+    name: string;
+    description: string;
+    triggerDescription: string;
+    emails: Array<{
+      templateName: string;
+      subject: string;
+      delayDays: number;
+    }>;
+  }> = [
+    {
+      id: "seq1_beta_welcome",
+      name: "Beta Welcome & Activation",
+      description: "Activate new signups → generate first briefing → nurture to paid",
+      triggerDescription: "New waitlist signup with status = activated",
+      emails: [
+        { templateName: "seq1_email1", subject: "Welcome to CrewBrief — your first briefing is waiting", delayDays: 0 },
+        { templateName: "seq1_email2", subject: "3 features that make CrewBrief indispensable", delayDays: 1 },
+        { templateName: "seq1_email3", subject: "How operators cut briefing time by 60%", delayDays: 3 },
+        { templateName: "seq1_email4", subject: "Your first week with CrewBrief — here's what to try", delayDays: 5 },
+        { templateName: "seq1_email5", subject: "Your beta trial is ready to upgrade", delayDays: 7 },
+      ],
+    },
+    {
+      id: "seq2_cold_reengagement",
+      name: "Cold Lead Re-engagement",
+      description: "Re-activate inactive signups (no login >14 days)",
+      triggerDescription: "last_active_date >= 14 days, not paid",
+      emails: [
+        { templateName: "seq2_email1", subject: "We've been busy — here's what's new at CrewBrief", delayDays: 0 },
+        { templateName: "seq2_email2", subject: "This one feature saves pilots 10+ minutes per briefing", delayDays: 3 },
+        { templateName: "seq2_email3", subject: "Don't lose access — extend your trial", delayDays: 7 },
+      ],
+    },
+    {
+      id: "seq3_trial_conversion",
+      name: "Trial-to-Paid Conversion",
+      description: "Convert active trial users to paid subscribers",
+      triggerDescription: "Trial day 5, lifecyclestage = opportunity, not yet paid",
+      emails: [
+        { templateName: "seq3_email1", subject: "You've generated {briefingCount} briefings — nice work", delayDays: 0 },
+        { templateName: "seq3_email2", subject: "Your trial ends in 4 days — here's what changes", delayDays: 5 },
+        { templateName: "seq3_email3", subject: "Your CrewBrief trial has ended — but here's a backup plan", delayDays: 9 },
+      ],
+    },
+  ];
+
+  async function enrollInSequence(
+    entryId: string,
+    email: string,
+    entry: { id: string; name: string; email: string; queuePosition: number; referralCode: string; referralCount: number },
+    sequenceId: string,
+  ): Promise<string | null> {
+    const seq = SEQUENCES.find((s) => s.id === sequenceId);
+    if (!seq) return `Unknown sequence: ${sequenceId}`;
+
+    const existing = await db
+      .select()
+      .from(crewbriefEmailLog)
+      .where(
+        and(
+          eq(crewbriefEmailLog.waitlistEntryId, entryId),
+          eq(crewbriefEmailLog.templateName, `${sequenceId}_enrolled`),
+        ),
+      )
+      .limit(1);
+
+    if (existing.length > 0) return null;
+
+    const vars = buildTemplateVars(entry);
+
+    for (const emailDef of seq.emails) {
+      const sendAt = new Date(Date.now() + emailDef.delayDays * 24 * 60 * 60 * 1000);
+      const eVars = { ...vars, briefingCount: "0", routesCount: "0", fratsCompleted: "0", timeSaved: "0" };
+      await scheduleEmail(entryId, email, emailDef.templateName, eVars, sendAt);
+    }
+
+    await db.insert(crewbriefEmailLog).values({
+      waitlistEntryId: entryId,
+      email,
+      templateName: `${sequenceId}_enrolled`,
+      subject: `Enrolled in ${seq.name}`,
+      status: "sent",
+    });
+
+    if (posthog.enabled) {
+      await posthog.capture("sequence_enrolled", email, {
+        sequence_name: seq.name,
+        sequence_id: sequenceId,
+        contact_id: entryId,
+      });
+    }
+
+    return null;
+  }
+
+  async function checkSeq1Enrollments(): Promise<number> {
+    const activated = await db
+      .select()
+      .from(crewbriefWaitlistEntries)
+      .where(eq(crewbriefWaitlistEntries.status, "activated"))
+      .limit(50);
+
+    let enrolled = 0;
+    for (const entry of activated) {
+      const alreadySeq1 = await db
+        .select()
+        .from(crewbriefEmailLog)
+        .where(
+          and(
+            eq(crewbriefEmailLog.waitlistEntryId, entry.id),
+            eq(crewbriefEmailLog.templateName, "seq1_beta_welcome_enrolled"),
+          ),
+        )
+        .limit(1);
+      if (alreadySeq1.length > 0) continue;
+
+      const err = await enrollInSequence(
+        entry.id, entry.email,
+        { id: entry.id, name: entry.name, email: entry.email, queuePosition: entry.queuePosition, referralCode: entry.referralCode, referralCount: entry.referralCount },
+        "seq1_beta_welcome",
+      );
+      if (!err) enrolled++;
+    }
+    return enrolled;
+  }
+
+  async function checkSeq2Enrollments(): Promise<number> {
+    const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+    const inactives = await db
+      .select()
+      .from(crewbriefWaitlistEntries)
+      .where(
+        and(
+          eq(crewbriefWaitlistEntries.status, "activated"),
+          lte(crewbriefWaitlistEntries.createdAt, fourteenDaysAgo),
+          isNull(crewbriefWaitlistEntries.lastActiveDate),
+        ),
+      )
+      .limit(50);
+
+    let enrolled = 0;
+    for (const entry of inactives) {
+      const alreadySeq2 = await db
+        .select()
+        .from(crewbriefEmailLog)
+        .where(
+          and(
+            eq(crewbriefEmailLog.waitlistEntryId, entry.id),
+            eq(crewbriefEmailLog.templateName, "seq2_cold_reengagement_enrolled"),
+          ),
+        )
+        .limit(1);
+      if (alreadySeq2.length > 0) continue;
+
+      const err = await enrollInSequence(
+        entry.id, entry.email,
+        { id: entry.id, name: entry.name, email: entry.email, queuePosition: entry.queuePosition, referralCode: entry.referralCode, referralCount: entry.referralCount },
+        "seq2_cold_reengagement",
+      );
+      if (!err) enrolled++;
+    }
+    return enrolled;
+  }
+
+  async function checkSeq3Enrollments(): Promise<number> {
+    const fiveDaysAgo = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000);
+    const trialUsers = await db
+      .select()
+      .from(crewbriefWaitlistEntries)
+      .where(
+        and(
+          eq(crewbriefWaitlistEntries.status, "activated"),
+          lte(crewbriefWaitlistEntries.createdAt, fiveDaysAgo),
+        ),
+      )
+      .limit(50);
+
+    let enrolled = 0;
+    for (const entry of trialUsers) {
+      const alreadySeq3 = await db
+        .select()
+        .from(crewbriefEmailLog)
+        .where(
+          and(
+            eq(crewbriefEmailLog.waitlistEntryId, entry.id),
+            eq(crewbriefEmailLog.templateName, "seq3_trial_conversion_enrolled"),
+          ),
+        )
+        .limit(1);
+      if (alreadySeq3.length > 0) continue;
+
+      const err = await enrollInSequence(
+        entry.id, entry.email,
+        { id: entry.id, name: entry.name, email: entry.email, queuePosition: entry.queuePosition, referralCode: entry.referralCode, referralCount: entry.referralCount },
+        "seq3_trial_conversion",
+      );
+      if (!err) enrolled++;
+    }
+    return enrolled;
+  }
+
+  async function checkAllEnrollments(): Promise<{ seq1: number; seq2: number; seq3: number }> {
+    const [seq1, seq2, seq3] = await Promise.all([
+      checkSeq1Enrollments(),
+      checkSeq2Enrollments(),
+      checkSeq3Enrollments(),
+    ]);
+    return { seq1, seq2, seq3 };
+  }
+
+  async function handleEmailEvent(
+    eventType: string,
+    email: string,
+    properties: Record<string, unknown>,
+  ): Promise<void> {
+    if (!posthog.enabled) return;
+    await posthog.capture(eventType, email, properties);
+  }
+
   return {
     getTemplate,
     sendNurtureEmail,
@@ -522,6 +974,10 @@ export function crewbriefNurtureService(
     handleBetaInvitation,
     handleBetaActivation,
     processScheduledEmails,
+    checkAllEnrollments,
+    enrollInSequence,
+    handleEmailEvent,
+    SEQUENCES,
   };
 }
 

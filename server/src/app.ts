@@ -65,6 +65,7 @@ import {
   crewbriefPosthogService,
   crewbriefEmailService,
   crewbriefNurtureService,
+  crewbriefWebhookService,
 } from "./services/index.js";
 
 type UiMode = "none" | "static" | "vite-dev";
@@ -322,7 +323,8 @@ export async function createApp(
   const cbPosthog = crewbriefPosthogService(crewbriefCfg.CREWBRIEF_POSTHOG_API_KEY, crewbriefCfg.CREWBRIEF_POSTHOG_HOST);
   const cbEmail = crewbriefEmailService(crewbriefCfg);
   const cbNurture = crewbriefNurtureService(db, crewbriefCfg, cbHubspot, cbPosthog, cbEmail);
-  api.use("/crewbrief", crewbriefRoutes(db, crewbriefCfg, cbNurture));
+  const cbWebhooks = crewbriefWebhookService(cbPosthog, cbNurture);
+  api.use("/crewbrief", crewbriefRoutes(db, crewbriefCfg, cbNurture, cbHubspot, cbWebhooks));
 
   app.use("/api", api);
   app.use("/api", (_req, res) => {

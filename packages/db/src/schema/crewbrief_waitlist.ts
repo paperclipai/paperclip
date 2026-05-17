@@ -20,6 +20,7 @@ export const crewbriefWaitlistEntries = pgTable(
     tier: text("tier").notNull().default("standard"),
     status: text("status").notNull().default("waitlisted"),
     hubspotContactId: text("hubspot_contact_id"),
+    lastActiveDate: timestamp("last_active_date", { withTimezone: true }),
     betaActivatedAt: timestamp("beta_activated_at", { withTimezone: true }),
     invitedAt: timestamp("invited_at", { withTimezone: true }),
     convertedAt: timestamp("converted_at", { withTimezone: true }),

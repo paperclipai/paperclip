@@ -610,6 +610,12 @@
       "when": 1747526400000,
       "tag": "0087_crewbrief_tables",
       "breakpoints": true
+    },
+    {
+      "tag": "0088_crewbrief_last_active_date",
+      "idx": 87,
+      "when": 1747526400000,
+      "breakpoints": true
     }
   ]
 }

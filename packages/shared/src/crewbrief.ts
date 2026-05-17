@@ -97,4 +97,38 @@ export const crewbriefEnvSchema = z.object({
   CREWBRIEF_RESEND_API_KEY: z.string().optional(),
 });
 
+export const webhookEventSchema = z.object({
+  eventType: z.enum(["delivered", "open", "click", "unsubscribe", "enrollment", "completion"]),
+  email: z.string().email(),
+  subject: z.string().optional(),
+  linkUrl: z.string().optional(),
+  deviceType: z.string().optional(),
+  sequenceName: z.string().optional(),
+  emailId: z.string().optional(),
+  contactId: z.string().optional(),
+  source: z.string().optional(),
+  emailsClicked: z.number().optional(),
+  eventId: z.string().optional(),
+  occurredAt: z.string().optional(),
+});
+
+export type WebhookEvent = z.infer<typeof webhookEventSchema>;
+
+export const enrollmentCheckSchema = z.object({
+  waitlistEntryId: z.string().uuid(),
+  sequenceId: z.enum(["seq1_beta_welcome", "seq2_cold_reengagement", "seq3_trial_conversion"]),
+});
+
+export type EnrollmentCheckInput = z.infer<typeof enrollmentCheckSchema>;
+
+export const sequenceInfoSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  triggerDescription: z.string(),
+  emailCount: z.number(),
+});
+
+export type SequenceInfo = z.infer<typeof sequenceInfoSchema>;
+
 export type CrewbriefConfig = z.infer<typeof crewbriefEnvSchema>;

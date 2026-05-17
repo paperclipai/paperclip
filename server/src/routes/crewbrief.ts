@@ -15,6 +15,8 @@ import {
 import type { CrewbriefConfig } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import type { CrewbriefNurtureService } from "../services/crewbrief-nurture.js";
+import type { CrewbriefHubspotService } from "../services/crewbrief-hubspot.js";
+import type { CrewbriefWebhookService } from "../services/crewbrief-webhooks.js";
 
 function generateReferralCode(): string {
   return randomBytes(6).toString("base64url").slice(0, 8);
@@ -37,6 +39,8 @@ export function crewbriefRoutes(
   db: Db,
   config: CrewbriefConfig,
   nurture: CrewbriefNurtureService,
+  hubspot?: CrewbriefHubspotService,
+  webhooks?: CrewbriefWebhookService,
 ) {
   const router = Router();
 
@@ -403,6 +407,82 @@ export function crewbriefRoutes(
       byStatus: Object.fromEntries(statusCounts.map((r) => [r.status, r.count])),
       totalReferrals: referralCount,
     });
+  });
+
+  router.post("/webhook/hubspot", async (req, res) => {
+    if (!webhooks) {
+      res.status(501).json({ error: "Webhook service not configured" });
+      return;
+    }
+
+    const events = Array.isArray(req.body) ? req.body : [req.body];
+    await webhooks.handleBatchHubSpotEvents(events);
+    res.status(200).json({ received: events.length });
+  });
+
+  router.post("/nurture/check-enrollments", async (_req, res) => {
+    try {
+      const result = await nurture.checkAllEnrollments();
+      res.status(200).json(result);
+    } catch (err) {
+      res.status(500).json({ error: `Enrollment check failed: ${(err as Error).message}` });
+    }
+  });
+
+  router.post("/nurture/enroll", async (req, res) => {
+    const { waitlistEntryId, sequenceId } = req.body as { waitlistEntryId?: string; sequenceId?: string };
+    if (!waitlistEntryId || !sequenceId) {
+      res.status(400).json({ error: "waitlistEntryId and sequenceId are required" });
+      return;
+    }
+
+    const entries = await db
+      .select()
+      .from(crewbriefWaitlistEntries)
+      .where(eq(crewbriefWaitlistEntries.id, waitlistEntryId))
+      .limit(1);
+
+    if (entries.length === 0) {
+      res.status(404).json({ error: "Waitlist entry not found" });
+      return;
+    }
+
+    const entry = entries[0];
+    const err = await nurture.enrollInSequence(
+      entry.id, entry.email,
+      { id: entry.id, name: entry.name, email: entry.email, queuePosition: entry.queuePosition, referralCode: entry.referralCode, referralCount: entry.referralCount },
+      sequenceId,
+    );
+
+    if (err) {
+      res.status(400).json({ error: err });
+      return;
+    }
+    res.status(200).json({ status: "enrolled", sequenceId });
+  });
+
+  router.get("/nurture/sequences", (_req, res) => {
+    const sequences = nurture.SEQUENCES.map((s) => ({
+      id: s.id,
+      name: s.name,
+      description: s.description,
+      triggerDescription: s.triggerDescription,
+      emailCount: s.emails.length,
+    }));
+    res.status(200).json({ sequences });
+  });
+
+  router.post("/hubspot/properties", async (_req, res) => {
+    if (!hubspot) {
+      res.status(501).json({ error: "HubSpot service not configured" });
+      return;
+    }
+    const { error } = await hubspot.ensureContactProperties();
+    if (error) {
+      res.status(500).json({ error });
+      return;
+    }
+    res.status(200).json({ status: "properties_created" });
   });
 
   return router;

@@ -1129,6 +1129,9 @@ export {
   referralTrackSchema,
   emailTriggerSchema,
   emailTemplates,
+  webhookEventSchema,
+  enrollmentCheckSchema,
+  sequenceInfoSchema,
   crewbriefEnvSchema,
 } from "./crewbrief.js";
 
@@ -1140,5 +1143,8 @@ export type {
   EmailTemplateName,
   WaitlistStatus,
   ReferralTier,
+  WebhookEvent,
+  EnrollmentCheckInput,
+  SequenceInfo,
   CrewbriefConfig,
 } from "./crewbrief.js";
