@@ -190,7 +190,13 @@ After deployment, the deploying agent MUST:
    curl -f https://<ref>.functions.supabase.co/<function-name>/health
    ```
 2. Verify the function is running the expected version (if version endpoint exists)
-3. Run any existing integration tests against the live function
+3. For Telegram bot functions (`chase-telegram`), re-register the bot command list by calling `/setup-commands`:
+   ```bash
+   curl -X POST https://<ref>.functions.supabase.co/chase-telegram/setup-commands \
+     -H "Authorization: Bearer <WEBHOOK_SETUP_SECRET>"
+   ```
+   This ensures the command list visible in Telegram's UI stays synchronized with the deployed code.
+4. Run any existing integration tests against the live function
 
 ### QA Gate (Quinn)
 

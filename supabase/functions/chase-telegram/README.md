@@ -90,8 +90,6 @@ Telegram message → routeQuery(text) → regex dispatch (fast path)
 
 ## Deployment
 
-### Supabase
-
 > **Note:** Deploy via GitHub Actions push trigger (May 15, 2026).
 
 ### Supabase

@@ -164,11 +164,11 @@ async function handleCommands(): Promise<QueryResult> {
     ].join("\n"),
     replyMarkup: {
       inline_keyboard: [
-        [{ text: "/help", callback_data: "/help" }, { text: "/about", callback_data: "/about" }, { text: "/ping", callback_data: "/ping" }],
-        [{ text: "/overview", callback_data: "/overview" }, { text: "/status", callback_data: "/status" }],
-        [{ text: "/blocked", callback_data: "/blocked" }, { text: "/approvals", callback_data: "/approvals" }],
-        [{ text: "/agents", callback_data: "/agents" }, { text: "/spend", callback_data: "/spend" }],
-        [{ text: "/recent", callback_data: "/recent" }, { text: "/version", callback_data: "/version" }],
+        [{ text: "/help", callback_data: "/help" }, { text: "/commands", callback_data: "/commands" }, { text: "/about", callback_data: "/about" }],
+        [{ text: "/ping", callback_data: "/ping" }, { text: "/version", callback_data: "/version" }, { text: "/status", callback_data: "/status" }],
+        [{ text: "/blocked", callback_data: "/blocked" }, { text: "/approvals", callback_data: "/approvals" }, { text: "/agents", callback_data: "/agents" }],
+        [{ text: "/detail", callback_data: "/detail" }, { text: "/search", callback_data: "/search" }, { text: "/spend", callback_data: "/spend" }],
+        [{ text: "/recent", callback_data: "/recent" }, { text: "/overview", callback_data: "/overview" }],
       ],
     },
   };
