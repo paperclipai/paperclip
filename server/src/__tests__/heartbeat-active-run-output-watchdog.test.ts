@@ -547,4 +547,178 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     });
     expect(decision.createdByRunId).toBe(managerRunId);
   });
+
+  async function seedAdditionalSilentRunForAgent(opts: {
+    companyId: string;
+    agentId: string;
+    issuePrefix: string;
+    issueNumber: number;
+    now: Date;
+    ageMs: number;
+  }) {
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const startedAt = new Date(opts.now.getTime() - opts.ageMs);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId: opts.companyId,
+      title: `Extra silent issue ${opts.issueNumber}`,
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: opts.agentId,
+      issueNumber: opts.issueNumber,
+      identifier: `${opts.issuePrefix}-${opts.issueNumber}`,
+      updatedAt: startedAt,
+      createdAt: startedAt,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: opts.companyId,
+      agentId: opts.agentId,
+      status: "running",
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      startedAt,
+      processStartedAt: startedAt,
+      lastOutputAt: null,
+      lastOutputSeq: 0,
+      lastOutputStream: null,
+      contextSnapshot: { issueId },
+      logBytes: 0,
+    });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    return { issueId, runId };
+  }
+
+  it("caps open silent-run reviews at one per subject agent", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const seed = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const second = await seedAdditionalSilentRunForAgent({
+      companyId: seed.companyId,
+      agentId: seed.coderId,
+      issuePrefix: seed.issuePrefix,
+      issueNumber: 50,
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 90_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const scan = await heartbeat.scanSilentActiveRuns({ now, companyId: seed.companyId });
+
+    expect(scan.scanned).toBe(2);
+    expect(scan.created).toBe(1);
+    expect(scan.appended).toBe(1);
+    expect(scan.evaluationIssueIds).toHaveLength(2);
+    expect(new Set(scan.evaluationIssueIds).size).toBe(1);
+
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, seed.companyId),
+        eq(issues.originKind, "stale_active_run_evaluation"),
+      ));
+    expect(evaluations).toHaveLength(1);
+    expect(evaluations[0]?.assigneeAgentId).toBe(seed.managerId);
+    expect([seed.runId, second.runId]).toContain(evaluations[0]?.originId);
+  });
+
+  it("escalates priority and blocks the cascaded source issue when critical", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const seed = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const second = await seedAdditionalSilentRunForAgent({
+      companyId: seed.companyId,
+      agentId: seed.coderId,
+      issuePrefix: seed.issuePrefix,
+      issueNumber: 70,
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const scan = await heartbeat.scanSilentActiveRuns({ now, companyId: seed.companyId });
+
+    expect(scan.scanned).toBe(2);
+    expect(scan.created).toBe(1);
+    expect(scan.appended).toBe(1);
+
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, seed.companyId),
+        eq(issues.originKind, "stale_active_run_evaluation"),
+      ));
+    expect(evaluations).toHaveLength(1);
+    expect(evaluations[0]?.priority).toBe("high");
+
+    const evaluationId = evaluations[0]?.id;
+    expect(evaluationId).toBeTruthy();
+    const blockerLinks = await db
+      .select()
+      .from(issueRelations)
+      .where(and(
+        eq(issueRelations.companyId, seed.companyId),
+        eq(issueRelations.relatedIssueId, second.issueId),
+      ));
+    expect(blockerLinks).toHaveLength(1);
+    expect(blockerLinks[0]?.issueId).toBe(evaluationId);
+
+    const [secondSource] = await db.select().from(issues).where(eq(issues.id, second.issueId));
+    expect(secondSource?.status).toBe("blocked");
+  });
+
+  it("does not load a reviewer with parallel silent-run reviews", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const seed = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+
+    const otherCoderId = randomUUID();
+    await db.insert(agents).values({
+      id: otherCoderId,
+      companyId: seed.companyId,
+      name: "Coder Two",
+      role: "engineer",
+      status: "running",
+      reportsTo: seed.managerId,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const second = await seedAdditionalSilentRunForAgent({
+      companyId: seed.companyId,
+      agentId: otherCoderId,
+      issuePrefix: seed.issuePrefix,
+      issueNumber: 60,
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 90_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const scan = await heartbeat.scanSilentActiveRuns({ now, companyId: seed.companyId });
+
+    expect(scan.scanned).toBe(2);
+    expect(scan.created).toBe(1);
+    expect(scan.appended).toBe(1);
+
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, seed.companyId),
+        eq(issues.originKind, "stale_active_run_evaluation"),
+      ));
+    expect(evaluations).toHaveLength(1);
+    expect(evaluations[0]?.assigneeAgentId).toBe(seed.managerId);
+    expect([seed.runId, second.runId]).toContain(evaluations[0]?.originId);
+  });
 });

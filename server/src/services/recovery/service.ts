@@ -723,6 +723,72 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  // Find the most-recent open stale-run evaluation whose linked run belongs to
+  // the given subject agent, excluding the run being evaluated. Used to cap
+  // open reviews to one per subject agent so cascading silence does not spawn
+  // a new issue per silent run.
+  async function findOpenStaleRunEvaluationForSubjectAgent(
+    companyId: string,
+    subjectAgentId: string,
+    excludeRunId: string,
+  ) {
+    const [row] = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        priority: issues.priority,
+        assigneeAgentId: issues.assigneeAgentId,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .innerJoin(heartbeatRuns, sql`${heartbeatRuns.id}::text = ${issues.originId}`)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+          eq(heartbeatRuns.agentId, subjectAgentId),
+          sql`${issues.originId} <> ${excludeRunId}`,
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(1);
+    return row ?? null;
+  }
+
+  // Find the most-recent open stale-run evaluation already assigned to the
+  // prospective reviewer. Used to avoid loading a single reviewer with two or
+  // more open silent-run reviews at once.
+  async function findOpenStaleRunEvaluationForReviewer(
+    companyId: string,
+    reviewerAgentId: string,
+  ) {
+    const [row] = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        priority: issues.priority,
+        assigneeAgentId: issues.assigneeAgentId,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.assigneeAgentId, reviewerAgentId),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(1);
+    return row ?? null;
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -1023,6 +1089,72 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return true;
   }
 
+  async function appendStaleRunCascadeNote(input: {
+    existing: { id: string; identifier: string | null; priority: string | null };
+    reason: "subject_cap" | "reviewer_loaded";
+    run: typeof heartbeatRuns.$inferSelect;
+    runningAgent: typeof agents.$inferSelect;
+    sourceIssue: typeof issues.$inferSelect | null;
+    level: "suspicious" | "critical";
+    evidence: { silenceAgeMs: number | null };
+  }) {
+    const headline = input.reason === "subject_cap"
+      ? `Additional silent run detected for the same subject agent (${input.runningAgent.name}).`
+      : `Additional silent run detected while this reviewer is already mid-evaluation.`;
+    const folded = input.reason === "subject_cap"
+      ? "Folded into this evaluation to keep one open review per subject agent."
+      : "Folded into this evaluation to avoid loading the reviewer with parallel review issues.";
+    const sourceLabel = input.sourceIssue?.identifier ?? input.sourceIssue?.id ?? "none";
+    await issuesSvc.addComment(input.existing.id, [
+      headline,
+      "",
+      `- Run: \`${input.run.id}\``,
+      `- Subject agent: ${input.runningAgent.name} (\`${input.runningAgent.id}\`)`,
+      `- Source issue: ${sourceLabel}`,
+      `- Silent for: ${formatDuration(input.evidence.silenceAgeMs)}`,
+      `- Level: ${input.level}`,
+      `- Last output at: ${input.run.lastOutputAt?.toISOString() ?? "none recorded"}`,
+      "",
+      folded,
+    ].join("\n"), { runId: input.run.id });
+
+    if (input.level === "critical" && input.existing.priority !== "high") {
+      await issuesSvc.update(input.existing.id, { priority: "high" });
+      await issuesSvc.addComment(input.existing.id, [
+        "Critical output silence threshold crossed on cascaded run.",
+        "",
+        `- Run: \`${input.run.id}\``,
+        `- Silent for: ${formatDuration(input.evidence.silenceAgeMs)}`,
+      ].join("\n"), { runId: input.run.id });
+    }
+    if (input.level === "critical") {
+      await ensureSourceIssueBlockedByStaleEvaluation({
+        sourceIssue: input.sourceIssue,
+        evaluationIssue: input.existing,
+        run: input.run,
+      });
+    }
+
+    await logActivity(db, {
+      companyId: input.run.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: input.run.id,
+      action: "heartbeat.output_stale_appended",
+      entityType: "issue",
+      entityId: input.existing.id,
+      details: {
+        source: "recovery.scan_silent_active_runs",
+        reason: input.reason,
+        level: input.level,
+        sourceIssueId: input.sourceIssue?.id ?? null,
+        silenceAgeMs: input.evidence.silenceAgeMs,
+        lastOutputAt: input.run.lastOutputAt?.toISOString() ?? null,
+      },
+    });
+  }
+
   async function createOrUpdateStaleRunEvaluation(input: {
     run: typeof heartbeatRuns.$inferSelect;
     now: Date;
@@ -1069,7 +1201,53 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       return { kind: "existing" as const, evaluationIssueId: existing.id };
     }
 
-    const ownerAgentId = await resolveStaleRunOwnerAgentId({ run: input.run, runningAgent, sourceIssue });
+    // Per-subject-agent cap: if this subject agent already has an open
+    // stale-run evaluation tied to a different run, append to it instead of
+    // spawning a parallel review. Breaks the single-agent run-flapping case.
+    const subjectExisting = await findOpenStaleRunEvaluationForSubjectAgent(
+      input.run.companyId,
+      runningAgent.id,
+      input.run.id,
+    );
+    if (subjectExisting) {
+      await appendStaleRunCascadeNote({
+        existing: subjectExisting,
+        reason: "subject_cap",
+        run: input.run,
+        runningAgent,
+        sourceIssue,
+        level,
+        evidence,
+      });
+      return { kind: "appended" as const, evaluationIssueId: subjectExisting.id };
+    }
+
+    let ownerAgentId = await resolveStaleRunOwnerAgentId({ run: input.run, runningAgent, sourceIssue });
+    if (ownerAgentId === runningAgent.id) ownerAgentId = null;
+
+    // Reviewer-already-loaded guard: if the prospective reviewer already has an
+    // open silent-run review, surface the new run as a comment on that issue
+    // rather than creating a parallel review. Breaks the cross-agent cascade
+    // (reviewer A spawns review for B, B spawns review for A).
+    if (ownerAgentId) {
+      const reviewerExisting = await findOpenStaleRunEvaluationForReviewer(
+        input.run.companyId,
+        ownerAgentId,
+      );
+      if (reviewerExisting) {
+        await appendStaleRunCascadeNote({
+          existing: reviewerExisting,
+          reason: "reviewer_loaded",
+          run: input.run,
+          runningAgent,
+          sourceIssue,
+          level,
+          evidence,
+        });
+        return { kind: "appended" as const, evaluationIssueId: reviewerExisting.id };
+      }
+    }
+
     const description = buildStaleRunEvaluationDescription({
       run: input.run,
       runningAgent,
@@ -1173,6 +1351,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       scanned: candidates.length,
       created: 0,
       existing: 0,
+      appended: 0,
       escalated: 0,
       snoozed: 0,
       skipped: 0,
@@ -1187,6 +1366,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       const outcome = await createOrUpdateStaleRunEvaluation({ run, now });
       if (outcome.kind === "created") result.created += 1;
       else if (outcome.kind === "existing") result.existing += 1;
+      else if (outcome.kind === "appended") result.appended += 1;
       else if (outcome.kind === "escalated") result.escalated += 1;
       else result.skipped += 1;
       if ("evaluationIssueId" in outcome && outcome.evaluationIssueId) {
