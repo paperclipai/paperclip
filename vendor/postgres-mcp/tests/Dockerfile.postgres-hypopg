@@ -1,0 +1,21 @@
+ARG PG_VERSION=15
+FROM postgres:${PG_VERSION}
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+  build-essential \
+  git \
+  postgresql-server-dev-${PG_MAJOR} \
+  && rm -rf /var/lib/apt/lists/*
+
+# Clone and build HypoPG
+RUN git clone --depth 1 https://github.com/HypoPG/hypopg.git /tmp/hypopg \
+  && cd /tmp/hypopg \
+  && make \
+  && make install \
+  && cd / \
+  && rm -rf /tmp/hypopg
+
+# Add initialization script to create extensions in template1
+RUN echo "CREATE EXTENSION IF NOT EXISTS pg_stat_statements; CREATE EXTENSION IF NOT EXISTS hypopg;" \
+  > /docker-entrypoint-initdb.d/00-create-extensions.sql 

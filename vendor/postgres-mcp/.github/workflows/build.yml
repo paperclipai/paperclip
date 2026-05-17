@@ -1,0 +1,50 @@
+name: Postgres MCP CI
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**/README.md"
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths-ignore:
+      - "**/README.md"
+
+jobs:
+  postgres-mcp-ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Start Docker service
+        run: sudo service docker start || true
+
+      - name: Verify Docker is running
+        run: docker info
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.6.9"
+
+      - name: Build
+        run: uv sync
+
+      - name: Run Lint
+        run: |
+          uv run ruff format --check .
+          uv run ruff check .
+
+      - name: Run Check
+        run: uv run pyright
+
+      - name: Run Tests
+        run: uv run pytest -v --log-cli-level=INFO
