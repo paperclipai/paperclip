@@ -11,6 +11,37 @@ import { isValidOpenCodeModelId } from "../index.js";
 const MODELS_CACHE_TTL_MS = 60_000;
 const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
 
+// External gateway providers whose models are not visible to `opencode models`
+// discovery (discovery runs without the agent's full env, so provider API keys
+// like OPENROUTER_API_KEY / ZHIPU_API_KEY / MANIFEST_API_KEY are absent).
+// Models with these prefixes skip discovery validation — actual execution
+// passes the full env to `opencode run`, so they resolve correctly there.
+const DEFAULT_GATEWAY_PREFIXES = [
+  "openrouter/",
+  "zai-coding-plan/",
+  "zai/",
+  "manifest/",
+] as const;
+
+// Operators integrating a gateway not in the default list can extend it via
+// PAPERCLIP_OPENCODE_SKIP_DISCOVERY_PREFIXES (comma-separated). Values are
+// merged with the defaults — the built-in prefixes can't be removed this way.
+function resolveGatewayPrefixes(): string[] {
+  const raw = process.env.PAPERCLIP_OPENCODE_SKIP_DISCOVERY_PREFIXES;
+  const extra =
+    typeof raw === "string"
+      ? raw
+          .split(",")
+          .map((entry) => entry.trim())
+          .filter((entry) => entry.length > 0)
+      : [];
+  return [...new Set([...DEFAULT_GATEWAY_PREFIXES, ...extra])];
+}
+
+export function isExternalGatewayModelId(model: string): boolean {
+  return resolveGatewayPrefixes().some((prefix) => model.startsWith(prefix));
+}
+
 function resolveOpenCodeCommand(input: unknown): string {
   const envOverride =
     typeof process.env.PAPERCLIP_OPENCODE_COMMAND === "string" &&
@@ -182,6 +213,13 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
   env?: unknown;
 }): Promise<AdapterModel[]> {
   const model = requireOpenCodeModelId(input.model);
+
+  // Skip discovery validation for known external gateway providers — see
+  // DEFAULT_GATEWAY_PREFIXES above. Discovery can't see these models, but
+  // execution passes the full env to `opencode run` so they resolve there.
+  if (isExternalGatewayModelId(model)) {
+    return [{ id: model, label: model }];
+  }
 
   const models = await discoverOpenCodeModelsCached({
     command: input.command,
