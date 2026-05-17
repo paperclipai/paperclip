@@ -120,4 +120,4 @@ The metric that matters: does a pilot at 0600 looking at their briefing have bet
 
 ---
 
-*CrewBrief delivers integrated briefing, risk assessment, and delivery for Part 91 and 135 operators. [Join the beta waitlist](https://crewbrief.avva.aero).*
+*CrewBrief delivers integrated briefing, risk assessment, and delivery for Part 91 and 135 operators. [Join the beta waitlist](https://crewbrief.avva.aero?utm_source=crewbrief-blog&utm_medium=blog&utm_campaign=seo-blog-flight-ops-buyers-guide).*

@@ -103,4 +103,4 @@ Operators who treat briefing automation as "a nice-to-have when we have budget" 
 
 ---
 
-*Calculate your operator's briefing savings with CrewBrief. [Try the calculator](https://crewbrief.avva.aero).*
+*Calculate your operator's briefing savings with CrewBrief. [Try the calculator](https://crewbrief.avva.aero?utm_source=crewbrief-blog&utm_medium=blog&utm_campaign=seo-blog-fragmented-workflow).*

@@ -83,6 +83,6 @@ An automated FRAT that takes 30 seconds every time, with pre-filled data from op
 
 ---
 
-*CrewBrief's automated FRAT is available now for beta operators. [Join the waitlist](https://crewbrief.avva.aero).*
+*CrewBrief's automated FRAT is available now for beta operators. [Join the waitlist](https://crewbrief.avva.aero?utm_source=crewbrief-blog&utm_medium=blog&utm_campaign=seo-blog-frat-fatigue).*
 
 *This article expands on the design philosophy introduced in [The 90/10 Risk Rule](/blog/the-90-10-risk-rule).*

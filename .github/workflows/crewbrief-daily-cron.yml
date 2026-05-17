@@ -1,0 +1,32 @@
+name: CrewBrief Daily Nurture Enrollment
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  check-enrollments:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call check-enrollments endpoint
+        run: |
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            https://crewbrief.avva.aero/api/crewbrief/nurture/check-enrollments \
+            -H "Content-Type: application/json")
+          if [ "$RESPONSE" -ne 200 ]; then
+            echo "ERROR: check-enrollments returned HTTP $RESPONSE"
+            exit 1
+          fi
+          echo "check-enrollments completed (HTTP $RESPONSE)"
+
+      - name: Call process-scheduled endpoint
+        run: |
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            https://crewbrief.avva.aero/api/crewbrief/nurture/process-scheduled \
+            -H "Content-Type: application/json")
+          if [ "$RESPONSE" -ne 200 ]; then
+            echo "ERROR: process-scheduled returned HTTP $RESPONSE"
+            exit 1
+          fi
+          echo "process-scheduled completed (HTTP $RESPONSE)"
