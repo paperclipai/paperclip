@@ -199,6 +199,18 @@
     height: 100%;
     overflow: hidden;
   }
+  /* Nothing-Phone dot-matrix wallpaper. Subtle radial-dot pattern on the
+     app background — invisible at first glance but gives surfaces a faint
+     "glyph grid" texture that reads as Nothing. Dark mode only. */
+  .dark body {
+    background-image: radial-gradient(
+      circle,
+      color-mix(in oklab, var(--foreground) 6%, transparent) 1px,
+      transparent 1px
+    );
+    background-size: 22px 22px;
+    background-position: 0 0;
+  }
   h1,
   h2,
   h3 {

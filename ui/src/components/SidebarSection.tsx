@@ -87,7 +87,13 @@ function SidebarSectionHeader({
     "h-5 w-5 shrink-0 text-muted-foreground/60 transition-opacity hover:text-foreground data-[state=open]:opacity-100",
     headerControlVisibilityClassName,
   );
-  const headerContent = <span className={labelClassName}>{label}</span>;
+  const headerContent = (
+    <span className={labelClassName}>
+      <span aria-hidden="true" className="opacity-50">[ </span>
+      {label}
+      <span aria-hidden="true" className="opacity-50"> ]</span>
+    </span>
+  );
   const HeaderActionIcon = headerAction?.icon;
 
   const headingControl = hasMenu ? (
