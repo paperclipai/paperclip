@@ -58,3 +58,6 @@ tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
 .release-monitor-state.json
+
+# CrewBrief runtime analytics artifact
+server/crewbrief-analytics-events.jsonl
