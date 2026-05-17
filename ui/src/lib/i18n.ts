@@ -574,6 +574,11 @@ export const orchestrationInjectionPage = {
   run: "运行",
   runRowIdLabel: "运行 ID",
   copyRunCardAria: "复制运行卡片全文",
+  runDetailAgentRunMirror: "与智能体运行页一致",
+  runDetailAgentRunMirrorHint:
+    "下列区块与「智能体 → 智能体运行」标签内右侧展开一致：运行摘要、用量、会话、关联事务与完整运行记录。",
+  openInAgentRuns: "在智能体运行中打开",
+  runDetailAgentMissing: "当前团队暂无该智能体元数据，无法渲染完整运行面板；请确认公司上下文与智能体列表已加载。",
   copyContextSnapshotCardAria: "复制运行快照全文",
   copyWakePayloadCardAria: "复制唤醒载荷全文",
   agent: "智能体",

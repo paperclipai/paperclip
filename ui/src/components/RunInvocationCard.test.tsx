@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ThemeProvider } from "../context/ThemeContext";
-import { RunInvocationCard } from "../pages/AgentDetail";
+import { RunInvocationCard } from "./HeartbeatRunDetailPanel";
 
 describe("RunInvocationCard", () => {
   it("keeps verbose invocation details collapsed by default", () => {

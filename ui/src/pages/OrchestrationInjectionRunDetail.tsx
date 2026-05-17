@@ -16,7 +16,8 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { parseEffectiveTrigger } from "../lib/wake-attribution";
-import { agentUrl, formatDateTime } from "../lib/utils";
+import { HeartbeatRunDetailPanel } from "../components/HeartbeatRunDetailPanel";
+import { agentRouteRef, agentUrl, formatDateTime } from "../lib/utils";
 import { Link, useParams, useSearchParams } from "@/lib/router";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { nav, orchestrationInjectionPage } from "../lib/i18n";
@@ -886,42 +887,58 @@ export function OrchestrationInjectionRunDetail() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="record" className="mt-4">
-          <Card>
-            <CardHeader className="pb-3">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <TabsContent value="record" className="mt-4 space-y-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="space-y-1">
+              <div className="text-sm font-medium text-foreground">{orchestrationInjectionPage.runDetailAgentRunMirror}</div>
+              <p className="text-xs text-muted-foreground">{orchestrationInjectionPage.runDetailAgentRunMirrorHint}</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="outline" size="sm" asChild>
+                <Link to={`/agents/${agentRouteRef(agentsById.get(run.agentId) ?? { id: run.agentId })}/runs/${run.id}`}>
+                  {orchestrationInjectionPage.openInAgentRuns}
+                </Link>
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={!runCardCopyText}
+                aria-label={orchestrationInjectionPage.copyRunCardAria}
+                onClick={() => void copyRunCard()}
+              >
+                {runCardCopied ? <Check className="mr-1.5 h-3.5 w-3.5" aria-hidden /> : <Copy className="mr-1.5 h-3.5 w-3.5" aria-hidden />}
+                {runCardCopied ? orchestrationInjectionPage.copyFinalPromptDone : orchestrationInjectionPage.copyFinalPrompt}
+              </Button>
+            </div>
+          </div>
+          {agentsById.get(run.agentId) ? (
+            <HeartbeatRunDetailPanel
+              key={run.id}
+              run={run}
+              agentRouteId={agentRouteRef(agentsById.get(run.agentId)!)}
+              adapterType={agentsById.get(run.agentId)!.adapterType}
+              adapterConfig={(agentsById.get(run.agentId)!.adapterConfig ?? {}) as Record<string, unknown>}
+            />
+          ) : (
+            <Card>
+              <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-base">
                   <Activity className="h-4 w-4 text-muted-foreground" aria-hidden />
                   {orchestrationInjectionPage.run}
                 </CardTitle>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="w-full shrink-0 sm:w-auto"
-                  disabled={!runCardCopyText}
-                  aria-label={orchestrationInjectionPage.copyRunCardAria}
-                  onClick={() => void copyRunCard()}
-                >
-                  {runCardCopied ? <Check className="mr-1.5 h-3.5 w-3.5" aria-hidden /> : <Copy className="mr-1.5 h-3.5 w-3.5" aria-hidden />}
-                  {runCardCopied ? orchestrationInjectionPage.copyFinalPromptDone : orchestrationInjectionPage.copyFinalPrompt}
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              <DetailRow label={orchestrationInjectionPage.runRowIdLabel} value={run.id} />
-              <DetailRow label={orchestrationInjectionPage.status} value={runStatusLabel(run.status)} />
-              <DetailRow label={orchestrationInjectionPage.source} value={runReason(run)} />
-              <DetailRow label={orchestrationInjectionPage.startedAt} value={run.startedAt ? formatDateTime(run.startedAt) : null} />
-              <DetailRow label={orchestrationInjectionPage.createdAt} value={formatDateTime(run.createdAt)} />
-              <DetailRow label={orchestrationInjectionPage.agent} value={agentsById.get(run.agentId)?.name ?? run.agentId} />
-              {agentsById.get(run.agentId) ? (
-                <Link to={agentUrl(agentsById.get(run.agentId)!)} className="text-sm text-primary hover:underline">
-                  {agentsById.get(run.agentId)!.name}
-                </Link>
-              ) : null}
-            </CardContent>
-          </Card>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                <DetailRow label={orchestrationInjectionPage.runRowIdLabel} value={run.id} />
+                <DetailRow label={orchestrationInjectionPage.status} value={runStatusLabel(run.status)} />
+                <DetailRow label={orchestrationInjectionPage.source} value={runReason(run)} />
+                <DetailRow label={orchestrationInjectionPage.startedAt} value={run.startedAt ? formatDateTime(run.startedAt) : null} />
+                <DetailRow label={orchestrationInjectionPage.createdAt} value={formatDateTime(run.createdAt)} />
+                <DetailRow label={orchestrationInjectionPage.agent} value={run.agentId} />
+                <p className="text-xs text-muted-foreground">{orchestrationInjectionPage.runDetailAgentMissing}</p>
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
       </Tabs>
     </div>
