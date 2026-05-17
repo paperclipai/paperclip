@@ -7,6 +7,18 @@ import { getRememberedInvitePath } from "../lib/invite-memory";
 import { Button } from "@/components/ui/button";
 import { AsciiArtAnimation } from "@/components/AsciiArtAnimation";
 import { Sparkles } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  isUnauthenticatedDevelopmentLoginAvailable,
+  unauthenticatedLoginAdapter,
+} from "@/features/auth/adapters/unauthenticated-login.adapter";
 
 type AuthMode = "sign_in" | "sign_up";
 
@@ -19,11 +31,13 @@ export function AuthPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [showUnauthenticatedWarning, setShowUnauthenticatedWarning] = useState(false);
 
   const nextPath = useMemo(
     () => searchParams.get("next") || getRememberedInvitePath() || "/",
     [searchParams],
   );
+  const showUnauthenticatedEntry = isUnauthenticatedDevelopmentLoginAvailable();
   const { data: session, isLoading: isSessionLoading } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -172,6 +186,18 @@ export function AuthPage() {
               {mode === "sign_in" ? "Create one" : "Sign in"}
             </button>
           </div>
+          {showUnauthenticatedEntry && (
+            <div className="mt-4 border-t border-border pt-4">
+              <Button
+                type="button"
+                variant="ghost"
+                className="w-full"
+                onClick={() => setShowUnauthenticatedWarning(true)}
+              >
+                Proceed without login
+              </Button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -179,6 +205,37 @@ export function AuthPage() {
       <div className="hidden md:block w-1/2 overflow-hidden">
         <AsciiArtAnimation />
       </div>
+      <Dialog
+        open={showUnauthenticatedEntry && showUnauthenticatedWarning}
+        onOpenChange={setShowUnauthenticatedWarning}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Continue without login?</DialogTitle>
+            <DialogDescription>
+              You are about to enter Paperclip without signing in. Some features may be limited, unavailable, or not persisted to your account.
+            </DialogDescription>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Only continue if you understand the limitations of unauthenticated mode.
+          </p>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setShowUnauthenticatedWarning(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={() => unauthenticatedLoginAdapter.proceed({ nextPath })}
+            >
+              Continue without login
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
