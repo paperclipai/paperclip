@@ -1,10 +1,12 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
-/* Nothing-Phone-inspired display font — geometric monospace, uppercase-only.
-   Loaded via Google Fonts CDN. Used for page titles + empty-state headlines
-   via the .font-display utility. Body text continues to use the system stack. */
-@import url('https://fonts.googleapis.com/css2?family=Major+Mono+Display&display=swap');
+/* Nothing-Phone-inspired display fonts. Silkscreen is a bitmap/dot-pixel
+   font that approximates the NDot look used on NothingOS clocks and big
+   numerals. Loaded via Google Fonts CDN. Used for page titles, empty-state
+   headlines, and prominent counters via the .font-display utility. Body
+   text continues to use the system stack. */
+@import url('https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&display=swap');
 
 @custom-variant dark (&:is(.dark *));
 
@@ -41,7 +43,7 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
-  --font-display: "Major Mono Display", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-display: "Silkscreen", ui-monospace, SFMono-Regular, Menlo, monospace;
 
   --radius-sm: 0.375rem;
   --radius-md: 0.5rem;
@@ -128,7 +130,8 @@
   --glass-border-light: rgb(255 255 255 / 0.06);
   --glass-inner-highlight: linear-gradient(180deg, rgb(255 255 255 / 0.08) 0%, rgb(255 255 255 / 0) 100%);
 
-  --background: oklch(0.145 0 0);
+  /* Pure Nothing-OS black — the dot wallpaper pops on absolute black. */
+  --background: oklch(0 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);
   --card-foreground: oklch(0.985 0 0);

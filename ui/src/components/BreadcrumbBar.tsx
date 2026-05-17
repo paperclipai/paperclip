@@ -169,7 +169,7 @@ export function BreadcrumbBar() {
         {menuButton}
         {inboxButton}
         <div className="min-w-0 overflow-hidden flex-1">
-          <h1 className="font-display text-base truncate">
+          <h1 className="font-display text-lg leading-none truncate">
             {breadcrumbs[0].label}
           </h1>
         </div>
