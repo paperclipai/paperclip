@@ -10,6 +10,7 @@ import { redactCommandText } from "./command-redaction.js";
 import type {
   AdapterSkillEntry,
   AdapterSkillSnapshot,
+  AdapterPromptSection,
 } from "./types.js";
 
 export interface RunProcessResult {
@@ -336,6 +337,23 @@ export function joinPromptSections(
     .map((value) => (typeof value === "string" ? value.trim() : ""))
     .filter(Boolean)
     .join(separator);
+}
+
+/** Join prompt chunks like {@link joinPromptSections} and retain labeled sections for run observability. */
+export function joinPromptSectionsLabeled(
+  sections: ReadonlyArray<{ id: string; body: string | null | undefined }>,
+  separator = "\n\n",
+): { prompt: string; promptSections: AdapterPromptSection[] } {
+  const promptSections = sections
+    .map((section) => ({
+      id: section.id,
+      body: typeof section.body === "string" ? section.body.trim() : "",
+    }))
+    .filter((section) => section.body.length > 0);
+  return {
+    prompt: promptSections.map((s) => s.body).join(separator),
+    promptSections,
+  };
 }
 
 type PaperclipWakeIssue = {

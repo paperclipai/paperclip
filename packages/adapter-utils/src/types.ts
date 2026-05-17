@@ -107,6 +107,12 @@ export interface AdapterSessionCodec {
   getDisplayId?: (params: Record<string, unknown> | null) => string | null;
 }
 
+export interface AdapterPromptSection {
+  /** Stable id for observability UI (board maps to localized labels). */
+  id: string;
+  body: string;
+}
+
 export interface AdapterInvocationMeta {
   adapterType: string;
   command: string;
@@ -116,6 +122,8 @@ export interface AdapterInvocationMeta {
   env?: Record<string, string>;
   prompt?: string;
   promptMetrics?: Record<string, number>;
+  /** When present, each non-empty chunk that was joined (\\n\\n) into `prompt` for stdin. */
+  promptSections?: AdapterPromptSection[];
   context?: Record<string, unknown>;
 }
 
