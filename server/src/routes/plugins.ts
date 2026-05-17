@@ -1097,7 +1097,7 @@ export function pluginRoutes(
       return;
     }
 
-    assertPluginBridgeScope(req, body.companyId);
+    const companyId = assertPluginBridgeScope(req, body.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1105,6 +1105,7 @@ export function pluginRoutes(
         "getData",
         {
           key: body.key,
+          companyId: companyId ?? null,
           params: body.params ?? {},
           renderEnvironment: body.renderEnvironment ?? null,
         },
@@ -1178,7 +1179,7 @@ export function pluginRoutes(
       return;
     }
 
-    assertPluginBridgeScope(req, body.companyId);
+    const companyId = assertPluginBridgeScope(req, body.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1186,6 +1187,7 @@ export function pluginRoutes(
         "performAction",
         {
           key: body.key,
+          companyId: companyId ?? null,
           params: body.params ?? {},
           renderEnvironment: body.renderEnvironment ?? null,
         },
@@ -1259,7 +1261,7 @@ export function pluginRoutes(
       renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
     } | undefined;
 
-    assertPluginBridgeScope(req, body?.companyId);
+    const companyId = assertPluginBridgeScope(req, body?.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1267,6 +1269,7 @@ export function pluginRoutes(
         "getData",
         {
           key,
+          companyId: companyId ?? null,
           params: body?.params ?? {},
           renderEnvironment: body?.renderEnvironment ?? null,
         },
@@ -1336,7 +1339,7 @@ export function pluginRoutes(
       renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
     } | undefined;
 
-    assertPluginBridgeScope(req, body?.companyId);
+    const companyId = assertPluginBridgeScope(req, body?.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1344,6 +1347,7 @@ export function pluginRoutes(
         "performAction",
         {
           key,
+          companyId: companyId ?? null,
           params: body?.params ?? {},
           renderEnvironment: body?.renderEnvironment ?? null,
         },

@@ -847,7 +847,7 @@ describe.sequential("plugin tool and bridge authz", () => {
       {},
       "catalog.prepare-company-import",
     ],
-  ] as const)("preserves plugin-owned params for %s bridge calls when company-scoped", async (_name, path, body, key) => {
+  ] as const)("passes host company scope separately from plugin-owned params for %s bridge calls", async (_name, path, body, key) => {
     readyPlugin();
     const call = vi.fn().mockResolvedValue({ ok: true });
     const { app } = await createApp(boardActor(), {}, {
@@ -873,6 +873,7 @@ describe.sequential("plugin tool and bridge authz", () => {
     expect(res.status).toBe(200);
     expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
       key,
+      companyId: companyA,
       params,
       renderEnvironment: null,
     });
@@ -898,6 +899,7 @@ describe.sequential("plugin tool and bridge authz", () => {
     expect(res.status).toBe(200);
     expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
       key: "sync",
+      companyId: null,
       params: {},
       renderEnvironment: null,
     });

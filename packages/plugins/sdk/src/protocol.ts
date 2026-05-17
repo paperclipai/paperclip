@@ -301,6 +301,8 @@ export interface RunJobParams {
 export interface GetDataParams {
   /** Plugin-defined data key (e.g. `"sync-health"`). */
   key: string;
+  /** Current host company scope, when the bridge call is company-scoped. */
+  companyId?: string | null;
   /** Context and query parameters from the UI. */
   params: Record<string, unknown>;
   /** Optional launcher/container metadata from the host render environment. */
@@ -315,6 +317,8 @@ export interface GetDataParams {
 export interface PerformActionParams {
   /** Plugin-defined action key (e.g. `"resync"`). */
   key: string;
+  /** Current host company scope, when the bridge call is company-scoped. */
+  companyId?: string | null;
   /** Action parameters from the UI. */
   params: Record<string, unknown>;
   /** Optional launcher/container metadata from the host render environment. */

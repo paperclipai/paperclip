@@ -1425,8 +1425,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       params.renderEnvironment === undefined
         ? params.params
         : { ...params.params, renderEnvironment: params.renderEnvironment };
-    const companyId = typeof handlerParams?.companyId === "string" ? handlerParams.companyId : null;
-    return runtimeCompanyContext.run({ companyId }, () => handler(handlerParams));
+    return runtimeCompanyContext.run({ companyId: params.companyId ?? null }, () => handler(handlerParams));
   }
 
   async function handlePerformAction(params: PerformActionParams): Promise<unknown> {
@@ -1438,8 +1437,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       params.renderEnvironment === undefined
         ? params.params
         : { ...params.params, renderEnvironment: params.renderEnvironment };
-    const companyId = typeof handlerParams?.companyId === "string" ? handlerParams.companyId : null;
-    return runtimeCompanyContext.run({ companyId }, () => handler(handlerParams));
+    return runtimeCompanyContext.run({ companyId: params.companyId ?? null }, () => handler(handlerParams));
   }
 
   async function handleExecuteTool(params: ExecuteToolParams): Promise<ToolResult> {

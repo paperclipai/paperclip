@@ -177,4 +177,87 @@ describe("startWorkerRpcHost runtime company context", () => {
 
     host.stop();
   });
+
+  it("uses bridge company context without mutating action handler params", async () => {
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const nextMessage = collectJsonLines(stdout);
+
+    const observedParams: unknown[] = [];
+    const plugin = definePlugin({
+      async setup(ctx) {
+        ctx.actions.register("import-company", async (params) => {
+          observedParams.push(params);
+          const config = await ctx.config.get();
+          const token = await ctx.secrets.resolve("77777777-7777-4777-8777-777777777777");
+          return { config, token };
+        });
+      },
+    });
+
+    const host = startWorkerRpcHost({ plugin, stdin, stdout });
+
+    writeMessage(stdin, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        manifest: { id: "test-plugin", name: "test-plugin", version: "1.0.0" },
+        config: {},
+        instanceInfo: { instanceId: "inst-1", hostVersion: "0.0.0-test" },
+        apiVersion: 1,
+      },
+    });
+    await expect(nextMessage()).resolves.toMatchObject({ id: 1, result: { ok: true } });
+
+    writeMessage(stdin, {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "performAction",
+      params: {
+        key: "import-company",
+        companyId: "paperclip-company-1",
+        params: {
+          companyId: "plugin-owned-company-id",
+          agentPath: "agents/ceo/AGENTS.md",
+        },
+      },
+    });
+
+    const configRequest = await nextMessage();
+    expect(configRequest).toMatchObject({
+      method: "config.get",
+      params: { companyId: "paperclip-company-1" },
+    });
+    writeMessage(stdin, {
+      jsonrpc: "2.0",
+      id: configRequest.id,
+      result: { mode: "company-config" },
+    });
+
+    const secretRequest = await nextMessage();
+    expect(secretRequest).toMatchObject({
+      method: "secrets.resolve",
+      params: {
+        secretRef: "77777777-7777-4777-8777-777777777777",
+        companyId: "paperclip-company-1",
+      },
+    });
+    writeMessage(stdin, {
+      jsonrpc: "2.0",
+      id: secretRequest.id,
+      result: "company-secret",
+    });
+
+    await expect(nextMessage()).resolves.toMatchObject({
+      id: 2,
+      result: { config: { mode: "company-config" }, token: "company-secret" },
+    });
+    expect(observedParams).toEqual([{
+      companyId: "plugin-owned-company-id",
+      agentPath: "agents/ceo/AGENTS.md",
+    }]);
+
+    host.stop();
+  });
 });
