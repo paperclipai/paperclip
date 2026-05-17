@@ -569,6 +569,7 @@ describe("worktree helpers", () => {
             intervalMinutes: 60,
             retentionDays: 30,
             dir: path.join(sourceConfigDir, "backups"),
+            excludeTables: sourceConfig.database.backup.excludeTables,
           },
           connectionString: sourceDb.connectionString,
         };
