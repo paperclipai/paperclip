@@ -469,19 +469,60 @@ async function resolveRunScopedMentionedSkillKeys(input: {
   ]);
   if (mentionedSkillIds.length === 0) return [];
 
-  const skillRows = await input.db
-    .select({
-      id: companySkillsTable.id,
-      key: companySkillsTable.key,
-    })
-    .from(companySkillsTable)
-    .where(
-      and(
-        eq(companySkillsTable.companyId, input.companyId),
-        inArray(companySkillsTable.id, mentionedSkillIds),
-      ),
-    );
-  const skillKeyById = new Map(skillRows.map((row) => [row.id, row.key]));
+  // Skill mention links are expected to embed the skill UUID, but legacy or
+  // manually-authored mentions may use the skill slug instead. Separate the
+  // two so we never pass a non-UUID string into the UUID-typed id column.
+  const uuidIds = mentionedSkillIds.filter((id) => isUuidLike(id));
+  const slugIds = mentionedSkillIds.filter((id) => !isUuidLike(id));
+
+  const skillKeyById = new Map<string, string>();
+
+  if (uuidIds.length > 0) {
+    const rows = await input.db
+      .select({
+        id: companySkillsTable.id,
+        key: companySkillsTable.key,
+      })
+      .from(companySkillsTable)
+      .where(
+        and(
+          eq(companySkillsTable.companyId, input.companyId),
+          inArray(companySkillsTable.id, uuidIds),
+        ),
+      );
+    for (const row of rows) {
+      skillKeyById.set(row.id, row.key);
+    }
+  }
+
+  if (slugIds.length > 0) {
+    // Fall back to slug lookup for non-UUID mentions. Only use unambiguous
+    // matches (exactly one skill with that slug in the company).
+    const rows = await input.db
+      .select({
+        slug: companySkillsTable.slug,
+        key: companySkillsTable.key,
+      })
+      .from(companySkillsTable)
+      .where(
+        and(
+          eq(companySkillsTable.companyId, input.companyId),
+          inArray(companySkillsTable.slug, slugIds),
+        ),
+      );
+    const keysBySlug = new Map<string, string[]>();
+    for (const row of rows) {
+      const keys = keysBySlug.get(row.slug) ?? [];
+      keys.push(row.key);
+      keysBySlug.set(row.slug, keys);
+    }
+    for (const [slug, keys] of keysBySlug.entries()) {
+      if (keys.length === 1) {
+        skillKeyById.set(slug, keys[0]!);
+      }
+    }
+  }
+
   return mentionedSkillIds
     .map((skillId) => skillKeyById.get(skillId) ?? null)
     .filter((skillKey): skillKey is string => Boolean(skillKey));
