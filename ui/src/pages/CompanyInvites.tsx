@@ -113,7 +113,7 @@ export function CompanyInvites() {
         allowedJoinTypes: "human",
         humanRole,
         agentMessage: null,
-    }),
+      }),
     onSuccess: async (invite) => {
       setLatestInviteUrl(invite.inviteUrl);
       setLatestInviteCopied(false);
