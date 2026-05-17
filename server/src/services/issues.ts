@@ -82,6 +82,8 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
+const SYSTEMD_ALERT_OPEN_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
+const SYSTEMD_ALERT_AUTO_CLOSE_AFTER_MS = 24 * 60 * 60 * 1000;
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -3225,6 +3227,13 @@ export function issueService(db: Db) {
 
         // Anti-dupe alerting: systemd_alert deduplication
         // Один открытый тикет per unit+service fingerprint
+        if (values.originKind === "systemd_alert" && !values.originFingerprint) {
+          throw unprocessable("systemd_alert issues require originFingerprint");
+        }
+        if (values.originKind === "systemd_alert" && values.originFingerprint === "default") {
+          throw unprocessable("systemd_alert originFingerprint cannot be 'default'");
+        }
+
         if (values.originKind === "systemd_alert" && values.originFingerprint) {
           const existing = await tx
             .select()
@@ -3235,7 +3244,7 @@ export function issueService(db: Db) {
                 eq(issues.originKind, "systemd_alert"),
                 eq(issues.originFingerprint, values.originFingerprint),
                 isNull(issues.hiddenAt),
-                inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]),
+                inArray(issues.status, [...SYSTEMD_ALERT_OPEN_STATUSES]),
               ),
             )
             .then((rows) => rows[0] ?? null);
@@ -3320,6 +3329,25 @@ export function issueService(db: Db) {
       if (issueData.requestDepth !== undefined) {
         patch.requestDepth = clampIssueRequestDepth(issueData.requestDepth);
       }
+      const nextExecutionState = issueData.executionState !== undefined
+        ? parseObject(issueData.executionState)
+        : parseObject(existing.executionState);
+      const nextStatus = (patch.status ?? existing.status) as string;
+      if (
+        existing.originKind === "systemd_alert" &&
+        SYSTEMD_ALERT_OPEN_STATUSES.includes(nextStatus as (typeof SYSTEMD_ALERT_OPEN_STATUSES)[number])
+      ) {
+        const lastGreenAtRaw = nextExecutionState.lastGreenAt;
+        if (typeof lastGreenAtRaw === "string" && lastGreenAtRaw.length > 0) {
+          const lastGreenAt = new Date(lastGreenAtRaw);
+          if (
+            Number.isFinite(lastGreenAt.getTime()) &&
+            Date.now() - lastGreenAt.getTime() >= SYSTEMD_ALERT_AUTO_CLOSE_AFTER_MS
+          ) {
+            patch.status = "done";
+          }
+        }
+      }
 
       const nextAssigneeAgentId =
         issueData.assigneeAgentId !== undefined ? issueData.assigneeAgentId : existing.assigneeAgentId;
@@ -3368,7 +3396,7 @@ export function issueService(db: Db) {
         await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
       }
 
-      applyStatusSideEffects(issueData.status, patch);
+      applyStatusSideEffects(patch.status, patch);
       if (issueData.status && issueData.status !== "done") {
         patch.completedAt = null;
       }

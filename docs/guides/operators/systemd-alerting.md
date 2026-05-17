@@ -1,4 +1,4 @@
-# Systemd Alerting — Anti-Dedupe Pipeline
+# Systemd Alerting - Dedupe Pipeline
 
 ## Overview
 
@@ -8,9 +8,10 @@
 
 When creating an issue with `originKind: "systemd_alert"`:
 
-1. Paperclip checks if an open issue exists with the same `originFingerprint` (unit + service combo)
-2. If exists: adds a comment with recurrence timestamp and returns the existing issue
-3. If not: creates a new issue
+1. `originFingerprint` is required and must be unique per `{host}:{unit}`.
+2. Paperclip checks if an open issue exists with the same `originFingerprint`.
+3. If an open issue exists, Paperclip posts a recurrence comment and returns that issue.
+4. If no open issue exists, Paperclip creates a new issue.
 
 ## Usage
 
@@ -40,20 +41,18 @@ Examples:
 
 ### Auto-Closing After 24h Green
 
-Create a routine that:
-1. Checks systemd unit status via health-check.sh
-2. Updates `executionState.lastGreenAt` when unit is healthy
-3. Closes issue if `lastGreenAt` was 24+ hours ago
+When a monitor observes the unit healthy, it should update `executionState.lastGreenAt`.
+Paperclip auto-closes open `systemd_alert` issues when `lastGreenAt` is 24+ hours old.
 
-Example routine logic:
-```typescript
-const issue = await findOpenSystemdAlertIssue(fingerprint);
-if (issue && issue.executionState?.lastGreenAt) {
-  const hoursSinceGreen = (Date.now() - new Date(issue.executionState.lastGreenAt).getTime()) / 3600000;
-  if (hoursSinceGreen >= 24) {
-    await closeIssue(issue.id, { comment: "Auto-closed after 24h green" });
-  }
-}
+Example monitor-side update:
+```bash
+curl -X PATCH "http://localhost:3100/api/companies/{companyId}/issues/{issueId}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "executionState": {
+      "lastGreenAt": "2026-05-17T10:00:00.000Z"
+    }
+  }'
 ```
 
 ## Database Schema
@@ -70,6 +69,6 @@ CREATE UNIQUE INDEX issues_active_systemd_alert_incident_uq
 
 ## Related
 
-- Migration: `0073_systemm_alert_dedupe.sql`
-- Code: `server/src/services/issues.ts` (create method, line 2643)
+- Migration: `0085_systemd_alert_dedupe.sql`
+- Code: `server/src/services/issues.ts` (`create` + `update`)
 - Issue: OFM-236
