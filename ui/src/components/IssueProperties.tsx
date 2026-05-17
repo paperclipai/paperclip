@@ -100,16 +100,16 @@ function defaultExecutionWorkspaceModeForProject(project: { executionWorkspacePo
   return "shared_workspace";
 }
 
-function primaryWorkspaceIdForProject(project: Pick<Project, "primaryWorkspace" | "workspaces"> | null | undefined) {
+function primaryWorkspaceIdForProject(project: Partial<Pick<Project, "primaryWorkspace" | "workspaces">> | null | undefined) {
   return project?.primaryWorkspace?.id
-    ?? project?.workspaces.find((workspace) => workspace.isPrimary)?.id
-    ?? project?.workspaces[0]?.id
+    ?? project?.workspaces?.find((workspace) => workspace.isPrimary)?.id
+    ?? project?.workspaces?.[0]?.id
     ?? null;
 }
 
 function isMainIssueWorkspace(input: {
   issue: Pick<Issue, "projectWorkspaceId" | "currentExecutionWorkspace">;
-  project: Pick<Project, "primaryWorkspace" | "workspaces"> | null | undefined;
+  project: Partial<Pick<Project, "primaryWorkspace" | "workspaces">> | null | undefined;
 }) {
   const workspace = input.issue.currentExecutionWorkspace ?? null;
   const primaryWorkspaceId = primaryWorkspaceIdForProject(input.project);
