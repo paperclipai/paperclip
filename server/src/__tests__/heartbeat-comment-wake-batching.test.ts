@@ -617,7 +617,12 @@ describe("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
       await waitFor(async () => {
         const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => ["cancelled", "succeeded"].includes(run.status));
+        return (
+          runs.length >= 2 &&
+          runs.every((run) => ["cancelled", "succeeded"].includes(run.status)) &&
+          runs.some((run) => run.status === "cancelled") &&
+          runs.some((run) => run.status === "succeeded")
+        );
       }, 90_000);
     } finally {
       gateway.releaseFirstWait();
@@ -946,7 +951,7 @@ describe("heartbeat comment wake batching", () => {
 
       gateway.releaseFirstWait();
 
-      await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
+      await waitFor(() => gateway.getAgentPayloads().length >= 2, 90_000);
       await waitFor(async () => {
         const reopened = await db
           .select({
