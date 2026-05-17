@@ -50,4 +50,3 @@ export function evaluateContracts(
 }
 
 export { detectContractTypes };
-export type { ContractType, VerificationResult, ContractViolation };

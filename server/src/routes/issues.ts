@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { checkDoneGate } from "../contracts/gate.js";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
@@ -2730,6 +2731,23 @@ export function issueRoutes(
     if (assigneeWillChange && !transition.workflowControlledAssignment) {
       if (!isAgentReturningIssueToCreator) {
         await assertCanAssignTasks(req, existing.companyId);
+      }
+    }
+
+    // Completion contract gate — runs before persisting status=done
+    if (updateFields.status === "done" && existing.status !== "done") {
+      const gateResult = await checkDoneGate(db, id, actor.agentId ?? null);
+      if (!gateResult.ok && gateResult.enforcingViolations.length > 0) {
+        const first = gateResult.enforcingViolations[0];
+        res.status(422).json({
+          error: "completion_contract_violated",
+          contract: first.contract,
+          missing: first.missing,
+          evidenceQuery: first.evidenceQuery,
+          overridePath: `POST /api/issues/${id}/contract-override with { contract, reason, approver }`,
+          allViolations: gateResult.enforcingViolations,
+        });
+        return;
       }
     }
 
