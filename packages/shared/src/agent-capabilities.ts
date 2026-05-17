@@ -75,6 +75,13 @@ export const agentCapabilityMcpServerSchema = z
     assertNoSecretLikeString(server.command, ctx, ["command"]);
     assertNoSecretLikeString(server.remoteUrl, ctx, ["remoteUrl"]);
     assertNoSecretLikeString(server.notes, ctx, ["notes"]);
+    // requiredSecretNames must be env-style identifiers AND must not embed
+    // credential-shaped values. The env-name regex alone accepts uppercase
+    // alphanumerics, so a shape like "AKIA…" can pass the identifier check
+    // while still being a raw credential.
+    for (const [index, secretName] of server.requiredSecretNames.entries()) {
+      assertNoSecretLikeString(secretName, ctx, ["requiredSecretNames", index]);
+    }
   });
 export type AgentCapabilityMcpServer = z.infer<typeof agentCapabilityMcpServerSchema>;
 

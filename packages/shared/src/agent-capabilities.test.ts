@@ -98,6 +98,44 @@ describe("agent capability config schema", () => {
     ).toThrow(/secret/i);
   });
 
+  // LET-321 reviewer fix: requiredSecretNames previously only enforced the
+  // env-style identifier regex, so an uppercase credential shape (e.g. an
+  // AWS access key id like AKIA<16 upper/digits>) could pass as a "name".
+  // The schema must also run the raw-secret detector against each entry.
+  it("rejects credential-shaped values smuggled into requiredSecretNames", () => {
+    const awsKeyShape = `${"AK" + "IA"}1234567890ABCDEF`;
+    expect(() =>
+      agentCapabilityConfigSchema.parse({
+        mcpServers: [
+          {
+            id: "secret-name-leak",
+            provider: "manual",
+            displayName: "Looks fine",
+            transport: "stdio",
+            command: "npx safe",
+            requiredSecretNames: [awsKeyShape],
+          },
+        ],
+      }),
+    ).toThrow(/secret/i);
+
+    // Sanity check: a real env-style name with no credential shape still parses.
+    expect(() =>
+      agentCapabilityConfigSchema.parse({
+        mcpServers: [
+          {
+            id: "safe-secret-name",
+            provider: "manual",
+            displayName: "Looks fine",
+            transport: "stdio",
+            command: "npx safe",
+            requiredSecretNames: ["SAFE_ENV_NAME"],
+          },
+        ],
+      }),
+    ).not.toThrow();
+  });
+
   it("builds audit summaries without commands, urls, or secret values", () => {
     const config = agentCapabilityConfigSchema.parse({
       mcpServers: [

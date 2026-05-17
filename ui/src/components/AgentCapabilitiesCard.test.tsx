@@ -544,6 +544,344 @@ describe("AgentCapabilitiesCard", () => {
     await unmount(root);
   });
 
+  // LET-321: Custom MCP server form coverage.
+  describe("Custom MCP server form", () => {
+    async function setInput(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
+      const proto =
+        input instanceof HTMLTextAreaElement
+          ? window.HTMLTextAreaElement.prototype
+          : window.HTMLInputElement.prototype;
+      const nativeValueSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+      await act(async () => {
+        nativeValueSetter?.call(input, value);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+
+    async function setSelect(select: HTMLSelectElement, value: string) {
+      const nativeValueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLSelectElement.prototype,
+        "value",
+      )?.set;
+      await act(async () => {
+        nativeValueSetter?.call(select, value);
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+    }
+
+    function field<T extends HTMLElement = HTMLInputElement>(label: string): T {
+      const el = container.querySelector(`[aria-label="${label}"]`);
+      if (!el) throw new Error(`Field with aria-label "${label}" not found`);
+      return el as unknown as T;
+    }
+
+    async function openCustomTab() {
+      await clickTab(container, "Custom");
+      await waitFor(() => expect(container.textContent).toContain("Add a custom MCP server"));
+    }
+
+    it("adds a valid stdio custom MCP server with named secret reference to the desired-config draft", async () => {
+      mockGetCapabilities.mockResolvedValue(response());
+
+      const root = renderInClient(container, <AgentCapabilitiesCard agentId="agent-1" companyId="company-1" />);
+      await waitFor(() => expect(container.textContent).toContain("MCP / skills / tools capabilities"));
+
+      await openCustomTab();
+
+      await setInput(field("Custom MCP id"), "my-custom-mcp");
+      await setInput(field("Custom MCP display name"), "My custom MCP");
+      await setInput(field("Custom MCP command"), "npx -y @example/mcp-server");
+      await setInput(field("Custom MCP required secret names"), "MY_API_KEY, ANOTHER_TOKEN_NAME");
+
+      await clickByText(container, "Add custom MCP to draft");
+
+      const advancedTextarea = container.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Capability desired config JSON"]',
+      );
+      expect(advancedTextarea?.value).toContain('"id": "my-custom-mcp"');
+      expect(advancedTextarea?.value).toContain('"provider": "manual"');
+      expect(advancedTextarea?.value).toContain('"transport": "stdio"');
+      expect(advancedTextarea?.value).toContain('"command": "npx -y @example/mcp-server"');
+      expect(advancedTextarea?.value).toContain('"MY_API_KEY"');
+      expect(advancedTextarea?.value).toContain('"ANOTHER_TOKEN_NAME"');
+      expect(advancedTextarea?.value).toContain('"liveState": "not_installed"');
+      expect(advancedTextarea?.value).toContain('"liveApply": false');
+      expect(advancedTextarea?.value).toContain('"liveExternalActions": false');
+
+      await unmount(root);
+    });
+
+    it("adds a valid remote (streamable_http) custom MCP server only when remoteUrl is provided", async () => {
+      mockGetCapabilities.mockResolvedValue(response());
+
+      const root = renderInClient(container, <AgentCapabilitiesCard agentId="agent-1" companyId="company-1" />);
+      await waitFor(() => expect(container.textContent).toContain("MCP / skills / tools capabilities"));
+
+      await openCustomTab();
+
+      await setInput(field("Custom MCP id"), "remote-mcp");
+      await setInput(field("Custom MCP display name"), "Remote MCP");
+      await setSelect(field<HTMLSelectElement>("Custom MCP transport"), "streamable_http");
+
+      // Missing remoteUrl should block submission.
+      await clickByText(container, "Add custom MCP to draft");
+      expect(container.textContent).toContain("remote MCP servers must include remoteUrl");
+
+      // Provide the URL and submit again.
+      await setInput(field("Custom MCP remote URL"), "https://mcp.example.com/endpoint");
+      await clickByText(container, "Add custom MCP to draft");
+
+      const advancedTextarea = container.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Capability desired config JSON"]',
+      );
+      expect(advancedTextarea?.value).toContain('"id": "remote-mcp"');
+      expect(advancedTextarea?.value).toContain('"transport": "streamable_http"');
+      expect(advancedTextarea?.value).toContain('"remoteUrl": "https://mcp.example.com/endpoint"');
+
+      await unmount(root);
+    });
+
+    it("blocks duplicate ids against existing draft entries", async () => {
+      mockGetCapabilities.mockResolvedValue(
+        response({
+          config: {
+            version: 1,
+            mcpServers: [
+              {
+                id: "paperclip-local",
+                provider: "manual",
+                displayName: "Paperclip MCP",
+                transport: "stdio",
+                command: "npx -y @paperclipai/mcp-server",
+                requiredSecretNames: ["PAPERCLIP_API_KEY"],
+                desiredState: "enabled",
+                liveState: "not_installed",
+              },
+            ],
+            skillRefs: [],
+            toolRefs: [],
+            liveApply: false,
+            liveExternalActions: false,
+          },
+        }),
+      );
+
+      const root = renderInClient(container, <AgentCapabilitiesCard agentId="agent-1" companyId="company-1" />);
+      await waitFor(() => expect(container.textContent).toContain("MCP / skills / tools capabilities"));
+
+      await openCustomTab();
+
+      await setInput(field("Custom MCP id"), "paperclip-local");
+      await setInput(field("Custom MCP display name"), "Should not add");
+      await setInput(field("Custom MCP command"), "npx -y other");
+
+      await clickByText(container, "Add custom MCP to draft");
+
+      expect(container.textContent).toContain(
+        'An MCP server with id "paperclip-local" already exists in the draft.',
+      );
+
+      // Draft must still only contain the original entry (no duplicate appended).
+      const advancedTextarea = container.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Capability desired config JSON"]',
+      );
+      const matches = advancedTextarea?.value.match(/"id": "paperclip-local"/g) ?? [];
+      expect(matches.length).toBe(1);
+      expect(advancedTextarea?.value).not.toContain("Should not add");
+
+      await unmount(root);
+    });
+
+    it("blocks invalid secret names that are not env-style identifiers", async () => {
+      mockGetCapabilities.mockResolvedValue(response());
+
+      const root = renderInClient(container, <AgentCapabilitiesCard agentId="agent-1" companyId="company-1" />);
+      await waitFor(() => expect(container.textContent).toContain("MCP / skills / tools capabilities"));
+
+      await openCustomTab();
+
+      await setInput(field("Custom MCP id"), "needs-clean-secret");
+      await setInput(field("Custom MCP display name"), "Needs clean secret");
+      await setInput(field("Custom MCP command"), "npx clean");
+      // lower-case + hyphens are not valid env-style identifiers.
+      await setInput(field("Custom MCP required secret names"), "lower-case-name");
+
+      await clickByText(container, "Add custom MCP to draft");
+
+      expect(container.textContent).toContain("Secret names must be environment-style identifiers");
+
+      const advancedTextarea = container.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Capability desired config JSON"]',
+      );
+      expect(advancedTextarea?.value).not.toContain('"id": "needs-clean-secret"');
+
+      await unmount(root);
+    });
+
+    it("blocks raw secret-like values pasted into free-text fields (notes)", async () => {
+      mockGetCapabilities.mockResolvedValue(response());
+
+      const root = renderInClient(container, <AgentCapabilitiesCard agentId="agent-1" companyId="company-1" />);
+      await waitFor(() => expect(container.textContent).toContain("MCP / skills / tools capabilities"));
+
+      await openCustomTab();
+
+      await setInput(field("Custom MCP id"), "no-raw-secret");
+      await setInput(field("Custom MCP display name"), "Clean name");
+      await setInput(field("Custom MCP command"), "npx clean");
+      // Build a bearer-shaped value from fragments so the test still exercises
+      // the schema's raw-secret detector without embedding a scanner-tripping
+      // literal in the source file (same hygiene pattern as
+      // agent-capabilities.test.ts).
+      const bearerLeak = `leak: ${["Bear", "er"].join("")} abcdef0123456789ABCDEF`;
+      await setInput(field<HTMLTextAreaElement>("Custom MCP notes"), bearerLeak);
+
+      await clickByText(container, "Add custom MCP to draft");
+
+      expect(container.textContent).toContain(
+        "Capability config must reference named secrets, not include raw secret values",
+      );
+
+      const advancedTextarea = container.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Capability desired config JSON"]',
+      );
+      expect(advancedTextarea?.value).not.toContain('"id": "no-raw-secret"');
+
+      await unmount(root);
+    });
+
+    // LET-321 reviewer fix: an uppercase credential shape (e.g. AWS access key
+    // id) satisfies the env-style identifier regex on its own, so the schema
+    // also has to run the raw-secret detector against each requiredSecretNames
+    // entry. This test guards the named-secret field specifically.
+    it("blocks credential-shaped values pasted into required secret names", async () => {
+      mockGetCapabilities.mockResolvedValue(response());
+
+      const root = renderInClient(container, <AgentCapabilitiesCard agentId="agent-1" companyId="company-1" />);
+      await waitFor(() => expect(container.textContent).toContain("MCP / skills / tools capabilities"));
+
+      await openCustomTab();
+
+      await setInput(field("Custom MCP id"), "leaky-secret-name");
+      await setInput(field("Custom MCP display name"), "Leaky secret name");
+      await setInput(field("Custom MCP command"), "npx safe");
+      // Build an AWS-access-key-shaped value from fragments so the source file
+      // does not embed an actual AKIA literal that secret scanners would flag.
+      const awsKeyShape = `${"AK" + "IA"}1234567890ABCDEF`;
+      await setInput(field("Custom MCP required secret names"), awsKeyShape);
+
+      await clickByText(container, "Add custom MCP to draft");
+
+      expect(container.textContent).toContain(
+        "Capability config must reference named secrets, not include raw secret values",
+      );
+
+      const advancedTextarea = container.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Capability desired config JSON"]',
+      );
+      expect(advancedTextarea?.value).not.toContain('"id": "leaky-secret-name"');
+
+      await unmount(root);
+    });
+
+    it("blocks stdio submission when command is missing", async () => {
+      mockGetCapabilities.mockResolvedValue(response());
+
+      const root = renderInClient(container, <AgentCapabilitiesCard agentId="agent-1" companyId="company-1" />);
+      await waitFor(() => expect(container.textContent).toContain("MCP / skills / tools capabilities"));
+
+      await openCustomTab();
+
+      await setInput(field("Custom MCP id"), "missing-cmd");
+      await setInput(field("Custom MCP display name"), "Missing command");
+      // Leave command empty.
+
+      await clickByText(container, "Add custom MCP to draft");
+
+      expect(container.textContent).toContain("stdio MCP servers must include a command");
+
+      const advancedTextarea = container.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Capability desired config JSON"]',
+      );
+      expect(advancedTextarea?.value).not.toContain('"id": "missing-cmd"');
+
+      await unmount(root);
+    });
+
+    it("forces provider=manual and liveState=not_installed even when the form posts a custom entry", async () => {
+      mockGetCapabilities.mockResolvedValue(response());
+
+      const root = renderInClient(container, <AgentCapabilitiesCard agentId="agent-1" companyId="company-1" />);
+      await waitFor(() => expect(container.textContent).toContain("MCP / skills / tools capabilities"));
+
+      await openCustomTab();
+
+      await setInput(field("Custom MCP id"), "force-safe-state");
+      await setInput(field("Custom MCP display name"), "Force safe state");
+      await setInput(field("Custom MCP command"), "npx safe");
+      await clickByText(container, "Add custom MCP to draft");
+
+      const advancedTextarea = container.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Capability desired config JSON"]',
+      );
+      expect(advancedTextarea?.value).toContain('"id": "force-safe-state"');
+      expect(advancedTextarea?.value).toContain('"provider": "manual"');
+      expect(advancedTextarea?.value).toContain('"liveState": "not_installed"');
+      expect(advancedTextarea?.value).toContain('"liveApply": false');
+      expect(advancedTextarea?.value).toContain('"liveExternalActions": false');
+
+      await unmount(root);
+    });
+  });
+
+  // LET-321 reviewer fix: a non-array mcpServers value in Advanced JSON used
+  // to crash the render when computing existing draft ids. The card must
+  // tolerate the malformed value and keep the Advanced JSON fallback usable.
+  it("survives a non-array mcpServers value in Advanced JSON without crashing", async () => {
+    mockGetCapabilities.mockResolvedValue(response());
+
+    const root = renderInClient(container, <AgentCapabilitiesCard agentId="agent-1" companyId="company-1" />);
+    await waitFor(() => expect(container.textContent).toContain("MCP / skills / tools capabilities"));
+
+    const advancedTextarea = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Capability desired config JSON"]',
+    );
+    expect(advancedTextarea).toBeTruthy();
+
+    const malformed = JSON.stringify(
+      {
+        version: 1,
+        mcpServers: { notAnArray: true },
+        skillRefs: [],
+        toolRefs: [],
+        liveApply: false,
+        liveExternalActions: false,
+      },
+      null,
+      2,
+    );
+    const nativeValueSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype,
+      "value",
+    )?.set;
+    await act(async () => {
+      nativeValueSetter?.call(advancedTextarea, malformed);
+      advancedTextarea!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    // The Custom tab triggers the existing-id memo path; it must render
+    // without throwing even though mcpServers is not iterable as an array.
+    await clickTab(container, "Custom");
+    await waitFor(() => expect(container.textContent).toContain("Add a custom MCP server"));
+    // The malformed draft is still in the Advanced JSON textarea, ready to fix.
+    const advancedAfter = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Capability desired config JSON"]',
+    );
+    expect(advancedAfter?.value).toContain('"notAnArray": true');
+
+    await unmount(root);
+  });
+
   it("preserves Advanced JSON fallback content when switching tabs", async () => {
     mockGetCapabilities.mockResolvedValue(response());
     mockGetCompanyCapabilities.mockResolvedValue(response({ scope: "company_default", agentId: null }));

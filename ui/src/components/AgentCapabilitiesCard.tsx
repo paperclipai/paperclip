@@ -11,6 +11,7 @@ import { companiesApi } from "../api/companies";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { CapabilityMarketplacePanel } from "./CapabilityMarketplacePanel";
+import { CustomMcpServerForm } from "./CustomMcpServerForm";
 
 function formatConfig(config: AgentCapabilityConfig | AgentCapabilityConfigInput) {
   return JSON.stringify(config, null, 2);
@@ -161,11 +162,12 @@ function withoutMarketplaceMcpServer(
   };
 }
 
-type WorkspaceTab = "summary" | "marketplace" | "effective";
+type WorkspaceTab = "summary" | "marketplace" | "custom" | "effective";
 
 const workspaceTabs: { key: WorkspaceTab; label: string }[] = [
   { key: "summary", label: "Summary" },
   { key: "marketplace", label: "Marketplace" },
+  { key: "custom", label: "Custom" },
   { key: "effective", label: "Effective Preview" },
 ];
 
@@ -220,6 +222,23 @@ function CapabilitySettingsCard({
   const summary = summarize(capabilitiesQuery.data);
   const parsedDraft = useMemo(() => (draft ? parseDraft(draft) : { config: null, error: null }), [draft]);
   const saveDisabled = saveMutation.isPending || Boolean(parsedDraft.error) || !draft.trim();
+  const existingDraftMcpServerIds = useMemo(() => {
+    const ids = new Set<string>();
+    // Guard against malformed Advanced JSON where mcpServers is not an array
+    // (e.g. user typed an object or null). Keep the Advanced JSON fallback
+    // editable rather than crashing the render.
+    const draftServers = parsedDraft.config?.mcpServers;
+    const savedServers = capabilitiesQuery.data?.config.mcpServers;
+    const source = Array.isArray(draftServers)
+      ? draftServers
+      : Array.isArray(savedServers)
+        ? savedServers
+        : [];
+    for (const server of source) {
+      if (server?.id) ids.add(server.id);
+    }
+    return ids;
+  }, [parsedDraft.config, capabilitiesQuery.data]);
 
   if (capabilitiesQuery.isLoading) {
     return (
@@ -269,6 +288,12 @@ function CapabilitySettingsCard({
 
   const onRemoveMcpPreset = (serverId: string) => {
     const next = withoutMarketplaceMcpServer(capabilitiesQuery.data, draft, serverId);
+    setDraft(JSON.stringify(next, null, 2));
+    setClientError(null);
+  };
+
+  const onAddCustomMcpServer = (server: AgentCapabilityMcpServer) => {
+    const next = withMarketplaceMcpServer(capabilitiesQuery.data, draft, server);
     setDraft(JSON.stringify(next, null, 2));
     setClientError(null);
   };
@@ -388,6 +413,19 @@ function CapabilitySettingsCard({
             draftConfig={parsedDraft.config}
             onAddMcpPreset={onAddMcpPreset}
             onRemoveMcpPreset={onRemoveMcpPreset}
+          />
+        </div>
+      )}
+
+      {activeTab === "custom" && (
+        <div
+          role="tabpanel"
+          id="capability-workspace-panel-custom"
+          aria-labelledby="capability-workspace-tab-custom"
+        >
+          <CustomMcpServerForm
+            existingServerIds={existingDraftMcpServerIds}
+            onAdd={onAddCustomMcpServer}
           />
         </div>
       )}
