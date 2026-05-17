@@ -108,6 +108,14 @@ export function decideRunLivenessContinuation(input: {
   if (!livenessState || !ACTIONABLE_LIVENESS_STATES.has(livenessState)) {
     return { kind: "skip", reason: "liveness state is not actionable for continuation" };
   }
+  const ctxSnapshot = run.contextSnapshot as Record<string, unknown> | null;
+  const retryReason =
+    ctxSnapshot && typeof ctxSnapshot.retryReason === "string"
+      ? ctxSnapshot.retryReason.trim()
+      : null;
+  if (retryReason === "issue_continuation_needed") {
+    return { kind: "skip", reason: "bounded in-progress retry already consumed; reconciler will escalate to blocked" };
+  }
   if (!issue) return { kind: "skip", reason: "issue not found" };
   if (!agent) return { kind: "skip", reason: "agent not found" };
   if (issue.companyId !== run.companyId || agent.companyId !== run.companyId) {

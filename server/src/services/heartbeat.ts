@@ -1,4 +1,4 @@
-import fs from "node:fs/promises";
+﻿import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -1329,6 +1329,15 @@ function didAutomaticRecoveryFail(
       latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
     )
   );
+}
+
+function didAutomaticRecoveryAttempt(
+  latestRun: Pick<typeof heartbeatRuns.$inferSelect, "contextSnapshot"> | null,
+  expectedRetryReason: "assignment_recovery" | "issue_continuation_needed",
+) {
+  if (!latestRun) return false;
+  const latestContext = parseObject(latestRun.contextSnapshot);
+  return readNonEmptyString(latestContext.retryReason) === expectedRetryReason;
 }
 
 function normalizeLedgerBillingType(value: unknown): BillingType {
@@ -3942,6 +3951,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function handleRunLivenessContinuation(run: typeof heartbeatRuns.$inferSelect) {
     const livenessState = run.livenessState as RunLivenessState | null;
     if (livenessState !== "plan_only" && livenessState !== "empty_response") return;
+    if (run.issueCommentStatus === "retry_queued" || run.issueCommentStatus === "retry_exhausted") return;
 
     const context = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(context.issueId);
@@ -8040,17 +8050,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
-        await releaseIssueExecutionAndPromote(livenessRun);
-        await handleRunLivenessContinuation(livenessRun);
-        await handleSuccessfulRunHandoff(
+        const issueCommentPolicyRun =
           issueCommentPolicyResult.outcome === "retry_queued" || issueCommentPolicyResult.outcome === "retry_exhausted"
             ? {
               ...livenessRun,
               issueCommentStatus: issueCommentPolicyResult.outcome,
             }
-            : livenessRun,
-          agent,
-        );
+            : livenessRun;
+        await releaseIssueExecutionAndPromote(issueCommentPolicyRun);
+        await handleRunLivenessContinuation(issueCommentPolicyRun);
+        await handleSuccessfulRunHandoff(issueCommentPolicyRun, agent);
       }
 
       if (finalizedRun) {
@@ -8490,11 +8499,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
 
+      const isFinishSuccessfulRunHandoffRun =
+        readNonEmptyString(parseObject(run.contextSnapshot).wakeReason) === "finish_successful_run_handoff";
+      const isIssueContinuationRecoveryRun = didAutomaticRecoveryAttempt(run, "issue_continuation_needed");
+      const isMissingIssueCommentRecoveryRun =
+        run.issueCommentStatus === "retry_queued" ||
+        run.issueCommentStatus === "retry_exhausted" ||
+        readNonEmptyString(parseObject(run.contextSnapshot).retryReason) === "missing_issue_comment";
       const issueNeedsImmediateRecovery =
-        (issue.status === "todo" || issue.status === "in_progress") &&
         !issue.assigneeUserId &&
         issue.assigneeAgentId === run.agentId &&
-        (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled");
+        (
+          (
+            issue.status === "todo" &&
+            (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled")
+          ) ||
+          (
+            issue.status === "in_progress" &&
+            !isFinishSuccessfulRunHandoffRun &&
+            !isMissingIssueCommentRecoveryRun &&
+            (
+              run.status === "failed" ||
+              run.status === "timed_out" ||
+              run.status === "cancelled" ||
+              (run.status === "succeeded" &&
+                (
+                  isIssueContinuationRecoveryRun ||
+                  (
+                    run.livenessState !== "advanced" &&
+                    run.livenessState !== "blocked" &&
+                    run.livenessState !== "completed" &&
+                    !readNonEmptyString(run.nextAction)
+                  )
+                ))
+            )
+          )
+        );
 
       if (!issueNeedsImmediateRecovery) {
         return { kind: "released" as const };
@@ -8529,10 +8569,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
 
+      const expectedRetryReason = issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed";
+      // Keep auto-recovery bounded: in-progress continuation recovery gets one automatic retry,
+      // then must surface explicitly instead of recursing through more retries.
       const shouldBlockImmediately =
         !recoveryAgentInvokable ||
         !recoveryAgent ||
-        didAutomaticRecoveryFail(run, issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed");
+        (issue.status === "todo"
+          ? didAutomaticRecoveryFail(run, expectedRetryReason)
+          : didAutomaticRecoveryAttempt(run, expectedRetryReason));
       if (shouldBlockImmediately) {
         const comment = buildImmediateExecutionPathRecoveryComment({
           status: issue.status as "todo" | "in_progress",
@@ -8546,7 +8591,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
 
-      const retryReason = issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed";
+      const retryReason = expectedRetryReason;
       const recoveryReason = issue.status === "todo" ? "issue_assignment_recovery" : "issue_continuation_needed";
       const recoverySource =
         issue.status === "todo" ? "issue.assignment_recovery" : "issue.continuation_recovery";

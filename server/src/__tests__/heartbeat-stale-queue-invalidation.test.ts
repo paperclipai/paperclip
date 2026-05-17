@@ -108,10 +108,11 @@ async function cleanupHeartbeatInvalidationFixture(db: ReturnType<typeof createD
       await db.delete(companies);
       return;
     } catch (error) {
-      const isLateCommentRace =
+      const isLateRace =
         error instanceof Error &&
-        error.message.includes("issue_comments_issue_id_issues_id_fk");
-      if (!isLateCommentRace || attempt === 4) {
+        (error.message.includes("issue_comments_issue_id_issues_id_fk") ||
+          error.message.includes("company_skills_company_id_companies_id_fk"));
+      if (!isLateRace || attempt === 4) {
         throw error;
       }
 

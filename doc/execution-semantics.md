@@ -330,6 +330,29 @@ Recovery rule:
 
 This is an active-work continuity recovery.
 
+#### 8.2.1 Productive-but-uncommittable disposition contract (Phase 1)
+
+When a continuation run for an assigned `in_progress` issue is productive (for example `livenessState=advanced`) but still leaves no live execution path, recovery must emit an explicit disposition instead of silently treating the run as healthy.
+
+Phase 1 disposition paths:
+
+- `live_continue`: queue one bounded continuation retry (`issue_continuation_needed`) with structured disposition metadata
+- `waiting_on_dependency`: escalate to `blocked` with a visible rationale/comment
+- `terminal_resolved`: reserved for explicit terminal completion paths only; never used for stranded active work
+
+Bounded behavior:
+
+- productive-terminal continuation recovery is capped at one automatic retry
+- once that retry is consumed (or fails), Paperclip must choose `waiting_on_dependency` and surface intervention work
+
+Runtime metadata:
+
+- queued continuation recovery writes `contextSnapshot.productiveUncommittableDisposition`
+- required fields: `selectedPath`, `reasonCode`, `boundedRetryCount`, `boundedRetryLimit`
+- current Phase 1 mapping:
+  - retry queued: `live_continue` + `needs_followup_implementation`
+  - retry exhausted/failed: `waiting_on_dependency` + `blocked_by_dependency`
+
 ## 9. Startup and Periodic Reconciliation
 
 Startup recovery and periodic recovery are different from normal wakeup delivery.
