@@ -17,6 +17,7 @@ const BOARD_ROUTE_ROOTS = new Set([
   "activity",
   "observability",
   "agent-os",
+  "eaos",
   "inbox",
   "u",
   "design-guide",
