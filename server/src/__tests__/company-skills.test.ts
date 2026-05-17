@@ -8,6 +8,7 @@ import {
   normalizeGitHubSkillDirectory,
   parseSkillImportSourceInput,
   readLocalSkillImportFromDirectory,
+  readLocalSkillImports,
 } from "../services/company-skills.js";
 
 const cleanupDirs = new Set<string>();
@@ -184,6 +185,46 @@ describe("project workspace skill discovery", () => {
         },
       ],
     });
+  });
+});
+
+describe("readLocalSkillImports — directory source", () => {
+  it("includes references/ tree when source points directly at the skill dir (SKILL.md at root)", async () => {
+    // Regression: dirname('SKILL.md') === '.' caused entry.startsWith('./') to never match,
+    // silently dropping every file except SKILL.md itself.
+    const skillDir = await makeTempDir("paperclip-at-root-import-");
+    await writeSkillDir(skillDir, "At Root Skill");
+    await fs.mkdir(path.join(skillDir, "references"), { recursive: true });
+    await fs.writeFile(path.join(skillDir, "references", "guide.md"), "# Guide\n", "utf8");
+    await fs.writeFile(path.join(skillDir, "references", "checklist.md"), "# Checklist\n", "utf8");
+
+    const [imported] = await readLocalSkillImports(
+      "44444444-4444-4444-4444-444444444444",
+      skillDir,
+    );
+
+    expect(imported).toBeDefined();
+    expect(new Set(imported.fileInventory.map((entry) => entry.path))).toEqual(
+      new Set(["SKILL.md", "references/guide.md", "references/checklist.md"]),
+    );
+  });
+
+  it("includes references/ tree when source is a parent dir containing the skill subdir (wrapper-dir case)", async () => {
+    const parentDir = await makeTempDir("paperclip-wrapper-dir-import-");
+    const skillSubDir = path.join(parentDir, "my-skill");
+    await writeSkillDir(skillSubDir, "Wrapped Skill");
+    await fs.mkdir(path.join(skillSubDir, "references"), { recursive: true });
+    await fs.writeFile(path.join(skillSubDir, "references", "overview.md"), "# Overview\n", "utf8");
+
+    const [imported] = await readLocalSkillImports(
+      "44444444-4444-4444-4444-444444444444",
+      parentDir,
+    );
+
+    expect(imported).toBeDefined();
+    expect(new Set(imported.fileInventory.map((entry) => entry.path))).toEqual(
+      new Set(["SKILL.md", "references/overview.md"]),
+    );
   });
 });
 
