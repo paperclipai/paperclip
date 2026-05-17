@@ -14,6 +14,10 @@ type AuthErrorBody =
   }
   | null;
 
+type UnauthenticatedLoginAvailability = {
+  available: boolean;
+};
+
 export class AuthApiError extends Error {
   status: number;
   code: string | null;
@@ -89,6 +93,21 @@ async function authPatch<T>(path: string, body: Record<string, unknown>, parse: 
 }
 
 export const authApi = {
+  getUnauthenticatedLoginAvailability: async (companyId: string): Promise<UnauthenticatedLoginAvailability> => {
+    const params = new URLSearchParams({ companyId });
+    const res = await fetch(`/api/auth/unauthenticated-login/availability?${params.toString()}`, {
+      credentials: "include",
+      headers: { Accept: "application/json" },
+    });
+    const payload = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error((payload as { error?: string } | null)?.error ?? `Failed to load availability (${res.status})`);
+    }
+    return {
+      available: payload && typeof payload === "object" && (payload as Record<string, unknown>).available === true,
+    };
+  },
+
   getSession: async (): Promise<AuthSession | null> => {
     const res = await fetch("/api/auth/get-session", {
       credentials: "include",

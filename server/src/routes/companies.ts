@@ -36,7 +36,6 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const access = accessService(db);
   const budgets = budgetService(db);
   const feedback = feedbackService(db);
-  const instanceSettings = instanceSettingsService(db);
 
   function parseBooleanQuery(value: unknown) {
     return value === true || value === "true" || value === "1";
@@ -369,6 +368,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
         res.status(404).json({ error: "Company not found" });
         return;
       }
+      const instanceSettings = instanceSettingsService(db);
       const updated = await instanceSettings.updateCompanyExperimentalFeatures(companyId, req.body);
       const actor = getActorInfo(req);
       await logActivity(db, {

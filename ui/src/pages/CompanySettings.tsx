@@ -228,6 +228,14 @@ export function CompanySettings() {
     );
   }
 
+  if (!selectedCompanyId) {
+    return (
+      <div className="text-sm text-muted-foreground">
+        No company selected. Select a company from the switcher above.
+      </div>
+    );
+  }
+
   function handleSaveGeneral() {
     generalMutation.mutate({
       name: companyName.trim(),
@@ -433,7 +441,7 @@ export function CompanySettings() {
         </div>
       </div>
 
-      <ExperimentalFeaturesSettings companyId={selectedCompanyId!} />
+      <ExperimentalFeaturesSettings companyId={selectedCompanyId} />
 
       {/* Invites */}
       <div className="space-y-4" data-testid="company-settings-invites-section">

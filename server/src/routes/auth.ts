@@ -5,10 +5,14 @@ import { authUsers } from "@paperclipai/db";
 import {
   authSessionSchema,
   currentUserProfileSchema,
+  isExperimentalFeatureEnabled,
+  isPaperclipExperimentalModeEnabled,
   updateCurrentUserProfileSchema,
 } from "@paperclipai/shared";
 import { unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
+import { isDevelopmentEnvironment } from "../development-environment.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 
 async function loadCurrentUserProfile(db: Db, userId: string) {
   const user = await db
@@ -36,6 +40,25 @@ async function loadCurrentUserProfile(db: Db, userId: string) {
 
 export function authRoutes(db: Db) {
   const router = Router();
+
+  router.get("/unauthenticated-login/availability", async (req, res) => {
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : "";
+    if (!companyId) {
+      res.json({ available: false });
+      return;
+    }
+
+    const experimental = await instanceSettingsService(db).getExperimental();
+    const companyExperimentalFeatures = experimental.companyExperimentalFeatures[companyId];
+    const available = isExperimentalFeatureEnabled({
+      feature: "unauthenticated_login",
+      environmentExperimentalModeEnabled: isPaperclipExperimentalModeEnabled(process.env),
+      isDevelopmentEnvironment: isDevelopmentEnvironment(),
+      companyEnabledFeatures: companyExperimentalFeatures?.enabledFeatures,
+    });
+
+    res.json({ available });
+  });
 
   router.get("/get-session", async (req, res) => {
     if (req.actor.type !== "board" || !req.actor.userId) {

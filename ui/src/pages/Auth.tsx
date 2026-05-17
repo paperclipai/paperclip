@@ -8,7 +8,6 @@ import { Button } from "@/components/ui/button";
 import { AsciiArtAnimation } from "@/components/AsciiArtAnimation";
 import { Sparkles } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
-import { instanceSettingsApi } from "@/api/instanceSettings";
 import {
   Dialog,
   DialogContent,
@@ -17,10 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  isUnauthenticatedDevelopmentLoginAvailable,
-  unauthenticatedLoginAdapter,
-} from "@/lib/unauthenticated-login.adapter";
+import { unauthenticatedLoginAdapter } from "@/lib/unauthenticated-login.adapter";
 
 type AuthMode = "sign_in" | "sign_up";
 
@@ -40,17 +36,13 @@ export function AuthPage() {
     () => searchParams.get("next") || getRememberedInvitePath() || "/",
     [searchParams],
   );
-  const experimentalQuery = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
+  const unauthenticatedAvailabilityQuery = useQuery({
+    queryKey: queryKeys.auth.unauthenticatedLoginAvailability(selectedCompanyId ?? ""),
+    queryFn: () => authApi.getUnauthenticatedLoginAvailability(selectedCompanyId ?? ""),
     retry: false,
     enabled: Boolean(selectedCompanyId),
   });
-  const companyExperimentalFeatures = selectedCompanyId
-    ? experimentalQuery.data?.companyExperimentalFeatures[selectedCompanyId]
-    : undefined;
-  const showUnauthenticatedEntry =
-    isUnauthenticatedDevelopmentLoginAvailable(companyExperimentalFeatures);
+  const showUnauthenticatedEntry = unauthenticatedAvailabilityQuery.data?.available === true;
   const { data: session, isLoading: isSessionLoading } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -246,7 +238,7 @@ export function AuthPage() {
               onClick={() =>
                 unauthenticatedLoginAdapter.proceed({
                   nextPath,
-                  companyExperimentalFeatures,
+                  companyId: selectedCompanyId,
                 })
               }
             >

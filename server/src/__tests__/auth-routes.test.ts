@@ -161,4 +161,52 @@ describe.sequential("auth routes", () => {
 
     expect(res.status).toBe(400);
   });
+
+  it("returns unavailable for unauthenticated login when no company is selected", async () => {
+    const app = await createApp({ type: "none", source: "none" }, { id: "settings-1", experimental: {} });
+
+    const res = await request(app).get("/api/auth/unauthenticated-login/availability");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ available: false });
+  });
+
+  it("resolves unauthenticated login availability without requiring a board session", async () => {
+    const previousExperimentalMode = process.env.PAPERCLIP_EXPERIMENTAL_MODE;
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.PAPERCLIP_EXPERIMENTAL_MODE = "true";
+    process.env.NODE_ENV = "development";
+
+    try {
+      const app = await createApp(
+        { type: "none", source: "none" },
+        {
+          id: "settings-1",
+          experimental: {
+            companyExperimentalFeatures: {
+              "company-1": {
+                enabledFeatures: { unauthenticated_login: true },
+              },
+            },
+          },
+        },
+      );
+
+      const res = await request(app).get("/api/auth/unauthenticated-login/availability?companyId=company-1");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ available: true });
+    } finally {
+      if (previousExperimentalMode === undefined) {
+        delete process.env.PAPERCLIP_EXPERIMENTAL_MODE;
+      } else {
+        process.env.PAPERCLIP_EXPERIMENTAL_MODE = previousExperimentalMode;
+      }
+      if (previousNodeEnv === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = previousNodeEnv;
+      }
+    }
+  });
 });

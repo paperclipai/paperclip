@@ -122,6 +122,8 @@ export const queryKeys = {
   },
   auth: {
     session: ["auth", "session"] as const,
+    unauthenticatedLoginAvailability: (companyId: string) =>
+      ["auth", "unauthenticated-login-availability", companyId] as const,
   },
   sidebarPreferences: {
     companyOrder: (userId: string) => ["sidebar-preferences", "company-order", userId] as const,
