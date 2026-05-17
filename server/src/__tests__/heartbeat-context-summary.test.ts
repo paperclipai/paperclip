@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildPaperclipTaskMarkdown,
+  derivePaperclipPrReview,
   mergeCoalescedContextSnapshot,
   summarizeHeartbeatRunContextSnapshot,
   summarizeHeartbeatRunListResultJson,
@@ -55,6 +56,26 @@ describe("buildPaperclipTaskMarkdown", () => {
     expect(acceptedConfirmation).not.toContain("Make the plan only.");
   });
 
+  it("renders a GitHub PR review directive for github_pr_* wakeups", () => {
+    const prReviewMarkdown = buildPaperclipTaskMarkdown({
+      issue: null,
+      prReview: {
+        wakeReason: "github_pr_opened",
+        prNumber: 35,
+        repoFullName: "Blockcast/paperclip",
+        event: "pull_request",
+        deliveryId: "abc-123",
+        reviewKind: "pr_review",
+      },
+    });
+
+    expect(prReviewMarkdown).toContain('- PR: "Blockcast/paperclip#35"');
+    expect(prReviewMarkdown).toContain('- Wake reason: "github_pr_opened"');
+    expect(prReviewMarkdown).toContain("GitHub PR review directive:");
+    expect(prReviewMarkdown).toContain("Follow your AGENTS.md PR-review workflow");
+    expect(prReviewMarkdown).toContain("Do not short-circuit to an inbox check");
+  });
+
   it("prefers ordinary comment planning guidance over stale accepted confirmation state", () => {
     const commentWake = buildPaperclipTaskMarkdown({
       issue: {
@@ -76,6 +97,66 @@ describe("buildPaperclipTaskMarkdown", () => {
 
     expect(commentWake).toContain("Update the plan only. Do not write code or perform implementation work.");
     expect(commentWake).not.toContain("Create child issues from the approved plan only");
+  });
+});
+
+describe("derivePaperclipPrReview", () => {
+  it("returns the PR review descriptor for github_pr_* wake reasons", () => {
+    expect(
+      derivePaperclipPrReview({
+        wakeReason: "github_pr_opened",
+        githubPrNumber: 35,
+        githubRepoFullName: "Blockcast/paperclip",
+        githubEvent: "pull_request",
+        githubDeliveryId: "abc-123",
+        reviewKind: "pr_review",
+      }),
+    ).toEqual({
+      wakeReason: "github_pr_opened",
+      prNumber: 35,
+      repoFullName: "Blockcast/paperclip",
+      event: "pull_request",
+      deliveryId: "abc-123",
+      reviewKind: "pr_review",
+    });
+  });
+
+  it("coerces string-form PR numbers (operators sometimes pass strings via curl)", () => {
+    expect(
+      derivePaperclipPrReview({
+        wakeReason: "github_pr_ready_for_review",
+        githubPrNumber: "42",
+        githubRepoFullName: "Blockcast/paperclip",
+      })?.prNumber,
+    ).toBe(42);
+  });
+
+  it("returns null when no PR number is present", () => {
+    expect(
+      derivePaperclipPrReview({
+        wakeReason: "github_pr_opened",
+        githubRepoFullName: "Blockcast/paperclip",
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null when wakeReason is unrelated and reviewKind is not pr_review", () => {
+    expect(
+      derivePaperclipPrReview({
+        wakeReason: "issue_assigned",
+        githubPrNumber: 35,
+      }),
+    ).toBeNull();
+  });
+
+  it("matches on reviewKind even when wakeReason is missing", () => {
+    expect(
+      derivePaperclipPrReview({
+        reviewKind: "pr_review",
+        githubPrNumber: 35,
+        githubRepoFullName: "Blockcast/paperclip",
+      })?.wakeReason,
+    ).toBe("github_pull_request");
   });
 });
 
