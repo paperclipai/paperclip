@@ -94,6 +94,13 @@ export const queryKeys = {
   environments: {
     list: (companyId: string) => ["environments", companyId] as const,
   },
+  sandbox: {
+    providers: (companyId: string) => ["sandbox", companyId, "providers"] as const,
+    leases: (companyId: string, filters?: Record<string, string | number | undefined>) =>
+      ["sandbox", companyId, "leases", filters ?? {}] as const,
+    leaseDetail: (companyId: string, leaseId: string) =>
+      ["sandbox", companyId, "leases", leaseId] as const,
+  },
   projects: {
     list: (companyId: string) => ["projects", companyId] as const,
     detail: (id: string) => ["projects", "detail", id] as const,
