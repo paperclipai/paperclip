@@ -1030,6 +1030,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const runningAgent = await getAgent(input.run.agentId);
     if (!runningAgent || runningAgent.companyId !== input.run.companyId) return { kind: "skipped" as const };
     const sourceIssue = await resolveStaleRunSourceIssue(input.run);
+    // Skip evaluation when the source issue has already reached a terminal state.
+    // The DB unique constraint (activeStaleRunEvaluationIdx) only prevents duplicate
+    // *open* evaluations, so closing a false-positive allows a new one to be created
+    // for the same runId. This guard prevents that re-fire for completed work.
+    if (sourceIssue && ["done", "cancelled"].includes(sourceIssue.status)) {
+      return { kind: "skipped" as const };
+    }
     const prefix = await getCompanyIssuePrefix(input.run.companyId);
     const evidence = await collectStaleRunEvidence({
       run: input.run,
