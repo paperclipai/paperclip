@@ -1,15 +1,19 @@
 /**
- * Phase 4A-3 (LET-323): sandbox egress proxy policy + decision evaluator.
+ * Phase 4A-3 (LET-323) / Phase 4A-S6 (LET-352): sandbox egress proxy policy
+ * + decision evaluator.
  *
  * This module models the *intent* a future sandbox egress proxy would
  * receive (method, URL, host, protocol, headers) and produces a pure
- * `allow`/`deny` decision against a `SandboxNetworkPolicy`. It is
- * intentionally preview-only:
+ * `allow`/`deny` decision against a `SandboxNetworkPolicy`. The path is
+ * intentionally preview / stub only — no real network boundary is wired
+ * up yet (see ADR LET-328 for the buy-vs-build decision):
  *
  *   - The evaluator NEVER opens a socket, performs DNS, spawns a process,
- *     or otherwise reaches the network.
- *   - Every decision carries `previewOnly: true` so downstream consumers
- *     cannot mistake the result for traffic that has actually been routed.
+ *     or otherwise reaches the network. Even an `allow` decision describes
+ *     what a future real proxy *would* do, not traffic that actually flows.
+ *   - Every decision carries `previewOnly: true` and `truth: "preview"`
+ *     so downstream consumers cannot mistake the result for traffic that
+ *     has actually been routed or enforced by a network policy engine.
  *   - The default policy is deny-by-default (mode `none`), matching the
  *     LET-307 boundary model. Allow paths require an explicit allowlist
  *     entry or loopback opt-in.
@@ -17,7 +21,8 @@
  * Hosts that fall into the cloud-instance metadata range
  * (169.254.169.254 IMDSv1, 169.254.170.2 ECS task metadata, fd00:ec2::254)
  * are always denied regardless of the allowlist — these endpoints can leak
- * credentials and are a known sandbox-escape vector.
+ * credentials and are a known sandbox-escape vector once a real boundary
+ * lands; for now the deny is policy-only.
  */
 
 import {
@@ -234,7 +239,9 @@ function validateMethod(method: unknown): string {
 
 /**
  * Pure egress decision evaluator. Does not perform any network or
- * filesystem activity. Always returns `previewOnly: true`.
+ * filesystem activity. Always returns `previewOnly: true` and
+ * `truth: "preview"` — even an `allow` decision describes what a future
+ * real proxy *would* do, not traffic actually routed (see ADR LET-328).
  */
 export function evaluateEgressIntent(
   rawIntent: EgressIntent,

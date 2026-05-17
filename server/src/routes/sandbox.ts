@@ -1,11 +1,19 @@
 /**
- * Phase 4A-2 (LET-314): /api/sandbox REST + SSE read-models.
+ * Phase 4A-2 (LET-314) / Phase 4A-S6 (LET-352): /api/sandbox REST + SSE
+ * read-models.
  *
- * Preview-only. This surface exposes truthful lease / provider / artifact
- * status for future Command Center consumers without invoking any real
- * Docker run/build/pull/start/stop. The only mutation-like endpoint is
- * `POST /sandbox/preview/validate`, which is explicitly tagged
- * preview-only and runs the in-memory provider scaffold's `validateConfig`.
+ * Preview / stub only. This surface exposes truthful lease / provider /
+ * artifact status for future Command Center consumers without invoking any
+ * real Docker run/build/pull/start/stop. No real container isolation has
+ * shipped yet — see ADR LET-328 for the buy-vs-build decision. The only
+ * mutation-like endpoint is `POST /sandbox/preview/validate`, which is
+ * explicitly tagged preview-only and runs the in-memory provider scaffold's
+ * `validateConfig` (no host action).
+ *
+ * Every JSON response and every SSE payload carries:
+ *   - `previewOnly: true`     — invariant marker, never `false` in this phase.
+ *   - `notice: SANDBOX_PREVIEW_NOTICE` — the same banner copy the UI shows.
+ *   - `adr: { id, href, summary }` — pointer to the LET-328 ADR.
  */
 
 import { Router, type Request, type Response } from "express";
@@ -80,6 +88,26 @@ export const SANDBOX_ERROR_CODES = {
 
 const SSE_KEEPALIVE_MS = 25_000;
 
+/**
+ * LET-352: stable preview-notice copy that every /api/sandbox response and
+ * SSE payload echoes. The UI banner shows the same string so operators see a
+ * single, consistent disclaimer regardless of which surface they read first.
+ */
+export const SANDBOX_PREVIEW_NOTICE =
+  "Preview — no real container isolation yet. See ADR LET-328 for the buy-vs-build decision.";
+
+/**
+ * LET-352: pointer to the buy-vs-build ADR (LET-328). The `href` resolves to
+ * the issue thread that hosts the rev-controlled ADR document so callers can
+ * deep-link to it without baking a path-on-disk into clients.
+ */
+export const SANDBOX_PREVIEW_ADR = Object.freeze({
+  id: "LET-328",
+  href: "/issues/LET-328",
+  summary:
+    "Sandbox runtime buy-vs-build ADR — drives the preview/stub state of every /api/sandbox surface.",
+});
+
 function knownSandboxProviderKeys(): string[] {
   return listSandboxProviders().map((provider) => provider.provider);
 }
@@ -152,21 +180,31 @@ function listProviderDescriptors(): SandboxProviderDescriptor[] {
     .sort((a, b) => a.provider.localeCompare(b.provider));
 }
 
-interface SandboxLeaseListResponse {
+export interface SandboxSnapshotMeta {
   previewOnly: true;
   generatedAt: string;
+  /** LET-352: human-readable preview notice; mirrors the UI banner copy. */
+  notice: typeof SANDBOX_PREVIEW_NOTICE;
+  /** LET-352: pointer to the buy-vs-build ADR (LET-328). */
+  adr: typeof SANDBOX_PREVIEW_ADR;
+}
+
+interface SandboxLeaseListResponse extends SandboxSnapshotMeta {
   count: number;
   leases: SandboxLeaseReadModel[];
 }
 
-interface SandboxLeaseGetResponse {
-  previewOnly: true;
-  generatedAt: string;
+interface SandboxLeaseGetResponse extends SandboxSnapshotMeta {
   lease: SandboxLeaseReadModel;
 }
 
-function snapshotMeta(): { previewOnly: true; generatedAt: string } {
-  return { previewOnly: true, generatedAt: new Date().toISOString() };
+function snapshotMeta(): SandboxSnapshotMeta {
+  return {
+    previewOnly: true,
+    generatedAt: new Date().toISOString(),
+    notice: SANDBOX_PREVIEW_NOTICE,
+    adr: SANDBOX_PREVIEW_ADR,
+  };
 }
 
 function writeSseEvent(res: Response, event: { type: string; data: unknown; id?: number }): boolean {
@@ -522,11 +560,13 @@ export function sandboxRoutes(db: Db) {
 
     // Emit a `ready` event with the current provider snapshot so clients
     // have an authoritative starting point without an extra REST call.
+    // LET-352: the ready payload carries the same preview notice + ADR
+    // pointer as REST responses so SSE-only consumers cannot drift away
+    // from the truth contract.
     writeSseEvent(res, {
       type: "sandbox.ready",
       data: {
-        previewOnly: true,
-        generatedAt: new Date().toISOString(),
+        ...snapshotMeta(),
         providers: listProviderDescriptors(),
       },
     });
@@ -541,6 +581,10 @@ export function sandboxRoutes(db: Db) {
 
     const unsubscribe = subscribeCompanySandboxEvents(companyId, (event: SandboxEvent) => {
       if (unsubscribed) return;
+      // LET-352: every per-event payload echoes the preview notice + ADR
+      // pointer alongside the canonical `previewOnly: true` invariant so
+      // an SSE-only consumer never has to cross-reference REST to know
+      // this stream describes a stub surface.
       const ok = writeSseEvent(res, {
         type: event.type,
         id: event.id,
@@ -551,6 +595,8 @@ export function sandboxRoutes(db: Db) {
           createdAt: event.createdAt,
           payload: redactSandboxEventPayload(event.payload),
           previewOnly: true,
+          notice: SANDBOX_PREVIEW_NOTICE,
+          adr: SANDBOX_PREVIEW_ADR,
         },
       });
       if (!ok) cleanup();

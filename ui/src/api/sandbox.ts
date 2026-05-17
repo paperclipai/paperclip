@@ -87,9 +87,29 @@ export interface SandboxLeaseReadModel {
   updatedAt: string;
 }
 
+export interface SandboxPreviewAdrPointer {
+  /** Issue identifier of the buy-vs-build ADR — `LET-328`. */
+  id: string;
+  /** Route the UI can deep-link to (`/issues/LET-328`). */
+  href: string;
+  /** One-line ADR summary surfaced alongside the banner. */
+  summary: string;
+}
+
 export interface SandboxSnapshotMeta {
   previewOnly: true;
   generatedAt: string;
+  /**
+   * LET-352: stable preview-notice copy mirrored by the UI banner. Clients
+   * that show their own banner should prefer this string so server-side
+   * wording stays the source of truth.
+   */
+  notice?: string;
+  /**
+   * LET-352: pointer to the buy-vs-build ADR. Optional because older
+   * server builds may not surface it yet.
+   */
+  adr?: SandboxPreviewAdrPointer;
 }
 
 export interface SandboxProvidersResponse extends SandboxSnapshotMeta {

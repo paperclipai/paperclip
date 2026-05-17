@@ -1,5 +1,5 @@
 /**
- * Phase 4A-2 (LET-314): sandbox lease read-model.
+ * Phase 4A-2 (LET-314) / Phase 4A-S6 (LET-352): sandbox lease read-model.
  *
  * Translates an `EnvironmentLease` row into a redacted, allowlisted shape
  * that is safe to return from the `/api/sandbox` REST/SSE surface or to
@@ -7,6 +7,12 @@
  * `redactSandboxEventPayload` before publishing — no raw env, token,
  * credential, proxy, destination id, or sensitive log payload is allowed
  * to leak through this surface.
+ *
+ * The provider/runtime stack remains a preview / stub in this phase: no
+ * real container isolation has shipped yet (see ADR LET-328). Even when a
+ * lease has `truth: "backend-backed"` it describes how a future real
+ * provider *would* be observed — the read-model never implies live
+ * runtime execution on its own.
  */
 
 import type { EnvironmentLease } from "@paperclipai/shared";
@@ -354,11 +360,12 @@ export interface SandboxProviderDescriptor {
 }
 
 /**
- * Build provider descriptors from the built-in registry. The Docker
- * provider remains preview-only in Phase 4A-2 because LET-314's scope
- * forbids live container execution from the REST/SSE surface, even when
- * the feature flag is set. The `enabled` flag tracks whether the flag is
- * set — `previewOnly` is the public-facing truth label.
+ * Build provider descriptors from the built-in registry. Every provider
+ * descriptor is preview / stub in this phase: LET-310/LET-314/LET-323 do
+ * not wire a real container/runtime/network boundary — see ADR LET-328.
+ * The `enabled` flag tracks whether the feature flag is set; `previewOnly`
+ * is the public-facing truth label and is always `true` here so callers
+ * cannot read "enabled" as "running real containers".
  */
 export function describeBuiltinSandboxProvider(input: {
   provider: string;
