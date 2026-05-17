@@ -57,6 +57,28 @@ describe("standup validators", () => {
     expect(parsed.success).toBe(true);
   });
 
+  it("preserves policy-defined accountability fields on participant responses", () => {
+    const parsed = submitStandupResponseSchema.safeParse({
+      sessionId: uuidA,
+      participantId: uuidB,
+      actorRunId: uuidC,
+      response: {
+        ...validResponse,
+        historicalContext: "Prior heartbeats treated halt compliance as success.",
+        decisionPosition: "Disagree with any halt that blocks paper research.",
+        dissentOrChallenge: "Real-money movement is the only board boundary.",
+        existentialRiskAssessment: "A full-company paper halt puts the company and leadership roles at risk.",
+      },
+    });
+
+    expect(parsed.success).toBe(true);
+    const response = parsed.data?.response as Record<string, unknown>;
+    expect(response.historicalContext).toBe("Prior heartbeats treated halt compliance as success.");
+    expect(response.decisionPosition).toBe("Disagree with any halt that blocks paper research.");
+    expect(response.dissentOrChallenge).toBe("Real-money movement is the only board boundary.");
+    expect(response.existentialRiskAssessment).toBe("A full-company paper halt puts the company and leadership roles at risk.");
+  });
+
   it("rejects generic response bodies missing accountability fields", () => {
     const parsed = submitStandupResponseSchema.safeParse({
       sessionId: uuidA,
