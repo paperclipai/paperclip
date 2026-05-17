@@ -135,4 +135,4 @@ Operators should treat crew briefing not as a regulatory checkbox but as the ope
 
 ---
 
-*CrewBrief provides automated, SMS-ready crew briefings with integrated risk assessment and full audit trail. [Join the beta waitlist](https://crewbrief.avva.aero).*
+*CrewBrief provides automated, SMS-ready crew briefings with integrated risk assessment and full audit trail. [Join the beta waitlist](https://crewbrief.avva.aero?utm_source=crewbrief-blog&utm_medium=blog&utm_campaign=seo-blog-faa-compliance-guide).*

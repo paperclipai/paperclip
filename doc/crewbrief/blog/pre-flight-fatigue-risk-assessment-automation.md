@@ -120,4 +120,4 @@ The key insight: fatigue is not a moral failing or a personal weakness. It is an
 
 ---
 
-*CrewBrief includes an automated FRAT with objective fatigue scoring, integrated risk context, and continuous updates. [Join the beta waitlist](https://crewbrief.avva.aero).*
+*CrewBrief includes an automated FRAT with objective fatigue scoring, integrated risk context, and continuous updates. [Join the beta waitlist](https://crewbrief.avva.aero?utm_source=crewbrief-blog&utm_medium=blog&utm_campaign=seo-blog-fatigue-risk-assessment).*

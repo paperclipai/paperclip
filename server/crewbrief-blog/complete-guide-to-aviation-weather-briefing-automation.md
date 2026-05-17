@@ -121,4 +121,4 @@ Weather briefing automation doesn't replace pilot judgment. It ensures that judg
 
 ---
 
-*CrewBrief delivers automated, route-aware weather briefings with live updates and integrated risk assessment. [Join the beta waitlist](https://crewbrief.avva.aero).*
+*CrewBrief delivers automated, route-aware weather briefings with live updates and integrated risk assessment. [Join the beta waitlist](https://crewbrief.avva.aero?utm_source=crewbrief-blog&utm_medium=blog&utm_campaign=seo-blog-weather-briefing-automation).*
