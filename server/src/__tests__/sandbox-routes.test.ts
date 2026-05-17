@@ -3,7 +3,12 @@ import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EnvironmentLease } from "@paperclipai/shared";
-import { sandboxRoutes, __testing as sandboxRoutesTesting } from "../routes/sandbox.js";
+import {
+  sandboxRoutes,
+  SANDBOX_PREVIEW_ADR,
+  SANDBOX_PREVIEW_NOTICE,
+  __testing as sandboxRoutesTesting,
+} from "../routes/sandbox.js";
 import { errorHandler } from "../middleware/index.js";
 import {
   publishSandboxEvent,
@@ -142,6 +147,21 @@ describe("sandbox routes", () => {
         expect.objectContaining({ provider: "fake", kind: "builtin", enabled: false, previewOnly: true }),
       ]),
     );
+  });
+
+  it("LET-352: every snapshot response carries the preview notice + ADR pointer", async () => {
+    const app = buildApp({ type: "board", userId: "user-1", source: "local_implicit" });
+    mockListSandboxLeasesForCompany.mockResolvedValue([buildLease()]);
+
+    const providersRes = await request(app).get("/api/companies/company-1/sandbox/providers");
+    expect(providersRes.body.notice).toBe(SANDBOX_PREVIEW_NOTICE);
+    expect(providersRes.body.adr).toEqual(SANDBOX_PREVIEW_ADR);
+    expect(providersRes.body.notice).toContain("no real container isolation yet");
+    expect(providersRes.body.adr.id).toBe("LET-328");
+
+    const leasesRes = await request(app).get("/api/companies/company-1/sandbox/leases");
+    expect(leasesRes.body.notice).toBe(SANDBOX_PREVIEW_NOTICE);
+    expect(leasesRes.body.adr).toEqual(SANDBOX_PREVIEW_ADR);
   });
 
   it("GET /sandbox/leases returns redacted read-model and never invokes Docker", async () => {
@@ -336,6 +356,10 @@ describe("sandbox routes", () => {
     const first = await readChunk();
     expect(first).toContain(":ok");
     expect(first).toContain("event: sandbox.ready");
+    // LET-352: ready payload carries the preview notice + ADR pointer
+    // so SSE-only consumers cannot drift from the truth contract.
+    expect(first).toContain(SANDBOX_PREVIEW_NOTICE);
+    expect(first).toContain("\"id\":\"LET-328\"");
 
     // Wait until the subscriber is wired in (publish may race connection setup)
     for (let attempt = 0; attempt < 20; attempt += 1) {

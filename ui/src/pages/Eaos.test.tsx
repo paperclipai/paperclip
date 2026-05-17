@@ -3,6 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Eaos } from "./Eaos";
 
@@ -112,9 +113,11 @@ describe("EAOS Sandbox & runtime dashboard", () => {
     const root = createRoot(container);
     await act(async () => {
       root.render(
-        <QueryClientProvider client={newQueryClient()}>
-          <Eaos />
-        </QueryClientProvider>,
+        <MemoryRouter>
+          <QueryClientProvider client={newQueryClient()}>
+            <Eaos />
+          </QueryClientProvider>
+        </MemoryRouter>,
       );
     });
     await flush();
@@ -123,6 +126,14 @@ describe("EAOS Sandbox & runtime dashboard", () => {
     expect(container.textContent).toContain("Read-only");
     expect(container.textContent).toContain("Preview");
     expect(container.textContent).toContain("No live sandbox execution");
+    // LET-352: ADR banner must surface the buy-vs-build link and the
+    // "no real container isolation yet" disclaimer.
+    expect(container.textContent).toContain(
+      "Preview — no real container isolation yet. See ADR LET-328 for the buy-vs-build decision.",
+    );
+    expect(container.textContent).toContain("Stub — no real container isolation");
+    const adrLink = container.querySelector('a[href="/issues/LET-328"]');
+    expect(adrLink).not.toBeNull();
     expect(breadcrumbState.setBreadcrumbs).toHaveBeenCalledWith([
       { label: "Paperclip", href: "/dashboard" },
       { label: "EAOS Sandbox & runtime" },
@@ -188,9 +199,11 @@ describe("EAOS Sandbox & runtime dashboard", () => {
     const root = createRoot(container);
     await act(async () => {
       root.render(
-        <QueryClientProvider client={newQueryClient()}>
-          <Eaos />
-        </QueryClientProvider>,
+        <MemoryRouter>
+          <QueryClientProvider client={newQueryClient()}>
+            <Eaos />
+          </QueryClientProvider>
+        </MemoryRouter>,
       );
     });
     await flush();
@@ -217,9 +230,11 @@ describe("EAOS Sandbox & runtime dashboard", () => {
     const root = createRoot(container);
     await act(async () => {
       root.render(
-        <QueryClientProvider client={newQueryClient()}>
-          <Eaos />
-        </QueryClientProvider>,
+        <MemoryRouter>
+          <QueryClientProvider client={newQueryClient()}>
+            <Eaos />
+          </QueryClientProvider>
+        </MemoryRouter>,
       );
     });
     await flush();
@@ -241,9 +256,11 @@ describe("EAOS Sandbox & runtime dashboard", () => {
     const root = createRoot(container);
     await act(async () => {
       root.render(
-        <QueryClientProvider client={newQueryClient()}>
-          <Eaos />
-        </QueryClientProvider>,
+        <MemoryRouter>
+          <QueryClientProvider client={newQueryClient()}>
+            <Eaos />
+          </QueryClientProvider>
+        </MemoryRouter>,
       );
     });
     await flush();

@@ -1,9 +1,13 @@
 /**
- * Phase 4A-3 (LET-323): redaction pipeline for egress proxy intents and
- * decisions. Producers (the future sandbox proxy worker, the REST preview
- * endpoint, the audit/evidence hook) MUST pipe the raw intent through
- * `redactEgressIntent` before persisting, logging, returning over REST,
- * or publishing on the sandbox event bus.
+ * Phase 4A-3 (LET-323) / Phase 4A-S6 (LET-352): redaction pipeline for
+ * egress proxy intents and decisions. Producers (the future sandbox proxy
+ * worker, the REST preview endpoint, the audit/evidence hook) MUST pipe the
+ * raw intent through `redactEgressIntent` before persisting, logging,
+ * returning over REST, or publishing on the sandbox event bus.
+ *
+ * Preview / stub only: there is no real egress proxy yet — see ADR LET-328
+ * for the buy-vs-build decision. Audit records describe what a future real
+ * proxy *would* have logged, not traffic that actually flowed.
  *
  * Guarantees:
  *   - Full URL is never echoed — the path is collapsed to a short digest
@@ -208,9 +212,12 @@ export function summarizeEgressAudit(input: {
   message?: string;
 }): EgressAuditRecord {
   const redactedIntent = redactEgressIntent(input.intent);
+  // LET-352: default message tags every record as `preview` so audit
+  // consumers cannot read an allow/deny as evidence that real traffic
+  // flowed. See ADR LET-328.
   const baseMessage =
     input.message ??
-    `sandbox.egress ${input.decision.decision}: ${input.decision.reasonCode} (${redactedIntent.method} ${redactedIntent.host})`;
+    `sandbox.egress[preview] ${input.decision.decision}: ${input.decision.reasonCode} (${redactedIntent.method} ${redactedIntent.host})`;
   return {
     previewOnly: true,
     redactedIntent,

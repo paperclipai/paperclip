@@ -115,7 +115,8 @@ export function RuntimeSandboxesModule({
           <PreviewChip />
         </div>
         <CardDescription>
-          Lease, provider, run, workspace, and approval visibility from existing read-only sources. No live
+          Lease, provider, run, workspace, and approval visibility from existing read-only sources.
+          Preview / stub surface — no real container isolation yet (see ADR LET-328). No live
           start/stop, no real egress, no runtime service mutation.
         </CardDescription>
       </CardHeader>
@@ -277,8 +278,13 @@ function SandboxLeaseTable({ loading, error, leases, onSelect }: SandboxLeaseTab
                   <StateChip label={provider.label} tone={provider.tone} />
                   <div className="mt-1 flex flex-wrap gap-1">
                     <StateChip
-                      label={provider.enabled ? "Flag: enabled" : "Flag: disabled"}
+                      label={provider.enabled ? "Flag: enabled (stub)" : "Flag: disabled"}
                       tone={provider.enabled ? "info" : "neutral"}
+                      title={
+                        provider.enabled
+                          ? "Provider feature flag is set, but the provider remains a preview stub — no real container isolation yet (ADR LET-328)."
+                          : "Provider feature flag is unset; nothing in this row implies a live runtime."
+                      }
                     />
                     <PreviewChip />
                   </div>
@@ -371,7 +377,15 @@ function ProvidersTable({ loading, error, providers }: ProvidersTableProps) {
               <td className="px-3 py-2 font-mono text-xs">{p.provider}</td>
               <td className="px-3 py-2 text-xs">{p.kind}</td>
               <td className="px-3 py-2 text-xs">
-                <StateChip label={p.enabled ? "enabled" : "disabled"} tone={p.enabled ? "info" : "neutral"} />
+                <StateChip
+                  label={p.enabled ? "enabled (stub)" : "disabled"}
+                  tone={p.enabled ? "info" : "neutral"}
+                  title={
+                    p.enabled
+                      ? "Feature flag set, but the provider remains a preview stub — no real container isolation yet (ADR LET-328)."
+                      : "Feature flag unset; nothing in this row implies a live runtime."
+                  }
+                />
               </td>
               <td className="px-3 py-2 text-xs">
                 {p.previewOnly ? <PreviewChip /> : <BackendBackedChip />}

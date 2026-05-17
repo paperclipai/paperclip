@@ -38,12 +38,15 @@ export function Eaos() {
     >
       <header className="space-y-3">
         <h1 id="eaos-heading" className="text-2xl font-semibold tracking-tight">
-          EAOS — Sandbox &amp; runtime dashboard
+          EAOS — Sandbox &amp; runtime dashboard{" "}
+          <span className="text-base font-normal text-muted-foreground">(preview / stub)</span>
         </h1>
         <p className="text-sm leading-6 text-muted-foreground">
           Read-only Enterprise Agent OS command center. Backed by the LET-314 / LET-323 preview-only
-          sandbox APIs plus existing live-runs, workspaces, and approvals reads. This surface never
-          starts containers, performs real egress, or mutates runtime services.
+          sandbox APIs plus existing live-runs, workspaces, and approvals reads. The sandbox /
+          runtime stack itself is still a stub: no real container isolation, no real egress
+          enforcement, and no runtime service mutation has shipped yet — see ADR LET-328 for the
+          buy-vs-build decision driving this surface.
         </p>
       </header>
 

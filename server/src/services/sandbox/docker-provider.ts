@@ -1,11 +1,14 @@
 /**
- * Phase 4A-1 (LET-310): DockerSandboxProvider scaffold.
+ * Phase 4A-1 (LET-310) / Phase 4A-S6 (LET-352): DockerSandboxProvider
+ * scaffold.
  *
- * Backend-only, default-off, mocked. This provider records intended
- * boundary metadata (capabilities, quotas, network policy, policy hash)
- * onto the lease but performs no real Docker run/build/pull/start/stop.
- * Real container lifecycle wiring is intentionally deferred to a later
- * Phase 4A child after the REST/SSE boundary lands.
+ * Backend-only, default-off, mocked — preview / stub. This provider
+ * records intended boundary metadata (capabilities, quotas, network
+ * policy, policy hash) onto the lease but performs NO real Docker
+ * run/build/pull/start/stop. Real container isolation has not shipped
+ * yet — see ADR LET-328 for the buy-vs-build decision driving this stub
+ * state. The recorded capability/quota/network values describe what a
+ * future real provider *would* enforce.
  *
  * Capability defaults match the LET-307 boundary model:
  *   - rootless user namespace
