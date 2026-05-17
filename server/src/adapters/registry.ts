@@ -8,6 +8,7 @@ import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
 } from "@paperclipai/adapter-utils";
+import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import {
   execute as acpxExecute,
   testEnvironment as acpxTestEnvironment,
@@ -210,6 +211,27 @@ function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(
   }
 
   return ctx;
+}
+
+function buildHermesScopedPaperclipPrompt(context: unknown): string {
+  if (!context || typeof context !== "object" || Array.isArray(context)) return "";
+  const record = context as Record<string, unknown>;
+  const sections: string[] = [];
+  if (record.paperclipWake) {
+    const wakePrompt = renderPaperclipWakePrompt(record.paperclipWake, { resumedSession: false });
+    if (wakePrompt.trim().length > 0) sections.push(wakePrompt.trim());
+  }
+  if (typeof record.paperclipTaskMarkdown === "string" && record.paperclipTaskMarkdown.trim().length > 0) {
+    sections.push(record.paperclipTaskMarkdown.trim());
+  }
+  if (sections.length === 0) return "";
+  return [
+    "Paperclip scoped task rule:",
+    "This run includes an assigned Paperclip issue/task context. Treat it as mandatory scoped work, not a generic heartbeat.",
+    "If the assigned issue is already in_progress for this agent, continue it; do not decide 'no work' from a broad todo-only listing.",
+    "A liveness/progress comment without the expected artifact or a structured blocking disposition is not completion.",
+    ...sections,
+  ].join("\n\n");
 }
 
 function dedupeAdapterModels(models: AdapterModel[]): AdapterModel[] {
@@ -452,6 +474,7 @@ const hermesLocalAdapter: ServerAdapterModule = {
       typeof existingConfig.promptTemplate === "string" && existingConfig.promptTemplate.trim().length > 0
         ? existingConfig.promptTemplate
         : "";
+    const scopedPaperclipPrompt = buildHermesScopedPaperclipPrompt(normalizedCtx.context);
     const authGuardPrompt = [
       "Paperclip API safety rule:",
       "Use Authorization: Bearer $PAPERCLIP_API_KEY on every Paperclip API request.",
@@ -468,11 +491,13 @@ const hermesLocalAdapter: ServerAdapterModule = {
       },
     };
 
-    // Only inject the auth guard into promptTemplate when a custom template already exists.
-    // When no custom template is set, Hermes uses its built-in default heartbeat/task prompt —
-    // overwriting it with only the auth guard text would strip the assigned issue/workflow instructions.
-    if (promptTemplate) {
-      patchedConfig.promptTemplate = `${authGuardPrompt}\n\n${promptTemplate}`;
+    // Keep Hermes' built-in default prompt for generic heartbeats, but when Paperclip
+    // provided scoped task context, make that context explicit in a Hermes-consumed
+    // promptTemplate so issue-assigned runs cannot degrade into broad heartbeat scans.
+    if (scopedPaperclipPrompt || promptTemplate) {
+      patchedConfig.promptTemplate = [authGuardPrompt, scopedPaperclipPrompt, promptTemplate]
+        .filter((section) => section.trim().length > 0)
+        .join("\n\n");
     }
 
     const patchedCtx = {

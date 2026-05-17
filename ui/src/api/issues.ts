@@ -20,6 +20,7 @@ import type {
   IssueWorkProduct,
   PreviewIssueTreeControl,
   ReleaseIssueTreeHold,
+  ResolveIssueRecoveryAction,
   UpsertIssueDocument,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -126,15 +127,8 @@ export const issuesApi = {
     api.post<Issue>(`/companies/${companyId}/issues`, data),
   update: (id: string, data: Record<string, unknown>) =>
     api.patch<IssueUpdateResponse>(`/issues/${id}`, data),
-  resolveRecoveryAction: (
-    id: string,
-    data: {
-      actionId?: string;
-      outcome: "restored" | "false_positive" | "blocked" | "cancelled";
-      sourceIssueStatus: "todo" | "done" | "in_review" | "blocked";
-      resolutionNote?: string | null;
-    },
-  ) => api.post<ResolveRecoveryActionResponse>(`/issues/${id}/recovery-actions/resolve`, data),
+  resolveRecoveryAction: (id: string, data: ResolveIssueRecoveryAction) =>
+    api.post<ResolveRecoveryActionResponse>(`/issues/${id}/recovery-actions/resolve`, data),
   previewTreeControl: (id: string, data: PreviewIssueTreeControl) =>
     api.post<IssueTreeControlPreview>(`/issues/${id}/tree-control/preview`, data),
   createTreeHold: (id: string, data: CreateIssueTreeHold) =>

@@ -91,6 +91,74 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function extractParentDoneProofEnvelope(executionState: unknown): Record<string, unknown> | null {
+  const state = asRecord(executionState);
+  if (!state) return null;
+  return asRecord(state.parentProofEnvelope)
+    ?? asRecord(state.parentClosureProofEnvelope)
+    ?? asRecord(state.parent_proof_envelope_v0_1);
+}
+
+function withParentProofEnvelope(executionState: unknown, parentProofEnvelope: unknown) {
+  return {
+    status: "idle",
+    currentStageId: null,
+    currentStageIndex: null,
+    currentStageType: null,
+    currentParticipant: null,
+    returnAssignee: null,
+    reviewRequest: null,
+    completedStageIds: [],
+    lastDecisionId: null,
+    lastDecisionOutcome: null,
+    ...(asRecord(executionState) ?? {}),
+    parentProofEnvelope,
+  };
+}
+
+export function isPassingParentDoneProofEnvelope(
+  envelope: unknown,
+  expectedChildren?: Array<{ id: string; identifier?: string | null; status: string }> | number,
+) {
+  const record = asRecord(envelope);
+  if (!record) return false;
+  const classifications = Array.isArray(record.classifications) ? record.classifications : null;
+  const children = Array.isArray(record.children) ? record.children : null;
+  const synthesis = asRecord(record.parent_synthesis);
+  const hygiene = asRecord(synthesis?.hygiene);
+  const expectedChildCount = Array.isArray(expectedChildren) ? expectedChildren.length : expectedChildren;
+  const terminalChildStatuses = new Set(["done", "cancelled"]);
+  const childProofRefs = new Set(
+    (children ?? [])
+      .map((child) => asRecord(child))
+      .flatMap((child) => [child?.issueId, child?.id, child?.issue_id, child?.child_id, child?.identifier, child?.label])
+      .filter((childRef): childRef is string => typeof childRef === "string"),
+  );
+  const childProofsMatchActualChildren = !Array.isArray(expectedChildren)
+    || expectedChildren.every((child) => {
+      const expectedRefs = [child.id, child.identifier].filter((childRef): childRef is string => typeof childRef === "string");
+      return terminalChildStatuses.has(child.status) && expectedRefs.some((childRef) => childProofRefs.has(childRef));
+    });
+  return record.proof_envelope_version === "parent_proof_envelope_v0.1"
+    && record.verdict === "PASS"
+    && record.parent_closeable === true
+    && typeof record.child_count === "number"
+    && record.child_count > 0
+    && (expectedChildCount === undefined || record.child_count === expectedChildCount)
+    && children !== null
+    && children.length === record.child_count
+    && childProofsMatchActualChildren
+    && classifications !== null
+    && classifications.length === 0
+    && synthesis?.exists === true
+    && hygiene?.pass === true;
+}
+
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -4249,6 +4317,7 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        parentProofEnvelope?: unknown;
       },
       dbOrTx: any = db,
     ) => {
@@ -4264,6 +4333,7 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        parentProofEnvelope,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -4281,6 +4351,9 @@ export function issueService(db: Db) {
         ...issueData,
         updatedAt: new Date(),
       };
+      if (parentProofEnvelope !== undefined) {
+        patch.executionState = withParentProofEnvelope(patch.executionState ?? existing.executionState, parentProofEnvelope);
+      }
       if (issueData.requestDepth !== undefined) {
         patch.requestDepth = clampIssueRequestDepth(issueData.requestDepth);
       }
@@ -4304,6 +4377,27 @@ export function issueService(db: Db) {
             ).get(id)?.unresolvedBlockerIssueIds ?? [];
         if (unresolvedBlockerIssueIds.length > 0) {
           throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
+        }
+      }
+      if (patch.status === "done") {
+        const experimentalSettings = await instanceSettings.getExperimental();
+        if (experimentalSettings.enableParentDoneProofEnvelopeGate) {
+          const childRows = await dbOrTx
+            .select({ id: issues.id, identifier: issues.identifier, status: issues.status })
+            .from(issues)
+            .where(and(eq(issues.companyId, existing.companyId), eq(issues.parentId, existing.id)));
+          if (childRows.length > 0) {
+            const envelope = parentProofEnvelope !== undefined
+              ? parentProofEnvelope
+              : extractParentDoneProofEnvelope(existing.executionState);
+            if (!isPassingParentDoneProofEnvelope(envelope, childRows)) {
+              throw unprocessable("Parent issue done transition requires a passing parent proof envelope", {
+                gate: "parent_done_proof_envelope",
+                expectedEnvelopeVersion: "parent_proof_envelope_v0.1",
+                reason: "child proof envelopes and parent synthesis must validate before parent closure",
+              });
+            }
+          }
         }
       }
       if (issueData.assigneeAgentId) {

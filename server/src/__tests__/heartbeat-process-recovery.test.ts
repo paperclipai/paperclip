@@ -703,6 +703,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     retryReason?: "assignment_recovery" | "issue_continuation_needed" | null;
     cause?: string;
     kind?: string;
+    maxAttempts?: number | null;
   }) {
     const action = await waitForValue(async () =>
       db.select().from(issueRecoveryActions).where(
@@ -726,7 +727,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       returnOwnerAgentId: input.agentId,
       cause: input.cause ?? "stranded_assigned_issue",
       attemptCount: 1,
-      maxAttempts: null,
+      maxAttempts: input.maxAttempts ?? null,
     });
     expect(action.evidence).toMatchObject({
       sourceIssueId: input.issueId,
@@ -1619,6 +1620,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryReason: null,
       cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
       kind: "missing_disposition",
+      maxAttempts: 1,
     });
     expect(recoveryAction.evidence).toMatchObject({
       sourceRunId,
@@ -1707,6 +1709,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryReason: null,
       cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
       kind: "missing_disposition",
+      maxAttempts: 1,
     });
     expect(recoveryAction.evidence).toMatchObject({
       sourceRunId,

@@ -1040,6 +1040,7 @@ describe("worktree helpers", () => {
     try {
       fs.mkdirSync(repoRoot, { recursive: true });
       execFileSync("git", ["init"], { cwd: repoRoot, stdio: "ignore" });
+      execFileSync("git", ["config", "core.hooksPath", ".git/hooks"], { cwd: repoRoot, stdio: "ignore" });
       execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repoRoot, stdio: "ignore" });
       execFileSync("git", ["config", "user.name", "Test User"], { cwd: repoRoot, stdio: "ignore" });
       fs.writeFileSync(path.join(repoRoot, "README.md"), "# temp\n", "utf8");
@@ -1047,6 +1048,7 @@ describe("worktree helpers", () => {
       execFileSync("git", ["commit", "-m", "Initial commit"], { cwd: repoRoot, stdio: "ignore" });
 
       const sourceHooksDir = path.join(repoRoot, ".git", "hooks");
+      execFileSync("git", ["config", "core.hooksPath", sourceHooksDir], { cwd: repoRoot, stdio: "ignore" });
       const sourceHookPath = path.join(sourceHooksDir, "pre-commit");
       const sourceTokensPath = path.join(sourceHooksDir, "forbidden-tokens.txt");
       fs.writeFileSync(sourceHookPath, "#!/usr/bin/env bash\nexit 0\n", { encoding: "utf8", mode: 0o755 });
@@ -1066,7 +1068,10 @@ describe("worktree helpers", () => {
       const targetHookPath = path.join(resolvedTargetHooksDir, "pre-commit");
       const targetTokensPath = path.join(resolvedTargetHooksDir, "forbidden-tokens.txt");
 
-      expect(copied).toMatchObject({
+      expect({
+        ...copied,
+        sourceHooksPath: fs.realpathSync(copied!.sourceHooksPath),
+      }).toMatchObject({
         sourceHooksPath: resolvedSourceHooksDir,
         targetHooksPath: resolvedTargetHooksDir,
         copied: true,
@@ -1123,6 +1128,7 @@ describe("worktree helpers", () => {
     try {
       fs.mkdirSync(repoRoot, { recursive: true });
       execFileSync("git", ["init"], { cwd: repoRoot, stdio: "ignore" });
+      execFileSync("git", ["config", "core.hooksPath", ".git/hooks"], { cwd: repoRoot, stdio: "ignore" });
       execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repoRoot, stdio: "ignore" });
       execFileSync("git", ["config", "user.name", "Test User"], { cwd: repoRoot, stdio: "ignore" });
       fs.writeFileSync(path.join(repoRoot, "README.md"), "# temp\n", "utf8");
@@ -1156,6 +1162,7 @@ describe("worktree helpers", () => {
     try {
       fs.mkdirSync(repoRoot, { recursive: true });
       execFileSync("git", ["init"], { cwd: repoRoot, stdio: "ignore" });
+      execFileSync("git", ["config", "core.hooksPath", ".git/hooks"], { cwd: repoRoot, stdio: "ignore" });
       execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repoRoot, stdio: "ignore" });
       execFileSync("git", ["config", "user.name", "Test User"], { cwd: repoRoot, stdio: "ignore" });
       fs.writeFileSync(path.join(repoRoot, "README.md"), "# temp\n", "utf8");
@@ -1198,6 +1205,7 @@ describe("worktree helpers", () => {
     try {
       fs.mkdirSync(repoRoot, { recursive: true });
       execFileSync("git", ["init"], { cwd: repoRoot, stdio: "ignore" });
+      execFileSync("git", ["config", "core.hooksPath", ".git/hooks"], { cwd: repoRoot, stdio: "ignore" });
       execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repoRoot, stdio: "ignore" });
       execFileSync("git", ["config", "user.name", "Test User"], { cwd: repoRoot, stdio: "ignore" });
       fs.writeFileSync(path.join(repoRoot, "README.md"), "# temp\n", "utf8");

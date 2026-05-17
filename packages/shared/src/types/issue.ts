@@ -411,6 +411,9 @@ export interface IssueExecutionState {
   lastDecisionId: string | null;
   lastDecisionOutcome: IssueExecutionDecisionOutcome | null;
   monitor?: IssueExecutionMonitorState | null;
+  parentProofEnvelope?: Record<string, unknown>;
+  parentClosureProofEnvelope?: Record<string, unknown>;
+  parent_proof_envelope_v0_1?: Record<string, unknown>;
 }
 
 export interface IssueExecutionDecision {

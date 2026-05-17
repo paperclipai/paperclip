@@ -232,6 +232,9 @@ export const issueExecutionStateSchema = z.object({
   lastDecisionId: z.string().uuid().nullable(),
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
   monitor: issueExecutionMonitorStateSchema.optional().nullable(),
+  parentProofEnvelope: z.record(z.unknown()).optional(),
+  parentClosureProofEnvelope: z.record(z.unknown()).optional(),
+  parent_proof_envelope_v0_1: z.record(z.unknown()).optional(),
 });
 
 export const issueRecoveryActionReadModelSchema = z.object({
@@ -269,6 +272,9 @@ const RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES = [
   "restored",
   "false_positive",
   "blocked",
+  "held",
+  "resource_capped",
+  "operator_paused",
   "cancelled",
 ] as const;
 
@@ -293,11 +299,16 @@ export const resolveIssueRecoveryActionSchema = z.object({
     return;
   }
 
-  if (value.outcome === "blocked") {
+  if (
+    value.outcome === "blocked" ||
+    value.outcome === "held" ||
+    value.outcome === "resource_capped" ||
+    value.outcome === "operator_paused"
+  ) {
     if (value.sourceIssueStatus !== "blocked") {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Blocked recovery actions must move the source issue to blocked",
+        message: "Blocked/held recovery actions must move the source issue to blocked",
         path: ["sourceIssueStatus"],
       });
     }
@@ -428,6 +439,7 @@ export const updateIssueSchema = createIssueBaseSchema.partial().extend({
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
+  parentProofEnvelope: z.record(z.unknown()).optional(),
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
