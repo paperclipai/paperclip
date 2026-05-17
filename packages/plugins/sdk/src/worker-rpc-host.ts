@@ -1528,16 +1528,11 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (!handler) {
       throw new Error(`No data handler registered for key "${params.key}"`);
     }
-    const baseParams = params.params ?? {};
-    const handlerParams = {
-      ...baseParams,
-      ...(params.companyId !== undefined && !Object.prototype.hasOwnProperty.call(baseParams, "companyId")
-        ? { companyId: params.companyId }
-        : {}),
-      ...(params.renderEnvironment === undefined ? {} : { renderEnvironment: params.renderEnvironment }),
-    };
-    const companyId = typeof params.companyId === "string" ? params.companyId : null;
-    return runtimeCompanyContext.run({ companyId }, () => handler(handlerParams));
+    const handlerParams =
+      params.renderEnvironment === undefined
+        ? params.params
+        : { ...params.params, renderEnvironment: params.renderEnvironment };
+    return runtimeCompanyContext.run({ companyId: params.companyId ?? null }, () => handler(handlerParams));
   }
 
   function stringOrNull(value: unknown): string | null {
@@ -1576,7 +1571,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         : { ...params.params, renderEnvironment: params.renderEnvironment };
     const actionContext = actionContextFromParams(params);
     return runtimeCompanyContext.run(
-      { companyId: actionContext.companyId },
+      { companyId: params.companyId ?? actionContext.companyId },
       () => handler(handlerParams ?? {}, actionContext),
     );
   }
