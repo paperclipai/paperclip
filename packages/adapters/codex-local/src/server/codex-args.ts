@@ -37,10 +37,8 @@ export function buildCodexExecArgs(
 ): BuildCodexExecArgsResult {
   const record = asRecord(config);
   const model = asString(record.model, "").trim();
-  const modelReasoningEffort = asString(
-    record.modelReasoningEffort,
-    asString(record.reasoningEffort, ""),
-  ).trim();
+  const rawEffort = asString(record.modelReasoningEffort, asString(record.reasoningEffort, "")).trim();
+  const modelReasoningEffort = rawEffort === "auto" ? "" : rawEffort || "medium";
   const search = asBoolean(record.search, false);
   const fastModeRequested = asBoolean(record.fastMode, false);
   const fastModeApplied = fastModeRequested && isCodexLocalFastModeSupported(model);
@@ -55,7 +53,7 @@ export function buildCodexExecArgs(
   if (search) args.unshift("--search");
   if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
   if (model) args.push("--model", model);
-  if (modelReasoningEffort) {
+  if (modelReasoningEffort && !options.resumeSessionId) {
     args.push("-c", `model_reasoning_effort=${JSON.stringify(modelReasoningEffort)}`);
   }
   if (fastModeApplied) {

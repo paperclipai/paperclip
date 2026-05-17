@@ -262,6 +262,8 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
+      "-c",
+      'model_reasoning_effort="medium"',
       "-",
     ]);
   });

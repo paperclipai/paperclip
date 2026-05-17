@@ -33,6 +33,7 @@ export function isCodexLocalFastModeSupported(model: string | null | undefined):
 }
 
 export const models = [
+  { id: "gpt-5.5", label: "gpt-5.5" },
   { id: "gpt-5.4", label: "gpt-5.4" },
   { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
   { id: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark" },
@@ -52,7 +53,7 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
     description: "Use the lowest-cost known Codex local model lane without changing the primary model.",
     adapterConfig: {
       model: "gpt-5.3-codex-spark",
-      modelReasoningEffort: "low",
+      modelReasoningEffort: "xhigh",
     },
     source: "adapter_default",
   },
@@ -66,7 +67,7 @@ Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to stdin prompt at runtime
 - model (string, optional): Codex model id
-- modelReasoningEffort (string, optional): reasoning effort override (minimal|low|medium|high|xhigh) passed via -c model_reasoning_effort=...
+- modelReasoningEffort (string, optional): reasoning effort override (auto|minimal|low|medium|high|xhigh). Defaults to medium when unset. Use auto to pass no reasoning override to Codex CLI.
 - promptTemplate (string, optional): run prompt template
 - search (boolean, optional): run codex with --search
 - fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-5.4 and passed through for manual model IDs
