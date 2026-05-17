@@ -137,7 +137,10 @@ function parseIntentTarget(intent: EgressIntent): ParsedTarget {
   } catch {
     throw new InvalidEgressIntentError("url", "unparseable");
   }
-  const host = parsed.hostname.toLowerCase();
+  // Node's URL parser preserves brackets around IPv6 literals
+  // (e.g. "[fd00:ec2::254]"). Strip them here so downstream classification
+  // (notably METADATA_HOSTS) sees a canonical, unwrapped host string.
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (host.length === 0) {
     throw new InvalidEgressIntentError("url", "missing_host");
   }
@@ -304,8 +307,35 @@ export function evaluateEgressIntent(
     };
   }
 
-  // DNS classification path: only allow if dnsAllowlist matches.
+  // DNS classification path: only allow under egress_allowlist mode, and
+  // only if dnsAllowlist matches. mode=none and mode=host_loopback must
+  // never allow a DNS lookup regardless of the dnsAllowlist contents —
+  // the network-mode gate is the primary deny-by-default invariant.
   if (target.protocol === "dns" || rawIntent.targetKind === "dns") {
+    if (policy.mode === "none") {
+      return {
+        previewOnly: true,
+        decision: "deny",
+        reasonCode: "DENY_NETWORK_MODE_NONE",
+        classification: "dns",
+        protocol: target.protocol,
+        policyMode: policy.mode,
+        matchedAllowlistEntry: null,
+        truth: "preview",
+      };
+    }
+    if (policy.mode === "host_loopback") {
+      return {
+        previewOnly: true,
+        decision: "deny",
+        reasonCode: "DENY_HOST_NOT_ALLOWLISTED",
+        classification: "dns",
+        protocol: target.protocol,
+        policyMode: policy.mode,
+        matchedAllowlistEntry: null,
+        truth: "preview",
+      };
+    }
     const matched = findAllowlistEntry(target.host, policy.dnsAllowlist);
     if (matched) {
       return {

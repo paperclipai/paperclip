@@ -539,6 +539,27 @@ describe("sandbox routes", () => {
       expect(res.body.details?.code).toBe("SANDBOX_EGRESS_INTENT_INVALID");
     });
 
+    it("returns typed 400 EGRESS_INTENT_INVALID for malformed method shape (LET-323 QA)", async () => {
+      // Prior behaviour leaked a 500 because InvalidEgressIntentError was
+      // thrown out of evaluateEgressIntent without being caught.
+      const app = buildApp({ type: "board", userId: "user-1", source: "local_implicit" });
+      const res = await request(app)
+        .post("/api/companies/company-1/sandbox/preview/egress")
+        .send({
+          intent: { method: "GET WITH SPACES", url: "https://api.example.com/" },
+          policy: {
+            mode: "egress_allowlist",
+            egressAllowlist: ["example.com"],
+            dnsAllowlist: [],
+            allowLoopback: true,
+            allowInboundPorts: [],
+          },
+        });
+      expect(res.status).toBe(400);
+      expect(res.body.details?.code).toBe("SANDBOX_EGRESS_INTENT_INVALID");
+      expect(res.body.details?.field).toBe("intent.method");
+    });
+
     it("rejects invalid network policy with EGRESS_POLICY_INVALID", async () => {
       const app = buildApp({ type: "board", userId: "user-1", source: "local_implicit" });
       const res = await request(app)

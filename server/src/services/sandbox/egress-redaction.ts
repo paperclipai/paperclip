@@ -54,6 +54,11 @@ const SENSITIVE_HEADER_PATTERNS: readonly RegExp[] = [
   /^x-goog-api-key$/i,
   /^x-vault-token$/i,
   /^api[-_]?key$/i,
+  // Substring matches so names like X-Authorization,
+  // X-Forwarded-Authorization, Authentication, X-Authentication-Info, …
+  // are all dropped — not just the exact RFC names above.
+  /authorization/i,
+  /authentication/i,
   /token/i,
   /secret/i,
   /credential/i,
@@ -173,10 +178,29 @@ export interface EgressAuditRecord {
 }
 
 /**
+ * URL/path/query stripper for caller-supplied audit messages. The
+ * `redactLearningEvidence` pass catches secret-shaped tokens, but not raw
+ * URL/path/query fixtures. We collapse anything URL-shaped, plus any bare
+ * path or query string, to a `[URL_REDACTED]` placeholder so accidental
+ * raw fixtures from future callers cannot leak endpoints, IDs, or
+ * path-embedded tokens through the audit hook.
+ */
+function scrubUrlsAndPaths(message: string): string {
+  let out = message;
+  // Full http(s)/ftp/ws/dns URLs (and anything with a scheme://host).
+  out = out.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s'"<>`]+/gi, "[URL_REDACTED]");
+  // Bare query strings (e.g. "?token=abc&id=1" inside a longer string).
+  out = out.replace(/\?[^\s'"<>`]*=[^\s'"<>`]*/g, "[QUERY_REDACTED]");
+  // Bare absolute paths with at least one segment (e.g. "/v1/secrets/abc").
+  out = out.replace(/(^|[\s(<])\/[A-Za-z0-9._~%\-/]+/g, "$1[PATH_REDACTED]");
+  return out;
+}
+
+/**
  * Build a redacted audit record for an egress decision. The `message`
- * field is additionally scrubbed via the existing learning-evidence
- * redactor — so even if a caller accidentally passes a raw URL/token
- * string, known secret patterns are stripped before persistence.
+ * field is scrubbed for URL/path/query content first (so caller-supplied
+ * raw fixtures cannot leak endpoints or path-embedded tokens) and then
+ * runs through the learning-evidence redactor for known secret patterns.
  */
 export function summarizeEgressAudit(input: {
   intent: EgressIntent;
@@ -192,7 +216,7 @@ export function summarizeEgressAudit(input: {
     redactedIntent,
     decision: input.decision,
     classification: input.decision.classification,
-    message: redactLearningEvidence(baseMessage),
+    message: redactLearningEvidence(scrubUrlsAndPaths(baseMessage)),
   };
 }
 
@@ -200,4 +224,5 @@ export const __testing = {
   isSensitiveHeaderName,
   normalizeHost,
   digestPath,
+  scrubUrlsAndPaths,
 };

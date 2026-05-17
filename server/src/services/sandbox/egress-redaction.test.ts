@@ -82,6 +82,32 @@ describe("redactEgressIntent", () => {
     expect(redactionTesting.isSensitiveHeaderName("Content-Type")).toBe(false);
     expect(redactionTesting.isSensitiveHeaderName("Accept")).toBe(false);
   });
+
+  it("treats authorization/authentication variants as sensitive (LET-323 QA)", () => {
+    // QA fixture: substring match must catch non-RFC prefixed/aliased names.
+    expect(redactionTesting.isSensitiveHeaderName("X-Authorization")).toBe(true);
+    expect(redactionTesting.isSensitiveHeaderName("X-Forwarded-Authorization")).toBe(true);
+    expect(redactionTesting.isSensitiveHeaderName("Authentication")).toBe(true);
+    expect(redactionTesting.isSensitiveHeaderName("X-Authentication-Info")).toBe(true);
+
+    const redacted = redactEgressIntent({
+      method: "GET",
+      url: "https://api.example.com/",
+      headers: {
+        "X-Authorization": "leaked-1",
+        "X-Forwarded-Authorization": "leaked-2",
+        "Authentication": "leaked-3",
+        "X-Authentication-Info": "leaked-4",
+        "User-Agent": "ua",
+      },
+    });
+    expect(redacted.headerNames).toEqual(["user-agent"]);
+    expect(redacted.redactedHeaderCount).toBe(4);
+    const serialized = JSON.stringify(redacted);
+    expect(serialized).not.toContain("leaked-");
+    expect(serialized).not.toContain("authorization");
+    expect(serialized).not.toContain("authentication");
+  });
 });
 
 describe("summarizeEgressAudit", () => {
@@ -121,5 +147,33 @@ describe("summarizeEgressAudit", () => {
     expect(audit.message).toContain("[REDACTED]");
     expect(audit.message).not.toContain("top-secret-token");
     expect(audit.message).not.toContain("apsecret");
+  });
+
+  it("scrubs raw URL/path/query content in caller-supplied audit messages (LET-323 QA)", () => {
+    const intent = { method: "POST", url: "https://api.example.com/" };
+    const decision = evaluateEgressIntent(
+      intent,
+      parseSandboxNetworkPolicy({ mode: "egress_allowlist", egressAllowlist: ["api.example.com"] }),
+    );
+    const audit = summarizeEgressAudit({
+      intent,
+      decision,
+      message:
+        "raw fixture https://leak.example.org/v1/secrets/abc123?token=leakme then /etc/passwd then ?id=99&token=zzz tail",
+    });
+    expect(audit.message).not.toContain("leak.example.org");
+    expect(audit.message).not.toContain("/v1/secrets/abc123");
+    expect(audit.message).not.toContain("leakme");
+    expect(audit.message).not.toContain("/etc/passwd");
+    expect(audit.message).not.toContain("?id=99");
+    expect(audit.message).not.toContain("token=zzz");
+    expect(audit.message).toContain("[URL_REDACTED]");
+  });
+
+  it("scrubUrlsAndPaths is exposed for unit testing", () => {
+    const scrub = redactionTesting.scrubUrlsAndPaths;
+    expect(scrub("see https://example.com/x?y=1 here")).toContain("[URL_REDACTED]");
+    expect(scrub("look at /v1/secrets/abc later")).toContain("[PATH_REDACTED]");
+    expect(scrub("tail ?token=zz end")).toContain("[QUERY_REDACTED]");
   });
 });

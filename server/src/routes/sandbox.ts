@@ -39,6 +39,7 @@ import {
 } from "../services/sandbox/events.js";
 import {
   evaluateEgressIntent,
+  InvalidEgressIntentError,
   type EgressDecision,
   type EgressIntent,
 } from "../services/sandbox/egress-policy.js";
@@ -408,7 +409,22 @@ export function sandboxRoutes(db: Db) {
       targetKind,
     };
 
-    const decision: EgressDecision = evaluateEgressIntent(intentInput, policy);
+    let decision: EgressDecision;
+    try {
+      decision = evaluateEgressIntent(intentInput, policy);
+    } catch (err) {
+      // The pure evaluator throws InvalidEgressIntentError when the
+      // method/url fail structural validation (e.g. method has spaces).
+      // Surface as a typed 400 instead of leaking a 500.
+      if (err instanceof InvalidEgressIntentError) {
+        throw badRequest(`Invalid egress intent ${err.field}: ${err.reason}`, {
+          code: SANDBOX_ERROR_CODES.EGRESS_INTENT_INVALID,
+          field: `intent.${err.field}`,
+          reason: err.reason,
+        });
+      }
+      throw err;
+    }
     const audit = summarizeEgressAudit({ intent: intentInput, decision });
     const redactedIntent: RedactedEgressIntent = audit.redactedIntent;
 
