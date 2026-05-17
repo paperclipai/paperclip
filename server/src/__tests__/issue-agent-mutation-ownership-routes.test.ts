@@ -48,6 +48,7 @@ const mockWorkProductService = vi.hoisted(() => ({
   getById: vi.fn(),
   update: vi.fn(),
 }));
+const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 const mockStorageService = vi.hoisted(() => ({
   provider: "local_disk",
@@ -95,7 +96,7 @@ function registerRouteMocks() {
   }));
 
   vi.doMock("../services/activity-log.js", () => ({
-    logActivity: vi.fn(async () => undefined),
+    logActivity: mockLogActivity,
   }));
 
   vi.doMock("../services/index.js", () => ({
@@ -143,7 +144,7 @@ function registerRouteMocks() {
     }),
     issueService: () => mockIssueService,
     issueThreadInteractionService: () => mockIssueThreadInteractionService,
-    logActivity: vi.fn(async () => undefined),
+    logActivity: mockLogActivity,
     projectService: () => ({}),
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
@@ -269,6 +270,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.removeAttachment.mockReset();
     mockIssueService.update.mockReset();
     mockIssueService.findMentionedAgents.mockReset();
+    mockLogActivity.mockReset();
     mockDocumentService.upsertIssueDocument.mockReset();
     mockWorkProductService.getById.mockReset();
     mockWorkProductService.update.mockReset();
@@ -442,6 +444,48 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status).toBe(200);
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
     expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it("allows comment writes to adopt a stale checkout lock and records the adoption audit", async () => {
+    mockIssueService.assertCheckoutOwner.mockResolvedValue({
+      adoptedFromRunId: "77777777-7777-4777-8777-777777777777",
+    });
+
+    const res = await request(await createApp(ownerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Recovered comment write" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.assertCheckoutOwner).toHaveBeenCalledWith(issueId, ownerAgentId, ownerRunId);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Recovered comment write",
+      expect.objectContaining({
+        agentId: ownerAgentId,
+        runId: ownerRunId,
+      }),
+      expect.objectContaining({
+        authorType: "agent",
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId,
+        actorType: "agent",
+        actorId: ownerAgentId,
+        agentId: ownerAgentId,
+        runId: ownerRunId,
+        action: "issue.checkout_lock_adopted",
+        entityType: "issue",
+        entityId: issueId,
+        details: {
+          previousCheckoutRunId: "77777777-7777-4777-8777-777777777777",
+          checkoutRunId: ownerRunId,
+          reason: "stale_checkout_run",
+        },
+      }),
+    );
   });
 
   it.each([

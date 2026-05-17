@@ -1669,7 +1669,7 @@ function describeSessionResetReason(
   return null;
 }
 
-function shouldAutoCheckoutIssueForWake(input: {
+export function shouldAutoCheckoutIssueForWake(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   issueStatus: string | null;
   issueAssigneeAgentId: string | null;
@@ -1694,6 +1694,15 @@ function shouldAutoCheckoutIssueForWake(input: {
   if (wakeReason === "issue_comment_mentioned") return false;
   if (wakeReason === "source_scoped_recovery_action") return false;
   if (wakeReason.startsWith("execution_")) return false;
+
+  // For comment/child-completed wakes, only auto-checkout active issues,
+  // promoted deferred wakes that reopened the issue, or explicit resume intents.
+  // Parked todo/blocked issues stay parked on plain comment/child wakes.
+  if (wakeReason === "issue_commented" || wakeReason === "issue_children_completed") {
+    if (issueStatus === "in_progress") return true;
+    if (readNonEmptyString(input.contextSnapshot?.reopenedFrom)) return true;
+    return Boolean(input.contextSnapshot?.resumeIntent);
+  }
 
   return true;
 }
