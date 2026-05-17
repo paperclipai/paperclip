@@ -278,6 +278,67 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(resultIds.has(excludedIssueId)).toBe(false);
   });
 
+  it("returns only unassigned issues when assigneeAgentId filter is null (GST-112 regression guard)", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "AssignedAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const unassignedTodoId = randomUUID();
+    const unassignedBacklogId = randomUUID();
+    const assignedTodoId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: unassignedTodoId,
+        companyId,
+        title: "Unassigned todo",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: unassignedBacklogId,
+        companyId,
+        title: "Unassigned backlog",
+        status: "backlog",
+        priority: "medium",
+      },
+      {
+        id: assignedTodoId,
+        companyId,
+        title: "Assigned todo",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+    ]);
+
+    const unassignedAll = await svc.list(companyId, { assigneeAgentId: null });
+    expect(new Set(unassignedAll.map((issue) => issue.id))).toEqual(
+      new Set([unassignedTodoId, unassignedBacklogId]),
+    );
+
+    const unassignedTodos = await svc.list(companyId, { assigneeAgentId: null, status: "todo" });
+    expect(unassignedTodos.map((issue) => issue.id)).toEqual([unassignedTodoId]);
+  });
+
   it("combines participation filtering with search", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

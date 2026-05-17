@@ -58,6 +58,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { isStandingChannelIssue } from "./standing-channel.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
@@ -68,6 +69,7 @@ const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+export const STRANDED_RECOVERY_REOPEN_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
@@ -1350,6 +1352,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
+  async function findRecentlyClosedStrandedIssueRecoveryIssue(
+    companyId: string,
+    sourceIssueId: string,
+    cooldownMs: number,
+  ) {
+    const cutoff = new Date(Date.now() - cooldownMs);
+    return db
+      .select({
+        id: issues.id,
+        status: issues.status,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STRANDED_ISSUE_RECOVERY_ORIGIN_KIND),
+          eq(issues.originId, sourceIssueId),
+          inArray(issues.status, ["done", "cancelled"]),
+          gt(issues.updatedAt, cutoff),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   function isStrandedIssueRecoveryIssue(issue: typeof issues.$inferSelect) {
     return issue.originKind === STRANDED_ISSUE_RECOVERY_ORIGIN_KIND;
   }
@@ -1493,9 +1522,35 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) return null;
+    if (isStandingChannelIssue(input.issue)) {
+      logger.info(
+        { companyId: input.issue.companyId, issueId: input.issue.id, reason: "standing_channel" },
+        "recovery: skipped (standing_channel)",
+      );
+      return null;
+    }
 
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
     if (existing) return existing;
+
+    const recentlyClosed = await findRecentlyClosedStrandedIssueRecoveryIssue(
+      input.issue.companyId,
+      input.issue.id,
+      STRANDED_RECOVERY_REOPEN_COOLDOWN_MS,
+    );
+    logger.info(
+      {
+        companyId: input.issue.companyId,
+        sourceIssueId: input.issue.id,
+        lookup: "recently_closed_stranded_recovery",
+        recentlyClosedFound: Boolean(recentlyClosed),
+        recentlyClosedIssueId: recentlyClosed?.id ?? null,
+        recentlyClosedUpdatedAt: recentlyClosed?.updatedAt ?? null,
+        cooldownMs: STRANDED_RECOVERY_REOPEN_COOLDOWN_MS,
+      },
+      "recovery: cooldown lookup result",
+    );
+    if (recentlyClosed) return null;
 
     const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
     if (!ownerAgentId) return null;
@@ -1998,6 +2053,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     };
 
     for (const issue of candidates) {
+      if (isStandingChannelIssue(issue)) {
+        result.skipped += 1;
+        continue;
+      }
+
       const agentId = issue.assigneeAgentId;
       if (!agentId) {
         result.skipped += 1;

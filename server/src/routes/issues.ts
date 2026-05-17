@@ -41,6 +41,7 @@ import {
   updateIssueSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
+  isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   type CompanySearchQuery,
   type CompanySearchResponse,
@@ -83,6 +84,7 @@ import {
   collectIssueWorkspaceCommandPaths,
 } from "./workspace-command-authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
+import { isStandingChannelIssue } from "../services/recovery/standing-channel.js";
 import {
   isInlineAttachmentContentType,
   normalizeIssueAttachmentMaxBytes,
@@ -313,25 +315,52 @@ async function buildIssueWorkspaceChangeActivityDetails(
   };
 }
 
-function hasExecutionParticipant(value: unknown) {
+function hasExecutionParticipant(value: unknown, opts?: { excludeAgentId?: string | null }) {
   const state = parseIssueExecutionState(value);
   if (!state || state.status !== "pending") return false;
   const participant = state.currentParticipant;
   if (!participant) return false;
-  if (participant.type === "agent") return Boolean(participant.agentId);
+  if (participant.type === "agent") {
+    if (!participant.agentId) return false;
+    if (opts?.excludeAgentId && participant.agentId === opts.excludeAgentId) return false;
+    return true;
+  }
   if (participant.type === "user") return Boolean(participant.userId);
   return false;
 }
 
-function hasScheduledMonitor(input: {
+const REVIEW_MONITOR_MAX_LEAD_MS = 24 * 60 * 60 * 1000;
+
+function pickReviewMonitorNextCheckAt(input: {
   existingMonitorNextCheckAt?: Date | null;
   patchMonitorNextCheckAt?: unknown;
   executionPolicy?: unknown;
-}) {
-  if (input.patchMonitorNextCheckAt instanceof Date && !Number.isNaN(input.patchMonitorNextCheckAt.getTime())) return true;
-  if (input.patchMonitorNextCheckAt === undefined && input.existingMonitorNextCheckAt) return true;
+}): Date | null {
+  if (input.patchMonitorNextCheckAt instanceof Date && !Number.isNaN(input.patchMonitorNextCheckAt.getTime())) {
+    return input.patchMonitorNextCheckAt;
+  }
+  if (input.patchMonitorNextCheckAt === undefined && input.existingMonitorNextCheckAt) {
+    return input.existingMonitorNextCheckAt;
+  }
   const policy = normalizeIssueExecutionPolicy(input.executionPolicy ?? null);
-  return Boolean(policy?.monitor?.nextCheckAt);
+  const nextCheckAt = policy?.monitor?.nextCheckAt;
+  if (!nextCheckAt) return null;
+  return typeof nextCheckAt === "string" ? new Date(nextCheckAt) : nextCheckAt;
+}
+
+function hasScheduledMonitorWithin(
+  input: {
+    existingMonitorNextCheckAt?: Date | null;
+    patchMonitorNextCheckAt?: unknown;
+    executionPolicy?: unknown;
+  },
+  maxLeadMs: number,
+  now: Date = new Date(),
+) {
+  const nextCheckAt = pickReviewMonitorNextCheckAt(input);
+  if (!nextCheckAt || Number.isNaN(nextCheckAt.getTime())) return false;
+  const leadMs = nextCheckAt.getTime() - now.getTime();
+  return leadMs <= maxLeadMs;
 }
 
 function successfulRunHandoffStateFromActivity(row: {
@@ -886,17 +915,21 @@ export function issueRoutes(
       id: string;
       companyId: string;
       status: string;
+      assigneeAgentId?: string | null;
       assigneeUserId?: string | null;
       executionState?: unknown;
       monitorNextCheckAt?: Date | null;
     };
     updateFields: Record<string, unknown>;
     actorType: string;
+    actorAgentId?: string | null;
   }) {
     const nextStatus = typeof input.updateFields.status === "string"
       ? input.updateFields.status
       : input.existing.status;
     if (input.actorType !== "agent" || input.existing.status === "in_review" || nextStatus !== "in_review") return;
+
+    const actorAgentId = input.actorAgentId ?? null;
 
     const nextAssigneeUserId = input.updateFields.assigneeUserId === undefined
       ? input.existing.assigneeUserId
@@ -906,17 +939,33 @@ export function issueRoutes(
     const nextExecutionState = input.updateFields.executionState === undefined
       ? input.existing.executionState
       : input.updateFields.executionState;
-    if (hasExecutionParticipant(nextExecutionState)) return;
+    if (hasExecutionParticipant(nextExecutionState, { excludeAgentId: actorAgentId })) return;
 
     const nextExecutionPolicy = input.updateFields.executionPolicy;
-    if (hasScheduledMonitor({
-      existingMonitorNextCheckAt: input.existing.monitorNextCheckAt ?? null,
-      patchMonitorNextCheckAt: input.updateFields.monitorNextCheckAt,
-      executionPolicy: nextExecutionPolicy,
-    })) return;
+    if (hasScheduledMonitorWithin(
+      {
+        existingMonitorNextCheckAt: input.existing.monitorNextCheckAt ?? null,
+        patchMonitorNextCheckAt: input.updateFields.monitorNextCheckAt,
+        executionPolicy: nextExecutionPolicy,
+      },
+      REVIEW_MONITOR_MAX_LEAD_MS,
+    )) return;
+
+    const nextAssigneeAgentId = input.updateFields.assigneeAgentId === undefined
+      ? (input.existing.assigneeAgentId ?? null)
+      : (input.updateFields.assigneeAgentId as string | null | undefined) ?? null;
 
     const interactions = await issueThreadInteractionService(db).listForIssue(input.existing.id);
-    if (interactions.some((interaction) => interaction.status === "pending")) return;
+    const hasReviewerInteraction = interactions.some((interaction) => {
+      if (interaction.status !== "pending") return false;
+      if (interaction.continuationPolicy !== "wake_assignee") return false;
+      if (!nextAssigneeAgentId) return false;
+      // The interaction must wake a different agent than the one who filed it.
+      // This is the GST-36 case: a request_confirmation where assignee == createdBy
+      // would only wake the requester themselves — no real reviewer path.
+      return interaction.createdByAgentId !== nextAssigneeAgentId;
+    });
+    if (hasReviewerInteraction) return;
 
     const approvals = await issueApprovalsSvc.listApprovalsForIssue(input.existing.id);
     if (approvals.some((approval) => ACTIVE_REVIEW_APPROVAL_STATUSES.has(String(approval.status)))) return;
@@ -1474,13 +1523,35 @@ export function issueRoutes(
       res.status(400).json({ error: "offset must be a non-negative integer" });
       return;
     }
+    const assigneeAgentFilterRaw =
+      typeof req.query.assigneeAgentId === "string" ? req.query.assigneeAgentId.trim() : undefined;
+    const participantAgentFilterRaw =
+      typeof req.query.participantAgentId === "string" ? req.query.participantAgentId.trim() : undefined;
+    const assigneeAgentIdFilter =
+      assigneeAgentFilterRaw === undefined
+        ? undefined
+        : assigneeAgentFilterRaw === "null"
+          ? null
+          : assigneeAgentFilterRaw;
+    if (
+      assigneeAgentIdFilter !== undefined
+      && assigneeAgentIdFilter !== null
+      && !isUuidLike(assigneeAgentIdFilter)
+    ) {
+      res.status(400).json({ error: "assigneeAgentId must be a UUID or 'null'" });
+      return;
+    }
+    if (participantAgentFilterRaw !== undefined && !isUuidLike(participantAgentFilterRaw)) {
+      res.status(400).json({ error: "participantAgentId must be a UUID" });
+      return;
+    }
     const offset = parsedOffset ?? 0;
 
     const result = await svc.list(companyId, {
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | undefined,
-      assigneeAgentId: req.query.assigneeAgentId as string | undefined,
-      participantAgentId: req.query.participantAgentId as string | undefined,
+      assigneeAgentId: assigneeAgentIdFilter,
+      participantAgentId: participantAgentFilterRaw,
       assigneeUserId,
       touchedByUserId,
       inboxArchivedByUserId,
@@ -3072,6 +3143,7 @@ export function issueRoutes(
       existing,
       updateFields,
       actorType: req.actor.type,
+      actorAgentId: actor.agentId ?? null,
     });
 
     const nextAssigneeAgentId =
@@ -3715,30 +3787,39 @@ export function issueRoutes(
       if (becameTerminal && issue.parentId) {
         const parent = await svc.getWakeableParentAfterChildCompletion(issue.parentId);
         if (parent) {
-          addWakeup(parent.assigneeAgentId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_children_completed",
-            payload: {
-              issueId: parent.id,
-              completedChildIssueId: issue.id,
-              childIssueIds: parent.childIssueIds,
-              childIssueSummaries: parent.childIssueSummaries,
-              childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
-            },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: parent.id,
-              taskId: parent.id,
-              wakeReason: "issue_children_completed",
-              source: "issue.children_completed",
-              completedChildIssueId: issue.id,
-              childIssueIds: parent.childIssueIds,
-              childIssueSummaries: parent.childIssueSummaries,
-              childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
-            },
-          });
+          const suppressParentWake =
+            issue.originKind === "stranded_issue_recovery" && isStandingChannelIssue(parent);
+          if (suppressParentWake) {
+            logger.info(
+              { issueId: issue.id, parentIssueId: parent.id, reason: "standing_channel" },
+              "issue wake suppressed (issue_children_completed)",
+            );
+          } else {
+            addWakeup(parent.assigneeAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_children_completed",
+              payload: {
+                issueId: parent.id,
+                completedChildIssueId: issue.id,
+                childIssueIds: parent.childIssueIds,
+                childIssueSummaries: parent.childIssueSummaries,
+                childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+              },
+              requestedByActorType: actor.actorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: {
+                issueId: parent.id,
+                taskId: parent.id,
+                wakeReason: "issue_children_completed",
+                source: "issue.children_completed",
+                completedChildIssueId: issue.id,
+                childIssueIds: parent.childIssueIds,
+                childIssueSummaries: parent.childIssueSummaries,
+                childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+              },
+            });
+          }
         }
       }
 

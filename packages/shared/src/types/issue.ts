@@ -362,6 +362,7 @@ export interface IssueExecutionStage {
 export interface IssueExecutionMonitorPolicy {
   nextCheckAt: string;
   notes: string | null;
+  standingChannel?: boolean;
   scheduledBy: IssueMonitorScheduledBy;
   kind?: IssueExecutionMonitorKind | null;
   serviceName?: string | null;

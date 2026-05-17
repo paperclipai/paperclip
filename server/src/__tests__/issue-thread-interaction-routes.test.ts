@@ -622,6 +622,29 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
+  it("rejects request_confirmation creation with continuationPolicy=none (GST-36 prevention)", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "request_confirmation",
+        continuationPolicy: "none",
+        payload: {
+          version: 1,
+          prompt: "Apply this plan?",
+        },
+      });
+
+    expect(res.status).toBe(400);
+    expect(mockInteractionService.create).not.toHaveBeenCalled();
+  });
+
   it("allows agent-authored interaction creation and stamps the active run id", async () => {
     const app = await createApp({
       type: "agent",
