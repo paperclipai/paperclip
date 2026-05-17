@@ -7,6 +7,8 @@ import {
   companyMemberships,
   instanceUserRoles,
 } from "@paperclipai/db";
+import { accessService } from "./services/access.js";
+import { companyService } from "./services/companies.js";
 
 /**
  * jade.computer → Paperclip SSO bridge.
@@ -24,6 +26,8 @@ const LOCAL_BOARD_USER_ID = "local-board";
 export interface JadeGrant {
   email: string;
   name: string;
+  /** Workspace name chosen in jade — used as the first company name. */
+  company: string | null;
 }
 
 function b64urlDecode(input: string): string {
@@ -62,6 +66,7 @@ export function parseJadeGrant(): JadeGrant | null {
     const parsed = JSON.parse(b64urlDecode(payloadB64)) as {
       email?: unknown;
       name?: unknown;
+      company?: unknown;
     };
     const email =
       typeof parsed.email === "string" ? parsed.email.trim().toLowerCase() : "";
@@ -70,7 +75,11 @@ export function parseJadeGrant(): JadeGrant | null {
       typeof parsed.name === "string" && parsed.name.trim()
         ? parsed.name.trim()
         : email.split("@")[0];
-    return { email, name };
+    const company =
+      typeof parsed.company === "string" && parsed.company.trim()
+        ? parsed.company.trim().slice(0, 80)
+        : null;
+    return { email, name, company };
   } catch {
     return null;
   }
@@ -160,4 +169,38 @@ export async function findAuthUserIdByEmail(
     .where(eq(authUsers.email, email))
     .then((rows) => rows[0] ?? null);
   return row?.id ?? null;
+}
+
+/**
+ * First-run only: create the tenant's company named after the jade
+ * workspace and make the SSO user its owner, so they skip Paperclip's
+ * "Name your company" onboarding step entirely. Idempotent — no-op once
+ * the user already has any company membership.
+ */
+export async function ensureJadeCompany(
+  db: Db,
+  userId: string,
+  companyName: string | null,
+): Promise<void> {
+  const existingMembership = await db
+    .select({ id: companyMemberships.id })
+    .from(companyMemberships)
+    .where(
+      and(
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, userId),
+      ),
+    )
+    .then((rows) => rows[0] ?? null);
+  if (existingMembership) return;
+
+  const name = (companyName ?? "").trim() || "My Company";
+  const company = await companyService(db).create({ name });
+  await accessService(db).ensureMembership(
+    company.id,
+    "user",
+    userId,
+    "owner",
+    "active",
+  );
 }

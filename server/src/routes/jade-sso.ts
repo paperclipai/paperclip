@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import {
   deriveJadeSsoPassword,
+  ensureJadeCompany,
   ensureJadeInstanceAdmin,
   findAuthUserIdByEmail,
   parseJadeGrant,
@@ -93,6 +94,12 @@ export function jadeSsoRoutes(
         logger.error({ err }, "jade-sso: instance-admin grant failed");
         // Session is still valid; surface as a soft failure rather than
         // blocking sign-in entirely.
+      }
+      try {
+        await ensureJadeCompany(db, userId, grant.company);
+      } catch (err) {
+        logger.error({ err }, "jade-sso: company bootstrap failed");
+        // Non-fatal: they'll just see the normal "Name your company" step.
       }
     }
 
