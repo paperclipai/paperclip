@@ -51,4 +51,16 @@ describe("company routes", () => {
     expect(applyCompanyPrefix("/goals", "AGENT-OS")).toBe("/AGENT-OS/goals");
     expect(toCompanyRelativePath("/PAP/agent-os")).toBe("/agent-os");
   });
+
+  it("treats /eaos as a board route, not as a company prefix", () => {
+    expect(isBoardPathWithoutPrefix("/eaos")).toBe(true);
+    expect(extractCompanyPrefixFromPath("/eaos")).toBeNull();
+    expect(extractCompanyPrefixFromPath("/eaos/runtime")).toBeNull();
+    expect(extractCompanyPrefixFromPath("/EAOS")).toBeNull();
+    expect(applyCompanyPrefix("/eaos", "PAP")).toBe("/PAP/eaos");
+    expect(applyCompanyPrefix("/eaos?tab=leases", "PAP")).toBe("/PAP/eaos?tab=leases");
+    expect(applyCompanyPrefix("/PAP/eaos", "PAP")).toBe("/PAP/eaos");
+    expect(toCompanyRelativePath("/PAP/eaos")).toBe("/eaos");
+    expect(toCompanyRelativePath("/PAP/eaos?tab=leases")).toBe("/eaos?tab=leases");
+  });
 });
