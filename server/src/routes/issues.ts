@@ -605,20 +605,6 @@ function isClosedIssueStatus(status: string | null | undefined): status is "done
   return status === "done" || status === "cancelled";
 }
 
-function shouldImplicitlyMoveCommentedIssueToTodo(input: {
-  issueStatus: string | null | undefined;
-  assigneeAgentId: string | null | undefined;
-  actorType: "agent" | "user";
-  actorId: string;
-}) {
-  // Only human comments should implicitly reopen finished work.
-  // Agent-authored comments remain communicative unless reopen was explicit.
-  if (input.actorType !== "user") return false;
-  if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
-  if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
-  return true;
-}
-
 function isExplicitResumeCapableStatus(status: string | null | undefined) {
   return status === "done" || status === "blocked" || status === "todo" || status === "in_progress";
 }
@@ -1235,6 +1221,18 @@ export function issueRoutes(
         issueId: issue.id,
         assigneeAgentId: issue.assigneeAgentId,
         actorAgentId,
+      },
+    });
+    return false;
+  }
+
+  function assertExplicitReopenIntentAllowed(res: Response, issue: { id: string; status: string }) {
+    if (issue.status !== "cancelled") return true;
+    res.status(409).json({
+      error: "Cancelled issues must be restored through the dedicated restore flow",
+      details: {
+        issueId: issue.id,
+        status: issue.status,
       },
     });
     return false;
@@ -2924,22 +2922,27 @@ export function issueRoutes(
       return;
     }
     if (resumeRequested === true && !(await assertExplicitResumeIntentAllowed(req, res, existing))) return;
+    if (reopenRequested === true && !assertExplicitReopenIntentAllowed(res, existing)) return;
     if (resumeRequested !== true && reopenRequested === true && req.actor.type === "agent") {
       if (!(await assertExplicitResumeIntentAllowed(req, res, existing))) return;
     }
+    if (
+      existing.status === "cancelled" &&
+      typeof updateFields.status === "string" &&
+      updateFields.status !== "cancelled"
+    ) {
+      res.status(409).json({
+        error: "Cancelled issues must be restored through the dedicated restore flow",
+        details: {
+          issueId: existing.id,
+          status: existing.status,
+        },
+      });
+      return;
+    }
     await assertIssueEnvironmentSelection(existing.companyId, updateFields.executionWorkspaceSettings?.environmentId);
-    const requestedAssigneeAgentId =
-      normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
     const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;
-    const effectiveMoveToTodoRequested =
-      explicitMoveToTodoRequested ||
-      (!!commentBody &&
-        shouldImplicitlyMoveCommentedIssueToTodo({
-          issueStatus: existing.status,
-          assigneeAgentId: requestedAssigneeAgentId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-        }));
+    const effectiveMoveToTodoRequested = explicitMoveToTodoRequested;
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
       ? await issueReferencesSvc.listIssueReferenceSummary(existing.id)
       : null;
@@ -3053,6 +3056,14 @@ export function issueRoutes(
       };
     }
     Object.assign(updateFields, transition.patch);
+    if (
+      isClosed &&
+      !explicitMoveToTodoRequested &&
+      req.body.status === undefined &&
+      updateFields.status === "todo"
+    ) {
+      delete updateFields.status;
+    }
     if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
       const existingExecutionState = parseIssueExecutionState(existing.executionState);
       if (!existingExecutionState || existingExecutionState.status !== "pending") {
@@ -3564,7 +3575,12 @@ export function issueRoutes(
 
       if (executionStageWakeup) {
         addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
-      } else if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
+      } else if (
+        assigneeChanged &&
+        issue.assigneeAgentId &&
+        issue.status !== "backlog" &&
+        !isClosedIssueStatus(issue.status)
+      ) {
         addWakeup(issue.assigneeAgentId, {
           source: "assignment",
           triggerDetail: "system",
@@ -3655,31 +3671,33 @@ export function issueRoutes(
           });
         }
 
-        let mentionedIds: string[] = [];
-        try {
-          mentionedIds = await svc.findMentionedAgents(issue.companyId, commentBody);
-        } catch (err) {
-          logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
-        }
+        if (!(isClosed && !reopened)) {
+          let mentionedIds: string[] = [];
+          try {
+            mentionedIds = await svc.findMentionedAgents(issue.companyId, commentBody);
+          } catch (err) {
+            logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+          }
 
-        for (const mentionedId of mentionedIds) {
-          if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
-          addWakeup(mentionedId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_comment_mentioned",
-            payload: { issueId: id, commentId: comment.id },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: id,
-              taskId: id,
-              commentId: comment.id,
-              wakeCommentId: comment.id,
-              wakeReason: "issue_comment_mentioned",
-              source: "comment.mention",
-            },
-          });
+          for (const mentionedId of mentionedIds) {
+            if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
+            addWakeup(mentionedId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_comment_mentioned",
+              payload: { issueId: id, commentId: comment.id },
+              requestedByActorType: actor.actorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: {
+                issueId: id,
+                taskId: id,
+                commentId: comment.id,
+                wakeCommentId: comment.id,
+                wakeReason: "issue_comment_mentioned",
+                source: "comment.mention",
+              },
+            });
+          }
         }
       }
 
@@ -4485,20 +4503,14 @@ export function issueRoutes(
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;
     if (resumeRequested === true && !(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
+    if (reopenRequested === true && !assertExplicitReopenIntentAllowed(res, issue)) return;
     if (resumeRequested !== true && reopenRequested === true && req.actor.type === "agent") {
       if (!(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
     }
     const isClosed = isClosedIssueStatus(issue.status);
     const isBlocked = issue.status === "blocked";
     const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;
-    const effectiveMoveToTodoRequested =
-      explicitMoveToTodoRequested ||
-      shouldImplicitlyMoveCommentedIssueToTodo({
-        issueStatus: issue.status,
-        assigneeAgentId: issue.assigneeAgentId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-      });
+    const effectiveMoveToTodoRequested = explicitMoveToTodoRequested;
     const hasUnresolvedFirstClassBlockers =
       isBlocked && effectiveMoveToTodoRequested
         ? (await svc.getDependencyReadiness(issue.id)).unresolvedBlockerCount > 0
@@ -4692,6 +4704,8 @@ export function issueRoutes(
           });
         }
       }
+
+      if (isClosed && !reopened) return;
 
       let mentionedIds: string[] = [];
       try {

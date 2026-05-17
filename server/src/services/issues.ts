@@ -93,6 +93,9 @@ function assertTransition(from: string, to: string) {
   if (!ALL_ISSUE_STATUSES.includes(to)) {
     throw conflict(`Unknown issue status: ${to}`);
   }
+  if (from === "cancelled") {
+    throw conflict("Cancelled issues must be restored through the dedicated restore flow");
+  }
 }
 
 function applyStatusSideEffects(

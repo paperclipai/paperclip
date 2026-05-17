@@ -87,73 +87,10 @@ vi.mock("../services/index.js", () => ({
   workProductService: () => ({}),
 }));
 
-function registerModuleMocks() {
-  vi.doMock("../services/index.js", () => ({
-    companyService: () => ({
-      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
-    }),
-    accessService: () => ({
-      canUser: vi.fn(async () => true),
-      hasPermission: vi.fn(async () => true),
-    }),
-    agentService: () => ({
-      getById: vi.fn(async () => null),
-      resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
-        ambiguous: false,
-        agent: { id: raw },
-      })),
-    }),
-    documentService: () => ({}),
-    executionWorkspaceService: () => ({}),
-    feedbackService: () => ({
-      listIssueVotesForUser: vi.fn(async () => []),
-      saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
-    }),
-    goalService: () => ({}),
-    heartbeatService: () => mockHeartbeatService,
-    instanceSettingsService: () => ({
-      get: vi.fn(async () => ({
-        id: "instance-settings-1",
-        general: {
-          censorUsernameInLogs: false,
-          feedbackDataSharingPreference: "prompt",
-        },
-      })),
-      listCompanyIds: vi.fn(async () => ["company-1"]),
-    }),
-    issueApprovalService: () => ({}),
-    issueReferenceService: () => ({
-      deleteDocumentSource: async () => undefined,
-      diffIssueReferenceSummary: () => ({
-        addedReferencedIssues: [],
-        removedReferencedIssues: [],
-        currentReferencedIssues: [],
-      }),
-      emptySummary: () => ({ outbound: [], inbound: [] }),
-      listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
-      syncComment: async () => undefined,
-      syncDocument: async () => undefined,
-      syncIssue: async () => undefined,
-    }),
-    issueRecoveryActionService: () => ({
-      getActiveForIssue: vi.fn(async () => null),
-      listActiveForIssues: vi.fn(async () => new Map()),
-    }),
-    issueService: () => mockIssueService,
-    issueThreadInteractionService: () => mockIssueThreadInteractionService,
-    logActivity: vi.fn(async () => undefined),
-    projectService: () => ({}),
-    routineService: () => ({
-      syncRunStatusForIssue: vi.fn(async () => undefined),
-    }),
-    workProductService: () => ({}),
-  }));
-}
-
 async function createApp() {
-  const [{ errorHandler }, { issueRoutes }] = await Promise.all([
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
+    import("../routes/issues.js"),
+    import("../middleware/index.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -195,11 +132,6 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
 
 describe("issue update comment wakeups", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../routes/issues.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    registerModuleMocks();
     vi.clearAllMocks();
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });

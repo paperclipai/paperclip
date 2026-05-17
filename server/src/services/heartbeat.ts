@@ -6020,7 +6020,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const wakeCommentId = deriveCommentId(context, null);
     const isInteractionWake = allowsIssueInteractionWake(context);
-    const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
 
@@ -6067,15 +6066,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
-    if (issue.status === "done" || issue.status === "cancelled") {
-      if (!resumeIntent && !wakeCommentId) {
-        return {
-          stale: true,
-          errorCode: "issue_terminal_status",
-          reason: `Cancelled because issue reached terminal status (${issue.status}) before the queued run could start`,
-          details: { issueId, currentStatus: issue.status },
-        };
-      }
+    if (issue.status === "cancelled" || (issue.status === "done" && !wakeCommentId)) {
+      return {
+        stale: true,
+        errorCode: "issue_terminal_status",
+        reason: `Cancelled because issue reached terminal status (${issue.status}) before the queued run could start`,
+        details: { issueId, currentStatus: issue.status },
+      };
     }
 
     if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON && issue.status !== "in_progress") {
@@ -8250,11 +8247,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
         const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
-        // Only human/comment-reopen interactions should revive completed issues;
-        // system follow-ups such as retry or cleanup wakes must not reopen closed work.
+        if (deferredCommentIds.length > 0 && issue.status === "cancelled") {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: new Date(),
+              error: "Deferred comment wake suppressed because the issue is cancelled",
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
+        }
+
+        // Only deferred comment wakes for done issues may revive work. Cancelled
+        // issues stay terminal and must go through the explicit restore flow.
         const shouldReopenDeferredCommentWake =
           deferredCommentIds.length > 0 &&
-          (issue.status === "done" || issue.status === "cancelled") &&
+          issue.status === "done" &&
           (
             deferred.requestedByActorType === "user" ||
             deferredWakeReason === "issue_reopened_via_comment"

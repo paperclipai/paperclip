@@ -1351,6 +1351,123 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(activity.some((event) => event.action === "issue.successful_run_handoff_required")).toBe(true);
   });
 
+  it("cancels queued comment runs when the issue reached cancelled before the queued run starts", async () => {
+    const { companyId, agentId, issueId } = await seedQueuedIssueRunFixture();
+    const sourceRunId = randomUUID();
+    const queuedRunId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    const commentId = randomUUID();
+    const now = new Date("2026-03-19T00:00:01.000Z");
+
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId,
+        taskId: issueId,
+        commentId,
+        sourceRunId,
+        handoffRequired: true,
+        resumeIntent: true,
+        followUpRequested: true,
+        resumeFromRunId: sourceRunId,
+      },
+      status: "queued",
+      runId: queuedRunId,
+      requestedAt: now,
+      updatedAt: now,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: queuedRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId,
+      scheduledRetryReason: "issue_continuation_needed",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_commented",
+        commentId,
+        wakeCommentId: commentId,
+        retryReason: "issue_continuation_needed",
+        sourceRunId,
+        handoffRequired: true,
+        resumeIntent: true,
+        followUpRequested: true,
+        resumeFromRunId: sourceRunId,
+      },
+      updatedAt: now,
+      createdAt: now,
+    });
+
+    await db
+      .update(issues)
+      .set({
+        status: "cancelled",
+        cancelledAt: now,
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: now,
+      })
+      .where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const [queuedRun, wakeup, issue] = await Promise.all([
+      db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          resultJson: heartbeatRuns.resultJson,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, queuedRunId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({
+          status: issues.status,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+          executionLockedAt: issues.executionLockedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(queuedRun).toMatchObject({
+      status: "cancelled",
+      errorCode: "issue_terminal_status",
+      resultJson: expect.objectContaining({ stopReason: "issue_terminal_status" }),
+    });
+    expect(wakeup?.status).toBe("skipped");
+    expect(wakeup?.error).toContain("reached terminal status");
+    expect(issue).toMatchObject({
+      status: "cancelled",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
   it("requeues a missing-disposition handoff when the previous corrective wake was cancelled", async () => {
     const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     const idempotencyKey = `finish_successful_run_handoff:${issueId}:${runId}:1`;

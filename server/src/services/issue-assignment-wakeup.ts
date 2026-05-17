@@ -29,6 +29,7 @@ export function queueIssueAssignmentWakeup(input: {
   rethrowOnError?: boolean;
 }) {
   if (!input.issue.assigneeAgentId || input.issue.status === "backlog") return;
+  if (input.issue.status === "done" || input.issue.status === "cancelled") return;
 
   return input.heartbeat
     .wakeup(input.issue.assigneeAgentId, {
