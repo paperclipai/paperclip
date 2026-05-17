@@ -3,9 +3,25 @@ import { initReactI18next, useTranslation as useReactI18nextTranslation } from "
 
 import { DEFAULT_LOCALE, i18nextResources, supportedLocales } from "./locales";
 
+function detectLocale(): string {
+  const candidates = [
+    ...(navigator.languages ?? []),
+    navigator.language,
+  ];
+  for (const lang of candidates) {
+    if (!lang) continue;
+    // Exact match (e.g. "pt-BR")
+    if (supportedLocales.includes(lang)) return lang;
+    // Base language match (e.g. "tr-TR" → "tr")
+    const base = lang.split("-")[0];
+    if (base && supportedLocales.includes(base)) return base;
+  }
+  return DEFAULT_LOCALE;
+}
+
 const i18nextOptions: InitOptions = {
   resources: i18nextResources,
-  lng: DEFAULT_LOCALE,
+  lng: detectLocale(),
   fallbackLng: DEFAULT_LOCALE,
   supportedLngs: supportedLocales,
   defaultNS: "translation",
