@@ -1,4 +1,5 @@
 import type { DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
+import { DotBar, DotStack } from "./NothingAesthetic";
 
 /* ---- Utilities ---- */
 
@@ -35,8 +36,12 @@ function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
   return (
     <div className="flex flex-wrap gap-x-2.5 gap-y-0.5 mt-2">
       {items.map(item => (
-        <span key={item.label} className="flex items-center gap-1 text-[9px] text-muted-foreground">
-          <span className="h-1.5 w-1.5 rounded-full shrink-0" style={{ backgroundColor: item.color }} />
+        <span key={item.label} className="flex items-center gap-1 text-[9px] uppercase tracking-[0.08em] text-muted-foreground">
+          <span className="grid grid-cols-2 gap-px shrink-0" aria-hidden="true">
+            {Array.from({ length: 4 }, (_, index) => (
+              <span key={index} className="h-1 w-1 rounded-full" style={{ backgroundColor: item.color }} />
+            ))}
+          </span>
           {item.label}
         </span>
       ))}
@@ -46,12 +51,13 @@ function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
 
 export function ChartCard({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
-    <div className="border border-border rounded-lg p-4 space-y-3">
+    <div className="relative overflow-hidden rounded-lg border border-border/70 bg-background/55 p-4 space-y-3">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle,currentColor_1px,transparent_1px)] bg-[length:14px_14px] opacity-[0.03]" />
       <div>
-        <h3 className="text-xs font-medium text-muted-foreground">{title}</h3>
+        <h3 className="font-display text-[11px] text-muted-foreground">{title}</h3>
         {subtitle && <span className="text-[10px] text-muted-foreground/60">{subtitle}</span>}
       </div>
-      {children}
+      <div className="relative">{children}</div>
     </div>
   );
 }
@@ -105,12 +111,17 @@ export function RunActivityChart(props: RunChartProps) {
             <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} runs`}>
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
-                  {entry.succeeded > 0 && <div className="bg-emerald-500" style={{ flex: entry.succeeded }} />}
-                  {entry.failed > 0 && <div className="bg-red-500" style={{ flex: entry.failed }} />}
-                  {entry.other > 0 && <div className="bg-neutral-500" style={{ flex: entry.other }} />}
+                  <DotStack
+                    title={`${day}: ${total} runs`}
+                    values={[
+                      { key: "succeeded", value: entry.succeeded, color: "currentColor" },
+                      { key: "failed", value: entry.failed, tone: "danger" },
+                      { key: "other", value: entry.other, color: "rgb(115 115 115)" },
+                    ]}
+                  />
                 </div>
               ) : (
-                <div className="bg-muted/30 rounded-sm" style={{ height: 2 }} />
+                <div className="mx-auto h-1.5 w-1.5 rounded-full bg-muted/50" />
               )}
             </div>
           );
@@ -123,9 +134,9 @@ export function RunActivityChart(props: RunChartProps) {
 
 const priorityColors: Record<string, string> = {
   critical: "#ef4444",
-  high: "#f97316",
-  medium: "#eab308",
-  low: "#6b7280",
+  high: "#fafafa",
+  medium: "#a3a3a3",
+  low: "#525252",
 };
 
 const priorityOrder = ["critical", "high", "medium", "low"] as const;
@@ -157,12 +168,18 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
             <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} issues`}>
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
-                  {priorityOrder.map(p => entry[p] > 0 ? (
-                    <div key={p} style={{ flex: entry[p], backgroundColor: priorityColors[p] }} />
-                  ) : null)}
+                  <DotStack
+                    title={`${day}: ${total} issues`}
+                    values={priorityOrder.map((priority) => ({
+                      key: priority,
+                      value: entry[priority],
+                      color: priorityColors[priority],
+                      tone: priority === "critical" ? "danger" : undefined,
+                    }))}
+                  />
                 </div>
               ) : (
-                <div className="bg-muted/30 rounded-sm" style={{ height: 2 }} />
+                <div className="mx-auto h-1.5 w-1.5 rounded-full bg-muted/50" />
               )}
             </div>
           );
@@ -175,13 +192,13 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
 }
 
 const statusColors: Record<string, string> = {
-  todo: "#3b82f6",
-  in_progress: "#8b5cf6",
-  in_review: "#a855f7",
-  done: "#10b981",
+  todo: "#d4d4d4",
+  in_progress: "#fafafa",
+  in_review: "#a3a3a3",
+  done: "#e5e5e5",
   blocked: "#ef4444",
-  cancelled: "#6b7280",
-  backlog: "#64748b",
+  cancelled: "#525252",
+  backlog: "#737373",
 };
 
 const statusLabels: Record<string, string> = {
@@ -224,12 +241,18 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
             <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} issues`}>
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
-                  {statusOrder.map(s => (entry[s] ?? 0) > 0 ? (
-                    <div key={s} style={{ flex: entry[s], backgroundColor: statusColors[s] ?? "#6b7280" }} />
-                  ) : null)}
+                  <DotStack
+                    title={`${day}: ${total} issues`}
+                    values={statusOrder.map((status) => ({
+                      key: status,
+                      value: entry[status] ?? 0,
+                      color: statusColors[status] ?? "#737373",
+                      tone: status === "blocked" ? "danger" : undefined,
+                    }))}
+                  />
                 </div>
               ) : (
-                <div className="bg-muted/30 rounded-sm" style={{ height: 2 }} />
+                <div className="mx-auto h-1.5 w-1.5 rounded-full bg-muted/50" />
               )}
             </div>
           );
@@ -255,13 +278,13 @@ export function SuccessRateChart(props: RunChartProps) {
         {days.map(day => {
           const entry = grouped.get(day) ?? { date: day, succeeded: 0, failed: 0, other: 0, total: 0 };
           const rate = entry.total > 0 ? entry.succeeded / entry.total : 0;
-          const color = entry.total === 0 ? undefined : rate >= 0.8 ? "#10b981" : rate >= 0.5 ? "#eab308" : "#ef4444";
+          const tone = entry.total === 0 ? "muted" : rate >= 0.8 ? "default" : rate >= 0.5 ? "warning" : "danger";
           return (
             <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${entry.total > 0 ? Math.round(rate * 100) : 0}% (${entry.succeeded}/${entry.total})`}>
               {entry.total > 0 ? (
-                <div style={{ height: `${rate * 100}%`, minHeight: 2, backgroundColor: color }} />
+                <DotBar heightPct={rate * 100} tone={tone} />
               ) : (
-                <div className="bg-muted/30 rounded-sm" style={{ height: 2 }} />
+                <div className="mx-auto h-1.5 w-1.5 rounded-full bg-muted/50" />
               )}
             </div>
           );

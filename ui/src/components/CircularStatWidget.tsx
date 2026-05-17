@@ -2,6 +2,7 @@ import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link } from "@/lib/router";
 import { cn } from "../lib/utils";
+import { DotMatrixText } from "./NothingAesthetic";
 
 interface CircularStatWidgetProps {
   icon: LucideIcon;
@@ -86,9 +87,9 @@ export function CircularStatWidget({
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5">
           <Icon className="h-3.5 w-3.5 text-muted-foreground/60" />
-          <div className={cn("font-display text-2xl sm:text-3xl leading-none tabular-nums", valueClass)}>
+          <DotMatrixText className={cn("text-2xl leading-none sm:text-3xl", valueClass)}>
             {value}
-          </div>
+          </DotMatrixText>
         </div>
       </div>
       <div className="text-center min-w-0 w-full">

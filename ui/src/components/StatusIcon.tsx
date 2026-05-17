@@ -4,6 +4,7 @@ import { cn } from "../lib/utils";
 import { issueStatusIcon, issueStatusIconDefault } from "../lib/status-colors";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { GlyphRing } from "./NothingAesthetic";
 
 const allStatuses = ["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"];
 
@@ -82,10 +83,21 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
         ? "needs_attention"
         : undefined;
 
+  const tone =
+    status === "blocked" || status === "cancelled"
+      ? "danger"
+      : status === "in_progress" || status === "in_review"
+        ? "live"
+        : status === "done"
+          ? "success"
+          : status === "backlog"
+            ? "muted"
+            : "default";
+
   const circle = (
     <span
       className={cn(
-        "relative inline-flex h-4 w-4 rounded-full border-2 shrink-0",
+        "relative inline-flex h-5 w-5 shrink-0 items-center justify-center",
         colorClass,
         onChange && !showLabel && "cursor-pointer",
         className
@@ -94,9 +106,13 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
       aria-label={ariaLabel}
       title={ariaLabel}
     >
-      {isDone && (
-        <span className="absolute inset-0 m-auto h-2 w-2 rounded-full bg-current" />
-      )}
+      <GlyphRing
+        tone={tone}
+        active={status === "in_progress" || status === "in_review"}
+        complete={isDone}
+        broken={status === "blocked" || isAttentionBlocked}
+        className="h-full w-full"
+      />
       {isCoveredBlocked && (
         <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-background bg-current" />
       )}

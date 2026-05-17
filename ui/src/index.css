@@ -222,6 +222,17 @@
     background-size: 22px 22px;
     background-position: 0 0;
   }
+  @keyframes glyph-pulse {
+    0%,
+    100% {
+      opacity: 0.55;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 1;
+      transform: scale(1.12);
+    }
+  }
   h1,
   h2,
   h3 {
