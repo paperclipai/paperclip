@@ -1086,7 +1086,7 @@ export function Secrets() {
       )}
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Create secret</DialogTitle>
             <DialogDescription>
@@ -1224,7 +1224,7 @@ export function Secrets() {
                       setCreateForm((current) => ({ ...current, value: event.target.value }))
                     }
                     rows={3}
-                    className="font-mono text-xs"
+                    className="max-h-48 overflow-y-auto break-all font-mono text-xs"
                     placeholder="Stored once, never re-displayed"
                   />
                 </div>
@@ -1398,7 +1398,7 @@ export function Secrets() {
       </Dialog>
 
       <Dialog open={rotateOpen} onOpenChange={setRotateOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
               {selectedSecret?.managedMode === "external_reference" ? "Update external reference" : "Update secret value"}
@@ -1459,7 +1459,7 @@ export function Secrets() {
                 value={rotateValue}
                 onChange={(event) => setRotateValue(event.target.value)}
                 rows={3}
-                className="font-mono text-xs"
+                className="max-h-48 overflow-y-auto break-all font-mono text-xs"
                 placeholder="Paste the new value"
               />
             </div>
