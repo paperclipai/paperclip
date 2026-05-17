@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockCreateChild = vi.fn();
+const mockUpdateIssue = vi.fn().mockResolvedValue(null);
 
 vi.mock("./issues.js", () => ({
   issueService: () => ({
     createChild: mockCreateChild,
+    update: mockUpdateIssue,
   }),
 }));
 
@@ -211,5 +213,186 @@ describe("issueThreadInteractionService", () => {
     });
     expect(state.interactionUpdates).toHaveLength(1);
     expect(state.issueTouches).toHaveLength(1);
+  });
+
+  describe("create request_confirmation auto-routing", () => {
+    const baseInteractionRow = {
+      id: "interaction-rc-1",
+      companyId: "company-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee_on_accept",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: null,
+      title: "Please confirm",
+      summary: null,
+      createdByAgentId: "agent-1",
+      createdByUserId: null,
+      resolvedByAgentId: null,
+      resolvedByUserId: null,
+      payload: { version: 1, prompt: "Please confirm this action.", target: null },
+      result: null,
+      resolvedAt: null,
+      createdAt: new Date("2026-05-04T10:00:00.000Z"),
+      updatedAt: new Date("2026-05-04T10:00:00.000Z"),
+    };
+
+    function createMembershipsSelectChain(rows: SelectRow[]) {
+      const terminal = {
+        then: (callback: (rows: SelectRow[]) => unknown) => Promise.resolve(callback(rows)),
+        limit: (_n: number) => ({
+          then: (callback: (rows: SelectRow[]) => unknown) => Promise.resolve(callback(rows)),
+        }),
+      };
+      return { from: () => ({ where: () => terminal }) };
+    }
+
+    function buildAutoRouteDb(interactionRow: Record<string, unknown>, memberRows: SelectRow[]) {
+      const issueTouches: Array<Record<string, unknown>> = [];
+      const db: any = {
+        select: vi.fn(() => createMembershipsSelectChain(memberRows)),
+        insert: vi.fn(() => ({
+          values: () => ({
+            returning: async () => [interactionRow],
+          }),
+        })),
+        update: vi.fn((_table: unknown) => ({
+          set(values: Record<string, unknown>) {
+            return {
+              where() {
+                if ("updatedAt" in values) {
+                  issueTouches.push(values);
+                }
+                return Promise.resolve(undefined);
+              },
+            };
+          },
+        })),
+      };
+      return { db, issueTouches };
+    }
+
+    it("auto-routes issue to fallback board user when issue has no creator user", async () => {
+      const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+      const { db, issueTouches } = buildAutoRouteDb(baseInteractionRow, [{ principalId: "user-board-1" }]);
+
+      const svc = issueThreadInteractionService(db as never);
+      const created = await svc.create(
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          companyId: "company-1",
+          assigneeAgentId: "agent-1",
+          status: "in_progress",
+          createdByUserId: null,
+        },
+        {
+          kind: "request_confirmation",
+          continuationPolicy: "wake_assignee_on_accept",
+          payload: { version: 1, prompt: "Please confirm this action." },
+          title: "Please confirm",
+        },
+        { agentId: "agent-1" },
+      );
+
+      expect(created.kind).toBe("request_confirmation");
+      expect(created.status).toBe("pending");
+      expect(mockUpdateIssue).toHaveBeenCalledWith(
+        "11111111-1111-4111-8111-111111111111",
+        expect.objectContaining({
+          assigneeAgentId: null,
+          assigneeUserId: "user-board-1",
+          status: "in_review",
+        }),
+      );
+      expect(issueTouches).toHaveLength(0);
+    });
+
+    it("auto-routes issue to issue creator when creator is an active board member", async () => {
+      const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+      const rowWithCreator = { ...baseInteractionRow };
+      const { db, issueTouches } = buildAutoRouteDb(rowWithCreator, [{ principalId: "user-creator-1" }]);
+
+      const svc = issueThreadInteractionService(db as never);
+      await svc.create(
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          companyId: "company-1",
+          assigneeAgentId: "agent-1",
+          status: "in_progress",
+          createdByUserId: "user-creator-1",
+        },
+        {
+          kind: "request_confirmation",
+          continuationPolicy: "wake_assignee_on_accept",
+          payload: { version: 1, prompt: "Please confirm this action." },
+          title: "Please confirm",
+        },
+        { agentId: "agent-1" },
+      );
+
+      expect(mockUpdateIssue).toHaveBeenCalledWith(
+        "11111111-1111-4111-8111-111111111111",
+        expect.objectContaining({
+          assigneeAgentId: null,
+          assigneeUserId: "user-creator-1",
+          status: "in_review",
+        }),
+      );
+      expect(issueTouches).toHaveLength(0);
+    });
+
+    it("does not auto-route when issue is already assigned to a user", async () => {
+      const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+      const { db, issueTouches } = buildAutoRouteDb(baseInteractionRow, [{ principalId: "user-board-1" }]);
+
+      const svc = issueThreadInteractionService(db as never);
+      await svc.create(
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          companyId: "company-1",
+          assigneeAgentId: null,
+          status: "in_review",
+          createdByUserId: null,
+        },
+        {
+          kind: "request_confirmation",
+          continuationPolicy: "wake_assignee_on_accept",
+          payload: { version: 1, prompt: "Please confirm this action." },
+          title: "Please confirm",
+        },
+        { agentId: "agent-1" },
+      );
+
+      expect(mockUpdateIssue).not.toHaveBeenCalled();
+      expect(issueTouches).toHaveLength(1);
+    });
+
+    it("does not auto-route when actor is a board user (not an agent)", async () => {
+      const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+      const { db, issueTouches } = buildAutoRouteDb(baseInteractionRow, [{ principalId: "user-board-1" }]);
+
+      const svc = issueThreadInteractionService(db as never);
+      await svc.create(
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          companyId: "company-1",
+          assigneeAgentId: "agent-1",
+          status: "in_progress",
+          createdByUserId: null,
+        },
+        {
+          kind: "request_confirmation",
+          continuationPolicy: "wake_assignee_on_accept",
+          payload: { version: 1, prompt: "Please confirm this action." },
+          title: "Please confirm",
+        },
+        { userId: "user-board-1" },
+      );
+
+      expect(mockUpdateIssue).not.toHaveBeenCalled();
+      expect(issueTouches).toHaveLength(1);
+    });
   });
 });
