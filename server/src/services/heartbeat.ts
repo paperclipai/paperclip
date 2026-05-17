@@ -6477,7 +6477,53 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
+      const sourceIssue = tracksLocalChild && run.errorCode === DETACHED_PROCESS_ERROR_CODE
+        ? await resolveDetachedOrphanSourceIssue(run)
+        : null;
       if (processPidAlive) {
+        if (shouldCleanupDetachedCompletedSourceRun(run, sourceIssue)) {
+          const cleanupMessage = `Terminated detached child process after source issue ${sourceIssue.identifier ?? sourceIssue.id} reached ${sourceIssue.status} with no active execution binding`;
+          await terminateHeartbeatRunProcess({
+            pid: run.processPid,
+            processGroupId: run.processGroupId,
+          });
+          let cleanedRun = await setRunStatus(run.id, "cancelled", {
+            finishedAt: now,
+            error: cleanupMessage,
+            errorCode: "orphaned_completed_issue_process",
+            resultJson: mergeRunStopMetadataForAgent({ adapterType, adapterConfig }, "cancelled", {
+              resultJson: parseObject(run.resultJson),
+              errorCode: "orphaned_completed_issue_process",
+              errorMessage: cleanupMessage,
+            }),
+          });
+          await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+            finishedAt: now,
+            error: cleanupMessage,
+          });
+          if (!cleanedRun) cleanedRun = await getRun(run.id);
+          if (cleanedRun) {
+            await appendRunEvent(cleanedRun, await nextRunEventSeq(cleanedRun.id), {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "warn",
+              message: cleanupMessage,
+              payload: {
+                issueId: sourceIssue.id,
+                issueStatus: sourceIssue.status,
+                ...(run.processPid ? { processPid: run.processPid } : {}),
+                ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
+                cleanupReason: "completed_source_issue",
+              },
+            });
+            await releaseIssueExecutionAndPromote(cleanedRun);
+          }
+          await finalizeAgentStatus(run.agentId, "cancelled");
+          await startNextQueuedRunForAgent(run.agentId);
+          runningProcesses.delete(run.id);
+          reaped.push(run.id);
+          continue;
+        }
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
           const detachedRun = await setRunStatus(run.id, "running", {
@@ -6596,6 +6642,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   function issueIdFromRunContext(contextSnapshot: unknown) {
     const context = parseObject(contextSnapshot);
     return readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+  }
+
+  async function resolveDetachedOrphanSourceIssue(run: typeof heartbeatRuns.$inferSelect) {
+    const issueId = issueIdFromRunContext(run.contextSnapshot);
+    if (!issueId) return null;
+    const [issue] = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId), isNull(issues.hiddenAt)))
+      .limit(1);
+    return issue ?? null;
+  }
+
+  function shouldCleanupDetachedCompletedSourceRun(
+    run: typeof heartbeatRuns.$inferSelect,
+    sourceIssue: {
+      id: string;
+      identifier: string | null;
+      status: string;
+      executionRunId: string | null;
+    } | null,
+  ) {
+    if (!sourceIssue || run.errorCode !== DETACHED_PROCESS_ERROR_CODE) return false;
+    const sourceIssueTerminal = sourceIssue.status === "done" || sourceIssue.status === "cancelled";
+    const sourceIssueReleasedRun = sourceIssue.executionRunId !== run.id;
+    return sourceIssueTerminal && sourceIssueReleasedRun;
   }
 
   function issueIdFromWakePayload(payload: unknown) {
