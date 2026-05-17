@@ -203,7 +203,12 @@ function blogPageHtml(params: {
   ogDescription: string;
   ogUrl: string;
   body: string;
+  articleMeta?: { slug: string; title: string; tags: string[]; readingTime: string } | null;
 }): string {
+  const articleJson = params.articleMeta
+    ? JSON.stringify(params.articleMeta)
+    : "null";
+
   return `<!DOCTYPE html>
 <html lang="en" prefix="og: https://ogp.me/ns#">
 <head>
@@ -239,6 +244,7 @@ tailwind.config = {
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<script async defer src="/umami/script.js" data-website-id="e69396ab-6b76-4d2b-8e4a-778337f8bca4"></script>
 <style>
 html { scroll-behavior: smooth; }
 ul:not([class]) { list-style: disc; padding-left: 1.5rem; margin: 1rem 0; }
@@ -301,6 +307,46 @@ ${params.body}
     </div>
   </div>
 </footer>
+
+<script>
+(function() {
+  function track(event, properties) {
+    try {
+      var payload = { event: event, properties: properties || {}, distinct_id: location.pathname };
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon('/api/crewbrief/track', JSON.stringify(payload));
+      } else {
+        fetch('/api/crewbrief/track', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          keepalive: true,
+        }).catch(function(){});
+      }
+    } catch(e) {}
+  }
+
+  track('$pageview', { page: location.pathname, referrer: document.referrer });
+
+  var article = ${articleJson};
+  if (article) {
+    track('blog_view', {
+      slug: article.slug,
+      title: article.title,
+      tags: article.tags.join(', '),
+      reading_time: article.readingTime,
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    var target = e.target.closest('a');
+    if (!target) return;
+    if (target.getAttribute('href') === '/' || target.textContent.trim() === 'Get Early Access \u2192') {
+      track('cta_click', { text: target.textContent.trim(), href: target.getAttribute('href'), page: location.pathname });
+    }
+  });
+})();
+</script>
 
 </body>
 </html>`;
@@ -411,6 +457,7 @@ export function createBlogService() {
       ogDescription:
         "Expert analysis on crew briefing automation, flight operations metrics, and aviation safety.",
       ogUrl: "https://crewbrief.avva.aero/blog",
+      articleMeta: null,
       body: `<section class="py-20 lg:py-28 bg-slate-50 min-h-screen">
   <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
     <div class="mb-12 text-center">
@@ -472,6 +519,7 @@ export function createBlogService() {
       ogTitle: post.title,
       ogDescription: post.description,
       ogUrl: post.canonical,
+      articleMeta: { slug: post.slug, title: post.title, tags: post.tags, readingTime: post.readingTime },
       body,
     });
   }
@@ -484,6 +532,7 @@ export function createBlogService() {
       ogTitle: "Blog Post Not Found \u2014 CrewBrief",
       ogDescription: "The requested blog post could not be found.",
       ogUrl: "https://crewbrief.avva.aero/blog",
+      articleMeta: null,
       body: `<section class="py-20 lg:py-28 bg-slate-50 min-h-screen flex items-center">
   <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
     <h1 class="text-4xl font-extrabold text-slate-900 mb-4">Post Not Found</h1>
