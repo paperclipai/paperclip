@@ -24,11 +24,7 @@ import {
   extractProviderIdWithFallback
 } from "../lib/model-utils";
 import { getUIAdapter } from "../adapters";
-import { listUIAdapters } from "../adapters";
-import { isVisualAdapterChoice } from "../adapters/metadata";
-import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
-import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { parseOnboardingGoalInput } from "../lib/onboarding-goal";
 import {
@@ -46,6 +42,8 @@ import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
 import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
+import { AdapterEnvironmentResult } from "./AdapterEnvironmentResult";
+import { AdapterTypePicker } from "./AdapterTypePicker";
 import {
   Building2,
   Bot,
@@ -54,8 +52,8 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
-  Loader2,
   ChevronDown,
+  Loader2,
   X
 } from "lucide-react";
 
@@ -77,9 +75,6 @@ export function OnboardingWizard() {
   const location = useLocation();
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
   const [routeDismissed, setRouteDismissed] = useState(false);
-
-  // Sync disabled adapter types from server so adapter grid filters them out
-  const disabledTypes = useDisabledAdaptersSync();
 
   const routeOnboardingOptions =
     companyPrefix && companiesLoading
@@ -122,7 +117,6 @@ export function OnboardingWizard() {
   const [forceUnsetAnthropicApiKey, setForceUnsetAnthropicApiKey] =
     useState(false);
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
-  const [showMoreAdapters, setShowMoreAdapters] = useState(false);
 
   // Step 3
   const [taskTitle, setTaskTitle] = useState(
@@ -203,23 +197,6 @@ export function OnboardingWizard() {
   const adapterCaps = getCapabilities(adapterType);
   const isLocalAdapter = adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt;
 
-  // Build adapter grids dynamically from the UI registry + display metadata.
-  // External/plugin adapters automatically appear with generic defaults.
-  const { recommendedAdapters, moreAdapters } = useMemo(() => {
-    const SYSTEM_ADAPTER_TYPES = new Set(["process", "http"]);
-    const all = listUIAdapters()
-      .filter((a) =>
-        !SYSTEM_ADAPTER_TYPES.has(a.type) &&
-        !disabledTypes.has(a.type) &&
-        isVisualAdapterChoice(a.type)
-      )
-      .map((a) => ({ ...getAdapterDisplay(a.type), type: a.type }));
-
-    return {
-      recommendedAdapters: all.filter((a) => a.recommended),
-      moreAdapters: all.filter((a) => !a.recommended),
-    };
-  }, [disabledTypes]);
   const COMMAND_PLACEHOLDERS: Record<string, string> = {
     claude_local: "claude",
     codex_local: "codex",
@@ -248,6 +225,17 @@ export function OnboardingWizard() {
     adapterType === "claude_local" &&
     adapterEnvResult?.status === "fail" &&
     hasAnthropicApiKeyOverrideCheck;
+  // Step 2 Next button — derived from probe state.
+  const stepTwoTestFailed =
+    isLocalAdapter && adapterEnvResult?.status === "fail";
+  const stepTwoTestNotRun = isLocalAdapter && adapterEnvResult === null;
+  const stepTwoLabel = loading
+    ? "Creating..."
+    : stepTwoTestFailed
+      ? "Fix issues above"
+      : stepTwoTestNotRun
+        ? "Test & next"
+        : "Next";
   const filteredModels = useMemo(() => {
     const query = modelSearch.trim().toLowerCase();
     return (adapterModels ?? []).filter((entry) => {
@@ -438,6 +426,12 @@ export function OnboardingWizard() {
       if (isLocalAdapter) {
         const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
         if (!result) return;
+        // The probe is advisory: a `fail` result does NOT block hire here.
+        // Visible gating happens via the disabled state on the Step 2 Next
+        // button when the user has explicitly run the probe and seen the
+        // failure. Clicking "Test & next" before the probe has run still
+        // proceeds through a failing probe by design — tightening that to
+        // block in the handler is a separate decision.
       }
 
       const hire = await agentsApi.hire(createdCompanyId, {
@@ -740,103 +734,30 @@ export function OnboardingWizard() {
                     <label className="text-xs text-muted-foreground mb-2 block">
                       Adapter type
                     </label>
-                    <div className="grid grid-cols-2 gap-2">
-                      {recommendedAdapters.map((opt) => (
-                        <button
-                          key={opt.type}
-                          className={cn(
-                            "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors relative",
-                            adapterType === opt.type
-                              ? "border-foreground bg-accent"
-                              : "border-border hover:bg-accent/50"
-                          )}
-                          onClick={() => {
-                            const nextType = opt.type;
-                            setAdapterType(nextType);
-                            if (nextType === "codex_local") {
-                              if (!model) {
-                                setModel(DEFAULT_CODEX_LOCAL_MODEL);
-                              }
-                              return;
-                            }
-                            if (nextType === "opencode_local") {
-                              setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
-                              return;
-                            }
-                            setModel("");
-                          }}
-                        >
-                          {opt.recommended && (
-                            <span className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none">
-                              Recommended
-                            </span>
-                          )}
-                          <opt.icon className="h-4 w-4" />
-                          <span className="font-medium">{opt.label}</span>
-                          <span className="text-muted-foreground text-[10px]">
-                            {opt.description}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-
-                    <button
-                      className="flex items-center gap-1.5 mt-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                      onClick={() => setShowMoreAdapters((v) => !v)}
-                    >
-                      <ChevronDown
-                        className={cn(
-                          "h-3 w-3 transition-transform",
-                          showMoreAdapters ? "rotate-0" : "-rotate-90"
-                        )}
-                      />
-                      More Agent Adapter Types
-                    </button>
-
-                    {showMoreAdapters && (
-                      <div className="grid grid-cols-2 gap-2 mt-2">
-                        {moreAdapters.map((opt) => (
-                           <button
-                             key={opt.type}
-                             disabled={!!opt.comingSoon}
-                             className={cn(
-                               "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors relative",
-                               opt.comingSoon
-                                 ? "border-border opacity-40 cursor-not-allowed"
-                                 : adapterType === opt.type
-                                 ? "border-foreground bg-accent"
-                                 : "border-border hover:bg-accent/50"
-                             )}
-                             onClick={() => {
-                               if (opt.comingSoon) return;
-                               const nextType = opt.type;
-                              setAdapterType(nextType);
-                              if (nextType === "gemini_local" && !model) {
-                                setModel(DEFAULT_GEMINI_LOCAL_MODEL);
-                                return;
-                              }
-                              if (nextType === "cursor" && !model) {
-                                setModel(DEFAULT_CURSOR_LOCAL_MODEL);
-                                return;
-                              }
-                              if (nextType === "opencode_local") {
-                                setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
-                                return;
-                              }
-                              setModel("");
-                            }}
-                          >
-                            <opt.icon className="h-4 w-4" />
-                            <span className="font-medium">{opt.label}</span>
-                            <span className="text-muted-foreground text-[10px]">
-                              {opt.comingSoon
-                                ? opt.disabledLabel ?? "Coming soon"
-                                : opt.description}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
+                    <AdapterTypePicker
+                      value={adapterType}
+                      onChange={(nextType) => {
+                        setAdapterType(nextType);
+                        // Auto-default model when switching adapters that need one.
+                        if (nextType === "codex_local") {
+                          if (!model) setModel(DEFAULT_CODEX_LOCAL_MODEL);
+                          return;
+                        }
+                        if (nextType === "opencode_local") {
+                          setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
+                          return;
+                        }
+                        if (nextType === "gemini_local" && !model) {
+                          setModel(DEFAULT_GEMINI_LOCAL_MODEL);
+                          return;
+                        }
+                        if (nextType === "cursor" && !model) {
+                          setModel(DEFAULT_CURSOR_LOCAL_MODEL);
+                          return;
+                        }
+                        setModel("");
+                      }}
+                    />
                   </div>
 
                   {/* Conditional adapter fields */}
@@ -1216,7 +1137,10 @@ export function OnboardingWizard() {
                     <Button
                       size="sm"
                       disabled={
-                        !agentName.trim() || loading || adapterEnvLoading
+                        !agentName.trim()
+                        || loading
+                        || adapterEnvLoading
+                        || stepTwoTestFailed
                       }
                       onClick={handleStep2Next}
                     >
@@ -1225,7 +1149,7 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Creating..." : "Next"}
+                      {stepTwoLabel}
                     </Button>
                   )}
                   {step === 3 && (
@@ -1272,56 +1196,3 @@ export function OnboardingWizard() {
   );
 }
 
-function AdapterEnvironmentResult({
-  result
-}: {
-  result: AdapterEnvironmentTestResult;
-}) {
-  const statusLabel =
-    result.status === "pass"
-      ? "Passed"
-      : result.status === "warn"
-      ? "Warnings"
-      : "Failed";
-  const statusClass =
-    result.status === "pass"
-      ? "text-green-700 dark:text-green-300 border-green-300 dark:border-green-500/40 bg-green-50 dark:bg-green-500/10"
-      : result.status === "warn"
-      ? "text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10"
-      : "text-red-700 dark:text-red-300 border-red-300 dark:border-red-500/40 bg-red-50 dark:bg-red-500/10";
-
-  return (
-    <div className={`rounded-md border px-2.5 py-2 text-[11px] ${statusClass}`}>
-      <div className="flex items-center justify-between gap-2">
-        <span className="font-medium">{statusLabel}</span>
-        <span className="opacity-80">
-          {new Date(result.testedAt).toLocaleTimeString()}
-        </span>
-      </div>
-      <div className="mt-1.5 space-y-1">
-        {result.checks.map((check, idx) => (
-          <div
-            key={`${check.code}-${idx}`}
-            className="leading-relaxed break-words"
-          >
-            <span className="font-medium uppercase tracking-wide opacity-80">
-              {check.level}
-            </span>
-            <span className="mx-1 opacity-60">·</span>
-            <span>{check.message}</span>
-            {check.detail && (
-              <span className="block opacity-75 break-all">
-                ({check.detail})
-              </span>
-            )}
-            {check.hint && (
-              <span className="block opacity-90 break-words">
-                Hint: {check.hint}
-              </span>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
