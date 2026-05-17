@@ -6,6 +6,17 @@ on:
       - "master"
     tags:
       - "v*"
+  # Reusable entrypoint for release.yml. The push trigger above does not fire
+  # for stable v* tags because release.yml pushes them with the default
+  # GITHUB_TOKEN, which GitHub deliberately suppresses to prevent recursion.
+  # See: https://docs.github.com/en/actions/security-guides/automatic-token-authentication#using-the-github_token-in-a-workflow
+  workflow_call:
+    inputs:
+      tag:
+        description: "Stable git tag to build (e.g. v2026.428.0). When set, the image is tagged latest, MAJOR.MINOR, and the full semver."
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -16,11 +27,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
-      group: docker-${{ github.ref }}
+      group: docker-${{ inputs.tag != '' && format('tag-{0}', inputs.tag) || github.ref }}
       cancel-in-progress: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -38,10 +51,10 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' || inputs.tag != '' }}
+            type=semver,pattern={{version}},value=${{ inputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.tag }}
+            type=sha,enable=${{ inputs.tag == '' }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
