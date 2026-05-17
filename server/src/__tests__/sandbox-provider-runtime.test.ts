@@ -19,13 +19,13 @@ import {
 describe("sandbox provider runtime", () => {
   it("exposes built-in providers through the provider interface", () => {
     expect(listSandboxProviders().map((provider) => provider.provider).sort()).toEqual([
-      "daytona",
       "docker",
-      "e2b",
       "fake",
       "null",
     ]);
     expect(getSandboxProvider(NULL_SANDBOX_PROVIDER_KEY)).toBeInstanceOf(NullSandboxProvider);
+    expect(getSandboxProvider("e2b")).toBeNull();
+    expect(getSandboxProvider("daytona")).toBeNull();
     expect(getSandboxProvider("fake-plugin")).toBeNull();
 
     const descriptors = listSandboxProviderDescriptors();
