@@ -4,6 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { normalizeIssueIdentifier } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { activityService, normalizeActivityLimit } from "../services/activity.js";
+import { executionThreadService } from "../services/execution-thread.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess } from "./authz.js";
 import { heartbeatService, issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
@@ -23,6 +24,7 @@ export function activityRoutes(db: Db) {
   const svc = activityService(db);
   const heartbeat = heartbeatService(db);
   const issueSvc = issueService(db);
+  const threadSvc = executionThreadService(db);
 
   async function resolveIssueByRef(rawId: string) {
     const identifier = normalizeIssueIdentifier(rawId);
@@ -80,6 +82,18 @@ export function activityRoutes(db: Db) {
     }
     assertCompanyAccess(req, issue.companyId);
     const result = await svc.runsForIssue(issue.companyId, issue.id);
+    res.json(result);
+  });
+
+  router.get("/issues/:id/execution-thread", async (req, res) => {
+    const rawId = req.params.id as string;
+    const issue = await resolveIssueByRef(rawId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const result = await threadSvc.getThread(issue.id);
     res.json(result);
   });
 

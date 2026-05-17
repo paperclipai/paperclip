@@ -632,6 +632,10 @@ export type {
   PluginWebhookDeliveryRecord,
   QuotaWindow,
   ProviderQuotaResult,
+  ExecutionThreadIssueSummary,
+  ExecutionThreadEntryKind,
+  ExecutionThreadEntry,
+  ExecutionThreadResponse,
 } from "./types/index.js";
 export { COMPANY_SEARCH_SCOPES } from "./types/index.js";
 export {

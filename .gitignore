@@ -57,3 +57,4 @@ tests/release-smoke/playwright-report/
 .superset/
 .superpowers/
 .claude/worktrees/
+.gstack/

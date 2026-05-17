@@ -419,3 +419,9 @@ export type {
   PluginDatabaseNamespaceMode,
   PluginDatabaseNamespaceStatus,
 } from "./plugin.js";
+export type {
+  ExecutionThreadIssueSummary,
+  ExecutionThreadEntryKind,
+  ExecutionThreadEntry,
+  ExecutionThreadResponse,
+} from "./execution-thread.js";
