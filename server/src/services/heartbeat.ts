@@ -91,7 +91,14 @@ import {
   type RealizedExecutionWorkspace,
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
-import { issueService } from "./issues.js";
+import {
+  collectUnresolvedBlockerIds,
+  computeSharedInboxLiteAssignmentOutcome,
+  fetchAssigneesForIssueIds,
+  resolveRetryWindowFromWakeContext,
+  serializeWakeGuardrailResult,
+} from "../lib/wake-assignment-outcome.js";
+import { issueService, ISSUE_LIST_DEFAULT_LIMIT } from "./issues.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
@@ -7587,6 +7594,47 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           (entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string",
         ),
       );
+      const wakeReasonForOutcome = readNonEmptyString(context.wakeReason);
+      if (wakeReasonForOutcome === "heartbeat_timer") {
+        try {
+          const { retryAttempt, maxRetries } = resolveRetryWindowFromWakeContext(context);
+          const inboxRows = await issuesSvc.list(agent.companyId, {
+            assigneeAgentId: agent.id,
+            status: "todo,in_progress,blocked",
+            includeRoutineExecutions: true,
+            limit: ISSUE_LIST_DEFAULT_LIMIT,
+          });
+          const rowLite = inboxRows.map((row) => ({
+            id: row.id,
+            status: row.status,
+            assigneeAgentId: row.assigneeAgentId,
+          }));
+          const depMap = await issuesSvc.listDependencyReadiness(
+            agent.companyId,
+            rowLite.map((r) => r.id),
+          );
+          const blockerIds = collectUnresolvedBlockerIds(depMap);
+          const blockerAssignees = await fetchAssigneesForIssueIds(db, agent.companyId, blockerIds);
+          const outcome = computeSharedInboxLiteAssignmentOutcome({
+            rows: rowLite,
+            dependencyReadiness: depMap,
+            blockerAssigneeByIssueId: blockerAssignees,
+            retryAttempt,
+            maxRetries,
+          });
+          adapterEnv.PAPERCLIP_ASSIGNMENT_OUTCOME_JSON = serializeWakeGuardrailResult(outcome);
+        } catch (err) {
+          logger.warn(
+            {
+              err,
+              runId: run.id,
+              agentId: agent.id,
+              companyId: agent.companyId,
+            },
+            "failed to compute PAPERCLIP_ASSIGNMENT_OUTCOME_JSON for heartbeat_timer",
+          );
+        }
+      }
       const runtimeServices = await ensureRuntimeServicesForRun({
         db,
         runId: run.id,

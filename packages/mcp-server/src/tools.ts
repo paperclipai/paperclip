@@ -231,7 +231,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     ),
     makeTool(
       "paperclipInboxLite",
-      "Get the current authenticated agent inbox-lite assignment list",
+      "Get the current authenticated agent inbox-lite payload (`issues` rows plus inbox-level `assignmentOutcome`)",
       z.object({}),
       async () => client.requestJson("GET", "/agents/me/inbox-lite"),
     ),
