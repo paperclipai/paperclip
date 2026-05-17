@@ -723,6 +723,45 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  // Returns a closed (done/cancelled) stale-run evaluation issue for this run if one exists.
+  // Used to detect when a reviewer closed an alert directly on the board without going through
+  // the watchdog decision API — which would not leave a dismissed_false_positive decision record.
+  async function findClosedStaleRunEvaluation(companyId: string, runId: string) {
+    const [row] = await db
+      .select({ id: issues.id, identifier: issues.identifier, status: issues.status })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(1);
+    return row ?? null;
+  }
+
+  // Returns true when a reviewer has already dismissed this run's silence as a false positive.
+  // Used to prevent re-filing after a deliberate close — while still allowing legitimate
+  // re-arm after a "continue" decision's snooze window expires.
+  async function hasDismissedFalsePositiveDecision(companyId: string, runId: string) {
+    const [row] = await db
+      .select({ id: heartbeatRunWatchdogDecisions.id })
+      .from(heartbeatRunWatchdogDecisions)
+      .where(
+        and(
+          eq(heartbeatRunWatchdogDecisions.companyId, companyId),
+          eq(heartbeatRunWatchdogDecisions.runId, runId),
+          eq(heartbeatRunWatchdogDecisions.decision, "dismissed_false_positive"),
+        ),
+      )
+      .limit(1);
+    return row != null;
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -990,20 +1029,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     run: typeof heartbeatRuns.$inferSelect;
   }) {
     if (!input.sourceIssue || ["done", "cancelled"].includes(input.sourceIssue.status)) return false;
-    const blockerIds = await existingBlockerIssueIds(input.sourceIssue.companyId, input.sourceIssue.id);
-    if (blockerIds.includes(input.evaluationIssue.id)) return false;
-    const nextBlockerIds = [...blockerIds, input.evaluationIssue.id];
-    await issuesSvc.update(input.sourceIssue.id, {
-      ...(input.sourceIssue.status === "blocked" ? {} : { status: "blocked" }),
-      blockedByIssueIds: nextBlockerIds,
-    });
+    // Evaluation issues are observability-only — do NOT add them to blockedByIssueIds.
+    // They are already parented under the source issue. Adding them as hard blockers
+    // creates a self-amplifying loop: block → silence → new alert → block again.
     await issuesSvc.addComment(input.sourceIssue.id, [
       "Paperclip detected critical output silence on this issue's active run.",
       "",
       `- Evaluation issue: ${input.evaluationIssue.identifier ?? input.evaluationIssue.id}`,
       `- Run: \`${input.run.id}\``,
       "",
-      "This blocks the source issue on the explicit review task without cancelling the active process.",
+      "Review the evaluation issue above. The active run has not been cancelled.",
     ].join("\n"), { runId: input.run.id });
     await logActivity(db, {
       companyId: input.sourceIssue.companyId,
@@ -1017,7 +1052,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       details: {
         source: "recovery.scan_silent_active_runs",
         evaluationIssueId: input.evaluationIssue.id,
-        blockerIssueIds: nextBlockerIds,
       },
     });
     return true;
@@ -1030,6 +1064,53 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const runningAgent = await getAgent(input.run.agentId);
     if (!runningAgent || runningAgent.companyId !== input.run.companyId) return { kind: "skipped" as const };
     const sourceIssue = await resolveStaleRunSourceIssue(input.run);
+
+    // Idle output is expected when the source issue is blocked — skip ticket creation entirely.
+    if (sourceIssue?.status === "blocked") return { kind: "skipped" as const };
+
+    // Dedup: if a reviewer has dismissed this run's silence as a false positive, don't re-file.
+    // A "continue" decision with a snooze window is allowed to re-arm normally — only an
+    // explicit dismissed_false_positive blocks all further alerts for this run.
+    if (await hasDismissedFalsePositiveDecision(input.run.companyId, input.run.id)) {
+      return { kind: "skipped" as const };
+    }
+
+    // Dedup: if a prior evaluation issue for this run was closed (done/cancelled) on the board
+    // without going through the watchdog decision API, no dismissed_false_positive record exists
+    // and the watchdog would re-fire every cycle. Auto-record the suppression now so future
+    // cycles skip immediately via hasDismissedFalsePositiveDecision.
+    //
+    // Exception: if any watchdog decision exists (snooze/continue), a human explicitly opted
+    // in to the watchdog lifecycle — honour that and allow re-arm as designed.
+    const closedEvaluation = await findClosedStaleRunEvaluation(input.run.companyId, input.run.id);
+    if (closedEvaluation) {
+      const hasAnyDecision = await db
+        .select({ id: heartbeatRunWatchdogDecisions.id })
+        .from(heartbeatRunWatchdogDecisions)
+        .where(
+          and(
+            eq(heartbeatRunWatchdogDecisions.companyId, input.run.companyId),
+            eq(heartbeatRunWatchdogDecisions.runId, input.run.id),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows.length > 0);
+      if (!hasAnyDecision) {
+        await db.insert(heartbeatRunWatchdogDecisions).values({
+          companyId: input.run.companyId,
+          runId: input.run.id,
+          evaluationIssueId: closedEvaluation.id,
+          decision: "dismissed_false_positive",
+          snoozedUntil: null,
+          reason: `Auto-recorded: evaluation issue ${closedEvaluation.identifier} was closed as ${closedEvaluation.status} on the board without a watchdog decision.`,
+          createdByAgentId: null,
+          createdByUserId: null,
+          createdByRunId: null,
+        });
+        return { kind: "skipped" as const };
+      }
+    }
+
     const prefix = await getCompanyIssuePrefix(input.run.companyId);
     const evidence = await collectStaleRunEvidence({
       run: input.run,

@@ -244,7 +244,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(evaluation?.description).not.toContain(leakedGithubToken);
   });
 
-  it("raises critical stale-run evaluations and blocks the source issue", async () => {
+  it("raises critical stale-run evaluations with high priority but does not hard-block the source issue", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const { companyId, issueId } = await seedRunningRun({
       now,
@@ -261,14 +261,75 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
     expect(evaluation?.priority).toBe("high");
 
-    const [blocker] = await db
+    // Evaluation issues are observability-only — they must NOT be added as hard blockers
+    // on the source issue. That caused the self-amplifying loop (KIV-1590).
+    const blockerRelations = await db
       .select()
       .from(issueRelations)
       .where(and(eq(issueRelations.companyId, companyId), eq(issueRelations.relatedIssueId, issueId)));
-    expect(blocker?.issueId).toBe(evaluation?.id);
+    expect(blockerRelations).toHaveLength(0);
 
     const [source] = await db.select().from(issues).where(eq(issues.id, issueId));
-    expect(source?.status).toBe("blocked");
+    expect(source?.status).not.toBe("blocked");
+  });
+
+  it("skips ticket creation when the source issue is blocked (idle is expected)", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, issueId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    // Mark the source issue as blocked before scanning
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
+  });
+
+  it("does not re-file after a stale-run evaluation is dismissed as false positive", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId, managerId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn() });
+
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first.created).toBe(1);
+    const evaluationIssueId = first.evaluationIssueIds[0]!;
+
+    // Reviewer records a dismissed_false_positive decision and closes the ticket
+    await recovery.recordWatchdogDecision({
+      runId,
+      actor: { type: "agent", agentId: managerId },
+      decision: "dismissed_false_positive",
+      evaluationIssueId,
+      reason: "SADE is blocked on KIV-1066 — silence is expected",
+      now,
+    });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, evaluationIssueId));
+
+    // Scan again — should not create a new ticket because of the dismissed_false_positive decision
+    const second = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(second.created).toBe(0);
+    expect(second.skipped).toBe(1);
+
+    const allEvaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(allEvaluations).toHaveLength(1);
   });
 
   it("skips snoozed runs and healthy noisy runs", async () => {
@@ -494,6 +555,81 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
         reason: "closed evaluation should not authorize",
       }),
     ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("suppresses repeat alerts when evaluation is closed on the board without a watchdog decision", async () => {
+    // Regression: KIV-1519–KIV-1618 — watchdog re-fired 18+ times for the same run because
+    // CEO closed each alert as 'done' directly on the board without recording a watchdog decision.
+    // The unique constraint only prevents duplicates while an issue is open, so once it's closed
+    // the scanner created a fresh one every cycle.
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    // First scan: creates the evaluation issue.
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first.created).toBe(1);
+    const evaluationIssueId = first.evaluationIssueIds[0];
+    expect(evaluationIssueId).toBeTruthy();
+
+    // Reviewer closes the issue on the board — no watchdog decision recorded.
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, evaluationIssueId));
+
+    // Second scan: should NOT create a new issue. Instead auto-records dismissed_false_positive.
+    const second = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(second.created).toBe(0);
+    expect(second.skipped).toBe(1);
+
+    // All subsequent scans also skip.
+    const third = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(third.created).toBe(0);
+    expect(third.skipped).toBe(1);
+
+    // The auto-recorded dismissed_false_positive decision must be persisted.
+    const decisions = await db
+      .select()
+      .from(heartbeatRunWatchdogDecisions)
+      .where(and(eq(heartbeatRunWatchdogDecisions.runId, runId), eq(heartbeatRunWatchdogDecisions.decision, "dismissed_false_positive")));
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0].evaluationIssueId).toBe(evaluationIssueId);
+  });
+
+  it("still allows re-arm after continue decision even when issue was closed on board", async () => {
+    // When a human explicitly recorded a 'continue' decision the watchdog lifecycle is active;
+    // closing the issue on the board should not permanently suppress future alerts.
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, managerId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn() });
+
+    const scan = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    const evaluationIssueId = scan.evaluationIssueIds[0];
+    expect(evaluationIssueId).toBeTruthy();
+
+    // Human records a 'continue' decision.
+    await recovery.recordWatchdogDecision({
+      runId,
+      actor: { type: "agent", agentId: managerId },
+      decision: "continue",
+      evaluationIssueId,
+      reason: "Expected quiet period.",
+      now,
+    });
+
+    // Board also closes the evaluation issue.
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, evaluationIssueId));
+
+    // After the re-arm window, watchdog should still fire a new alert.
+    const rearmAt = new Date(now.getTime() + ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS + 60_000);
+    const rearm = await heartbeat.scanSilentActiveRuns({ now: rearmAt, companyId });
+    expect(rearm.created).toBe(1);
+    expect(rearm.evaluationIssueIds[0]).not.toBe(evaluationIssueId);
   });
 
   it("validates createdByRunId before storing watchdog decisions", async () => {
