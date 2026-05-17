@@ -592,10 +592,11 @@ export function executionWorkspaceRoutes(db: Db) {
         req.body.status !== undefined &&
         req.body.status !== "archived" &&
         req.body.status !== "cleanup_failed" &&
-        (existing.status === "archived" || existing.status === "cleanup_failed") &&
-        existing.closedAt != null
+        (existing.status === "archived" || existing.status === "cleanup_failed")
       ) {
-        patch.closedAt = null;
+        if (existing.closedAt != null) {
+          patch.closedAt = null;
+        }
         patch.cleanupReason = null;
         patch.cleanupEligibleAt = null;
       }
