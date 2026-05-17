@@ -70,7 +70,11 @@ describe("redaction", () => {
     const input = [
       "Authorization: Bearer live-bearer-token-value",
       `payload {"apiKey":"json-secret-value"}`,
+      `payload {"token":"json-token-value"}`,
       `escaped {\\"apiKey\\":\\"escaped-json-secret\\"}`,
+      `export OPPM_API_KEY='quoted-secret-value'`,
+      `curl https://example.test/hook?access_token=url-token-value&safe=1`,
+      `paperclipai login --api-key cli-secret-value`,
       `GITHUB_TOKEN=${githubToken}`,
       `session=${jwt}`,
     ].join("\n");
@@ -80,7 +84,11 @@ describe("redaction", () => {
     expect(result).toContain(REDACTED_EVENT_VALUE);
     expect(result).not.toContain("live-bearer-token-value");
     expect(result).not.toContain("json-secret-value");
+    expect(result).not.toContain("json-token-value");
     expect(result).not.toContain("escaped-json-secret");
+    expect(result).not.toContain("quoted-secret-value");
+    expect(result).not.toContain("url-token-value");
+    expect(result).not.toContain("cli-secret-value");
     expect(result).not.toContain(githubToken);
     expect(result).not.toContain(jwt);
   });

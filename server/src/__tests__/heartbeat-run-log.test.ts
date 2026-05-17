@@ -21,4 +21,23 @@ describe("compactRunLogChunk", () => {
     expect(compacted).toContain("[paperclip truncated run log chunk:");
     expect(compacted.endsWith("tail")).toBe(true);
   });
+
+  it("redacts credentials before run log chunks are stored or streamed", () => {
+    const chunk = [
+      "Authorization: Bearer live-bearer-token-value",
+      "export PAPERCLIP_API_KEY='quoted-paperclip-key'",
+      "curl https://example.test/api?token=url-token-value",
+      "paperclipai login --api-key cli-secret-value",
+      '{"token":"json-token-value"}',
+    ].join("\n");
+
+    const compacted = compactRunLogChunk(chunk);
+
+    expect(compacted).toContain("***REDACTED***");
+    expect(compacted).not.toContain("live-bearer-token-value");
+    expect(compacted).not.toContain("quoted-paperclip-key");
+    expect(compacted).not.toContain("url-token-value");
+    expect(compacted).not.toContain("cli-secret-value");
+    expect(compacted).not.toContain("json-token-value");
+  });
 });
