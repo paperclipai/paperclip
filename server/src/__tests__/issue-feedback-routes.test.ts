@@ -16,6 +16,7 @@ const mockIssueService = vi.hoisted(() => ({
   update: vi.fn(),
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
+  hasAgentBeenMentionedInThread: vi.fn(),
 }));
 
 const mockFeedbackExportService = vi.hoisted(() => ({
@@ -172,6 +173,7 @@ describe("issue feedback trace routes", () => {
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);
+    mockIssueService.hasAgentBeenMentionedInThread.mockResolvedValue(false);
   });
 
   it("flushes a newly shared feedback trace immediately after saving the vote", async () => {

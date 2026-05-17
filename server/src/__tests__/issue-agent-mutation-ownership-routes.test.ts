@@ -17,6 +17,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getRelationSummaries: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
+  hasAgentBeenMentionedInThread: vi.fn(),
   listAttachments: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   remove: vi.fn(),
@@ -269,6 +270,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.removeAttachment.mockReset();
     mockIssueService.update.mockReset();
     mockIssueService.findMentionedAgents.mockReset();
+    mockIssueService.hasAgentBeenMentionedInThread.mockReset();
     mockDocumentService.upsertIssueDocument.mockReset();
     mockWorkProductService.getById.mockReset();
     mockWorkProductService.update.mockReset();
@@ -296,6 +298,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockIssueService.hasAgentBeenMentionedInThread.mockResolvedValue(false);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue(),
       ...patch,
@@ -476,5 +479,43 @@ describe("agent issue mutation checkout ownership", () => {
       assigneeAgentId: null,
       title: "Claimable update",
     });
+  });
+
+  it.each([
+    ["todo", (app: express.Express) => request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Review: LGTM" })],
+    ["in_progress", (app: express.Express) => request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Review: LGTM" })],
+    ["blocked", (app: express.Express) => request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Review: LGTM" })],
+  ])("allows a peer agent mentioned in the thread to comment on a %s issue", async (status, sendRequest) => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: status as "todo" | "in_progress" | "blocked", assigneeAgentId: ownerAgentId }));
+    mockIssueService.hasAgentBeenMentionedInThread.mockResolvedValue(true);
+    mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+
+    const res = await sendRequest(await createApp(peerActor()));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.hasAgentBeenMentionedInThread).toHaveBeenCalledWith(issueId, companyId, peerAgentId);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+  });
+
+  it("rejects a peer agent not mentioned in the thread from commenting on another agent's issue", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    mockIssueService.hasAgentBeenMentionedInThread.mockResolvedValue(false);
+
+    const res = await request(await createApp(peerActor())).post(`/api/issues/${issueId}/comments`).send({ body: "Unsolicited noise" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("mention-based bypass is comment-only: patch is still rejected for mentioned peer agents", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    mockIssueService.hasAgentBeenMentionedInThread.mockResolvedValue(true);
+
+    const res = await request(await createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ title: "Overreach" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 });

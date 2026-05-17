@@ -9,6 +9,7 @@ const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
   getDependencyReadiness: vi.fn(),
   findMentionedAgents: vi.fn(),
+  hasAgentBeenMentionedInThread: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
 }));
@@ -224,6 +225,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockIssueService.addComment.mockReset();
     mockIssueService.getDependencyReadiness.mockReset();
     mockIssueService.findMentionedAgents.mockReset();
+    mockIssueService.hasAgentBeenMentionedInThread.mockReset();
     mockIssueService.listWakeableBlockedDependents.mockReset();
     mockIssueService.getWakeableParentAfterChildCompletion.mockReset();
     mockAccessService.canUser.mockReset();
@@ -292,6 +294,7 @@ describe.sequential("issue comment reopen routes", () => {
       authorUserId: "local-board",
     });
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockIssueService.hasAgentBeenMentionedInThread.mockResolvedValue(false);
     mockIssueService.getDependencyReadiness.mockResolvedValue({
       issueId: "11111111-1111-4111-8111-111111111111",
       blockerIssueIds: [],

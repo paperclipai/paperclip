@@ -4469,7 +4469,21 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    // Peer-review bypass: a cross-agent comment is allowed when the actor agent has been
+    // @-mentioned in the issue thread. This mirrors the trigger that causes the
+    // `issue_comment_mentioned` wakeup and enables review workflows where agents are
+    // explicitly invited to comment on another agent's issue.
+    const isCrossAgentComment =
+      req.actor.type === "agent" &&
+      req.actor.agentId &&
+      issue.assigneeAgentId &&
+      issue.assigneeAgentId !== req.actor.agentId;
+    const allowedByCrossAgentMention =
+      isCrossAgentComment &&
+      (await svc.hasAgentBeenMentionedInThread(issue.id, issue.companyId, req.actor.agentId!));
+    if (!allowedByCrossAgentMention) {
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    }
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,

@@ -12,6 +12,7 @@ const mockIssueService = vi.hoisted(() => ({
   update: vi.fn(),
   checkout: vi.fn(),
   addComment: vi.fn(),
+  hasAgentBeenMentionedInThread: vi.fn(),
 }));
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
@@ -198,6 +199,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
     registerServiceMocks();
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
+    mockIssueService.hasAgentBeenMentionedInThread.mockResolvedValue(false);
     mockExecutionWorkspaceService.getById.mockResolvedValue(makeClosedWorkspace());
   });
 
