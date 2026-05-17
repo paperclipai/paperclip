@@ -7,6 +7,7 @@ import {
   createDb,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
+  issueComments,
   issueRelations,
   issues,
 } from "@paperclipai/db";
@@ -404,6 +405,61 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
     expect(evaluations.filter((issue) => !["done", "cancelled"].includes(issue.status))).toHaveLength(1);
+  });
+
+  it("auto-resolves stale evaluations when output resumes below the suspicion threshold", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      logChunk: [
+        "worker waiting on websocket reconnect",
+        "idle timeout cleared after reconnect",
+      ].join("\n"),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const initial = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    const evaluationIssueId = initial.evaluationIssueIds[0];
+    expect(evaluationIssueId).toBeTruthy();
+
+    const base = new Date();
+    const resumedOutputAt = new Date(base.getTime() + 5 * 60 * 1000);
+    await db
+      .update(heartbeatRuns)
+      .set({
+        lastOutputAt: resumedOutputAt,
+        lastOutputSeq: 44,
+        lastOutputStream: "stdout",
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const followupNow = new Date(base.getTime() + 6 * 60 * 1000);
+    const followup = await heartbeat.scanSilentActiveRuns({
+      now: followupNow,
+      companyId,
+    });
+
+    expect(followup).toMatchObject({
+      created: 0,
+      escalated: 0,
+      existing: 0,
+      recovered: 1,
+      recoveredOpen: 1,
+      recoveredSkipped: 0,
+    });
+    expect(followup.recoveredEvaluationIssueIds).toContain(evaluationIssueId);
+
+    const [evaluation] = await db.select().from(issues).where(eq(issues.id, evaluationIssueId));
+    expect(evaluation?.status).toBe("done");
+
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, evaluationIssueId));
+    expect(comments.some((comment) => comment.body.includes("Auto-resolved stale-run watchdog evaluation after output resumed."))).toBe(true);
+    expect(comments.some((comment) => comment.body.includes("Recovery rule: `output_resumed_below_suspicion_threshold`"))).toBe(true);
+    expect(comments.some((comment) => comment.body.includes("websocket reconnect"))).toBe(true);
   });
 
   it("rejects agent watchdog decisions using issues not bound to the target run", async () => {
