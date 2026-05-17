@@ -59,6 +59,7 @@ export {
   isSuccessfulRunHandoffRequiredNoticeBody,
 } from "./successful-run-handoff.js";
 export type {
+  SuccessfulRunHandoffEvidenceInput,
   SuccessfulRunHandoffNotice,
   SuccessfulRunHandoffDecision,
 } from "./successful-run-handoff.js";
