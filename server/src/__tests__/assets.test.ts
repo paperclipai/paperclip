@@ -431,6 +431,21 @@ describe("POST /api/companies/:companyId/agents/:agentId/avatar", () => {
     expect(createAssetMock).not.toHaveBeenCalled();
   });
 
+  it("reports the avatar size limit in megabytes", async () => {
+    const app = await createApp(createStorageService("image/png"), createDbStub());
+    createAssetMock.mockResolvedValue(createAsset());
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents/agent-1/avatar")
+        .attach("file", Buffer.alloc((5 * 1024 * 1024) + 1), { filename: "avatar.png", contentType: "image/png" }),
+    );
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("Image exceeds 5 MB");
+    expect(createAssetMock).not.toHaveBeenCalled();
+  });
+
   it("rejects avatar uploads for agents outside the route company", async () => {
     const app = await createApp(createStorageService("image/png"), createDbStub({ id: "agent-1", companyId: "company-2" }));
     getAgentByIdMock.mockResolvedValue({

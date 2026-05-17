@@ -27,6 +27,7 @@ const ALLOWED_AGENT_AVATAR_CONTENT_TYPES = new Set([
   "image/gif",
 ]);
 const AGENT_AVATAR_MAX_BYTES = 5 * 1024 * 1024;
+const AGENT_AVATAR_MAX_MEGABYTES = AGENT_AVATAR_MAX_BYTES / (1024 * 1024);
 const AGENT_AVATAR_MAX_PIXELS = 16_000_000;
 
 async function validateRasterImageBuffer(input: {
@@ -162,7 +163,6 @@ export function assetRoutes(db: Db, storage: StorageService) {
   }
 
   async function assertCanUploadAgentAvatar(req: Request, targetAgent: { id: string; companyId: string }) {
-    assertCompanyAccess(req, targetAgent.companyId);
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
       const allowed = await access.canUser(targetAgent.companyId, req.actor.userId, "agents:create");
@@ -407,7 +407,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
     } catch (err) {
       if (err instanceof multer.MulterError) {
         if (err.code === "LIMIT_FILE_SIZE") {
-          res.status(422).json({ error: `Image exceeds ${AGENT_AVATAR_MAX_BYTES} bytes` });
+          res.status(422).json({ error: `Image exceeds ${AGENT_AVATAR_MAX_MEGABYTES} MB` });
           return;
         }
         res.status(400).json({ error: err.message });
