@@ -128,7 +128,7 @@ Every keyword evaluation must produce one activity-log entry (see Activity Log s
   "tier": "S|A|B",
   "compositeScore": 0,
   "discoveredAt": "<ISO-8601>",
-  "metadata": "{\"scoring\":{\"demand\":0,\"competition\":0,\"monetization\":0,\"defensibility\":0,\"risk\":0,\"royaltyPerUnit\":0},\"signals\":{\"bsrMedianTop30\":0,\"estimatedMonthlySales\":0,\"keywordSearchVolume\":0,\"medianPrice\":0,\"competitivenessIndex\":0,\"longTailVariants\":0},\"reviewGaps\":[],\"hardGuardTriggered\":null,\"cycleId\":\"...\",\"ndaRunId\":\"...\"}"
+  "metadata": "{\"scoring\":{\"demand\":0,\"competition\":0,\"monetization\":0,\"defensibility\":0,\"risk\":0,\"royaltyPerUnit\":0},\"signals\":{\"bsrMedianTop30\":0,\"estimatedMonthlySales\":0,\"keywordSearchVolume\":0,\"medianPrice\":0,\"competitivenessIndex\":0,\"longTailVariants\":0,\"qualifiedTitlesInTop30\":0,\"demandShape\":\"evergreen\",\"kdpPolicyProximity\":\"safe\",\"seasonalityCliffRisk\":false},\"reviewGaps\":[],\"hardGuardTriggered\":null,\"cycleId\":\"...\",\"ndaRunId\":\"...\"}"
 }
 ```
 
@@ -145,7 +145,11 @@ Fields for the API call:
     - `scoring.royaltyPerUnit` — royalty per unit in USD
     - `signals.bsrMedianTop30`, `signals.estimatedMonthlySales`, `signals.keywordSearchVolume`
     - `signals.medianPrice`, `signals.competitivenessIndex`, `signals.longTailVariants`
-    - `reviewGaps` — array of review gap excerpt strings
+    - `signals.qualifiedTitlesInTop30` — count of titles in top 30 with ≥4.3 stars AND ≥100 reviews
+    - `signals.demandShape` — "evergreen" | "seasonal-trending" | "gift-seasonal" | "trending"
+    - `signals.kdpPolicyProximity` — "safe" | "caution" | "risk" proximity to KDP policy edges
+    - `signals.seasonalityCliffRisk` — boolean, true if significant off-season demand drop expected
+    - `reviewGaps` — array of review gap excerpt strings (verbatim 2–3 star quotes, ≤150 chars each)
     - `hardGuardTriggered` — guard name or null
     - `cycleId`, `ndaRunId`
 
