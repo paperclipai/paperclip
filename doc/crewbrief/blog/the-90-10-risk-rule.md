@@ -1,3 +1,16 @@
+---
+title: "The 90/10 Risk Rule: How Automated FRATs Can Reduce Pilot Burden Without Reducing Safety"
+description: "System pre-fills 90% of risk factors from ops data — pilot confirms or adjusts the remaining 10%. The operational sweet spot for FRAT implementation."
+slug: the-90-10-risk-rule
+tags: [FRAT, risk-assessment, automation, pilot-workflow, 90-10-rule]
+keywords: [90/10 risk rule, automated FRAT pre-fill, pilot risk assessment burden, FRAT implementation, aviation risk scoring]
+date: 2026-06-23
+author: CrewBrief Operations
+readingTime: 9 min
+canonical: https://crewbrief.avva.aero/blog/the-90-10-risk-rule
+ogImage: /blog/img/og-90-10-rule.png
+---
+
 # The 90/10 Risk Rule: How Automated FRATs Can Reduce Pilot Burden Without Reducing Safety
 
 **By CrewBrief Operations** · May 2026 · 7 min read

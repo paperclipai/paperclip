@@ -1,3 +1,16 @@
+---
+title: "The End of the PDF Briefing: Why Static Documents Don't Belong in Modern Flight Operations"
+description: "PDF briefings are stale the moment they're generated. Live HTML briefings with delta tracking, mobile rendering, and real-time updates are the new standard."
+slug: end-of-the-pdf-briefing
+tags: [PDF, briefing-format, technology, mobile, modern-ops]
+keywords: [PDF crew briefing problems, live HTML aviation briefing, digital pilot briefing, mobile crew briefing, real-time flight ops data]
+date: 2026-06-25
+author: CrewBrief Operations
+readingTime: 7 min
+canonical: https://crewbrief.avva.aero/blog/end-of-the-pdf-briefing
+ogImage: /blog/img/og-end-of-pdf.png
+---
+
 # The End of the PDF Briefing: Why HTML-First Won in Every Other Industry and Aviation Is Next
 
 **By CrewBrief Operations** · May 2026 · 6 min read

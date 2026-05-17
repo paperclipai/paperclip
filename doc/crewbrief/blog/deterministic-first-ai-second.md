@@ -1,3 +1,16 @@
+---
+title: "Deterministic First, AI Second"
+description: "Why aviation safety software must use deterministic rules for critical calculations and reserve AI for non-safety formatting, summarization, and prioritization."
+slug: deterministic-first-ai-second
+tags: [AI-safety, deterministic-logic, aviation-software, engineering-philosophy]
+keywords: [deterministic aviation software, AI in aviation safety, aviation software architecture, safety-critical systems, crew briefing AI]
+date: 2026-06-18
+author: CrewBrief Operations
+readingTime: 8 min
+canonical: https://crewbrief.avva.aero/blog/deterministic-first-ai-second
+ogImage: /blog/img/og-deterministic-first.png
+---
+
 # Deterministic First, AI Second: Why Aviation Software Needs a Safety-First AI Philosophy
 
 **By CrewBrief Operations** · May 2026 · 7 min read
