@@ -79,4 +79,4 @@ An automated briefing system should surface all five metrics without manual data
 
 ---
 
-*CrewBrief includes a built-in operations dashboard with all five metrics. [Get the ops director's briefing metrics checklist](https://crewbrief.avva.aero).*
+*CrewBrief includes a built-in operations dashboard with all five metrics. [Get the ops director's briefing metrics checklist](https://crewbrief.avva.aero?utm_source=crewbrief-blog&utm_medium=blog&utm_campaign=seo-blog-metrics-ops-director).*
