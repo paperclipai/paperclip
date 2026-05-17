@@ -1300,7 +1300,23 @@ export async function ensureAbsoluteDirectory(
   }
 
   try {
-    await fs.mkdir(cwd, { recursive: true });
+    // Create directories level-by-level to avoid edge cases where Node's recursive mkdir
+    // fails when walking parent paths (MAI-2799). This handles permission issues more gracefully.
+    const parts = cwd.split(path.sep).filter(p => p.length > 0);
+    let current = "/";
+    for (const part of parts) {
+      current = path.join(current, part);
+      try {
+        await fs.mkdir(current);
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        // EEXIST means the directory was already created (perhaps by another process).
+        // EACCES means we don't have permission — let it propagate as a real error.
+        if (code !== "EEXIST") {
+          throw err;
+        }
+      }
+    }
     await assertDirectory();
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);

@@ -220,6 +220,10 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+// Cap on automatic retries when a heartbeat run's process is lost. Default 1 preserves
+// historical behavior. Set PAPERCLIP_PROCESS_LOSS_RETRY_MAX=0 to surface failures immediately
+// (useful when investigating the root cause behind a high process_lost rate).
+const PROCESS_LOSS_RETRY_MAX = Math.max(0, Number(process.env.PAPERCLIP_PROCESS_LOSS_RETRY_MAX ?? 1) || 0);
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -6508,7 +6512,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       }
 
-      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
+      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < PROCESS_LOSS_RETRY_MAX;
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
@@ -7651,6 +7655,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
 
       const adapter = getServerAdapter(agent.adapterType);
+
+      // FIX MAI-2561: Validate agent company before JWT creation to prevent tenant isolation leak
+      if (adapter.supportsLocalAgentJwt && agent.companyId !== run.companyId) {
+        logger.error(
+          {
+            agentId: agent.id,
+            agentCompanyId: agent.companyId,
+            runCompanyId: run.companyId,
+            runId: run.id,
+            adapterType: agent.adapterType,
+          },
+          "CRITICAL: Agent company ID mismatch — refusing to create JWT for wrong company (MAI-2561 tenant isolation leak)",
+        );
+        throw new Error(
+          `Agent company mismatch: agent ${agent.id} has companyId ${agent.companyId} but run is for company ${run.companyId}. Refusing JWT creation to prevent tenant isolation breach.`,
+        );
+      }
+
       const authToken = adapter.supportsLocalAgentJwt
         ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id)
         : null;

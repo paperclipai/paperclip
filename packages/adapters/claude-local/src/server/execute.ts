@@ -177,8 +177,25 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
   const envConfig = parseObject(config.env);
-  const hasExplicitApiKey =
-    typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
+  // MAI-2561 — Reject hardcoded PAPERCLIP_API_KEY values in adapter_config.
+  // A stored key in DB is a tenant-isolation hazard: if an admin clones an agent
+  // adapter_config or accidentally swaps it during a hire flow, the wrong company's
+  // key gets injected into a run. The per-run JWT (authToken) is the only path that's
+  // bound to (agentId, companyId, runId) by the server at request time.
+  // Strip + warn loudly. Pending full vault migration (project_paperclip_vault_migration).
+  const configuredApiKeyValue =
+    typeof envConfig.PAPERCLIP_API_KEY === "string"
+      ? envConfig.PAPERCLIP_API_KEY.trim()
+      : "";
+  if (configuredApiKeyValue.length > 0) {
+    void onLog?.(
+      "stderr",
+      `[security] adapter_config carried a hardcoded PAPERCLIP_API_KEY for agent ${agent.id}; ignoring — per-run JWT will be used instead (MAI-2561)\n`,
+    );
+    delete envConfig.PAPERCLIP_API_KEY;
+  }
+  const hasExplicitApiKey = false; // MAI-2561 — never honor stored API keys
+  void hasExplicitApiKey;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
   env.PAPERCLIP_RUN_ID = runId;
 

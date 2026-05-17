@@ -444,14 +444,15 @@ export async function startServer(): Promise<StartedServer> {
     startupDbInfo = { mode: "embedded-postgres", dataDir, port };
   }
   
-  if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host)) {
+  const dockerLocalTrustedBypass = process.env.PAPERCLIP_DOCKER_LOCAL_TRUSTED === "true";
+  if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host) && !dockerLocalTrustedBypass) {
     throw new Error(
       `local_trusted mode requires loopback host binding (received: ${config.host}). ` +
         "Use authenticated mode for non-loopback deployments.",
     );
   }
-  
-  if (config.deploymentMode === "local_trusted" && config.deploymentExposure !== "private") {
+
+  if (config.deploymentMode === "local_trusted" && config.deploymentExposure !== "private" && !dockerLocalTrustedBypass) {
     throw new Error("local_trusted mode only supports private exposure");
   }
   

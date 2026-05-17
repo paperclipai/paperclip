@@ -2367,6 +2367,23 @@ export function companySkillService(db: Db) {
         : await db
           .insert(companySkills)
           .values(values)
+          .onConflictDoUpdate({
+            target: [companySkills.companyId, companySkills.key],
+            set: {
+              slug: values.slug,
+              name: values.name,
+              description: values.description,
+              markdown: values.markdown,
+              sourceType: values.sourceType,
+              sourceLocator: values.sourceLocator,
+              sourceRef: values.sourceRef,
+              trustLevel: values.trustLevel,
+              compatibility: values.compatibility,
+              fileInventory: values.fileInventory,
+              metadata: values.metadata,
+              updatedAt: values.updatedAt,
+            },
+          })
           .returning()
           .then((rows) => rows[0] ?? null);
       if (!row) throw notFound("Failed to persist company skill");

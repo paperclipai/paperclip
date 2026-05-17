@@ -23,7 +23,7 @@ if [ "$(id -g node)" -ne "$PGID" ]; then
 fi
 
 if [ "$changed" = "1" ]; then
-    chown -R node:node /paperclip
+    chown -R node:node /paperclip 2>/dev/null || true
 fi
 
 exec gosu node "$@"

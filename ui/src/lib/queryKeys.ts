@@ -120,6 +120,12 @@ export const queryKeys = {
     invite: (token: string) => ["access", "invite", token] as const,
     currentBoardAccess: ["access", "current-board-access"] as const,
   },
+  members: {
+    list: (companyId: string) => ["access", "company-members", companyId] as const,
+  },
+  trading: {
+    ironCondorStatus: ["trading", "iron-condor-status"] as const,
+  },
   auth: {
     session: ["auth", "session"] as const,
   },

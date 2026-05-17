@@ -42,7 +42,9 @@ export function validateConfiguredBindMode(input: {
   const customBindHost = normalizeHost(input.customBindHost);
   const errors: string[] = [];
 
-  if (input.deploymentMode === "local_trusted" && bind !== "loopback") {
+  const dockerLocalTrustedBypass =
+    typeof process !== "undefined" && process.env?.PAPERCLIP_DOCKER_LOCAL_TRUSTED === "true";
+  if (input.deploymentMode === "local_trusted" && bind !== "loopback" && !dockerLocalTrustedBypass) {
     errors.push("local_trusted requires server.bind=loopback");
   }
 

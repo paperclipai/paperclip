@@ -1,0 +1,200 @@
+services:
+  db:
+    restart: unless-stopped
+    mem_limit: 4g
+    mem_reservation: 1g
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: paperclip
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set — source ~/.secrets/paperclip-db.env}
+      POSTGRES_DB: paperclip
+      POSTGRES_INITDB_ARGS: "-c checkpoint_timeout=15min -c max_wal_size=2GB -c checkpoint_completion_target=0.9 -c shared_buffers=256MB -c effective_cache_size=1GB"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperclip -d paperclip"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  server:
+    # 2026-05-04: Switched to Docker-as-source-of-truth (decision B).
+    # Original comment kept for context — see MAI-1306/MAI-1313.
+    # 2026-05-04: Decision B (Docker-as-canonical) caused continuous restart loop & resource spikes.
+    # Reverting to original config: restart: 'no'
+    # Paperclip runs on HOST, not Docker. Docker only provides Postgres backend.
+    # This prevents split-brain (two servers, same DB) and eliminates restart loop spikes.
+    # Decision: Host process is more reliable than Docker restarts every 10-20 minutes.
+    # See MAI-1306/MAI-1313 and deployment notes.
+    restart: 'no'
+    mem_limit: 4g
+    mem_reservation: 1g
+    init: true
+    build: .
+    # Do not set `user:` here — scripts/docker-entrypoint.sh must run as root first
+    # (usermod/groupmod/chown), then exec gosu node … If you force UID 1001 here,
+    # the entrypoint cannot remap the node user and the container exits (restart loop).
+    # UID/GID for node + /paperclip ownership come from USER_UID / USER_GID below.
+    ports:
+      # host:container — app still listens on 3100 inside the container
+      - "3200:3100"
+    environment:
+      USER_UID: "1001"
+      USER_GID: "1001"
+      # Required for published port 3200→3100: listen on all interfaces, not 127.0.0.1 only.
+      HOST: "0.0.0.0"
+      # Docker has no TTY; never block on migration prompts.
+      PAPERCLIP_MIGRATION_AUTO_APPLY: "true"
+      DATABASE_URL: postgres://paperclip:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set — source ~/.secrets/paperclip-db.env}@db:5432/paperclip
+      PORT: "3100"
+      SERVE_UI: "true"
+      # local_trusted = no login (board "local-board"); matches your DB company membership.
+      # Set PAPERCLIP_DEPLOYMENT_MODE=authenticated in .env when you want password login again.
+      PAPERCLIP_DEPLOYMENT_MODE: "${PAPERCLIP_DEPLOYMENT_MODE:-local_trusted}"
+      # Required for local_trusted when server host is 0.0.0.0 (Docker port publish)
+      PAPERCLIP_DOCKER_LOCAL_TRUSTED: "true"
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
+      PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3200}"
+      # Only used when PAPERCLIP_DEPLOYMENT_MODE=authenticated
+      PAPERCLIP_AUTH_BASE_URL_MODE: "explicit"
+      BETTER_AUTH_TRUSTED_ORIGINS: "${BETTER_AUTH_TRUSTED_ORIGINS:-http://localhost:3200,http://127.0.0.1:3200}"
+      # Required when switching back to authenticated (set in .env)
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:-}"
+      # Required for local adapters (Claude, Cursor, etc.) to inject PAPERCLIP_API_KEY into agent runs
+      PAPERCLIP_AGENT_JWT_SECRET: "${PAPERCLIP_AGENT_JWT_SECRET:?PAPERCLIP_AGENT_JWT_SECRET must be set for agent API auth}"
+      # Paperclip data stays in the volume (workspaces, DB, etc.)
+      PAPERCLIP_HOME: /paperclip
+      # Claude CLI uses HOME to find .claude.json and session — /paperclip is safe because all mounts already target it
+      HOME: /paperclip
+      # Cursor CLI still uses mounted dir under /paperclip
+      CURSOR_CONFIG_DIR: /paperclip/.cursor
+      # From `claude setup-token` (1yr) — set in .env so Docker Claude runs use it when file OAuth is stale
+      CLAUDE_CODE_OAUTH_TOKEN: "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+      # Telegram polling: intentionally disabled in the server container.
+      # The standalone bridge daemon (scripts/telegram-bridge.mjs) is the
+      # designated poller. Running both simultaneously causes 409 Conflict errors.
+      # Set to "true" only if you are NOT using the bridge daemon.
+      TELEGRAM_POLLING_ENABLED: "false"
+      # Market Intelligence signals — Google Sheets integration
+      SHEETS_WORKBOOK_ID: "${SHEETS_WORKBOOK_ID:-}"
+      GOOGLE_CREDENTIALS_JSON: "${GOOGLE_CREDENTIALS_JSON:-/run/secrets/market-intel-key.json}"
+      SHEETS_SIGNALS_TAB: "${SHEETS_SIGNALS_TAB:-signals}"
+    volumes:
+      - paperclip-data:/paperclip
+      # Use host's Claude CLI login (Pro) inside the container — both locations for compatibility
+      - ~/.claude:/paperclip/.claude
+      - ~/.openclaw/paperclip-claude.json:/paperclip/.claude.json
+      - ~/.openclaw/paperclip-claude.json:/paperclip/config.json
+      - ~/.config/claude:/paperclip/.config/claude
+      # Use host's Cursor CLI login (agent login) so you don't need CURSOR_API_KEY
+      - ~/.cursor:/paperclip/.cursor
+      # Targeted Google credentials mount (read-only) — replaces the former wide home-dir mount
+      - ~/.secrets/market-intel-key.json:/run/secrets/market-intel-key.json:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    # Node only opens :3100 after DB/migrations/adapters init — instant curl often gets RST.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3100/api/health >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 120s
+
+  # Edith Ltd — isolated company container (MAI-1441, multi-tenant arch)
+  # Port 3201 on host → 3100 inside container.
+  # shared volume = read-only vault (common reference data).
+  # edith-data volume = Edith's isolated rw workspace.
+  paperclip-server-edith:
+    restart: unless-stopped
+    mem_limit: 4g
+    mem_reservation: 1g
+    init: true
+    build: .
+    ports:
+      - "3201:3100"
+    environment:
+      COMPANY_ID: "edith"
+      USER_UID: "1001"
+      USER_GID: "1001"
+      HOST: "0.0.0.0"
+      PAPERCLIP_MIGRATION_AUTO_APPLY: "true"
+      DATABASE_URL: postgres://paperclip:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set — source ~/.secrets/paperclip-db.env}@db:5432/paperclip
+      PORT: "3100"
+      SERVE_UI: "true"
+      PAPERCLIP_DEPLOYMENT_MODE: "${PAPERCLIP_DEPLOYMENT_MODE:-local_trusted}"
+      PAPERCLIP_DOCKER_LOCAL_TRUSTED: "true"
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
+      PAPERCLIP_PUBLIC_URL: "${EDITH_PUBLIC_URL:-http://localhost:3201}"
+      PAPERCLIP_AUTH_BASE_URL_MODE: "explicit"
+      BETTER_AUTH_TRUSTED_ORIGINS: "${BETTER_AUTH_TRUSTED_ORIGINS:-http://localhost:3201,http://127.0.0.1:3201}"
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:-}"
+      PAPERCLIP_AGENT_JWT_SECRET: "${PAPERCLIP_AGENT_JWT_SECRET:?PAPERCLIP_AGENT_JWT_SECRET must be set for agent API auth}"
+      PAPERCLIP_HOME: /paperclip
+      HOME: /paperclip
+      CURSOR_CONFIG_DIR: /paperclip/.cursor
+      CLAUDE_CODE_OAUTH_TOKEN: "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+      TELEGRAM_POLLING_ENABLED: "false"
+    volumes:
+      - edith-data:/paperclip
+      - shared:/vault:ro
+      - ~/.claude:/paperclip/.claude
+      - ~/.openclaw/paperclip-claude.json:/paperclip/.claude.json
+      - ~/.openclaw/paperclip-claude.json:/paperclip/config.json
+      - ~/.config/claude:/paperclip/.config/claude
+      - ~/.cursor:/paperclip/.cursor
+      - ~/.secrets/market-intel-key.json:/run/secrets/market-intel-key.json:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3100/api/health >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 120s
+
+  # Optional: Tailscale sidecar for remote access.
+  # Requires Docker privileges: `--cap-add=NET_ADMIN --device=/dev/net/tun`
+  # and a valid auth key in `TS_AUTHKEY`.
+  #
+  # Not started by default (compose profile) — sharing the server netns can race
+  # with `docker compose up` after recreate on Docker Desktop (runc:
+  # "lstat /proc/.../ns/net: no such file or directory").
+  #
+  # Usage:
+  #   TS_AUTHKEY=tskey-auth-... docker compose --profile tailscale up -d
+  # Then access Paperclip via the Tailscale IP of this node.
+  tailscale:
+    profiles:
+      - tailscale
+    image: tailscale/tailscale:stable
+    restart: unless-stopped
+    mem_limit: 4g
+    mem_reservation: 1g
+    network_mode: service:server
+    depends_on:
+      server:
+        condition: service_started
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      TS_AUTHKEY: "${TS_AUTHKEY:-}"
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "false"
+      TS_ROUTES: ""
+      TS_EXTRA_ARGS: "--accept-dns=false"
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+
+volumes:
+  pgdata:
+  paperclip-data:
+  tailscale-state:
+  edith-data:
+  shared:
