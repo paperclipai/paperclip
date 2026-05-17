@@ -130,11 +130,19 @@ function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
   return null;
 }
 
+function isTransientUpstreamRun(run: LatestIssueRun): boolean {
+  if (!run) return false;
+  return run.errorCode === "claude_transient_upstream" || run.errorCode === "codex_transient_upstream";
+}
+
 function didAutomaticRecoveryFail(
   latestRun: LatestIssueRun,
   expectedRetryReason: "assignment_recovery" | "issue_continuation_needed",
 ) {
   if (!latestRun) return false;
+  // Transient upstream (rate limit) failures are retried by the bounded retry mechanism;
+  // don't treat them as automatic recovery failures that need a "Recover stalled" issue.
+  if (isTransientUpstreamRun(latestRun)) return false;
 
   const latestContext = parseObject(latestRun.contextSnapshot);
   const latestRetryReason = readNonEmptyString(latestContext.retryReason);
@@ -1897,6 +1905,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
+        // Skip enqueueing recovery for transient upstream (rate limit) failures.
+        if (isTransientUpstreamRun(latestRun)) {
+          result.skipped += 1;
+          continue;
+        }
+
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
           agentId,
@@ -2009,6 +2023,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await isInvocationBudgetBlocked(issue, agentId)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // Skip enqueueing recovery for transient upstream (rate limit) failures; the bounded
+      // retry mechanism on the run itself will re-queue after the reset window.
+      if (isTransientUpstreamRun(latestRun)) {
         result.skipped += 1;
         continue;
       }
