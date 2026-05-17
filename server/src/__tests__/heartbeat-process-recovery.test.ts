@@ -2940,13 +2940,23 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     // the latestRun.status === "failed" check causes outcome="failed" and the
     // agent stays stuck in "error". With the fix, subprocessExitCode=0 overrides
     // the transition to "idle".
-    const { companyId, agentId, runId } = await seedQueuedIssueRunFixture();
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
 
     // Put the agent into "error" to simulate a previous failure.
     await db
       .update(agents)
       .set({ status: "error", updatedAt: new Date() })
       .where(eq(agents.id, agentId));
+
+    // Set the issue to "in_review" so that releaseIssueExecutionAndPromote does not
+    // enqueue a recovery run when the simulated run is marked failed. If the issue
+    // stays "in_progress", the recovery loop starts a new run immediately, putting
+    // the agent into "running" before finalizeAgentStatus fires — which prevents the
+    // exit-code-0 override from being reached.
+    await db
+      .update(issues)
+      .set({ status: "in_review", updatedAt: new Date() })
+      .where(eq(issues.id, issueId));
 
     // Mock: simulate process-loss recovery pre-terminating the run as "failed"
     // while the subprocess is still executing, then returning exit code 0.
