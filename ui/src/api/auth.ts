@@ -14,6 +14,11 @@ type AuthErrorBody =
   }
   | null;
 
+type UnauthenticatedLoginAvailability = {
+  available: boolean;
+  companyId?: string | null;
+};
+
 export class AuthApiError extends Error {
   status: number;
   code: string | null;
@@ -89,6 +94,31 @@ async function authPatch<T>(path: string, body: Record<string, unknown>, parse: 
 }
 
 export const authApi = {
+  getUnauthenticatedLoginAvailability: async (companyId?: string | null): Promise<UnauthenticatedLoginAvailability> => {
+    const params = new URLSearchParams();
+    if (companyId) params.set("companyId", companyId);
+    const query = params.toString();
+    const res = await fetch(`/api/auth/unauthenticated-login/availability${query ? `?${query}` : ""}`, {
+      credentials: "include",
+      headers: { Accept: "application/json" },
+    });
+    const payload = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error((payload as { error?: string } | null)?.error ?? `Failed to load availability (${res.status})`);
+    }
+    return {
+      available: payload && typeof payload === "object" && (payload as Record<string, unknown>).available === true,
+      companyId:
+        payload && typeof payload === "object" && typeof (payload as Record<string, unknown>).companyId === "string"
+          ? ((payload as Record<string, unknown>).companyId as string)
+          : null,
+    };
+  },
+
+  startUnauthenticatedLoginSession: async (companyId: string): Promise<void> => {
+    await authPost("/unauthenticated-login/session", { companyId });
+  },
+
   getSession: async (): Promise<AuthSession | null> => {
     const res = await fetch("/api/auth/get-session", {
       credentials: "include",

@@ -10,6 +10,9 @@ const sidebarNavItemMock = vi.hoisted(() => vi.fn());
 const mockSidebarBadgesApi = vi.hoisted(() => ({
   get: vi.fn(),
 }));
+const mockAccessApi = vi.hoisted(() => ({
+  getCurrentBoardAccess: vi.fn(),
+}));
 
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -61,6 +64,10 @@ vi.mock("@/api/sidebarBadges", () => ({
   sidebarBadgesApi: mockSidebarBadgesApi,
 }));
 
+vi.mock("@/api/access", () => ({
+  accessApi: mockAccessApi,
+}));
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -75,6 +82,7 @@ describe("CompanySettingsSidebar", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    vi.stubEnv("VITE_PAPERCLIP_EXPERIMENTAL_MODE", "true");
     container = document.createElement("div");
     document.body.appendChild(container);
     mockSidebarBadgesApi.get.mockResolvedValue({
@@ -83,11 +91,21 @@ describe("CompanySettingsSidebar", () => {
       failedRuns: 0,
       joinRequests: 2,
     });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
+      user: { id: "user-1", email: "admin@paperclip.local", name: "Admin", image: null },
+      userId: "user-1",
+      isInstanceAdmin: true,
+      companyIds: ["company-1"],
+      memberships: [],
+      source: "session",
+      keyId: null,
+    });
   });
 
   afterEach(() => {
     container.remove();
     document.body.innerHTML = "";
+    vi.unstubAllEnvs();
     vi.clearAllMocks();
   });
 
@@ -109,6 +127,7 @@ describe("CompanySettingsSidebar", () => {
     expect(container.textContent).toContain("Paperclip");
     expect(container.textContent).toContain("Company Settings");
     expect(container.textContent).toContain("General");
+    expect(container.textContent).toContain("Experimental");
     expect(container.textContent).toContain("Environments");
     expect(container.textContent).toContain("Access");
     expect(container.textContent).toContain("Invites");
@@ -117,6 +136,13 @@ describe("CompanySettingsSidebar", () => {
       expect.objectContaining({
         to: "/company/settings",
         label: "General",
+        end: true,
+      }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/settings/experimental-features",
+        label: "Experimental",
         end: true,
       }),
     );
@@ -147,6 +173,70 @@ describe("CompanySettingsSidebar", () => {
         to: "/company/settings/secrets",
         label: "Secrets",
         end: true,
+      }),
+    );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("hides the experimental section when experimental mode is disabled", async () => {
+    vi.stubEnv("VITE_PAPERCLIP_EXPERIMENTAL_MODE", "false");
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanySettingsSidebar />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Experimental");
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/settings/experimental-features",
+      }),
+    );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("hides the experimental section for non-admin users", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
+      user: { id: "user-1", email: "member@paperclip.local", name: "Member", image: null },
+      userId: "user-1",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", membershipRole: "admin", status: "active" }],
+      source: "session",
+      keyId: null,
+    });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanySettingsSidebar />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Experimental");
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/settings/experimental-features",
       }),
     );
 

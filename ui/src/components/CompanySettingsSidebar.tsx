@@ -1,7 +1,17 @@
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, KeyRound, MailPlus, MonitorCog, Settings, Shield, SlidersHorizontal } from "lucide-react";
+import {
+  ChevronLeft,
+  FlaskConical,
+  KeyRound,
+  MailPlus,
+  MonitorCog,
+  Settings,
+  Shield,
+  SlidersHorizontal,
+} from "lucide-react";
 import { sidebarBadgesApi } from "@/api/sidebarBadges";
 import { ApiError } from "@/api/client";
+import { useExperimentalFeaturesAccess } from "@/hooks/useExperimentalFeaturesAccess";
 import { Link } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCompany } from "@/context/CompanyContext";
@@ -11,6 +21,7 @@ import { SidebarNavItem } from "./SidebarNavItem";
 export function CompanySettingsSidebar() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();
+  const { canViewExperimentalFeatures } = useExperimentalFeaturesAccess();
   const { data: badges } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.sidebarBadges(selectedCompanyId)
@@ -54,6 +65,14 @@ export function CompanySettingsSidebar() {
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide px-3 py-2">
         <div className="flex flex-col gap-0.5">
           <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
+          {canViewExperimentalFeatures && (
+            <SidebarNavItem
+              to="/company/settings/experimental-features"
+              label="Experimental"
+              icon={FlaskConical}
+              end
+            />
+          )}
           <SidebarNavItem
             to="/company/settings/environments"
             label="Environments"

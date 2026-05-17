@@ -41,6 +41,16 @@ export {
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
 } from "./instance.js";
 export type {
+  CompanyExperimentalFeaturesByCompanyId,
+  CompanyExperimentalFeaturesConfig,
+  CompanyConfig,
+  ExperimentalAgentDualModeConfig,
+  ExperimentalAgentProvider,
+  ExperimentalFeatureDefinition,
+  ExperimentalFeatureKey,
+  ExperimentalFeatureResolverInput,
+} from "../experimental-features.js";
+export type {
   CompanySkillSourceType,
   CompanySkillTrustLevel,
   CompanySkillCompatibility,

@@ -6,6 +6,7 @@ import {
   companyPortabilityImportSchema,
   companyPortabilityPreviewSchema,
   createCompanySchema,
+  companyExperimentalFeaturesConfigSchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
@@ -21,6 +22,7 @@ import {
   companyPortabilityService,
   companyService,
   feedbackService,
+  instanceSettingsService,
   logActivity,
 } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
@@ -353,6 +355,36 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     });
     res.json(company);
   });
+
+  router.patch(
+    "/:companyId/experimental-features",
+    validate(companyExperimentalFeaturesConfigSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const companyId = req.params.companyId as string;
+      assertInstanceAdmin(req);
+      const company = await svc.getById(companyId);
+      if (!company) {
+        res.status(404).json({ error: "Company not found" });
+        return;
+      }
+      const instanceSettings = instanceSettingsService(db);
+      const updated = await instanceSettings.updateCompanyExperimentalFeatures(companyId, req.body);
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.experimental_features_updated",
+        entityType: "company",
+        entityId: companyId,
+        details: req.body,
+      });
+      res.json(updated.experimental.companyExperimentalFeatures[companyId] ?? {});
+    },
+  );
 
   router.patch("/:companyId/branding", validate(updateCompanyBrandingSchema), async (req, res) => {
     const companyId = req.params.companyId as string;

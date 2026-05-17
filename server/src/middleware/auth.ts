@@ -8,6 +8,7 @@ import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
+import { resolveUnauthenticatedLoginSession } from "../services/unauthenticated-login-session.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -90,6 +91,17 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             isInstanceAdmin: Boolean(roleRow),
             runId: runIdHeader ?? undefined,
             source: "session",
+          };
+          next();
+          return;
+        }
+      }
+      if (opts.deploymentMode === "authenticated") {
+        const unauthenticatedLoginActor = await resolveUnauthenticatedLoginSession(db, req.header("cookie"));
+        if (unauthenticatedLoginActor) {
+          req.actor = {
+            ...unauthenticatedLoginActor,
+            runId: runIdHeader ?? undefined,
           };
           next();
           return;

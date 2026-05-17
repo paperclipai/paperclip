@@ -289,6 +289,32 @@ function runMetrics(run: HeartbeatRun) {
   };
 }
 
+function providerForAdapterType(adapterType: string | null) {
+  if (adapterType === "codex_local") return "codex";
+  if (adapterType === "claude_local") return "claude";
+  return null;
+}
+
+function modelFromCommandArgs(commandArgs: unknown) {
+  if (!Array.isArray(commandArgs)) return null;
+  const args = commandArgs.filter((value): value is string => typeof value === "string");
+  const modelIndex = args.findIndex((value) => value === "--model" || value === "-m");
+  if (modelIndex < 0) return null;
+  return asNonEmptyString(args[modelIndex + 1]);
+}
+
+function readRunInvocationMeta(events: HeartbeatRunEvent[] | undefined) {
+  const event = events?.find((entry) => entry.eventType === "adapter.invoke");
+  const payload = asRecord(event?.payload);
+  const adapterType = asNonEmptyString(payload?.adapterType);
+  const provider = asNonEmptyString(payload?.provider) ?? providerForAdapterType(adapterType);
+  const model =
+    asNonEmptyString(payload?.model) ??
+    asNonEmptyString(asRecord(payload?.modelProfile)?.model) ??
+    modelFromCommandArgs(payload?.commandArgs);
+  return { adapterType, provider, model };
+}
+
 type RunLogChunk = { ts: string; stream: "stdout" | "stderr" | "system"; chunk: string };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -3174,6 +3200,14 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   const sessionId = run.sessionIdAfter || run.sessionIdBefore;
   const hasNonZeroExit = run.exitCode !== null && run.exitCode !== 0;
   const retryState = describeRunRetryState(run);
+  const { data: summaryEvents } = useQuery({
+    queryKey: ["run-summary-events", run.id],
+    queryFn: () => heartbeatsApi.events(run.id, 0, 25),
+    refetchInterval: isRunning ? 2000 : false,
+  });
+  const invocationMeta = useMemo(() => readRunInvocationMeta(summaryEvents), [summaryEvents]);
+  const effectiveAdapterType = invocationMeta.adapterType ?? adapterType;
+  const routedAdapter = Boolean(invocationMeta.adapterType && invocationMeta.adapterType !== adapterType);
 
   return (
     <div className="space-y-4 min-w-0">
@@ -3223,14 +3257,19 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
             {/* Adapter type · provider · model */}
             {(() => {
               const displayProvider = metrics.provider
+                ?? invocationMeta.provider
                 ?? asNonEmptyString(adapterConfig?.provider);
               const displayModel = metrics.model
+                ?? invocationMeta.model
                 ?? asNonEmptyString(adapterConfig?.model);
-              if (!adapterType && !displayProvider && !displayModel) return null;
+              if (!effectiveAdapterType && !displayProvider && !displayModel) return null;
               return (
                 <div className="text-[11px] text-muted-foreground font-mono flex items-center gap-1.5 flex-wrap">
-                  {adapterType && (
-                    <span className="bg-muted rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide">{adapterType.replace(/_/g, " ")}</span>
+                  {effectiveAdapterType && (
+                    <span className="bg-muted rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide">{effectiveAdapterType.replace(/_/g, " ")}</span>
+                  )}
+                  {routedAdapter && (
+                    <span className="text-[10px] text-muted-foreground">routed from {adapterType.replace(/_/g, " ")}</span>
                   )}
                   {displayProvider && displayModel && (
                     <span>{displayProvider}/{displayModel}</span>
@@ -3275,7 +3314,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}
               </div>
             )}
-            {run.errorCode === "claude_auth_required" && adapterType === "claude_local" && (
+            {run.errorCode === "claude_auth_required" && effectiveAdapterType === "claude_local" && (
               <div className="space-y-2">
                 <Button
                   variant="outline"
@@ -3475,7 +3514,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
       )}
 
       {/* Log viewer */}
-      <LogViewer run={run} adapterType={adapterType} />
+      <LogViewer run={run} adapterType={effectiveAdapterType} />
       <ScrollToBottom />
     </div>
   );
