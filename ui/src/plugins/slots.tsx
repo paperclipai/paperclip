@@ -63,6 +63,33 @@ export type ResolvedPluginSlot = PluginUiSlotDeclaration & {
   pluginVersion: string;
 };
 
+/**
+ * Returns the unique `routeSidebar` slot that pairs with a single `page` slot
+ * for the given route, or `null` if no unambiguous pairing exists.
+ *
+ * Used to detect when a route is taken over by a plugin's full-page sidebar so
+ * host chrome (breadcrumb, in-page Back) can be suppressed.
+ */
+export function resolveRouteSidebarSlot(
+  slots: ResolvedPluginSlot[],
+  routePath: string | null,
+): ResolvedPluginSlot | null {
+  if (!routePath) return null;
+
+  const pageMatches = slots.filter((slot) => slot.type === "page" && slot.routePath === routePath);
+  if (pageMatches.length !== 1) return null;
+
+  const [pageSlot] = pageMatches;
+  const sidebarMatches = slots.filter((slot) =>
+    slot.type === "routeSidebar"
+    && slot.routePath === routePath
+    && slot.pluginId === pageSlot.pluginId,
+  );
+
+  if (sidebarMatches.length !== 1) return null;
+  return sidebarMatches[0] ?? null;
+}
+
 type PluginSlotComponentProps = {
   slot: ResolvedPluginSlot;
   context: PluginSlotContext;
@@ -257,8 +284,30 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
     case "sdk-ui":
       source = `
         const SDK = globalThis.__paperclipPluginBridge__?.sdkUi ?? {};
-        const { usePluginData, usePluginAction, useHostContext, usePluginStream, usePluginToast } = SDK;
-        export { usePluginData, usePluginAction, useHostContext, usePluginStream, usePluginToast };
+        function missing(name) {
+          return function MissingPaperclipSdkUiComponent() {
+            throw new Error('Paperclip plugin UI runtime is not initialized for "' + name + '". Ensure the host loaded the plugin bridge before rendering this UI module.');
+          };
+        }
+        const { usePluginData, usePluginAction, useHostContext, useHostLocation, useHostNavigation, usePluginStream, usePluginToast } = SDK;
+        const MetricCard = SDK.MetricCard ?? missing("MetricCard");
+        const StatusBadge = SDK.StatusBadge ?? missing("StatusBadge");
+        const DataTable = SDK.DataTable ?? missing("DataTable");
+        const TimeseriesChart = SDK.TimeseriesChart ?? missing("TimeseriesChart");
+        const MarkdownBlock = SDK.MarkdownBlock ?? missing("MarkdownBlock");
+        const MarkdownEditor = SDK.MarkdownEditor ?? missing("MarkdownEditor");
+        const KeyValueList = SDK.KeyValueList ?? missing("KeyValueList");
+        const ActionBar = SDK.ActionBar ?? missing("ActionBar");
+        const LogView = SDK.LogView ?? missing("LogView");
+        const JsonTree = SDK.JsonTree ?? missing("JsonTree");
+        const Spinner = SDK.Spinner ?? missing("Spinner");
+        const ErrorBoundary = SDK.ErrorBoundary ?? missing("ErrorBoundary");
+        const FileTree = SDK.FileTree ?? missing("FileTree");
+        const IssuesList = SDK.IssuesList ?? missing("IssuesList");
+        const AssigneePicker = SDK.AssigneePicker ?? missing("AssigneePicker");
+        const ProjectPicker = SDK.ProjectPicker ?? missing("ProjectPicker");
+        const ManagedRoutinesList = SDK.ManagedRoutinesList ?? missing("ManagedRoutinesList");
+        export { usePluginData, usePluginAction, useHostContext, useHostLocation, useHostNavigation, usePluginStream, usePluginToast, MetricCard, StatusBadge, DataTable, TimeseriesChart, MarkdownBlock, MarkdownEditor, KeyValueList, ActionBar, LogView, JsonTree, Spinner, ErrorBoundary, FileTree, IssuesList, AssigneePicker, ProjectPicker, ManagedRoutinesList };
       `;
       break;
   }

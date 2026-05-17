@@ -1,12 +1,15 @@
 import * as React from "react";
 import * as RouterDom from "react-router-dom";
 import type { NavigateOptions, To } from "react-router-dom";
+import type { Issue } from "@paperclipai/shared";
 import { useCompany } from "@/context/CompanyContext";
+import { IssueLinkQuicklook } from "@/components/IssueLinkQuicklook";
 import {
   applyCompanyPrefix,
   extractCompanyPrefixFromPath,
   normalizeCompanyPrefix,
 } from "@/lib/company-routes";
+import { parseIssuePathIdFromPath } from "@/lib/issue-reference";
 
 function resolveTo(to: To, companyPrefix: string | null): To {
   if (typeof to === "string") {
@@ -40,10 +43,42 @@ function useActiveCompanyPrefix(): string | null {
 
 export * from "react-router-dom";
 
-export const Link = React.forwardRef<HTMLAnchorElement, React.ComponentProps<typeof RouterDom.Link>>(
-  function CompanyLink({ to, ...props }, ref) {
+type CompanyLinkProps = React.ComponentProps<typeof RouterDom.Link> & {
+  disableIssueQuicklook?: boolean;
+  issuePrefetch?: Issue | null;
+  issueQuicklookSide?: React.ComponentProps<typeof IssueLinkQuicklook>["issueQuicklookSide"];
+  issueQuicklookAlign?: React.ComponentProps<typeof IssueLinkQuicklook>["issueQuicklookAlign"];
+};
+
+export const Link = React.forwardRef<HTMLAnchorElement, CompanyLinkProps>(
+  function CompanyLink({
+    to,
+    disableIssueQuicklook = false,
+    issuePrefetch = null,
+    issueQuicklookSide,
+    issueQuicklookAlign,
+    ...props
+  }, ref) {
     const companyPrefix = useActiveCompanyPrefix();
-    return <RouterDom.Link ref={ref} to={resolveTo(to, companyPrefix)} {...props} />;
+    const resolvedTo = resolveTo(to, companyPrefix);
+    const issuePathId = parseIssuePathIdFromPath(typeof resolvedTo === "string" ? resolvedTo : resolvedTo.pathname);
+
+    if (issuePathId) {
+      return (
+        <IssueLinkQuicklook
+          ref={ref}
+          to={resolvedTo}
+          issuePathId={issuePathId}
+          disableIssueQuicklook={disableIssueQuicklook}
+          issuePrefetch={issuePrefetch}
+          issueQuicklookSide={issueQuicklookSide}
+          issueQuicklookAlign={issueQuicklookAlign}
+          {...props}
+        />
+      );
+    }
+
+    return <RouterDom.Link ref={ref} to={resolvedTo} {...props} />;
   },
 );
 

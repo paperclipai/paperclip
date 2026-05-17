@@ -1,4 +1,8 @@
-function truncateSummaryText(value: unknown, maxLength = 500) {
+export const HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS = 500;
+export const HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS = 4_096;
+export const HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES = 64 * 1024;
+
+function truncateSummaryText(value: unknown, maxLength = HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS) {
   if (typeof value !== "string") return null;
   return value.length > maxLength ? value.slice(0, maxLength) : value;
 }
@@ -11,6 +15,34 @@ function readCommentText(value: unknown) {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+export function mergeHeartbeatRunResultJson(
+  resultJson: Record<string, unknown> | null | undefined,
+  summary: string | null | undefined,
+): Record<string, unknown> | null {
+  const normalizedSummary = readCommentText(summary);
+  const baseResult =
+    resultJson && typeof resultJson === "object" && !Array.isArray(resultJson)
+      ? resultJson
+      : null;
+
+  if (!baseResult) {
+    return normalizedSummary ? { summary: normalizedSummary } : null;
+  }
+
+  if (!normalizedSummary) {
+    return baseResult;
+  }
+
+  if (readCommentText(baseResult.summary)) {
+    return baseResult;
+  }
+
+  return {
+    ...baseResult,
+    summary: normalizedSummary,
+  };
 }
 
 export function summarizeHeartbeatRunResultJson(
@@ -34,6 +66,26 @@ export function summarizeHeartbeatRunResultJson(
     const value = readNumericField(resultJson, key);
     if (value !== undefined && value !== null) {
       summary[key] = value;
+    }
+  }
+
+  for (const key of ["stopReason", "timeoutSource"] as const) {
+    const value = readCommentText(resultJson[key]);
+    if (value !== null) {
+      summary[key] = value;
+    }
+  }
+
+  for (const key of ["effectiveTimeoutSec", "effectiveTimeoutMs"] as const) {
+    const value = readNumericField(resultJson, key);
+    if (value !== undefined && value !== null) {
+      summary[key] = value;
+    }
+  }
+
+  for (const key of ["timeoutConfigured", "timeoutFired"] as const) {
+    if (typeof resultJson[key] === "boolean") {
+      summary[key] = resultJson[key];
     }
   }
 

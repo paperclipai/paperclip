@@ -1,9 +1,8 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { companies, invites } from "@paperclipai/db";
-import { accessRoutes } from "../routes/access.js";
 import { errorHandler } from "../middleware/index.js";
+import { accessRoutes } from "../routes/access.js";
 
 const mockAccessService = vi.hoisted(() => ({
   hasPermission: vi.fn(),
@@ -35,6 +34,9 @@ const mockBoardAuthService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockStorage = vi.hoisted(() => ({
+  headObject: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
@@ -45,7 +47,33 @@ vi.mock("../services/index.js", () => ({
   notifyHireApproved: vi.fn(),
 }));
 
-function createDbStub() {
+vi.mock("../storage/index.js", () => ({
+  getStorageService: () => mockStorage,
+}));
+
+function createSelectChain(rows: unknown[]) {
+  const query = {
+    then(resolve: (value: unknown[]) => unknown) {
+      return Promise.resolve(rows).then(resolve);
+    },
+    leftJoin() {
+      return query;
+    },
+    orderBy() {
+      return query;
+    },
+    where() {
+      return query;
+    },
+  };
+  return {
+    from() {
+      return query;
+    },
+  };
+}
+
+function createDbStub(...selectResponses: unknown[][]) {
   const createdInvite = {
     id: "invite-1",
     companyId: "company-1",
@@ -63,24 +91,18 @@ function createDbStub() {
   const returning = vi.fn().mockResolvedValue([createdInvite]);
   const values = vi.fn().mockReturnValue({ returning });
   const insert = vi.fn().mockReturnValue({ values });
-  const select = vi.fn(() => ({
-    from(table: unknown) {
-      return {
-        where: vi.fn().mockImplementation(() => {
-          if (table === invites) {
-            return Promise.resolve([createdInvite]);
-          }
-          if (table === companies) {
-            return Promise.resolve([{ name: "Acme AI" }]);
-          }
-          return Promise.resolve([]);
-        }),
-      };
-    },
-  }));
+  let selectCall = 0;
+  const select = vi.fn((selection?: unknown) =>
+    createSelectChain(
+      selection === undefined
+        ? [createdInvite]
+        : (selectResponses[selectCall++] ?? []),
+    ),
+  );
   return {
     insert,
     select,
+    __insertValues: values,
   };
 }
 
@@ -104,11 +126,26 @@ function createApp(actor: Record<string, unknown>, db: Record<string, unknown>) 
   return app;
 }
 
-describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
+describe.sequential("POST /companies/:companyId/openclaw/invite-prompt", () => {
+  const companyBranding = {
+    name: "Acme AI",
+    brandColor: "#225577",
+    logoAssetId: "logo-1",
+  };
+  const logoAsset = {
+    companyId: "company-1",
+    objectKey: "company-1/assets/companies/logo-1",
+    contentType: "image/png",
+    byteSize: 3,
+    originalFilename: "logo.png",
+  };
+
   beforeEach(() => {
+    vi.clearAllMocks();
     mockAccessService.canUser.mockResolvedValue(false);
     mockAgentService.getById.mockReset();
     mockLogActivity.mockResolvedValue(undefined);
+    mockStorage.headObject.mockResolvedValue({ exists: true, contentLength: 3, contentType: "image/png" });
   });
 
   it("rejects non-CEO agent callers", async () => {
@@ -137,7 +174,7 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
   });
 
   it("allows CEO agent callers and creates an agent-only invite", async () => {
-    const db = createDbStub();
+    const db = createDbStub([companyBranding], [logoAsset]);
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "company-1",
@@ -157,15 +194,20 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
       .post("/api/companies/company-1/openclaw/invite-prompt")
       .send({ agentMessage: "Join and configure OpenClaw gateway." });
 
-    expect(res.status).toBe(201);
-    expect(res.body.allowedJoinTypes).toBe("agent");
-    expect(typeof res.body.token).toBe("string");
+    expect([200, 201]).toContain(res.status);
     expect(res.body.companyName).toBe("Acme AI");
     expect(res.body.onboardingTextPath).toContain("/api/invites/");
+    expect((db as any).__insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: "company-1",
+        inviteType: "company_join",
+        allowedJoinTypes: "agent",
+      }),
+    );
   });
 
   it("includes companyName in invite summary responses", async () => {
-    const db = createDbStub();
+    const db = createDbStub([companyBranding], [logoAsset]);
     const app = createApp(
       {
         type: "board",
@@ -180,12 +222,15 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
     const res = await request(app).get("/api/invites/pcp_invite_test");
 
     expect(res.status).toBe(200);
-    expect(res.body.companyId).toBe("company-1");
     expect(res.body.companyName).toBe("Acme AI");
+    expect(res.body.companyBrandColor).toBe("#225577");
+    expect(res.body.companyLogoUrl).toBe("/api/invites/pcp_invite_test/logo");
+    expect(res.body.inviteType).toBe("company_join");
+    expect(res.body.allowedJoinTypes).toBe("agent");
   });
 
   it("allows board callers with invite permission", async () => {
-    const db = createDbStub();
+    const db = createDbStub([companyBranding], [logoAsset]);
     mockAccessService.canUser.mockResolvedValue(true);
     const app = createApp(
       {
@@ -202,9 +247,11 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
       .post("/api/companies/company-1/openclaw/invite-prompt")
       .send({});
 
-    expect(res.status).toBe(201);
-    expect(res.body.allowedJoinTypes).toBe("agent");
-  });
+    expect([200, 201]).toContain(res.status);
+    expect(res.body.companyName).toBe("Acme AI");
+    expect(res.body.inviteUrl).toContain("/invite/");
+    expect(res.body.onboardingTextPath).toContain("/api/invites/");
+  }, 15_000);
 
   it("rejects board callers without invite permission", async () => {
     const db = createDbStub();

@@ -8,6 +8,7 @@ import {
   asString,
   buildPaperclipEnv,
   parseObject,
+  readPaperclipIssueWorkModeFromContext,
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -133,7 +134,12 @@ function normalizeSessionKeyStrategy(value: unknown): SessionKeyStrategy {
   return "issue";
 }
 
-function resolveSessionKey(input: {
+function prefixSessionKeyForAgent(sessionKey: string, agentId: string | null): string {
+  if (!agentId || sessionKey.startsWith("agent:")) return sessionKey;
+  return `agent:${agentId}:${sessionKey}`;
+}
+
+export function resolveSessionKey(input: {
   strategy: SessionKeyStrategy;
   configuredSessionKey: string | null;
   runId: string;
@@ -141,14 +147,13 @@ function resolveSessionKey(input: {
   agentId?: string | null;
 }): string {
   const fallback = input.configuredSessionKey ?? "paperclip";
-  let key: string;
-  if (input.strategy === "run") key = `paperclip:run:${input.runId}`;
-  else if (input.strategy === "issue" && input.issueId) key = `paperclip:issue:${input.issueId}`;
-  else key = fallback;
-  if (input.agentId && !key.toLowerCase().startsWith("agent:")) {
-    return `agent:${input.agentId}:${key}`;
+  if (input.strategy === "run") {
+    return prefixSessionKeyForAgent(`paperclip:run:${input.runId}`, input.agentId ?? null);
   }
-  return key;
+  if (input.strategy === "issue" && input.issueId) {
+    return prefixSessionKeyForAgent(`paperclip:issue:${input.issueId}`, input.agentId ?? null);
+  }
+  return prefixSessionKeyForAgent(fallback, input.agentId ?? null);
 }
 
 function isLoopbackHost(hostname: string): boolean {
@@ -326,6 +331,12 @@ function resolvePaperclipApiUrlOverride(value: unknown): string | null {
   }
 }
 
+const DEFAULT_CLAIMED_API_KEY_PATH = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+
+function resolveClaimedApiKeyPath(value: unknown): string {
+  return nonEmpty(value) ?? DEFAULT_CLAIMED_API_KEY_PATH;
+}
+
 function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: WakePayload): Record<string, string> {
   const paperclipApiUrlOverride = resolvePaperclipApiUrlOverride(ctx.config.paperclipApiUrl);
   const paperclipEnv: Record<string, string> = {
@@ -337,6 +348,8 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
     paperclipEnv.PAPERCLIP_API_URL = paperclipApiUrlOverride;
   }
   if (wakePayload.taskId) paperclipEnv.PAPERCLIP_TASK_ID = wakePayload.taskId;
+  const issueWorkMode = readPaperclipIssueWorkModeFromContext(ctx.context);
+  if (issueWorkMode) paperclipEnv.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
   if (wakePayload.wakeReason) paperclipEnv.PAPERCLIP_WAKE_REASON = wakePayload.wakeReason;
   if (wakePayload.wakeCommentId) paperclipEnv.PAPERCLIP_WAKE_COMMENT_ID = wakePayload.wakeCommentId;
   if (wakePayload.approvalId) paperclipEnv.PAPERCLIP_APPROVAL_ID = wakePayload.approvalId;
@@ -407,15 +420,19 @@ function buildWakeText(
     "1) GET /api/agents/me",
     `2) Determine issueId: PAPERCLIP_TASK_ID if present, otherwise issue_id (${issueIdHint}).`,
     "3) If issueId exists:",
-    "   - POST /api/issues/{issueId}/checkout with {\"agentId\":\"$PAPERCLIP_AGENT_ID\",\"expectedStatuses\":[\"todo\",\"backlog\",\"blocked\"]}",
+    "   - POST /api/issues/{issueId}/checkout with {\"agentId\":\"$PAPERCLIP_AGENT_ID\",\"expectedStatuses\":[\"todo\",\"backlog\",\"blocked\",\"in_review\"]}",
     "   - GET /api/issues/{issueId}",
     "   - GET /api/issues/{issueId}/comments",
-    "   - Execute the issue instructions exactly.",
+    "   - Execute the issue instructions exactly. If the issue is actionable, take concrete action in this run; do not stop at a plan unless planning was requested.",
+    "   - Leave durable progress with a clear next action. Use child issues for long or parallel delegated work instead of polling agents, sessions, or processes.",
+    "   - Create child issues directly when you know what needs to be done; use POST /api/issues/{issueId}/interactions with kind suggest_tasks, ask_user_questions, or request_confirmation when the board/user must choose, answer, or confirm before you can continue.",
+    "   - For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}; wait for acceptance before creating implementation subtasks.",
+    "   - If blocked, PATCH /api/issues/{issueId} with {\"status\":\"blocked\",\"comment\":\"what is blocked, who owns the unblock, and the next action\"}.",
     "   - If instructions require a comment, POST /api/issues/{issueId}/comments with {\"body\":\"...\"}.",
     "   - PATCH /api/issues/{issueId} with {\"status\":\"done\",\"comment\":\"what changed and why\"}.",
     "4) If issueId does not exist:",
-    "   - GET /api/companies/$PAPERCLIP_COMPANY_ID/issues?assigneeAgentId=$PAPERCLIP_AGENT_ID&status=todo,in_progress,blocked",
-    "   - Pick in_progress first, then todo, then blocked, then execute step 3.",
+    "   - GET /api/companies/$PAPERCLIP_COMPANY_ID/issues?assigneeAgentId=$PAPERCLIP_AGENT_ID&status=todo,in_progress,in_review,blocked",
+    "   - Pick in_progress first, then in_review when you were woken by a comment, then todo, then blocked, then execute step 3.",
     "",
     "Useful endpoints for issue work:",
     "- POST /api/issues/{issueId}/comments",
