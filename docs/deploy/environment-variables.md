@@ -52,3 +52,17 @@ These are set automatically by the server when invoking agents:
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic API key (for Claude Local adapter) |
 | `OPENAI_API_KEY` | OpenAI API key (for Codex Local adapter) |
+
+## Langfuse Export (Optional)
+
+When enabled, Paperclip exports **issue-scoped heartbeat runs** to Langfuse via `POST /api/public/ingestion`.
+Exports are metadata-only (no prompts, run logs, file paths, issue bodies, or env vars).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PAPERCLIP_LANGFUSE_ENABLED` | (disabled) | Enable Paperclip → Langfuse export (`1/true/yes/on`) |
+| `LANGFUSE_HOST` | (unset) | Langfuse base URL (e.g. `http://127.0.0.1:3001`) |
+| `LANGFUSE_PUBLIC_KEY` | (unset) | Langfuse public key (Basic Auth username) |
+| `LANGFUSE_SECRET_KEY` | (unset) | Langfuse secret key (Basic Auth password) |
+| `PAPERCLIP_LANGFUSE_TIMEOUT_MS` | `3000` | Ingestion request timeout in milliseconds |
+| `PAPERCLIP_LANGFUSE_ENVIRONMENT` | `local` | Langfuse `environment` field for traces (normalized to lowercase `a-z0-9-_`, max 40 chars; values starting with `langfuse` fall back to `local`) |
