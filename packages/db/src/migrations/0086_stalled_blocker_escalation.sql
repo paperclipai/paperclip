@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS "issues_active_stalled_blocker_escalation_uq" ON "issues" USING btree ("company_id","origin_kind","origin_fingerprint") WHERE "issues"."origin_kind" = 'stalled_blocker_escalation' and "issues"."origin_fingerprint" <> 'default' and "issues"."hidden_at" is null and "issues"."status" not in ('done', 'cancelled');

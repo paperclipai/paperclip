@@ -38,6 +38,11 @@ export {
   productivityReviewService,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
 } from "./productivity-review.js";
+export {
+  stalledBlockerEscalationService,
+  STALLED_BLOCKER_ESCALATION_ORIGIN_KIND,
+  DEFAULT_STALLED_BLOCKER_THRESHOLD_MS,
+} from "./stalled-blocker-escalation.js";
 export { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/index.js";
 export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
