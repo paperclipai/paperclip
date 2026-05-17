@@ -63,12 +63,33 @@ jobs:
       - name: Set required secrets
         if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
         run: |
-          supabase secrets set \
-            TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}" \
-            PAPERCLIP_API_URL="${{ secrets.PAPERCLIP_API_URL }}" \
-            CHASE_PAPERCLIP_API_KEY="${{ secrets.CHASE_PAPERCLIP_API_KEY }}" \
-            CHASE_AGENT_ID="${{ secrets.CHASE_AGENT_ID }}" \
-            PAPERCLIP_COMPANY_ID="${{ secrets.PAPERCLIP_COMPANY_ID }}"
+          # Each required secret is validated non-empty before setting to avoid
+          # silently clearing Supabase secrets when a GitHub secret is missing.
+          if [ -n "${{ secrets.TELEGRAM_BOT_TOKEN }}" ]; then
+            supabase secrets set TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}"
+          else
+            echo "WARNING: TELEGRAM_BOT_TOKEN GitHub secret not set — skipping"
+          fi
+          if [ -n "${{ secrets.PAPERCLIP_API_URL }}" ]; then
+            supabase secrets set PAPERCLIP_API_URL="${{ secrets.PAPERCLIP_API_URL }}"
+          else
+            echo "WARNING: PAPERCLIP_API_URL GitHub secret not set — skipping"
+          fi
+          if [ -n "${{ secrets.CHASE_PAPERCLIP_API_KEY }}" ]; then
+            supabase secrets set CHASE_PAPERCLIP_API_KEY="${{ secrets.CHASE_PAPERCLIP_API_KEY }}"
+          else
+            echo "WARNING: CHASE_PAPERCLIP_API_KEY GitHub secret not set — skipping"
+          fi
+          if [ -n "${{ secrets.CHASE_AGENT_ID }}" ]; then
+            supabase secrets set CHASE_AGENT_ID="${{ secrets.CHASE_AGENT_ID }}"
+          else
+            echo "WARNING: CHASE_AGENT_ID GitHub secret not set — skipping"
+          fi
+          if [ -n "${{ secrets.PAPERCLIP_COMPANY_ID }}" ]; then
+            supabase secrets set PAPERCLIP_COMPANY_ID="${{ secrets.PAPERCLIP_COMPANY_ID }}"
+          else
+            echo "WARNING: PAPERCLIP_COMPANY_ID GitHub secret not set — skipping"
+          fi
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
 
