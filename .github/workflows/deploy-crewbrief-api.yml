@@ -1,0 +1,34 @@
+name: Deploy CrewBrief API
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - 'server/**'
+      - 'packages/db/**'
+      - 'packages/shared/**'
+      - 'Dockerfile.crewbrief'
+      - 'railway.json'
+      - 'pnpm-lock.yaml'
+      - 'package.json'
+      - '.github/workflows/deploy-crewbrief-api.yml'
+
+concurrency:
+  group: deploy-crewbrief-api-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy to Railway
+        run: railway up --service crewbrief-api --detach
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}

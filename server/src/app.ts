@@ -326,6 +326,16 @@ export async function createApp(
   const cbWebhooks = crewbriefWebhookService(cbPosthog, cbNurture);
   api.use("/crewbrief", crewbriefRoutes(db, crewbriefCfg, cbNurture, cbHubspot, cbWebhooks));
 
+  if (process.env.NODE_ENV === "production") {
+    const NURTURE_POLL_MS = 60_000;
+    logger.info({ intervalMs: NURTURE_POLL_MS }, "Starting CrewBrief nurture email scheduler");
+    setInterval(() => {
+      cbNurture.processScheduledEmails().catch((err) => {
+        logger.error({ err }, "CrewBrief nurture email scheduler failed");
+      });
+    }, NURTURE_POLL_MS);
+  }
+
   app.use("/api", api);
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
