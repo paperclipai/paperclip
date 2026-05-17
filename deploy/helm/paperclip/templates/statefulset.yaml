@@ -330,6 +330,43 @@ spec:
               # paperclip-server, not by hand-editing this file.
               MCP_FILE="${BASE}/.mcp.json"
               MCP_BRIDGE_JS="/app/packages/mcp-server/dist/stdio.js"
+
+              # gbrain endpoint selection. Two paths exist:
+              #   1. admin-ui:3130/mcp   — OAuth Bearer, scales independently
+              #   2. gbrain-mcp-internal:3131/gbrain — bridge (unauthed),
+              #      same gbrain backend but OOMs ~3/hr under aggregate load.
+              # We pick #1 by minting a Bearer here against the CEO agent's
+              # OAuth client at boot. Per-agent identity at the paperclip
+              # plugin layer is preserved via adapter_config.mcpServers.gbrain
+              # (refreshed by the gbrain-oauth-refresher CronJob in
+              # onprem-k8s/paperclip/). All 7 agents have equivalent /mcp
+              # access; using CEO's client for the shared claude-direct
+              # path is operationally neutral.
+              # Falls back to the bridge if minting fails so claude_k8s still
+              # has a working gbrain MCP path on first deploy / outage.
+              GBRAIN_ENTRY='{"type":"http","url":"http://gbrain-mcp-internal.paperclip.svc.cluster.local:3131/gbrain"}'
+              if [ -r /etc/paperclip-plugin-gbrain/clients.json ]; then
+                CEO_ID=$(jq -r '."4eca1725-632f-45fa-97a2-8cf7e0430958".client_id // empty' /etc/paperclip-plugin-gbrain/clients.json 2>/dev/null || true)
+                CEO_SEC=$(jq -r '."4eca1725-632f-45fa-97a2-8cf7e0430958".client_secret // empty' /etc/paperclip-plugin-gbrain/clients.json 2>/dev/null || true)
+                if [ -n "${CEO_ID}" ] && [ -n "${CEO_SEC}" ]; then
+                  GBRAIN_BEARER=$(curl -sf --max-time 5 -X POST \
+                    http://gbrain-mcp-admin.paperclip.svc.cluster.local:3130/token \
+                    --data-urlencode "grant_type=client_credentials" \
+                    --data-urlencode "client_id=${CEO_ID}" \
+                    --data-urlencode "client_secret=${CEO_SEC}" 2>/dev/null \
+                    | jq -r '.access_token // empty' 2>/dev/null || true)
+                  if [ -n "${GBRAIN_BEARER}" ]; then
+                    GBRAIN_ENTRY=$(jq -nc \
+                      --arg url "http://gbrain-mcp-admin.paperclip.svc.cluster.local:3130/mcp" \
+                      --arg auth "Bearer ${GBRAIN_BEARER}" \
+                      '{type:"http", url:$url, headers:{Authorization:$auth}}')
+                    echo "seed: minted gbrain Bearer; routing claude direct MCP at admin-ui:3130/mcp"
+                  else
+                    echo "seed: gbrain /token call failed; falling back to bridge:3131/gbrain"
+                  fi
+                fi
+              fi
+
               if [ -f "${MCP_BRIDGE_JS}" ]; then
                 # Cluster-internal MCP servers (deployed via kubectl in the
                 # paperclip ns; see .planning/mcp-servers.yaml). All agents
@@ -379,10 +416,7 @@ spec:
                     "type": "http",
                     "url": "http://linear-mcp-server.paperclip.svc.cluster.local:8000/mcp"
                   },
-                  "gbrain": {
-                    "type": "http",
-                    "url": "http://gbrain-mcp-internal.paperclip.svc.cluster.local:3131/gbrain"
-                  }
+                  "gbrain": ${GBRAIN_ENTRY}
                 }
               }
               EOF
