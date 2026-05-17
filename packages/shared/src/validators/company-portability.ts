@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { MAX_COMPANY_ATTACHMENT_MAX_BYTES } from "../constants.js";
+import { ISSUE_PHASES, MAX_COMPANY_ATTACHMENT_MAX_BYTES } from "../constants.js";
 import {
+  issueEstimateSchema,
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
@@ -155,6 +156,12 @@ export const portabilityIssueManifestEntrySchema = z.object({
   projectWorkspaceKey: z.string().min(1).nullable(),
   assigneeAgentSlug: z.string().min(1).nullable(),
   description: z.string().nullable(),
+  successCriteria: z.array(z.string().min(1)).nullable().default(null),
+  minimumVerification: z.array(z.string().min(1)).nullable().default(null),
+  expectedOutput: z.string().nullable().default(null),
+  outOfScope: z.array(z.string().min(1)).nullable().default(null),
+  estimate: issueEstimateSchema.nullable().default(null),
+  phase: z.enum(ISSUE_PHASES).nullable().default(null),
   recurring: z.boolean().default(false),
   routine: portabilityIssueRoutineManifestEntrySchema.nullable(),
   legacyRecurrence: z.record(z.unknown()).nullable(),

@@ -1,7 +1,7 @@
 import type { AgentEnvConfig } from "./secrets.js";
 import type { RoutineVariable } from "./routine.js";
-import type { IssueCommentAuthorType } from "../constants.js";
-import type { IssueCommentMetadata, IssueCommentPresentation } from "./issue.js";
+import type { IssueCommentAuthorType, IssuePhase } from "../constants.js";
+import type { IssueCommentMetadata, IssueCommentPresentation, IssueEstimate } from "./issue.js";
 
 export interface CompanyPortabilityInclude {
   company: boolean;
@@ -115,6 +115,12 @@ export interface CompanyPortabilityIssueManifestEntry {
   projectWorkspaceKey: string | null;
   assigneeAgentSlug: string | null;
   description: string | null;
+  successCriteria: string[] | null;
+  minimumVerification: string[] | null;
+  expectedOutput: string | null;
+  outOfScope: string[] | null;
+  estimate: IssueEstimate | null;
+  phase: IssuePhase | null;
   recurring: boolean;
   routine: CompanyPortabilityIssueRoutineManifestEntry | null;
   legacyRecurrence: Record<string, unknown> | null;

@@ -151,6 +151,12 @@ const legacyProjectLinkedIssue = {
   identifier: "PAP-581",
   title: "Legacy onboarding task",
   description: "Seed the first CEO task",
+  successCriteria: null,
+  minimumVerification: null,
+  expectedOutput: null,
+  outOfScope: null,
+  estimate: null,
+  phase: null,
   status: "todo",
   workMode: "planning",
   priority: "medium",
@@ -280,6 +286,49 @@ describe.sequential("issue goal context routes", () => {
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
     expect(res.body.attachments).toEqual([]);
+  });
+
+  it("surfaces issue contract fields and derived progress in get and heartbeat context responses", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      successCriteria: ["Board knows done"],
+      minimumVerification: ["Run focused API tests"],
+      expectedOutput: "Implementation PR",
+      outOfScope: ["UI forms"],
+      estimate: { size: "L", risk: "medium" },
+      phase: "verification",
+      status: "in_progress",
+    });
+
+    const getRes = await request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111");
+    expect(getRes.status).toBe(200);
+    expect(getRes.body).toEqual(expect.objectContaining({
+      successCriteria: ["Board knows done"],
+      minimumVerification: ["Run focused API tests"],
+      expectedOutput: "Implementation PR",
+      outOfScope: ["UI forms"],
+      estimate: { size: "L", risk: "medium" },
+      phase: "verification",
+      progress: expect.objectContaining({
+        phase: "verification",
+        state: "verifying",
+        source: "phase",
+      }),
+    }));
+
+    const heartbeatRes = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+    expect(heartbeatRes.status).toBe(200);
+    expect(heartbeatRes.body.issue).toEqual(expect.objectContaining({
+      successCriteria: ["Board knows done"],
+      minimumVerification: ["Run focused API tests"],
+      expectedOutput: "Implementation PR",
+      outOfScope: ["UI forms"],
+      estimate: { size: "L", risk: "medium" },
+      phase: "verification",
+      progress: expect.objectContaining({ state: "verifying" }),
+    }));
   });
 
   it("preserves direct continuation summary lookup in GET /issues/:id/heartbeat-context", async () => {

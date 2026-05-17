@@ -2521,6 +2521,12 @@ describe("company portability", () => {
         identifier: "PAP-1",
         title: "Labelled task",
         description: "Has labels",
+        successCriteria: ["Preserve contract"],
+        minimumVerification: ["Run portability import"],
+        expectedOutput: "Portable bundle",
+        outOfScope: [],
+        estimate: { size: "M", expectedHeartbeatCount: 2, risk: "low" },
+        phase: "delivery",
         projectId: "project-1",
         projectWorkspaceId: null,
         assigneeAgentId: null,
@@ -2541,6 +2547,22 @@ describe("company portability", () => {
     expect(extension).toContain("labelIds:");
     expect(extension).toContain("label-a");
     expect(extension).toContain("label-b");
+    expect(extension).toContain("successCriteria:");
+    expect(extension).toContain("Preserve contract");
+    expect(extension).toContain("minimumVerification:");
+    expect(extension).toContain('expectedOutput: "Portable bundle"');
+    expect(extension).toContain("outOfScope: []");
+    expect(extension).toContain("estimate:");
+    expect(extension).toContain("expectedHeartbeatCount: 2");
+    expect(extension).toContain('phase: "delivery"');
+    expect(exported.manifest.issues[0]).toEqual(expect.objectContaining({
+      successCriteria: ["Preserve contract"],
+      minimumVerification: ["Run portability import"],
+      expectedOutput: "Portable bundle",
+      outOfScope: [],
+      estimate: expect.objectContaining({ size: "M", expectedHeartbeatCount: 2, risk: "low" }),
+      phase: "delivery",
+    }));
 
     companySvc.create.mockResolvedValue({ id: "company-imported", name: "Imported" });
     accessSvc.ensureMembership.mockResolvedValue(undefined);
@@ -2561,6 +2583,12 @@ describe("company portability", () => {
       "company-imported",
       expect.objectContaining({
         labelIds: ["label-a", "label-b"],
+        successCriteria: ["Preserve contract"],
+        minimumVerification: ["Run portability import"],
+        expectedOutput: "Portable bundle",
+        outOfScope: [],
+        estimate: expect.objectContaining({ size: "M", expectedHeartbeatCount: 2, risk: "low" }),
+        phase: "delivery",
       }),
     );
   });

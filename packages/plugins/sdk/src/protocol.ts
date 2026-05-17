@@ -870,6 +870,12 @@ export interface WorkerToHostMethods {
       inheritExecutionWorkspaceFromIssueId?: string;
       title: string;
       description?: string;
+      successCriteria?: string[] | null;
+      minimumVerification?: string[] | null;
+      expectedOutput?: string | null;
+      outOfScope?: string[] | null;
+      estimate?: Issue["estimate"];
+      phase?: Issue["phase"];
       status?: string;
       priority?: string;
       assigneeAgentId?: string;

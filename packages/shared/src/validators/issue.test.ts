@@ -4,6 +4,7 @@ import {
   addIssueCommentSchema,
   createIssueSchema,
   issueBlockedInboxAttentionSchema,
+  issueEstimateSchema,
   resolveIssueRecoveryActionSchema,
   respondIssueThreadInteractionSchema,
   suggestedTaskDraftSchema,
@@ -361,5 +362,71 @@ describe("issue validators", () => {
     });
 
     expect(parsed.success).toBe(false);
+  });
+
+  it("accepts and normalizes a full issue contract payload", () => {
+    const parsed = createIssueSchema.parse({
+      title: "Ship contract fields",
+      successCriteria: [" Persist fields ", ""],
+      minimumVerification: [" Run targeted tests "],
+      expectedOutput: " GitHub-ready PR ",
+      outOfScope: [" UI forms "],
+      estimate: {
+        size: "L",
+        expectedHeartbeatRange: { min: 2, max: 4 },
+        risk: "medium",
+        effectiveParallelism: 2,
+        notes: " Broad API surface ",
+      },
+      phase: "implementation",
+    });
+
+    expect(parsed.successCriteria).toEqual(["Persist fields"]);
+    expect(parsed.minimumVerification).toEqual(["Run targeted tests"]);
+    expect(parsed.expectedOutput).toBe("GitHub-ready PR");
+    expect(parsed.outOfScope).toEqual(["UI forms"]);
+    expect(parsed.estimate).toEqual({
+      size: "L",
+      expectedHeartbeatRange: { min: 2, max: 4 },
+      risk: "medium",
+      effectiveParallelism: 2,
+      notes: "Broad API surface",
+    });
+    expect(parsed.phase).toBe("implementation");
+  });
+
+  it("normalizes empty issue contract text fields without breaking legacy payloads", () => {
+    const parsed = updateIssueSchema.parse({
+      expectedOutput: "   ",
+      successCriteria: [" Keep old clients working ", "   "],
+      minimumVerification: null,
+      estimate: {
+        size: null,
+        notes: "   ",
+      },
+    });
+
+    expect(parsed.expectedOutput).toBeNull();
+    expect(parsed.successCriteria).toEqual(["Keep old clients working"]);
+    expect(parsed.minimumVerification).toBeNull();
+    expect(parsed.estimate).toEqual({ size: null, notes: null });
+    expect(createIssueSchema.parse({ title: "Legacy simple issue" })).toEqual(
+      expect.objectContaining({
+        title: "Legacy simple issue",
+        status: "backlog",
+        priority: "medium",
+      }),
+    );
+  });
+
+  it("rejects invalid issue contract enums and estimate ranges", () => {
+    expect(() => createIssueSchema.parse({ title: "Bad phase", phase: "coding" }))
+      .toThrow();
+    expect(() => issueEstimateSchema.parse({ size: "XXL" }))
+      .toThrow();
+    expect(() => issueEstimateSchema.parse({ risk: "unknown" }))
+      .toThrow();
+    expect(() => issueEstimateSchema.parse({ expectedHeartbeatRange: { min: 5, max: 2 } }))
+      .toThrow("expectedHeartbeatRange.min must be less than or equal to max");
   });
 });

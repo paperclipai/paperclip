@@ -112,6 +112,12 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
             clientKey: "root",
             title: "Create the root follow-up",
             workMode: "planning",
+            successCriteria: ["Contract survives acceptance"],
+            minimumVerification: ["Inspect created child"],
+            expectedOutput: "Accepted child issue",
+            outOfScope: ["UI rendering"],
+            estimate: { size: "S", risk: "low" },
+            phase: "planning",
             assigneeAgentId,
           },
           {
@@ -172,6 +178,14 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     const children = await issuesSvc.list(companyId, { parentId: issueId });
     expect(children).toHaveLength(1);
     expect(children[0]?.title).toBe("Create the root follow-up");
+    expect(children[0]).toEqual(expect.objectContaining({
+      successCriteria: ["Contract survives acceptance"],
+      minimumVerification: ["Inspect created child"],
+      expectedOutput: "Accepted child issue",
+      outOfScope: ["UI rendering"],
+      estimate: expect.objectContaining({ size: "S", risk: "low" }),
+      phase: "planning",
+    }));
 
     const nestedChildren = await issuesSvc.list(companyId, { parentId: children[0]!.id });
     expect(nestedChildren).toHaveLength(1);

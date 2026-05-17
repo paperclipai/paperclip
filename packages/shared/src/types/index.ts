@@ -145,6 +145,9 @@ export type {
 export type {
   Issue,
   IssueWorkMode,
+  IssueContract,
+  IssueEstimate,
+  IssueProgressSummary,
   IssueAssigneeAdapterOverrides,
   IssueBlockerAttention,
   IssueBlockerAttentionReason,

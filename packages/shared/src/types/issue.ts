@@ -14,7 +14,10 @@ import type {
   IssueExecutionStageType,
   IssueExecutionStateStatus,
   IssueOriginKind,
+  IssuePhase,
   IssuePriority,
+  IssueProgressSource,
+  IssueProgressState,
   IssueRecoveryActionKind,
   IssueRecoveryActionOutcome,
   IssueRecoveryActionOwnerType,
@@ -79,6 +82,30 @@ export interface IssueAssigneeAdapterOverrides {
   modelProfile?: ModelProfileKey;
   adapterConfig?: Record<string, unknown>;
   useProjectWorkspace?: boolean;
+}
+
+export interface IssueContract {
+  successCriteria: string[] | null;
+  minimumVerification: string[] | null;
+  expectedOutput: string | null;
+  outOfScope: string[] | null;
+}
+
+export interface IssueEstimate {
+  size: "XS" | "S" | "M" | "L" | "XL" | null;
+  expectedHeartbeatCount?: number | null;
+  expectedHeartbeatRange?: { min: number; max: number } | null;
+  risk?: "low" | "medium" | "high" | null;
+  effectiveParallelism?: number | null;
+  notes?: string | null;
+}
+
+export interface IssueProgressSummary {
+  phase: IssuePhase | null;
+  state: IssueProgressState;
+  percent: number | null;
+  reason: string;
+  source: IssueProgressSource;
 }
 
 export type DocumentFormat = "markdown";
@@ -438,6 +465,13 @@ export interface Issue {
   ancestors?: IssueAncestor[];
   title: string;
   description: string | null;
+  successCriteria?: string[] | null;
+  minimumVerification?: string[] | null;
+  expectedOutput?: string | null;
+  outOfScope?: string[] | null;
+  estimate?: IssueEstimate | null;
+  phase?: IssuePhase | null;
+  progress?: IssueProgressSummary;
   status: IssueStatus;
   workMode: IssueWorkMode;
   priority: IssuePriority;
@@ -599,6 +633,12 @@ export interface SuggestedTaskDraft {
   parentId?: string | null;
   title: string;
   description?: string | null;
+  successCriteria?: string[] | null;
+  minimumVerification?: string[] | null;
+  expectedOutput?: string | null;
+  outOfScope?: string[] | null;
+  estimate?: IssueEstimate | null;
+  phase?: IssuePhase | null;
   priority?: IssuePriority | null;
   workMode?: IssueWorkMode | null;
   assigneeAgentId?: string | null;

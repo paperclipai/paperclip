@@ -564,6 +564,109 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
   it("returns null instead of throwing for malformed non-uuid issue refs", async () => {
     await expect(svc.getById("not-a-uuid")).resolves.toBeNull();
   });
+
+  it("persists issue contract fields on create, list, get, and patch", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const created = await svc.create(companyId, {
+      title: "Contract issue",
+      description: "Structured contract coverage",
+      successCriteria: ["Round trips through APIs"],
+      minimumVerification: ["Run targeted tests"],
+      expectedOutput: "GitHub-ready PR",
+      outOfScope: ["UI forms"],
+      estimate: {
+        size: "L",
+        expectedHeartbeatRange: { min: 2, max: 4 },
+        risk: "medium",
+        effectiveParallelism: 2,
+        notes: "Broad compatibility surface",
+      },
+      phase: "implementation",
+      status: "todo",
+      priority: "high",
+    });
+
+    expect(created).toEqual(expect.objectContaining({
+      successCriteria: ["Round trips through APIs"],
+      minimumVerification: ["Run targeted tests"],
+      expectedOutput: "GitHub-ready PR",
+      outOfScope: ["UI forms"],
+      estimate: expect.objectContaining({
+        size: "L",
+        expectedHeartbeatRange: { min: 2, max: 4 },
+        risk: "medium",
+      }),
+      phase: "implementation",
+    }));
+
+    const listed = await svc.list(companyId);
+    expect(listed[0]).toEqual(expect.objectContaining({
+      id: created.id,
+      successCriteria: ["Round trips through APIs"],
+      phase: "implementation",
+      progress: expect.objectContaining({
+        phase: "implementation",
+        state: "active",
+        source: "phase",
+      }),
+    }));
+
+    const fetched = await svc.getById(created.id);
+    expect(fetched).toEqual(expect.objectContaining({
+      minimumVerification: ["Run targeted tests"],
+      expectedOutput: "GitHub-ready PR",
+    }));
+
+    const updated = await svc.update(created.id, {
+      expectedOutput: null,
+      phase: "verification",
+    });
+    expect(updated).toEqual(expect.objectContaining({
+      successCriteria: ["Round trips through APIs"],
+      minimumVerification: ["Run targeted tests"],
+      expectedOutput: null,
+      phase: "verification",
+    }));
+  });
+
+  it("dual-writes legacy child acceptanceCriteria into successCriteria", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const parent = await svc.create(companyId, {
+      title: "Parent issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const { issue: child } = await svc.createChild(parent.id, {
+      title: "Child issue",
+      description: "Implement child",
+      acceptanceCriteria: ["Uses structured contract", "Keeps markdown compatibility"],
+    });
+
+    expect(child.successCriteria).toEqual([
+      "Uses structured contract",
+      "Keeps markdown compatibility",
+    ]);
+    expect(child.description).toContain("## Acceptance Criteria");
+    expect(child.description).toContain("- Uses structured contract");
+  });
+
   it("filters issues by execution workspace id", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();

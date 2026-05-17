@@ -12,6 +12,9 @@ import {
   ISSUE_COMMENT_METADATA_ROW_TYPES,
   ISSUE_COMMENT_PRESENTATION_KINDS,
   ISSUE_COMMENT_PRESENTATION_TONES,
+  ISSUE_ESTIMATE_RISKS,
+  ISSUE_ESTIMATE_SIZES,
+  ISSUE_PHASES,
   ISSUE_MONITOR_SCHEDULED_BY,
   ISSUE_PRIORITIES,
   ISSUE_RECOVERY_ACTION_KINDS,
@@ -323,6 +326,48 @@ const issueRequestDepthInputSchema = z
   .nonnegative()
   .transform((value) => clampIssueRequestDepth(value));
 
+const issueContractListSchema = z.array(z.string().trim().max(1000))
+  .max(20)
+  .transform((items) => items.filter((item) => item.length > 0));
+
+const nullableIssueContractListSchema = issueContractListSchema.nullable();
+
+const nullableTrimmedIssueTextSchema = z.string()
+  .trim()
+  .max(4000)
+  .transform((value) => (value.length > 0 ? value : null))
+  .nullable();
+
+export const issueEstimateSchema = z.object({
+  size: z.enum(ISSUE_ESTIMATE_SIZES).nullable().optional().default(null),
+  expectedHeartbeatCount: z.number().int().min(1).max(100).nullable().optional(),
+  expectedHeartbeatRange: z.object({
+    min: z.number().int().min(1).max(100),
+    max: z.number().int().min(1).max(100),
+  }).strict().nullable().optional(),
+  risk: z.enum(ISSUE_ESTIMATE_RISKS).nullable().optional(),
+  effectiveParallelism: z.number().int().min(1).max(20).nullable().optional(),
+  notes: z.string().trim().max(2000).transform((value) => (value.length > 0 ? value : null)).nullable().optional(),
+}).strict().superRefine((value, ctx) => {
+  const range = value.expectedHeartbeatRange;
+  if (range && range.min > range.max) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "expectedHeartbeatRange.min must be less than or equal to max",
+      path: ["expectedHeartbeatRange", "min"],
+    });
+  }
+});
+
+export const issueContractFieldsSchema = z.object({
+  successCriteria: nullableIssueContractListSchema.optional(),
+  minimumVerification: nullableIssueContractListSchema.optional(),
+  expectedOutput: nullableTrimmedIssueTextSchema.optional(),
+  outOfScope: nullableIssueContractListSchema.optional(),
+  estimate: issueEstimateSchema.nullable().optional(),
+  phase: z.enum(ISSUE_PHASES).nullable().optional(),
+});
+
 type IssueCreateStatusDefaultInput = {
   status?: unknown;
   assigneeAgentId?: unknown;
@@ -373,6 +418,7 @@ const createIssueBaseSchema = z.object({
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
   description: multilineTextSchema.optional().nullable(),
+  ...issueContractFieldsSchema.shape,
   status: z.enum(ISSUE_STATUSES),
   workMode: z.enum(ISSUE_WORK_MODES).optional().default("standard"),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
@@ -552,6 +598,7 @@ export const suggestedTaskDraftSchema = z.object({
   parentId: z.string().uuid().nullable().optional(),
   title: z.string().trim().min(1).max(240),
   description: multilineTextSchema.pipe(z.string().trim().max(20000)).nullable().optional(),
+  ...issueContractFieldsSchema.shape,
   priority: z.enum(ISSUE_PRIORITIES).nullable().optional(),
   workMode: z.enum(ISSUE_WORK_MODES).nullable().optional(),
   assigneeAgentId: z.string().uuid().nullable().optional(),

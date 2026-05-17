@@ -45,6 +45,8 @@ import {
   type CompanySearchQuery,
   type CompanySearchResponse,
   type ExecutionWorkspace,
+  type IssuePhase,
+  type IssueProgressSummary,
   type IssueRelationIssueSummary,
   type SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
@@ -129,6 +131,48 @@ type ActivityExecutionParticipant = Pick<
   NormalizedExecutionPolicy["stages"][number]["participants"][number],
   "type" | "agentId" | "userId"
 >;
+const deriveIssueProgressSummary: (issue: { status: string; phase?: string | null }) => IssueProgressSummary =
+  ("deriveIssueProgressSummary" in serviceIndex ? serviceIndex.deriveIssueProgressSummary : undefined) ??
+  ((issue) => {
+    const phase = (issue.phase ?? null) as IssuePhase | null;
+    if (issue.status === "done") {
+      return { phase, state: "complete", percent: 100, reason: "Issue is done.", source: "status" };
+    }
+    if (issue.status === "cancelled") {
+      return { phase, state: "cancelled", percent: null, reason: "Issue is cancelled.", source: "status" };
+    }
+    if (issue.status === "blocked") {
+      return { phase, state: "waiting", percent: null, reason: "Issue is blocked.", source: "blocker" };
+    }
+    if (issue.status === "in_review") {
+      return {
+        phase: (issue.phase ?? "review") as IssuePhase,
+        state: "reviewing",
+        percent: null,
+        reason: "Issue is in review.",
+        source: issue.phase ? "phase" : "status",
+      };
+    }
+    if (issue.phase === "verification") {
+      return { phase: "verification", state: "verifying", percent: null, reason: "Issue phase is verification.", source: "phase" };
+    }
+    if (issue.status === "in_progress" || issue.phase === "implementation") {
+      return {
+        phase: (issue.phase ?? "implementation") as IssuePhase,
+        state: "active",
+        percent: null,
+        reason: issue.phase ? "Issue phase is active." : "Issue is in progress.",
+        source: issue.phase ? "phase" : "status",
+      };
+    }
+    return {
+      phase,
+      state: "not_started",
+      percent: 0,
+      reason: "Issue has not started.",
+      source: issue.phase ? "phase" : "status",
+    };
+  });
 type ExecutionStageWakeContext = {
   wakeRole: "reviewer" | "approver" | "executor";
   stageId: string | null;
@@ -1675,6 +1719,13 @@ export function issueRoutes(
         identifier: issue.identifier,
         title: issue.title,
         description: issue.description,
+        successCriteria: issue.successCriteria,
+        minimumVerification: issue.minimumVerification,
+        expectedOutput: issue.expectedOutput,
+        outOfScope: issue.outOfScope,
+        estimate: issue.estimate,
+        phase: issue.phase,
+        progress: deriveIssueProgressSummary(issue),
         status: issue.status,
         workMode: issue.workMode,
         ...(blockerAttention ? { blockerAttention } : {}),
@@ -1795,6 +1846,7 @@ export function issueRoutes(
     const workProducts = await workProductsSvc.listForIssue(issue.id);
     res.json({
       ...issue,
+      progress: deriveIssueProgressSummary(issue),
       goalId: goal?.id ?? issue.goalId,
       ancestors,
       ...(blockerAttention ? { blockerAttention } : {}),
@@ -2735,6 +2787,7 @@ export function issueRoutes(
 
     res.status(201).json({
       ...issue,
+      progress: deriveIssueProgressSummary(issue),
       relatedWork: referenceSummary,
       referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
     });
@@ -2823,7 +2876,10 @@ export function issueRoutes(
       requestedByActorId: actor.actorId,
     });
 
-    res.status(201).json(issue);
+    res.status(201).json({
+      ...issue,
+      progress: deriveIssueProgressSummary(issue),
+    });
   });
 
   router.post("/issues/:id/monitor/check-now", async (req, res) => {
@@ -3207,14 +3263,19 @@ export function issueRoutes(
     let issueResponse: typeof issue & {
       blockedBy?: unknown;
       blocks?: unknown;
+      progress: IssueProgressSummary;
       relatedWork?: Awaited<ReturnType<typeof issueReferencesSvc.listIssueReferenceSummary>>;
       referencedIssueIdentifiers?: string[];
-    } = issue;
+    } = {
+      ...issue,
+      progress: deriveIssueProgressSummary(issue),
+    };
     let updatedRelations: Awaited<ReturnType<typeof svc.getRelationSummaries>> | null = null;
     if (issue && Array.isArray(req.body.blockedByIssueIds)) {
       updatedRelations = await svc.getRelationSummaries(issue.id);
       issueResponse = {
         ...issue,
+        progress: deriveIssueProgressSummary(issue),
         blockedBy: updatedRelations.blockedBy,
         blocks: updatedRelations.blocks,
       };

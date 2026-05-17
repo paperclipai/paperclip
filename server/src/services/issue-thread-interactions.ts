@@ -838,6 +838,12 @@ export function issueThreadInteractionService(db: Db) {
           const { issue: createdIssue } = await issueService(tx as unknown as Db).createChild(parentIssueId, {
             title: task.title,
             description: task.description ?? null,
+            successCriteria: task.successCriteria ?? undefined,
+            minimumVerification: task.minimumVerification ?? undefined,
+            expectedOutput: task.expectedOutput ?? undefined,
+            outOfScope: task.outOfScope ?? undefined,
+            estimate: task.estimate ?? undefined,
+            phase: task.phase ?? undefined,
             status: "todo",
             workMode: task.workMode ?? "standard",
             priority: task.priority ?? "medium",
