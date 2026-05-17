@@ -19,6 +19,10 @@ const mockLifecycle = vi.hoisted(() => ({
   disable: vi.fn(),
 }));
 
+const mockSecrets = vi.hoisted(() => ({
+  syncSecretRefsForTarget: vi.fn(),
+}));
+
 vi.mock("../services/plugin-registry.js", () => ({
   pluginRegistryService: () => mockRegistry,
 }));
@@ -33,6 +37,10 @@ vi.mock("../services/activity-log.js", () => ({
 
 vi.mock("../services/live-events.js", () => ({
   publishGlobalLiveEvent: vi.fn(),
+}));
+
+vi.mock("../services/secrets.js", () => ({
+  secretService: () => mockSecrets,
 }));
 
 async function createApp(
@@ -308,7 +316,7 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(mockLifecycle.unload).toHaveBeenCalledWith(pluginId, true);
   }, 20_000);
 
-  it("rejects plugin config saves that contain secret refs even for instance admins", async () => {
+  it("rejects plugin config saves that contain secret refs without companyId", async () => {
     readyPlugin();
 
     const { app } = await createApp({
@@ -328,8 +336,57 @@ describe.sequential("plugin install and upgrade authz", () => {
       });
 
     expect(res.status).toBe(422);
-    expect(res.body.error).toMatch(/secret references are disabled/i);
+    expect(res.body.error).toMatch(/secret references require companyId/i);
     expect(mockRegistry.upsertConfig).not.toHaveBeenCalled();
+    expect(mockSecrets.syncSecretRefsForTarget).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("saves company-scoped plugin config secret refs as plugin bindings", async () => {
+    readyPlugin();
+    mockRegistry.upsertConfig.mockResolvedValue({
+      id: "99999999-9999-4999-8999-999999999999",
+      pluginId,
+      companyId: companyA,
+      configJson: {
+        apiKeyRef: "77777777-7777-4777-8777-777777777777",
+      },
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const { app } = await createApp(boardActor({
+      isInstanceAdmin: true,
+      companyIds: [companyA],
+    }));
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/config`)
+      .send({
+        companyId: companyA,
+        configJson: {
+          apiKeyRef: "77777777-7777-4777-8777-777777777777",
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockSecrets.syncSecretRefsForTarget).toHaveBeenCalledWith(
+      companyA,
+      { targetType: "plugin", targetId: pluginId },
+      [{
+        secretId: "77777777-7777-4777-8777-777777777777",
+        configPath: "$",
+      }],
+    );
+    expect(mockRegistry.upsertConfig).toHaveBeenCalledWith(
+      pluginId,
+      {
+        configJson: {
+          apiKeyRef: "77777777-7777-4777-8777-777777777777",
+        },
+      },
+      companyA,
+    );
   }, 20_000);
 
   it("reads plugin config from the requested company scope", async () => {

@@ -164,6 +164,10 @@ export interface WorkerRpcHost {
   stop(): void;
 }
 
+interface RuntimeCompanyContext {
+  companyId?: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Internal: event registration
 // ---------------------------------------------------------------------------
@@ -285,6 +289,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   let currentConfig: Record<string, unknown> = {};
   let databaseNamespace: string | null = null;
   const invocationContextStorage = new AsyncLocalStorage<PluginInvocationContext>();
+  const runtimeCompanyContext = new AsyncLocalStorage<RuntimeCompanyContext>();
 
   // Plugin handler registrations (populated during setup())
   const eventHandlers: EventRegistration[] = [];
@@ -414,7 +419,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
       config: {
         async get() {
-          return callHost("config.get", {} as Record<string, never>);
+          const companyId = runtimeCompanyContext.getStore()?.companyId ?? null;
+          return callHost("config.get", companyId ? { companyId } : {});
         },
       },
 
@@ -565,7 +571,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
       secrets: {
         async resolve(secretRef: string): Promise<string> {
-          return callHost("secrets.resolve", { secretRef });
+          const companyId = runtimeCompanyContext.getStore()?.companyId ?? null;
+          return callHost("secrets.resolve", { secretRef, companyId });
         },
       },
 
@@ -1467,7 +1474,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       if (registration.filter && !allowsEvent(registration.filter, event)) continue;
 
       try {
-        await registration.fn(event);
+        await runtimeCompanyContext.run(
+          { companyId: event.companyId },
+          () => registration.fn(event),
+        );
       } catch (err) {
         // Log error but continue processing other handlers so one failing
         // handler doesn't prevent the rest from running.
@@ -1507,7 +1517,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         { code: PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED },
       );
     }
-    return plugin.definition.onApiRequest(params);
+    return runtimeCompanyContext.run(
+      { companyId: params.companyId },
+      () => plugin.definition.onApiRequest!(params),
+    );
   }
 
   async function handleGetData(params: GetDataParams): Promise<unknown> {
@@ -1515,11 +1528,16 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (!handler) {
       throw new Error(`No data handler registered for key "${params.key}"`);
     }
-    return handler({
-      ...params.params,
-      ...(params.companyId === undefined ? {} : { companyId: params.companyId }),
+    const baseParams = params.params ?? {};
+    const handlerParams = {
+      ...baseParams,
+      ...(params.companyId !== undefined && !Object.prototype.hasOwnProperty.call(baseParams, "companyId")
+        ? { companyId: params.companyId }
+        : {}),
       ...(params.renderEnvironment === undefined ? {} : { renderEnvironment: params.renderEnvironment }),
-    });
+    };
+    const companyId = typeof params.companyId === "string" ? params.companyId : null;
+    return runtimeCompanyContext.run({ companyId }, () => handler(handlerParams));
   }
 
   function stringOrNull(value: unknown): string | null {
@@ -1552,13 +1570,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (!handler) {
       throw new Error(`No action handler registered for key "${params.key}"`);
     }
-    return handler(
-      {
-        ...params.params,
-        ...(params.companyId === undefined ? {} : { companyId: params.companyId }),
-        ...(params.renderEnvironment === undefined ? {} : { renderEnvironment: params.renderEnvironment }),
-      },
-      actionContextFromParams(params),
+    const handlerParams =
+      params.renderEnvironment === undefined
+        ? params.params
+        : { ...params.params, renderEnvironment: params.renderEnvironment };
+    const actionContext = actionContextFromParams(params);
+    return runtimeCompanyContext.run(
+      { companyId: actionContext.companyId },
+      () => handler(handlerParams ?? {}, actionContext),
     );
   }
 
@@ -1567,7 +1586,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (!entry) {
       throw new Error(`No tool handler registered for "${params.toolName}"`);
     }
-    return entry.fn(params.parameters, params.runContext);
+    return runtimeCompanyContext.run(
+      { companyId: params.runContext.companyId },
+      () => entry.fn(params.parameters, params.runContext),
+    );
   }
 
   function methodNotImplemented(method: string): Error & { code: number } {
@@ -1590,49 +1612,70 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (!plugin.definition.onEnvironmentProbe) {
       throw methodNotImplemented("environmentProbe");
     }
-    return plugin.definition.onEnvironmentProbe(params);
+    return runtimeCompanyContext.run(
+      { companyId: params.companyId },
+      () => plugin.definition.onEnvironmentProbe!(params),
+    );
   }
 
   async function handleEnvironmentAcquireLease(params: PluginEnvironmentAcquireLeaseParams) {
     if (!plugin.definition.onEnvironmentAcquireLease) {
       throw methodNotImplemented("environmentAcquireLease");
     }
-    return plugin.definition.onEnvironmentAcquireLease(params);
+    return runtimeCompanyContext.run(
+      { companyId: params.companyId },
+      () => plugin.definition.onEnvironmentAcquireLease!(params),
+    );
   }
 
   async function handleEnvironmentResumeLease(params: PluginEnvironmentResumeLeaseParams) {
     if (!plugin.definition.onEnvironmentResumeLease) {
       throw methodNotImplemented("environmentResumeLease");
     }
-    return plugin.definition.onEnvironmentResumeLease(params);
+    return runtimeCompanyContext.run(
+      { companyId: params.companyId },
+      () => plugin.definition.onEnvironmentResumeLease!(params),
+    );
   }
 
   async function handleEnvironmentReleaseLease(params: PluginEnvironmentReleaseLeaseParams) {
     if (!plugin.definition.onEnvironmentReleaseLease) {
       throw methodNotImplemented("environmentReleaseLease");
     }
-    return plugin.definition.onEnvironmentReleaseLease(params);
+    return runtimeCompanyContext.run(
+      { companyId: params.companyId },
+      () => plugin.definition.onEnvironmentReleaseLease!(params),
+    );
   }
 
   async function handleEnvironmentDestroyLease(params: PluginEnvironmentDestroyLeaseParams) {
     if (!plugin.definition.onEnvironmentDestroyLease) {
       throw methodNotImplemented("environmentDestroyLease");
     }
-    return plugin.definition.onEnvironmentDestroyLease(params);
+    return runtimeCompanyContext.run(
+      { companyId: params.companyId },
+      () => plugin.definition.onEnvironmentDestroyLease!(params),
+    );
   }
 
   async function handleEnvironmentRealizeWorkspace(params: PluginEnvironmentRealizeWorkspaceParams) {
     if (!plugin.definition.onEnvironmentRealizeWorkspace) {
       throw methodNotImplemented("environmentRealizeWorkspace");
     }
-    return plugin.definition.onEnvironmentRealizeWorkspace(params);
+    return runtimeCompanyContext.run(
+      { companyId: params.companyId },
+      () => plugin.definition.onEnvironmentRealizeWorkspace!(params),
+    );
   }
 
   async function handleEnvironmentExecute(params: PluginEnvironmentExecuteParams) {
     if (!plugin.definition.onEnvironmentExecute) {
       throw methodNotImplemented("environmentExecute");
     }
-    return plugin.definition.onEnvironmentExecute(params);
+    return runtimeCompanyContext.run(
+      { companyId: params.companyId },
+      () => plugin.definition.onEnvironmentExecute!(params),
+    );
   }
 
   // -----------------------------------------------------------------------
