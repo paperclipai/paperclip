@@ -71,10 +71,10 @@ export function SidebarNavItem({
       {liveCount != null && liveCount > 0 && (
         <span className="ml-auto flex items-center gap-1.5">
           <span className="relative flex h-2 w-2">
-            <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+            <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500" />
           </span>
-          <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">{liveCount} live</span>
+          <span className="text-[11px] font-medium text-red-600 dark:text-red-400">{liveCount} live</span>
         </span>
       )}
       {badge != null && badge > 0 && (
