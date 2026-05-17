@@ -20,7 +20,7 @@ import {
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
   heartbeatService,
 } from "../services/heartbeat.ts";
-import { recoveryService } from "../services/recovery/service.ts";
+import { ACTIVE_RUN_DONE_SOURCE_GRACE_MS, recoveryService } from "../services/recovery/service.ts";
 import { getRunLogStore } from "../services/run-log-store.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
@@ -546,5 +546,57 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       createdByRunId: randomUUID(),
     });
     expect(decision.createdByRunId).toBe(managerRunId);
+  });
+
+  it("skips evaluation when source issue is done within the grace window of last output", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, issueId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      withOutput: true,
+    });
+
+    // Mark the source issue done within the grace window of the run's last output.
+    // seedRunningRun sets lastOutputAt = now - 5min; completedAt = now - 4min is 1min skew.
+    const completedAt = new Date(now.getTime() - 4 * 60 * 1000);
+    await db.update(issues).set({ status: "done", completedAt }).where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result.scanned).toBe(1);
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
+  });
+
+  it("still creates evaluation when source issue is done but completion is far from last output", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, issueId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      withOutput: true,
+    });
+
+    // Mark the source issue done, but completedAt is well outside the grace window.
+    const completedAt = new Date(now.getTime() - (ACTIVE_RUN_DONE_SOURCE_GRACE_MS + 60_000));
+    await db.update(issues).set({ status: "done", completedAt }).where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result.scanned).toBe(1);
+    expect(result.created).toBe(1);
+
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(1);
   });
 });
