@@ -474,6 +474,168 @@ describe("sandbox routes", () => {
     expect(__sandboxSubscriberCount("company-1")).toBe(0);
   });
 
+  describe("POST /sandbox/preview/egress", () => {
+    it("returns a deny decision under default policy and never invokes Docker", async () => {
+      const app = buildApp({ type: "board", userId: "user-1", source: "local_implicit" });
+      const res = await request(app)
+        .post("/api/companies/company-1/sandbox/preview/egress")
+        .send({
+          intent: {
+            method: "GET",
+            url: "https://api.example.com/v1/leak?token=stealme",
+            headers: { Authorization: "Bearer secret-bearer" },
+          },
+        });
+      expect(res.status).toBe(200);
+      expect(res.body.previewOnly).toBe(true);
+      expect(res.body.decision.previewOnly).toBe(true);
+      expect(res.body.decision.decision).toBe("deny");
+      expect(res.body.decision.reasonCode).toBe("DENY_NETWORK_MODE_NONE");
+      expect(res.body.decision.truth).toBe("preview");
+      expect(res.body.redactedIntent.host).toBe("api.example.com");
+      expect(res.body.redactedIntent.queryParamCount).toBe(1);
+      expect(res.body.redactedIntent.headerNames).toEqual([]);
+      const serialized = JSON.stringify(res.body);
+      expect(serialized).not.toContain("stealme");
+      expect(serialized).not.toContain("secret-bearer");
+      expect(serialized).not.toContain("/v1/leak");
+      expect(mockDockerExecute).not.toHaveBeenCalled();
+    });
+
+    it("allows an allowlisted host under egress_allowlist mode", async () => {
+      const app = buildApp({ type: "board", userId: "user-1", source: "local_implicit" });
+      const res = await request(app)
+        .post("/api/companies/company-1/sandbox/preview/egress")
+        .send({
+          intent: { method: "GET", url: "https://api.example.com/things" },
+          policy: { mode: "egress_allowlist", egressAllowlist: ["api.example.com"] },
+        });
+      expect(res.status).toBe(200);
+      expect(res.body.decision.decision).toBe("allow");
+      expect(res.body.decision.reasonCode).toBe("ALLOW_HOST_ALLOWLISTED");
+      expect(res.body.decision.matchedAllowlistEntry).toBe("api.example.com");
+    });
+
+    it("always denies metadata service even if allowlisted", async () => {
+      const app = buildApp({ type: "board", userId: "user-1", source: "local_implicit" });
+      const res = await request(app)
+        .post("/api/companies/company-1/sandbox/preview/egress")
+        .send({
+          intent: { method: "GET", url: "http://169.254.169.254/latest/meta-data/" },
+          policy: { mode: "egress_allowlist", egressAllowlist: ["169.254.169.254"] },
+        });
+      expect(res.status).toBe(200);
+      expect(res.body.decision.decision).toBe("deny");
+      expect(res.body.decision.reasonCode).toBe("DENY_METADATA_SERVICE");
+      expect(res.body.decision.classification).toBe("metadata_service");
+    });
+
+    it("rejects missing intent body with EGRESS_INTENT_INVALID", async () => {
+      const app = buildApp({ type: "board", userId: "user-1", source: "local_implicit" });
+      const res = await request(app)
+        .post("/api/companies/company-1/sandbox/preview/egress")
+        .send({});
+      expect(res.status).toBe(400);
+      expect(res.body.details?.code).toBe("SANDBOX_EGRESS_INTENT_INVALID");
+    });
+
+    it("rejects invalid network policy with EGRESS_POLICY_INVALID", async () => {
+      const app = buildApp({ type: "board", userId: "user-1", source: "local_implicit" });
+      const res = await request(app)
+        .post("/api/companies/company-1/sandbox/preview/egress")
+        .send({
+          intent: { method: "GET", url: "https://api.example.com/" },
+          policy: { mode: "egress_allowlist", egressAllowlist: ["bad host!!!"] },
+        });
+      expect(res.status).toBe(400);
+      expect(res.body.details?.code).toBe("SANDBOX_EGRESS_POLICY_INVALID");
+    });
+
+    it("refuses unauthenticated callers with 401", async () => {
+      const app = buildApp({ type: "none" });
+      const res = await request(app)
+        .post("/api/companies/company-1/sandbox/preview/egress")
+        .send({ intent: { method: "GET", url: "https://api.example.com/" } });
+      expect(res.status).toBe(401);
+    });
+
+    it("refuses cross-company agents with 403", async () => {
+      const app = buildApp({
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "other-company",
+        source: "agent_key",
+      });
+      const res = await request(app)
+        .post("/api/companies/company-1/sandbox/preview/egress")
+        .send({ intent: { method: "GET", url: "https://api.example.com/" } });
+      expect(res.status).toBe(403);
+    });
+
+    it("publishes a redacted preview_evaluated event scoped to the company", async () => {
+      const events: unknown[] = [];
+      const off = (await import("../services/sandbox/events.js")).subscribeCompanySandboxEvents(
+        "company-1",
+        (e) => events.push(e),
+      );
+      try {
+        const app = buildApp({ type: "board", userId: "user-1", source: "local_implicit" });
+        await request(app)
+          .post("/api/companies/company-1/sandbox/preview/egress")
+          .send({
+            intent: {
+              method: "GET",
+              url: "https://api.example.com/v1/secrets?token=stealme",
+              headers: { Authorization: "Bearer secret-bearer" },
+            },
+          });
+        const previewEvent = events.find(
+          (e) => (e as { type: string }).type === "sandbox.egress.preview_evaluated",
+        );
+        expect(previewEvent).toBeDefined();
+        const serialized = JSON.stringify(previewEvent);
+        expect(serialized).not.toContain("stealme");
+        expect(serialized).not.toContain("secret-bearer");
+        expect(serialized).not.toContain("/v1/secrets");
+        const payload = (previewEvent as { payload: Record<string, unknown> }).payload;
+        expect(payload.previewOnly).toBe(true);
+        expect(payload.decision).toBe("deny");
+      } finally {
+        off();
+      }
+    });
+
+    it("returns PREVIEW_ONLY for /sandbox/egress/proxy/start|stop refusal routes", async () => {
+      const app = buildApp({ type: "board", userId: "user-1", source: "local_implicit" });
+      for (const action of ["start", "stop"]) {
+        const res = await request(app).post(
+          `/api/companies/company-1/sandbox/egress/proxy/${action}`,
+        );
+        expect(res.status).toBe(409);
+        expect(res.body.details?.code).toBe("SANDBOX_PREVIEW_ONLY");
+      }
+    });
+
+    it("refusal routes return 401 unauthenticated / 403 cross-company before PREVIEW_ONLY", async () => {
+      const unauth = buildApp({ type: "none" });
+      const r1 = await request(unauth).post(
+        "/api/companies/company-1/sandbox/egress/proxy/start",
+      );
+      expect(r1.status).toBe(401);
+
+      const cross = buildApp({
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "other-company",
+        source: "agent_key",
+      });
+      const r2 = await request(cross).post(
+        "/api/companies/company-1/sandbox/egress/proxy/start",
+      );
+      expect(r2.status).toBe(403);
+    });
+  });
+
   it("SSE refuses cross-company access", async () => {
     const app = buildApp({
       type: "agent",

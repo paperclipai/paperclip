@@ -33,9 +33,26 @@ import {
   type SandboxProviderDescriptor,
 } from "../services/sandbox/read-model.js";
 import {
+  publishSandboxEvent,
   subscribeCompanySandboxEvents,
   type SandboxEvent,
 } from "../services/sandbox/events.js";
+import {
+  evaluateEgressIntent,
+  type EgressDecision,
+  type EgressIntent,
+} from "../services/sandbox/egress-policy.js";
+import {
+  parseSandboxNetworkPolicy,
+  InvalidSandboxNetworkPolicyError,
+  DEFAULT_SANDBOX_NETWORK_POLICY,
+  type SandboxNetworkPolicy,
+} from "../services/sandbox/network-policy.js";
+import {
+  redactEgressIntent,
+  summarizeEgressAudit,
+  type RedactedEgressIntent,
+} from "../services/sandbox/egress-redaction.js";
 import {
   ENVIRONMENT_LEASE_STATUSES,
   type EnvironmentLeaseStatus,
@@ -56,6 +73,8 @@ export const SANDBOX_ERROR_CODES = {
   ARTIFACT_MISSING: "SANDBOX_ARTIFACT_MISSING",
   LEASE_NOT_FOUND: "SANDBOX_LEASE_NOT_FOUND",
   INVALID_QUERY: "SANDBOX_INVALID_QUERY",
+  EGRESS_POLICY_INVALID: "SANDBOX_EGRESS_POLICY_INVALID",
+  EGRESS_INTENT_INVALID: "SANDBOX_EGRESS_INTENT_INVALID",
 } as const;
 
 const SSE_KEEPALIVE_MS = 25_000;
@@ -301,6 +320,126 @@ export function sandboxRoutes(db: Db) {
   });
 
   /**
+   * Preview-only egress policy evaluator. Accepts a proposed egress
+   * intent (method/url/headers) and an optional sandbox network policy,
+   * returns the deny-by-default decision + reason code + classification.
+   *
+   * This endpoint NEVER opens a socket, performs DNS, or invokes a real
+   * proxy. The decision is computed from policy alone — `previewOnly` is
+   * always `true` and `truth` is always `preview`. The redacted audit
+   * record is also published on the sandbox event bus so subscribers can
+   * mirror evaluator activity into the Command Center.
+   */
+  router.post("/companies/:companyId/sandbox/preview/egress", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const rawIntent = body.intent;
+    if (!rawIntent || typeof rawIntent !== "object" || Array.isArray(rawIntent)) {
+      throw badRequest("'intent' must be an object", {
+        code: SANDBOX_ERROR_CODES.EGRESS_INTENT_INVALID,
+        field: "intent",
+      });
+    }
+    const intent = rawIntent as Record<string, unknown>;
+    if (typeof intent.url !== "string" || intent.url.length === 0) {
+      throw badRequest("'intent.url' is required", {
+        code: SANDBOX_ERROR_CODES.EGRESS_INTENT_INVALID,
+        field: "intent.url",
+      });
+    }
+    if (typeof intent.method !== "string" || intent.method.length === 0) {
+      throw badRequest("'intent.method' is required", {
+        code: SANDBOX_ERROR_CODES.EGRESS_INTENT_INVALID,
+        field: "intent.method",
+      });
+    }
+    let headers: Record<string, string> | undefined;
+    if (intent.headers !== undefined) {
+      if (
+        !intent.headers ||
+        typeof intent.headers !== "object" ||
+        Array.isArray(intent.headers)
+      ) {
+        throw badRequest("'intent.headers' must be an object", {
+          code: SANDBOX_ERROR_CODES.EGRESS_INTENT_INVALID,
+          field: "intent.headers",
+        });
+      }
+      // We intentionally accept any string-valued header here. Values are
+      // never echoed back; the redaction pipeline drops them entirely.
+      headers = {};
+      for (const [key, value] of Object.entries(intent.headers as Record<string, unknown>)) {
+        if (typeof value === "string") headers[key] = value;
+      }
+    }
+    let targetKind: EgressIntent["targetKind"] | undefined;
+    if (intent.targetKind !== undefined) {
+      if (intent.targetKind !== "http" && intent.targetKind !== "dns" && intent.targetKind !== "tcp") {
+        throw badRequest("'intent.targetKind' must be one of http|dns|tcp", {
+          code: SANDBOX_ERROR_CODES.EGRESS_INTENT_INVALID,
+          field: "intent.targetKind",
+        });
+      }
+      targetKind = intent.targetKind;
+    }
+
+    let policy: SandboxNetworkPolicy = DEFAULT_SANDBOX_NETWORK_POLICY;
+    if (body.policy !== undefined) {
+      try {
+        policy = parseSandboxNetworkPolicy(body.policy);
+      } catch (err) {
+        if (err instanceof InvalidSandboxNetworkPolicyError) {
+          throw badRequest(`Invalid sandbox network policy: ${err.message}`, {
+            code: SANDBOX_ERROR_CODES.EGRESS_POLICY_INVALID,
+            field: err.field,
+            reason: err.reason,
+          });
+        }
+        throw err;
+      }
+    }
+
+    const intentInput: EgressIntent = {
+      method: intent.method,
+      url: intent.url,
+      headers,
+      targetKind,
+    };
+
+    const decision: EgressDecision = evaluateEgressIntent(intentInput, policy);
+    const audit = summarizeEgressAudit({ intent: intentInput, decision });
+    const redactedIntent: RedactedEgressIntent = audit.redactedIntent;
+
+    // Publish a redacted preview event so subscribers can mirror evaluator
+    // activity (preview-only — never accompanied by real traffic).
+    publishSandboxEvent({
+      companyId,
+      type: "sandbox.egress.preview_evaluated",
+      payload: {
+        decision: decision.decision,
+        reasonCode: decision.reasonCode,
+        classification: decision.classification,
+        protocol: decision.protocol,
+        policyMode: decision.policyMode,
+        matchedAllowlistEntry: decision.matchedAllowlistEntry,
+        previewOnly: true,
+        truth: decision.truth,
+        redactedIntent,
+        message: audit.message,
+      },
+    });
+
+    res.json({
+      ...snapshotMeta(),
+      decision,
+      redactedIntent,
+      audit: { message: audit.message },
+    });
+  });
+
+  /**
    * Defensive guard: any HTTP verb that could be construed as a real
    * mutation must be rejected with PREVIEW_ONLY rather than 404, so
    * callers see a typed refusal instead of guessing whether the endpoint
@@ -317,6 +456,20 @@ export function sandboxRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     throw conflict("Sandbox stop is not exposed by the REST preview surface", {
+      code: SANDBOX_ERROR_CODES.PREVIEW_ONLY,
+    });
+  });
+
+  /**
+   * The egress proxy itself is not exposed by the preview surface. Any
+   * caller that tries to "start" or "stop" a real proxy receives a typed
+   * PREVIEW_ONLY refusal rather than a 404. Use POST /sandbox/preview/egress
+   * to evaluate the policy without sending traffic.
+   */
+  router.all("/companies/:companyId/sandbox/egress/proxy/:action", (req, _res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    throw conflict("Sandbox egress proxy is not exposed by the REST preview surface", {
       code: SANDBOX_ERROR_CODES.PREVIEW_ONLY,
     });
   });

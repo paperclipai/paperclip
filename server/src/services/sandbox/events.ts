@@ -20,6 +20,7 @@ export const SANDBOX_EVENT_TYPES = [
   "sandbox.lease.state_changed",
   "sandbox.lease.released",
   "sandbox.provider.status",
+  "sandbox.egress.preview_evaluated",
 ] as const;
 
 export type SandboxEventType = (typeof SANDBOX_EVENT_TYPES)[number];
