@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { checkDoneGate } from "../contracts/gate.js";
+import { completionContractOverrides } from "@paperclipai/db";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
@@ -4692,6 +4693,78 @@ export function issueRoutes(
     });
 
     res.json({ ok: true });
+  });
+
+  // Contract override endpoint — allows board/CTO to waive a contract check
+  const CTO_AGENT_ID = "7f24e335-716c-43a2-9f5f-061bfc984fb9";
+  const CTO_OVERRIDEABLE_CONTRACTS = new Set(["meta-no-artifact", "bridge-dispatched"]);
+
+  router.post("/issues/:id/contract-override", async (req, res) => {
+    const id = req.params.id as string;
+    const { contract, reason, approver } = req.body as {
+      contract?: string;
+      reason?: string;
+      approver?: string;
+    };
+
+    if (!contract || !reason || !approver) {
+      res.status(400).json({ error: "contract, reason, and approver are required" });
+      return;
+    }
+    if (!["board", "cto"].includes(approver)) {
+      res.status(400).json({ error: "approver must be 'board' or 'cto'" });
+      return;
+    }
+
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    const actor = getActorInfo(req);
+
+    // Authorization: board approver requires board actor; CTO approver requires CTO agent
+    if (approver === "board") {
+      if (req.actor.type !== "board") {
+        res.status(403).json({ error: "approver 'board' requires a board-level actor" });
+        return;
+      }
+    } else if (approver === "cto") {
+      if (req.actor.type !== "agent" || actor.agentId !== CTO_AGENT_ID) {
+        res.status(403).json({ error: "approver 'cto' requires the CTO agent" });
+        return;
+      }
+      if (!CTO_OVERRIDEABLE_CONTRACTS.has(contract)) {
+        res.status(403).json({
+          error: `CTO may only override 'meta-no-artifact' and 'bridge-dispatched', not '${contract}'`,
+        });
+        return;
+      }
+    }
+
+    await db.insert(completionContractOverrides).values({
+      companyId: issue.companyId,
+      issueId: id,
+      contract,
+      reason,
+      approver: approver as "board" | "cto",
+      authorizedByUserId: actor.actorType === "user" ? actor.actorId : null,
+      authorizedByAgentId: actor.agentId ?? null,
+    });
+
+    const comment = await svc.addComment(
+      id,
+      `[contract-override] ${contract} waived.\n- Reason: ${reason}\n- Approver: ${approver}\n- Authorized by: ${actor.agentId ?? actor.actorId}`,
+      {
+        agentId: actor.agentId ?? undefined,
+        userId: actor.actorType === "user" ? actor.actorId : undefined,
+        runId: actor.runId,
+      },
+    );
+
+    res.json({ ok: true, comment: { id: comment.id } });
   });
 
   return router;
