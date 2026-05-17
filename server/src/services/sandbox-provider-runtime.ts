@@ -10,6 +10,12 @@ import {
   DockerSandboxProvider,
 } from "./sandbox/docker-provider.js";
 import {
+  DAYTONA_SANDBOX_PROVIDER_KEY,
+  E2B_SANDBOX_PROVIDER_KEY,
+  DaytonaSandboxProvider,
+  E2BSandboxProvider,
+} from "./sandbox/managed-provider-spikes.js";
+import {
   NULL_SANDBOX_PROVIDER_KEY,
   NullSandboxProvider,
 } from "./sandbox/null-provider.js";
@@ -70,6 +76,12 @@ export {
   SandboxProviderError,
   previewSandboxProviderStatus,
 } from "./sandbox/provider-contract.js";
+export {
+  DAYTONA_SANDBOX_PROVIDER_KEY,
+  E2B_SANDBOX_PROVIDER_KEY,
+  DaytonaSandboxProvider,
+  E2BSandboxProvider,
+} from "./sandbox/managed-provider-spikes.js";
 export {
   NULL_SANDBOX_PROVIDER_KEY,
   NullSandboxProvider,
@@ -254,6 +266,8 @@ const registeredSandboxProviders = new Map<SandboxEnvironmentProvider, SandboxPr
   [NULL_SANDBOX_PROVIDER_KEY, new NullSandboxProvider()],
   ["fake", new FakeSandboxProvider()],
   [DOCKER_SANDBOX_PROVIDER_KEY, new DockerSandboxProvider()],
+  [E2B_SANDBOX_PROVIDER_KEY, new E2BSandboxProvider()],
+  [DAYTONA_SANDBOX_PROVIDER_KEY, new DaytonaSandboxProvider()],
 ]);
 
 /**

@@ -19,7 +19,9 @@ import {
 describe("sandbox provider runtime", () => {
   it("exposes built-in providers through the provider interface", () => {
     expect(listSandboxProviders().map((provider) => provider.provider).sort()).toEqual([
+      "daytona",
       "docker",
+      "e2b",
       "fake",
       "null",
     ]);
