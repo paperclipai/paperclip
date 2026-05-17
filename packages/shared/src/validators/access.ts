@@ -9,11 +9,20 @@ import {
 } from "../constants.js";
 import { optionalAgentAdapterTypeSchema } from "../adapter-type.js";
 
+export const COMPANY_INVITE_TTL_SECONDS_MIN = 60;
+export const COMPANY_INVITE_TTL_SECONDS_MAX = 24 * 60 * 60;
+
 export const createCompanyInviteSchema = z.object({
   allowedJoinTypes: z.enum(INVITE_JOIN_TYPES).default("both"),
   humanRole: z.enum(HUMAN_COMPANY_MEMBERSHIP_ROLES).optional().nullable(),
   defaultsPayload: z.record(z.string(), z.unknown()).optional().nullable(),
   agentMessage: z.string().max(4000).optional().nullable(),
+  ttlSeconds: z
+    .number()
+    .int()
+    .min(COMPANY_INVITE_TTL_SECONDS_MIN)
+    .max(COMPANY_INVITE_TTL_SECONDS_MAX)
+    .optional(),
 });
 
 export type CreateCompanyInvite = z.infer<typeof createCompanyInviteSchema>;

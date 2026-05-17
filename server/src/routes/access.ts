@@ -110,7 +110,14 @@ function createClaimSecret() {
   return `pcp_claim_${randomBytes(24).toString("hex")}`;
 }
 
-export function companyInviteExpiresAt(nowMs: number = Date.now()) {
+export function companyInviteExpiresAt(
+  nowMs: number = Date.now(),
+  ttlSeconds?: number,
+) {
+  if (typeof ttlSeconds === "number" && Number.isFinite(ttlSeconds)) {
+    const ttlMs = ttlSeconds * 1000;
+    return new Date(nowMs + ttlMs);
+  }
   return new Date(nowMs + COMPANY_INVITE_TTL_MS);
 }
 
@@ -2668,6 +2675,20 @@ export function accessRoutes(
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "agent") {
       if (!req.actor.agentId) throw forbidden();
+      // CEO-role bypass for invite creation: mirrors
+      // assertCanGenerateOpenClawInvitePrompt and lets a CEO agent create
+      // company invites without the board granting users:invite explicitly.
+      // Scoped to users:invite to avoid widening other permissions.
+      if (permissionKey === "users:invite") {
+        const actorAgent = await agents.getById(req.actor.agentId);
+        if (
+          actorAgent &&
+          actorAgent.companyId === companyId &&
+          actorAgent.role === "ceo"
+        ) {
+          return;
+        }
+      }
       const allowed = await access.hasPermission(
         companyId,
         "agent",
@@ -2716,6 +2737,7 @@ export function accessRoutes(
     humanRole?: "owner" | "admin" | "operator" | "viewer" | null;
     defaultsPayload?: Record<string, unknown> | null;
     agentMessage?: string | null;
+    ttlSeconds?: number;
   }) {
     const normalizedAgentMessage =
       typeof input.agentMessage === "string"
@@ -2734,7 +2756,7 @@ export function accessRoutes(
         normalizedAgentMessage,
         effectiveHumanRole,
       ),
-      expiresAt: companyInviteExpiresAt(),
+      expiresAt: companyInviteExpiresAt(Date.now(), input.ttlSeconds),
       invitedByUserId: input.req.actor.userId ?? null
     };
 
@@ -2899,7 +2921,8 @@ export function accessRoutes(
           allowedJoinTypes: req.body.allowedJoinTypes,
           humanRole: req.body.humanRole ?? null,
           defaultsPayload: req.body.defaultsPayload ?? null,
-          agentMessage: req.body.agentMessage ?? null
+          agentMessage: req.body.agentMessage ?? null,
+          ttlSeconds: req.body.ttlSeconds,
         });
 
       await logActivity(db, {
