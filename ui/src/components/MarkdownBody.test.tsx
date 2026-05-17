@@ -8,6 +8,7 @@ import {
   buildAgentMentionHref,
   buildIssueReferenceHref,
   buildProjectMentionHref,
+  buildRoutineMentionHref,
   buildSkillMentionHref,
   buildUserMentionHref,
 } from "@paperclipai/shared";
@@ -92,12 +93,12 @@ describe("MarkdownBody", () => {
     expect(html).toContain('alt="Org chart"');
   });
 
-  it("renders user, agent, project, and skill mentions as chips", () => {
+  it("renders user, agent, project, skill, and routine mentions as chips", () => {
     const html = renderToStaticMarkup(
       <QueryClientProvider client={new QueryClient()}>
         <ThemeProvider>
           <MarkdownBody>
-            {`[@Taylor](${buildUserMentionHref("user-123")}) [@CodexCoder](${buildAgentMentionHref("agent-123", "code")}) [@Paperclip App](${buildProjectMentionHref("project-456", "#336699")}) [/release-changelog](${buildSkillMentionHref("skill-789", "release-changelog")})`}
+            {`[@Taylor](${buildUserMentionHref("user-123")}) [@CodexCoder](${buildAgentMentionHref("agent-123", "code")}) [@Paperclip App](${buildProjectMentionHref("project-456", "#336699")}) [/release-changelog](${buildSkillMentionHref("skill-789", "release-changelog")}) [/routine:Weekly review](${buildRoutineMentionHref("routine-123")})`}
           </MarkdownBody>
         </ThemeProvider>
       </QueryClientProvider>,
@@ -113,6 +114,8 @@ describe("MarkdownBody", () => {
     expect(html).toContain("--paperclip-mention-project-color:#336699");
     expect(html).toContain('href="/skills/skill-789"');
     expect(html).toContain('data-mention-kind="skill"');
+    expect(html).toContain('href="/routines/routine-123"');
+    expect(html).toContain('data-mention-kind="routine"');
   });
 
   it("sanitizes unsafe javascript markdown links", () => {

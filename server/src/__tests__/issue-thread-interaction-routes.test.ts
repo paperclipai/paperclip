@@ -106,6 +106,7 @@ function createIssue(overrides: Record<string, unknown> = {}) {
     id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     companyId: "company-1",
     status: "in_progress",
+    workMode: "standard",
     priority: "medium",
     projectId: null,
     goalId: null,
@@ -476,6 +477,57 @@ describe.sequential("issue thread interaction routes", () => {
           interactionId: "interaction-3",
           interactionKind: "request_confirmation",
           interactionStatus: "accepted",
+        }),
+      }),
+    );
+  });
+
+  it("forces a fresh workspace-aware session when accepting a planning confirmation", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ workMode: "planning" }));
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-plan",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee_on_accept",
+        idempotencyKey: "confirmation:issue:plan:revision",
+        sourceCommentId: null,
+        sourceRunId: "run-plan",
+        payload: {
+          version: 1,
+          prompt: "Approve this plan?",
+        },
+        result: {
+          version: 1,
+          outcome: "accepted",
+        },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
+      },
+      createdIssues: [],
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-plan/accept")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        reason: "issue_commented",
+        contextSnapshot: expect.objectContaining({
+          issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          interactionId: "interaction-plan",
+          interactionKind: "request_confirmation",
+          interactionStatus: "accepted",
+          forceFreshSession: true,
+          workspaceRefreshReason: "accepted_plan_confirmation",
         }),
       }),
     );

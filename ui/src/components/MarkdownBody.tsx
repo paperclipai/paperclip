@@ -586,11 +586,13 @@ export function MarkdownBody({
           ? `/projects/${parsed.projectId}`
           : parsed.kind === "issue"
             ? `/issues/${parsed.identifier}`
-          : parsed.kind === "skill"
-            ? `/skills/${parsed.skillId}`
-            : parsed.kind === "user"
-              ? "/company/settings/access"
-            : `/agents/${parsed.agentId}`;
+            : parsed.kind === "skill"
+              ? `/skills/${parsed.skillId}`
+              : parsed.kind === "routine"
+                ? `/routines/${parsed.routineId}`
+                : parsed.kind === "user"
+                  ? "/company/settings/access"
+                  : `/agents/${parsed.agentId}`;
         return (
           <a
             href={targetHref}

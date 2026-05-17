@@ -129,7 +129,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       expect(pendingState.appliedMigrations.at(-2)).toBe("0050_tiresome_gambit.sql");
       expect(pendingState.appliedMigrations.at(-1)).toBe("0051_calm_puff_adder.sql");
       expect(pendingState.pendingMigrations[0]).toBe("0052_stiff_luckman.sql");
-      expect(pendingState.pendingMigrations.at(-1)).toBe("0087_tranquil_the_executioner.sql");
+      expect(pendingState.pendingMigrations.at(-1)).toBe("0088_routine_env_runtime_contract.sql");
 
       await applyPendingMigrations(connectionString);
 
@@ -171,6 +171,23 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
           `,
         );
         expect(projectColumns).toHaveLength(1);
+
+        const routineColumns = await verifySql.unsafe<{ table_name: string; column_name: string }[]>(
+          `
+            SELECT table_name, column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND (
+                (table_name = 'routines' AND column_name = 'env')
+                OR (table_name = 'routine_runs' AND column_name = 'routine_revision_id')
+              )
+            ORDER BY table_name, column_name
+          `,
+        );
+        expect(routineColumns).toEqual([
+          { table_name: "routine_runs", column_name: "routine_revision_id" },
+          { table_name: "routines", column_name: "env" },
+        ]);
       } finally {
         await verifySql.end();
       }
