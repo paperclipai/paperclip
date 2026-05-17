@@ -1,6 +1,7 @@
 export type WorkspaceOperationPhase =
   | "worktree_prepare"
   | "workspace_provision"
+  | "workspace_sync"
   | "workspace_teardown"
   | "worktree_cleanup";
 
