@@ -488,11 +488,6 @@ export function buildStandardPaperclipPayload(
     approvalStatus: wakePayload.approvalStatus,
     apiUrl: paperclipEnv.PAPERCLIP_API_URL ?? null,
   };
-  const structuredWake = parseObject(ctx.context.paperclipWake);
-  if (Object.keys(structuredWake).length > 0) {
-    standardPaperclip.wake = structuredWake;
-  }
-
   return {
     ...templatePaperclip,
     ...standardPaperclip,
@@ -1308,7 +1303,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       await ctx.onLog(
         "stdout",
-        `[openclaw-gateway] connected protocol=${asNumber(asRecord(hello)?.protocol, GATEWAY_MAX_PROTOCOL_VERSION)}\n`,
+        `[openclaw-gateway] connected protocol=${asNumber(asRecord(hello)?.protocol, GATEWAY_MIN_PROTOCOL_VERSION)}\n`,
       );
 
       const acceptedPayload = await client.request<Record<string, unknown>>("agent", agentParams, {

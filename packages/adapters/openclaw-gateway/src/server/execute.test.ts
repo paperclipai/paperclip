@@ -72,10 +72,9 @@ describe("buildStandardPaperclipPayload", () => {
       companyId: "company-1",
       agentId: "agent-1",
       issueId: "issue-1",
-      wake: {
-        reason: "issue_assigned",
-      },
+      wakeReason: "issue_assigned",
     });
+    expect(payload).not.toHaveProperty("wake");
     expect(payload).not.toHaveProperty("workspace");
     expect(payload).not.toHaveProperty("workspaces");
     expect(payload).not.toHaveProperty("workspaceRuntime");
