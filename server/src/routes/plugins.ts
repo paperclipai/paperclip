@@ -1096,7 +1096,7 @@ export function pluginRoutes(
       return;
     }
 
-    const companyId = assertPluginBridgeScope(req, body.companyId);
+    assertPluginBridgeScope(req, body.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1104,7 +1104,7 @@ export function pluginRoutes(
         "getData",
         {
           key: body.key,
-          params: companyId ? { ...(body.params ?? {}), companyId } : body.params ?? {},
+          params: body.params ?? {},
           renderEnvironment: body.renderEnvironment ?? null,
         },
       );
@@ -1177,7 +1177,7 @@ export function pluginRoutes(
       return;
     }
 
-    const companyId = assertPluginBridgeScope(req, body.companyId);
+    assertPluginBridgeScope(req, body.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1185,7 +1185,7 @@ export function pluginRoutes(
         "performAction",
         {
           key: body.key,
-          params: companyId ? { ...(body.params ?? {}), companyId } : body.params ?? {},
+          params: body.params ?? {},
           renderEnvironment: body.renderEnvironment ?? null,
         },
       );
@@ -1258,7 +1258,7 @@ export function pluginRoutes(
       renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
     } | undefined;
 
-    const companyId = assertPluginBridgeScope(req, body?.companyId);
+    assertPluginBridgeScope(req, body?.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1266,7 +1266,7 @@ export function pluginRoutes(
         "getData",
         {
           key,
-          params: companyId ? { ...(body?.params ?? {}), companyId } : body?.params ?? {},
+          params: body?.params ?? {},
           renderEnvironment: body?.renderEnvironment ?? null,
         },
       );
@@ -1335,7 +1335,7 @@ export function pluginRoutes(
       renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
     } | undefined;
 
-    const companyId = assertPluginBridgeScope(req, body?.companyId);
+    assertPluginBridgeScope(req, body?.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1343,7 +1343,7 @@ export function pluginRoutes(
         "performAction",
         {
           key,
-          params: companyId ? { ...(body?.params ?? {}), companyId } : body?.params ?? {},
+          params: body?.params ?? {},
           renderEnvironment: body?.renderEnvironment ?? null,
         },
       );

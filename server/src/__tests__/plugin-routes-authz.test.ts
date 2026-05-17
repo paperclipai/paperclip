@@ -777,6 +777,50 @@ describe.sequential("plugin tool and bridge authz", () => {
     expect(call).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [
+      "legacy action",
+      `/api/plugins/${pluginId}/bridge/action`,
+      { key: "catalog.prepare-company-import" },
+      "catalog.prepare-company-import",
+    ],
+    [
+      "url action",
+      `/api/plugins/${pluginId}/actions/catalog.prepare-company-import`,
+      {},
+      "catalog.prepare-company-import",
+    ],
+  ] as const)("preserves plugin-owned params for %s bridge calls when company-scoped", async (_name, path, body, key) => {
+    readyPlugin();
+    const call = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+    });
+
+    const pluginCompanyId = "repo-9bffb087:aeon-intelligence/COMPANY.md";
+    const params = {
+      companyId: pluginCompanyId,
+      agentPath: "agents/ceo/AGENTS.md",
+    };
+
+    const res = await request(app)
+      .post(path)
+      .send({
+        ...body,
+        companyId: companyA,
+        params,
+      });
+
+    expect(res.status).toBe(200);
+    expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
+      key,
+      params,
+      renderEnvironment: null,
+    });
+  });
+
   it("allows omitted-company bridge calls for instance admins as global plugin actions", async () => {
     readyPlugin();
     const call = vi.fn().mockResolvedValue({ ok: true });
