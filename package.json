@@ -8,6 +8,7 @@
     "dev:once": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts once",
     "dev:list": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-service.ts list",
     "dev:stop": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-service.ts stop",
+    "dev:tray": "pwsh -NoProfile -STA -ExecutionPolicy Bypass -File scripts/paperclip-tray.ps1",
     "dev:nuke": "node scripts/run-kill-dev.mjs",
     "dev:prereqs": "pwsh -NoProfile -File scripts/ensure-paperclip-ports-free.ps1",
     "dev:server": "pnpm --filter @paperclipai/server dev",

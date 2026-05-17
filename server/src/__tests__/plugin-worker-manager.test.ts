@@ -10,6 +10,8 @@ import {
   appendStderrExcerpt,
   createPluginWorkerHandle,
   formatWorkerFailureMessage,
+  sanitizeNodeForkExecArgv,
+  stripNodeImportHooksOnWindows,
 } from "../services/plugin-worker-manager.js";
 
 const FIXTURES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
@@ -27,6 +29,50 @@ const TEST_MANIFEST: PaperclipPluginManifestV1 = {
   capabilities: [],
   entrypoints: { worker: "dist/worker.js" },
 };
+
+describe("sanitizeNodeForkExecArgv", () => {
+  it("leaves file: import specifiers unchanged", () => {
+    const u = "file:///C:/repo/cli/node_modules/tsx/dist/loader.mjs";
+    expect(sanitizeNodeForkExecArgv(["--import", u])).toEqual(["--import", u]);
+  });
+
+  it("converts POSIX absolute import paths to file URLs", () => {
+    if (process.platform === "win32") return;
+    const out = sanitizeNodeForkExecArgv(["--import", "/tmp/loader.mjs"]);
+    expect(out[0]).toBe("--import");
+    expect(out[1]).toMatch(/^file:\/\//);
+    expect(out[1]).toContain("/tmp/loader.mjs");
+  });
+
+  it("converts Windows-style absolute import paths to file URLs", () => {
+    const winPath = "C:\\temp\\tsx-loader.mjs";
+    if (!path.isAbsolute(winPath)) return;
+    const out = sanitizeNodeForkExecArgv(["--import", winPath]);
+    expect(out[0]).toBe("--import");
+    expect(out[1]).toMatch(/^file:\/\//);
+    expect(out[1]).toContain("tsx-loader.mjs");
+  });
+
+  it("supports --import=PATH form", () => {
+    if (process.platform === "win32") {
+      const out = sanitizeNodeForkExecArgv(["--import=C:\\temp\\x.mjs"]);
+      expect(out[0]).toMatch(/^--import=file:\/\//);
+    } else {
+      const out = sanitizeNodeForkExecArgv(["--import=/tmp/x.mjs"]);
+      expect(out[0]).toMatch(/^--import=file:\/\//);
+    }
+  });
+});
+
+describe("stripNodeImportHooksOnWindows", () => {
+  it("removes all --import hooks on win32", () => {
+    if (process.platform !== "win32") return;
+    expect(
+      stripNodeImportHooksOnWindows(["--import", "file:///C:/x.mjs", "--foo"]),
+    ).toEqual(["--foo"]);
+    expect(stripNodeImportHooksOnWindows(["--import=C:\\x.mjs"])).toEqual([]);
+  });
+});
 
 describe("plugin-worker-manager stderr failure context", () => {
   it("appends worker stderr context to failure messages", () => {

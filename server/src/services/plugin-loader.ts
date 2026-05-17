@@ -79,6 +79,21 @@ export const DEFAULT_LOCAL_PLUGIN_DIR = path.join(
 
 const DEV_TSX_LOADER_PATH = path.resolve(__dirname, "../../../cli/node_modules/tsx/dist/loader.mjs");
 
+/**
+ * Only TypeScript entrypoints need the dev tsx loader. Prebuilt `.js` / `.mjs`
+ * workers (typical after `pnpm build` in a plugin package) must run with plain
+ * Node — forcing `tsx` on bundled output can crash the child on Windows/Node 24.
+ */
+function shouldUseDevTsxLoaderForWorker(workerEntrypoint: string): boolean {
+  const normalized = workerEntrypoint.replaceAll("\\", "/").toLowerCase();
+  return (
+    normalized.endsWith(".ts") ||
+    normalized.endsWith(".tsx") ||
+    normalized.endsWith(".mts") ||
+    normalized.endsWith(".cts")
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Discovery result types
 // ---------------------------------------------------------------------------
@@ -1829,9 +1844,25 @@ export function pluginLoader(
       // Repo-local plugin installs can resolve workspace TS sources at runtime
       // (for example @paperclipai/shared exports). Run those workers through
       // the tsx loader so first-party example plugins work in development.
-      if (activePlugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
-        workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
+      //
+      // Windows + Node 20+: tsx/--import remains brittle (ERR_UNSUPPORTED_ESM_URL_SCHEME /
+      // "Received protocol 'c:'" inside the loader pipeline). Skip tsx on win32 and use
+      // prebuilt `dist/worker.js`; run `pnpm build` in the plugin package if needed.
+      const shouldAttachTsxLoader =
+        activePlugin.packagePath &&
+        existsSync(DEV_TSX_LOADER_PATH) &&
+        shouldUseDevTsxLoaderForWorker(workerEntrypoint);
+
+      if (shouldAttachTsxLoader && process.platform !== "win32") {
+        workerOptions.execArgv = ["--import", pathToFileURL(DEV_TSX_LOADER_PATH).href];
+      } else if (shouldAttachTsxLoader && process.platform === "win32") {
+        log.warn(
+          { pluginId, pluginKey, workerEntrypoint },
+          "plugin-loader: Windows skips dev tsx loader for plugin workers; use built dist/worker.js (pnpm --filter <plugin> build)",
+        );
       }
+
+      log.info({ pluginId, pluginKey, workerEntrypoint, execArgv: workerOptions.execArgv ?? [] }, "plugin-loader: worker spawn");
 
       await workerManager.startWorker(pluginId, workerOptions);
       registered.worker = true;

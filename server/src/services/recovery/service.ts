@@ -26,6 +26,7 @@ import { forbidden, notFound } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { redactCurrentUserText } from "../../log-redaction.js";
 import { redactSensitiveText } from "../../redaction.js";
+import { loadConfig } from "../../config.js";
 import { logActivity } from "../activity-log.js";
 import { budgetService } from "../budgets.js";
 import { instanceSettingsService } from "../instance-settings.js";
@@ -385,6 +386,7 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
 }
 
 export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup }) {
+  const { strandedIssueRecoveryEnabled } = loadConfig();
   const issuesSvc = issueService(db);
   const treeControlSvc = issueTreeControlService(db);
   const budgets = budgetService(db);
@@ -1488,6 +1490,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) return null;
+    if (!strandedIssueRecoveryEnabled) return null;
 
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
     if (existing) return existing;
@@ -1731,6 +1734,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         `- Recovery issue: ${issueUiLink({ identifier: recoveryIssue.identifier, id: recoveryIssue.id }, prefix)}`,
         `- Recovery owner: ${agentUiLink(recoveryOwner, prefix)}`,
         "- Next action: the recovery owner should either restore a live execution path or record the manual resolution, then mark the recovery issue done.",
+      ].join("\n");
+    } else if (!strandedIssueRecoveryEnabled) {
+      recoveryLine = [
+        "",
+        "- Recovery issue: none created — automatic stranded-issue recovery is disabled for this server instance (`PAPERCLIP_STRANDED_ISSUE_RECOVERY_ENABLED=false`).",
+        "- Next action: handle this issue manually, or set the env var to `true` and restart the server.",
       ].join("\n");
     } else {
       recoveryLine = [

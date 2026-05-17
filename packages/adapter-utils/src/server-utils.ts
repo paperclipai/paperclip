@@ -1844,7 +1844,7 @@ const MINIMAL_ADAPTER_RUNTIME_SKILL_NOTE_TIERS = new Set([
 /**
  * When true, adapters should emit a **short** Paperclip runtime skill note (root path + keys only).
  * - Resumed session: minimize redundant boilerplate.
- * - Comment wake at low tiers (`read_thread`, `allow_api_context`): minimize.
+ * - Comment wake at low tiers (`receipt_only`, `read_thread`, `allow_api_context`): minimize.
  */
 export function shouldMinimizeAdapterRuntimeSkillNotes(
   context: Record<string, unknown>,

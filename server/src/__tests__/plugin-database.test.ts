@@ -82,6 +82,24 @@ describe("plugin database SQL validation", () => {
       validatePluginMigrationStatement("DO $$ BEGIN END $$;", "plugin_test")
     ).toThrow(/disallowed/i);
   });
+
+  it("allows create index on qualified plugin tables", () => {
+    expect(() =>
+      validatePluginMigrationStatement(
+        "CREATE INDEX IF NOT EXISTS my_idx ON plugin_test.stuff (id)",
+        "plugin_test",
+      )
+    ).not.toThrow();
+  });
+
+  it("allows controlled update migration statements", () => {
+    expect(() =>
+      validatePluginMigrationStatement(
+        "UPDATE plugin_test.rows t SET n = 1 FROM plugin_test.other o WHERE t.id = o.id",
+        "plugin_test",
+      )
+    ).not.toThrow();
+  });
 });
 
 describeEmbeddedPostgres("plugin database namespaces", () => {

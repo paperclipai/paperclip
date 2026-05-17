@@ -19,6 +19,11 @@ const BOARD_ROUTE_ROOTS = new Set([
   "u",
   "design-guide",
   "search",
+  "heartbeat-tasks",
+  "orchestration-injection",
+  "orchestration-gates",
+  /** LLM Wiki 等插件注册的板级页面路径（manifest `routePath: "wiki"`） */
+  "wiki",
 ]);
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "cli-auth", "docs", "instance"]);

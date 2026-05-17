@@ -59,6 +59,10 @@ function mapIssueDocumentRow(
     createdByUserId: row.createdByUserId,
     updatedByAgentId: row.updatedByAgentId,
     updatedByUserId: row.updatedByUserId,
+    // Reserved in IssueDocumentSummary; no DB columns on `documents` yet.
+    lockedAt: null,
+    lockedByAgentId: null,
+    lockedByUserId: null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };

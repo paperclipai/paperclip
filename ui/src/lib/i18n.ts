@@ -246,6 +246,7 @@ export const nav = {
   routines: "例行任务",
   heartbeatTasks: "心跳任务",
   orchestrationInjection: "编排注入",
+  orchestrationGates: "编排闸门",
   goals: "公司目标",
   workspaces: "工作区",
   work: "工作",
@@ -288,6 +289,286 @@ export const heartbeatTasksPage = {
   concurrencySemanticsFootnote:
     "并行上限常为 1。若评论/指派类等唤醒尚在排队或运行中，调度器触发的定时心跳会避让：不新增 timer run，写入 `agent_wakeup_requests` 一条 `skipped`（reason 含 heartbeat.timer_yield），并顺延界面上的「上次心跳」；与 **042** 的 `effectiveTrigger` 同看时间线更清楚。（工单 **043**）",
 } as const;
+
+/** 编排闸门页：只读说明控制面「工程自动化」有哪些闸门，与技能/提示词注入无关。 */
+export const orchestrationGatesPage = {
+  title: "编排闸门",
+  subtitle:
+    "用产品语言说明：系统在「定时巡检、有人互动、花钱/暂停、卡住恢复、自动开单」这些环节里，什么时候会动、动完会怎样；并收录 **API 心跳调度器** 里同一轮会跑的服务端编排（过去单独归在心跳里、没写进本表的那些）。不含智能体技能包、长文提示词拼装——那些请看「编排注入」。",
+  selectCompany: "请选择团队查看编排闸门。",
+  footnote:
+    "具体数值与优先级以你当前运行的版本为准；升级或自建实例后可能微调。本页是说明书，不是实时监控大屏。",
+  notInScope:
+    "不包含：技能怎么打包、说明文档怎么拼进对话、一次运行实际喂给模型多长上下文——请用「编排注入」对照某次运行。",
+  relatedHeartbeatTasks: "心跳任务（多久巡检、开不开）",
+  relatedInjection: "编排注入（这次运行上下文从哪来）",
+  columnComponent: "组件",
+  columnGateScope: "在管什么",
+  columnUi: "上哪调",
+  columnConfigurable: "你能改什么",
+  columnHardcoded: "产品里固定的规则",
+  columnTrigger: "什么时候会触发",
+  columnOutcome: "触发之后会怎样",
+  columnCodeRef: "代码位置（可选）",
+  uiNone: "无单独页面",
+  jumpHeartbeatTasks: "心跳任务",
+  jumpCosts: "成本与预算",
+  jumpAgents: "智能体列表",
+  jumpOrchestrationInjection: "编排注入",
+  jumpIssues: "事务清单",
+  jumpInstanceExperimental: "实例实验设置",
+} as const;
+
+export type OrchestrationGatesTableRow = {
+  id: string;
+  /** 简短中文名，先读它再读 gate */
+  component: string;
+  gate: string;
+  uiLinks: ReadonlyArray<{ to: string; labelKey: keyof Pick<
+    typeof orchestrationGatesPage,
+    "jumpHeartbeatTasks" | "jumpCosts" | "jumpAgents" | "jumpOrchestrationInjection" | "jumpIssues" | "jumpInstanceExperimental"
+  > }>;
+  configurable: string;
+  hardcoded: string;
+  trigger: string;
+  outcome: string;
+  codeRef: string;
+};
+
+export const orchestrationGatesRows: ReadonlyArray<OrchestrationGatesTableRow> = [
+  {
+    id: "server-scheduler",
+    component: "API 心跳调度（实例）",
+    gate: "服务端要不要周期性跑整链恢复、隔多久跑一轮",
+    uiLinks: [{ to: "/heartbeat-tasks", labelKey: "jumpHeartbeatTasks" }],
+    configurable:
+      "实例级环境变量：`HEARTBEAT_SCHEDULER_ENABLED`（默认开）、`HEARTBEAT_SCHEDULER_INTERVAL_MS`（默认约 30s，下限约 10s）；改部署后需重启 API。与下面「智能体心跳任务」页里每人自己的间隔是两层：这里管「服务器多久触发一整轮」，那里管「某个经办隔多久领巡检」。",
+    hardcoded:
+      "关调度则启动时与每个间隔内的整链（孤儿回收、续跑、滞留对账、关系图、无输出、产出审查）均不会由该段代码触发，详见部署的 `HEARTBEAT_SCHEDULER_ENABLED`。同一时钟沿还会触发定时器 tick、例行 tick（与恢复链并列）。",
+    trigger: "API 进程已起且调度开启；每到一轮间隔。",
+    outcome:
+      "按顺序串联多条恢复子项（见本表后续行）；并在同一间隔内并行触发定时器 tick、例行 tick。",
+    codeRef: "server/index.ts · config HEARTBEAT_SCHEDULER_*",
+  },
+  {
+    id: "timer",
+    component: "心跳避退",
+    gate: "定时巡检（避免和人的互动抢跑次）",
+    uiLinks: [{ to: "/heartbeat-tasks", labelKey: "jumpHeartbeatTasks" }],
+    configurable:
+      "心跳任务页：每个智能体「隔多久巡检一次」「要不要开」。若由运维部署：可改「礼让之后推迟多久再测下一次」（默认约 2 分钟），用来让评论/指派触发的跑次先跑完。",
+    hardcoded:
+      "没有该领的当事事务时，定时巡检不会空转多排队。若同一智能体已有「留言/指派等」触发的跑次在排队或跑着，定时那一轮会让路：不额外加一轮仅因定时产生的跑次，你看到的「上次心跳」时间会往后挪；想核对可到编排注入看是否记了「本轮跳过」。",
+    trigger: "到了你在心跳里设的节奏；并且要么没有适合巡检领用的事务，要么已有别的来源的跑次还没结束。",
+    outcome: "本轮通常不新开一次「纯定时」的运行，或把下一次定时往后推，并尽量留下一条可核对的说明。",
+    codeRef: "orchestration-invariants · heartbeat-timer-yield · heartbeat",
+  },
+  {
+    id: "heartbeat-tick-timers",
+    component: "定时器到时",
+    gate: "事务/代理侧登记的 timer 到期 → 入队成运行",
+    uiLinks: [{ to: "/heartbeat-tasks", labelKey: "jumpHeartbeatTasks" }],
+    configurable:
+      "间隔由「API 心跳调度」一轮轮触发；单次 behaviour 在各 agent/事务策略里。不在本页改数值。",
+    hardcoded:
+      "与下面「例行计划」并行：同一 `setInterval` 里先发 `tickTimers`，再发例行 `tickScheduledTriggers`，再跑一整条服务器恢复链。",
+    trigger: "每到一轮「API 心跳调度」间隔；且定时器队列里有到期项。",
+    outcome: "把到期的定时唤醒排进执行队列（仍过预算/暂停等闸门）。",
+    codeRef: "heartbeat.tickTimers · server/index.ts",
+  },
+  {
+    id: "routine-tick-scheduled",
+    component: "例行计划到时",
+    gate: "Routine 里配置的周期/定时触发 → 并入队",
+    uiLinks: [{ to: "/issues", labelKey: "jumpIssues" }],
+    configurable: "具体触发条件在例行/自动化配置里（若版本已露出）；时钟仍依赖实例级调度开关与间隔。",
+    hardcoded: "与「定时器到时」同节拍触发，走的是 `routineService` 管线而非 heartbeat 内的业务恢复子链。",
+    trigger: "每到一轮「API 心跳调度」间隔；且例行侧有待触发项。",
+    outcome: "按例行定义去排队运行或产生唤醒（细节以实现为准）。",
+    codeRef: "routineService.tickScheduledTriggers · server/index.ts",
+  },
+  {
+    id: "orphan-reap",
+    component: "孤儿运行回收",
+    gate: "进程不在了/状态不一致时，把仍标成进行中的跑次收干净",
+    uiLinks: [{ to: "/orchestration-injection", labelKey: "jumpOrchestrationInjection" }],
+    configurable:
+      "周期性扫描可带「多久算陈旧」阈值（默认约 5 分钟，以当前实现为准）；属服务端内部策略，看板无单独页。",
+    hardcoded:
+      "启动时先收一波；调度打开时每个间隔再收。避免界面、成本与真实进程状态脱节。",
+    trigger: "API 启动后首开一轮；之后每到调度间隔。",
+    outcome: "终止或修正孤儿跑次，便于后续「续跑/滞留对账」在干净状态上工作。",
+    codeRef: "heartbeat.reapOrphanedRuns",
+  },
+  {
+    id: "promote-resume-pipeline",
+    component: "重试提升与队列续跑",
+    gate: "到点的 scheduled retry 从等表里捞出来；持久化 queued 的跑次在新进程里接着排",
+    uiLinks: [
+      { to: "/heartbeat-tasks", labelKey: "jumpHeartbeatTasks" },
+      { to: "/issues", labelKey: "jumpIssues" },
+    ],
+    configurable: "单次运行上的「计划重试」时刻多在运行/事务相关界面或记录里；全实例扫描节奏跟「API 心跳调度」间隔。",
+    hardcoded:
+      "顺序上紧挨在孤儿回收之后：先 `promoteDueScheduledRetries` 再 `resumeQueuedRuns`，与你在「预约重试」行里说的「到点再跑」相衔接——这里偏服务端批量推进。",
+    trigger: "每个调度间隔里、在滞留对账之前跑完这一段。",
+    outcome: "该升阶的重试进入可执行态；上次进程崩溃留下的排队跑次尽量接着跑。",
+    codeRef: "heartbeat.promoteDueScheduledRetries · heartbeat.resumeQueuedRuns · server/index.ts",
+  },
+  {
+    id: "stranded-wake-requeue",
+    component: "滞留补救（唤醒入队）",
+    gate: "已分配经办却没有健康执行路径时：先尝试再给经办排唤醒（初派/续跑），不是建「滞留回收」子单",
+    uiLinks: [{ to: "/orchestration-injection", labelKey: "jumpOrchestrationInjection" }],
+    configurable:
+      "团队/事务侧的档位、预算仍 applicable；实例可用 `PAPERCLIP_STRANDED_ISSUE_RECOVERY_ENABLED=false` 关闭**自动建滞留回收子单**（见下行），但本行「排唤醒、重试 dispatch」多数仍会执行，除非另有 pause-hold。",
+    hardcoded:
+      "`reconcileStrandedAssignedIssues`：候选集为「分给了 agent、仍在 todo/in_progress、且当下没有 queued/running 类执行路径」等；会走 `enqueueStrandedIssueRecovery` / `enqueueInitialAssignedTodoDispatch` 一类入队。多次失败后才 escalate blocked 并可能建子单。",
+    trigger: "每个调度间隔，在重试提升/续跑之后执行。",
+    outcome: "经办侧多一次（或多次策略内）自动唤醒；仍失败则见下行「滞留回收」与 blocked。",
+    codeRef: "recovery/reconcileStrandedAssignedIssues · enqueueStrandedIssueRecovery · enqueueInitialAssignedTodoDispatch",
+  },
+  {
+    id: "issue-graph-liveness-reconcile",
+    component: "关系图活性对账",
+    gate: "依赖/阻塞图长期不健康时，按实验设置自动恢复或开单",
+    uiLinks: [{ to: "/instance/settings/experimental", labelKey: "jumpInstanceExperimental" }],
+    configurable:
+      "实例设置 · 实验：是否启用自动恢复、回溯小时数（默认约一天，以页面为准）。",
+    hardcoded:
+      "与滞留对账不同：看的是图结构与 incident，不是「单条分派跑不通」。可在同一轮调度里与滞留链先后执行。",
+    trigger: "每个调度间隔（及启动链）；且实验开关与回溯窗口内存在命中项。",
+    outcome: "可能新建 escalation 类事务并叫醒负责人；或复用已有升级单。",
+    codeRef: "heartbeat.reconcileIssueGraphLiveness · recovery/issue-graph-liveness",
+  },
+  {
+    id: "silent-active-run-watchdog",
+    component: "活跃无输出盯梢",
+    gate: "长时间处于活跃跑次却几乎没有控制台输出 → 分级怀疑并可能开单/评论",
+    uiLinks: [{ to: "/orchestration-injection", labelKey: "jumpOrchestrationInjection" }],
+    configurable: "阈值（约 1h / 4h 等）写在实现里，本页不暴露滑块；若将来实例级可配会出现在设置。",
+    hardcoded:
+      "与「心跳避退」里礼让无关：这里是看输出静默。会去重同类骚扰。",
+    trigger: "每个调度间隔内扫描在跑且命中静默规则的心跳跑次。",
+    outcome: "可能创建或关联「stale active run evaluation」一类工单并叫醒；详见活动日志。",
+    codeRef: "recovery/scanSilentActiveRuns · heartbeat",
+  },
+  {
+    id: "bare-wake",
+    component: "无单不叫",
+    gate: "说不清是哪张单就不叫醒；台账和界面要一致",
+    uiLinks: [{ to: "/orchestration-injection", labelKey: "jumpOrchestrationInjection" }],
+    configurable: "没有单独总开关；一次叫醒必须能落到具体事务上，否则系统不认。",
+    hardcoded:
+      "拒绝「只有一句话、但绑不上任何事务」的即时叫醒，以免智能体在真空中瞎跑。若事务已经关了，仍有一条显示「进行中」的运行，会自动收尾并修正占用，避免界面和成本看上去不对。",
+    trigger: "外部只丢了说明却指不到某条事务；或事务已结束仍挂着进行中的运行。",
+    outcome: "不进入执行队列；或取消那次无效运行并把状态纠正回来。",
+    codeRef: "orchestration-invariants · heartbeat（reconcile）",
+  },
+  {
+    id: "event-wake",
+    component: "互动叫醒",
+    gate: "你在事务上一动，就叫醒经办人（同类会合并）",
+    uiLinks: [
+      { to: "/issues", labelKey: "jumpIssues" },
+      { to: "/orchestration-injection", labelKey: "jumpOrchestrationInjection" },
+    ],
+    configurable:
+      "可按事务调「评论叫醒要带多少上下文」（档位）；未设则用团队默认值。若当前界面没有该字段，只能走接口或等后续版本露出。",
+    hardcoded:
+      "同一次保存里，对同一经办、同一张单的多重叫醒会合成一次，避免连续刷屏跑。评论特别长或 @ 特别多时，会按档位做压缩再叫醒，减轻噪声和费用。",
+    trigger: "留言、改指派、签出、推进执行阶段等你日常在事务里做的操作。",
+    outcome: "一般只触发一轮叫醒，经办智能体可能带着压过的评论摘要继续干活。",
+    codeRef: "routes/issues · comment-wake-tier",
+  },
+  {
+    id: "budget",
+    component: "预算暂停",
+    gate: "钱不够或点了暂停，就先别跑（含个别智能体暂停）",
+    uiLinks: [
+      { to: "/costs", labelKey: "jumpCosts" },
+      { to: "/agents", labelKey: "jumpAgents" },
+    ],
+    configurable: "成本页里公司 / 智能体 / 事务相关的额度与周期；智能体列表里可暂停某个智能体。",
+    hardcoded: "系统按既定顺序检查「是否超支、是否暂停」等门槛，再决定能不能跑。",
+    trigger: "每一次「新的一次运行要排队」或「接着跑」之前。",
+    outcome: "直接拦住，并标明预算不足或已暂停等原因；运行记录里能看到对应说法。",
+    codeRef: "budgets · heartbeat",
+  },
+  {
+    id: "recovery",
+    component: "协作树护栏",
+    gate: "pause-hold 等树级抑制：别在不该自动救济时硬拉长阻塞链",
+    uiLinks: [{ to: "/orchestration-injection", labelKey: "jumpOrchestrationInjection" }],
+    configurable:
+      "若实例对人因暂停、未复机等有 suppress 策略，以活动日志与当前版本为准。",
+    hardcoded:
+      "自动恢复路径会尊重协作树上挂起的暂停/抑制（与滞留对账、关系图活性等子项配合；细节见 `pause-hold-guard`）。不等同于「关系图不健康」单开一行——那见「关系图活性对账」。",
+    trigger: "任一带自动救济的后台路径在动到该事务/子树之前。",
+    outcome: "可能跳过本应以自动方式追加的 wake、blocked 边或回收子单，避免叠床架屋。",
+    codeRef: "recovery/pause-hold-guard · isAutomaticRecoverySuppressedByPauseHold",
+  },
+  {
+    id: "stranded-recovery",
+    component: "滞留回收",
+    gate: "源单分给了经办却长期跑不通时，延伸一张子单给管理人收场",
+    uiLinks: [
+      { to: "/issues", labelKey: "jumpIssues" },
+      { to: "/orchestration-injection", labelKey: "jumpOrchestrationInjection" },
+    ],
+    configurable:
+      "同「滞留补救（唤醒入队）」：pause-hold、预算、`PAPERCLIP_STRANDED_ISSUE_RECOVERY_ENABLED=false`（仅关**建子单**，不一定关整段对账）。",
+    hardcoded:
+      "对同一源事务通常只保留一张进行中的「滞留回收」子单。已是回收子单的，不会再嵌套再建一层。管理人人选从候选链里挑。成功跑完却缺下一步时也可能走同类收尾单（标题或含 missing next step）。",
+    trigger:
+      "在「滞留补救」几轮唤醒仍不能恢复执行路径、或握手/续跑 exhausted 等实现分支命中时；与同轮对账中的入队阶段前后相邻。",
+    outcome:
+      "新建子事务并指派给管理人、系统叫醒；源单可被标 blocked。先于本步发生的自动 wake 见上行「滞留补救（唤醒入队）」。",
+    codeRef: "recovery/service · reconcileStrandedAssignedIssues · ensureStrandedIssueRecoveryIssue",
+  },
+  {
+    id: "productivity",
+    component: "产出纠偏",
+    gate: "觉得产出不对劲，自动开审查单让你拍板",
+    uiLinks: [],
+    configurable: "当前看板没有单独设置页，门槛写在产品里；将来若做成可配，会出现在实例或团队级设置。",
+    hardcoded:
+      "例如：连着多轮跑完却一直没人回评论、单次拖得太久、改动过于频繁等；并且通常在 24 小时内同类自动开单有次数上限，避免单子雪崩。",
+    trigger: "与「关系图活性」「活跃无输出」等同在一轮 API 调度尾部执行；命中产出/节奏异常模式时。",
+    outcome:
+      "生成供你人工判断的审查类事务（与滞留回收单不是同一条链：这里是产出/节奏异常触发的审查），而不是默默替你改业务结论。",
+    codeRef: "heartbeat.reconcileProductivityReviews · productivity-review",
+  },
+  {
+    id: "monitor",
+    component: "执行盯梢",
+    gate: "到点再查一眼（执行监控）",
+    uiLinks: [{ to: "/issues", labelKey: "jumpIssues" }],
+    configurable: "在事务侧维护「下一次何时再检查」（若详情或策略界面、接口有暴露）。若策略允许 **到期新建可见恢复单**，在同一事务或活动日志里能看到对应记录。",
+    hardcoded:
+      "系统自动维护节奏，并让同类自动动作可区分、不重复刷同一件事。监控耗尽、超时等且策略为「建恢复单」时，会新开一张供人收场的事务（与「滞留回收」成因不同：这里偏执行阶段约定）。",
+    trigger: "到了你（或策略）定的「下一次检查」时刻，或你在界面里点「马上再查」（若有）。",
+    outcome:
+      "叫醒经办按约定往下跑；或按策略结束监控。若配置为新建恢复单，你会多一张待处理事务（可在活动里搜监控恢复相关动作）。",
+    codeRef: "issue-execution-policy · heartbeat",
+  },
+  {
+    id: "retry",
+    component: "预约重试",
+    gate: "约好的重试时间到了，或系统发现该补一手",
+    uiLinks: [
+      { to: "/heartbeat-tasks", labelKey: "jumpHeartbeatTasks" },
+      { to: "/issues", labelKey: "jumpIssues" },
+    ],
+    configurable:
+      "某次运行上可以约定「几点再试」「为什么再试」；部分界面在事务里能看或改「计划重试」（视版本）。",
+    hardcoded:
+      "后台按固定节奏扫到期的重试；失败原因有一套固定说法。服务端批量「提升/续跑」见上行「重试提升与队列续跑」，与此处用户可见的预约互为补充。",
+    trigger: "到了预约时间；或需要补偿的情况（例如该落的评论没落下、进程异常退出等）。",
+    outcome: "重新排队再跑一轮；仍然要先过预算和暂停两关。",
+    codeRef: "heartbeat",
+  },
+];
 
 export const orchestrationInjectionPage = {
   title: "编排注入",
@@ -3110,6 +3391,30 @@ export const pluginManagerPage = {
   noPluginsInstalled: "未安装插件",
   noPluginsDesc: "安装插件以扩展功能。",
   noDescription: "未提供描述。",
+
+  /** 内置示例插件：与 `GET /api/plugins/examples` 的 packageName 对齐。 */
+  bundledExampleUi: {
+    "@paperclipai/plugin-hello-world-example": {
+      displayName: "Hello World 小组件（示例）",
+      description: "演示用 UI 插件：在看板里挂一个简单的 Hello World 小组件。",
+    },
+    "@paperclipai/plugin-file-browser-example": {
+      displayName: "文件浏览器（示例）",
+      description: "在项目导航里增加「文件」入口，并在项目详情页里浏览文件。",
+    },
+    "@paperclipai/plugin-kitchen-sink-example": {
+      displayName: "插件能力全景（示例）",
+      description:
+        "大而全的参考实现：展示当前插件 API、前后桥接、各类界面扩展位、任务、Webhook、工具、流式输出，以及受信任本地工作区/进程等演示。",
+    },
+    "@paperclipai/plugin-orchestration-smoke-example": {
+      displayName: "编排冒烟 / 集成验收（示例）",
+      description:
+        "集成与编排方向的验收夹具：插件路由范围、受限库表命名空间、事务编排、文档、唤醒、运行摘要与界面状态等。",
+    },
+  } as const,
+
+  exampleRowBadge: "示例",
   pluginError: "插件错误",
   viewFullError: "查看完整错误",
 

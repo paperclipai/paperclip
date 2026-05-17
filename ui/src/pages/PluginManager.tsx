@@ -31,6 +31,16 @@ import { useToastActions } from "@/context/ToastContext";
 import { cn } from "@/lib/utils";
 import { pluginManagerPage } from "@/lib/i18n";
 
+function localizedBundledExample(example: { packageName: string; displayName: string; description: string }) {
+  const row = (pluginManagerPage.bundledExampleUi as Record<string, { displayName: string; description: string } | undefined>)[
+    example.packageName
+  ];
+  return {
+    displayName: row?.displayName ?? example.displayName,
+    description: row?.description ?? example.description,
+  };
+}
+
 function firstNonEmptyLine(value: string | null | undefined): string | null {
   if (!value) return null;
   const line = value
@@ -240,14 +250,15 @@ export function PluginManager() {
                 installMutation.isPending &&
                 installMutation.variables?.isLocalPath &&
                 installMutation.variables.packageName === example.localPath;
+              const exampleUi = localizedBundledExample(example);
 
               return (
                 <li key={example.packageName}>
                   <div className="flex items-center gap-4 px-4 py-3">
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-medium">{example.displayName}</span>
-                        <Badge variant="outline">Example</Badge>
+                        <span className="font-medium">{exampleUi.displayName}</span>
+                        <Badge variant="outline">{pluginManagerPage.exampleRowBadge}</Badge>
                         {installedPlugin ? (
                           <Badge
                             variant={installedPlugin.status === "ready" ? "default" : "secondary"}
@@ -259,7 +270,7 @@ export function PluginManager() {
                           <Badge variant="secondary">{pluginManagerPage.notInstalled}</Badge>
                         )}
                       </div>
-                      <p className="mt-1 text-sm text-muted-foreground">{example.description}</p>
+                      <p className="mt-1 text-sm text-muted-foreground">{exampleUi.description}</p>
                       <p className="mt-1 text-xs text-muted-foreground">{example.packageName}</p>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
@@ -352,7 +363,7 @@ export function PluginManager() {
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2 text-sm font-medium text-red-700 dark:text-red-300">
                               <AlertTriangle className="h-4 w-4 shrink-0" />
-                              <span>Plugin error</span>
+                              <span>{pluginManagerPage.pluginError}</span>
                             </div>
                             <p
                               className="mt-1 text-sm text-red-700/90 dark:text-red-200/90 break-words"

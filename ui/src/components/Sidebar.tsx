@@ -12,6 +12,7 @@ import {
   Repeat,
   HeartPulse,
   Workflow,
+  Shield,
   GitBranch,
   Settings,
 } from "lucide-react";
@@ -106,6 +107,7 @@ export function Sidebar() {
           <SidebarNavItem to="/routines" label={nav.routines} icon={Repeat} />
           <SidebarNavItem to="/heartbeat-tasks" label={nav.heartbeatTasks} icon={HeartPulse} />
           <SidebarNavItem to="/orchestration-injection" label={nav.orchestrationInjection} icon={Workflow} />
+          <SidebarNavItem to="/orchestration-gates" label={nav.orchestrationGates} icon={Shield} />
           <SidebarNavItem to="/goals" label={nav.goals} icon={Target} />
           {showWorkspacesLink ? (
             <SidebarNavItem to="/workspaces" label={nav.workspaces} icon={GitBranch} />

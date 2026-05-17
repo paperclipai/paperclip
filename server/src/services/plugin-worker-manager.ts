@@ -20,6 +20,8 @@
 
 import { fork, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import {
@@ -49,6 +51,66 @@ import type {
   InitializeParams,
 } from "@paperclipai/plugin-sdk";
 import { logger } from "../middleware/logger.js";
+
+/**
+ * Node 20+ on Windows rejects `node --import` values that are bare paths like
+ * `C:\...\loader.mjs` (ERR_UNSUPPORTED_ESM_URL_SCHEME / Received protocol 'c:').
+ * Normalize absolute filesystem paths to file:// URLs. Idempotent for values
+ * that are already file:/node:/data: URLs.
+ */
+export function sanitizeNodeForkExecArgv(execArgv: string[]): string[] {
+  if (execArgv.length === 0) return execArgv;
+  const out: string[] = [];
+  for (let i = 0; i < execArgv.length; i++) {
+    const arg = execArgv[i]!;
+    if (arg === "--import" && i + 1 < execArgv.length) {
+      const val = execArgv[i + 1]!;
+      out.push(arg, normalizeNodeImportSpecifier(val));
+      i++;
+      continue;
+    }
+    if (arg.startsWith("--import=")) {
+      const val = arg.slice("--import=".length);
+      out.push(`--import=${normalizeNodeImportSpecifier(val)}`);
+      continue;
+    }
+    out.push(arg);
+  }
+  return out;
+}
+
+function normalizeNodeImportSpecifier(spec: string): string {
+  const t = spec.trim();
+  if (t.startsWith("file:") || t.startsWith("node:") || t.startsWith("data:")) {
+    return t;
+  }
+  if (path.isAbsolute(t)) {
+    return pathToFileURL(t).href;
+  }
+  return t;
+}
+
+/**
+ * Plugin workers never need register/tsx import hooks on Windows; leaving any
+ * `--import` risks Node 24 ERR_UNSUPPORTED_ESM_URL_SCHEME (bare `C:\...`).
+ * Strip after {@link sanitizeNodeForkExecArgv} so upstream can't leak hooks.
+ */
+export function stripNodeImportHooksOnWindows(execArgv: string[]): string[] {
+  if (process.platform !== "win32") return execArgv;
+  const out: string[] = [];
+  for (let i = 0; i < execArgv.length; i++) {
+    const arg = execArgv[i]!;
+    if (arg === "--import" && i + 1 < execArgv.length) {
+      i++;
+      continue;
+    }
+    if (arg.startsWith("--import=")) {
+      continue;
+    }
+    out.push(arg);
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -620,7 +682,7 @@ export function createPluginWorkerHandle(
 
     const child = fork(options.entrypointPath, [], {
       stdio: ["pipe", "pipe", "pipe", "ipc"],
-      execArgv: options.execArgv ?? [],
+      execArgv: stripNodeImportHooksOnWindows(sanitizeNodeForkExecArgv(options.execArgv ?? [])),
       env: workerEnv,
       // Don't let the child keep the parent alive
       detached: false,

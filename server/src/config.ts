@@ -114,6 +114,8 @@ export interface Config {
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
+  /** When false, heartbeat does not create `stranded_issue_recovery` child issues (滞留回收子单). */
+  strandedIssueRecoveryEnabled: boolean;
   telemetryEnabled: boolean;
 }
 
@@ -360,6 +362,7 @@ export function loadConfig(): Config {
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
+    strandedIssueRecoveryEnabled: process.env.PAPERCLIP_STRANDED_ISSUE_RECOVERY_ENABLED !== "false",
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
   };
 }

@@ -126,11 +126,17 @@ function extractQualifiedRefs(statement: string): SqlRef[] {
   const patterns = [
     /\b(from|join|references|into|update)\s+"?([A-Za-z_][A-Za-z0-9_]*)"?\."?([A-Za-z_][A-Za-z0-9_]*)"?/gi,
     /\b(alter\s+table|create\s+table|create\s+view|drop\s+table|truncate\s+table)\s+(?:if\s+(?:not\s+)?exists\s+)?"?([A-Za-z_][A-Za-z0-9_]*)"?\."?([A-Za-z_][A-Za-z0-9_]*)"?/gi,
+    /\bcreate\s+(?:unique\s+)?index(?:\s+if\s+not\s+exists)?\s+[A-Za-z0-9_]+\s+on\s+"?([A-Za-z_][A-Za-z0-9_]*)"?\."?([A-Za-z_][A-Za-z0-9_]*)"?/gi,
   ];
 
-  for (const pattern of patterns) {
+  for (let i = 0; i < patterns.length; i += 1) {
+    const pattern = patterns[i]!;
     for (const match of statement.matchAll(pattern)) {
-      refs.push({ keyword: match[1]!.toLowerCase(), schema: match[2]!, table: match[3]! });
+      if (i === 2) {
+        refs.push({ keyword: "on", schema: match[1]!, table: match[2]! });
+      } else {
+        refs.push({ keyword: match[1]!.toLowerCase(), schema: match[2]!, table: match[3]! });
+      }
     }
   }
   return refs;
@@ -182,13 +188,15 @@ export function validatePluginMigrationStatement(
     throw new Error("Destructive plugin migrations are not allowed in Phase 1");
   }
 
-  const ddlAllowed = /^(create|alter|comment)\b/.test(normalized);
-  if (!ddlAllowed) {
-    throw new Error("Plugin migrations may contain DDL statements only");
+  const isCommentStmt = normalized.startsWith("comment ");
+  const isDdl = /^(create|alter|comment)\b/.test(normalized);
+  const isControlledDml = /^(insert|update|with)\b/.test(normalized);
+  if (!isDdl && !isControlledDml && !isCommentStmt) {
+    throw new Error("Plugin migrations may contain DDL or controlled DML (INSERT/UPDATE/WITH) only");
   }
 
   const refs = extractQualifiedRefs(statement);
-  if (refs.length === 0 && !normalized.startsWith("comment ")) {
+  if (refs.length === 0 && !isCommentStmt) {
     throw new Error("Plugin migration objects must use fully qualified schema names");
   }
 

@@ -19,6 +19,7 @@ Paperclip 用于服务器配置的所有环境变量。
 | `PAPERCLIP_DEPLOYMENT_MODE` | `local_trusted` | 运行时模式覆盖 |
 | `PAPERCLIP_DEPLOYMENT_EXPOSURE` | `private` | 当部署模式为 `authenticated` 时的暴露策略 |
 | `PAPERCLIP_API_URL` |（自动派生） | Paperclip API 基础 URL。当在外部设置时（例如，通过 Kubernetes ConfigMap、负载均衡器或反向代理），服务器保留该值，而不是从侦听主机和端口派生。对于面向公共的 URL 与本地绑定地址不同的部署很有用。 |
+| `PAPERCLIP_STRANDED_ISSUE_RECOVERY_ENABLED` | 开启（未设置或非 `false`） | 设为 `false` 时，心跳调度器不再自动创建 `stranded_issue_recovery`（滞留回收子单）。修改后需重启 API 进程生效。 |
 
 ## 密钥
 
