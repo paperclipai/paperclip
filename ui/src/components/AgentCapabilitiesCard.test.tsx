@@ -10,13 +10,16 @@ import capabilityMarketplaceCatalogSource from "./capabilityMarketplaceCatalog.t
 
 const mockGetCapabilities = vi.hoisted(() => vi.fn());
 const mockUpdateCapabilities = vi.hoisted(() => vi.fn());
+const mockPreviewCapabilities = vi.hoisted(() => vi.fn());
 const mockGetCompanyCapabilities = vi.hoisted(() => vi.fn());
 const mockUpdateCompanyCapabilities = vi.hoisted(() => vi.fn());
+const mockPreviewCompanyCapabilities = vi.hoisted(() => vi.fn());
 
 vi.mock("../api/agents", () => ({
   agentsApi: {
     getCapabilities: mockGetCapabilities,
     updateCapabilities: mockUpdateCapabilities,
+    previewCapabilityApply: mockPreviewCapabilities,
   },
 }));
 
@@ -24,6 +27,7 @@ vi.mock("../api/companies", () => ({
   companiesApi: {
     getCapabilities: mockGetCompanyCapabilities,
     updateCapabilities: mockUpdateCompanyCapabilities,
+    previewCapabilityApply: mockPreviewCompanyCapabilities,
   },
 }));
 
@@ -123,8 +127,10 @@ describe("AgentCapabilitiesCard", () => {
     document.body.appendChild(container);
     mockGetCapabilities.mockReset();
     mockUpdateCapabilities.mockReset();
+    mockPreviewCapabilities.mockReset();
     mockGetCompanyCapabilities.mockReset();
     mockUpdateCompanyCapabilities.mockReset();
+    mockPreviewCompanyCapabilities.mockReset();
     // Provide a default resolved value for the company defaults query so that
     // useQuery never returns undefined, which avoids the
     // "Query data cannot be undefined" warning in tests focused on the
@@ -880,6 +886,187 @@ describe("AgentCapabilitiesCard", () => {
     expect(advancedAfter?.value).toContain('"notAnArray": true');
 
     await unmount(root);
+  });
+
+  // LET-336: Apply Preview dry-run tab coverage.
+  describe("Apply Preview tab (LET-140-F dry-run)", () => {
+    function proposal(overrides: Record<string, unknown> = {}) {
+      return {
+        dryRun: true,
+        liveActionPerformed: false,
+        liveApply: false,
+        liveExternalActions: false,
+        scope: "agent_local",
+        companyId: "company-1",
+        agentId: "agent-1",
+        status: "changes_pending_approval",
+        approvalRequiredForLiveApply: true,
+        proposalIdentity: "acp1:abcdef0123456789",
+        generatedAt: "2026-05-17T00:00:00.000Z",
+        copy: {
+          headline: "Apply Preview — dry-run, changes pending approval",
+          dryRunNote:
+            "Dry-run only. No live MCP install, connect, execute, apply, or external action occurred from this preview.",
+          safetyStatement:
+            "Desired-vs-live: this preview describes desired config changes. Live apply, install, connect, execute, and external actions remain approval-gated and are not performed by this endpoint.",
+          rollbackNote: "If an approved live apply later proceeds, rollback consists of saving the prior desired config.",
+        },
+        totals: { additions: 1, removals: 0, updates: 0 },
+        riskSummary: { highRiskCount: 1, mediumRiskCount: 0, lowRiskCount: 0 },
+        mcpServers: {
+          additions: [
+            {
+              id: "paperclip-local",
+              kind: "add",
+              displayName: "Paperclip MCP",
+              transport: "stdio",
+              desiredState: "enabled",
+              liveState: "not_installed",
+              requiredSecretNames: ["PAPERCLIP_API_KEY"],
+              missingSecretNames: ["PAPERCLIP_API_KEY"],
+              hasCommand: true,
+              hasRemoteUrl: false,
+              riskClass: "high",
+              approvalRequiredForLiveApply: true,
+              changedFields: [],
+            },
+          ],
+          removals: [],
+          updates: [],
+        },
+        skillRefs: { additions: [], removals: [] },
+        toolRefs: { additions: [], removals: [] },
+        requiredSecretNames: ["PAPERCLIP_API_KEY"],
+        missingSecretNames: ["PAPERCLIP_API_KEY"],
+        expectedEffects: [
+          'Would record desired MCP server "paperclip-local" (stdio). Live install/connect/execute remains approval-gated; no live action occurs from this preview.',
+        ],
+        inheritedContext: { note: "Per-category inheritance applies.", globalDefaultsAvailable: true },
+        ...overrides,
+      };
+    }
+
+    it("renders an idle CTA, then a sanitized proposal with disabled live-apply CTA on click", async () => {
+      mockGetCapabilities.mockResolvedValue(response());
+      mockGetCompanyCapabilities.mockResolvedValue(response({ scope: "company_default", agentId: null }));
+      mockPreviewCapabilities.mockResolvedValue(proposal());
+
+      const root = renderInClient(container, <AgentCapabilitiesCard agentId="agent-1" companyId="company-1" />);
+      await waitFor(() => expect(container.textContent).toContain("MCP / skills / tools capabilities"));
+
+      await clickTab(container, "Apply Preview");
+      await waitFor(() => expect(container.textContent).toContain("Apply Preview (dry-run)"));
+
+      // Idle state copy must reinforce no-live-action posture.
+      expect(container.textContent).toContain("Run dry-run preview");
+      expect(container.textContent).toContain("Dry-run only");
+      expect(container.textContent).toContain("approval-gated");
+      expect(container.textContent).not.toMatch(/install now|connect now|execute now|apply live/i);
+
+      await clickByText(container, "Run dry-run preview");
+      await waitFor(() => expect(container.textContent).toContain("Apply Preview — dry-run, changes pending approval"));
+
+      // Proposal rendering
+      expect(container.textContent).toContain("acp1:abcdef0123456789");
+      expect(container.textContent).toContain("Paperclip MCP");
+      expect(container.textContent).toContain("PAPERCLIP_API_KEY");
+      expect(container.textContent).toContain("Missing named secrets");
+      expect(container.textContent).toContain("approval required for live apply");
+      // No raw command/url leakage
+      expect(container.textContent).not.toContain("npx -y @paperclipai/mcp-server");
+
+      // Live apply CTA is present but disabled and clearly informational.
+      const liveCta = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((b) =>
+        b.textContent?.includes("Request live apply"),
+      );
+      expect(liveCta).toBeTruthy();
+      expect(liveCta?.disabled).toBe(true);
+      expect(liveCta?.getAttribute("aria-disabled")).toBe("true");
+
+      // Posted payload reaches the API with the current draft.
+      expect(mockPreviewCapabilities).toHaveBeenCalledWith(
+        "agent-1",
+        expect.objectContaining({ draftConfig: expect.objectContaining({ liveApply: false }) }),
+        "company-1",
+      );
+
+      await unmount(root);
+    });
+
+    it("renders no-op state without raw secrets or live-action affordances", async () => {
+      mockGetCapabilities.mockResolvedValue(response());
+      mockGetCompanyCapabilities.mockResolvedValue(response({ scope: "company_default", agentId: null }));
+      mockPreviewCapabilities.mockResolvedValue(
+        proposal({
+          status: "no_op",
+          approvalRequiredForLiveApply: false,
+          totals: { additions: 0, removals: 0, updates: 0 },
+          riskSummary: { highRiskCount: 0, mediumRiskCount: 0, lowRiskCount: 0 },
+          mcpServers: { additions: [], removals: [], updates: [] },
+          requiredSecretNames: [],
+          missingSecretNames: [],
+          expectedEffects: ["Desired config is already aligned with the draft."],
+          copy: {
+            headline: "Apply Preview — dry-run, no changes detected",
+            dryRunNote: "Dry-run only. No live MCP install, connect, execute, apply, or external action occurred.",
+            safetyStatement: "Desired-vs-live: this preview describes desired config only.",
+            rollbackNote: "Rollback note unchanged because no changes are proposed.",
+          },
+        }),
+      );
+
+      const root = renderInClient(container, <AgentCapabilitiesCard agentId="agent-1" companyId="company-1" />);
+      await waitFor(() => expect(container.textContent).toContain("MCP / skills / tools capabilities"));
+
+      await clickTab(container, "Apply Preview");
+      await clickByText(container, "Run dry-run preview");
+
+      await waitFor(() => expect(container.textContent).toContain("Apply Preview — dry-run, no changes detected"));
+      expect(container.textContent).toContain("No-op");
+      expect(container.textContent).not.toContain("MCP additions");
+      expect(container.textContent).not.toContain("MCP removals");
+      expect(container.textContent).not.toMatch(/install now|connect now|execute now|apply live/i);
+
+      await unmount(root);
+    });
+
+    it("renders the error state and keeps copy saying no live action occurred", async () => {
+      mockGetCapabilities.mockResolvedValue(response());
+      mockGetCompanyCapabilities.mockResolvedValue(response({ scope: "company_default", agentId: null }));
+      mockPreviewCapabilities.mockRejectedValue(new Error("preview unavailable"));
+
+      const root = renderInClient(container, <AgentCapabilitiesCard agentId="agent-1" companyId="company-1" />);
+      await waitFor(() => expect(container.textContent).toContain("MCP / skills / tools capabilities"));
+
+      await clickTab(container, "Apply Preview");
+      await clickByText(container, "Run dry-run preview");
+
+      await waitFor(() => expect(container.textContent).toContain("Failed to compute Apply Preview"));
+      expect(container.textContent).toContain("No live action occurred");
+
+      await unmount(root);
+    });
+
+    it("Apply Preview tab on the company defaults card targets the company preview endpoint", async () => {
+      mockGetCompanyCapabilities.mockResolvedValue(response({ scope: "company_default", agentId: null }));
+      mockPreviewCompanyCapabilities.mockResolvedValue(
+        proposal({ scope: "company_default", agentId: null, inheritedContext: null }),
+      );
+
+      const root = renderInClient(container, <CompanyCapabilityDefaultsCard companyId="company-1" />);
+      await waitFor(() => expect(container.textContent).toContain("Global MCP / skills / tools defaults"));
+
+      await clickTab(container, "Apply Preview");
+      await clickByText(container, "Run dry-run preview");
+
+      await waitFor(() => expect(container.textContent).toContain("Apply Preview — dry-run, changes pending approval"));
+      expect(mockPreviewCompanyCapabilities).toHaveBeenCalledWith(
+        "company-1",
+        expect.objectContaining({ draftConfig: expect.objectContaining({ liveApply: false }) }),
+      );
+
+      await unmount(root);
+    });
   });
 
   it("preserves Advanced JSON fallback content when switching tabs", async () => {

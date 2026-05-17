@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
+  AgentCapabilityApplyPreviewProposal,
+  AgentCapabilityApplyPreviewRequestInput,
   AgentCapabilityConfig,
   AgentCapabilityConfigInput,
   AgentCapabilityMcpServer,
@@ -10,6 +12,7 @@ import { agentsApi } from "../api/agents";
 import { companiesApi } from "../api/companies";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
+import { ApplyPreviewPanel } from "./ApplyPreviewPanel";
 import { CapabilityMarketplacePanel } from "./CapabilityMarketplacePanel";
 import { CustomMcpServerForm } from "./CustomMcpServerForm";
 
@@ -162,13 +165,14 @@ function withoutMarketplaceMcpServer(
   };
 }
 
-type WorkspaceTab = "summary" | "marketplace" | "custom" | "effective";
+type WorkspaceTab = "summary" | "marketplace" | "custom" | "effective" | "apply";
 
 const workspaceTabs: { key: WorkspaceTab; label: string }[] = [
   { key: "summary", label: "Summary" },
   { key: "marketplace", label: "Marketplace" },
   { key: "custom", label: "Custom" },
   { key: "effective", label: "Effective Preview" },
+  { key: "apply", label: "Apply Preview" },
 ];
 
 function CapabilitySettingsCard({
@@ -177,6 +181,7 @@ function CapabilitySettingsCard({
   queryKey,
   queryFn,
   updateFn,
+  previewFn,
   enabled = true,
   emptyText = "No desired MCP servers saved yet.",
   effectivePreviewSettings,
@@ -187,6 +192,7 @@ function CapabilitySettingsCard({
   queryKey: readonly unknown[];
   queryFn: () => Promise<AgentCapabilitySettingsResponse>;
   updateFn: (config: AgentCapabilityConfigInput) => Promise<AgentCapabilitySettingsResponse>;
+  previewFn: (body: AgentCapabilityApplyPreviewRequestInput) => Promise<AgentCapabilityApplyPreviewProposal>;
   enabled?: boolean;
   emptyText?: string;
   effectivePreviewSettings?: AgentCapabilitySettingsResponse | undefined;
@@ -430,6 +436,20 @@ function CapabilitySettingsCard({
         </div>
       )}
 
+      {activeTab === "apply" && (
+        <div
+          role="tabpanel"
+          id="capability-workspace-panel-apply"
+          aria-labelledby="capability-workspace-tab-apply"
+        >
+          <ApplyPreviewPanel
+            draftConfig={parsedDraft.config ?? capabilitiesQuery.data?.config}
+            draftError={parsedDraft.error}
+            previewFn={previewFn}
+          />
+        </div>
+      )}
+
       {activeTab === "effective" && (
         <div
           role="tabpanel"
@@ -570,6 +590,7 @@ export function AgentCapabilitiesCard({ agentId, companyId }: { agentId: string;
       queryKey={queryKeys.agents.capabilities(agentId)}
       queryFn={() => agentsApi.getCapabilities(agentId, companyId)}
       updateFn={(config) => agentsApi.updateCapabilities(agentId, config, companyId)}
+      previewFn={(body) => agentsApi.previewCapabilityApply(agentId, body, companyId)}
       enabled={Boolean(agentId)}
       effectivePreviewSettings={companyCapabilityDefaultsQuery.data}
       showEffectivePreview={Boolean(companyId)}
@@ -586,6 +607,7 @@ export function CompanyCapabilityDefaultsCard({ companyId }: { companyId?: strin
       queryKey={queryKeys.companies.capabilities(normalizedCompanyId)}
       queryFn={() => companiesApi.getCapabilities(normalizedCompanyId)}
       updateFn={(config) => companiesApi.updateCapabilities(normalizedCompanyId, config)}
+      previewFn={(body) => companiesApi.previewCapabilityApply(normalizedCompanyId, body)}
       enabled={Boolean(normalizedCompanyId)}
       emptyText="No global desired MCP defaults saved yet."
     />

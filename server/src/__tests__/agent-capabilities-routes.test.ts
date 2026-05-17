@@ -7,6 +7,8 @@ const mockCapabilityService = vi.hoisted(() => ({
   updateCompanyDefaults: vi.fn(),
   getAgentCapabilities: vi.fn(),
   updateAgentCapabilities: vi.fn(),
+  previewApplyForCompany: vi.fn(),
+  previewApplyForAgent: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -194,5 +196,197 @@ describe("agent capability routes", () => {
       .expect(403);
 
     expect(mockCapabilityService.updateAgentCapabilities).not.toHaveBeenCalled();
+  });
+
+  // LET-336 Apply Preview dry-run endpoint coverage.
+  describe("apply-preview (LET-140-F dry-run)", () => {
+    function sanitizedProposal(overrides: Record<string, unknown> = {}) {
+      return {
+        dryRun: true,
+        liveActionPerformed: false,
+        liveApply: false,
+        liveExternalActions: false,
+        scope: "agent_local" as const,
+        companyId: "company-1",
+        agentId: "agent-1",
+        status: "changes_pending_approval" as const,
+        approvalRequiredForLiveApply: true,
+        proposalIdentity: "acp1:deadbeefdeadbeef",
+        generatedAt: "2026-05-17T00:00:00.000Z",
+        copy: {
+          headline: "Apply Preview — dry-run, changes pending approval",
+          dryRunNote:
+            "Dry-run only. No live MCP install, connect, execute, apply, or external action occurred from this preview.",
+          safetyStatement:
+            "Desired-vs-live: this preview describes desired config changes. Live apply, install, connect, execute, and external actions remain approval-gated and are not performed by this endpoint.",
+          rollbackNote: "If an approved live apply later proceeds, rollback consists of saving the prior desired config.",
+        },
+        totals: { additions: 1, removals: 0, updates: 0 },
+        riskSummary: { highRiskCount: 1, mediumRiskCount: 0, lowRiskCount: 0 },
+        mcpServers: {
+          additions: [
+            {
+              id: "paperclip-local",
+              kind: "add",
+              displayName: "Paperclip MCP",
+              transport: "stdio",
+              desiredState: "enabled",
+              liveState: "not_installed",
+              requiredSecretNames: ["PAPERCLIP_API_KEY"],
+              missingSecretNames: ["PAPERCLIP_API_KEY"],
+              hasCommand: true,
+              hasRemoteUrl: false,
+              riskClass: "high",
+              approvalRequiredForLiveApply: true,
+              changedFields: [],
+            },
+          ],
+          removals: [],
+          updates: [],
+        },
+        skillRefs: { additions: [], removals: [] },
+        toolRefs: { additions: [], removals: [] },
+        requiredSecretNames: ["PAPERCLIP_API_KEY"],
+        missingSecretNames: ["PAPERCLIP_API_KEY"],
+        expectedEffects: [
+          'Would record desired MCP server "paperclip-local" (stdio). Live install/connect/execute remains approval-gated; no live action occurs from this preview.',
+        ],
+        inheritedContext: { note: "Per-category inheritance applies.", globalDefaultsAvailable: true },
+        ...overrides,
+      };
+    }
+
+    it("returns sanitized dry-run proposal for company defaults and never performs live action", async () => {
+      const app = await createApp();
+      mockCapabilityService.previewApplyForCompany.mockResolvedValue(
+        sanitizedProposal({ scope: "company_default", agentId: null, inheritedContext: null }),
+      );
+
+      const res = await request(app)
+        .post("/api/companies/company-1/capabilities/apply-preview")
+        .send({
+          draftConfig: {
+            mcpServers: [
+              {
+                id: "paperclip-local",
+                provider: "manual",
+                displayName: "Paperclip MCP",
+                transport: "stdio",
+                command: "npx -y @paperclipai/mcp-server",
+                requiredSecretNames: ["PAPERCLIP_API_KEY"],
+              },
+            ],
+          },
+          availableSecretNames: [],
+        })
+        .expect(200);
+
+      expect(res.body).toMatchObject({
+        dryRun: true,
+        liveActionPerformed: false,
+        approvalRequiredForLiveApply: true,
+        status: "changes_pending_approval",
+      });
+      expect(JSON.stringify(res.body)).not.toContain("npx -y");
+      expect(JSON.stringify(res.body)).not.toContain("@paperclipai/mcp-server");
+      expect(mockCapabilityService.previewApplyForCompany).toHaveBeenCalledWith(
+        "company-1",
+        expect.objectContaining({ mcpServers: expect.any(Array) }),
+        [],
+      );
+      expect(mockCapabilityService.updateCompanyDefaults).not.toHaveBeenCalled();
+      expect(mockLogActivity).not.toHaveBeenCalled();
+    });
+
+    it("returns dry-run proposal for agent-local scope with desired-vs-live wording and missing-secret posture", async () => {
+      const app = await createApp();
+      mockCapabilityService.getAgentCapabilities.mockResolvedValue(capabilityResponse());
+      mockCapabilityService.previewApplyForAgent.mockResolvedValue(sanitizedProposal());
+
+      const res = await request(app)
+        .post("/api/agents/agent-1/capabilities/apply-preview")
+        .send({
+          draftConfig: {
+            mcpServers: [
+              {
+                id: "paperclip-local",
+                provider: "manual",
+                displayName: "Paperclip MCP",
+                transport: "stdio",
+                command: "npx -y @paperclipai/mcp-server",
+                requiredSecretNames: ["PAPERCLIP_API_KEY"],
+              },
+            ],
+          },
+          availableSecretNames: [],
+        })
+        .expect(200);
+
+      expect(res.body.copy.dryRunNote).toMatch(/dry-run/i);
+      expect(res.body.copy.safetyStatement).toMatch(/approval-gated/i);
+      expect(res.body.copy.safetyStatement).toMatch(/desired/i);
+      expect(res.body.copy.safetyStatement).toMatch(/live/i);
+      expect(res.body.missingSecretNames).toContain("PAPERCLIP_API_KEY");
+      expect(res.body.inheritedContext).toMatchObject({ globalDefaultsAvailable: true });
+      expect(mockCapabilityService.previewApplyForAgent).toHaveBeenCalledWith(
+        "agent-1",
+        expect.objectContaining({ mcpServers: expect.any(Array) }),
+        [],
+      );
+      expect(mockCapabilityService.updateAgentCapabilities).not.toHaveBeenCalled();
+      expect(mockLogActivity).not.toHaveBeenCalled();
+    });
+
+    it("supports an empty body to return a deterministic no-op proposal from persisted desired config", async () => {
+      const app = await createApp();
+      mockCapabilityService.getAgentCapabilities.mockResolvedValue(capabilityResponse());
+      mockCapabilityService.previewApplyForAgent.mockResolvedValue(
+        sanitizedProposal({
+          status: "no_op",
+          approvalRequiredForLiveApply: false,
+          totals: { additions: 0, removals: 0, updates: 0 },
+          mcpServers: { additions: [], removals: [], updates: [] },
+          requiredSecretNames: [],
+          missingSecretNames: [],
+          expectedEffects: ["Desired config is already aligned with the draft."],
+        }),
+      );
+
+      const res = await request(app)
+        .post("/api/agents/agent-1/capabilities/apply-preview")
+        .send({})
+        .expect(200);
+
+      expect(res.body.status).toBe("no_op");
+      expect(res.body.approvalRequiredForLiveApply).toBe(false);
+      expect(mockCapabilityService.previewApplyForAgent).toHaveBeenCalledWith(
+        "agent-1",
+        undefined,
+        undefined,
+      );
+    });
+
+    it("rejects raw secret values in draftConfig at the validation layer", async () => {
+      const app = await createApp();
+
+      await request(app)
+        .post("/api/companies/company-1/capabilities/apply-preview")
+        .send({
+          draftConfig: {
+            mcpServers: [
+              {
+                id: "leak",
+                provider: "manual",
+                displayName: "Leak",
+                transport: "stdio",
+                command: "leak --api-key sk_live_should_not_be_here",
+              },
+            ],
+          },
+        })
+        .expect(400);
+
+      expect(mockCapabilityService.previewApplyForCompany).not.toHaveBeenCalled();
+    });
   });
 });

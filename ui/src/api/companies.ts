@@ -7,6 +7,8 @@ import type {
   CompanyPortabilityImportResult,
   CompanyPortabilityPreviewRequest,
   CompanyPortabilityPreviewResult,
+  AgentCapabilityApplyPreviewProposal,
+  AgentCapabilityApplyPreviewRequestInput,
   AgentCapabilityConfigInput,
   AgentCapabilitySettingsResponse,
   UpdateCompanyBranding,
@@ -22,6 +24,11 @@ export const companiesApi = {
     api.get<AgentCapabilitySettingsResponse>(`/companies/${companyId}/capabilities`),
   updateCapabilities: (companyId: string, config: AgentCapabilityConfigInput) =>
     api.patch<AgentCapabilitySettingsResponse>(`/companies/${companyId}/capabilities`, { config }),
+  previewCapabilityApply: (companyId: string, body: AgentCapabilityApplyPreviewRequestInput) =>
+    api.post<AgentCapabilityApplyPreviewProposal>(
+      `/companies/${companyId}/capabilities/apply-preview`,
+      body,
+    ),
   stats: () => api.get<CompanyStats>("/companies/stats"),
   create: (data: {
     name: string;

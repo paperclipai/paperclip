@@ -12,6 +12,8 @@ import type {
   HeartbeatRun,
   Approval,
   AgentConfigRevision,
+  AgentCapabilityApplyPreviewProposal,
+  AgentCapabilityApplyPreviewRequestInput,
   AgentCapabilityConfigInput,
   AgentCapabilitySettingsResponse,
 } from "@paperclipai/shared";
@@ -127,6 +129,15 @@ export const agentsApi = {
     api.get<AgentCapabilitySettingsResponse>(agentPath(id, companyId, "/capabilities")),
   updateCapabilities: (id: string, config: AgentCapabilityConfigInput, companyId?: string) =>
     api.patch<AgentCapabilitySettingsResponse>(agentPath(id, companyId, "/capabilities"), { config }),
+  previewCapabilityApply: (
+    id: string,
+    body: AgentCapabilityApplyPreviewRequestInput,
+    companyId?: string,
+  ) =>
+    api.post<AgentCapabilityApplyPreviewProposal>(
+      agentPath(id, companyId, "/capabilities/apply-preview"),
+      body,
+    ),
   listConfigRevisions: (id: string, companyId?: string) =>
     api.get<AgentConfigRevision[]>(agentPath(id, companyId, "/config-revisions")),
   getConfigRevision: (id: string, revisionId: string, companyId?: string) =>
