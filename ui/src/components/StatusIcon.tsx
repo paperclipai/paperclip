@@ -4,7 +4,6 @@ import { cn } from "../lib/utils";
 import { issueStatusIcon, issueStatusIconDefault } from "../lib/status-colors";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { GlyphRing } from "./NothingAesthetic";
 
 const allStatuses = ["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"];
 
@@ -83,21 +82,10 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
         ? "needs_attention"
         : undefined;
 
-  const tone =
-    status === "blocked" || status === "cancelled"
-      ? "danger"
-      : status === "in_progress" || status === "in_review"
-        ? "live"
-        : status === "done"
-          ? "success"
-          : status === "backlog"
-            ? "muted"
-            : "default";
-
   const circle = (
     <span
       className={cn(
-        "relative inline-flex h-5 w-5 shrink-0 items-center justify-center",
+        "relative inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border",
         colorClass,
         onChange && !showLabel && "cursor-pointer",
         className
@@ -106,12 +94,15 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
       aria-label={ariaLabel}
       title={ariaLabel}
     >
-      <GlyphRing
-        tone={tone}
-        active={status === "in_progress" || status === "in_review"}
-        complete={isDone}
-        broken={status === "blocked" || isAttentionBlocked}
-        className="h-full w-full"
+      <span
+        className={cn(
+          "h-2 w-2 rounded-full bg-current",
+          status === "backlog" && "h-1.5 w-1.5 opacity-45",
+          status === "todo" && "opacity-65",
+          (status === "in_progress" || status === "in_review") && "opacity-90",
+          isDone && "h-2.5 w-2.5",
+          (status === "blocked" || isAttentionBlocked) && "h-2.5 w-2.5",
+        )}
       />
       {isCoveredBlocked && (
         <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-background bg-current" />

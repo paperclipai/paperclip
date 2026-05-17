@@ -1,19 +1,7 @@
 import { cn } from "../lib/utils";
 import { statusBadge, statusBadgeDefault } from "../lib/status-colors";
-import { GlyphRing } from "./NothingAesthetic";
 
 export function StatusBadge({ status }: { status: string }) {
-  const tone =
-    status === "blocked" || status === "failed" || status === "error"
-      ? "danger"
-      : status === "running" || status === "in_progress" || status === "in_review"
-        ? "live"
-        : status === "done" || status === "succeeded"
-          ? "success"
-          : status === "paused" || status === "backlog"
-            ? "muted"
-            : "default";
-
   return (
     <span
       className={cn(
@@ -21,13 +9,7 @@ export function StatusBadge({ status }: { status: string }) {
         statusBadge[status] ?? statusBadgeDefault
       )}
     >
-      <GlyphRing
-        tone={tone}
-        active={tone === "live"}
-        complete={tone === "success"}
-        broken={tone === "danger"}
-        className="h-3.5 w-3.5"
-      />
+      <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden="true" />
       {status.replace(/_/g, " ")}
     </span>
   );
