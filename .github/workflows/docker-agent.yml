@@ -45,6 +45,14 @@ jobs:
           username: ${{ vars.BLOCKCAST_REGISTRY_USERNAME }}
           password: ${{ secrets.BLOCKCAST_REGISTRY_PASSWORD }}
 
+      # Harbor parallel-push login (zot → Harbor cutover bake-in).
+      - name: Login to Harbor
+        uses: docker/login-action@v3
+        with:
+          registry: harbor.blockcast.net
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
@@ -72,7 +80,9 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip-agent
+          images: |
+            ${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip-agent
+            harbor.blockcast.net/paperclip-agent/paperclip-agent
           tags: |
             type=raw,value=sha-${{ steps.sha.outputs.short }}-k8s-vendored
             type=raw,value=latest-k8s-vendored,enable={{is_default_branch}}
