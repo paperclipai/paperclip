@@ -583,8 +583,12 @@ export function OrgChart() {
                 <div className="flex items-center px-4 py-3 gap-3">
                   {/* Agent icon + status dot */}
                   <div className="relative shrink-0">
-                    <div className="w-9 h-9 rounded-full bg-muted flex items-center justify-center">
-                      <AgentIcon icon={agent?.icon} className="h-4.5 w-4.5 text-foreground/70" />
+                    <div className="w-9 h-9 rounded-full bg-muted flex items-center justify-center overflow-hidden">
+                      <AgentIcon
+                        icon={agent?.icon}
+                        avatarUrl={agent?.avatarUrl}
+                        className={agent?.avatarUrl ? "h-full w-full" : "h-4.5 w-4.5 text-foreground/70"}
+                      />
                     </div>
                     <span
                       className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-card"

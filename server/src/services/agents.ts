@@ -2,7 +2,9 @@ import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  assets,
   agents,
+  agentAvatars,
   agentConfigRevisions,
   agentApiKeys,
   agentRuntimeState,
@@ -56,6 +58,8 @@ interface RevisionMetadata {
 interface UpdateAgentOptions {
   recordRevision?: RevisionMetadata;
 }
+
+type AgentPatch = Partial<typeof agents.$inferInsert> & { avatarAssetId?: string | null };
 
 interface AgentShortnameRow {
   id: string;
@@ -221,6 +225,39 @@ export function agentService(db: Db) {
     };
   }
 
+  const agentSelection = {
+    id: agents.id,
+    companyId: agents.companyId,
+    name: agents.name,
+    role: agents.role,
+    title: agents.title,
+    icon: agents.icon,
+    status: agents.status,
+    reportsTo: agents.reportsTo,
+    capabilities: agents.capabilities,
+    adapterType: agents.adapterType,
+    adapterConfig: agents.adapterConfig,
+    runtimeConfig: agents.runtimeConfig,
+    defaultEnvironmentId: agents.defaultEnvironmentId,
+    budgetMonthlyCents: agents.budgetMonthlyCents,
+    spentMonthlyCents: agents.spentMonthlyCents,
+    pauseReason: agents.pauseReason,
+    pausedAt: agents.pausedAt,
+    permissions: agents.permissions,
+    lastHeartbeatAt: agents.lastHeartbeatAt,
+    metadata: agents.metadata,
+    avatarAssetId: agentAvatars.assetId,
+    createdAt: agents.createdAt,
+    updatedAt: agents.updatedAt,
+  };
+
+  function agentQuery(database: Pick<Db, "select">) {
+    return database
+      .select(agentSelection)
+      .from(agents)
+      .leftJoin(agentAvatars, eq(agentAvatars.agentId, agents.id));
+  }
+
   function withUrlKey<T extends { id: string; name: string }>(row: T) {
     return {
       ...row,
@@ -228,9 +265,12 @@ export function agentService(db: Db) {
     };
   }
 
-  function normalizeAgentRow(row: typeof agents.$inferSelect) {
+  function normalizeAgentRow(row: typeof agents.$inferSelect & { avatarAssetId?: string | null }) {
+    const avatarAssetId = row.avatarAssetId ?? null;
     return withUrlKey({
       ...row,
+      avatarAssetId,
+      avatarUrl: avatarAssetId ? `/api/assets/${avatarAssetId}/content` : null,
       permissions: normalizeAgentPermissions(row.permissions, row.role),
     });
   }
@@ -268,9 +308,7 @@ export function agentService(db: Db) {
   }
 
   async function getById(id: string) {
-    const row = await db
-      .select()
-      .from(agents)
+    const row = await agentQuery(db)
       .where(eq(agents.id, id))
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
@@ -326,55 +364,99 @@ export function agentService(db: Db) {
 
   async function updateAgent(
     id: string,
-    data: Partial<typeof agents.$inferInsert>,
+    data: AgentPatch,
     options?: UpdateAgentOptions,
   ) {
     const existing = await getById(id);
     if (!existing) return null;
+    const { avatarAssetId, ...agentPatch } = data;
 
-    if (existing.status === "terminated" && data.status && data.status !== "terminated") {
+    if (existing.status === "terminated" && agentPatch.status && agentPatch.status !== "terminated") {
       throw conflict("Terminated agents cannot be resumed");
     }
     if (
       existing.status === "pending_approval" &&
-      data.status &&
-      data.status !== "pending_approval" &&
-      data.status !== "terminated"
+      agentPatch.status &&
+      agentPatch.status !== "pending_approval" &&
+      agentPatch.status !== "terminated"
     ) {
       throw conflict("Pending approval agents cannot be activated directly");
     }
 
-    if (data.reportsTo !== undefined) {
-      if (data.reportsTo) {
-        await ensureManager(existing.companyId, data.reportsTo);
+    if (agentPatch.reportsTo !== undefined) {
+      if (agentPatch.reportsTo) {
+        await ensureManager(existing.companyId, agentPatch.reportsTo);
       }
-      await assertNoCycle(id, data.reportsTo);
+      await assertNoCycle(id, agentPatch.reportsTo);
     }
 
-    if (data.name !== undefined) {
+    if (agentPatch.name !== undefined) {
       const previousShortname = normalizeAgentUrlKey(existing.name);
-      const nextShortname = normalizeAgentUrlKey(data.name);
+      const nextShortname = normalizeAgentUrlKey(agentPatch.name);
       if (previousShortname !== nextShortname) {
-        await assertCompanyShortnameAvailable(existing.companyId, data.name, { excludeAgentId: id });
+        await assertCompanyShortnameAvailable(existing.companyId, agentPatch.name, { excludeAgentId: id });
       }
     }
 
-    const normalizedPatch = { ...data } as Partial<typeof agents.$inferInsert>;
-    if (data.permissions !== undefined) {
-      const role = (data.role ?? existing.role) as string;
-      normalizedPatch.permissions = normalizeAgentPermissions(data.permissions, role);
+    const normalizedPatch = { ...agentPatch } as Partial<typeof agents.$inferInsert>;
+    if (agentPatch.permissions !== undefined) {
+      const role = (agentPatch.role ?? existing.role) as string;
+      normalizedPatch.permissions = normalizeAgentPermissions(agentPatch.permissions, role);
     }
 
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
     const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
 
-    const updated = await db
-      .update(agents)
-      .set({ ...normalizedPatch, updatedAt: new Date() })
-      .where(eq(agents.id, id))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-    const normalizedUpdated = updated ? normalizeAgentRow(updated) : null;
+    const normalizedUpdated = await db.transaction(async (tx) => {
+      if (avatarAssetId !== undefined && avatarAssetId !== null) {
+        const nextAvatarAsset = await tx
+          .select({ id: assets.id, companyId: assets.companyId })
+          .from(assets)
+          .where(eq(assets.id, avatarAssetId))
+          .then((rows) => rows[0] ?? null);
+        if (!nextAvatarAsset) throw notFound("Avatar asset not found");
+        if (nextAvatarAsset.companyId !== existing.companyId) {
+          throw unprocessable("Avatar asset must belong to the same company");
+        }
+      }
+
+      const updated = await tx
+        .update(agents)
+        .set({ ...normalizedPatch, updatedAt: new Date() })
+        .where(eq(agents.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!updated) return null;
+
+      if (avatarAssetId === null) {
+        await tx.delete(agentAvatars).where(eq(agentAvatars.agentId, id));
+      } else if (avatarAssetId !== undefined) {
+        await tx
+          .insert(agentAvatars)
+          .values({
+            agentId: id,
+            companyId: existing.companyId,
+            assetId: avatarAssetId,
+          })
+          .onConflictDoUpdate({
+            target: agentAvatars.agentId,
+            set: {
+              assetId: avatarAssetId,
+              companyId: existing.companyId,
+              updatedAt: new Date(),
+            },
+          });
+      }
+
+      if (avatarAssetId !== undefined && existing.avatarAssetId && existing.avatarAssetId !== avatarAssetId) {
+        await tx.delete(assets).where(eq(assets.id, existing.avatarAssetId));
+      }
+
+      const row = await agentQuery(tx)
+        .where(eq(agents.id, id))
+        .then((rows) => rows[0] ?? null);
+      return row ? normalizeAgentRow(row) : null;
+    });
 
     if (normalizedUpdated && shouldRecordRevision && beforeConfig) {
       const afterConfig = buildConfigSnapshot(normalizedUpdated);
@@ -403,8 +485,8 @@ export function agentService(db: Db) {
       if (!options?.includeTerminated) {
         conditions.push(ne(agents.status, "terminated"));
       }
-      const rows = await db.select().from(agents).where(and(...conditions));
-      const hydrated = await hydrateAgentSpend(rows);
+      const rowsWithAvatars = await agentQuery(db).where(and(...conditions));
+      const hydrated = await hydrateAgentSpend(rowsWithAvatars);
       return hydrated.map(normalizeAgentRow);
     },
 
@@ -451,7 +533,7 @@ export function agentService(db: Db) {
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
-      return updated ? normalizeAgentRow(updated) : null;
+      return updated ? getById(id) : null;
     },
 
     resume: async (id: string) => {
@@ -473,7 +555,7 @@ export function agentService(db: Db) {
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
-      return updated ? normalizeAgentRow(updated) : null;
+      return updated ? getById(id) : null;
     },
 
     terminate: async (id: string) => {
@@ -522,6 +604,10 @@ export function agentService(db: Db) {
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));
         await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.agentId, id));
+        if (existing.avatarAssetId) {
+          await tx.delete(agentAvatars).where(eq(agentAvatars.agentId, id));
+          await tx.delete(assets).where(eq(assets.id, existing.avatarAssetId));
+        }
         const deleted = await tx
           .delete(agents)
           .where(eq(agents.id, id))
@@ -540,7 +626,7 @@ export function agentService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (updated) {
-        return { agent: normalizeAgentRow(updated), activated: true };
+        return { agent: (await getById(id)) ?? normalizeAgentRow(updated), activated: true };
       }
 
       const existing = await getById(id);
@@ -561,7 +647,7 @@ export function agentService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
 
-      return updated ? normalizeAgentRow(updated) : null;
+      return updated ? getById(id) : null;
     },
 
     listConfigRevisions: async (id: string) =>
