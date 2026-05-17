@@ -319,6 +319,22 @@ export {
 } from "./tool-permissions.js";
 
 export {
+  AGENT_HARNESS_EVENT_ENVELOPE_SCHEMA_VERSION,
+  AGENT_HARNESS_APPROVAL_POSTURES,
+  AGENT_HARNESS_REDACTION_CLASSES,
+  AGENT_HARNESS_RISK_CLASSES,
+  createAgentHarnessEventSchemaRegistry,
+  createAgentHarnessEventEnvelopeSchema,
+  agentHarnessEventEnvelopeSchema,
+  type AgentHarnessApprovalPosture,
+  type AgentHarnessRedactionClass,
+  type AgentHarnessRiskClass,
+  type AgentHarnessEventSchemaDefinition,
+  type AgentHarnessEventSchemaRegistry,
+  type AgentHarnessEventEnvelope,
+} from "./agent-harness-events.js";
+
+export {
   buildLearningPostmortem,
   decideLearningPromotion,
   redactLearningEvidence,
