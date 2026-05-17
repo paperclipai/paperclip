@@ -58,6 +58,20 @@ Deno.test({
     assertEquals(isFastLaneMessage("/about"), true);
     assertEquals(isFastLaneMessage("/ping"), true);
     assertEquals(isFastLaneMessage("/version"), true);
+    assertEquals(isFastLaneMessage("/spend"), true);
+    assertEquals(isFastLaneMessage("/recent"), true);
+    assertEquals(isFastLaneMessage("/company"), true);
+  },
+});
+
+Deno.test({
+  name: "isFastLaneMessage returns true for /help and /commands regardless of trailing content (matches router \b)",
+  fn() {
+    assertEquals(isFastLaneMessage("/help me"), true);
+    assertEquals(isFastLaneMessage("/commands list"), true);
+    assertEquals(isFastLaneMessage("/help "), true);
+    assertEquals(isFastLaneMessage("/commands "), true);
+    assertEquals(isFastLaneMessage("/help!"), true);
   },
 });
 

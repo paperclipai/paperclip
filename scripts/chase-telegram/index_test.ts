@@ -279,6 +279,87 @@ Deno.test({
 });
 
 Deno.test({
+  name: "POST / handles /help via fast lane (no agent, no issue)",
+  async fn() {
+    setupMockFetch();
+    const { handleRequest } = await import("./index.ts");
+    mockFetch(/api\.telegram\.org/, () => mockJsonResponse({ ok: true }));
+    const res = await handleRequest(jsonRequest("POST", "/", {
+      update_id: 1,
+      message: {
+        message_id: 100,
+        from: { id: 12345, first_name: "TestUser" },
+        chat: { id: 67890, type: "private" },
+        text: "/help",
+        date: 1000000,
+      },
+    }));
+    const data = await res.json();
+    assertEquals(data.ok, true);
+    assertEquals(data.fastLane, true);
+    teardownMockFetch();
+  },
+  sanitizeResources: false,
+  sanitizeOps: false,
+});
+
+Deno.test({
+  name: "POST / handles /commands via fast lane (no agent, no issue)",
+  async fn() {
+    setupMockFetch();
+    const { handleRequest } = await import("./index.ts");
+    mockFetch(/api\.telegram\.org/, () => mockJsonResponse({ ok: true }));
+    const res = await handleRequest(jsonRequest("POST", "/", {
+      update_id: 1,
+      message: {
+        message_id: 100,
+        from: { id: 12345, first_name: "TestUser" },
+        chat: { id: 67890, type: "private" },
+        text: "/commands",
+        date: 1000000,
+      },
+    }));
+    const data = await res.json();
+    assertEquals(data.ok, true);
+    assertEquals(data.fastLane, true);
+    teardownMockFetch();
+  },
+  sanitizeResources: false,
+  sanitizeOps: false,
+});
+
+Deno.test({
+  name: "POST / handles /help and /commands before agent routing even when agent is configured",
+  async fn() {
+    setupMockFetch();
+    const { handleRequest } = await import("./index.ts");
+    // Set a low-priority mock for agent wakeup — should never be reached
+    // because fast-lane intercepts /help and /commands first
+    mockFetch(/paperclip\.avva\.aero/, () =>
+      mockJsonResponse({ status: "accepted" }),
+    );
+    mockFetch(/api\.telegram\.org/, () => mockJsonResponse({ ok: true }));
+    const res = await handleRequest(jsonRequest("POST", "/", {
+      update_id: 1,
+      message: {
+        message_id: 100,
+        from: { id: 12345, first_name: "TestUser" },
+        chat: { id: 67890, type: "private" },
+        text: "/help",
+        date: 1000000,
+      },
+    }));
+    const data = await res.json();
+    assertEquals(data.ok, true);
+    assertEquals(data.fastLane, true);
+    // fastLane: true means agent routing was NOT invoked
+    teardownMockFetch();
+  },
+  sanitizeResources: false,
+  sanitizeOps: false,
+});
+
+Deno.test({
   name: "POST / handles API error gracefully",
   async fn() {
     setupMockFetch();
