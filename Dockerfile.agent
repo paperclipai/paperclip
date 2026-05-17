@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.20
+# syntax=registry.blockcast.net/dockerfile:1.20
 #
 # paperclip-agent base image — extends the paperclip server image with the
 # build/devops toolchain that technical agents need to actually do work in
