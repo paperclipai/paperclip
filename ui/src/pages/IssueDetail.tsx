@@ -3097,11 +3097,7 @@ export function IssueDetail() {
     const files = evt.target.files;
     if (!files || files.length === 0) return;
     for (const file of Array.from(files)) {
-      if (isMarkdownFile(file)) {
-        await importMarkdownDocument.mutateAsync(file);
-      } else {
-        await uploadAttachment.mutateAsync(file);
-      }
+      await uploadAttachment.mutateAsync(file);
     }
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -3114,11 +3110,7 @@ export function IssueDetail() {
     const files = evt.dataTransfer.files;
     if (!files || files.length === 0) return;
     for (const file of Array.from(files)) {
-      if (isMarkdownFile(file)) {
-        await importMarkdownDocument.mutateAsync(file);
-      } else {
-        await uploadAttachment.mutateAsync(file);
-      }
+      await uploadAttachment.mutateAsync(file);
     }
   };
 
@@ -3194,14 +3186,14 @@ export function IssueDetail() {
         variant="outline"
         size="sm"
         onClick={() => fileInputRef.current?.click()}
-        disabled={uploadAttachment.isPending || importMarkdownDocument.isPending}
+        disabled={uploadAttachment.isPending}
         className={cn(
           "shadow-none",
           attachmentDragActive && "border-primary bg-primary/5",
         )}
       >
         <Paperclip className="h-3.5 w-3.5 mr-1.5" />
-        {uploadAttachment.isPending || importMarkdownDocument.isPending ? "Uploading..." : (
+        {uploadAttachment.isPending ? "Uploading..." : (
           <>
             <span className="hidden sm:inline">Upload attachment</span>
             <span className="sm:hidden">Upload</span>

@@ -6,6 +6,7 @@ import {
   matchesContentType,
   normalizeContentType,
   parseAllowedTypes,
+  inferContentTypeFromFilename,
 } from "../attachment-types.js";
 
 describe("parseAllowedTypes", () => {
@@ -110,16 +111,46 @@ describe("normalizeContentType", () => {
   });
 });
 
+describe("inferContentTypeFromFilename", () => {
+  it("infers markdown content type", () => {
+    expect(inferContentTypeFromFilename("test.md", "application/octet-stream")).toBe("text/markdown");
+    expect(inferContentTypeFromFilename("test.markdown", "application/octet-stream")).toBe("text/markdown");
+  });
+
+  it("infers other text content types", () => {
+    expect(inferContentTypeFromFilename("test.txt", "application/octet-stream")).toBe("text/plain");
+    expect(inferContentTypeFromFilename("test.json", "application/octet-stream")).toBe("application/json");
+    expect(inferContentTypeFromFilename("test.csv", "application/octet-stream")).toBe("text/csv");
+    expect(inferContentTypeFromFilename("test.html", "application/octet-stream")).toBe("text/html");
+  });
+
+  it("returns fallback for unknown extensions", () => {
+    expect(inferContentTypeFromFilename("test.unknown", "application/octet-stream")).toBe("application/octet-stream");
+    expect(inferContentTypeFromFilename("test.zip", "text/plain")).toBe("text/plain");
+  });
+
+  it("returns fallback when filename is null", () => {
+    expect(inferContentTypeFromFilename(null, "text/plain")).toBe("text/plain");
+  });
+});
+
 describe("isInlineAttachmentContentType", () => {
   it("allows the configured inline-safe types", () => {
-    for (const contentType of ["image/png", "image/svg+xml", "application/pdf", "text/plain"]) {
+    for (const contentType of [
+      "image/png", 
+      "image/svg+xml", 
+      "application/pdf", 
+      "text/plain",
+      "text/markdown",
+      "application/json",
+      "text/csv",
+      "text/html"
+    ]) {
       expect(isInlineAttachmentContentType(contentType)).toBe(true);
     }
   });
 
   it("rejects potentially unsafe or binary download types", () => {
-    expect(INLINE_ATTACHMENT_TYPES).not.toContain("text/html");
-    expect(isInlineAttachmentContentType("text/html")).toBe(false);
     expect(isInlineAttachmentContentType("application/zip")).toBe(false);
   });
 });
