@@ -11,6 +11,7 @@ import {
   executionWorkspaces,
   heartbeatRuns,
   issueComments,
+  issueRecoveryActions,
   issueRelations,
   issueTreeHolds,
   issues,
@@ -292,7 +293,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(result.escalationsCreated).toBe(0);
   });
 
-  it("creates one bounded escalation for an assigned backlog blocker leaf", async () => {
+  it("opens one source-scoped recovery action for an assigned backlog blocker leaf", async () => {
     await enableAutoRecovery();
     const { companyId, coderId, blockedIssueId, blockerIssueId } = await seedBlockedChain({
       blockerStatus: "backlog",
@@ -305,34 +306,211 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
 
     expect(first.findings).toBe(1);
     expect(first.escalationsCreated).toBe(1);
+    expect(first.sourceRecoveryActionsOpened).toBe(1);
     expect(second.findings).toBe(0);
     expect(second.escalationsCreated).toBe(0);
+    expect(second.existingSourceRecoveryActions).toBe(0);
 
     const escalations = await db
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
-    expect(escalations).toHaveLength(1);
-    expect(escalations[0]).toMatchObject({
-      parentId: blockerIssueId,
-      assigneeAgentId: coderId,
-      originId: [
-        "harness_liveness",
-        companyId,
-        blockedIssueId,
-        "blocked_by_assigned_backlog_issue",
-        blockerIssueId,
-      ].join(":"),
-      originFingerprint: [
+    expect(escalations).toHaveLength(0);
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, blockerIssueId)));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      sourceIssueId: blockerIssueId,
+      recoveryIssueId: null,
+      kind: "issue_graph_liveness",
+      cause: "issue_graph_liveness",
+      ownerAgentId: coderId,
+      fingerprint: [
         "harness_liveness_leaf",
         companyId,
         "blocked_by_assigned_backlog_issue",
         blockerIssueId,
       ].join(":"),
     });
+    expect(actions[0]?.evidence).toMatchObject({
+      incidentKey: [
+        "harness_liveness",
+        companyId,
+        blockedIssueId,
+        "blocked_by_assigned_backlog_issue",
+        blockerIssueId,
+      ].join(":"),
+      selectedOwnerAgentId: coderId,
+    });
   });
 
-  it("creates one manager escalation, preserves blockers, and records owner selection", async () => {
+  it("opens source-scoped recovery for a stalled in_review leaf without creating a synthetic issue", async () => {
+    await enableAutoRecovery();
+    const { companyId, coderId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    await db
+      .update(issues)
+      .set({
+        status: "in_review",
+        assigneeAgentId: coderId,
+        executionState: null,
+      })
+      .where(eq(issues.id, blockerIssueId));
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(1);
+    expect(result.escalationsCreated).toBe(1);
+    expect(result.sourceRecoveryActionsOpened).toBe(1);
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(0);
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, blockerIssueId)));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      companyId,
+      sourceIssueId: blockerIssueId,
+      recoveryIssueId: null,
+      kind: "issue_graph_liveness",
+      cause: "issue_graph_liveness",
+      ownerAgentId: coderId,
+      fingerprint: [
+        "harness_liveness_leaf",
+        companyId,
+        "in_review_without_action_path",
+        blockerIssueId,
+      ].join(":"),
+    });
+    expect(actions[0]?.evidence).toMatchObject({
+      incidentKey: [
+        "harness_liveness",
+        companyId,
+        blockedIssueId,
+        "in_review_without_action_path",
+        blockerIssueId,
+      ].join(":"),
+      selectedOwnerAgentId: coderId,
+    });
+  });
+
+  it("opens source-scoped recovery for an invalid review participant", async () => {
+    await enableAutoRecovery();
+    const { companyId, coderId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    await db
+      .update(issues)
+      .set({
+        status: "in_review",
+        assigneeAgentId: coderId,
+        executionState: {
+          status: "pending",
+          currentStageId: "review-1",
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: "00000000-0000-0000-0000-000000000404" },
+          returnAssignee: { type: "agent", agentId: coderId },
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+      })
+      .where(eq(issues.id, blockerIssueId));
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(1);
+    expect(result.escalationsCreated).toBe(1);
+    expect(result.sourceRecoveryActionsOpened).toBe(1);
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(0);
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, blockerIssueId)));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      companyId,
+      sourceIssueId: blockerIssueId,
+      recoveryIssueId: null,
+      kind: "issue_graph_liveness",
+      cause: "issue_graph_liveness",
+      ownerAgentId: coderId,
+      fingerprint: [
+        "harness_liveness_leaf",
+        companyId,
+        "invalid_review_participant",
+        blockerIssueId,
+      ].join(":"),
+    });
+    expect(actions[0]?.evidence).toMatchObject({
+      incidentKey: [
+        "harness_liveness",
+        companyId,
+        blockedIssueId,
+        "invalid_review_participant",
+        "00000000-0000-0000-0000-000000000404",
+      ].join(":"),
+      selectedOwnerAgentId: coderId,
+    });
+  });
+
+  it("opens source-scoped recovery for a cancelled blocker edge", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain({
+      blockerStatus: "cancelled",
+      blockerAssigneeAgentId: "coder",
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(1);
+    expect(result.escalationsCreated).toBe(1);
+    expect(result.sourceRecoveryActionsOpened).toBe(1);
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(0);
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, blockerIssueId)));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      companyId,
+      sourceIssueId: blockerIssueId,
+      recoveryIssueId: null,
+      kind: "issue_graph_liveness",
+      cause: "issue_graph_liveness",
+      ownerAgentId: managerId,
+      fingerprint: [
+        "harness_liveness_leaf",
+        companyId,
+        "blocked_by_cancelled_issue",
+        blockerIssueId,
+      ].join(":"),
+    });
+    expect(actions[0]?.evidence).toMatchObject({
+      incidentKey: [
+        "harness_liveness",
+        companyId,
+        blockedIssueId,
+        "blocked_by_cancelled_issue",
+        blockerIssueId,
+      ].join(":"),
+      selectedOwnerAgentId: managerId,
+    });
+  });
+
+  it("opens one manager-owned recovery action, preserves blockers, and records owner selection", async () => {
     await enableAutoRecovery();
     const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
     const heartbeat = heartbeatService(db);
@@ -340,12 +518,13 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     const first = await heartbeat.reconcileIssueGraphLiveness();
 
     expect(first.escalationsCreated).toBe(1);
+    expect(first.sourceRecoveryActionsOpened).toBe(1);
     const [sourceAfterFirst] = await db
       .select({ updatedAt: issues.updatedAt })
       .from(issues)
       .where(eq(issues.id, blockedIssueId));
     const eventsAfterFirst = await db.select().from(activityLog).where(eq(activityLog.companyId, companyId));
-    expect(eventsAfterFirst.filter((event) => event.action === "issue.blockers.updated")).toHaveLength(1);
+    expect(eventsAfterFirst.filter((event) => event.action === "issue.blockers.updated")).toHaveLength(0);
 
     const second = await heartbeat.reconcileIssueGraphLiveness();
 
@@ -365,13 +544,19 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
           eq(issues.originKind, "harness_liveness_escalation"),
         ),
       );
-    expect(escalations).toHaveLength(1);
-    expect(escalations[0]).toMatchObject({
-      parentId: blockerIssueId,
-      assigneeAgentId: managerId,
-      assigneeAdapterOverrides: { modelProfile: "cheap" },
-      status: expect.stringMatching(/^(todo|in_progress|done)$/),
-      originFingerprint: [
+    expect(escalations).toHaveLength(0);
+
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, blockerIssueId)));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      kind: "issue_graph_liveness",
+      cause: "issue_graph_liveness",
+      status: "active",
+      ownerAgentId: managerId,
+      fingerprint: [
         "harness_liveness_leaf",
         companyId,
         "blocked_by_unassigned_issue",
@@ -384,31 +569,102 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .from(issueRelations)
       .where(eq(issueRelations.relatedIssueId, blockedIssueId));
     expect(blockers.map((row) => row.blockerIssueId).sort()).toEqual(
-      [blockerIssueId, escalations[0]!.id].sort(),
+      [blockerIssueId].sort(),
     );
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, blockedIssueId));
-    expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("harness-level liveness incident");
-    expect(comments[0]?.body).toContain(escalations[0]?.identifier ?? escalations[0]!.id);
+    expect(comments).toHaveLength(0);
 
     const events = await db.select().from(activityLog).where(eq(activityLog.companyId, companyId));
-    const createdEvent = events.find((event) => event.action === "issue.harness_liveness_escalation_created");
+    const createdEvent = events.find((event) => event.action === "issue.recovery_action_opened");
     expect(createdEvent).toBeTruthy();
     expect(createdEvent?.details).toMatchObject({
+      recoveryActionId: actions[0]?.id,
       recoveryIssueId: blockerIssueId,
       ownerSelection: {
         selectedAgentId: managerId,
         selectedReason: "root_agent",
         selectedSourceIssueId: blockerIssueId,
       },
-      workspaceSelection: {
-        reuseRecoveryExecutionWorkspace: false,
-        inheritedExecutionWorkspaceFromIssueId: null,
-        projectWorkspaceSourceIssueId: blockerIssueId,
-      },
     });
-    expect(events.filter((event) => event.action === "issue.blockers.updated")).toHaveLength(1);
+    expect(events.filter((event) => event.action === "issue.blockers.updated")).toHaveLength(0);
+  });
+
+  it("migrates an existing legacy liveness escalation to source-scoped recovery before removing its blocker", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const legacyRecoveryIssueId = randomUUID();
+    const incidentKey = [
+      "harness_liveness",
+      companyId,
+      blockedIssueId,
+      "blocked_by_unassigned_issue",
+      blockerIssueId,
+    ].join(":");
+    const leafFingerprint = [
+      "harness_liveness_leaf",
+      companyId,
+      "blocked_by_unassigned_issue",
+      blockerIssueId,
+    ].join(":");
+    await db.insert(issues).values({
+      id: legacyRecoveryIssueId,
+      companyId,
+      title: "Legacy liveness escalation",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: managerId,
+      issueNumber: 3,
+      identifier: `LEGACY-${legacyRecoveryIssueId.slice(0, 8)}`,
+      originKind: "harness_liveness_escalation",
+      originId: incidentKey,
+      originFingerprint: leafFingerprint,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: legacyRecoveryIssueId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.reconcileIssueGraphLiveness();
+    const second = await heartbeat.reconcileIssueGraphLiveness();
+
+    expect(first.findings).toBe(1);
+    expect(first.sourceRecoveryActionsOpened).toBe(1);
+    expect(first.obsoleteRecoveriesRetired).toBe(1);
+    expect(first.obsoleteRecoveryBlockerRelationsRemoved).toBe(1);
+    expect(second.findings).toBe(0);
+    expect(second.sourceRecoveryActionsOpened).toBe(0);
+    expect(second.existingSourceRecoveryActions).toBe(0);
+
+    const legacyRecoveries = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(legacyRecoveries).toHaveLength(1);
+    expect(legacyRecoveries[0]?.id).toBe(legacyRecoveryIssueId);
+    expect(legacyRecoveries[0]?.status).toBe("cancelled");
+
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, blockerIssueId)));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      kind: "issue_graph_liveness",
+      cause: "issue_graph_liveness",
+      status: "active",
+      ownerAgentId: managerId,
+      fingerprint: leafFingerprint,
+    });
+
+    const blockers = await db
+      .select({ blockerIssueId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(eq(issueRelations.relatedIssueId, blockedIssueId));
+    expect(blockers.map((row) => row.blockerIssueId).sort()).toEqual([blockerIssueId].sort());
   });
 
   it("skips budget-blocked direct owners and assigns recovery to the manager fallback", async () => {
@@ -448,25 +704,39 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     const result = await heartbeatService(db).reconcileIssueGraphLiveness();
 
     expect(result.escalationsCreated).toBe(1);
+    expect(result.sourceRecoveryActionsOpened).toBe(1);
     const escalations = await db
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
-    expect(escalations).toHaveLength(1);
-    expect(escalations[0]).toMatchObject({
-      parentId: blockerIssueId,
-      assigneeAgentId: managerId,
-      originId: [
+    expect(escalations).toHaveLength(0);
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, blockerIssueId)));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      ownerAgentId: managerId,
+      fingerprint: [
+        "harness_liveness_leaf",
+        companyId,
+        "in_review_without_action_path",
+        blockerIssueId,
+      ].join(":"),
+    });
+    expect(actions[0]?.evidence).toMatchObject({
+      incidentKey: [
         "harness_liveness",
         companyId,
         blockedIssueId,
         "in_review_without_action_path",
         blockerIssueId,
       ].join(":"),
+      budgetBlockedCandidateAgentIds: [coderId],
     });
 
     const events = await db.select().from(activityLog).where(eq(activityLog.companyId, companyId));
-    const createdEvent = events.find((event) => event.action === "issue.harness_liveness_escalation_created");
+    const createdEvent = events.find((event) => event.action === "issue.recovery_action_opened");
     expect(createdEvent?.details).toMatchObject({
       ownerSelection: {
         selectedAgentId: managerId,
@@ -476,7 +746,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     });
   });
 
-  it("parents recovery under the leaf blocker without inheriting dependent or blocker execution state for manager-owned recovery", async () => {
+  it("opens leaf recovery without creating issue-backed workspace state for manager-owned recovery", async () => {
     await enableAutoRecovery();
     await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
 
@@ -606,23 +876,106 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     const result = await heartbeatService(db).reconcileIssueGraphLiveness();
 
     expect(result.escalationsCreated).toBe(1);
+    expect(result.sourceRecoveryActionsOpened).toBe(1);
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(0);
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, blockerIssueId)));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      recoveryIssueId: null,
+      ownerAgentId: managerId,
+    });
+    expect(actions[0]?.evidence).toMatchObject({
+      recoveryIssue: {
+        id: blockerIssueId,
+        status: "todo",
+      },
+    });
+  });
+
+  it("uses issue-backed graph-liveness fallback when the leaf already has a different active recovery action", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: blockerIssueId,
+      kind: "manual_recovery",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "operator_request",
+      fingerprint: "manual-recovery:blocks-source-scoped-graph-action",
+      evidence: { reason: "manual action already owns the source issue surface" },
+      nextAction: "Finish the operator-requested recovery first.",
+      wakePolicy: { type: "wake_owner" },
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(1);
+    expect(result.escalationsCreated).toBe(1);
+    expect(result.sourceRecoveryActionsOpened).toBe(0);
+    expect(result.escalationIssueIds).toHaveLength(1);
+    const escalationId = result.escalationIssueIds[0]!;
     const escalations = await db
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
     expect(escalations).toHaveLength(1);
     expect(escalations[0]).toMatchObject({
+      id: escalationId,
+      companyId,
       parentId: blockerIssueId,
-      projectId: blockerProjectId,
-      projectWorkspaceId: blockerProjectWorkspaceId,
-      executionWorkspaceId: null,
-      executionWorkspacePreference: null,
       assigneeAgentId: managerId,
-      assigneeAdapterOverrides: { modelProfile: "cheap" },
+      originId: [
+        "harness_liveness",
+        companyId,
+        blockedIssueId,
+        "blocked_by_unassigned_issue",
+        blockerIssueId,
+      ].join(":"),
+      originFingerprint: [
+        "harness_liveness_leaf",
+        companyId,
+        "blocked_by_unassigned_issue",
+        blockerIssueId,
+      ].join(":"),
     });
+    const graphActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.sourceIssueId, blockerIssueId),
+          eq(issueRecoveryActions.kind, "issue_graph_liveness"),
+        ),
+      );
+    expect(graphActions).toHaveLength(0);
+    const blockers = await db
+      .select({ blockerIssueId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(eq(issueRelations.relatedIssueId, blockedIssueId));
+    expect(blockers.map((row) => row.blockerIssueId).sort()).toEqual(
+      [blockerIssueId, escalationId].sort(),
+    );
+    const events = await db.select().from(activityLog).where(eq(activityLog.companyId, companyId));
+    expect(events.find((event) => event.action === "issue.harness_liveness_escalation_created")?.details)
+      .toMatchObject({
+        fallbackReason: "source_has_different_active_recovery_action",
+        sourceIssueId: blockedIssueId,
+        recoveryIssueId: blockerIssueId,
+        escalationIssueId: escalationId,
+      });
   });
 
-  it("reuses one open recovery issue for multiple dependents with the same leaf blocker", async () => {
+  it("reuses one open recovery action for multiple dependents with the same leaf blocker", async () => {
     await enableAutoRecovery();
     const { companyId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
     const secondBlockedIssueId = randomUUID();
@@ -652,22 +1005,21 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(result.findings).toBe(2);
     expect(result.escalationsCreated).toBe(1);
     expect(result.existingEscalations).toBe(1);
+    expect(result.sourceRecoveryActionsOpened).toBe(1);
+    expect(result.existingSourceRecoveryActions).toBe(1);
     const escalations = await db
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
-    expect(escalations).toHaveLength(1);
-
-    const blockers = await db
-      .select({ blockedIssueId: issueRelations.relatedIssueId })
-      .from(issueRelations)
-      .where(and(eq(issueRelations.companyId, companyId), eq(issueRelations.issueId, escalations[0]!.id)));
-    expect(blockers.map((row) => row.blockedIssueId).sort()).toEqual(
-      [blockedIssueId, secondBlockedIssueId].sort(),
-    );
+    expect(escalations).toHaveLength(0);
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, blockerIssueId)));
+    expect(actions).toHaveLength(1);
   });
 
-  it("creates a fresh escalation when the previous matching escalation is terminal", async () => {
+  it("does not create a fresh recovery object when the same-fingerprint action was already resolved", async () => {
     await enableAutoRecovery();
     const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
     const heartbeat = heartbeatService(db);
@@ -678,26 +1030,33 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       "blocked_by_unassigned_issue",
       blockerIssueId,
     ].join(":");
-    const closedEscalationId = randomUUID();
+    const resolvedAt = new Date();
 
-    await db.insert(issues).values({
-      id: closedEscalationId,
+    await db.insert(issueRecoveryActions).values({
       companyId,
-      title: "Closed escalation",
-      status: "done",
-      priority: "high",
-      parentId: blockedIssueId,
-      assigneeAgentId: managerId,
-      issueNumber: 3,
-      identifier: "CLOSED-3",
-      originKind: "harness_liveness_escalation",
-      originId: incidentKey,
+      sourceIssueId: blockerIssueId,
+      kind: "issue_graph_liveness",
+      status: "resolved",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "issue_graph_liveness",
+      fingerprint: [
+        "harness_liveness_leaf",
+        companyId,
+        "blocked_by_unassigned_issue",
+        blockerIssueId,
+      ].join(":"),
+      evidence: { incidentKey },
+      nextAction: "Already handled",
+      outcome: "restored",
+      resolvedAt,
     });
 
     const result = await heartbeat.reconcileIssueGraphLiveness();
 
-    expect(result.escalationsCreated).toBe(1);
+    expect(result.escalationsCreated).toBe(0);
     expect(result.existingEscalations).toBe(0);
+    expect(result.resolvedUnchangedSourceRecoveryActions).toBe(1);
 
     const openEscalations = await db
       .select()
@@ -709,19 +1068,60 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
           eq(issues.originId, incidentKey),
         ),
       );
-    expect(openEscalations).toHaveLength(2);
-    const freshEscalation = openEscalations.find((issue) => issue.status !== "done");
-    expect(freshEscalation).toMatchObject({
-      parentId: blockerIssueId,
-      assigneeAgentId: managerId,
-      status: expect.stringMatching(/^(todo|in_progress|done)$/),
+    expect(openEscalations).toHaveLength(0);
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, blockerIssueId)));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]?.status).toBe("resolved");
+  });
+
+  it("creates a fresh recovery object when the same-fingerprint action was cancelled", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const heartbeat = heartbeatService(db);
+    const incidentKey = [
+      "harness_liveness",
+      companyId,
+      blockedIssueId,
+      "blocked_by_unassigned_issue",
+      blockerIssueId,
+    ].join(":");
+    const resolvedAt = new Date();
+
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: blockerIssueId,
+      kind: "issue_graph_liveness",
+      status: "cancelled",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "issue_graph_liveness",
+      fingerprint: [
+        "harness_liveness_leaf",
+        companyId,
+        "blocked_by_unassigned_issue",
+        blockerIssueId,
+      ].join(":"),
+      evidence: { incidentKey },
+      nextAction: "Cancelled by operator",
+      outcome: "cancelled",
+      resolvedAt,
     });
 
-    const blockers = await db
-      .select({ blockerIssueId: issueRelations.issueId })
-      .from(issueRelations)
-      .where(eq(issueRelations.relatedIssueId, blockedIssueId));
-    expect(blockers.some((row) => row.blockerIssueId === closedEscalationId)).toBe(false);
-    expect(blockers.some((row) => row.blockerIssueId === freshEscalation?.id)).toBe(true);
+    const result = await heartbeat.reconcileIssueGraphLiveness();
+
+    expect(result.escalationsCreated).toBe(1);
+    expect(result.existingEscalations).toBe(0);
+    expect(result.sourceRecoveryActionsOpened).toBe(1);
+    expect(result.resolvedUnchangedSourceRecoveryActions).toBe(0);
+
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, blockerIssueId)));
+    expect(actions).toHaveLength(2);
+    expect(actions.map((action) => action.status).sort()).toEqual(["active", "cancelled"]);
   });
 });

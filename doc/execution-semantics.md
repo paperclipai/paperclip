@@ -390,6 +390,25 @@ The recovery action stays source-scoped by default. The source issue should show
 
 Create an issue-backed recovery action only when a separate issue is the right execution object. In that fallback form, the source issue remains visible and is blocked on the recovery issue when blocking is necessary for correctness. The recovery owner must restore a live path, resolve the source issue manually, delegate real follow-up work, or record the reason the signal is a false positive.
 
+### Issue-Graph Liveness Recovery
+
+`issue_graph_liveness` findings create source-scoped explicit recovery actions by default. The recovery action belongs to the source issue whose dependency path is unhealthy; it should not create a separate "unblock liveness incident" issue merely to say that the source issue is stranded. The action records the unhealthy leaf or edge, selected recovery owner, bounded evidence, idempotency fingerprint, and wake, monitor, timeout, retry, or escalation policy that will restore one valid action-path primitive.
+
+Default source-scoped handling must let productive work continue. If the source issue or its healthy leaf blockers already have a live action path, Paperclip records the graph finding on the source issue and does not block unrelated work. It moves the source issue to `blocked` or adds blockers only when the unhealthy leaf is a real dependency that prevents the source issue from continuing.
+
+Repeated scans must be idempotent. For the same source issue, recovery kind, and graph fingerprint, scans update the open source-scoped recovery action or count advisory/out-of-lookback findings; they must not create new sibling issues, new blockers, or new comments solely because the same dependency graph is still non-terminal. A resolved false-positive action stays resolved until new evidence changes the fingerprint.
+
+Issue-backed graph-liveness recovery is a fallback only when a separate execution object is required. It is allowed for:
+
+- independent repair work that can complete without mutating the source issue directly
+- cross-agent repair where another assignee needs a bounded task, blockers, or child work
+- long-running evaluation or investigation that needs its own monitor or retry policy
+- security-sensitive review or escalation that should not run in the source issue context
+- external-service observation where a separate owner watches GitHub, CI, deployment, provider, or other external state
+- unsafe leaf ownership changes, such as invalid or unclear reassignment of a blocker or review participant
+
+When issue-backed fallback is used, the new issue is the recovery action's execution object. It must link to the source issue, share the idempotency fingerprint, and block the source only when correctness requires the source to wait.
+
 Instance-level issue-graph liveness auto-recovery is disabled by default. When enabled, its lookback window means "dependency paths updated within the last N hours"; older findings remain advisory and are counted as outside the configured lookback instead of creating recovery actions automatically. This is an operator noise control, not the older staleness delay for determining whether a chain is old enough to surface.
 
 ### Human Escalation

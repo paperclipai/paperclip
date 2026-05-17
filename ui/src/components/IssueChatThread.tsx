@@ -4265,6 +4265,7 @@ export function IssueChatThread({
                       action={recoveryAction}
                       agentMap={agentMap}
                       onResolve={onResolveRecoveryAction}
+                      canMarkBlocked={(blockedBy ?? []).some((blocker) => blocker.status !== "done" && blocker.status !== "cancelled")}
                       canFalsePositive={canFalsePositiveRecoveryAction}
                     />
                   ) : null}

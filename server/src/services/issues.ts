@@ -2129,7 +2129,15 @@ async function listIssueBlockedInboxAttentionMap(
   const graphIssueIds = graphIssues.map((issue) => issue.id);
   const issuesById = new Map<string, IssueRow>(graphIssues.map((issue) => [issue.id, issue]));
 
-  const [activeRunRows, wakeRows, scheduledRetryRows, interactionRows, approvalRows, handoffMap] = await Promise.all([
+  const [
+    activeRunRows,
+    wakeRows,
+    scheduledRetryRows,
+    interactionRows,
+    approvalRows,
+    activeRecoveryActionRows,
+    handoffMap,
+  ] = await Promise.all([
     graphIssueIds.length === 0
       ? Promise.resolve([])
       : dbOrTx
@@ -2207,6 +2215,27 @@ async function listIssueBlockedInboxAttentionMap(
             inArray(approvals.status, [...BLOCKED_INBOX_PENDING_APPROVAL_STATUSES]),
             inArray(issueApprovals.issueId, graphIssueIds),
           )),
+    graphIssueIds.length === 0
+      ? Promise.resolve([])
+      : dbOrTx
+          .select({
+            id: issueRecoveryActions.id,
+            sourceIssueId: issueRecoveryActions.sourceIssueId,
+            kind: issueRecoveryActions.kind,
+            status: issueRecoveryActions.status,
+            ownerType: issueRecoveryActions.ownerType,
+            ownerAgentId: issueRecoveryActions.ownerAgentId,
+            ownerUserId: issueRecoveryActions.ownerUserId,
+            evidence: issueRecoveryActions.evidence,
+            nextAction: issueRecoveryActions.nextAction,
+            createdAt: issueRecoveryActions.createdAt,
+          })
+          .from(issueRecoveryActions)
+          .where(and(
+            eq(issueRecoveryActions.companyId, companyId),
+            inArray(issueRecoveryActions.status, ["active", "escalated"]),
+            inArray(issueRecoveryActions.sourceIssueId, graphIssueIds),
+          )),
     listSuccessfulRunHandoffMapForIssues(dbOrTx, companyId, rowIssueIds),
   ]);
 
@@ -2220,6 +2249,21 @@ async function listIssueBlockedInboxAttentionMap(
     issueId: row.issueId,
     status: "pending",
   }));
+
+  const recoveryActionsByIssueId = new Map(
+    (activeRecoveryActionRows as Array<{
+      id: string;
+      sourceIssueId: string;
+      kind: string;
+      status: string;
+      ownerType: string;
+      ownerAgentId: string | null;
+      ownerUserId: string | null;
+      evidence: Record<string, unknown>;
+      nextAction: string;
+      createdAt: Date;
+    }>).map((action) => [action.sourceIssueId, action]),
+  );
 
   const openRecoveryIssues = graphIssues
     .filter((issue) => BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS.includes(issue.originKind as typeof BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS[number]))
@@ -2235,7 +2279,14 @@ async function listIssueBlockedInboxAttentionMap(
         entries.push({ companyId, issueId: issue.originId, status: issue.status });
       }
       return entries;
-    });
+    })
+    .concat(
+      [...recoveryActionsByIssueId.values()].map((action) => ({
+        companyId,
+        issueId: action.sourceIssueId,
+        status: action.status,
+      })),
+    );
 
   const findings = classifyIssueGraphLiveness({
     issues: graphIssues.map((issue) => ({
@@ -2344,6 +2395,44 @@ async function listIssueBlockedInboxAttentionMap(
         },
         sourceIssue: sourceIssue ?? source,
         leafIssue,
+        recoveryIssue: source,
+      }));
+      continue;
+    }
+
+    const recoveryAction = recoveryActionsByIssueId.get(row.id);
+    if (recoveryAction) {
+      const evidence = recoveryAction.evidence && typeof recoveryAction.evidence === "object"
+        ? recoveryAction.evidence
+        : {};
+      const sourceEvidence = evidence.sourceIssue && typeof evidence.sourceIssue === "object"
+        ? evidence.sourceIssue as Record<string, unknown>
+        : null;
+      const sourceIssueId = typeof sourceEvidence?.id === "string" ? sourceEvidence.id : null;
+      const sourceIssue = sourceIssueId ? issueRef(issuesById.get(sourceIssueId)) : null;
+      result.set(row.id, attentionBase({
+        state: "recovery_open",
+        reason: "open_recovery_issue",
+        severity: "high",
+        stoppedSinceAt: recoveryAction.createdAt,
+        owner: {
+          type: recoveryAction.ownerType === "agent"
+            ? "agent"
+            : recoveryAction.ownerType === "user"
+              ? "user"
+              : recoveryAction.ownerType === "board"
+                ? "board"
+                : "unknown",
+          agentId: recoveryAction.ownerAgentId,
+          userId: recoveryAction.ownerUserId,
+          label: recoveryAction.ownerType === "board" ? "Board" : null,
+        },
+        action: {
+          label: "Resolve recovery",
+          detail: recoveryAction.nextAction,
+        },
+        sourceIssue: sourceIssue ?? source,
+        leafIssue: source,
         recoveryIssue: source,
       }));
       continue;

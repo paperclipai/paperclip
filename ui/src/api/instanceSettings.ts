@@ -29,10 +29,14 @@ export const instanceSettingsApi = {
       cutoff: string;
       escalationsCreated: number;
       existingEscalations: number;
+      sourceRecoveryActionsOpened: number;
+      existingSourceRecoveryActions: number;
+      resolvedUnchangedSourceRecoveryActions: number;
       skipped: number;
       skippedAutoRecoveryDisabled: number;
       skippedOutsideLookback: number;
       escalationIssueIds: string[];
+      recoveryActionIds: string[];
     }>(
       "/instance/settings/experimental/issue-graph-liveness-auto-recovery/run",
       input,

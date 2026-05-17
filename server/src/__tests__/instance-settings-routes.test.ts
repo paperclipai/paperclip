@@ -103,10 +103,14 @@ describe("instance settings routes", () => {
       cutoff: "2026-04-26T12:00:00.000Z",
       escalationsCreated: 1,
       existingEscalations: 0,
+      sourceRecoveryActionsOpened: 1,
+      existingSourceRecoveryActions: 0,
+      resolvedUnchangedSourceRecoveryActions: 0,
       skipped: 0,
       skippedAutoRecoveryDisabled: 0,
       skippedOutsideLookback: 0,
       escalationIssueIds: ["issue-2"],
+      recoveryActionIds: ["action-1"],
     });
   });
 

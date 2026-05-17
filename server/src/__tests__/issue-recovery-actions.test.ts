@@ -726,6 +726,137 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  it("rejects same-company peer agents from resolving unassigned recovery actions they do not own", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(issues).set({ assigneeAgentId: null, status: "todo" }).where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:owner-required",
+      evidence: { latestIssueStatus: "in_progress" },
+      nextAction: "Only the assigned recovery owner should resolve this action.",
+      wakePolicy: { type: "wake_owner" },
+    });
+    const app = createApp({
+      type: "agent",
+      agentId: coderId,
+      companyId,
+      runId: randomUUID(),
+      source: "agent_jwt",
+    });
+
+    await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "done",
+      })
+      .expect(403);
+
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(sourceIssue?.status).toBe("todo");
+    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toMatchObject({
+      id: action.id,
+      status: "active",
+      ownerAgentId: managerId,
+    });
+  });
+
+  it("rejects stale recovery action IDs before mutating the source issue", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:stale-action-id",
+      evidence: { latestIssueStatus: "in_progress" },
+      nextAction: "Only the current active recovery action can be resolved.",
+      wakePolicy: { type: "wake_owner" },
+    });
+    const app = createApp({
+      type: "agent",
+      agentId: managerId,
+      companyId,
+      source: "agent_jwt",
+    });
+
+    const rejected = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: randomUUID(),
+        outcome: "restored",
+        sourceIssueStatus: "done",
+      })
+      .expect(404);
+
+    expect(rejected.body.error).toContain("Active recovery action not found");
+
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(sourceIssue?.status).toBe("in_progress");
+    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toMatchObject({
+      id: action.id,
+      status: "active",
+      ownerAgentId: managerId,
+    });
+  });
+
+  it("allows the assigned recovery owner to resolve an unassigned recovery action", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    await db.update(issues).set({ assigneeAgentId: null, status: "todo" }).where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:owner-can-resolve",
+      evidence: { latestIssueStatus: "in_progress" },
+      nextAction: "Recovery owner confirms the source issue is complete.",
+      wakePolicy: { type: "wake_owner" },
+    });
+    const app = createApp({
+      type: "agent",
+      agentId: managerId,
+      companyId,
+      source: "agent_jwt",
+    });
+
+    const resolved = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "done",
+        resolutionNote: "Recovery owner completed the source issue cleanup.",
+      });
+    expect(resolved.status).toBe(200);
+
+    expect(resolved.body.issue).toMatchObject({
+      id: sourceIssueId,
+      status: "done",
+      activeRecoveryAction: null,
+    });
+    expect(resolved.body.recoveryAction).toMatchObject({
+      id: action.id,
+      status: "resolved",
+      outcome: "restored",
+      resolutionNote: "Recovery owner completed the source issue cleanup.",
+    });
+    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toBeNull();
+  });
+
   it("enforces company scope when resolving recovery actions", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     const recoveryActionSvc = issueRecoveryActionService(db);

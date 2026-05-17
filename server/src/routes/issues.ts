@@ -1141,6 +1141,51 @@ export function issueRoutes(
     return true;
   }
 
+  async function assertRecoveryActionResolutionAllowed(
+    req: Request,
+    res: Response,
+    input: {
+      issue: { id: string; companyId: string };
+      actionId?: string | null;
+    },
+  ) {
+    const activeAction = await recoveryActionsSvc.getActiveForIssue(input.issue.companyId, input.issue.id);
+    if (!activeAction) {
+      return { allowed: true, activeAction: null as typeof activeAction };
+    }
+    if (input.actionId && activeAction.id !== input.actionId) {
+      res.status(404).json({
+        error: "Active recovery action not found",
+        details: {
+          issueId: input.issue.id,
+          requestedRecoveryActionId: input.actionId,
+          activeRecoveryActionId: activeAction.id,
+          securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+        },
+      });
+      return { allowed: false, activeAction };
+    }
+    if (req.actor.type !== "agent") {
+      return { allowed: true, activeAction };
+    }
+    const actorAgentId = req.actor.agentId;
+    if (activeAction.ownerType === "agent" && actorAgentId && activeAction.ownerAgentId === actorAgentId) {
+      return { allowed: true, activeAction };
+    }
+    res.status(403).json({
+      error: "Only the board or the assigned recovery owner can resolve this recovery action",
+      details: {
+        issueId: input.issue.id,
+        recoveryActionId: activeAction.id,
+        recoveryOwnerType: activeAction.ownerType,
+        recoveryOwnerAgentId: activeAction.ownerAgentId,
+        actorAgentId: actorAgentId ?? null,
+        securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+      },
+    });
+    return { allowed: false, activeAction };
+  }
+
   function assertStructuredCommentFieldsAllowed(
     req: Request,
     res: Response,
@@ -1507,13 +1552,34 @@ export function issueRoutes(
       limit,
       offset,
     });
-    const issueIds = result.map((issue) => issue.id);
+    const issuesWithRelations = result as Array<typeof result[number] & {
+      blockedBy?: IssueRelationIssueSummary[];
+      blocks?: IssueRelationIssueSummary[];
+    }>;
+    const issueIds = issuesWithRelations.map((issue) => issue.id);
+    const relationRecoveryCandidateIdSet = new Set<string>();
+    const collectRelationRecoveryCandidateIds = (summary: IssueRelationIssueSummary) => {
+      relationRecoveryCandidateIdSet.add(summary.id);
+      summary.terminalBlockers?.forEach(collectRelationRecoveryCandidateIds);
+    };
+    issuesWithRelations.forEach((issue) => {
+      issue.blockedBy?.forEach(collectRelationRecoveryCandidateIds);
+      issue.blocks?.forEach(collectRelationRecoveryCandidateIds);
+    });
+    const relationRecoveryCandidateIds = [...relationRecoveryCandidateIdSet];
     const [handoffStates, recoveryActionByIssue] = await Promise.all([
       listSuccessfulRunHandoffStates(db, companyId, issueIds),
-      recoveryActionsSvc.listActiveForIssues(companyId, issueIds),
+      recoveryActionsSvc.listActiveForIssues(companyId, [...issueIds, ...relationRecoveryCandidateIds]),
     ]);
-    res.json(result.map((issue) => ({
+    const augmentRelation = (summary: IssueRelationIssueSummary): IssueRelationIssueSummary => ({
+      ...summary,
+      activeRecoveryAction: recoveryActionByIssue.get(summary.id) ?? summary.activeRecoveryAction ?? null,
+      terminalBlockers: summary.terminalBlockers?.map(augmentRelation),
+    });
+    res.json(issuesWithRelations.map((issue) => ({
       ...issue,
+      blockedBy: issue.blockedBy?.map(augmentRelation),
+      blocks: issue.blocks?.map(augmentRelation),
       successfulRunHandoff: handoffStates.get(issue.id) ?? null,
       activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
     })));
@@ -1838,9 +1904,13 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
 
     const { actionId, outcome, sourceIssueStatus, resolutionNote } = req.body;
+    const recoveryResolutionAuthz = await assertRecoveryActionResolutionAllowed(req, res, {
+      issue: existing,
+      actionId: actionId ?? null,
+    });
+    if (!recoveryResolutionAuthz.allowed) return;
     if (outcome === "false_positive" || outcome === "cancelled") {
       assertBoard(req);
     }

@@ -27,6 +27,8 @@ export const deriveRecoveryCardState = deriveRecoveryDisplayState;
 export type RecoveryResolveOutcome =
   | "done"
   | "in_review"
+  | "blocked"
+  | "delegated"
   | "false_positive_done"
   | "false_positive_in_review";
 
@@ -37,6 +39,8 @@ export interface IssueRecoveryActionCardProps {
   forcedState?: RecoveryCardCardState;
   /** Optional click handler for resolve menu actions. If omitted, the buttons are not rendered. */
   onResolve?: (outcome: RecoveryResolveOutcome) => void;
+  /** Whether blocked resolution can succeed immediately because the source issue already has a blocker. */
+  canMarkBlocked?: boolean;
   /** Whether the viewer can run destructive board-only actions (e.g. false-positive dismissal). */
   canFalsePositive?: boolean;
   className?: string;
@@ -291,16 +295,28 @@ const RESOLVE_OPTIONS: Array<{
   description: string;
   destructive?: boolean;
   boardOnly?: boolean;
+  requiresBlocker?: boolean;
 }> = [
   {
     outcome: "done",
-    label: "Mark issue done",
+    label: "Restored, mark done",
     description: "Restore by recording the requested work as complete.",
   },
   {
     outcome: "in_review",
-    label: "Send for review",
+    label: "Restored, send for review",
     description: "Hand off to a reviewer with a real review path.",
+  },
+  {
+    outcome: "blocked",
+    label: "Mark blocked",
+    description: "Resolve recovery by leaving the source issue blocked on its linked blocker.",
+    requiresBlocker: true,
+  },
+  {
+    outcome: "delegated",
+    label: "Delegated follow-up",
+    description: "Resolve recovery after delegating the remaining work to a follow-up path.",
   },
   {
     outcome: "false_positive_done",
@@ -323,6 +339,7 @@ export function IssueRecoveryActionCard({
   agentMap,
   forcedState,
   onResolve,
+  canMarkBlocked = false,
   canFalsePositive = false,
   className,
 }: IssueRecoveryActionCardProps) {
@@ -499,21 +516,32 @@ export function IssueRecoveryActionCard({
                 Resolve recovery
               </div>
               <div className="flex flex-col">
-                {visibleResolveOptions.map((option) => (
-                  <button
-                    key={option.outcome}
-                    type="button"
-                    onClick={() => onResolve?.(option.outcome)}
-                    className={cn(
-                      "flex flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
-                      "hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
-                      option.destructive ? "text-destructive" : null,
-                    )}
-                  >
-                    <span className="font-medium leading-5">{option.label}</span>
-                    <span className="text-[11px] leading-4 text-muted-foreground">{option.description}</span>
-                  </button>
-                ))}
+                {visibleResolveOptions.map((option) => {
+                  const disabled = option.requiresBlocker && !canMarkBlocked;
+                  return (
+                    <button
+                      key={option.outcome}
+                      type="button"
+                      onClick={() => {
+                        if (disabled) return;
+                        onResolve?.(option.outcome);
+                      }}
+                      disabled={disabled}
+                      aria-disabled={disabled}
+                      title={disabled ? "Add a first-class blocker before marking recovery blocked." : undefined}
+                      className={cn(
+                        "flex flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+                        "hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:bg-transparent",
+                        option.destructive ? "text-destructive" : null,
+                      )}
+                    >
+                      <span className="font-medium leading-5">{option.label}</span>
+                      <span className="text-[11px] leading-4 text-muted-foreground">
+                        {disabled ? "Add a first-class blocker before using this outcome." : option.description}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </PopoverContent>
           </Popover>

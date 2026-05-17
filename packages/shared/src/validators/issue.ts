@@ -267,6 +267,7 @@ export type IssueRecoveryActionReadModel = z.infer<typeof issueRecoveryActionRea
 
 const RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES = [
   "restored",
+  "delegated",
   "false_positive",
   "blocked",
   "cancelled",
@@ -294,6 +295,17 @@ export const resolveIssueRecoveryActionSchema = z.object({
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "Blocked recovery actions must move the source issue to blocked",
+        path: ["sourceIssueStatus"],
+      });
+    }
+    return;
+  }
+
+  if (value.outcome === "delegated") {
+    if (value.sourceIssueStatus !== "in_review" && value.sourceIssueStatus !== "blocked") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Delegated recovery actions must leave the source issue in_review or blocked",
         path: ["sourceIssueStatus"],
       });
     }

@@ -288,6 +288,53 @@ describe("IssueRow", () => {
     });
   });
 
+  it("flags rows with an active source-scoped recovery action", () => {
+    const root = createRoot(container);
+    const issue = createIssue({
+      activeRecoveryAction: {
+        id: "recovery-1",
+        companyId: "company-1",
+        sourceIssueId: "issue-1",
+        recoveryIssueId: null,
+        kind: "issue_graph_liveness",
+        status: "active",
+        ownerType: "agent",
+        ownerAgentId: "agent-1",
+        ownerUserId: null,
+        previousOwnerAgentId: null,
+        returnOwnerAgentId: null,
+        cause: "blocked_chain_stalled",
+        fingerprint: "fp",
+        evidence: {},
+        nextAction: "restore a live path",
+        wakePolicy: { type: "wake_owner" },
+        monitorPolicy: null,
+        attemptCount: 1,
+        maxAttempts: 3,
+        timeoutAt: null,
+        lastAttemptAt: null,
+        outcome: null,
+        resolutionNote: null,
+        resolvedAt: null,
+        createdAt: "2026-05-01T00:00:00.000Z",
+        updatedAt: "2026-05-01T00:00:00.000Z",
+      },
+    });
+
+    act(() => {
+      root.render(<IssueRow issue={issue} />);
+    });
+
+    const badge = container.querySelector('[data-testid="issue-row-recovery-indicator"]');
+    expect(badge).not.toBeNull();
+    expect(badge?.getAttribute("data-recovery-state")).toBe("needed");
+    expect(badge?.textContent).toContain("Recovery needed");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("does not show the parked-work badge when assigned blocker is not in backlog", () => {
     const root = createRoot(container);
     const issue = createIssue({

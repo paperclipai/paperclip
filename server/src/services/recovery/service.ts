@@ -2366,6 +2366,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             .select({
               companyId: issueRecoveryActions.companyId,
               issueId: issueRecoveryActions.sourceIssueId,
+              kind: issueRecoveryActions.kind,
               status: issueRecoveryActions.status,
             })
             .from(issueRecoveryActions)
@@ -2380,21 +2381,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     const openRecoveryIssues = recoveryIssueRows.flatMap((row) => {
       if (row.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation) {
-        const parsed = parseIssueGraphLivenessIncidentKey(row.originId);
-        if (!parsed || parsed.companyId !== row.companyId) return [];
-        if (parsed.state !== "blocked_by_assigned_backlog_issue") return [];
-        return [
-          {
-            companyId: row.companyId,
-            issueId: parsed.issueId,
-            status: row.status,
-          },
-          {
-            companyId: row.companyId,
-            issueId: parsed.leafIssueId,
-            status: row.status,
-          },
-        ];
+        return [];
       }
 
       const issueId = readNonEmptyString(row.originId);
@@ -2429,7 +2416,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       })),
       pendingInteractions: interactionRows,
       pendingApprovals: approvalRows,
-      openRecoveryIssues: openRecoveryIssues.concat(recoveryActionRows),
+      openRecoveryIssues: openRecoveryIssues.concat(
+        recoveryActionRows
+          .filter((row) => row.kind === "issue_graph_liveness")
+          .map((row) => ({
+            companyId: row.companyId,
+            issueId: row.issueId,
+            status: row.status,
+          })),
+      ),
       now: new Date(),
     });
   }
@@ -2486,6 +2481,44 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }) ?? null;
   }
 
+  async function findActiveIssueGraphLivenessActionForLeaf(finding: IssueLivenessFinding) {
+    return db
+      .select()
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, finding.companyId),
+          eq(issueRecoveryActions.sourceIssueId, livenessRecoveryLeafIssueId(finding)),
+          eq(issueRecoveryActions.kind, "issue_graph_liveness"),
+          eq(issueRecoveryActions.cause, "issue_graph_liveness"),
+          eq(issueRecoveryActions.fingerprint, livenessRecoveryLeafFingerprint(finding)),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+        ),
+      )
+      .orderBy(desc(issueRecoveryActions.updatedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function findTerminalIssueGraphLivenessActionForLeaf(finding: IssueLivenessFinding) {
+    return db
+      .select()
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, finding.companyId),
+          eq(issueRecoveryActions.sourceIssueId, livenessRecoveryLeafIssueId(finding)),
+          eq(issueRecoveryActions.kind, "issue_graph_liveness"),
+          eq(issueRecoveryActions.cause, "issue_graph_liveness"),
+          eq(issueRecoveryActions.fingerprint, livenessRecoveryLeafFingerprint(finding)),
+          eq(issueRecoveryActions.status, "resolved"),
+        ),
+      )
+      .orderBy(desc(issueRecoveryActions.resolvedAt), desc(issueRecoveryActions.updatedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function removeRecoveryBlockerFromSource(recovery: typeof issues.$inferSelect) {
     const parsed = parseLivenessIncidentKey(recovery.originId);
     if (!parsed) return false;
@@ -2536,6 +2569,32 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Boolean(contextRun || issueRun);
   }
 
+  async function hasActiveIssueGraphLivenessActionForLegacyRecovery(recovery: typeof issues.$inferSelect) {
+    const parsed = parseLivenessIncidentKey(recovery.originId);
+    if (!parsed || parsed.companyId !== recovery.companyId) return false;
+    const expectedFingerprint = recovery.originFingerprint && recovery.originFingerprint !== "default"
+      ? recovery.originFingerprint
+      : livenessRecoveryLeafKey(parsed.companyId, parsed.state, parsed.leafIssueId);
+
+    const row = await db
+      .select({ id: issueRecoveryActions.id })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, recovery.companyId),
+          eq(issueRecoveryActions.sourceIssueId, parsed.leafIssueId),
+          eq(issueRecoveryActions.kind, "issue_graph_liveness"),
+          eq(issueRecoveryActions.cause, "issue_graph_liveness"),
+          eq(issueRecoveryActions.fingerprint, expectedFingerprint),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    return Boolean(row);
+  }
+
   async function retireObsoleteLivenessRecoveryIssues(findings: IssueLivenessFinding[]) {
     const currentIncidentKeys = new Set(findings.map((finding) => finding.incidentKey));
     const currentLeafKeys = new Set(
@@ -2565,14 +2624,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     };
 
     for (const recovery of openRecoveries) {
-      if (recovery.originId && currentIncidentKeys.has(recovery.originId)) continue;
       const parsed = parseLivenessIncidentKey(recovery.originId);
       if (!parsed) continue;
-      if (
-        currentLeafKeys.has(
-          livenessRecoveryLeafKey(parsed.companyId, parsed.state, parsed.leafIssueId),
-        )
-      ) {
+      const hasCurrentIncidentFinding = Boolean(recovery.originId && currentIncidentKeys.has(recovery.originId));
+      const hasCurrentLeafFinding = currentLeafKeys.has(
+        livenessRecoveryLeafKey(parsed.companyId, parsed.state, parsed.leafIssueId),
+      );
+      const sourceScopedActionTookOver = await hasActiveIssueGraphLivenessActionForLegacyRecovery(recovery);
+      if ((hasCurrentIncidentFinding || hasCurrentLeafFinding) && !sourceScopedActionTookOver) {
         continue;
       }
       if (await removeRecoveryBlockerFromSource(recovery)) {
@@ -2745,6 +2804,39 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return null;
   }
 
+  type IssueGraphLivenessOwnerSelection = NonNullable<Awaited<ReturnType<typeof resolveEscalationOwnerAgentId>>>;
+
+  function buildIssueGraphLivenessRecoveryActionEvidence(input: {
+    finding: IssueLivenessFinding;
+    sourceIssue: typeof issues.$inferSelect;
+    recoveryIssue: typeof issues.$inferSelect;
+    ownerSelection: IssueGraphLivenessOwnerSelection | null;
+  }) {
+    return {
+      incidentKey: input.finding.incidentKey,
+      findingState: input.finding.state,
+      reason: input.finding.reason,
+      sourceIssue: {
+        id: input.sourceIssue.id,
+        identifier: input.sourceIssue.identifier,
+        title: input.sourceIssue.title,
+        status: input.sourceIssue.status,
+      },
+      recoveryIssue: {
+        id: input.recoveryIssue.id,
+        identifier: input.recoveryIssue.identifier,
+        title: input.recoveryIssue.title,
+        status: input.recoveryIssue.status,
+      },
+      dependencyPath: input.finding.dependencyPath,
+      ownerCandidateAgentIds: input.finding.recommendedOwnerCandidateAgentIds,
+      ownerCandidateReasons: input.finding.recommendedOwnerCandidates,
+      selectedOwnerAgentId: input.ownerSelection?.agentId ?? null,
+      selectedOwnerReason: input.ownerSelection?.reason ?? null,
+      budgetBlockedCandidateAgentIds: input.ownerSelection?.budgetBlockedCandidateAgentIds ?? [],
+    };
+  }
+
   function shouldReuseRecoveryExecutionWorkspace(input: {
     finding: IssueLivenessFinding;
     recoveryIssue: typeof issues.$inferSelect;
@@ -2801,8 +2893,195 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
-  async function createIssueGraphLivenessEscalation(input: {
+  type IssueGraphLivenessIssueBackedFallbackReason =
+    | "source_has_different_active_recovery_action";
+
+  async function enqueueIssueGraphLivenessRecoveryWake(input: {
+    actionId: string;
+    ownerAgentId: string | null;
+    sourceIssue: typeof issues.$inferSelect;
+    recoveryIssue: typeof issues.$inferSelect;
     finding: IssueLivenessFinding;
+  }) {
+    if (!input.ownerAgentId) return;
+    await deps.enqueueWakeup(input.ownerAgentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "source_scoped_recovery_action",
+      idempotencyKey: `issue_graph_liveness_recovery_action:${input.actionId}`,
+      payload: withRecoveryModelProfileHint({
+        issueId: input.recoveryIssue.id,
+        sourceIssueId: input.recoveryIssue.id,
+        blockedSourceIssueId: input.sourceIssue.id,
+        recoveryActionId: input.actionId,
+        recoveryIssueId: input.recoveryIssue.id,
+        incidentKey: input.finding.incidentKey,
+        recoveryCause: "issue_graph_liveness",
+      }),
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      contextSnapshot: withRecoveryModelProfileHint({
+        issueId: input.recoveryIssue.id,
+        taskId: input.recoveryIssue.id,
+        wakeReason: "source_scoped_recovery_action",
+        skipIssueComment: true,
+        source: "issue_recovery_action",
+        recoveryActionId: input.actionId,
+        sourceIssueId: input.recoveryIssue.id,
+        blockedSourceIssueId: input.sourceIssue.id,
+        recoveryIssueId: input.recoveryIssue.id,
+        incidentKey: input.finding.incidentKey,
+        recoveryCause: "issue_graph_liveness",
+      }),
+    });
+  }
+
+  async function ensureSourceScopedIssueGraphLivenessAction(input: {
+    finding: IssueLivenessFinding;
+    runId?: string | null;
+  }) {
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, input.finding.issueId))
+      .then((rows) => rows[0] ?? null);
+    if (!sourceIssue || sourceIssue.companyId !== input.finding.companyId) return { kind: "skipped" as const };
+    if (await isAutomaticRecoverySuppressedByPauseHold(db, sourceIssue.companyId, sourceIssue.id, treeControlSvc)) {
+      return { kind: "skipped" as const };
+    }
+
+    const recoveryIssue = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.id, input.finding.recoveryIssueId), eq(issues.companyId, sourceIssue.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!recoveryIssue) return { kind: "skipped" as const };
+
+    const existingGraphAction = await findActiveIssueGraphLivenessActionForLeaf(input.finding);
+    if (existingGraphAction) {
+      return { kind: "existing" as const, recoveryActionId: existingGraphAction.id };
+    }
+
+    const terminalGraphAction = await findTerminalIssueGraphLivenessActionForLeaf(input.finding);
+    if (terminalGraphAction) {
+      return { kind: "resolved_unchanged" as const, recoveryActionId: terminalGraphAction.id };
+    }
+
+    const activeAction = await recoveryActionsSvc.getActiveForIssue(
+      sourceIssue.companyId,
+      recoveryIssue.id,
+    );
+    if (activeAction && activeAction.kind !== "issue_graph_liveness") {
+      return createIssueBackedIssueGraphLivenessFallback({
+        finding: input.finding,
+        runId: input.runId ?? null,
+        fallbackReason: "source_has_different_active_recovery_action",
+      });
+    }
+
+    const ownerSelection = await resolveEscalationOwnerAgentId(input.finding, recoveryIssue);
+    const ownerAgentId = ownerSelection?.agentId ?? null;
+    const now = new Date();
+    const action = await recoveryActionsSvc.upsertSourceScoped({
+      companyId: sourceIssue.companyId,
+      sourceIssueId: recoveryIssue.id,
+      recoveryIssueId: null,
+      kind: "issue_graph_liveness",
+      ownerType: ownerAgentId ? "agent" : "board",
+      ownerAgentId,
+      previousOwnerAgentId: recoveryIssue.assigneeAgentId,
+      returnOwnerAgentId: recoveryIssue.assigneeAgentId,
+      cause: "issue_graph_liveness",
+      fingerprint: livenessRecoveryLeafFingerprint(input.finding),
+      evidence: buildIssueGraphLivenessRecoveryActionEvidence({
+        finding: input.finding,
+        sourceIssue,
+        recoveryIssue,
+        ownerSelection,
+      }),
+      nextAction: input.finding.recommendedAction,
+      wakePolicy: ownerAgentId
+        ? {
+          type: "wake_owner",
+          reason: "issue_graph_liveness",
+          ownerAgentId,
+          sourceIssueId: recoveryIssue.id,
+          blockedSourceIssueId: sourceIssue.id,
+        }
+        : {
+          type: "board_escalation",
+          reason: "no_invokable_graph_liveness_recovery_owner",
+          blockedSourceIssueId: sourceIssue.id,
+        },
+      monitorPolicy: null,
+      maxAttempts: null,
+      lastAttemptAt: now,
+    });
+
+    await logActivity(db, {
+      companyId: sourceIssue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: ownerAgentId,
+      runId: input.runId ?? null,
+      action: "issue.recovery_action_opened",
+      entityType: "issue",
+      entityId: recoveryIssue.id,
+      details: {
+        source: "recovery.reconcile_issue_graph_liveness",
+        recoveryActionId: action.id,
+        recoveryActionKind: action.kind,
+        incidentKey: input.finding.incidentKey,
+        findingState: input.finding.state,
+        sourceIssueId: sourceIssue.id,
+        sourceIdentifier: sourceIssue.identifier,
+        recoveryIssueId: recoveryIssue.id,
+        recoveryIdentifier: recoveryIssue.identifier,
+        dependencyPath: input.finding.dependencyPath,
+        ownerSelection: ownerSelection
+          ? {
+            selectedAgentId: ownerSelection.agentId,
+            selectedReason: ownerSelection.reason,
+            selectedSourceIssueId: ownerSelection.sourceIssueId,
+            candidateAgentIds: ownerSelection.candidateAgentIds,
+            candidateReasons: ownerSelection.candidateReasons,
+            budgetBlockedCandidateAgentIds: ownerSelection.budgetBlockedCandidateAgentIds,
+          }
+          : {
+            selectedAgentId: null,
+            selectedReason: "board_escalation",
+            selectedSourceIssueId: recoveryIssue.id,
+            candidateAgentIds: input.finding.recommendedOwnerCandidateAgentIds,
+            candidateReasons: input.finding.recommendedOwnerCandidates,
+            budgetBlockedCandidateAgentIds: [],
+          },
+      },
+    });
+
+    await enqueueIssueGraphLivenessRecoveryWake({
+      actionId: action.id,
+      ownerAgentId,
+      sourceIssue,
+      recoveryIssue,
+      finding: input.finding,
+    });
+
+    logger.warn({
+      incidentKey: input.finding.incidentKey,
+      findingState: input.finding.state,
+      sourceIssueId: sourceIssue.id,
+      recoveryIssueId: recoveryIssue.id,
+      recoveryActionId: action.id,
+      ownerAgentId,
+      ownerSelectionReason: ownerSelection?.reason ?? "board_escalation",
+    }, "opened source-scoped issue graph liveness recovery action");
+
+    return { kind: "created" as const, recoveryActionId: action.id };
+  }
+
+  async function createIssueBackedIssueGraphLivenessFallback(input: {
+    finding: IssueLivenessFinding;
+    fallbackReason: IssueGraphLivenessIssueBackedFallbackReason;
     runId?: string | null;
   }) {
     const issue = await db
@@ -2846,7 +3125,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     let escalation: Awaited<ReturnType<typeof issuesSvc.create>>;
     try {
       escalation = await issuesSvc.create(issue.companyId, {
-        title: `Unblock liveness incident for ${recoveryIssue.identifier ?? recoveryIssue.title}`,
+        title: `Restore live path for ${recoveryIssue.identifier ?? recoveryIssue.title}`,
         description: buildLivenessEscalationDescription(input.finding),
         status: "todo",
         priority: "high",
@@ -2928,6 +3207,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           inheritedExecutionWorkspaceFromIssueId: reuseRecoveryExecutionWorkspace ? recoveryIssue.id : null,
           projectWorkspaceSourceIssueId: recoveryIssue.id,
         },
+        fallbackReason: input.fallbackReason,
       },
     });
 
@@ -2993,6 +3273,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       cutoff: cutoff.toISOString(),
       escalationsCreated: 0,
       existingEscalations: 0,
+      sourceRecoveryActionsOpened: 0,
+      existingSourceRecoveryActions: 0,
+      resolvedUnchangedSourceRecoveryActions: 0,
       skipped: 0,
       skippedAutoRecoveryDisabled: 0,
       skippedOutsideLookback: 0,
@@ -3001,6 +3284,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       obsoleteRecoveryBlockerRelationsRemoved: obsoleteRecoveryCleanup.blockerRelationsRemoved,
       issueIds: [] as string[],
       escalationIssueIds: [] as string[],
+      recoveryActionIds: [] as string[],
       retiredRecoveryIssueIds: obsoleteRecoveryCleanup.retiredIssueIds,
     };
 
@@ -3015,22 +3299,42 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.skipped += 1;
         continue;
       }
-      const escalation = await createIssueGraphLivenessEscalation({
+      const recovery = await ensureSourceScopedIssueGraphLivenessAction({
         finding,
         runId: opts?.runId ?? null,
       });
-      if (escalation.kind === "created") {
+      if (recovery.kind === "created") {
         result.escalationsCreated += 1;
         result.issueIds.push(finding.issueId);
-        result.escalationIssueIds.push(escalation.escalationIssueId);
-      } else if (escalation.kind === "existing") {
+        if ("recoveryActionId" in recovery) {
+          result.sourceRecoveryActionsOpened += 1;
+          result.recoveryActionIds.push(recovery.recoveryActionId);
+        } else {
+          result.escalationIssueIds.push(recovery.escalationIssueId);
+        }
+      } else if (recovery.kind === "existing") {
         result.existingEscalations += 1;
         result.issueIds.push(finding.issueId);
-        result.escalationIssueIds.push(escalation.escalationIssueId);
+        if ("recoveryActionId" in recovery) {
+          result.existingSourceRecoveryActions += 1;
+          result.recoveryActionIds.push(recovery.recoveryActionId);
+        } else {
+          result.escalationIssueIds.push(recovery.escalationIssueId);
+        }
+      } else if (recovery.kind === "resolved_unchanged") {
+        result.resolvedUnchangedSourceRecoveryActions += 1;
+        result.issueIds.push(finding.issueId);
+        result.recoveryActionIds.push(recovery.recoveryActionId);
       } else {
         result.skipped += 1;
       }
     }
+
+    const postRecoveryCleanup = await retireObsoleteLivenessRecoveryIssues(findings);
+    result.obsoleteRecoveriesRetired += postRecoveryCleanup.retired;
+    result.obsoleteRecoveriesActiveSkipped += postRecoveryCleanup.activeSkipped;
+    result.obsoleteRecoveryBlockerRelationsRemoved += postRecoveryCleanup.blockerRelationsRemoved;
+    result.retiredRecoveryIssueIds.push(...postRecoveryCleanup.retiredIssueIds);
 
     return result;
   }

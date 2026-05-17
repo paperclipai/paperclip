@@ -158,7 +158,7 @@ import {
 
 type CommentReassignment = IssueCommentReassignment;
 type ActionableIssueThreadInteraction = SuggestTasksInteraction | RequestConfirmationInteraction;
-type ResolveRecoveryActionOutcome = "restored" | "false_positive" | "blocked" | "cancelled";
+type ResolveRecoveryActionOutcome = "restored" | "delegated" | "false_positive" | "blocked" | "cancelled";
 type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
   runId?: string | null;
   runAgentId?: string | null;
@@ -3005,6 +3005,18 @@ export function IssueDetail() {
           return;
         case "in_review":
           void resolveRecoveryAction.mutateAsync({ actionId, outcome: "restored", sourceIssueStatus: "in_review" });
+          return;
+        case "blocked":
+          void resolveRecoveryAction.mutateAsync({ actionId, outcome: "blocked", sourceIssueStatus: "blocked" });
+          return;
+        case "delegated":
+          // The API also permits "blocked" for delegated recovery when a first-class blocker should keep the source parked.
+          void resolveRecoveryAction.mutateAsync({
+            actionId,
+            outcome: "delegated",
+            sourceIssueStatus: "in_review",
+            resolutionNote: "Recovery delegated to follow-up work.",
+          });
           return;
         case "false_positive_done":
           void resolveRecoveryAction.mutateAsync({ actionId, outcome: "false_positive", sourceIssueStatus: "done" });

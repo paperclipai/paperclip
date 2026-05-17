@@ -9,6 +9,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  issueRecoveryActions,
   issueApprovals,
   issueRelations,
   issueThreadInteractions,
@@ -48,6 +49,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(issueRecoveryActions);
     await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(agents);
@@ -482,6 +484,48 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("treats source-scoped graph-liveness recovery actions on blocker leaves as covered waiting paths", async () => {
+    const { companyId, agentId } = await createCompany("PBA");
+    const parentId = await insertIssue({ companyId, identifier: "PBA-1", title: "Parent", status: "blocked" });
+    const reviewLeafId = await insertIssue({
+      companyId,
+      identifier: "PBA-2",
+      title: "Stalled review leaf",
+      status: "in_review",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: reviewLeafId, blockedIssueId: parentId });
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: reviewLeafId,
+      kind: "issue_graph_liveness",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: agentId,
+      cause: "issue_graph_liveness",
+      fingerprint: [
+        "harness_liveness_leaf",
+        companyId,
+        "in_review_without_action_path",
+        reviewLeafId,
+      ].join(":"),
+      evidence: {},
+      nextAction: "Choose review path",
+    });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "active_dependency",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "PBA-2",
+    });
+  });
+
   it("does not treat a scheduled retry as actively covered work", async () => {
     const { companyId, agentId } = await createCompany("PBY");
     const parentId = await insertIssue({ companyId, identifier: "PBY-1", title: "Parent", status: "blocked" });
@@ -693,5 +737,51 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       owner: { type: "agent", agentId },
       action: { label: "Choose disposition" },
     });
+  });
+
+  it("surfaces source-scoped graph-liveness recovery actions in the blocked inbox", async () => {
+    const { companyId, agentId } = await createCompany("BIR");
+    const parentId = await insertIssue({ companyId, identifier: "BIR-1", title: "Blocked source", status: "blocked" });
+    const leafId = await insertIssue({
+      companyId,
+      identifier: "BIR-2",
+      title: "Stalled review leaf",
+      status: "in_review",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: leafId, blockedIssueId: parentId });
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: leafId,
+      kind: "issue_graph_liveness",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: agentId,
+      cause: "issue_graph_liveness",
+      fingerprint: [
+        "harness_liveness_leaf",
+        companyId,
+        "in_review_without_action_path",
+        leafId,
+      ].join(":"),
+      evidence: {
+        sourceIssue: { id: parentId },
+        recoveryIssue: { id: leafId },
+      },
+      nextAction: "Choose review path",
+    });
+
+    const rows = await svc.list(companyId, { attention: "blocked" });
+    const byId = new Map(rows.map((row) => [row.id, row]));
+
+    expect(byId.get(leafId)?.blockedInboxAttention).toMatchObject({
+      state: "recovery_open",
+      reason: "open_recovery_issue",
+      owner: { type: "agent", agentId },
+      sourceIssue: { id: parentId },
+      leafIssue: { id: leafId },
+      action: { label: "Resolve recovery", detail: "Choose review path" },
+    });
+    expect(byId.has(parentId)).toBe(false);
   });
 });

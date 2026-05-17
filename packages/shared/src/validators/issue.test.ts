@@ -98,13 +98,27 @@ describe("issue validators", () => {
     ).toBe(false);
   });
 
-  it("rejects recovery outcomes that are not supported by the source-scoped resolution endpoint", () => {
+  it("allows delegated recovery resolutions to leave a live follow-up path", () => {
+    expect(
+      resolveIssueRecoveryActionSchema.parse({
+        outcome: "delegated",
+        sourceIssueStatus: "in_review",
+        resolutionNote: "Delegated to a child follow-up.",
+      }),
+    ).toMatchObject({
+      outcome: "delegated",
+      sourceIssueStatus: "in_review",
+    });
+
     expect(
       resolveIssueRecoveryActionSchema.safeParse({
         outcome: "delegated",
+        sourceIssueStatus: "done",
       }).success,
     ).toBe(false);
+  });
 
+  it("rejects recovery outcomes that are not supported by the source-scoped resolution endpoint", () => {
     expect(
       resolveIssueRecoveryActionSchema.safeParse({
         outcome: "escalated",

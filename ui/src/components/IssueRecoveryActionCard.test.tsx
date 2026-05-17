@@ -165,32 +165,51 @@ describe("IssueRecoveryActionCard", () => {
     expect(node.textContent).toContain("Resolved as restored");
   });
 
-  it("calls resolve with done and does not offer delegated recovery", () => {
+  it("calls resolve with restored done and shows delegated recovery", () => {
     const onResolve = vi.fn();
     const node = render(
       <IssueRecoveryActionCard action={buildAction()} onResolve={onResolve} />,
     );
     click(node.querySelector("[data-testid='recovery-action-resolve-trigger']"));
 
-    expect(document.body.textContent).toContain("Mark issue done");
-    expect(document.body.textContent).not.toContain("Mark blocked");
-    expect(document.body.textContent).not.toContain("Delegate follow-up issue");
-    click([...document.body.querySelectorAll("button")].find((button) => button.textContent?.includes("Mark issue done")) ?? null);
+    expect(document.body.textContent).toContain("Restored, mark done");
+    expect(document.body.textContent).toContain("Delegated follow-up");
+    click([...document.body.querySelectorAll("button")].find((button) => button.textContent?.includes("Delegated follow-up")) ?? null);
+    expect(onResolve).toHaveBeenCalledWith("delegated");
+    click([...document.body.querySelectorAll("button")].find((button) => button.textContent?.includes("Restored, mark done")) ?? null);
 
     expect(onResolve).toHaveBeenCalledWith("done");
   });
 
-  it("does not offer blocked recovery resolution without a blocker selection flow", () => {
+  it("disables blocked recovery resolution without a first-class blocker", () => {
+    const onResolve = vi.fn();
     const node = render(
-      <IssueRecoveryActionCard action={buildAction()} onResolve={() => {}} canFalsePositive />,
+      <IssueRecoveryActionCard action={buildAction()} onResolve={onResolve} canFalsePositive />,
     );
     click(node.querySelector("[data-testid='recovery-action-resolve-trigger']"));
 
-    expect(document.body.textContent).toContain("Mark issue done");
-    expect(document.body.textContent).toContain("Send for review");
+    expect(document.body.textContent).toContain("Restored, mark done");
+    expect(document.body.textContent).toContain("Restored, send for review");
+    expect(document.body.textContent).toContain("Mark blocked");
+    expect(document.body.textContent).toContain("Add a first-class blocker before using this outcome.");
     expect(document.body.textContent).toContain("False positive, done");
     expect(document.body.textContent).toContain("False positive, review");
-    expect(document.body.textContent).not.toContain("Mark blocked");
+    const blockedButton = [...document.body.querySelectorAll("button")]
+      .find((button) => button.textContent?.includes("Mark blocked"));
+    expect(blockedButton?.hasAttribute("disabled")).toBe(true);
+    click(blockedButton ?? null);
+    expect(onResolve).not.toHaveBeenCalled();
+  });
+
+  it("calls resolve with blocked when a source blocker exists", () => {
+    const onResolve = vi.fn();
+    const node = render(
+      <IssueRecoveryActionCard action={buildAction()} onResolve={onResolve} canMarkBlocked />,
+    );
+    click(node.querySelector("[data-testid='recovery-action-resolve-trigger']"));
+    click([...document.body.querySelectorAll("button")].find((button) => button.textContent?.includes("Mark blocked")) ?? null);
+
+    expect(onResolve).toHaveBeenCalledWith("blocked");
   });
 
   it("hides false-positive options unless canFalsePositive is set", () => {
