@@ -19,6 +19,7 @@ function snapshot(
     reset7d?: number | null;
     utilization5h?: number | null;
     utilization7d?: number | null;
+    snapshotCapturedAt?: string | null;
   }>,
 ): CcrotateTierCacheSnapshot {
   return {
@@ -32,12 +33,14 @@ function snapshot(
           && a.reset7d === undefined
           && a.utilization5h === undefined
           && a.utilization7d === undefined
+          && a.snapshotCapturedAt === undefined
           ? null
           : {
             reset5h: a.reset5h ?? null,
             reset7d: a.reset7d ?? null,
             utilization5h: a.utilization5h ?? null,
             utilization7d: a.utilization7d ?? null,
+            snapshotCapturedAt: a.snapshotCapturedAt ?? null,
           },
     })),
   };
@@ -165,6 +168,44 @@ describe("evaluateTierCacheSnapshot", () => {
     expect(result.allow).toBe(false);
     expect(result.resumeAt).not.toBeNull();
     expect(result.resumeAt!.getTime()).toBe(earliest5h * 1000);
+  });
+
+  it("allows optimistically when every account is exhausted AND every snapshot is >5min stale", () => {
+    // BLO-freshness-loop (2026-05-17): `ccrotate refresh`'s burst-probe-all
+    // routinely false-flags accounts as `exhausted` due to Anthropic per-org
+    // Usage API throttling. The cluster's freshness-loop (ccrotate-serve
+    // sidecar) re-probes one account at a time to correct the labels — but
+    // until it sweeps the pool, the gate must not deadlock heartbeats on
+    // stale labels. Mirror the inconclusive-snapshot fallback for the
+    // stale-snapshot case.
+    const sixMinAgo = new Date(now.getTime() - 6 * 60_000).toISOString();
+    const result = evaluateTierCacheSnapshot(
+      "claude",
+      snapshot([
+        { email: "a@x.com", serviceTier: "exhausted", snapshotCapturedAt: sixMinAgo },
+        { email: "b@x.com", serviceTier: "exhausted", snapshotCapturedAt: sixMinAgo },
+      ]),
+      now,
+    );
+    expect(result.allow).toBe(true);
+    expect(result.usableAccount).toBeNull();
+  });
+
+  it("does NOT trigger stale-snapshot fallback when even one account snapshot is fresh", () => {
+    // If the freshness-loop has just re-probed any account and confirmed
+    // it's still exhausted, the cache is trustworthy. Don't bypass.
+    const sixMinAgo = new Date(now.getTime() - 6 * 60_000).toISOString();
+    const tenSecAgo = new Date(now.getTime() - 10_000).toISOString();
+    const result = evaluateTierCacheSnapshot(
+      "claude",
+      snapshot([
+        { email: "a@x.com", serviceTier: "exhausted", snapshotCapturedAt: sixMinAgo, reset5h: 1777680600 },
+        { email: "b@x.com", serviceTier: "exhausted", snapshotCapturedAt: tenSecAgo, reset5h: 1777680600 },
+      ]),
+      now,
+    );
+    expect(result.allow).toBe(false);
+    expect(result.resumeAt).not.toBeNull();
   });
 
   it("denies with null resumeAt when no resets are present", () => {

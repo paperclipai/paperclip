@@ -46,6 +46,17 @@ export interface CcrotateTierCacheAccount {
     utilization5h?: number | null;
     /** Percent of the 7-day rolling Claude window consumed (0–100). */
     utilization7d?: number | null;
+    /**
+     * ISO timestamp ccrotate-serve writes per-account when it ran the probe
+     * that produced this snapshot row. Distinct from the wrapping snapshot's
+     * `updatedAt`, which is bumped on ANY upsert — so it doesn't tell you
+     * how stale a SPECIFIC account's tier-state actually is.
+     *
+     * The gate uses this to detect "exhausted label written by a burst
+     * probe-all >5min ago but freshness-loop hasn't re-verified yet".
+     * See [[ccrotate-burst-probe-false-positive]].
+     */
+    snapshotCapturedAt?: string | null;
   } | null;
 }
 
@@ -142,7 +153,15 @@ const DEFAULT_GRACE_MS = 120_000;
 // MAX_DEFERRAL_MS so a fresh `refresh-one`, a new switch, or an account
 // moving back to usable gets picked up promptly. Without this, a far-future
 // resumeAt locked the same agent into a 28h skip (BLO-4975).
-const DEFAULT_MAX_DEFERRAL_MS = 15 * 60_000;
+//
+// 5min (2026-05-17, was 15min): with the ccrotate-serve freshness-loop now
+// sweeping one account every ~90s, the longest gap between a stale-label
+// flip and its discovery is one sweep round (~20min for the full pool).
+// 15min was over-cautious — it meant a heartbeat dispatch deferred 14:30
+// (just before a sweep flip) wouldn't re-check until 14:45 even though the
+// pool was usable by 14:35. 5min keeps the deferral useful as a debounce
+// without holding stale state past the freshness-loop's reaction time.
+const DEFAULT_MAX_DEFERRAL_MS = 5 * 60_000;
 
 /**
  * Maps a paperclip agent adapter type to the ccrotate target whose tier-cache
@@ -274,6 +293,40 @@ export function evaluateTierCacheSnapshot(
       acc.rateLimits === null,
   );
   if (snapshot.accounts.length > 0 && inconclusive) {
+    return { allow: true, resumeAt: null, usableAccount: null };
+  }
+
+  // Stale-snapshot fallback (2026-05-17). Symmetric with the inconclusive
+  // fallback above: if every account's per-account `snapshotCapturedAt` is
+  // older than the freshness-loop's stale floor (~5min), the `exhausted`
+  // labels are very likely leftovers from the periodic burst-probe-all
+  // cron that didn't get refreshed yet by the per-account freshness loop.
+  // Allow optimistically — let the run attempt the API call. If it 401/quotas,
+  // quotaExhaustedHook fires; if it succeeds, the account flips to `base` on
+  // its next probe.
+  //
+  // Cost of being wrong: one failed agent run vs. up to 15min of deferral
+  // on a stale label (the existing MAX_DEFERRAL_MS cap). The freshness-loop
+  // sweeps all 13 accounts every ~20min, so any genuinely-exhausted state
+  // gets re-confirmed within one sweep — the optimistic path doesn't keep
+  // firing once labels are fresh.
+  //
+  // The gate only trips this when EVERY account is stale, not just some, so
+  // a healthy mix of freshly-base + stale-exhausted accounts still hits the
+  // regular usable path above.
+  const STALE_SNAPSHOT_GRACE_MS = 5 * 60_000;
+  const accountsWithSnapshots = snapshot.accounts.filter(
+    (acc) => !!acc.rateLimits?.snapshotCapturedAt,
+  );
+  if (
+    accountsWithSnapshots.length > 0 &&
+    accountsWithSnapshots.length === snapshot.accounts.length &&
+    accountsWithSnapshots.every((acc) => {
+      const captured = Date.parse(acc.rateLimits!.snapshotCapturedAt!);
+      if (!Number.isFinite(captured)) return false;
+      return now.getTime() - captured > STALE_SNAPSHOT_GRACE_MS;
+    })
+  ) {
     return { allow: true, resumeAt: null, usableAccount: null };
   }
 
