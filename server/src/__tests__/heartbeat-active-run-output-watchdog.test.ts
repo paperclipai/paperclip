@@ -216,6 +216,44 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(evaluations[0]?.description).not.toContain("sk-test-secret-value");
   });
 
+  it("does not re-fire stale-run evaluation after prior evaluation is closed without a rearm decision (ATO-223)", async () => {
+    // Regression test: closing an evaluation issue without a continue/snooze decision
+    // should NOT allow the evaluator to immediately (or ever, without explicit rearm) create
+    // another one for the same run. This was the root cause of ATO-223 where 5 identical
+    // evaluation issues were created in ~7 minutes as each was closed and immediately replaced.
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first.created).toBe(1);
+
+    // Simulate closing the evaluation issue (e.g. marked done as a false positive).
+    await db.update(issues).set({ status: "done" }).where(
+      and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")),
+    );
+
+    // Run is still silent — evaluator should NOT create another issue (no rearm decision set).
+    const second = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(second.created).toBe(0);
+    expect(second.existing).toBe(1);
+
+    // Still blocked even much later — re-firing requires an explicit continue/snooze rearm cycle.
+    const later = new Date(now.getTime() + 60 * 60 * 1000);
+    const third = await heartbeat.scanSilentActiveRuns({ now: later, companyId });
+    expect(third.created).toBe(0);
+    expect(third.existing).toBe(1);
+
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(1);
+  });
+
   it("redacts sensitive values from actual run-log evidence", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const leakedJwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";

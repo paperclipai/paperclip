@@ -726,6 +726,43 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  async function findAnyClosedStaleRunEvaluation(companyId: string, runId: string) {
+    const [row] = await db
+      .select({ id: issues.id, identifier: issues.identifier, status: issues.status })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
+  // Returns true when a prior continue/snooze watchdog decision exists with a rearm window
+  // that has now expired. This is the explicit signal that the evaluator is allowed to
+  // re-fire for this run after the operator acknowledged the prior evaluation and requested
+  // another check after the quiet window.
+  async function hasExpiredRearmDecision(companyId: string, runId: string, now: Date) {
+    const [row] = await db
+      .select({ id: heartbeatRunWatchdogDecisions.id })
+      .from(heartbeatRunWatchdogDecisions)
+      .where(
+        and(
+          eq(heartbeatRunWatchdogDecisions.companyId, companyId),
+          eq(heartbeatRunWatchdogDecisions.runId, runId),
+          inArray(heartbeatRunWatchdogDecisions.decision, ["continue", "snooze"]),
+          sql`${heartbeatRunWatchdogDecisions.snoozedUntil} <= ${now.toISOString()}::timestamptz`,
+        ),
+      )
+      .limit(1);
+    return row != null;
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -1043,6 +1080,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
     const level = (evidence.silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS ? "critical" : "suspicious";
     const existing = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
+    if (!existing) {
+      // Guard against re-firing after a prior evaluation is closed without an explicit
+      // continue/snooze rearm cycle. Without this, each heartbeat that finds no open
+      // evaluation creates a new one immediately after the prior is closed (ATO-223).
+      // Re-firing is allowed only when a rearm decision exists with an expired snoozedUntil —
+      // the operator explicitly requested "check again after N minutes".
+      const closedEval = await findAnyClosedStaleRunEvaluation(input.run.companyId, input.run.id);
+      if (closedEval && !(await hasExpiredRearmDecision(input.run.companyId, input.run.id, input.now))) {
+        return { kind: "existing" as const, evaluationIssueId: closedEval.id };
+      }
+    }
     if (existing) {
       if (level === "critical" && existing.priority !== "high") {
         await issuesSvc.update(existing.id, {
