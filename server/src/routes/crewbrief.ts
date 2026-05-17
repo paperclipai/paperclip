@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { appendFileSync } from "node:fs";
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { and, eq, count } from "drizzle-orm";
@@ -470,6 +471,17 @@ export function crewbriefRoutes(
       emailCount: s.emails.length,
     }));
     res.status(200).json({ sequences });
+  });
+
+  router.post("/track", async (req, res) => {
+    const ANALYTICS_EVENTS_FILE = "/opt/paperclip/server/crewbrief-analytics-events.jsonl";
+    try {
+      const event = req.body;
+      if (event && typeof event === "object") {
+        appendFileSync(ANALYTICS_EVENTS_FILE, JSON.stringify({ ...event, capturedAt: new Date().toISOString() }) + "\n", "utf-8");
+      }
+    } catch { /* ignore */ }
+    res.json({ status: "ok" });
   });
 
   router.post("/hubspot/properties", async (_req, res) => {

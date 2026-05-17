@@ -45,6 +45,8 @@ tailwind.config = {
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 
 <!-- __CONFIG_INJECT__ -->
+<!-- Umami Analytics -->
+<script async defer src="/umami/script.js" data-website-id="e69396ab-6b76-4d2b-8e4a-778337f8bca4" data-host-url="/umami"></script>
 <!-- LinkedIn Insight Tag -->
 <script type="text/javascript">
 _linkedin_partner_id = "__LINKEDIN_PARTNER_ID__";
@@ -66,20 +68,25 @@ s.parentNode.insertBefore(b, s);})(window.lintrk);
 </noscript>
 <!-- End LinkedIn Insight Tag -->
 
-<!-- PostHog -->
 <script>
-!function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.async=!0,p.src=s.api_host+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.toString(1)+".people (stub)"},o="capture identify alias people.set people.set_once set_config register register_once unregister opt_out_capturing has_opted_out_capturing opt_in_capturing reset isFeatureEnabled onFeatureFlags getFeatureFlag getFeatureFlagPayload reloadFeatureFlags group updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures getActiveMatchingSurveys getSurveys onSessionId".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=!0)}(document,window.posthog||[]);
-posthog.init('__POSTHOG_CLIENT_KEY__', {
-  api_host: '__POSTHOG_HOST__' || 'https://app.posthog.com',
-  person_profiles: 'identified_only',
-  loaded: function(ph) {
-    if (window.CREWBRIEF_CONFIG && window.CREWBRIEF_CONFIG.distinctId) {
-      ph.identify(window.CREWBRIEF_CONFIG.distinctId);
+function track(event, properties) {
+  try {
+    var payload = { event: event, properties: properties || {}, distinct_id: window.CREWBRIEF_CONFIG && window.CREWBRIEF_CONFIG.distinctId };
+    var apiUrl = (window.CREWBRIEF_CONFIG && window.CREWBRIEF_CONFIG.apiBaseUrl) || '/api';
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon(apiUrl + '/crewbrief/track', JSON.stringify(payload));
+    } else {
+      fetch(apiUrl + '/crewbrief/track', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        keepalive: true,
+      }).catch(function(){});
     }
-  }
-});
+  } catch(e) {}
+}
 </script>
-<!-- End PostHog -->
+<!-- End Analytics -->
 <style>
 html { scroll-behavior: smooth; }
 .hero-gradient { background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 50%, #172554 100%); }
@@ -109,6 +116,7 @@ html { scroll-behavior: smooth; }
         <a href="#solution" class="hover:text-brand-600 transition-colors">Solution</a>
         <a href="#how-it-works" class="hover:text-brand-600 transition-colors">How It Works</a>
         <a href="#pricing" class="hover:text-brand-600 transition-colors">Pricing</a>
+        <a href="/blog" class="hover:text-brand-600 transition-colors">Blog</a>
         <a href="#waitlist" class="inline-flex items-center px-4 py-2 rounded-lg bg-brand-600 text-white font-semibold hover:bg-brand-700 transition-colors text-sm">Join Waitlist</a>
       </div>
     </div>
@@ -517,13 +525,11 @@ html { scroll-behavior: smooth; }
 
   setHiddenFields();
 
-  if (window.posthog) {
-    posthog.capture('$pageview', {
-      utm_source: document.getElementById('utmSource').value,
-      utm_medium: document.getElementById('utmMedium').value,
-      utm_campaign: document.getElementById('utmCampaign').value,
-    });
-  }
+  track('$pageview', {
+    utm_source: document.getElementById('utmSource').value,
+    utm_medium: document.getElementById('utmMedium').value,
+    utm_campaign: document.getElementById('utmCampaign').value,
+  });
 
   document.getElementById('waitlistForm').addEventListener('submit', function(e) {
     e.preventDefault();
@@ -561,16 +567,13 @@ html { scroll-behavior: smooth; }
     .then(function(res) { return res.json().then(function(data) { return { status: res.status, data: data }; }); })
     .then(function(result) {
       if (result.status === 201 || result.status === 200) {
-        if (window.posthog) {
-          posthog.identify(result.data.email);
-          posthog.capture('waitlist_signup', {
-            email: result.data.email,
-            role: payload.role,
-            source: payload.source,
-            referral_code: result.data.referralCode,
-            queue_position: result.data.queuePosition,
-          });
-        }
+        track('waitlist_signup', {
+          email: result.data.email,
+          role: payload.role,
+          source: payload.source,
+          referral_code: result.data.referralCode,
+          queue_position: result.data.queuePosition,
+        });
 
         if (window.lintrk) {
           window.lintrk('track', 'conversion', {
