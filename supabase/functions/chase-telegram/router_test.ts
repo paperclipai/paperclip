@@ -384,13 +384,14 @@ Deno.test({
 });
 
 Deno.test({
-  name: "routeQuery /commands handler returns commands list",
+  name: "routeQuery /commands handler returns commands list with inline keyboard",
   async fn() {
     const { handler } = routeQuery("/commands");
     const result = await handler();
     assertStringIncludes(result.text, "Available commands");
-    assertStringIncludes(result.text, "Instant commands");
-    assertStringIncludes(result.text, "Paperclip lookup commands");
+    assertStringIncludes(result.text, "Tap a button below");
+    assertEquals(Array.isArray(result.replyMarkup?.inline_keyboard), true);
+    assertEquals(result.replyMarkup!.inline_keyboard.length > 0, true);
   },
   sanitizeResources: false,
   sanitizeOps: false,

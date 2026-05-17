@@ -225,6 +225,51 @@ Deno.test({
 });
 
 Deno.test({
+  name: "handleCreateIssue posts cross-reference comment on source issue when sourceIssueId provided",
+  async fn() {
+    setupMockFetch();
+    const { handleCreateIssue } = await import("./actions.ts");
+    mockFetch(/agents/, () => mockJsonResponse(SAMPLE_AGENTS));
+    mockFetch(/\/api\/companies\/.*\/issues$/, () => mockJsonResponse({
+      id: "new-xref-issue",
+      identifier: "CRE-600",
+      title: "Delete CRE-549",
+      status: "todo",
+      priority: "medium",
+    }));
+
+    let postedToNewIssue = "";
+    let postedToSourceIssue = "";
+    mockFetch(/\/issues\/new-xref-issue\/comments/, (_url, init) => {
+      postedToNewIssue = JSON.parse(init?.body as string).body;
+      return mockJsonResponse({});
+    });
+    mockFetch(/\/issues\/issue-cre549\/comments/, (_url, init) => {
+      postedToSourceIssue = JSON.parse(init?.body as string).body;
+      return mockJsonResponse({});
+    });
+
+    await handleCreateIssue({
+      title: "Delete CRE-549",
+      description: "Delete CRE-549 - Test issue. Requested by Jeff.",
+      assigneeName: "Miles",
+      sourceMessage: "Can you delete CRE-549?",
+      confirmationMessage: "Yes",
+      chatId: 12345,
+      sourceIssueId: "issue-cre549",
+      sourceIssueIdentifier: "CRE-549",
+    });
+
+    assertStringIncludes(postedToSourceIssue, "Related task created");
+    assertStringIncludes(postedToSourceIssue, "CRE-600");
+    assertStringIncludes(postedToNewIssue, "Related task: CRE-549");
+    teardownMockFetch();
+  },
+  sanitizeResources: false,
+  sanitizeOps: false,
+});
+
+Deno.test({
   name: "handleCreateIssue succeeds even when audit comment fails",
   async fn() {
     setupMockFetch();
@@ -237,7 +282,6 @@ Deno.test({
       status: "todo",
       priority: "medium",
     }));
-    // Comment POST returns 500
     mockFetch(
       /\/comments/,
       () => new Response("Server error", { status: 500 }),
@@ -252,7 +296,6 @@ Deno.test({
       chatId: 12345,
     });
 
-    // Issue creation should still succeed despite audit comment failure
     assertStringIncludes(result.text, "Issue Created");
     assertStringIncludes(result.text, "CRE-510");
     teardownMockFetch();
