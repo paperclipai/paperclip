@@ -505,6 +505,7 @@ describe("sandbox callback bridge", () => {
         timeoutMs: 30_000,
       }),
       queueDir,
+      pollIntervalMs: 10,
       authorizeRequest: async () => null,
       handleRequest: async (request) => {
         seenRequestIds.push(request.id);
@@ -526,6 +527,7 @@ describe("sandbox callback bridge", () => {
       assetRemoteDir: prepared.assetDirs.bridge,
       queueDir,
       bridgeToken,
+      pollIntervalMs: 10,
       timeoutMs: 30_000,
     });
     cleanupFns.push(async () => {
@@ -538,8 +540,8 @@ describe("sandbox callback bridge", () => {
       },
     });
 
-    for (let attempt = 0; attempt < 50 && seenRequestIds.length === 0; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
+    for (let attempt = 0; attempt < 500 && seenRequestIds.length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
     }
 
     expect(seenRequestIds).toHaveLength(1);
@@ -559,7 +561,7 @@ describe("sandbox callback bridge", () => {
         entries.filter((entry) => entry.endsWith(".tmp") || entry.includes(".paperclip-write.lock")),
       ),
     ).resolves.toEqual([]);
-  });
+  }, 10_000);
 
   it("rejects non-JSON request bodies and full queues at the bridge server", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-server-guards-"));

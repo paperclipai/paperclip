@@ -581,6 +581,9 @@ async function writeBridgeResponse(
     await client.writeResponseFile(responsePath, body, options.requireRequestPath === false ? {} : { requestPath });
     return;
   }
+  if (options.requireRequestPath !== false && !(await pathExists(requestPath))) {
+    return;
+  }
   const tempPath = `${responsePath}.tmp`;
   await client.writeTextFile(tempPath, body);
   await client.rename(tempPath, responsePath);
@@ -611,6 +614,14 @@ export async function startSandboxCallbackBridgeWorker(input: {
   let settled = false;
   let stopDeadline = Number.POSITIVE_INFINITY;
   let settleResolve: (() => void) | null = null;
+  const activeRequests = new Map<
+    string,
+    {
+      requestPath: string;
+      responsePath: string;
+      requestId: string;
+    }
+  >();
   const settledPromise = new Promise<void>((resolve) => {
     settleResolve = resolve;
   });
@@ -653,6 +664,11 @@ export async function startSandboxCallbackBridgeWorker(input: {
     }
 
     try {
+      activeRequests.set(fileName, {
+        requestPath,
+        responsePath,
+        requestId: request.id,
+      });
       const result = await input.handleRequest(request);
       const responseBody = result.body ?? "";
       if (Buffer.byteLength(responseBody, "utf8") > maxBodyBytes) {
@@ -679,22 +695,51 @@ export async function startSandboxCallbackBridgeWorker(input: {
         completedAt: new Date().toISOString(),
       });
     } finally {
+      activeRequests.delete(fileName);
       await input.client.remove(requestPath);
     }
   };
 
   const failPendingRequests = async (message: string) => {
+    const pendingRequests = new Map<
+      string,
+      {
+        requestPath: string;
+        responsePath: string;
+        requestId: string;
+      }
+    >();
+
+    for (const [fileName, activeRequest] of Array.from(activeRequests.entries())) {
+      pendingRequests.set(fileName, activeRequest);
+    }
+
     const fileNames = await input.client.listJsonFiles(directories.requestsDir).catch(() => []);
     for (const fileName of fileNames) {
+      if (pendingRequests.has(fileName)) continue;
       const requestPath = path.posix.join(directories.requestsDir, fileName);
       const responsePath = path.posix.join(directories.responsesDir, fileName);
       const requestId = fileName.replace(/\.json$/i, "") || randomUUID();
       try {
         const raw = await input.client.readTextFile(requestPath);
         const parsed = JSON.parse(raw) as Partial<SandboxCallbackBridgeRequest>;
-        await input.client.remove(requestPath).catch(() => undefined);
-        await writeBridgeResponse(input.client, requestPath, responsePath, {
-          id: typeof parsed.id === "string" && parsed.id.length > 0 ? parsed.id : requestId,
+        pendingRequests.set(fileName, {
+          requestPath,
+          responsePath,
+          requestId: typeof parsed.id === "string" && parsed.id.length > 0 ? parsed.id : requestId,
+        });
+      } catch (error) {
+        console.warn(
+          `[paperclip] sandbox callback bridge failed to read pending request ${requestId}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
+    for (const [fileName, request] of Array.from(pendingRequests.entries())) {
+      try {
+        await input.client.remove(request.requestPath).catch(() => undefined);
+        await writeBridgeResponse(input.client, request.requestPath, request.responsePath, {
+          id: request.requestId,
           status: 503,
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ error: message }),
@@ -704,10 +749,11 @@ export async function startSandboxCallbackBridgeWorker(input: {
         });
       } catch (error) {
         console.warn(
-          `[paperclip] sandbox callback bridge failed to abort pending request ${requestId}: ${error instanceof Error ? error.message : String(error)}`,
+          `[paperclip] sandbox callback bridge failed to abort pending request ${request.requestId}: ${error instanceof Error ? error.message : String(error)}`,
         );
       } finally {
-        await input.client.remove(requestPath).catch(() => undefined);
+        activeRequests.delete(fileName);
+        await input.client.remove(request.requestPath).catch(() => undefined);
       }
     }
   };
