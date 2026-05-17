@@ -119,7 +119,32 @@ export type RunOutputSilenceSummary = {
   evaluationIssueId: string | null;
   evaluationIssueIdentifier: string | null;
   evaluationIssueAssigneeAgentId: string | null;
+  latestEvaluationIssueId: string | null;
+  latestEvaluationIssueIdentifier: string | null;
+  latestEvaluationIssueStatus: string | null;
+  latestEvaluationUpdatedAt: Date | null;
+  recoveryState: "none" | "resolved_after_output_resume";
+  recoveredAt: Date | null;
 };
+
+type StaleRunRecoveredState = {
+  recovered: true;
+  reason: "run_succeeded_after_output_resumed" | "output_resumed_below_suspicion_threshold";
+  silenceAgeMs: number | null;
+};
+
+type StaleRunNotRecoveredState = {
+  recovered: false;
+  reason:
+    | "missing_recovery_timestamps"
+    | "no_output_after_evaluation_opened"
+    | "run_not_running_or_succeeded"
+    | "silence_age_unavailable"
+    | "still_over_suspicion_threshold";
+  silenceAgeMs: number | null;
+};
+
+type StaleRunRecoveryState = StaleRunRecoveredState | StaleRunNotRecoveredState;
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
@@ -682,6 +707,65 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return startedAt ? Math.max(0, now.getTime() - startedAt.getTime()) : null;
   }
 
+  function evaluateStaleRunRecoveryState(input: {
+    runStatus: string;
+    evaluationCreatedAt: Date | null;
+    lastOutputAt: Date | null;
+    silenceAgeMs: number | null;
+    suspicionThresholdMs: number;
+  }): StaleRunRecoveryState {
+    const evaluationCreatedAt = input.evaluationCreatedAt ?? null;
+    const lastOutputAt = input.lastOutputAt ?? null;
+    if (!evaluationCreatedAt || !lastOutputAt) {
+      return {
+        recovered: false,
+        reason: "missing_recovery_timestamps" as const,
+        silenceAgeMs: input.silenceAgeMs ?? null,
+      };
+    }
+    if (lastOutputAt.getTime() <= evaluationCreatedAt.getTime()) {
+      return {
+        recovered: false,
+        reason: "no_output_after_evaluation_opened" as const,
+        silenceAgeMs: input.silenceAgeMs ?? null,
+      };
+    }
+    if (input.runStatus === "succeeded") {
+      return {
+        recovered: true,
+        reason: "run_succeeded_after_output_resumed" as const,
+        silenceAgeMs: 0,
+      };
+    }
+    if (input.runStatus !== "running") {
+      return {
+        recovered: false,
+        reason: "run_not_running_or_succeeded" as const,
+        silenceAgeMs: input.silenceAgeMs ?? null,
+      };
+    }
+    const silenceAgeMs = input.silenceAgeMs ?? null;
+    if (silenceAgeMs === null) {
+      return {
+        recovered: false,
+        reason: "silence_age_unavailable" as const,
+        silenceAgeMs: null,
+      };
+    }
+    if (silenceAgeMs >= input.suspicionThresholdMs) {
+      return {
+        recovered: false,
+        reason: "still_over_suspicion_threshold" as const,
+        silenceAgeMs,
+      };
+    }
+    return {
+      recovered: true,
+      reason: "output_resumed_below_suspicion_threshold" as const,
+      silenceAgeMs,
+    };
+  }
+
   async function latestActiveOutputQuietUntilDecision(companyId: string, runId: string, now = new Date()) {
     const [row] = await db
       .select()
@@ -707,6 +791,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         status: issues.status,
         priority: issues.priority,
         assigneeAgentId: issues.assigneeAgentId,
+        createdAt: issues.createdAt,
         updatedAt: issues.updatedAt,
       })
       .from(issues)
@@ -723,6 +808,54 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  async function findLatestStaleRunEvaluation(companyId: string, runId: string) {
+    const [row] = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        createdAt: issues.createdAt,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1);
+    return row ?? null;
+  }
+
+  async function listOpenStaleRunEvaluations(companyId?: string) {
+    return db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        status: issues.status,
+        originId: issues.originId,
+        createdAt: issues.createdAt,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          companyId ? eq(issues.companyId, companyId) : undefined,
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .orderBy(asc(issues.createdAt))
+      .limit(100);
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -730,12 +863,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     >,
     now = new Date(),
   ): Promise<RunOutputSilenceSummary> {
-    const [quietUntilDecision, evaluation] = await Promise.all([
+    const [quietUntilDecision, evaluation, latestEvaluation] = await Promise.all([
       latestActiveOutputQuietUntilDecision(run.companyId, run.id, now),
       findOpenStaleRunEvaluation(run.companyId, run.id),
+      findLatestStaleRunEvaluation(run.companyId, run.id),
     ]);
     const silenceStartedAt = silenceStartedAtForRun(run);
     const silenceAgeMs = run.status === "running" ? silenceAgeMsForRun(run, now) : null;
+    const recoveryState = latestEvaluation &&
+      ["done", "cancelled"].includes(latestEvaluation.status) &&
+      run.lastOutputAt &&
+      run.lastOutputAt.getTime() > latestEvaluation.createdAt.getTime()
+      ? "resolved_after_output_resume"
+      : "none";
     const level = run.status !== "running"
       ? "not_applicable"
       : quietUntilDecision
@@ -760,6 +900,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       evaluationIssueId: evaluation?.id ?? null,
       evaluationIssueIdentifier: evaluation?.identifier ?? null,
       evaluationIssueAssigneeAgentId: evaluation?.assigneeAgentId ?? null,
+      latestEvaluationIssueId: latestEvaluation?.id ?? null,
+      latestEvaluationIssueIdentifier: latestEvaluation?.identifier ?? null,
+      latestEvaluationIssueStatus: latestEvaluation?.status ?? null,
+      latestEvaluationUpdatedAt: latestEvaluation?.updatedAt ?? null,
+      recoveryState,
+      recoveredAt: recoveryState === "resolved_after_output_resume" ? run.lastOutputAt ?? null : null,
     };
   }
 
@@ -785,6 +931,82 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       logger.warn({ err, runId: run.id }, "failed to read stale-run watchdog evidence tail");
       return "";
     }
+  }
+
+  function compactWatchdogEvidenceLine(value: string, maxChars = 260) {
+    const normalized = value
+      .replace(/\n/g, " ")
+      .replace(/\\"/g, "\"")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!normalized) return "";
+    if (normalized.length <= maxChars) return normalized;
+    return `...${normalized.slice(normalized.length - (maxChars - 3))}`;
+  }
+
+  function extractReconnectEvidenceFromLogTail(tail: string, maxItems = 3) {
+    if (!tail) return [] as string[];
+
+    const matches: string[] = [];
+    const reconnectPattern = /(reconnect|websocket|idle timeout)/i;
+    for (const rawLine of tail.split(/\r?\n/)) {
+      if (!rawLine) continue;
+      let candidate = rawLine;
+      try {
+        const parsed = JSON.parse(rawLine) as { chunk?: unknown; message?: unknown };
+        if (typeof parsed?.chunk === "string") {
+          candidate = parsed.chunk;
+        } else if (typeof parsed?.message === "string") {
+          candidate = parsed.message;
+        }
+      } catch (_err) {
+        // keep raw line
+      }
+      if (!reconnectPattern.test(candidate)) continue;
+      const compacted = compactWatchdogEvidenceLine(candidate);
+      if (compacted) matches.push(compacted);
+    }
+
+    if (matches.length <= maxItems) return matches;
+    return matches.slice(matches.length - maxItems);
+  }
+
+  function buildStaleRunRecoveredComment(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    prefix: string;
+    evaluation: {
+      id: string;
+      identifier: string | null;
+      status: string;
+      createdAt: Date;
+    };
+    recovery: {
+      recovered: true;
+      reason: "run_succeeded_after_output_resumed" | "output_resumed_below_suspicion_threshold";
+      silenceAgeMs: number | null;
+    };
+    reconnectEvidence: string[];
+  }) {
+    const reconnectLines = input.reconnectEvidence.length > 0
+      ? input.reconnectEvidence.map((line) => `- \`${line}\``).join("\n")
+      : "- none found in retained run-log tail";
+    return [
+      "Auto-resolved stale-run watchdog evaluation after output resumed.",
+      "",
+      `- Run: ${runUiLink(input.run, input.prefix)}`,
+      `- Evaluation opened at: ${input.evaluation.createdAt?.toISOString() ?? "unknown"}`,
+      `- Evaluation status before close: \`${input.evaluation.status}\``,
+      `- Run status now: \`${input.run.status}\``,
+      `- Recovery rule: \`${input.recovery.reason}\``,
+      `- Last output at: ${input.run.lastOutputAt?.toISOString() ?? "none recorded"}`,
+      `- Last output sequence: ${input.run.lastOutputSeq ?? 0}`,
+      `- Current silence age: ${formatDuration(input.recovery.silenceAgeMs)}`,
+      "",
+      "Reconnect evidence (if present):",
+      reconnectLines,
+      "",
+      "Next action: no cancellation was applied; watchdog will only re-escalate if a future silence window crosses thresholds again.",
+    ].join("\n");
   }
 
   async function resolveStaleRunSourceIssue(run: typeof heartbeatRuns.$inferSelect) {
@@ -1023,6 +1245,91 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return true;
   }
 
+  async function resolveRecoveredStaleRunEvaluations(opts?: { now?: Date; companyId?: string }) {
+    const now = opts?.now ?? new Date();
+    const openEvaluations = await listOpenStaleRunEvaluations(opts?.companyId);
+    const result = {
+      open: openEvaluations.length,
+      resolved: 0,
+      skipped: 0,
+      evaluationIssueIds: [] as string[],
+    };
+
+    for (const evaluation of openEvaluations) {
+      const runId = readNonEmptyString(evaluation.originId);
+      if (!runId) {
+        result.skipped += 1;
+        continue;
+      }
+      const [run] = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, evaluation.companyId), eq(heartbeatRuns.id, runId)))
+        .limit(1);
+      if (!run) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const recovery = evaluateStaleRunRecoveryState({
+        runStatus: run.status,
+        evaluationCreatedAt: evaluation.createdAt ?? null,
+        lastOutputAt: run.lastOutputAt ?? null,
+        silenceAgeMs: silenceAgeMsForRun(run, now),
+        suspicionThresholdMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
+      });
+      if (!recovery.recovered) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const updated = await issuesSvc.update(evaluation.id, {
+        status: "done",
+      });
+      if (!updated) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const prefix = await getCompanyIssuePrefix(evaluation.companyId);
+      const tail = await readRunLogTailForEvidence(run);
+      const reconnectEvidence = extractReconnectEvidenceFromLogTail(tail);
+      await issuesSvc.addComment(
+        evaluation.id,
+        buildStaleRunRecoveredComment({
+          run,
+          prefix,
+          evaluation,
+          recovery,
+          reconnectEvidence,
+        }),
+        { runId: run.id },
+      );
+      await logActivity(db, {
+        companyId: evaluation.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: run.id,
+        action: "heartbeat.output_stale_auto_resolved",
+        entityType: "issue",
+        entityId: evaluation.id,
+        details: {
+          source: "recovery.scan_silent_active_runs",
+          recoveryRule: recovery.reason,
+          silenceAgeMs: recovery.silenceAgeMs,
+          lastOutputAt: run.lastOutputAt?.toISOString() ?? null,
+          lastOutputSeq: run.lastOutputSeq ?? 0,
+          reconnectEvidence,
+        },
+      });
+      result.resolved += 1;
+      result.evaluationIssueIds.push(evaluation.id);
+    }
+
+    return result;
+  }
+
   async function createOrUpdateStaleRunEvaluation(input: {
     run: typeof heartbeatRuns.$inferSelect;
     now: Date;
@@ -1155,6 +1462,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   async function scanSilentActiveRuns(opts?: { now?: Date; companyId?: string }) {
     const now = opts?.now ?? new Date();
+    const recovered = await resolveRecoveredStaleRunEvaluations({
+      companyId: opts?.companyId,
+      now,
+    });
     const suspicionBefore = new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS);
     const candidates = await db
       .select()
@@ -1176,6 +1487,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       escalated: 0,
       snoozed: 0,
       skipped: 0,
+      recovered: recovered.resolved,
+      recoveredOpen: recovered.open,
+      recoveredSkipped: recovered.skipped,
+      recoveredEvaluationIssueIds: recovered.evaluationIssueIds,
       evaluationIssueIds: [] as string[],
     };
 
