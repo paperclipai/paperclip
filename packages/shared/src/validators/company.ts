@@ -18,7 +18,7 @@ export const createCompanySchema = z.object({
   description: z.string().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
-});
+}).strict();
 
 export type CreateCompany = z.infer<typeof createCompanySchema>;
 
@@ -35,7 +35,7 @@ export const updateCompanySchema = createCompanySchema
     brandColor: brandColorSchema,
     logoAssetId: logoAssetIdSchema,
     attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
-  });
+  }).strict();
 
 export type UpdateCompany = z.infer<typeof updateCompanySchema>;
 

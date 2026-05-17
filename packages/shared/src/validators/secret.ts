@@ -38,7 +38,7 @@ export const createSecretSchema = z.object({
   externalRef: z.string().optional().nullable(),
   providerMetadata: z.record(z.unknown()).optional().nullable(),
   providerVersionRef: z.string().optional().nullable(),
-}).superRefine((value, ctx) => {
+}).strict().superRefine((value, ctx) => {
   if ((value.managedMode ?? "paperclip_managed") === "external_reference") {
     if (!value.externalRef?.trim()) {
       ctx.addIssue({
@@ -72,7 +72,7 @@ export const rotateSecretSchema = z.object({
   externalRef: z.string().optional().nullable(),
   providerVersionRef: z.string().optional().nullable(),
   providerConfigId: z.string().uuid().optional().nullable(),
-});
+}).strict();
 
 export type RotateSecret = z.infer<typeof rotateSecretSchema>;
 
@@ -84,7 +84,7 @@ export const updateSecretSchema = z.object({
   description: z.string().optional().nullable(),
   externalRef: z.string().optional().nullable(),
   providerMetadata: z.record(z.unknown()).optional().nullable(),
-});
+}).strict();
 
 export type UpdateSecret = z.infer<typeof updateSecretSchema>;
 
@@ -99,7 +99,7 @@ export const createSecretBindingSchema = secretBindingTargetSchema.extend({
   versionSelector: z.union([z.literal("latest"), z.number().int().positive()]).default("latest"),
   required: z.boolean().default(true),
   label: z.string().optional().nullable(),
-});
+}).strict();
 
 export type CreateSecretBinding = z.infer<typeof createSecretBindingSchema>;
 
@@ -199,7 +199,7 @@ export const createSecretProviderConfigSchema = z.object({
   status: z.enum(SECRET_PROVIDER_CONFIG_STATUSES).optional(),
   isDefault: z.boolean().optional(),
   config: z.record(z.unknown()).default({}),
-}).superRefine((value, ctx) => {
+}).strict().superRefine((value, ctx) => {
   rejectSensitiveProviderConfigKeys(value.config, ctx);
   const parsed = secretProviderConfigPayloadSchema.safeParse({
     provider: value.provider,
@@ -237,7 +237,7 @@ export const updateSecretProviderConfigSchema = z.object({
   status: z.enum(SECRET_PROVIDER_CONFIG_STATUSES).optional(),
   isDefault: z.boolean().optional(),
   config: z.record(z.unknown()).optional(),
-}).superRefine((value, ctx) => {
+}).strict().superRefine((value, ctx) => {
   if (value.config !== undefined) {
     rejectSensitiveProviderConfigKeys(value.config, ctx);
     rejectUnsafeVaultAddress(value.config.address, ctx);
@@ -258,7 +258,7 @@ export const remoteSecretImportPreviewSchema = z.object({
   query: z.string().trim().max(200).optional().nullable(),
   nextToken: z.string().trim().min(1).max(4096).optional().nullable(),
   pageSize: z.number().int().min(1).max(100).optional(),
-});
+}).strict();
 
 export type RemoteSecretImportPreview = z.infer<typeof remoteSecretImportPreviewSchema>;
 
@@ -269,12 +269,12 @@ export const remoteSecretImportSelectionSchema = z.object({
   description: z.string().trim().max(500).optional().nullable(),
   providerVersionRef: z.string().trim().min(1).max(512).optional().nullable(),
   providerMetadata: z.record(z.unknown()).optional().nullable(),
-});
+}).strict();
 
 export const remoteSecretImportSchema = z.object({
   providerConfigId: z.string().uuid(),
   secrets: z.array(remoteSecretImportSelectionSchema).min(1).max(100),
-});
+}).strict();
 
 export type RemoteSecretImportSelection = z.infer<typeof remoteSecretImportSelectionSchema>;
 export type RemoteSecretImport = z.infer<typeof remoteSecretImportSchema>;

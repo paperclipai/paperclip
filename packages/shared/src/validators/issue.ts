@@ -386,11 +386,11 @@ const createIssueBaseSchema = z.object({
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
-});
+}).strict();
 
 export const createIssueInputSchema = createIssueBaseSchema.extend({
   status: createIssueBaseSchema.shape.status.optional(),
-});
+}).strict();
 
 export const createIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema);
 
@@ -404,14 +404,14 @@ export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBa
   .extend({
     acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
     blockParentUntilDone: z.boolean().optional().default(false),
-  }));
+  }).strict());
 
 export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
 
 export const createIssueLabelSchema = z.object({
   name: z.string().trim().min(1).max(48),
   color: z.string().regex(/^#(?:[0-9a-fA-F]{6})$/, "Color must be a 6-digit hex value"),
-});
+}).strict();
 
 export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
@@ -424,7 +424,7 @@ export const updateIssueSchema = createIssueBaseSchema.partial().extend({
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
-});
+}).strict();
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
 export type IssueExecutionWorkspaceSettings = z.infer<typeof issueExecutionWorkspaceSettingsSchema>;
@@ -432,7 +432,7 @@ export type IssueExecutionWorkspaceSettings = z.infer<typeof issueExecutionWorks
 export const checkoutIssueSchema = z.object({
   agentId: z.string().uuid(),
   expectedStatuses: z.array(z.enum(ISSUE_STATUSES)).nonempty(),
-});
+}).strict();
 
 export type CheckoutIssue = z.infer<typeof checkoutIssueSchema>;
 
@@ -561,7 +561,7 @@ export const suggestedTaskDraftSchema = z.object({
   billingCode: z.string().trim().max(120).nullable().optional(),
   labels: z.array(z.string().trim().min(1).max(48)).max(20).optional(),
   hiddenInPreview: z.boolean().optional(),
-}).superRefine((value, ctx) => {
+}).strict().superRefine((value, ctx) => {
   if (value.assigneeAgentId && value.assigneeUserId) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -575,7 +575,7 @@ export const suggestTasksPayloadSchema = z.object({
   version: z.literal(1),
   defaultParentId: z.string().uuid().nullable().optional(),
   tasks: z.array(suggestedTaskDraftSchema).min(1).max(50),
-}).superRefine((value, ctx) => {
+}).strict().superRefine((value, ctx) => {
   const seenClientKeys = new Set<string>();
   for (const [index, task] of value.tasks.entries()) {
     if (seenClientKeys.has(task.clientKey)) {

@@ -84,14 +84,14 @@ function validateProjectWorkspace(value: Record<string, unknown>, ctx: z.Refinem
 export const createProjectWorkspaceSchema = z.object({
   ...projectWorkspaceFields,
   isPrimary: z.boolean().optional().default(false),
-}).superRefine(validateProjectWorkspace);
+}).strict().superRefine(validateProjectWorkspace);
 
 export type CreateProjectWorkspace = z.infer<typeof createProjectWorkspaceSchema>;
 
 export const updateProjectWorkspaceSchema = z.object({
   ...projectWorkspaceFields,
   isPrimary: z.boolean().optional(),
-}).partial();
+}).partial().strict();
 
 export type UpdateProjectWorkspace = z.infer<typeof updateProjectWorkspaceSchema>;
 
@@ -113,11 +113,11 @@ const projectFields = {
 export const createProjectSchema = z.object({
   ...projectFields,
   workspace: createProjectWorkspaceSchema.optional(),
-});
+}).strict();
 
 export type CreateProject = z.infer<typeof createProjectSchema>;
 
-export const updateProjectSchema = z.object(projectFields).partial();
+export const updateProjectSchema = z.object(projectFields).partial().strict();
 
 export type UpdateProject = z.infer<typeof updateProjectSchema>;
 

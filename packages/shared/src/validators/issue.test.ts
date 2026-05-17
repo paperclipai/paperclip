@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
+  checkoutIssueSchema,
   createIssueSchema,
   issueBlockedInboxAttentionSchema,
   resolveIssueRecoveryActionSchema,
@@ -361,5 +362,31 @@ describe("issue validators", () => {
     });
 
     expect(parsed.success).toBe(false);
+  });
+
+  it("rejects unknown body keys on issue body schemas (ZERA-568 sweep)", () => {
+    expect(() =>
+      createIssueSchema.parse({
+        title: "x",
+        spoofedCreatedByAgentId: "00000000-0000-0000-0000-000000000000",
+      }),
+    ).toThrow(/Unrecognized key/);
+    expect(() =>
+      updateIssueSchema.parse({ title: "x", spoofedField: 1 }),
+    ).toThrow(/Unrecognized key/);
+    expect(() =>
+      checkoutIssueSchema.parse({
+        agentId: "00000000-0000-0000-0000-000000000000",
+        expectedStatuses: ["todo"],
+        extra: 1,
+      }),
+    ).toThrow(/Unrecognized key/);
+    expect(() =>
+      suggestedTaskDraftSchema.parse({
+        clientKey: "x",
+        title: "y",
+        spoofedField: 1,
+      }),
+    ).toThrow(/Unrecognized key/);
   });
 });

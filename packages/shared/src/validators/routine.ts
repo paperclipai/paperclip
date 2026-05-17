@@ -60,13 +60,13 @@ export const createRoutineSchema = z.object({
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES).optional().default("coalesce_if_active"),
   catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES).optional().default("skip_missed"),
   variables: z.array(routineVariableSchema).optional().default([]),
-});
+}).strict();
 
 export type CreateRoutine = z.infer<typeof createRoutineSchema>;
 
 export const updateRoutineSchema = createRoutineSchema.partial().extend({
   baseRevisionId: z.string().uuid().optional().nullable(),
-});
+}).strict();
 export type UpdateRoutine = z.infer<typeof updateRoutineSchema>;
 
 export const routineRevisionSnapshotRoutineV1Schema = z.object({
@@ -137,7 +137,7 @@ export const updateRoutineTriggerSchema = z.object({
   timezone: z.string().trim().min(1).optional().nullable(),
   signingMode: z.enum(ROUTINE_TRIGGER_SIGNING_MODES).optional().nullable(),
   replayWindowSec: z.number().int().min(30).max(86_400).optional().nullable(),
-});
+}).strict();
 
 export type UpdateRoutineTrigger = z.infer<typeof updateRoutineTriggerSchema>;
 
@@ -152,9 +152,9 @@ export const runRoutineSchema = z.object({
   executionWorkspaceId: z.string().uuid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
-});
+}).strict();
 
 export type RunRoutine = z.infer<typeof runRoutineSchema>;
 
-export const rotateRoutineTriggerSecretSchema = z.object({});
+export const rotateRoutineTriggerSecretSchema = z.object({}).strict();
 export type RotateRoutineTriggerSecret = z.infer<typeof rotateRoutineTriggerSecretSchema>;
