@@ -423,6 +423,29 @@ export {
 } from "./agent-capabilities.js";
 
 export {
+  CAPABILITY_APPLY_RISK_CLASSES,
+  CAPABILITY_APPLY_PLAN_STATES,
+  CAPABILITY_APPLY_STEP_STATES,
+  CAPABILITY_APPLY_STEP_KINDS,
+  CAPABILITY_APPLY_ERROR_CODES,
+  capabilityApplyRiskClassSchema,
+  capabilityApplyStepTargetRefSchema,
+  buildCapabilityApplyPlan,
+  type CapabilityApplyRiskClass,
+  type CapabilityApplyPlanState,
+  type CapabilityApplyStepState,
+  type CapabilityApplyStepKind,
+  type CapabilityApplyErrorCode,
+  type CapabilityApplyStepTargetRef,
+  type CapabilityApplyStep,
+  type CapabilityApplyApprovalPayload,
+  type CapabilityApplyPlanSummary,
+  type CapabilityApplyEvent,
+  type CapabilityApplyPlanInput,
+  type CapabilityApplyPlanBuilderResult,
+} from "./capability-apply.js";
+
+export {
   buildOrgPackageInstallPreview,
   paperclipOrgPackageManifestSchema,
   type OrgPackageInstallPreview,
