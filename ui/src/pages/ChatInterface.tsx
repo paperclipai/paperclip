@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowUp, Check, Copy, Download } from "lucide-react";
+import { ArrowUp, Check, Copy, Download, Menu, X, Upload, Clock, Search, Bell, LayoutDashboard, Paperclip } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
@@ -427,6 +427,86 @@ function SignupGate({
   );
 }
 
+// ── Mobile drawer ─────────────────────────────────────────────────────────
+
+const DRAWER_NAV_ITEMS = [
+  { icon: Upload, label: "Upload a file", description: "Attach context for your agents" },
+  { icon: LayoutDashboard, label: "Dashboard", description: "Overview of your workspace" },
+  { icon: Clock, label: "Chat History", description: "Browse past conversations" },
+  { icon: Search, label: "Search Files", description: "Find uploaded documents" },
+  { icon: Bell, label: "Reminders", description: "Follow-up and nudge settings" },
+] as const;
+
+function MobileDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  return (
+    <>
+      {/* Backdrop */}
+      {open && (
+        <button
+          type="button"
+          className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm md:hidden"
+          onClick={onClose}
+          aria-label="Close menu"
+        />
+      )}
+
+      {/* Drawer panel */}
+      <div
+        className={cn(
+          "fixed inset-y-0 left-0 z-50 flex w-full flex-col bg-[#FAFAF9] transition-transform duration-200 ease-out md:hidden",
+          open ? "translate-x-0" : "-translate-x-full",
+        )}
+        aria-hidden={!open}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
+          <span className="text-base font-semibold text-gray-800">goffer</span>
+          <button
+            onClick={onClose}
+            className="flex items-center justify-center rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-700 transition-colors"
+            aria-label="Close menu"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Nav items */}
+        <nav className="flex-1 overflow-y-auto px-3 py-4">
+          <ul className="space-y-1">
+            {DRAWER_NAV_ITEMS.map((item) => {
+              const Icon = item.icon;
+              return (
+                <li key={item.label}>
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left transition-colors hover:bg-gray-100 active:bg-gray-200"
+                  >
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gray-100">
+                      <Icon className="h-[18px] w-[18px] text-gray-600" />
+                    </span>
+                    <span>
+                      <span className="block text-sm font-medium text-gray-800">{item.label}</span>
+                      <span className="block text-xs text-gray-400">{item.description}</span>
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </nav>
+      </div>
+    </>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────
 
 export function ChatInterface() {
@@ -434,6 +514,7 @@ export function ChatInterface() {
   const [input, setInput] = useState("");
   const [selectedAgentId, setSelectedAgentId] = useState<string>(AGENTS[0].id);
   const [streaming, setStreaming] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [runsLeft, setRunsLeft] = useState<Record<string, number>>(() =>
     Object.fromEntries(AGENTS.map((a) => [a.id, getRemainingRuns(a.id)])),
   );
@@ -550,14 +631,25 @@ export function ChatInterface() {
 
   return (
     <main className="flex min-h-screen flex-col bg-[#FAFAF9]">
-      {/* Minimal header */}
+      {/* Mobile drawer */}
+      <MobileDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
+
+      {/* Header: always visible on mobile (for hamburger access), hidden on desktop when no messages */}
       <header
         className={cn(
-          "sticky top-0 z-10 flex items-center justify-between border-b border-gray-100/80 bg-[#FAFAF9]/90 px-6 py-3 backdrop-blur-sm transition-all duration-300",
-          hasMessages ? "opacity-100" : "opacity-0 pointer-events-none",
+          "sticky top-0 z-10 flex items-center justify-between border-b border-gray-100/80 bg-[#FAFAF9]/90 px-4 md:px-6 py-3 backdrop-blur-sm transition-all duration-300",
+          !hasMessages && "md:opacity-0 md:pointer-events-none",
         )}
       >
         <div className="flex items-center gap-2">
+          {/* Hamburger — mobile only */}
+          <button
+            onClick={() => setDrawerOpen(true)}
+            className="md:hidden -ml-1 flex items-center justify-center rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
+            aria-label="Open menu"
+          >
+            <Menu className="h-5 w-5" />
+          </button>
           <span className="text-base">{selectedAgent.emoji}</span>
           <span className="text-sm font-medium text-gray-700">{selectedAgent.name}</span>
         </div>
@@ -610,7 +702,7 @@ export function ChatInterface() {
         ) : (
           /* ── Message stream ── */
           <div className="flex-1 overflow-y-auto">
-            <div className="mx-auto max-w-[600px] space-y-8 px-6 py-14">
+            <div className="mx-auto max-w-[600px] space-y-8 px-4 md:px-6 py-14 pb-32 md:pb-14">
               {messages.map((msg) => (
                 <MessageBubble
                   key={msg.id}
@@ -626,8 +718,10 @@ export function ChatInterface() {
         )}
       </div>
 
-      {/* ── Input area ── */}
-      <div className="sticky bottom-0 bg-gradient-to-t from-[#FAFAF9] via-[#FAFAF9] to-transparent pb-8 pt-4">
+      {/* ── Input area ──
+           On mobile: sticky above MobileBottomNav (h-16 = 4rem); on desktop: sticky at bottom.
+           The [&]:bottom-20 targets mobile viewport where MobileBottomNav lives. */}
+      <div className="sticky bottom-20 md:bottom-0 bg-gradient-to-t from-[#FAFAF9] via-[#FAFAF9] to-transparent pb-4 md:pb-8 pt-4">
         <div className="mx-auto max-w-[600px] px-4">
           <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-[0_4px_24px_rgba(0,0,0,0.08)] input-warm-focus">
             <textarea
@@ -650,9 +744,21 @@ export function ChatInterface() {
               }}
             />
 
-            {/* Footer: agent pills + send */}
-            <div className="flex items-center justify-between gap-2 px-3 pb-2.5">
-              <div className="flex flex-wrap gap-1.5">
+            {/* Footer: upload + agent pills (scrollable on mobile) + send */}
+            <div className="flex items-center gap-2 px-3 pb-2.5">
+              {/* Upload button */}
+              <button
+                type="button"
+                onClick={() => setDrawerOpen(true)}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
+                aria-label="Upload file"
+                title="Upload a file"
+              >
+                <Paperclip className="h-4 w-4" />
+              </button>
+
+              {/* Agent pills — horizontal scroll on mobile, wrap on desktop */}
+              <div className="flex min-w-0 flex-1 gap-1.5 overflow-x-auto md:flex-wrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                 {AGENTS.map((agent) => (
                   <AgentPill
                     key={agent.id}
