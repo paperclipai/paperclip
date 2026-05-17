@@ -3045,7 +3045,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   const [sessionOpen, setSessionOpen] = useState(false);
   const [claudeLoginResult, setClaudeLoginResult] = useState<ClaudeLoginResult | null>(null);
   // Codex device-auth flow runs in the background on the server and returns a
-  // verification URL + 8-char user code; we poll for status and surface it in
+  // verification URL + one-time user code; we poll for status and surface it in
   // a modal while the user approves the request in their browser.
   const [codexLoginSessionId, setCodexLoginSessionId] = useState<string | null>(null);
   const [codexLoginState, setCodexLoginState] = useState<CodexLoginPollResponse | null>(null);

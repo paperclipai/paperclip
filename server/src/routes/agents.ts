@@ -3132,7 +3132,7 @@ export function agentRoutes(
 
   // ── Codex device-auth login session state ────────────────────────────
   // `codex login --device-auth` takes up to 15min: it prints a verification URL
-  // and 8-char code immediately, then polls OpenAI until the user approves in
+  // and one-time code immediately, then polls OpenAI until the user approves in
   // a browser. We can't block the HTTP request that long, so the start route
   // kicks the process off in the background and returns a session id, then a
   // poll route reports current state (URL/code/result) back to the UI.

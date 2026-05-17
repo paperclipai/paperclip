@@ -112,10 +112,11 @@ export function stripAnsi(text: string): string {
 //      FYL1-MAV09
 // (typically with ANSI styling). Codes are alphanumeric blocks separated by
 // a dash. Lengths vary across codex versions — older builds emitted 4-4
-// (XXXX-XXXX), 0.128+ emits 4-5 (XXXX-XXXXX). Allow 3-8 in each block to
-// stay forward-compatible without false-positive matches like "[v0.128.0]".
+// (XXXX-XXXX), 0.128 emits 4-5 (XXXX-XXXXX = 9 chars), and newer builds have
+// been observed emitting longer blocks. Allow 3-12 in each block so we stay
+// forward-compatible without false-positive matches like "[v0.128.0]".
 const CODEX_DEVICE_AUTH_URL_RE = /https?:\/\/auth\.openai\.com\/[^\s]*device[^\s]*/i;
-const CODEX_USER_CODE_RE = /\b([A-Z0-9]{3,8})-([A-Z0-9]{3,8})\b/;
+const CODEX_USER_CODE_RE = /\b([A-Z0-9]{3,12})-([A-Z0-9]{3,12})\b/;
 
 export function extractCodexDeviceAuth(text: string): { verificationUrl: string | null; userCode: string | null } {
   const cleaned = stripAnsi(text);

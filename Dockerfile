@@ -51,7 +51,7 @@ WORKDIR /app
 COPY --from=build /app /app
 RUN apt-get update && apt-get install -y --no-install-recommends gosu postgresql-client bsdextrautils && rm -rf /var/lib/apt/lists/*
 ARG CLAUDE_CODE_VERSION=2.1.141
-ARG CODEX_VERSION=0.128.0
+ARG CODEX_VERSION=0.130.0
 ARG AGENT_BROWSER_VERSION=0.27.0
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @openai/codex@${CODEX_VERSION} playwright agent-browser@${AGENT_BROWSER_VERSION}
 

@@ -129,6 +129,17 @@ describe("extractCodexDeviceAuth", () => {
     });
   });
 
+  it("parses longer 4-6 (10 char) and 5-5 (11 char) device-auth codes", () => {
+    expect(extractCodexDeviceAuth("Enter code: FYL1-MAV09B")).toEqual({
+      verificationUrl: null,
+      userCode: "FYL1-MAV09B",
+    });
+    expect(extractCodexDeviceAuth("Enter code: FYL1A-MAV09B")).toEqual({
+      verificationUrl: null,
+      userCode: "FYL1A-MAV09B",
+    });
+  });
+
   it("ignores version-like noise such as [v0.128.0]", () => {
     const stdout = "Welcome to Codex [v0.128.0]\nNo URL or code here";
     expect(extractCodexDeviceAuth(stdout)).toEqual({
