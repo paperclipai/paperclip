@@ -381,6 +381,7 @@ export function accessService(db: Db) {
           startedAt: null,
           checkoutRunId: null,
           executionRunId: null,
+          executionAgentNameKey: null,
           executionLockedAt: null,
         })
         .where(and(assignedOpenIssueWhere, eq(issues.status, "in_progress")))

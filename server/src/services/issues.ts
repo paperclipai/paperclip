@@ -4354,6 +4354,30 @@ export function issueService(db: Db) {
         patch.executionLockedAt = null;
       }
 
+      // PIN-225 fix #2: Mark run as failed when stale evaluation is resolved
+      if (
+        existing.originKind === "stale_active_run_evaluation" &&
+        existing.originId &&
+        issueData.status &&
+        ["done", "cancelled"].includes(issueData.status) &&
+        !["done", "cancelled"].includes(existing.status)
+      ) {
+        await dbOrTx
+          .update(heartbeatRuns)
+          .set({
+            status: "failed",
+            finishedAt: new Date(),
+            error: "Stale run evaluation resolved",
+          })
+          .where(
+            and(
+              eq(heartbeatRuns.id, existing.originId),
+              eq(heartbeatRuns.status, "running"),
+              isNull(heartbeatRuns.finishedAt),
+            ),
+          );
+      }
+
       const runUpdate = async (tx: any) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
         const [currentProjectGoalId, nextProjectGoalId] = await Promise.all([
@@ -4845,6 +4869,24 @@ export function issueService(db: Db) {
         }
       }
 
+      // Mark executionRunId run as failed if still running (PIN-225 fix #1)
+      if (existing.executionRunId) {
+        await db
+          .update(heartbeatRuns)
+          .set({
+            status: "failed",
+            finishedAt: new Date(),
+            error: "Issue released while run was active",
+          })
+          .where(
+            and(
+              eq(heartbeatRuns.id, existing.executionRunId),
+              eq(heartbeatRuns.status, "running"),
+              isNull(heartbeatRuns.finishedAt),
+            ),
+          );
+      }
+
       const updated = await db
         .update(issues)
         .set({
@@ -4879,6 +4921,24 @@ export function issueService(db: Db) {
           .where(eq(issues.id, id))
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
+
+        // Mark executionRunId run as failed if still running (PIN-225 fix #1)
+        if (existing.executionRunId) {
+          await tx
+            .update(heartbeatRuns)
+            .set({
+              status: "failed",
+              finishedAt: new Date(),
+              error: "Issue force-released while run was active",
+            })
+            .where(
+              and(
+                eq(heartbeatRuns.id, existing.executionRunId),
+                eq(heartbeatRuns.status, "running"),
+                isNull(heartbeatRuns.finishedAt),
+              ),
+            );
+        }
 
         const patch: Partial<typeof issues.$inferInsert> = {
           checkoutRunId: null,
