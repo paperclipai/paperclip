@@ -13,6 +13,11 @@ on:
         required: false
         type: string
         default: ""
+      chase_paperclip_api_key:
+        description: Bootstrap value for CHASE_PAPERCLIP_API_KEY Supabase secret
+        required: false
+        type: string
+        default: ""
 
 concurrency:
   group: supabase-deploy-${{ github.ref }}
@@ -75,10 +80,13 @@ jobs:
           else
             echo "WARNING: PAPERCLIP_API_URL GitHub secret not set — skipping"
           fi
-          if [ -n "${{ secrets.CHASE_PAPERCLIP_API_KEY }}" ]; then
+          CHASE_KEY="${{ inputs.chase_paperclip_api_key }}"
+          if [ -n "$CHASE_KEY" ]; then
+            supabase secrets set CHASE_PAPERCLIP_API_KEY="$CHASE_KEY"
+          elif [ -n "${{ secrets.CHASE_PAPERCLIP_API_KEY }}" ]; then
             supabase secrets set CHASE_PAPERCLIP_API_KEY="${{ secrets.CHASE_PAPERCLIP_API_KEY }}"
           else
-            echo "WARNING: CHASE_PAPERCLIP_API_KEY GitHub secret not set — skipping"
+            echo "WARNING: CHASE_PAPERCLIP_API_KEY not provided (neither dispatch input nor GitHub secret) — skipping"
           fi
           if [ -n "${{ secrets.CHASE_AGENT_ID }}" ]; then
             supabase secrets set CHASE_AGENT_ID="${{ secrets.CHASE_AGENT_ID }}"
