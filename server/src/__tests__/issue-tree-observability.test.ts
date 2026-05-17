@@ -8,6 +8,7 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueRelations,
   issues,
 } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
@@ -46,6 +47,9 @@ it("coerces timestamp strings returned by raw SQL rows", async () => {
           updatedAt: "2026-05-01T00:05:00.000Z",
         },
       ],
+    },
+    {
+      rows: [],
     },
     {
       rows: [
@@ -112,7 +116,7 @@ it("coerces timestamp strings returned by raw SQL rows", async () => {
     now: new Date("2026-05-01T00:20:00.000Z"),
   });
 
-  expect(fakeDb.execute).toHaveBeenCalledTimes(5);
+  expect(fakeDb.execute).toHaveBeenCalledTimes(6);
   expect(result.summary).toMatchObject({
     issueCount: 1,
     runCount: 1,
@@ -131,6 +135,82 @@ it("coerces timestamp strings returned by raw SQL rows", async () => {
   expect(result.timeline.map((entry) => entry.kind)).toEqual(["activity", "cost", "error", "run"]);
 });
 
+it("builds blocker explanation strings from raw SQL rows without needing embedded Postgres", async () => {
+  const companyId = randomUUID();
+  const rootIssueId = randomUUID();
+  const activeBlockerId = randomUUID();
+  const cancelledBlockerId = randomUUID();
+  const ownerAgentId = randomUUID();
+  const queryResults = [
+    {
+      rows: [
+        {
+          id: rootIssueId,
+          identifier: "LET-161",
+          title: "Roadmap completion loop",
+          status: "blocked",
+          parentId: null,
+          assigneeAgentId: null,
+          assigneeUserId: null,
+          depth: "0",
+          createdAt: "2026-05-02T00:00:00.000Z",
+          updatedAt: "2026-05-02T00:01:00.000Z",
+        },
+      ],
+    },
+    {
+      rows: [
+        {
+          issueId: rootIssueId,
+          blockerIssueId: activeBlockerId,
+          blockerIdentifier: "LET-303",
+          blockerTitle: "Canonical recovery child",
+          blockerStatus: "todo",
+          blockerAssigneeAgentId: ownerAgentId,
+          blockerAssigneeUserId: null,
+        },
+        {
+          issueId: rootIssueId,
+          blockerIssueId: cancelledBlockerId,
+          blockerIdentifier: "LET-214",
+          blockerTitle: "Superseded duplicate child",
+          blockerStatus: "cancelled",
+          blockerAssigneeAgentId: ownerAgentId,
+          blockerAssigneeUserId: null,
+        },
+      ],
+    },
+    { rows: [] },
+    { rows: [] },
+    { rows: [] },
+    { rows: [] },
+  ];
+  const fakeDb = {
+    execute: vi.fn(async () => queryResults.shift() ?? { rows: [] }),
+  } as unknown as Db;
+
+  const result = await buildIssueTreeObservability(fakeDb, companyId, rootIssueId, {
+    now: new Date("2026-05-02T00:10:00.000Z"),
+  });
+
+  expect(fakeDb.execute).toHaveBeenCalled();
+  expect(result.blockerExplanations).toHaveLength(2);
+  expect(result.blockerExplanations.find((entry) => entry.blockerIssueId === activeBlockerId)).toMatchObject({
+    issueId: rootIssueId,
+    state: "canonical_active",
+    nextOwnerAgentId: ownerAgentId,
+    nextOwnerUserId: null,
+    explanation: expect.stringContaining("canonical active blocker"),
+  });
+  expect(result.blockerExplanations.find((entry) => entry.blockerIssueId === cancelledBlockerId)).toMatchObject({
+    issueId: rootIssueId,
+    state: "suppressed_terminal",
+    nextOwnerAgentId: null,
+    nextOwnerUserId: null,
+    explanation: expect.stringContaining("not canonically blocked"),
+  });
+});
+
 describeEmbeddedPostgres("issue tree observability service", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -145,6 +225,7 @@ describeEmbeddedPostgres("issue tree observability service", () => {
     await db.delete(costEvents);
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
+    await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
@@ -414,5 +495,115 @@ describeEmbeddedPostgres("issue tree observability service", () => {
     expect(timelineText).toContain("[REDACTED]");
     expect(timelineText).not.toContain(fakePassword);
     expect(timelineText).not.toContain(fakeBearerToken);
+  });
+
+  it("explains canonical active blockers and suppresses terminal stale blocker children", async () => {
+    const companyId = randomUUID();
+    const ownerAgentId = randomUUID();
+    const rootIssueId = randomUUID();
+    const staleDuplicateId = randomUUID();
+    const canonicalLiveId = randomUUID();
+    const canonicalDoneId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: ownerAgentId,
+      companyId,
+      name: "Canonical Owner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: rootIssueId,
+        companyId,
+        title: "LET-161 shaped roadmap root",
+        status: "blocked",
+        priority: "high",
+        issueNumber: 10,
+        identifier: `${issuePrefix}-10`,
+        createdAt: new Date("2026-05-02T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-02T00:00:00.000Z"),
+      },
+      {
+        id: staleDuplicateId,
+        companyId,
+        title: "Superseded LET-214 duplicate blocker",
+        status: "cancelled",
+        priority: "medium",
+        issueNumber: 11,
+        identifier: `${issuePrefix}-11`,
+        createdAt: new Date("2026-05-02T00:01:00.000Z"),
+        updatedAt: new Date("2026-05-02T00:01:00.000Z"),
+      },
+      {
+        id: canonicalLiveId,
+        companyId,
+        title: "Canonical active child",
+        status: "todo",
+        priority: "high",
+        issueNumber: 12,
+        identifier: `${issuePrefix}-12`,
+        assigneeAgentId: ownerAgentId,
+        createdAt: new Date("2026-05-02T00:02:00.000Z"),
+        updatedAt: new Date("2026-05-02T00:03:00.000Z"),
+      },
+      {
+        id: canonicalDoneId,
+        companyId,
+        title: "Completed canonical evidence child",
+        status: "done",
+        priority: "medium",
+        issueNumber: 13,
+        identifier: `${issuePrefix}-13`,
+        createdAt: new Date("2026-05-02T00:04:00.000Z"),
+        updatedAt: new Date("2026-05-02T00:05:00.000Z"),
+      },
+    ]);
+    await db.insert(issueRelations).values([
+      { companyId, issueId: staleDuplicateId, relatedIssueId: rootIssueId, type: "blocks" },
+      { companyId, issueId: canonicalLiveId, relatedIssueId: rootIssueId, type: "blocks" },
+      { companyId, issueId: canonicalDoneId, relatedIssueId: rootIssueId, type: "blocks" },
+    ]);
+
+    const result = await buildIssueTreeObservability(db, companyId, rootIssueId, {
+      now: new Date("2026-05-02T00:10:00.000Z"),
+    });
+
+    const active = result.blockerExplanations.find((entry) => entry.blockerIssueId === canonicalLiveId);
+    expect(active).toMatchObject({
+      issueId: rootIssueId,
+      state: "canonical_active",
+      nextOwnerAgentId: ownerAgentId,
+      nextOwnerUserId: null,
+    });
+    expect(active?.explanation).toContain("canonical active blocker");
+    expect(active?.explanation).toContain(`agent ${ownerAgentId}`);
+
+    const cancelled = result.blockerExplanations.find((entry) => entry.blockerIssueId === staleDuplicateId);
+    expect(cancelled).toMatchObject({
+      state: "suppressed_terminal",
+      nextOwnerAgentId: null,
+      nextOwnerUserId: null,
+    });
+    expect(cancelled?.explanation).toContain("not canonically blocked");
+    expect(cancelled?.explanation).toContain("cancelled");
+
+    const done = result.blockerExplanations.find((entry) => entry.blockerIssueId === canonicalDoneId);
+    expect(done).toMatchObject({
+      state: "suppressed_terminal",
+      nextOwnerAgentId: null,
+      nextOwnerUserId: null,
+    });
   });
 });

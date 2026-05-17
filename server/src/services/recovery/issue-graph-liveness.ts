@@ -579,23 +579,40 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     seen.add(current.id);
 
     const relations = blockersByBlockedIssueId.get(current.id) ?? [];
+    let staleTerminalFinding: IssueLivenessFinding | null = null;
+    let hasCanonicalBlockerPath = false;
     for (const relation of relations) {
       if (relation.companyId !== current.companyId || relation.companyId !== source.companyId) continue;
       const blocker = issuesById.get(relation.blockerIssueId);
-      if (!blocker || blocker.companyId !== source.companyId || blocker.status === "done") continue;
+      if (!blocker || blocker.companyId !== source.companyId) continue;
+      if (blocker.status === "done") {
+        hasCanonicalBlockerPath = true;
+        continue;
+      }
       const path = [...dependencyPath, blocker];
+      let chainFinding: IssueLivenessFinding | null = null;
 
       if (blocker.status === "blocked") {
-        const nested = firstBlockedChainFinding(source, blocker, path, new Set(seen));
-        if (nested) return nested;
-        if (hasExplicitWaitingPath(blocker)) continue;
+        chainFinding = firstBlockedChainFinding(source, blocker, path, new Set(seen));
+        if (!chainFinding && hasExplicitWaitingPath(blocker)) {
+          hasCanonicalBlockerPath = true;
+          continue;
+        }
       }
 
-      const leafFinding = blockedFindingForLeaf(source, blocker, path);
-      if (leafFinding) return leafFinding;
+      const leafFinding = chainFinding ?? blockedFindingForLeaf(source, blocker, path);
+      if (!leafFinding) {
+        hasCanonicalBlockerPath = true;
+        continue;
+      }
+      if (leafFinding.state === "blocked_by_cancelled_issue") {
+        staleTerminalFinding ??= leafFinding;
+        continue;
+      }
+      return leafFinding;
     }
 
-    return null;
+    return hasCanonicalBlockerPath ? null : staleTerminalFinding;
   }
 
   for (const issue of input.issues) {

@@ -92,6 +92,15 @@ function registerModuleMocks() {
     goalService: () => ({}),
     heartbeatService: () => mockHeartbeatService,
     issueApprovalService: () => ({}),
+    issueDispositionService: () => ({
+      applyCommentDisposition: vi.fn(),
+      preflightDispositionRequest: vi.fn(),
+      assertDispositionSourceRunAuthorized: vi.fn(async () => undefined),
+    }),
+    extractDispositionRowFromMetadata: () => null,
+    issueFinalDeliveryService: () => ({
+      queueForCompletedIssue: vi.fn(async () => ({ status: "skipped", reason: "not_configured" })),
+    }),
     issueReferenceService: () => mockIssueReferenceService,
     issueService: () => mockIssueService,
     issueThreadInteractionService: () => mockIssueThreadInteractionService,

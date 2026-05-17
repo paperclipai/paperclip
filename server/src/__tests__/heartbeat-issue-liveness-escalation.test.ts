@@ -332,6 +332,60 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     });
   });
 
+  it("de-dupes multiple LET-161-style parents through one canonical blocker leaf recovery", async () => {
+    await enableAutoRecovery();
+    const { companyId, coderId, blockedIssueId, blockerIssueId } = await seedBlockedChain({
+      blockerStatus: "backlog",
+      blockerAssigneeAgentId: "coder",
+    });
+    const secondBlockedIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: secondBlockedIssueId,
+      companyId,
+      title: "Second blocked parent sharing canonical leaf",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: coderId,
+      issueNumber: 3,
+      identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-3`,
+      createdAt: new Date(Date.now() - 60 * 60 * 1000),
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: secondBlockedIssueId,
+      type: "blocks",
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(2);
+    expect(result.escalationsCreated).toBe(1);
+    expect(result.existingEscalations).toBe(1);
+    expect(new Set(result.escalationIssueIds).size).toBe(1);
+
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(1);
+    expect(escalations[0]?.originFingerprint).toBe([
+      "harness_liveness_leaf",
+      companyId,
+      "blocked_by_assigned_backlog_issue",
+      blockerIssueId,
+    ].join(":"));
+
+    const blockerEdges = await db
+      .select({ relatedIssueId: issueRelations.relatedIssueId })
+      .from(issueRelations)
+      .where(eq(issueRelations.issueId, escalations[0]!.id));
+    expect(blockerEdges.map((row) => row.relatedIssueId).sort()).toEqual(
+      [blockedIssueId, secondBlockedIssueId].sort(),
+    );
+  });
+
   it("creates one manager escalation, preserves blockers, and records owner selection", async () => {
     await enableAutoRecovery();
     const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();

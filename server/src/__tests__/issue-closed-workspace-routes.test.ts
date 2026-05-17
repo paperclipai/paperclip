@@ -103,6 +103,15 @@ function registerServiceMocks() {
       listCompanyIds: vi.fn(async () => ["company-1"]),
     }),
     issueApprovalService: () => ({}),
+    issueDispositionService: () => ({
+      applyCommentDisposition: vi.fn(),
+      preflightDispositionRequest: vi.fn(),
+      assertDispositionSourceRunAuthorized: vi.fn(async () => undefined),
+    }),
+    extractDispositionRowFromMetadata: () => null,
+    issueFinalDeliveryService: () => ({
+      queueForCompletedIssue: vi.fn(async () => ({ status: "skipped", reason: "not_configured" })),
+    }),
     issueReferenceService: () => ({
       deleteDocumentSource: async () => undefined,
       diffIssueReferenceSummary: () => ({

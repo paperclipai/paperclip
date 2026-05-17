@@ -207,4 +207,117 @@ describe("run liveness classifier", () => {
     expect(classification.actionability).toBe("unknown");
     expect(classification.nextAction).toBeNull();
   });
+
+  it("keeps process-lost runs with durable evidence separate from no-output dead work", () => {
+    const latestEvidenceAt = new Date("2026-04-18T12:00:00Z");
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      runStatus: "failed",
+      errorCode: "process_lost",
+      error: "Adapter process was lost after writing a patch.",
+      evidence: {
+        workProductsCreated: 1,
+        toolOrActionEventsCreated: 2,
+        latestEvidenceAt,
+      },
+    });
+
+    expect(classification.livenessState).toBe("advanced");
+    expect(classification.lastUsefulActionAt).toBe(latestEvidenceAt);
+    expect(classification.livenessReason).toContain("Runtime bookkeeping recovery");
+    expect(classification.livenessReason).toContain("process_lost");
+  });
+
+  it("classifies failed adapter output without durable evidence as follow-up, not empty dead work", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      runStatus: "failed",
+      errorCode: "adapter_failed",
+      resultJson: {
+        summary: "Patch was drafted but the adapter crashed before saving it.\nNext action: rerun pnpm test.",
+      },
+    });
+
+    expect(classification.livenessState).toBe("needs_followup");
+    expect(classification.livenessReason).toContain("Runtime bookkeeping recovery");
+    expect(classification.nextAction).toBe("rerun pnpm test.");
+  });
+
+  it("labels true failed no-output runs as dead work", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      runStatus: "failed",
+      errorCode: "unknown_exit",
+      error: "Process exited before producing output.",
+    });
+
+    expect(classification.livenessState).toBe("failed");
+    expect(classification.livenessReason).toContain("No-output/dead work");
+  });
+
+  it("distinguishes product, QA, approval, stale-blocker, and release failure causes in reason/actionability", () => {
+    expect(classifyRunLiveness({
+      ...baseInput,
+      runStatus: "failed",
+      error: "Acceptance criteria regression: API contract mismatch.",
+    }).livenessReason).toContain("Product/contract failure");
+
+    expect(classifyRunLiveness({
+      ...baseInput,
+      runStatus: "failed",
+      error: "QA validator found failing tests in vitest.",
+    }).livenessReason).toContain("QA/review failure");
+
+    const qaRuntimeError = classifyRunLiveness({
+      ...baseInput,
+      runStatus: "failed",
+      errorCode: "test_failure",
+      error: "Vitest Runtime Error in heartbeat liveness test: expected PASS but received FAIL.",
+      evidence: {
+        toolOrActionEventsCreated: 1,
+        latestEvidenceAt: new Date("2026-04-18T12:00:00Z"),
+      },
+    });
+    expect(qaRuntimeError.livenessState).toBe("failed");
+    expect(qaRuntimeError.livenessReason).toContain("QA/review failure");
+
+    const approvalHold = classifyRunLiveness({
+      ...baseInput,
+      runStatus: "failed",
+      error: "Blocked: board approval required before continuing.",
+    });
+    expect(approvalHold.livenessReason).toContain("Approval hold");
+    expect(approvalHold.actionability).toBe("approval_required");
+
+    expect(classifyRunLiveness({
+      ...baseInput,
+      runStatus: "failed",
+      error: "Blocked by stale blocker; canonical blocker was superseded.",
+    }).livenessReason).toContain("Stale blocker");
+
+    const releaseHold = classifyRunLiveness({
+      ...baseInput,
+      runStatus: "failed",
+      error: "Release hold: wait for release manager preflight.",
+    });
+    expect(releaseHold.livenessReason).toContain("Release hold");
+    expect(releaseHold.actionability).toBe("manager_review");
+  });
+
+  it("treats metadata-only output as empty but comment-only output as useful follow-up", () => {
+    const metadataOnly = classifyRunLiveness({
+      ...baseInput,
+      resultJson: {
+        metadata: { tokenCount: 123 },
+      },
+    });
+    expect(metadataOnly.livenessState).toBe("empty_response");
+
+    const commentOnly = classifyRunLiveness({
+      ...baseInput,
+      issueCommentBodies: ["Recorded investigation notes for the next owner."],
+    });
+    expect(commentOnly.livenessState).toBe("needs_followup");
+    expect(commentOnly.livenessReason).toContain("useful output");
+  });
 });

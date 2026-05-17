@@ -52,11 +52,34 @@ const mockSecretService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
+const mockFinalDeliveryService = vi.hoisted(() => ({
+  queueForCompletedIssue: vi.fn(async () => null),
+}));
+
+const mockIssueDispositionService = vi.hoisted(() => ({
+  applyCommentDisposition: vi.fn(),
+  preflightDispositionRequest: vi.fn(),
+  assertDispositionSourceRunAuthorized: vi.fn(async () => undefined),
+}));
+
+const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+  expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+  listForIssue: vi.fn(async () => []),
+}));
+
+const mockBuildIssueTreeObservability = vi.hoisted(() => vi.fn());
+
 vi.mock("../services/index.js", () => ({
   projectService: () => mockProjectService,
   issueService: () => mockIssueService,
   companyService: () => mockCompanyService,
   environmentService: () => mockEnvironmentService,
+  issueFinalDeliveryService: () => mockFinalDeliveryService,
+  issueDispositionService: () => mockIssueDispositionService,
+  extractDispositionRowFromMetadata: () => null,
+  issueThreadInteractionService: () => mockIssueThreadInteractionService,
+  buildIssueTreeObservability: mockBuildIssueTreeObservability,
   issueReferenceService: () => mockIssueReferenceService,
   logActivity: mockLogActivity,
   workspaceOperationService: () => ({}),

@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import type {
   IssueStatus,
   IssueTreeObservability,
+  IssueTreeObservabilityBlockerExplanation,
   IssueTreeObservabilityNode,
   IssueTreeObservabilitySeverity,
   IssueTreeObservabilityTimelineEntry,
@@ -47,6 +48,16 @@ type RunLinkRow = {
   createdAt: DateLike;
   error: string | null;
   errorCode: string | null;
+};
+
+type BlockerRow = {
+  issueId: string;
+  blockerIssueId: string;
+  blockerIdentifier: string | null;
+  blockerTitle: string;
+  blockerStatus: string;
+  blockerAssigneeAgentId: string | null;
+  blockerAssigneeUserId: string | null;
 };
 
 type CostRow = {
@@ -132,6 +143,46 @@ function sanitizeMessage(message: string | null | undefined) {
 
 function stableTimelineId(kind: IssueTreeObservabilityTimelineKind, id: string | number, issueId: string) {
   return `${kind}:${issueId}:${String(id)}`;
+}
+
+function issueDisplayName(identifier: string | null, title: string) {
+  return identifier ? `${identifier} (${title})` : title;
+}
+
+function blockerState(status: string): IssueTreeObservabilityBlockerExplanation["state"] {
+  return ACTIVE_ISSUE_TERMINAL_STATUSES.has(status) ? "suppressed_terminal" : "canonical_active";
+}
+
+function buildBlockerExplanation(
+  issue: IssueTreeRow,
+  blocker: BlockerRow,
+): IssueTreeObservabilityBlockerExplanation {
+  const blockedName = issueDisplayName(issue.identifier, issue.title);
+  const blockerName = issueDisplayName(blocker.blockerIdentifier, blocker.blockerTitle);
+  const state = blockerState(blocker.blockerStatus);
+  const nextOwnerAgentId = state === "canonical_active" ? blocker.blockerAssigneeAgentId : null;
+  const nextOwnerUserId = state === "canonical_active" ? blocker.blockerAssigneeUserId : null;
+  let explanation: string;
+  if (state === "suppressed_terminal") {
+    explanation = `${blockedName} is not canonically blocked by ${blockerName}; the blocker is ${blocker.blockerStatus}.`;
+  } else if (nextOwnerAgentId || nextOwnerUserId) {
+    explanation = `${blockedName} is blocked by canonical active blocker ${blockerName}; next owner is ${nextOwnerAgentId ? `agent ${nextOwnerAgentId}` : `user ${nextOwnerUserId}`}.`;
+  } else {
+    explanation = `${blockedName} is blocked by canonical active blocker ${blockerName}; no next owner is assigned.`;
+  }
+  return {
+    issueId: issue.id,
+    issueIdentifier: issue.identifier,
+    issueTitle: issue.title,
+    blockerIssueId: blocker.blockerIssueId,
+    blockerIdentifier: blocker.blockerIdentifier,
+    blockerTitle: blocker.blockerTitle,
+    blockerStatus: blocker.blockerStatus as IssueStatus,
+    state,
+    explanation,
+    nextOwnerAgentId,
+    nextOwnerUserId,
+  };
 }
 
 function runSeverity(status: string): IssueTreeObservabilitySeverity {
@@ -232,6 +283,40 @@ export async function buildIssueTreeObservability(
       latestRunId: null,
     });
   }
+
+  const blockerRows = issueIds.length > 0
+    ? rowsFromExecute<BlockerRow>(await db.execute(sql`
+        WITH issue_ids(id) AS (
+          VALUES ${sql.join(issueIds.map((id) => sql`(${id}::uuid)`), sql`, `)}
+        )
+        SELECT
+          ir.related_issue_id AS "issueId",
+          blocker.id AS "blockerIssueId",
+          blocker.identifier AS "blockerIdentifier",
+          blocker.title AS "blockerTitle",
+          blocker.status AS "blockerStatus",
+          blocker.assignee_agent_id AS "blockerAssigneeAgentId",
+          blocker.assignee_user_id AS "blockerAssigneeUserId"
+        FROM issue_relations ir
+        JOIN issue_ids ON issue_ids.id = ir.related_issue_id
+        JOIN issues blocker ON blocker.id = ir.issue_id
+        WHERE ir.company_id = ${companyId}
+          AND ir.type = 'blocks'
+          AND blocker.company_id = ${companyId}
+          AND blocker.hidden_at IS NULL
+        ORDER BY
+          CASE WHEN blocker.status IN ('done', 'cancelled') THEN 1 ELSE 0 END ASC,
+          blocker.updated_at DESC,
+          blocker.id ASC
+      `))
+    : [];
+
+  const blockerExplanations = blockerRows
+    .map((blocker) => {
+      const issue = issueById.get(blocker.issueId);
+      return issue ? buildBlockerExplanation(issue, blocker) : null;
+    })
+    .filter((entry): entry is IssueTreeObservabilityBlockerExplanation => Boolean(entry));
 
   const runRows = issueIds.length > 0
     ? rowsFromExecute<RunLinkRow>(await db.execute(sql`
@@ -531,6 +616,7 @@ export async function buildIssueTreeObservability(
     generatedAt: now,
     summary,
     nodes,
+    blockerExplanations,
     timeline: timeline.slice(0, timelineLimit),
   };
 }

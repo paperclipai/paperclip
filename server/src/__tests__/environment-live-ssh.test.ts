@@ -155,30 +155,34 @@ describeLiveSsh("live SSH environment smoke", () => {
     }
   });
 
-  it("connects to the configured SSH environment and verifies basic runtime tools", async () => {
-    if (resolvedConfig === undefined) {
-      resolvedConfig = await resolveSshConfig();
-    }
+  it(
+    "connects to the configured SSH environment and verifies basic runtime tools",
+    async () => {
+      if (resolvedConfig === undefined) {
+        resolvedConfig = await resolveSshConfig();
+      }
 
-    if (!resolvedConfig) {
-      console.warn(
-        "Live SSH smoke test could not resolve SSH config from env vars or env-lab fixture. Set PAPERCLIP_ENV_LIVE_SSH_NO_AUTO_FIXTURE=true to mark this suite skipped intentionally.",
+      if (!resolvedConfig) {
+        console.warn(
+          "Live SSH smoke test could not resolve SSH config from env vars or env-lab fixture. Set PAPERCLIP_ENV_LIVE_SSH_NO_AUTO_FIXTURE=true to mark this suite skipped intentionally.",
+        );
+        return;
+      }
+
+      const config = resolvedConfig;
+      const ready = await ensureSshWorkspaceReady(config);
+      const quotedRemoteWorkspacePath = JSON.stringify(config.remoteWorkspacePath);
+      const result = await runSshCommand(
+        config,
+        `cd ${quotedRemoteWorkspacePath} && which git && which tar && pwd`,
+        { timeoutMs: 30000, maxBuffer: 256 * 1024 },
       );
-      return;
-    }
 
-    const config = resolvedConfig;
-    const ready = await ensureSshWorkspaceReady(config);
-    const quotedRemoteWorkspacePath = JSON.stringify(config.remoteWorkspacePath);
-    const result = await runSshCommand(
-      config,
-      `cd ${quotedRemoteWorkspacePath} && which git && which tar && pwd`,
-      { timeoutMs: 30000, maxBuffer: 256 * 1024 },
-    );
-
-    expect(ready.remoteCwd).toBe(config.remoteWorkspacePath);
-    expect(result.stdout).toContain(config.remoteWorkspacePath);
-    expect(result.stdout).toContain("git");
-    expect(result.stdout).toContain("tar");
-  });
+      expect(ready.remoteCwd).toBe(config.remoteWorkspacePath);
+      expect(result.stdout).toContain(config.remoteWorkspacePath);
+      expect(result.stdout).toContain("git");
+      expect(result.stdout).toContain("tar");
+    },
+    60_000,
+  );
 });

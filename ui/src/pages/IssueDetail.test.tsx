@@ -513,6 +513,7 @@ function createValidationHistory(overrides: Partial<IssueValidationHistory> = {}
 }
 
 function createTreeObservability(overrides: Partial<IssueTreeObservability> = {}): IssueTreeObservability {
+  const { blockerExplanations = [], ...restOverrides } = overrides;
   return {
     issueId: "issue-1",
     generatedAt: new Date("2026-04-21T00:10:00.000Z"),
@@ -595,7 +596,8 @@ function createTreeObservability(overrides: Partial<IssueTreeObservability> = {}
         costCents: null,
       },
     ],
-    ...overrides,
+    blockerExplanations,
+    ...restOverrides,
   };
 }
 
@@ -1127,7 +1129,8 @@ describe("IssueDetail", () => {
       expect(text).toContain("Validator found missing regression evidence.");
       expect(text).toContain("Evidence: Missing UI regression evidence");
       expect(text).toContain("Blockers: Needs route coverage");
-      expect(text).toContain("Telegram · chat -100123 · thread 103");
+      expect(text).toContain("Telegram · chat …0123 · thread …103");
+      expect(text).not.toContain("chat -100123");
       expect(text).toContain("delivered");
       expect(text).toContain("external 910");
       expect(text).toContain("Tree observability");

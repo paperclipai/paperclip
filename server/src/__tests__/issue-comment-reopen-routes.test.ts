@@ -72,6 +72,15 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
+const mockApplyCommentDisposition = vi.hoisted(() => vi.fn());
+const mockPreflightDispositionRequest = vi.hoisted(() => vi.fn());
+const mockAssertDispositionSourceRunAuthorized = vi.hoisted(() => vi.fn());
+const mockIssueDispositionService = vi.hoisted(() => ({
+  applyCommentDisposition: mockApplyCommentDisposition,
+  preflightDispositionRequest: mockPreflightDispositionRequest,
+  assertDispositionSourceRunAuthorized: mockAssertDispositionSourceRunAuthorized,
+}));
+const mockExtractDispositionRowFromMetadata = vi.hoisted(() => vi.fn(() => null));
 const mockIssueFinalDeliveryService = vi.hoisted(() => ({
   queueForCompletedIssue: vi.fn(async () => ({ status: "skipped", reason: "not_configured" })),
 }));
@@ -146,6 +155,9 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => mockHeartbeatService,
   instanceSettingsService: () => mockInstanceSettingsService,
   issueApprovalService: () => ({}),
+  issueDispositionService: () => mockIssueDispositionService,
+  extractDispositionRowFromMetadata: (...args: unknown[]) =>
+    mockExtractDispositionRowFromMetadata(...args),
   issueReferenceService: () => ({
     deleteDocumentSource: async () => undefined,
     diffIssueReferenceSummary: () => ({
@@ -262,6 +274,19 @@ describe.sequential("issue comment reopen routes", () => {
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockRoutineService.syncRunStatusForIssue.mockReset();
     mockIssueTreeControlService.getActivePauseHoldGate.mockReset();
+    mockApplyCommentDisposition.mockReset();
+    mockPreflightDispositionRequest.mockReset();
+    mockPreflightDispositionRequest.mockImplementation((input: { metadata?: { sourceRunId?: string } | null; actor?: { runId?: string | null } } = {}) => ({
+      row: { type: "disposition", value: "done" },
+      idempotencyKey: "preflight-key",
+      sourceRunId: input.metadata?.sourceRunId ?? input.actor?.runId ?? null,
+      validatedMetadata: input.metadata ?? null,
+      validatedPresentation: null,
+    }));
+    mockAssertDispositionSourceRunAuthorized.mockReset();
+    mockAssertDispositionSourceRunAuthorized.mockResolvedValue(undefined);
+    mockExtractDispositionRowFromMetadata.mockReset();
+    mockExtractDispositionRowFromMetadata.mockImplementation(() => null);
     mockTxInsertValues.mockReset();
     mockTxInsert.mockReset();
     mockDbSelect.mockReset();
@@ -1678,5 +1703,579 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
     ));
+  });
+
+  it("treats an active reviewer QA FAIL comment as a changes-requested execution decision", async () => {
+    const policy = await normalizePolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "review",
+          participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+        },
+      ],
+    })!;
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_review",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    const body = "QA VERDICT: FAIL / CHANGES REQUESTED — fix the route-level side effects.";
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-qa-fail",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: "33333333-3333-4333-8333-333333333333",
+      authorUserId: null,
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>, tx?: unknown) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+      _tx: tx,
+    }));
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        runId: "run-qa",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body });
+
+    expect(res.status).toBe(201);
+    expect(mockDb.transaction).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        status: "in_progress",
+        assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+        executionState: expect.objectContaining({
+          status: "changes_requested",
+          currentStageId: policy.stages[0].id,
+          lastDecisionId: expect.any(String),
+          lastDecisionOutcome: "changes_requested",
+        }),
+      }),
+      mockTx,
+    );
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, any>;
+    const decisionId = updatePatch.executionState.lastDecisionId;
+    expect(mockTxInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: decisionId,
+        issueId: "11111111-1111-4111-8111-111111111111",
+        stageId: policy.stages[0].id,
+        outcome: "changes_requested",
+        body,
+        createdByRunId: "run-qa",
+      }),
+    );
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        reason: "execution_changes_requested",
+        payload: expect.objectContaining({
+          issueId: "11111111-1111-4111-8111-111111111111",
+          executionStage: expect.objectContaining({
+            wakeRole: "executor",
+            stageType: "review",
+            lastDecisionOutcome: "changes_requested",
+            allowedActions: ["address_changes", "resubmit"],
+          }),
+        }),
+      }),
+    ));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({ reason: "issue_commented" }),
+    );
+  });
+
+  it("does not treat a non-verdict no-go mention as a changes-requested execution decision", async () => {
+    const policy = await normalizePolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "review",
+          participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+        },
+      ],
+    })!;
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_review",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    const body = "This is not a no-go by itself; still reading the evidence.";
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-non-verdict",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: "33333333-3333-4333-8333-333333333333",
+      authorUserId: null,
+    });
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        runId: "run-qa",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body });
+
+    expect(res.status).toBe(201);
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockTxInsertValues).not.toHaveBeenCalled();
+  });
+
+  describe("disposition carrier", () => {
+    const ISSUE_ID = "11111111-1111-4111-8111-111111111111";
+    const RUN_ID = "55555555-5555-4555-8555-555555555555";
+    const dispositionRow = {
+      type: "disposition" as const,
+      value: "done" as const,
+      reason: "All done",
+      evidenceRefs: [],
+      idempotencyKey: `disposition:${ISSUE_ID}:${RUN_ID}:done`,
+    };
+    const dispositionMetadata = {
+      version: 1,
+      sourceRunId: RUN_ID,
+      sections: [{ rows: [dispositionRow] }],
+    };
+
+    function setupBaseStubs() {
+      mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+      mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+      mockExtractDispositionRowFromMetadata.mockImplementation(() => ({
+        row: dispositionRow,
+        sectionIndex: 0,
+        rowIndex: 0,
+      }));
+    }
+
+    it("delegates to the disposition writer and surfaces atomic evidence", async () => {
+      setupBaseStubs();
+      const appliedComment = {
+        id: "disposition-comment-1",
+        issueId: ISSUE_ID,
+        companyId: "company-1",
+        body: "Marking done",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        authorAgentId: "22222222-2222-4222-8222-222222222222",
+        authorUserId: null,
+      };
+      mockApplyCommentDisposition.mockResolvedValue({
+        comment: appliedComment,
+        applied: true,
+        noop: false,
+        dispositionValue: "done",
+        intention: { targetStatus: "done", parentBlockerIntention: "remove_from_parent_blockers" },
+        sourceRunId: RUN_ID,
+        idempotencyKey: dispositionRow.idempotencyKey,
+        evidence: {
+          sourceRunId: RUN_ID,
+          sourceCommentId: appliedComment.id,
+          actor: { actorType: "agent", agentId: "22222222-2222-4222-8222-222222222222", runId: RUN_ID },
+          parentBlockerIntention: "remove_from_parent_blockers",
+          parentBlockerCleared: true,
+          parentBlockerReplacementDeferred: false,
+          previousStatus: "in_progress",
+          nextStatus: "done",
+        },
+      });
+      (mockIssueService as unknown as { getComment?: ReturnType<typeof vi.fn> }).getComment =
+        vi.fn(async () => appliedComment);
+
+      const res = await request(await installActor(createApp(), agentActor()))
+        .post(`/api/issues/${ISSUE_ID}/comments`)
+        .send({
+          body: "Marking done",
+          metadata: dispositionMetadata,
+        });
+
+      expect(res.status).toBe(201);
+      expect(mockApplyCommentDisposition).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+
+      // The post-tx comment_added activity references the atomic evidence row.
+      const commentAddedCall = mockLogActivity.mock.calls.find(
+        ([, input]) => (input as { action: string }).action === "issue.comment_added",
+      );
+      expect(commentAddedCall).toBeTruthy();
+      const commentAddedDetails = (commentAddedCall?.[1] as { details: Record<string, unknown> }).details;
+      expect(commentAddedDetails.disposition).toMatchObject({
+        value: "done",
+        applied: true,
+        previousStatus: "in_progress",
+        nextStatus: "done",
+        parentBlockerCleared: true,
+        parentBlockerReplacementDeferred: false,
+        atomicEvidenceAction: "issue.disposition_applied",
+      });
+    });
+
+    it("rejects requests that combine a disposition row with reopen/resume/interrupt", async () => {
+      setupBaseStubs();
+      mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+
+      const res = await request(await installActor(createApp(), agentActor()))
+        .post(`/api/issues/${ISSUE_ID}/comments`)
+        .send({
+          body: "Marking done again",
+          resume: true,
+          metadata: dispositionMetadata,
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body).toMatchObject({
+        details: { code: "disposition_combines_with_lifecycle_flag" },
+      });
+      expect(mockApplyCommentDisposition).not.toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("surfaces HttpError details from the disposition writer back to the client", async () => {
+      setupBaseStubs();
+      const { HttpError } = await import("../errors.js");
+      mockApplyCommentDisposition.mockRejectedValue(
+        new HttpError(409, "duplicate idempotency", { code: "disposition_idempotency_conflict" }),
+      );
+
+      const res = await request(await installActor(createApp(), agentActor()))
+        .post(`/api/issues/${ISSUE_ID}/comments`)
+        .send({
+          body: "Marking done",
+          metadata: dispositionMetadata,
+        });
+
+      expect(res.status).toBe(409);
+      expect(res.body).toMatchObject({
+        error: "duplicate idempotency",
+        details: { code: "disposition_idempotency_conflict" },
+      });
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    });
+
+    it("falls through to the legacy comment path when no disposition row is present", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+      mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+      mockExtractDispositionRowFromMetadata.mockImplementation(() => null);
+
+      const res = await request(await installActor(createApp(), agentActor()))
+        .post(`/api/issues/${ISSUE_ID}/comments`)
+        .send({ body: "plain comment" });
+
+      expect(res.status).toBe(201);
+      expect(mockApplyCommentDisposition).not.toHaveBeenCalled();
+      expect(mockIssueService.addComment).toHaveBeenCalled();
+    });
+
+    it("does not implicitly reopen or move-to-todo when a disposition row is present, even on a closed issue", async () => {
+      setupBaseStubs();
+      // Issue is closed (done). On the legacy path this would normally
+      // implicit-reopen-to-todo for some agent actors. With a disposition row
+      // present, the writer owns the status transition and the route must not
+      // mutate status pre-validation.
+      mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+      const appliedComment = {
+        id: "disposition-comment-2",
+        issueId: ISSUE_ID,
+        companyId: "company-1",
+        body: "Marking done again",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        authorAgentId: "22222222-2222-4222-8222-222222222222",
+        authorUserId: null,
+      };
+      mockApplyCommentDisposition.mockResolvedValue({
+        comment: appliedComment,
+        applied: false,
+        noop: true,
+        dispositionValue: "done",
+        intention: null,
+        sourceRunId: RUN_ID,
+        idempotencyKey: dispositionRow.idempotencyKey,
+        evidence: {
+          sourceRunId: RUN_ID,
+          sourceCommentId: appliedComment.id,
+          actor: { actorType: "agent", agentId: "22222222-2222-4222-8222-222222222222", runId: RUN_ID },
+          parentBlockerIntention: null,
+          parentBlockerCleared: false,
+          parentBlockerReplacementDeferred: false,
+          previousStatus: "done",
+          nextStatus: "done",
+        },
+      });
+      (mockIssueService as unknown as { getComment?: ReturnType<typeof vi.fn> }).getComment =
+        vi.fn(async () => appliedComment);
+
+      const res = await request(await installActor(createApp(), agentActor()))
+        .post(`/api/issues/${ISSUE_ID}/comments`)
+        .send({
+          body: "Marking done again",
+          metadata: dispositionMetadata,
+        });
+
+      expect(res.status).toBe(201);
+      // The writer was invoked; the route never called svc.update to reopen.
+      expect(mockApplyCommentDisposition).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      // No issue.updated reopen activity should have been logged.
+      const reopenActivity = mockLogActivity.mock.calls.find(
+        ([, input]) => (input as { action: string }).action === "issue.updated",
+      );
+      expect(reopenActivity).toBeUndefined();
+    });
+
+    it("rejects an invalid disposition request before assertCheckoutOwner runs (pre-mutation preflight)", async () => {
+      // Reproduces the QA blocker: assertAgentIssueMutationAllowed used to run
+      // before any disposition validation, and its assertCheckoutOwner branch
+      // can mutate execution-run/checkout state. The new preflight rejects
+      // schema/idempotency/sourceRun/finalDisposition errors before any
+      // mutation-shaped side effect, so a rejected disposition leaves zero
+      // pre-validation state changes.
+      setupBaseStubs();
+      mockIssueService.getById.mockResolvedValue({
+        ...makeIssue("in_progress"),
+        checkoutRunId: "stale-run",
+      });
+      const { HttpError } = await import("../errors.js");
+      mockPreflightDispositionRequest.mockImplementation(() => {
+        throw new HttpError(422, "Disposition row must not carry a caller-supplied finalDisposition", {
+          code: "disposition_caller_supplied_final_disposition",
+        });
+      });
+
+      const res = await request(await installActor(createApp(), agentActor()))
+        .post(`/api/issues/${ISSUE_ID}/comments`)
+        .send({
+          body: "Marking done",
+          metadata: dispositionMetadata,
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body).toMatchObject({
+        details: { code: "disposition_caller_supplied_final_disposition" },
+      });
+      // Critically: the checkout-owner adoption path never ran for the
+      // rejected request, so no execution-run/checkout-lock mutation could
+      // have escaped before the writer would reject.
+      expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+      expect(mockApplyCommentDisposition).not.toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("suppresses downstream side effects on writer noop (idempotent retry)", async () => {
+      // Reproduces the QA blocker: when the writer returned noop=true for an
+      // idempotent retry, the route still ran syncComment, reportRunActivity,
+      // issue.comment_added activity logging, interaction expiration, and
+      // wakeup enqueue. That duplicated activity rows and re-woke assignees
+      // for a no-op write. The noop branch now short-circuits past every
+      // downstream side effect.
+      setupBaseStubs();
+      mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+      const existingComment = {
+        id: "existing-disposition-comment",
+        issueId: ISSUE_ID,
+        companyId: "company-1",
+        body: "Marking done",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        authorAgentId: "22222222-2222-4222-8222-222222222222",
+        authorUserId: null,
+      };
+      mockApplyCommentDisposition.mockResolvedValue({
+        comment: existingComment,
+        applied: false,
+        noop: true,
+        dispositionValue: "done",
+        intention: null,
+        sourceRunId: RUN_ID,
+        idempotencyKey: dispositionRow.idempotencyKey,
+        evidence: {
+          sourceRunId: RUN_ID,
+          sourceCommentId: existingComment.id,
+          actor: { actorType: "agent", agentId: "22222222-2222-4222-8222-222222222222", runId: RUN_ID },
+          parentBlockerIntention: null,
+          parentBlockerCleared: false,
+          parentBlockerReplacementDeferred: false,
+          parentBlockerReplaced: false,
+          parentBlockerReplacementIssueId: null,
+          previousStatus: "done",
+          nextStatus: "done",
+        },
+      });
+      (mockIssueService as unknown as { getComment?: ReturnType<typeof vi.fn> }).getComment =
+        vi.fn(async () => existingComment);
+
+      const res = await request(await installActor(createApp(), agentActor()))
+        .post(`/api/issues/${ISSUE_ID}/comments`)
+        .send({
+          body: "Marking done",
+          metadata: dispositionMetadata,
+        });
+
+      expect(res.status).toBe(201);
+      expect(mockApplyCommentDisposition).toHaveBeenCalledTimes(1);
+
+      // None of these downstream side effects should fire on noop.
+      const commentAddedCall = mockLogActivity.mock.calls.find(
+        ([, input]) => (input as { action: string }).action === "issue.comment_added",
+      );
+      expect(commentAddedCall).toBeUndefined();
+      expect(mockHeartbeatService.reportRunActivity).not.toHaveBeenCalled();
+      expect(
+        mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment,
+      ).not.toHaveBeenCalled();
+      // Wakeup should not be enqueued for a noop retry either.
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
+    it("rejects a disposition with an unknown sourceRunId before assertCheckoutOwner runs", async () => {
+      // Reproduces the QA blocker: assertAgentIssueMutationAllowed used to run
+      // ahead of the writer's DB-backed sourceRun validation, so a request that
+      // references an unknown/foreign/mismatched sourceRunId could still
+      // trigger checkout-lock adoption / clearExecutionRunIfTerminal side
+      // effects before the writer ultimately rejected. The route now invokes
+      // the DB-backed sourceRun authorization (existence + company + agent
+      // ownership) BEFORE assertCheckoutOwner, so the rejection leaves zero
+      // pre-validation state mutations behind.
+      setupBaseStubs();
+      mockIssueService.getById.mockResolvedValue({
+        ...makeIssue("in_progress"),
+        checkoutRunId: "stale-run",
+      });
+      const { HttpError } = await import("../errors.js");
+      mockAssertDispositionSourceRunAuthorized.mockRejectedValue(
+        new HttpError(422, "Disposition sourceRunId does not reference a known heartbeat run", {
+          code: "disposition_source_run_not_found",
+        }),
+      );
+
+      const res = await request(await installActor(createApp(), agentActor()))
+        .post(`/api/issues/${ISSUE_ID}/comments`)
+        .send({
+          body: "Marking done",
+          metadata: dispositionMetadata,
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body).toMatchObject({
+        details: { code: "disposition_source_run_not_found" },
+      });
+      // The DB-backed sourceRun authorization rejected the request before
+      // assertCheckoutOwner could adopt or clear any execution-run state.
+      expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+      expect(mockApplyCommentDisposition).not.toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      // No checkout_lock_adopted activity row could have been written.
+      const adoptionActivity = mockLogActivity.mock.calls.find(
+        ([, input]) => (input as { action: string }).action === "issue.checkout_lock_adopted",
+      );
+      expect(adoptionActivity).toBeUndefined();
+    });
+
+    it("rejects forbidden structured metadata before assertCheckoutOwner runs", async () => {
+      // Reproduces the second ordering blocker: a disposition row plus a
+      // forbidden extra structured-metadata row (e.g. a key_value row that
+      // only board users may set) used to slip past the disposition-only
+      // preflight, trigger checkout-lock adoption / terminal-run clearing,
+      // and only THEN get rejected by assertStructuredCommentFieldsAllowed.
+      // The route now runs the structured-fields guard before
+      // assertAgentIssueMutationAllowed on the disposition path, so the
+      // rejection cannot leave behind checkout/run mutations.
+      mockIssueService.getById.mockResolvedValue({
+        ...makeIssue("in_progress"),
+        checkoutRunId: "stale-run",
+      });
+      mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+      const forbiddenDispositionRow = {
+        type: "disposition" as const,
+        value: "done" as const,
+        reason: "All done",
+        evidenceRefs: [],
+        idempotencyKey: `disposition:${ISSUE_ID}:${RUN_ID}:done`,
+      };
+      const forbiddenKeyValueRow = {
+        type: "key_value" as const,
+        label: "agent-only-disallowed",
+        value: "should be rejected",
+      };
+      const forbiddenMetadata = {
+        version: 1,
+        sourceRunId: RUN_ID,
+        sections: [{ rows: [forbiddenDispositionRow, forbiddenKeyValueRow] }],
+      };
+      // The route only consults extractDispositionRowFromMetadata to decide
+      // whether to enter the disposition path; it does NOT use it to determine
+      // whether the rest of the metadata is disposition-only. The structured-
+      // fields guard inspects metadata directly.
+      mockExtractDispositionRowFromMetadata.mockImplementation(() => ({
+        row: forbiddenDispositionRow,
+        sectionIndex: 0,
+        rowIndex: 0,
+      }));
+
+      const res = await request(await installActor(createApp(), agentActor()))
+        .post(`/api/issues/${ISSUE_ID}/comments`)
+        .send({
+          body: "Marking done",
+          metadata: forbiddenMetadata,
+        });
+
+      expect(res.status).toBe(403);
+      // Critically: the structured-fields rejection short-circuited before
+      // assertCheckoutOwner could run.
+      expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+      expect(mockAssertDispositionSourceRunAuthorized).not.toHaveBeenCalled();
+      expect(mockApplyCommentDisposition).not.toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      const adoptionActivity = mockLogActivity.mock.calls.find(
+        ([, input]) => (input as { action: string }).action === "issue.checkout_lock_adopted",
+      );
+      expect(adoptionActivity).toBeUndefined();
+    });
   });
 });

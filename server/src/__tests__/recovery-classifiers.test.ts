@@ -214,6 +214,124 @@ describe("recovery classifier boundary", () => {
     expect(exhausted[0]?.state).toBe("in_review_without_action_path");
   });
 
+  it("suppresses a cancelled stale blocker when the same parent has a canonical active blocker path", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        {
+          id: issueId,
+          companyId,
+          identifier: "LET-161",
+          title: "Roadmap completion loop",
+          status: "blocked",
+          assigneeAgentId: agentId,
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          executionState: null,
+        },
+        {
+          id: "stale-cancelled",
+          companyId,
+          identifier: "LET-214",
+          title: "Superseded duplicate blocker",
+          status: "cancelled",
+          assigneeAgentId: agentId,
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          executionState: null,
+        },
+        {
+          id: blockerId,
+          companyId,
+          identifier: "LET-303",
+          title: "Canonical live blocker",
+          status: "todo",
+          assigneeAgentId: agentId,
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          executionState: null,
+        },
+      ],
+      relations: [
+        { companyId, blockerIssueId: "stale-cancelled", blockedIssueId: issueId },
+        { companyId, blockerIssueId: blockerId, blockedIssueId: issueId },
+      ],
+      agents: [
+        {
+          id: agentId,
+          companyId,
+          name: "Coder",
+          role: "engineer",
+          status: "idle",
+          reportsTo: managerId,
+        },
+      ],
+    });
+
+    expect(findings).toEqual([]);
+  });
+
+  it("suppresses a cancelled stale blocker when the same parent has completed canonical evidence", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        {
+          id: issueId,
+          companyId,
+          identifier: "LET-161",
+          title: "Roadmap completion loop",
+          status: "blocked",
+          assigneeAgentId: agentId,
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          executionState: null,
+        },
+        {
+          id: "stale-cancelled",
+          companyId,
+          identifier: "LET-214",
+          title: "Superseded duplicate blocker",
+          status: "cancelled",
+          assigneeAgentId: agentId,
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          executionState: null,
+        },
+        {
+          id: blockerId,
+          companyId,
+          identifier: "LET-302",
+          title: "Completed canonical evidence child",
+          status: "done",
+          assigneeAgentId: agentId,
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          executionState: null,
+        },
+      ],
+      relations: [
+        { companyId, blockerIssueId: "stale-cancelled", blockedIssueId: issueId },
+        { companyId, blockerIssueId: blockerId, blockedIssueId: issueId },
+      ],
+      agents: [
+        {
+          id: agentId,
+          companyId,
+          name: "Coder",
+          role: "engineer",
+          status: "idle",
+          reportsTo: managerId,
+        },
+      ],
+    });
+
+    expect(findings).toEqual([]);
+  });
+
   it("keeps run liveness continuation decision parity with the compatibility export", () => {
     const input = {
       run: {

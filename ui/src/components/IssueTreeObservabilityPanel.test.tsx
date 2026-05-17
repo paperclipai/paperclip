@@ -14,6 +14,7 @@ if (typeof window !== "undefined") {
 }
 
 function createObservability(overrides: Partial<IssueTreeObservability> = {}): IssueTreeObservability {
+  const { blockerExplanations = [], ...restOverrides } = overrides;
   return {
     issueId: "issue-root",
     generatedAt: new Date("2026-05-13T12:10:00.000Z"),
@@ -109,7 +110,8 @@ function createObservability(overrides: Partial<IssueTreeObservability> = {}): I
         costCents: 125,
       },
     ],
-    ...overrides,
+    blockerExplanations,
+    ...restOverrides,
   };
 }
 

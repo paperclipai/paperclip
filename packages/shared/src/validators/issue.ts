@@ -22,6 +22,16 @@ import {
   ISSUE_THREAD_INTERACTION_STATUSES,
   MODEL_PROFILE_KEYS,
 } from "../constants.js";
+import {
+  ISSUE_DISPOSITION_FINDING_BUNDLE_KINDS,
+  ISSUE_DISPOSITION_NEXT_GATE_KINDS,
+  ISSUE_DISPOSITION_PROJECTION_FRESHNESS_STATES,
+  ISSUE_DISPOSITION_USEFUL_OUTPUT_CLASSES,
+  ISSUE_DISPOSITION_VERDICTS,
+  ISSUE_FINAL_DISPOSITION_SOURCES,
+  ISSUE_FINAL_DISPOSITION_VALUES,
+  parseIssueDispositionIdempotencyKey,
+} from "../issue-disposition.js";
 import { multilineTextSchema } from "./text.js";
 import { missionControlIssuePolicySchema } from "../mission-control.js";
 
@@ -366,6 +376,185 @@ const issueCommentMetadataRunLinkRowSchema = issueCommentMetadataBaseRowSchema.e
   title: z.string().trim().min(1).max(160).nullable().optional(),
 }).strict();
 
+const issueDispositionUuidRefSchema = z.object({
+  id: z.string().uuid(),
+}).strict();
+
+const issueDispositionEvidenceRefCommentSchema = issueDispositionUuidRefSchema.extend({
+  kind: z.literal("comment"),
+  sourceRunId: z.string().uuid().nullable().optional(),
+}).strict();
+
+const issueDispositionEvidenceRefDocumentSchema = issueDispositionUuidRefSchema.extend({
+  kind: z.literal("document"),
+  revisionId: z.string().uuid().nullable().optional(),
+}).strict();
+
+const issueDispositionEvidenceRefIssueSchema = issueDispositionUuidRefSchema.extend({
+  kind: z.literal("issue"),
+}).strict();
+
+const issueDispositionEvidenceRefRunSchema = issueDispositionUuidRefSchema.extend({
+  kind: z.literal("run"),
+}).strict();
+
+const issueDispositionEvidenceRefApprovalSchema = issueDispositionUuidRefSchema.extend({
+  kind: z.literal("approval"),
+}).strict();
+
+const issueDispositionEvidenceRefEventSchema = issueDispositionUuidRefSchema.extend({
+  kind: z.literal("event"),
+}).strict();
+
+const issueDispositionEvidenceRefExternalSchema = z.object({
+  kind: z.literal("external"),
+  uri: z.string().trim().url().max(2000),
+  label: z.string().trim().min(1).max(120).nullable().optional(),
+}).strict();
+
+export const issueDispositionEvidenceRefSchema = z.discriminatedUnion("kind", [
+  issueDispositionEvidenceRefCommentSchema,
+  issueDispositionEvidenceRefDocumentSchema,
+  issueDispositionEvidenceRefIssueSchema,
+  issueDispositionEvidenceRefRunSchema,
+  issueDispositionEvidenceRefApprovalSchema,
+  issueDispositionEvidenceRefEventSchema,
+  issueDispositionEvidenceRefExternalSchema,
+]);
+
+const issueDispositionFindingSchema = z.object({
+  id: z.string().trim().min(1).max(120),
+  severity: z.enum(["blocker", "major", "minor"]),
+  area: z.string().trim().min(1).max(160),
+  summary: z.string().trim().min(1).max(1200),
+  evidenceRefs: z.array(issueDispositionEvidenceRefSchema).max(32).default([]),
+  acceptance: z.string().trim().min(1).max(1200),
+}).strict();
+
+const issueDispositionIdempotencyKeySchema = z
+  .string()
+  .trim()
+  .regex(/^disposition:[^:]+:[^:]+:[a-z_]+$/, "Disposition idempotency key must match disposition:{issueId}:{sourceRunId}:{dispositionValue}");
+
+const issueDispositionFindingBundleSchemaInner = z.object({
+  kind: z.enum(ISSUE_DISPOSITION_FINDING_BUNDLE_KINDS),
+  summary: z.string().trim().min(1).max(4000),
+  findings: z.array(issueDispositionFindingSchema).max(200).default([]),
+}).strict();
+
+export const issueDispositionFindingBundleSchema = issueDispositionFindingBundleSchemaInner;
+
+const issueDispositionActorRefSchema = z.object({
+  type: z.enum(["agent", "user", "system"]),
+  id: z.string().trim().min(1).max(120).nullable().optional(),
+}).strict();
+
+export const issueDispositionRecordSchema = z.object({
+  value: z.enum(ISSUE_FINAL_DISPOSITION_VALUES),
+  setAt: z.string().datetime(),
+  setByActor: issueDispositionActorRefSchema,
+  sourceRunId: z.string().uuid().nullable().optional(),
+  sourceCommentId: z.string().uuid().nullable().optional(),
+  reason: z.string().trim().max(4000).nullable().optional(),
+  evidenceRefs: z.array(issueDispositionEvidenceRefSchema).max(32).default([]),
+  findingBundles: z.array(issueDispositionFindingBundleSchemaInner).max(20).optional(),
+  idempotencyKey: issueDispositionIdempotencyKeySchema,
+  supersededBy: z.object({
+    value: z.enum(ISSUE_FINAL_DISPOSITION_VALUES),
+    setAt: z.string().datetime(),
+    sourceCommentId: z.string().uuid().nullable().optional(),
+  }).strict().nullable().optional(),
+}).strict().superRefine((value, ctx) => {
+  const parsedIdempotency = parseIssueDispositionIdempotencyKey(value.idempotencyKey);
+  if (!parsedIdempotency) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Disposition idempotency key is invalid",
+      path: ["idempotencyKey"],
+    });
+  } else if (value.sourceRunId && parsedIdempotency.sourceRunId !== value.sourceRunId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Disposition idempotency key sourceRunId must match sourceRunId",
+      path: ["idempotencyKey"],
+    });
+  } else if (parsedIdempotency.dispositionValue !== value.value) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Disposition idempotency key value must match disposition value",
+      path: ["idempotencyKey"],
+    });
+  }
+
+  if (!["superseded", "not_actionable"].includes(value.value)) {
+    const externalIndex = value.evidenceRefs.findIndex((ref) => ref.kind === "external");
+    if (externalIndex >= 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "External evidence refs are only allowed for superseded or not_actionable dispositions",
+        path: ["evidenceRefs", externalIndex],
+      });
+    }
+  }
+});
+
+const issueDispositionCanonicalBlockerGraphSchema = z.object({
+  canonicalBlockerId: z.string().uuid().nullable().optional(),
+  coveredBlockerIds: z.array(z.string().uuid()).max(200).default([]),
+  staleBlockerIds: z.array(z.string().uuid()).max(200).default([]),
+  supersededBlockerIds: z.array(z.string().uuid()).max(200).default([]),
+  parentExplanation: z.string().trim().max(1000).nullable().optional(),
+}).strict();
+
+const issueDispositionNextGateSchema = z.object({
+  kind: z.enum(ISSUE_DISPOSITION_NEXT_GATE_KINDS),
+  ownerAgentId: z.string().uuid().nullable().optional(),
+  ownerUserId: z.string().trim().min(1).max(120).nullable().optional(),
+  action: z.string().trim().min(1).max(240),
+  evidenceRequired: z.array(z.string().trim().min(1).max(120)).max(20).default([]),
+  approvalId: z.string().uuid().nullable().optional(),
+  releaseHoldKind: z.string().trim().min(1).max(120).nullable().optional(),
+}).strict();
+
+const issueDispositionEvidenceChainItemSchema = z.object({
+  id: z.string().trim().min(1).max(120),
+  source: z.enum(ISSUE_FINAL_DISPOSITION_SOURCES),
+  evidence: issueDispositionEvidenceRefSchema,
+  gateDriving: z.boolean(),
+  redacted: z.boolean().optional(),
+}).strict();
+
+const issueDispositionProjectionFreshnessSchema = z.object({
+  generatedAt: z.string().datetime(),
+  sourceEventCursor: z.string().trim().min(1).max(200),
+  staleMs: z.number().int().min(0),
+  rebuildState: z.enum(ISSUE_DISPOSITION_PROJECTION_FRESHNESS_STATES),
+}).strict();
+
+export const issueDispositionProjectionSchema = z.object({
+  finalDisposition: z.enum(ISSUE_FINAL_DISPOSITION_VALUES).nullable(),
+  finalDispositionSource: z.enum(ISSUE_FINAL_DISPOSITION_SOURCES).nullable(),
+  usefulOutputClass: z.enum(ISSUE_DISPOSITION_USEFUL_OUTPUT_CLASSES),
+  canonicalBlockerGraph: issueDispositionCanonicalBlockerGraphSchema,
+  nextGate: issueDispositionNextGateSchema,
+  evidenceChain: z.array(issueDispositionEvidenceChainItemSchema).max(100),
+  reviewVerdict: z.enum(ISSUE_DISPOSITION_VERDICTS),
+  qaVerdict: z.enum(ISSUE_DISPOSITION_VERDICTS),
+  recoveryDedupKey: z.string().trim().max(200).nullable(),
+  projectionFreshness: issueDispositionProjectionFreshnessSchema,
+}).strict();
+
+const issueCommentMetadataDispositionRowSchema = z.object({
+  type: z.literal("disposition"),
+  value: z.enum(ISSUE_FINAL_DISPOSITION_VALUES),
+  reason: z.string().trim().max(4000).nullable().optional(),
+  evidenceRefs: z.array(issueDispositionEvidenceRefSchema).max(32).default([]),
+  idempotencyKey: issueDispositionIdempotencyKeySchema.nullable().optional(),
+  findingBundles: z.array(issueDispositionFindingBundleSchemaInner).max(20).optional(),
+  finalDisposition: issueDispositionRecordSchema.nullable().optional(),
+  label: commentMetadataLabelSchema.nullable().optional(),
+}).strict();
+
 export const issueCommentMetadataRowSchema = z.discriminatedUnion("type", [
   issueCommentMetadataTextRowSchema,
   issueCommentMetadataCodeRowSchema,
@@ -373,6 +562,7 @@ export const issueCommentMetadataRowSchema = z.discriminatedUnion("type", [
   issueCommentMetadataIssueLinkRowSchema,
   issueCommentMetadataAgentLinkRowSchema,
   issueCommentMetadataRunLinkRowSchema,
+  issueCommentMetadataDispositionRowSchema,
 ]).superRefine((value, ctx) => {
   if (value.type === "issue_link" && !value.issueId && !value.identifier) {
     ctx.addIssue({
@@ -380,6 +570,49 @@ export const issueCommentMetadataRowSchema = z.discriminatedUnion("type", [
       message: "Issue link rows require issueId or identifier",
       path: ["issueId"],
     });
+  }
+  if (value.type === "disposition") {
+    let rowParsedIdempotency: ReturnType<typeof parseIssueDispositionIdempotencyKey> = null;
+    if (value.idempotencyKey) {
+      rowParsedIdempotency = parseIssueDispositionIdempotencyKey(value.idempotencyKey);
+      if (!rowParsedIdempotency) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Disposition idempotency key is invalid",
+          path: ["idempotencyKey"],
+        });
+      } else if (rowParsedIdempotency.dispositionValue !== value.value) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Disposition idempotency key value must match disposition value",
+          path: ["idempotencyKey"],
+        });
+      }
+    }
+    if (value.finalDisposition) {
+      if (value.finalDisposition.value !== value.value) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Disposition row value must match finalDisposition.value",
+          path: ["finalDisposition", "value"],
+        });
+      }
+      if (value.idempotencyKey && value.finalDisposition.idempotencyKey !== value.idempotencyKey) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Disposition row idempotencyKey must match finalDisposition.idempotencyKey",
+          path: ["finalDisposition", "idempotencyKey"],
+        });
+      }
+      if (rowParsedIdempotency && value.finalDisposition.sourceRunId
+        && rowParsedIdempotency.sourceRunId !== value.finalDisposition.sourceRunId) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Disposition row idempotencyKey sourceRunId must match finalDisposition.sourceRunId",
+          path: ["finalDisposition", "sourceRunId"],
+        });
+      }
+    }
   }
 });
 
@@ -392,7 +625,31 @@ export const issueCommentMetadataSchema = z.object({
   version: z.literal(1),
   sourceRunId: z.string().uuid().nullable().optional(),
   sections: z.array(issueCommentMetadataSectionSchema).min(1).max(20),
-}).strict();
+}).strict().superRefine((value, ctx) => {
+  if (!value.sourceRunId) return;
+  for (const [sectionIndex, section] of value.sections.entries()) {
+    for (const [rowIndex, row] of section.rows.entries()) {
+      if (row.type !== "disposition") continue;
+      if (row.idempotencyKey) {
+        const parsed = parseIssueDispositionIdempotencyKey(row.idempotencyKey);
+        if (parsed && parsed.sourceRunId !== value.sourceRunId) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Disposition row idempotencyKey sourceRunId must match metadata.sourceRunId",
+            path: ["sections", sectionIndex, "rows", rowIndex, "idempotencyKey"],
+          });
+        }
+      }
+      if (row.finalDisposition?.sourceRunId && row.finalDisposition.sourceRunId !== value.sourceRunId) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Disposition row finalDisposition.sourceRunId must match metadata.sourceRunId",
+          path: ["sections", sectionIndex, "rows", rowIndex, "finalDisposition", "sourceRunId"],
+        });
+      }
+    }
+  }
+});
 
 export type IssueCommentMetadata = z.infer<typeof issueCommentMetadataSchema>;
 

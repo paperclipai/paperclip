@@ -53,6 +53,8 @@ import {
   goalService,
   heartbeatService,
   issueApprovalService,
+  issueDispositionService,
+  extractDispositionRowFromMetadata,
   issueThreadInteractionService,
   ISSUE_LIST_DEFAULT_LIMIT,
   ISSUE_LIST_MAX_LIMIT,
@@ -430,12 +432,40 @@ const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
   "link or request a pending approval, assign a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, " +
   "or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update.";
 
+const COMMENT_CHANGES_REQUESTED_RE =
+  /\b(?:changes[_\s-]?requested|request(?:ed|s)?\s+changes|qa\s+verdict\s*:\s*(?:fail|no[-\s]?go)|verdict\s*:\s*(?:fail|no[-\s]?go))\b|(?:^|\n)\s*(?:fail|no[-\s]?go)\b/i;
+
+type RouteActorInfo = ReturnType<typeof getActorInfo>;
+
 function executionPrincipalsEqual(
   left: ParsedExecutionState["currentParticipant"] | null,
   right: ParsedExecutionState["currentParticipant"] | null,
 ) {
   if (!left || !right || left.type !== right.type) return false;
   return left.type === "agent" ? left.agentId === right.agentId : left.userId === right.userId;
+}
+
+function actorMatchesExecutionParticipant(
+  participant: ParsedExecutionState["currentParticipant"] | null,
+  actor: RouteActorInfo,
+) {
+  if (!participant) return false;
+  if (participant.type === "agent") return actor.actorType === "agent" && participant.agentId === actor.agentId;
+  return actor.actorType === "user" && participant.userId === actor.actorId;
+}
+
+function inferCommentExecutionDecision(input: {
+  issue: { status: string; executionState?: unknown };
+  actor: RouteActorInfo;
+  body: string;
+}) {
+  if (!COMMENT_CHANGES_REQUESTED_RE.test(input.body)) return null;
+  if (input.issue.status !== "in_review") return null;
+  const state = parseIssueExecutionState(input.issue.executionState);
+  if (!state || state.status !== "pending") return null;
+  if (!actorMatchesExecutionParticipant(state.currentParticipant, input.actor)) return null;
+  if (!state.returnAssignee) return null;
+  return "changes_requested" as const;
 }
 
 function buildExecutionStageWakeContext(input: {
@@ -804,6 +834,7 @@ export function issueRoutes(
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
+  const dispositionSvc = issueDispositionService(db);
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
@@ -1114,6 +1145,13 @@ export function issueRoutes(
     const hasStructuredFields = input.presentation !== undefined || input.metadata !== undefined;
     if (!hasStructuredFields) return true;
     if (req.actor.type === "board") return true;
+    if (
+      req.actor.type === "agent"
+      && input.presentation === undefined
+      && isDispositionOnlyAgentMetadata(input.metadata)
+    ) {
+      return true;
+    }
     res.status(403).json({
       error: "Only board users may set structured comment presentation or metadata",
       details: {
@@ -1121,6 +1159,27 @@ export function issueRoutes(
       },
     });
     return false;
+  }
+
+  /**
+   * Phase 3C-B disposition carrier: agents are permitted to post comment
+   * metadata whose every row is a disposition row, since the disposition
+   * writer authoritatively validates the payload. Any other structured
+   * row type (key_value, issue_link, etc.) remains board-only.
+   */
+  function isDispositionOnlyAgentMetadata(metadata: unknown): boolean {
+    if (!metadata || typeof metadata !== "object") return false;
+    const m = metadata as { sections?: Array<{ rows?: Array<{ type?: string }> }> };
+    if (!Array.isArray(m.sections) || m.sections.length === 0) return false;
+    let dispositionRows = 0;
+    for (const section of m.sections) {
+      if (!Array.isArray(section?.rows) || section.rows.length === 0) return false;
+      for (const row of section.rows) {
+        if (row?.type !== "disposition") return false;
+        dispositionRows += 1;
+      }
+    }
+    return dispositionRows > 0;
   }
 
   async function assertExplicitResumeIntentAllowed(
@@ -4293,6 +4352,70 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    // Pre-mutation disposition preflight: when the comment carries a
+    // disposition row we must reject schema/idempotency/sourceRun/finalDisp
+    // errors BEFORE assertAgentIssueMutationAllowed runs. That helper can
+    // clear terminal execution-run state and adopt stale checkout locks,
+    // and those mutations must not happen for a request the writer would
+    // ultimately reject. The preflight here mirrors the writer's pre-tx
+    // checks; the writer also runs them on entry, so direct service callers
+    // cannot bypass them.
+    const dispositionMatchPreflight = extractDispositionRowFromMetadata(req.body.metadata ?? null);
+    const reopenRequested = req.body.reopen === true;
+    const resumeRequested = req.body.resume === true;
+    const interruptRequested = req.body.interrupt === true;
+    if (dispositionMatchPreflight
+      && (reopenRequested || resumeRequested === true || interruptRequested)) {
+      res.status(422).json({
+        error:
+          "Disposition-carrying comments cannot also request reopen/resume/interrupt; the disposition transition drives status.",
+        details: { code: "disposition_combines_with_lifecycle_flag" },
+      });
+      return;
+    }
+    if (dispositionMatchPreflight) {
+      const preflightActor = getActorInfo(req);
+      const preflightActorPayload = {
+        actorType: (preflightActor.actorType === "agent"
+          ? "agent"
+          : preflightActor.actorType === "user" ? "user" : "system") as "agent" | "user" | "system",
+        agentId: preflightActor.agentId ?? null,
+        userId: preflightActor.actorType === "user" ? preflightActor.actorId ?? null : null,
+        runId: preflightActor.runId ?? null,
+      };
+      try {
+        const preflightResult = dispositionSvc.preflightDispositionRequest({
+          issueId: id,
+          metadata: req.body.metadata,
+          presentation: req.body.presentation ?? null,
+          actor: preflightActorPayload,
+        });
+        // Structured-fields authorization must run before assertAgentIssueMutationAllowed
+        // for the disposition path: that helper can clear terminal execution-run state and
+        // adopt stale checkout locks (mutating checkoutRunId/executionRunId/activity), and
+        // a forbidden structured-metadata payload that survives only the disposition
+        // preflight would otherwise trigger those side effects before this guard rejects.
+        if (!assertStructuredCommentFieldsAllowed(req, res, {
+          presentation: req.body.presentation,
+          metadata: req.body.metadata,
+        })) return;
+        // DB-backed sourceRun authorization: existence + company + agent ownership. Must
+        // run before assertAgentIssueMutationAllowed for the same reason; the writer's
+        // in-tx check remains authoritative for direct service callers.
+        await dispositionSvc.assertDispositionSourceRunAuthorized({
+          issueId: id,
+          issueCompanyId: issue.companyId,
+          sourceRunId: preflightResult.sourceRunId,
+          actor: preflightActorPayload,
+        });
+      } catch (err) {
+        if (err instanceof HttpError) {
+          res.status(err.status).json({ error: err.message, details: err.details });
+          return;
+        }
+        throw err;
+      }
+    }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
@@ -4305,9 +4428,6 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
-    const reopenRequested = req.body.reopen === true;
-    const resumeRequested = req.body.resume === true;
-    const interruptRequested = req.body.interrupt === true;
     if (resumeRequested === true && !(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
     if (resumeRequested !== true && reopenRequested === true && req.actor.type === "agent") {
       if (!(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
@@ -4315,14 +4435,23 @@ export function issueRoutes(
     const isClosed = isClosedIssueStatus(issue.status);
     const isBlocked = issue.status === "blocked";
     const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;
+    // When a disposition row carries the status transition, the writer is the
+    // single source of truth for status changes. Suppress implicit reopen,
+    // implicit todo-move, and interrupt side effects on this code path so that
+    // an invalid disposition (rejected by the writer) does not leave behind
+    // pre-validation state mutations. Explicit reopen/resume/interrupt combos
+    // are already rejected by the preflight above.
+    const dispositionCarriesStatusTransition = Boolean(dispositionMatchPreflight);
     const effectiveMoveToTodoRequested =
-      explicitMoveToTodoRequested ||
-      shouldImplicitlyMoveCommentedIssueToTodo({
-        issueStatus: issue.status,
-        assigneeAgentId: issue.assigneeAgentId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-      });
+      !dispositionCarriesStatusTransition && (
+        explicitMoveToTodoRequested ||
+        shouldImplicitlyMoveCommentedIssueToTodo({
+          issueStatus: issue.status,
+          assigneeAgentId: issue.assigneeAgentId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+        })
+      );
     const hasUnresolvedFirstClassBlockers =
       isBlocked && effectiveMoveToTodoRequested
         ? (await svc.getDependencyReadiness(issue.id)).unresolvedBlockerCount > 0
@@ -4367,7 +4496,7 @@ export function issueRoutes(
       });
     }
 
-    if (interruptRequested) {
+    if (interruptRequested && !dispositionCarriesStatusTransition) {
       if (req.actor.type !== "board") {
         res.status(403).json({ error: "Only board users can interrupt active runs from issue comments" });
         return;
@@ -4393,15 +4522,165 @@ export function issueRoutes(
       }
     }
 
-    const comment = await svc.addComment(id, req.body.body, {
-      agentId: actor.agentId ?? undefined,
-      userId: actor.actorType === "user" ? actor.actorId : undefined,
-      runId: actor.runId,
-    }, {
-      authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
-      presentation: req.body.presentation ?? null,
-      metadata: req.body.metadata ?? null,
-    });
+    const dispositionMatch = dispositionMatchPreflight;
+    let comment: Awaited<ReturnType<typeof svc.addComment>>;
+    let dispositionApplied: Awaited<ReturnType<typeof dispositionSvc.applyCommentDisposition>> | null = null;
+    let executionStageWakeup: ReturnType<typeof buildExecutionStageWakeup> = null;
+    if (dispositionMatch) {
+      try {
+        dispositionApplied = await dispositionSvc.applyCommentDisposition({
+          issueId: id,
+          body: req.body.body,
+          authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+          presentation: req.body.presentation ?? null,
+          metadata: req.body.metadata,
+          actor: {
+            actorType: actor.actorType === "agent" ? "agent" : actor.actorType === "user" ? "user" : "system",
+            agentId: actor.agentId ?? null,
+            userId: actor.actorType === "user" ? actor.actorId ?? null : null,
+            runId: actor.runId ?? null,
+          },
+          evidenceDetailExtras: {
+            issueTitle: currentIssue.title,
+          },
+        });
+      } catch (err) {
+        if (err instanceof HttpError) {
+          res.status(err.status).json({ error: err.message, details: err.details });
+          return;
+        }
+        throw err;
+      }
+      // Re-fetch through the issue service so the returned comment shape (with
+      // redaction + author type normalization) matches the legacy code path.
+      const reloadedComment = await svc.getComment(dispositionApplied.comment.id);
+      comment = reloadedComment ?? (dispositionApplied.comment as unknown as Awaited<ReturnType<typeof svc.addComment>>);
+      if (dispositionApplied.applied) {
+        const updatedIssue = await svc.getById(id);
+        if (updatedIssue) currentIssue = updatedIssue;
+      } else if (dispositionApplied.noop) {
+        // Idempotent retry: the writer returned the existing comment without
+        // touching the issue/comment/evidence state. Skip every downstream
+        // side effect (reference sync was already done at the original
+        // insert, the comment_added activity row was already written, wakeups
+        // and interaction expirations already fired). Repeating any of these
+        // for an idempotent retry would duplicate activity rows and wake
+        // assignees again for a no-op write.
+        res.status(201).json(comment);
+        return;
+      }
+    } else {
+      comment = await svc.addComment(id, req.body.body, {
+        agentId: actor.agentId ?? undefined,
+        userId: actor.actorType === "user" ? actor.actorId : undefined,
+        runId: actor.runId,
+      }, {
+        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+        presentation: req.body.presentation ?? null,
+        metadata: req.body.metadata ?? null,
+      });
+
+      const inferredExecutionDecision = inferCommentExecutionDecision({ issue: currentIssue, actor, body: req.body.body });
+      if (inferredExecutionDecision === "changes_requested") {
+        const previousExecutionPolicy = normalizeIssueExecutionPolicy(currentIssue.executionPolicy ?? null);
+        const previousExecutionState = parseIssueExecutionState(currentIssue.executionState);
+        const transition = applyIssueExecutionPolicyTransition({
+          issue: currentIssue,
+          policy: previousExecutionPolicy,
+          previousPolicy: previousExecutionPolicy,
+          requestedStatus: "in_progress",
+          requestedAssigneePatch: {
+            assigneeAgentId: undefined,
+            assigneeUserId: undefined,
+          },
+          actor: {
+            agentId: actor.agentId ?? null,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          },
+          commentBody: req.body.body,
+          monitorExplicitlyUpdated: false,
+        });
+
+        const decision = transition.decision;
+        if (decision?.outcome === "changes_requested") {
+          const decisionId = randomUUID();
+          const nextExecutionState = transition.patch.executionState;
+          if (!nextExecutionState || typeof nextExecutionState !== "object") {
+            throw new Error("Execution policy decision patch is missing executionState");
+          }
+          transition.patch.executionState = {
+            ...nextExecutionState,
+            lastDecisionId: decisionId,
+          };
+
+          const updatedIssue = await db.transaction(async (tx) => {
+            const updated = await svc.update(
+              id,
+              {
+                ...transition.patch,
+                actorAgentId: actor.agentId ?? null,
+                actorUserId: actor.actorType === "user" ? actor.actorId : null,
+              },
+              tx,
+            );
+            if (!updated) return null;
+
+            await tx.insert(issueExecutionDecisions).values({
+              id: decisionId,
+              companyId: updated.companyId,
+              issueId: updated.id,
+              stageId: decision.stageId,
+              stageType: decision.stageType,
+              actorAgentId: actor.agentId ?? null,
+              actorUserId: actor.actorType === "user" ? actor.actorId : null,
+              outcome: decision.outcome,
+              body: decision.body,
+              createdByRunId: actor.runId ?? null,
+            });
+
+            return updated;
+          });
+
+          if (!updatedIssue) {
+            res.status(404).json({ error: "Issue not found" });
+            return;
+          }
+
+          currentIssue = updatedIssue;
+          executionStageWakeup = buildExecutionStageWakeup({
+            issueId: currentIssue.id,
+            previousState: previousExecutionState,
+            nextState: parseIssueExecutionState(currentIssue.executionState),
+            interruptedRunId,
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+          });
+
+          await logActivity(db, {
+            companyId: currentIssue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.updated",
+            entityType: "issue",
+            entityId: currentIssue.id,
+            details: {
+              ...transition.patch,
+              identifier: currentIssue.identifier,
+              source: "comment_execution_decision",
+              commentId: comment.id,
+              executionDecision: {
+                id: decisionId,
+                outcome: decision.outcome,
+                stageId: decision.stageId,
+                stageType: decision.stageType,
+              },
+            },
+          });
+        }
+      }
+    }
     await issueReferencesSvc.syncComment(comment.id);
     const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(currentIssue.id);
     const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
@@ -4431,6 +4710,28 @@ export function issueRoutes(
         ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
         ...(interruptedRunId ? { interruptedRunId } : {}),
+        ...(dispositionApplied
+          ? {
+            disposition: {
+              value: dispositionApplied.dispositionValue,
+              applied: dispositionApplied.applied,
+              noop: dispositionApplied.noop,
+              previousStatus: dispositionApplied.evidence.previousStatus,
+              nextStatus: dispositionApplied.evidence.nextStatus,
+              parentBlockerIntention: dispositionApplied.evidence.parentBlockerIntention,
+              parentBlockerCleared: dispositionApplied.evidence.parentBlockerCleared,
+              parentBlockerReplacementDeferred:
+                dispositionApplied.evidence.parentBlockerReplacementDeferred,
+              parentBlockerReplaced: dispositionApplied.evidence.parentBlockerReplaced,
+              parentBlockerReplacementIssueId:
+                dispositionApplied.evidence.parentBlockerReplacementIssueId,
+              sourceRunId: dispositionApplied.evidence.sourceRunId,
+              sourceCommentId: dispositionApplied.evidence.sourceCommentId,
+              idempotencyKey: dispositionApplied.idempotencyKey,
+              atomicEvidenceAction: "issue.disposition_applied",
+            },
+          }
+          : {}),
         ...summarizeIssueReferenceActivityDetails({
           addedReferencedIssues: commentReferenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
           removedReferencedIssues: commentReferenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
@@ -4457,11 +4758,14 @@ export function issueRoutes(
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
+      if (executionStageWakeup) {
+        wakeups.set(executionStageWakeup.agentId, executionStageWakeup.wakeup);
+      }
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
       const skipWake = selfComment || isClosed;
-      if (assigneeId && (reopened || !skipWake)) {
+      if (assigneeId && !wakeups.has(assigneeId) && (reopened || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {
             source: "automation",

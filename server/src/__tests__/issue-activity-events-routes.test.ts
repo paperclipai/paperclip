@@ -44,6 +44,22 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 const mockRoutineService = vi.hoisted(() => ({
   syncRunStatusForIssue: vi.fn(async () => undefined),
 }));
+const mockIssueFinalDeliveryService = vi.hoisted(() => ({
+  queueForCompletedIssue: vi.fn(async () => ({ status: "skipped", reason: "not_configured" })),
+}));
+const mockIssueDispositionService = vi.hoisted(() => ({
+  applyCommentDisposition: vi.fn(),
+  preflightDispositionRequest: vi.fn(),
+  assertDispositionSourceRunAuthorized: vi.fn(async () => undefined),
+}));
+const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+  expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+  listForIssue: vi.fn(async () => []),
+}));
+const mockIssueTreeControlService = vi.hoisted(() => ({
+  getActivePauseHoldGate: vi.fn(async () => null),
+}));
 
 function registerModuleMocks() {
   vi.doMock("../services/access.js", () => ({
@@ -89,6 +105,11 @@ function registerModuleMocks() {
     heartbeatService: () => mockHeartbeatService,
     instanceSettingsService: () => mockInstanceSettingsService,
     issueApprovalService: () => ({}),
+    issueDispositionService: () => mockIssueDispositionService,
+    extractDispositionRowFromMetadata: () => null,
+    issueFinalDeliveryService: () => mockIssueFinalDeliveryService,
+    issueThreadInteractionService: () => mockIssueThreadInteractionService,
+    issueTreeControlService: () => mockIssueTreeControlService,
     issueReferenceService: () => ({
       deleteDocumentSource: async () => undefined,
       diffIssueReferenceSummary: () => ({

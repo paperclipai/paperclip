@@ -118,6 +118,12 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => mockHeartbeatService,
   instanceSettingsService: () => mockInstanceSettingsService,
   issueApprovalService: () => ({}),
+  issueDispositionService: () => ({
+    applyCommentDisposition: vi.fn(),
+    preflightDispositionRequest: vi.fn(),
+    assertDispositionSourceRunAuthorized: vi.fn(async () => undefined),
+  }),
+  extractDispositionRowFromMetadata: () => null,
   issueFinalDeliveryService: () => mockFinalDeliveryService,
   issueReferenceService: () => mockIssueReferenceService,
   issueService: () => mockIssueService,

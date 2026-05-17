@@ -75,6 +75,27 @@ const RUNNABLE_RE =
 const PLAN_TASK_TITLE_RE = /\b(?:plan|planning|analysis|investigation|research|report|proposal|design doc|write-?up)\b/i;
 const PLAN_TASK_DESCRIPTION_RE =
   /\b(?:create|write|produce|draft|update|revise|prepare)\s+(?:a\s+|the\s+)?(?:plan|analysis|investigation|research report|report|proposal|design doc|write-?up)\b/i;
+const NO_USEFUL_OUTPUT_FAILURE_RE =
+  /\b(?:before producing output|without producing output|produced no output|no useful output|no output|empty response)\b/i;
+const RUNTIME_BOOKKEEPING_FAILURE_RE =
+  /\b(?:process(?:\s+was)?\s+(?:lost|crashed|exited|killed|terminated)|process_lost|oom|out\s+of\s+memory|sigkill|adapter[_\s-]*(?:lost|crashed|failed|error|timed[_\s-]*out)|runtime\s+bookkeeping)\b/i;
+const QA_REVIEW_FAILURE_RE =
+  /\b(?:qa|validator|validation|review(?:er)?|changes\s+requested|test(?:s)?\s+failed|failing\s+test|vitest|jest|pytest|typecheck|lint|build\s+failed)\b/i;
+const PRODUCT_CONTRACT_FAILURE_RE =
+  /\b(?:contract|acceptance\s+criteria|schema|api\s+contract|regression|implementation\s+gap|product\s+failure|compile\s+error|type\s+error)\b/i;
+const STALE_BLOCKER_RE =
+  /\b(?:stale\s+blocker|stale\s+dependency|cancelled\s+blocker|superseded\s+(?:child|issue|blocker)|canonical\s+blocker|blocked\s+by\s+stale)\b/i;
+const RELEASE_HOLD_RE =
+  /\b(?:release\s+hold|release\s+manager|rc\b|preflight|protected\s+merge|deploy(?:ment)?\s+hold|production\s+release)\b/i;
+
+type RunFailureKind =
+  | "runtime_bookkeeping_recovery"
+  | "product_contract_failure"
+  | "qa_review_failure"
+  | "stale_blocker"
+  | "approval_hold"
+  | "release_hold"
+  | "dead_work";
 
 function compactReason(reason: string) {
   return reason.length <= 500 ? reason : `${reason.slice(0, 497)}...`;
@@ -274,6 +295,40 @@ function extractNextAction(input: RunLivenessClassificationInput) {
   return null;
 }
 
+function classifyRunFailureKind(input: RunLivenessClassificationInput): RunFailureKind {
+  const text = [combinedOutput(input), input.error, input.errorCode]
+    .map((value) => readText(value))
+    .filter((value): value is string => Boolean(value))
+    .join("\n");
+  if (RELEASE_HOLD_RE.test(text)) return "release_hold";
+  if (APPROVAL_REQUIRED_RE.test(text)) return "approval_hold";
+  if (STALE_BLOCKER_RE.test(text)) return "stale_blocker";
+  if (NO_USEFUL_OUTPUT_FAILURE_RE.test(text)) return "dead_work";
+  if (RUNTIME_BOOKKEEPING_FAILURE_RE.test(text)) return "runtime_bookkeeping_recovery";
+  if (QA_REVIEW_FAILURE_RE.test(text)) return "qa_review_failure";
+  if (PRODUCT_CONTRACT_FAILURE_RE.test(text)) return "product_contract_failure";
+  return "dead_work";
+}
+
+function runFailureKindLabel(kind: RunFailureKind) {
+  switch (kind) {
+    case "runtime_bookkeeping_recovery":
+      return "Runtime bookkeeping recovery";
+    case "product_contract_failure":
+      return "Product/contract failure";
+    case "qa_review_failure":
+      return "QA/review failure";
+    case "stale_blocker":
+      return "Stale blocker";
+    case "approval_hold":
+      return "Approval hold";
+    case "release_hold":
+      return "Release hold";
+    case "dead_work":
+      return "No-output/dead work";
+  }
+}
+
 export function classifyRunActionability(input: RunLivenessClassificationInput): RunLivenessActionability {
   const text = actionabilityText(input);
   if (!text) return "unknown";
@@ -284,7 +339,7 @@ export function classifyRunActionability(input: RunLivenessClassificationInput):
   if (EXTERNAL_BLOCKER_RE.test(text) || BLOCKER_RE.test(text) && /\b(?:credential|secret|api key|token|access|input|clarification)\b/i.test(text)) {
     return "blocked_external";
   }
-  if (MANAGER_REVIEW_RE.test(text)) return "manager_review";
+  if (MANAGER_REVIEW_RE.test(text) || RELEASE_HOLD_RE.test(text)) return "manager_review";
   if (RUNNABLE_RE.test(text)) return "runnable";
   return "unknown";
 }
@@ -310,7 +365,26 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
   });
 
   if (input.runStatus !== "succeeded") {
-    return output("failed", input.errorCode ? `Run ended with ${input.runStatus} (${input.errorCode})` : `Run ended with ${input.runStatus}`);
+    const failureKind = classifyRunFailureKind(input);
+    const failureLabel = runFailureKindLabel(failureKind);
+    const statusReason = input.errorCode
+      ? `run ended with ${input.runStatus} (${input.errorCode})`
+      : `run ended with ${input.runStatus}`;
+    if (failureKind === "runtime_bookkeeping_recovery" && concreteEvidence) {
+      return output(
+        "advanced",
+        `${failureLabel}: ${statusReason} after concrete action evidence: ${evidenceReason(evidence)}`,
+        nextAction,
+      );
+    }
+    if (failureKind === "runtime_bookkeeping_recovery" && usefulOutput) {
+      return output(
+        "needs_followup",
+        `${failureLabel}: ${statusReason} with useful output but no durable action evidence`,
+        nextAction,
+      );
+    }
+    return output("failed", `${failureLabel}: ${statusReason}`, nextAction);
   }
 
   if (issueStatus === "done" || issueStatus === "cancelled") {
