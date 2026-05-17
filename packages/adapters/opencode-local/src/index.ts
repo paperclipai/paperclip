@@ -68,6 +68,10 @@ export const models: Array<{ id: string; label: string }> = [
   { id: "openrouter/openai/gpt-5.2-codex", label: "openrouter/openai/gpt-5.2-codex" },
   { id: "openrouter/deepseek/deepseek-chat", label: "openrouter/deepseek/deepseek-chat" },
   { id: "openrouter/mistralai/mistral-small-3.1-24b-instruct", label: "openrouter/mistralai/mistral-small-3.1-24b-instruct" },
+  { id: "openrouter/owl-alpha", label: "openrouter/owl-alpha" },
+  { id: "openrouter/stepfun/step-3.5-flash", label: "openrouter/stepfun/step-3.5-flash" },
+  { id: "openrouter/deepseek/deepseek-v4-flash:free", label: "openrouter/deepseek/deepseek-v4-flash:free" },
+  { id: "openrouter/qwen/qwen3-coder:free", label: "openrouter/qwen/qwen3-coder:free" },
 ];
 
 export const modelProfiles: AdapterModelProfileDefinition[] = [
