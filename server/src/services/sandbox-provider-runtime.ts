@@ -1,97 +1,79 @@
 import { randomUUID } from "node:crypto";
 import type {
-  EnvironmentLeaseStatus,
   EnvironmentProbeResult,
   FakeSandboxEnvironmentConfig,
   SandboxEnvironmentConfig,
   SandboxEnvironmentProvider,
 } from "@paperclipai/shared";
-import { DOCKER_SANDBOX_PROVIDER_KEY, DockerSandboxProvider } from "./sandbox/docker-provider.js";
+import {
+  DOCKER_SANDBOX_PROVIDER_KEY,
+  DockerSandboxProvider,
+} from "./sandbox/docker-provider.js";
+import {
+  NULL_SANDBOX_PROVIDER_KEY,
+  NullSandboxProvider,
+} from "./sandbox/null-provider.js";
+import {
+  PREVIEW_NO_SECRET_INJECTION,
+  SandboxProviderError,
+  previewSandboxProviderStatus,
+  throwIfAborted,
+} from "./sandbox/provider-contract.js";
+import type {
+  AcquireSandboxLeaseInput,
+  DestroySandboxLeaseInput,
+  PrepareSandboxWorkspaceInput,
+  ReadSandboxLogsInput,
+  ReleaseSandboxLeaseInput,
+  ResumeSandboxLeaseInput,
+  SandboxExecuteInput,
+  SandboxExecuteResult,
+  SandboxLeaseHandle,
+  SandboxProvider,
+  SandboxProviderCapabilityFlags,
+  SandboxProviderLogsResult,
+  SandboxProviderStatusSnapshot,
+  SandboxProviderStreamEvent,
+  SandboxProviderValidationResult,
+  StartSandboxLeaseInput,
+  StopSandboxLeaseInput,
+  StreamSandboxEventsInput,
+} from "./sandbox/provider-contract.js";
 
-export interface SandboxProviderValidationResult {
-  ok: boolean;
-  summary: string;
-  details?: Record<string, unknown>;
-}
-
-export interface AcquireSandboxLeaseInput {
-  config: SandboxEnvironmentConfig;
-  environmentId: string;
-  heartbeatRunId: string;
-  issueId: string | null;
-}
-
-export interface ResumeSandboxLeaseInput {
-  config: SandboxEnvironmentConfig;
-  providerLeaseId: string;
-}
-
-export interface ReleaseSandboxLeaseInput {
-  config: SandboxEnvironmentConfig;
-  providerLeaseId: string | null;
-  status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed">;
-}
-
-export interface DestroySandboxLeaseInput {
-  config: SandboxEnvironmentConfig;
-  providerLeaseId: string | null;
-}
-
-export interface PrepareSandboxWorkspaceInput {
-  config: SandboxEnvironmentConfig;
-  providerLeaseId: string | null;
-  workspace: {
-    localPath?: string;
-    remotePath?: string;
-    mode?: string;
-    metadata?: Record<string, unknown>;
-  };
-}
-
-export interface SandboxExecuteInput {
-  config: SandboxEnvironmentConfig;
-  providerLeaseId: string | null;
-  command: string;
-  args?: string[];
-  cwd?: string;
-  env?: Record<string, string>;
-  stdin?: string;
-  timeoutMs?: number;
-}
-
-export interface SandboxLeaseHandle {
-  providerLeaseId: string;
-  metadata: Record<string, unknown>;
-}
-
-export interface PreparedSandboxWorkspace {
-  remotePath?: string | null;
-  metadata?: Record<string, unknown>;
-}
-
-export interface SandboxExecuteResult {
-  exitCode: number | null;
-  stdout: string;
-  stderr: string;
-}
-
-export interface SandboxProvider {
-  readonly provider: SandboxEnvironmentProvider;
-  validateConfig(config: SandboxEnvironmentConfig): Promise<SandboxProviderValidationResult>;
-  probe(config: SandboxEnvironmentConfig): Promise<EnvironmentProbeResult>;
-  acquireLease(input: AcquireSandboxLeaseInput): Promise<SandboxLeaseHandle>;
-  resumeLease(input: ResumeSandboxLeaseInput): Promise<SandboxLeaseHandle | null>;
-  releaseLease(input: ReleaseSandboxLeaseInput): Promise<void>;
-  destroyLease(input: DestroySandboxLeaseInput): Promise<void>;
-  matchesReusableLease(input: {
-    config: SandboxEnvironmentConfig;
-    lease: { providerLeaseId: string | null; metadata: Record<string, unknown> | null };
-  }): boolean;
-  configFromLeaseMetadata(metadata: Record<string, unknown>): SandboxEnvironmentConfig | null;
-  prepareWorkspace?(input: PrepareSandboxWorkspaceInput): Promise<PreparedSandboxWorkspace>;
-  execute?(input: SandboxExecuteInput): Promise<SandboxExecuteResult>;
-}
-
+export type {
+  AcquireSandboxLeaseInput,
+  DestroySandboxLeaseInput,
+  PrepareSandboxWorkspaceInput,
+  PreparedSandboxWorkspace,
+  ReadSandboxLogsInput,
+  ReleaseSandboxLeaseInput,
+  ResumeSandboxLeaseInput,
+  SandboxExecuteInput,
+  SandboxExecuteResult,
+  SandboxLeaseHandle,
+  SandboxProvider,
+  SandboxProviderCapabilityFlags,
+  SandboxProviderErrorCode,
+  SandboxProviderLogLine,
+  SandboxProviderLogsResult,
+  SandboxProviderSecretInjectionContract,
+  SandboxProviderStatusSnapshot,
+  SandboxProviderStreamEvent,
+  SandboxProviderValidationIssue,
+  SandboxProviderValidationResult,
+  StartSandboxLeaseInput,
+  StopSandboxLeaseInput,
+  StreamSandboxEventsInput,
+} from "./sandbox/provider-contract.js";
+export {
+  PREVIEW_NO_SECRET_INJECTION,
+  SandboxProviderError,
+  previewSandboxProviderStatus,
+} from "./sandbox/provider-contract.js";
+export {
+  NULL_SANDBOX_PROVIDER_KEY,
+  NullSandboxProvider,
+} from "./sandbox/null-provider.js";
 function assertProviderConfig<T extends SandboxEnvironmentConfig>(
   provider: SandboxEnvironmentProvider,
   config: SandboxEnvironmentConfig,
@@ -116,23 +98,50 @@ function buildFakeSandboxProbe(config: FakeSandboxEnvironmentConfig): Environmen
 
 class FakeSandboxProvider implements SandboxProvider {
   readonly provider = "fake" as const;
+  readonly kind = "builtin" as const;
+  readonly capabilities: SandboxProviderCapabilityFlags = {
+    lease: true,
+    start: true,
+    exec: true,
+    readLogs: true,
+    streamEvents: true,
+    stop: true,
+    destroy: true,
+  };
+  readonly secretInjection = PREVIEW_NO_SECRET_INJECTION;
+
+  status(): SandboxProviderStatusSnapshot {
+    return previewSandboxProviderStatus({
+      provider: this.provider,
+      enabled: false,
+      capabilities: this.capabilities,
+      secretInjection: this.secretInjection,
+    });
+  }
 
   async validateConfig(config: SandboxEnvironmentConfig): Promise<SandboxProviderValidationResult> {
     assertProviderConfig<FakeSandboxEnvironmentConfig>(this.provider, config);
     return {
       ok: true,
       summary: `Fake sandbox provider config is valid for image ${config.image}.`,
+      issues: [],
       details: {
         provider: config.provider,
         image: config.image,
         reuseLease: config.reuseLease,
+        previewOnly: true,
       },
+      normalizedConfig: config,
     };
   }
 
   async probe(config: SandboxEnvironmentConfig): Promise<EnvironmentProbeResult> {
     assertProviderConfig<FakeSandboxEnvironmentConfig>(this.provider, config);
     return buildFakeSandboxProbe(config);
+  }
+
+  async lease(input: AcquireSandboxLeaseInput): Promise<SandboxLeaseHandle> {
+    return this.acquireLease(input);
   }
 
   async acquireLease(input: AcquireSandboxLeaseInput): Promise<SandboxLeaseHandle> {
@@ -147,6 +156,7 @@ class FakeSandboxProvider implements SandboxProvider {
         provider: input.config.provider,
         image: input.config.image,
         reuseLease: input.config.reuseLease,
+        previewOnly: true,
       },
     };
   }
@@ -160,8 +170,44 @@ class FakeSandboxProvider implements SandboxProvider {
         image: input.config.image,
         reuseLease: input.config.reuseLease,
         resumedLease: true,
+        previewOnly: true,
       },
     };
+  }
+
+  async start(input: StartSandboxLeaseInput): Promise<SandboxLeaseHandle> {
+    throwIfAborted(input.signal);
+    return input.lease;
+  }
+
+  async exec(input: SandboxExecuteInput): Promise<SandboxExecuteResult> {
+    throwIfAborted(input.signal);
+    return {
+      exitCode: 0,
+      stdout: `fake sandbox executed: ${input.command}${input.args?.length ? ` ${input.args.join(" ")}` : ""}`,
+      stderr: "",
+    };
+  }
+
+  async execute(input: SandboxExecuteInput): Promise<SandboxExecuteResult> {
+    return this.exec(input);
+  }
+
+  async readLogs(input: ReadSandboxLogsInput): Promise<SandboxProviderLogsResult> {
+    throwIfAborted(input.signal);
+    return { lines: [], nextCursor: null, truncated: false };
+  }
+
+  async *streamEvents(input: StreamSandboxEventsInput): AsyncIterable<SandboxProviderStreamEvent> {
+    throwIfAborted(input.signal);
+  }
+
+  async stop(input: StopSandboxLeaseInput): Promise<void> {
+    throwIfAborted(input.signal);
+  }
+
+  async destroy(input: StopSandboxLeaseInput): Promise<void> {
+    throwIfAborted(input.signal);
   }
 
   async releaseLease(): Promise<void> {
@@ -205,6 +251,7 @@ class FakeSandboxProvider implements SandboxProvider {
 // ---------------------------------------------------------------------------
 
 const registeredSandboxProviders = new Map<SandboxEnvironmentProvider, SandboxProvider>([
+  [NULL_SANDBOX_PROVIDER_KEY, new NullSandboxProvider()],
   ["fake", new FakeSandboxProvider()],
   [DOCKER_SANDBOX_PROVIDER_KEY, new DockerSandboxProvider()],
 ]);
@@ -236,6 +283,20 @@ export function isBuiltinSandboxProvider(provider: string): boolean {
 
 export function listSandboxProviders(): SandboxProvider[] {
   return [...registeredSandboxProviders.values()];
+}
+
+export function listSandboxProviderDescriptors(): SandboxProviderStatusSnapshot[] {
+  return listSandboxProviders()
+    .map((provider) => provider.status())
+    .sort((a, b) => a.provider.localeCompare(b.provider));
+}
+
+export function sandboxProviderStatusMap(): Map<string, boolean> {
+  return new Map(listSandboxProviderDescriptors().map((provider) => [provider.provider, provider.enabled]));
+}
+
+export function sandboxProviderPreviewOnlyMap(): Map<string, boolean> {
+  return new Map(listSandboxProviderDescriptors().map((provider) => [provider.provider, provider.previewOnly]));
 }
 
 export async function validateSandboxProviderConfig(
@@ -362,7 +423,7 @@ export async function resumeSandboxProviderLease(input: {
 export async function releaseSandboxProviderLease(input: {
   config: SandboxEnvironmentConfig;
   providerLeaseId: string | null;
-  status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed">;
+  status: ReleaseSandboxLeaseInput["status"];
 }): Promise<void> {
   await requireSandboxProvider(input.config.provider).releaseLease(input);
 }

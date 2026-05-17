@@ -21,7 +21,6 @@ import {
   SANDBOX_LEASE_STATES,
   type SandboxLeaseState,
 } from "./lease-state-machine.js";
-import { DOCKER_SANDBOX_PROVIDER_KEY } from "./docker-provider.js";
 
 export type SandboxReadModelTruth = "backend-backed" | "derived" | "preview";
 
@@ -77,12 +76,13 @@ export interface SandboxLeaseReadModel {
 
   /**
    * Truth label for downstream UIs:
-   *   - "backend-backed" : the lease row carries a real provider lease id and
-   *     a sandbox state advanced past `requested`.
+   *   - "backend-backed" : the lease row carries a real provider lease id,
+   *     provider is enabled, provider is not preview-only, and sandbox state
+   *     has advanced past `requested`.
    *   - "derived"        : the lease row exists but the sandbox state has not
-   *     advanced past `requested`/`provisioning`.
-   *   - "preview"        : the lease has no provider lease id at all — the
-   *     row is a scaffolded/preview lease and no real runtime is implied.
+   *     advanced past `requested`/`provisioning` on a non-preview provider.
+   *   - "preview"        : the lease has no provider lease id, the provider is
+   *     disabled, or the provider is explicitly preview-only.
    */
   truth: SandboxReadModelTruth;
 
@@ -92,6 +92,13 @@ export interface SandboxLeaseReadModel {
    * Read models on a disabled provider are always `preview`.
    */
   providerEnabled: boolean;
+
+  /**
+   * True when the lease's provider key is preview-only. Read models for
+   * preview-only providers never claim backend-backed runtime truth, even if
+   * the provider has a feature flag enabled for scaffold validation.
+   */
+  providerPreviewOnly: boolean;
 
   /** Redacted failure reason (if any). */
   failureReason: string | null;
@@ -203,6 +210,7 @@ function readArtifactSummary(metadata: Record<string, unknown> | null): { presen
 export interface SandboxProviderStatusSnapshot {
   provider: string;
   enabled: boolean;
+  previewOnly?: boolean;
 }
 
 function isProviderEnabledForLease(
@@ -217,11 +225,22 @@ function isProviderEnabledForLease(
   return false;
 }
 
+function isProviderPreviewOnlyForLease(
+  providerKey: string | null,
+  providerPreviewOnly: ReadonlyMap<string, boolean>,
+): boolean {
+  if (!providerKey) return true;
+  const known = providerPreviewOnly.get(providerKey);
+  return known ?? false;
+}
+
 function deriveTruth(input: {
   providerLeaseId: string | null;
   sandboxState: SandboxLeaseState | null;
   providerEnabled: boolean;
+  providerPreviewOnly: boolean;
 }): SandboxReadModelTruth {
+  if (input.providerPreviewOnly) return "preview";
   if (!input.providerEnabled) return "preview";
   if (!input.providerLeaseId) return "preview";
   if (!input.sandboxState) return "derived";
@@ -234,14 +253,17 @@ function deriveTruth(input: {
 export function toSandboxLeaseReadModel(
   lease: EnvironmentLease,
   providerStatuses: ReadonlyMap<string, boolean> = new Map(),
+  providerPreviewOnly: ReadonlyMap<string, boolean> = new Map(),
 ): SandboxLeaseReadModel {
   const metadata = asRecord(lease.metadata);
   const sandboxState = readSandboxState(metadata);
   const providerEnabled = isProviderEnabledForLease(lease.provider, providerStatuses);
+  const providerIsPreviewOnly = isProviderPreviewOnlyForLease(lease.provider, providerPreviewOnly);
   const truth = deriveTruth({
     providerLeaseId: lease.providerLeaseId,
     sandboxState,
     providerEnabled,
+    providerPreviewOnly: providerIsPreviewOnly,
   });
   const capabilitiesSource = asRecord(metadata?.capabilities);
   const quotasSource = asRecord(metadata?.quotas);
@@ -268,6 +290,7 @@ export function toSandboxLeaseReadModel(
     artifacts: readArtifactSummary(metadata),
     truth,
     providerEnabled,
+    providerPreviewOnly: providerIsPreviewOnly,
     failureReason: lease.failureReason ? redactLearningEvidence(lease.failureReason) : null,
     cleanupStatus: lease.cleanupStatus,
     acquiredAt: lease.acquiredAt.toISOString(),
@@ -360,32 +383,23 @@ export interface SandboxProviderDescriptor {
 }
 
 /**
- * Build provider descriptors from the built-in registry. Every provider
- * descriptor is preview / stub in this phase: LET-310/LET-314/LET-323 do
- * not wire a real container/runtime/network boundary — see ADR LET-328.
- * The `enabled` flag tracks whether the feature flag is set; `previewOnly`
- * is the public-facing truth label and is always `true` here so callers
- * cannot read "enabled" as "running real containers".
+ * Build provider descriptors from the built-in registry without importing a
+ * concrete provider. Provider enablement comes from the provider interface.
+ * Every provider descriptor remains preview/stub/read-only in this phase:
+ * LET-310/LET-314/LET-323/LET-350 do not wire a real container/runtime/network
+ * boundary — see ADR LET-328. The `enabled` flag tracks whether the feature flag
+ * is set; `previewOnly` is the public-facing truth label so callers cannot read
+ * "enabled" as "running real containers".
  */
 export function describeBuiltinSandboxProvider(input: {
   provider: string;
   enabled: boolean;
+  previewOnly?: boolean;
 }): SandboxProviderDescriptor {
-  const provider = input.provider;
-  // Only the docker scaffold has a runtime-flag distinction today; "fake"
-  // is intrinsically preview-only.
-  if (provider === DOCKER_SANDBOX_PROVIDER_KEY) {
-    return {
-      provider,
-      kind: "builtin",
-      enabled: input.enabled,
-      previewOnly: true,
-    };
-  }
   return {
-    provider,
+    provider: input.provider,
     kind: "builtin",
-    enabled: false,
-    previewOnly: true,
+    enabled: input.enabled,
+    previewOnly: input.previewOnly ?? true,
   };
 }

@@ -43,14 +43,27 @@ import type {
   DestroySandboxLeaseInput,
   PrepareSandboxWorkspaceInput,
   PreparedSandboxWorkspace,
+  ReadSandboxLogsInput,
   ReleaseSandboxLeaseInput,
   ResumeSandboxLeaseInput,
   SandboxExecuteInput,
   SandboxExecuteResult,
   SandboxLeaseHandle,
   SandboxProvider,
+  SandboxProviderCapabilityFlags,
+  SandboxProviderLogsResult,
+  SandboxProviderStatusSnapshot,
+  SandboxProviderStreamEvent,
   SandboxProviderValidationResult,
-} from "../sandbox-provider-runtime.js";
+  StartSandboxLeaseInput,
+  StopSandboxLeaseInput,
+  StreamSandboxEventsInput,
+} from "./provider-contract.js";
+import {
+  PREVIEW_NO_SECRET_INJECTION,
+  previewSandboxProviderStatus,
+  throwIfAborted,
+} from "./provider-contract.js";
 
 export const DOCKER_SANDBOX_PROVIDER_KEY = "docker" as const;
 
@@ -168,6 +181,26 @@ class DockerSandboxNotEnabledError extends Error {
 
 export class DockerSandboxProvider implements SandboxProvider {
   readonly provider = DOCKER_SANDBOX_PROVIDER_KEY;
+  readonly kind = "builtin" as const;
+  readonly capabilities: SandboxProviderCapabilityFlags = {
+    lease: true,
+    start: false,
+    exec: false,
+    readLogs: true,
+    streamEvents: true,
+    stop: true,
+    destroy: true,
+  };
+  readonly secretInjection = PREVIEW_NO_SECRET_INJECTION;
+
+  status(): SandboxProviderStatusSnapshot {
+    return previewSandboxProviderStatus({
+      provider: this.provider,
+      enabled: isDockerSandboxEnabled(),
+      capabilities: this.capabilities,
+      secretInjection: this.secretInjection,
+    });
+  }
 
   async validateConfig(config: SandboxEnvironmentConfig): Promise<SandboxProviderValidationResult> {
     assertDockerConfig(config);
@@ -194,6 +227,7 @@ export class DockerSandboxProvider implements SandboxProvider {
         quotas: sandboxQuotasToMetadata(snapshot.quotas),
         network: networkPolicyToMetadata(snapshot.network),
         policyHash: hashDockerSandboxPolicy(snapshot),
+        previewOnly: true,
       },
     };
   }
@@ -215,6 +249,10 @@ export class DockerSandboxProvider implements SandboxProvider {
     };
   }
 
+  async lease(input: AcquireSandboxLeaseInput): Promise<SandboxLeaseHandle> {
+    return this.acquireLease(input);
+  }
+
   async acquireLease(input: AcquireSandboxLeaseInput): Promise<SandboxLeaseHandle> {
     assertDockerConfig(input.config);
     if (!isDockerSandboxEnabled()) {
@@ -234,6 +272,7 @@ export class DockerSandboxProvider implements SandboxProvider {
         quotas: sandboxQuotasToMetadata(snapshot.quotas),
         network: networkPolicyToMetadata(snapshot.network),
         policyHash: hashDockerSandboxPolicy(snapshot),
+        previewOnly: true,
       },
     };
   }
@@ -252,6 +291,7 @@ export class DockerSandboxProvider implements SandboxProvider {
         resumedLease: true,
         kind: "docker",
         policyHash: hashDockerSandboxPolicy(snapshot),
+        previewOnly: true,
       },
     };
   }
@@ -293,11 +333,39 @@ export class DockerSandboxProvider implements SandboxProvider {
   }
 
   async prepareWorkspace(_input: PrepareSandboxWorkspaceInput): Promise<PreparedSandboxWorkspace> {
-    return { remotePath: null, metadata: { provider: this.provider, scaffold: true } };
+    return { remotePath: null, metadata: { provider: this.provider, scaffold: true, previewOnly: true } };
   }
 
-  async execute(_input: SandboxExecuteInput): Promise<SandboxExecuteResult> {
+  async start(input: StartSandboxLeaseInput): Promise<SandboxLeaseHandle> {
+    throwIfAborted(input.signal);
+    // Scaffold only: no Docker create/start until a later phase wires a real runtime.
+    return input.lease;
+  }
+
+  async exec(input: SandboxExecuteInput): Promise<SandboxExecuteResult> {
+    return this.execute(input);
+  }
+
+  async execute(input: SandboxExecuteInput): Promise<SandboxExecuteResult> {
+    throwIfAborted(input.signal);
     throw new DockerSandboxNotEnabledError();
+  }
+
+  async readLogs(input: ReadSandboxLogsInput): Promise<SandboxProviderLogsResult> {
+    throwIfAborted(input.signal);
+    return { lines: [], nextCursor: null, truncated: false };
+  }
+
+  async *streamEvents(input: StreamSandboxEventsInput): AsyncIterable<SandboxProviderStreamEvent> {
+    throwIfAborted(input.signal);
+  }
+
+  async stop(input: StopSandboxLeaseInput): Promise<void> {
+    throwIfAborted(input.signal);
+  }
+
+  async destroy(input: StopSandboxLeaseInput): Promise<void> {
+    throwIfAborted(input.signal);
   }
 }
 

@@ -22,12 +22,18 @@ export interface SshEnvironmentConfig {
   strictHostKeyChecking: boolean;
 }
 
-export type SandboxEnvironmentProvider = "fake" | (string & {});
+export type SandboxEnvironmentProvider = "fake" | "null" | (string & {});
 
 export interface FakeSandboxEnvironmentConfig {
   provider: "fake";
   image: string;
   reuseLease: boolean;
+}
+
+export interface NullSandboxEnvironmentConfig {
+  provider: "null";
+  reuseLease: boolean;
+  image?: string;
 }
 
 export interface PluginSandboxEnvironmentConfig {
@@ -39,6 +45,7 @@ export interface PluginSandboxEnvironmentConfig {
 
 export type SandboxEnvironmentConfig =
   | FakeSandboxEnvironmentConfig
+  | NullSandboxEnvironmentConfig
   | PluginSandboxEnvironmentConfig;
 
 export interface PluginEnvironmentConfig {

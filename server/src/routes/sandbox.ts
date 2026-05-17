@@ -22,23 +22,21 @@ import { badRequest, conflict, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import {
   isBuiltinSandboxProvider,
+  listSandboxProviderDescriptors,
   listSandboxProviders,
+  sandboxProviderPreviewOnlyMap as getSandboxProviderPreviewOnlyMap,
+  sandboxProviderStatusMap as getSandboxProviderStatusMap,
   validateSandboxProviderConfig,
+  type SandboxProviderStatusSnapshot,
 } from "../services/sandbox-provider-runtime.js";
-import {
-  DOCKER_SANDBOX_PROVIDER_KEY,
-  __testing as dockerProviderTesting,
-} from "../services/sandbox/docker-provider.js";
 import {
   getSandboxLeaseForCompany,
   listSandboxLeasesForCompany,
 } from "../services/sandbox/queries.js";
 import {
-  describeBuiltinSandboxProvider,
   redactSandboxEventPayload,
   toSandboxLeaseReadModel,
   type SandboxLeaseReadModel,
-  type SandboxProviderDescriptor,
 } from "../services/sandbox/read-model.js";
 import {
   publishSandboxEvent,
@@ -113,15 +111,11 @@ function knownSandboxProviderKeys(): string[] {
 }
 
 function providerStatusMap(): Map<string, boolean> {
-  const out = new Map<string, boolean>();
-  for (const provider of listSandboxProviders()) {
-    if (provider.provider === DOCKER_SANDBOX_PROVIDER_KEY) {
-      out.set(provider.provider, dockerProviderTesting.isDockerSandboxEnabled());
-    } else {
-      out.set(provider.provider, false);
-    }
-  }
-  return out;
+  return getSandboxProviderStatusMap();
+}
+
+function providerPreviewOnlyMap(): Map<string, boolean> {
+  return getSandboxProviderPreviewOnlyMap();
 }
 
 function parseStatusFilter(req: Request): EnvironmentLeaseStatus | undefined {
@@ -168,16 +162,8 @@ function parseLimit(req: Request): number | undefined {
   return parsed;
 }
 
-function listProviderDescriptors(): SandboxProviderDescriptor[] {
-  const status = providerStatusMap();
-  return listSandboxProviders()
-    .map((provider) =>
-      describeBuiltinSandboxProvider({
-        provider: provider.provider,
-        enabled: status.get(provider.provider) ?? false,
-      }),
-    )
-    .sort((a, b) => a.provider.localeCompare(b.provider));
+function listProviderDescriptors(): SandboxProviderStatusSnapshot[] {
+  return listSandboxProviderDescriptors();
 }
 
 export interface SandboxSnapshotMeta {
@@ -258,7 +244,8 @@ export function sandboxRoutes(db: Db) {
       { knownProviderKeys: knownSandboxProviderKeys(), limit },
     );
     const statuses = providerStatusMap();
-    const readModels = leases.map((lease) => toSandboxLeaseReadModel(lease, statuses));
+    const previewOnly = providerPreviewOnlyMap();
+    const readModels = leases.map((lease) => toSandboxLeaseReadModel(lease, statuses, previewOnly));
     const response: SandboxLeaseListResponse = {
       ...snapshotMeta(),
       count: readModels.length,
@@ -281,7 +268,7 @@ export function sandboxRoutes(db: Db) {
     }
     const response: SandboxLeaseGetResponse = {
       ...snapshotMeta(),
-      lease: toSandboxLeaseReadModel(lease, providerStatusMap()),
+      lease: toSandboxLeaseReadModel(lease, providerStatusMap(), providerPreviewOnlyMap()),
     };
     res.json(response);
   });
@@ -342,9 +329,9 @@ export function sandboxRoutes(db: Db) {
       });
     }
 
-    // The Docker provider is preview-only in this child even if its
-    // runtime flag is set; report this explicitly so callers cannot
-    // mistake validation for an attempt to start a real container.
+    // Built-in providers remain preview-only in this child even if a
+    // runtime flag is set; report enablement separately so callers cannot
+    // mistake validation for an attempt to start a real runtime.
     const status = providerStatusMap();
     res.json({
       ...snapshotMeta(),
