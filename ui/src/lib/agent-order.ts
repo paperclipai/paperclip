@@ -1,17 +1,30 @@
 import type { Agent } from "@paperclipai/shared";
 
 export const AGENT_ORDER_UPDATED_EVENT = "paperclip:agent-order-updated";
+export const AGENT_SORT_MODE_UPDATED_EVENT = "paperclip:agent-sort-mode-updated";
 const AGENT_ORDER_STORAGE_PREFIX = "paperclip.agentOrder";
+const AGENT_SORT_MODE_STORAGE_PREFIX = "paperclip.agentSortMode";
 const ANONYMOUS_USER_ID = "anonymous";
+
+export type AgentSidebarSortMode = "top" | "alphabetical" | "recent";
 
 type AgentOrderUpdatedDetail = {
   storageKey: string;
   orderedIds: string[];
 };
 
+export type AgentSortModeUpdatedDetail = {
+  storageKey: string;
+  sortMode: AgentSidebarSortMode;
+};
+
 function normalizeIdList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string" && item.length > 0);
+}
+
+function normalizeSortMode(value: unknown): AgentSidebarSortMode {
+  return value === "alphabetical" || value === "recent" || value === "top" ? value : "top";
 }
 
 function resolveUserId(userId: string | null | undefined): string {
@@ -24,6 +37,10 @@ export function getAgentOrderStorageKey(companyId: string, userId: string | null
   return `${AGENT_ORDER_STORAGE_PREFIX}:${companyId}:${resolveUserId(userId)}`;
 }
 
+export function getAgentSortModeStorageKey(companyId: string, userId: string | null | undefined): string {
+  return `${AGENT_SORT_MODE_STORAGE_PREFIX}:${companyId}:${resolveUserId(userId)}`;
+}
+
 export function readAgentOrder(storageKey: string): string[] {
   try {
     const raw = localStorage.getItem(storageKey);
@@ -31,6 +48,14 @@ export function readAgentOrder(storageKey: string): string[] {
     return normalizeIdList(JSON.parse(raw));
   } catch {
     return [];
+  }
+}
+
+export function readAgentSortMode(storageKey: string): AgentSidebarSortMode {
+  try {
+    return normalizeSortMode(localStorage.getItem(storageKey));
+  } catch {
+    return "top";
   }
 }
 
@@ -45,6 +70,22 @@ export function writeAgentOrder(storageKey: string, orderedIds: string[]) {
     window.dispatchEvent(
       new CustomEvent<AgentOrderUpdatedDetail>(AGENT_ORDER_UPDATED_EVENT, {
         detail: { storageKey, orderedIds: normalized },
+      }),
+    );
+  }
+}
+
+export function writeAgentSortMode(storageKey: string, sortMode: AgentSidebarSortMode) {
+  const normalized = normalizeSortMode(sortMode);
+  try {
+    localStorage.setItem(storageKey, normalized);
+  } catch {
+    // Ignore storage write failures in restricted browser contexts.
+  }
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent<AgentSortModeUpdatedDetail>(AGENT_SORT_MODE_UPDATED_EVENT, {
+        detail: { storageKey, sortMode: normalized },
       }),
     );
   }

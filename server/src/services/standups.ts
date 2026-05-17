@@ -144,15 +144,31 @@ function wallTimeToDate(localDate: string, localTime: string, timeZone: string) 
   return candidate;
 }
 
-function isUniqueConstraint(error: unknown, constraint: string) {
-  const err = error as { code?: string; constraint?: string; constraint_name?: string } | null;
-  const constraintName = err?.constraint ?? err?.constraint_name;
-  return (
-    !!error &&
-    typeof error === "object" &&
-    err?.code === "23505" &&
-    constraintName === constraint
+function findErrorRecord(error: unknown, predicate: (record: Record<string, unknown>) => boolean): Record<string, unknown> | null {
+  let current = error;
+  while (current && typeof current === "object") {
+    const record = current as Record<string, unknown>;
+    if (predicate(record)) return record;
+    current = record.cause;
+  }
+  return null;
+}
+
+function uniqueConstraintName(error: unknown) {
+  const record = findErrorRecord(error, (candidate) =>
+    candidate.code === "23505" &&
+    (typeof candidate.constraint === "string" || typeof candidate.constraint_name === "string"),
   );
+  if (!record) return null;
+  return typeof record.constraint === "string"
+    ? record.constraint
+    : typeof record.constraint_name === "string"
+      ? record.constraint_name
+      : null;
+}
+
+function isUniqueConstraint(error: unknown, constraint: string) {
+  return uniqueConstraintName(error) === constraint;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -230,7 +246,9 @@ function responseJsonForStorage(response: unknown) {
 }
 
 function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
+  const base = error instanceof Error ? error.message : String(error);
+  const constraint = uniqueConstraintName(error);
+  return constraint && !base.includes(constraint) ? `${base} (${constraint})` : base;
 }
 
 function deliveryProofId(job: typeof standupOutboxJobs.$inferSelect, attempts: number, proofId?: string | null) {

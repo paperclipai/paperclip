@@ -3,12 +3,13 @@ import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
 import { activityApi } from "../api/activity";
+import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
-import { heartbeatsApi } from "../api/heartbeats";
+import { buildCompanyUserProfileMap } from "../lib/company-members";
 import { useCompany } from "../context/CompanyContext";
-import { useDialog } from "../context/DialogContext";
+import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { MetricCard } from "../components/MetricCard";
@@ -26,6 +27,8 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
+const DASHBOARD_ACTIVITY_LIMIT = 10;
+
 function getRecentIssues(issues: Issue[]): Issue[] {
   return [...issues]
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
@@ -33,7 +36,7 @@ function getRecentIssues(issues: Issue[]): Issue[] {
 
 export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
-  const { openOnboarding } = useDialog();
+  const { openOnboarding } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
   const seenActivityIdsRef = useRef<Set<string>>(new Set());
@@ -57,8 +60,8 @@ export function Dashboard() {
   });
 
   const { data: activity } = useQuery({
-    queryKey: queryKeys.activity(selectedCompanyId!),
-    queryFn: () => activityApi.list(selectedCompanyId!),
+    queryKey: [...queryKeys.activity(selectedCompanyId!), { limit: DASHBOARD_ACTIVITY_LIMIT }],
+    queryFn: () => activityApi.list(selectedCompanyId!, { limit: DASHBOARD_ACTIVITY_LIMIT }),
     enabled: !!selectedCompanyId,
   });
 
@@ -74,11 +77,16 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
-  const { data: runs } = useQuery({
-    queryKey: queryKeys.heartbeats(selectedCompanyId!),
-    queryFn: () => heartbeatsApi.list(selectedCompanyId!),
+  const { data: companyMembers } = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
+    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+
+  const userProfileMap = useMemo(
+    () => buildCompanyUserProfileMap(companyMembers?.users),
+    [companyMembers?.users],
+  );
 
   const recentIssues = issues ? getRecentIssues(issues) : [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
@@ -285,7 +293,7 @@ export function Dashboard() {
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <ChartCard title="Run Activity" subtitle="Last 14 days">
-              <RunActivityChart runs={runs ?? []} />
+              <RunActivityChart activity={data.runActivity} />
             </ChartCard>
             <ChartCard title="Issues by Priority" subtitle="Last 14 days">
               <PriorityChart issues={issues ?? []} />
@@ -294,7 +302,7 @@ export function Dashboard() {
               <IssueStatusChart issues={issues ?? []} />
             </ChartCard>
             <ChartCard title="Success Rate" subtitle="Last 14 days">
-              <SuccessRateChart runs={runs ?? []} />
+              <SuccessRateChart activity={data.runActivity} />
             </ChartCard>
           </div>
 
@@ -318,6 +326,7 @@ export function Dashboard() {
                       key={event.id}
                       event={event}
                       agentMap={agentMap}
+                      userProfileMap={userProfileMap}
                       entityNameMap={entityNameMap}
                       entityTitleMap={entityTitleMap}
                       className={animatedActivityIds.has(event.id) ? "activity-row-enter" : undefined}
@@ -347,7 +356,7 @@ export function Dashboard() {
                       <div className="flex items-start gap-2 sm:items-center sm:gap-3">
                         {/* Status icon - left column on mobile */}
                         <span className="shrink-0 sm:hidden">
-                          <StatusIcon status={issue.status} />
+                          <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />
                         </span>
 
                         {/* Right column on mobile: title + metadata stacked */}
@@ -356,7 +365,7 @@ export function Dashboard() {
                             {issue.title}
                           </span>
                           <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
-                            <span className="hidden sm:inline-flex"><StatusIcon status={issue.status} /></span>
+                            <span className="hidden sm:inline-flex"><StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} /></span>
                             <span className="text-xs font-mono text-muted-foreground">
                               {issue.identifier ?? issue.id.slice(0, 8)}
                             </span>

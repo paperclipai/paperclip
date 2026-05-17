@@ -74,7 +74,7 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
     const result = await runDatabaseBackup({
       connectionString: connection.value,
       backupDir,
-      retentionDays,
+      retention: { dailyDays: retentionDays, weeklyWeeks: 4, monthlyMonths: 1 },
       filenamePrefix,
       ...(excludeTables ? { excludeTables } : {}),
     });
