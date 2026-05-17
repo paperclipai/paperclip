@@ -1,6 +1,7 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, lt, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
+import { AGENT_DORMANT_THRESHOLD_MS, canonicalAgentStatus } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 
@@ -35,10 +36,32 @@ export function dashboardService(db: Db) {
       if (!company) throw notFound("Company not found");
 
       const agentRows = await db
-        .select({ status: agents.status, count: sql<number>`count(*)` })
+        .select({
+          status: agents.status,
+          pauseOrigin: agents.pauseOrigin,
+          count: sql<number>`count(*)`,
+        })
         .from(agents)
         .where(eq(agents.companyId, companyId))
-        .groupBy(agents.status);
+        .groupBy(agents.status, agents.pauseOrigin);
+
+      const dormantCutoff = new Date(Date.now() - AGENT_DORMANT_THRESHOLD_MS);
+      const dormantAgents = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(agents)
+        .where(
+          and(
+            eq(agents.companyId, companyId),
+            // Orthogonal liveness flag: roster agents (not terminated /
+            // pending) that have not heartbeated within the dormant window.
+            sql`${agents.status} not in ('terminated', 'pending_approval')`,
+            or(
+              isNull(agents.lastHeartbeatAt),
+              lt(agents.lastHeartbeatAt, dormantCutoff),
+            ),
+          ),
+        )
+        .then((rows) => Number(rows[0]?.count ?? 0));
 
       const taskRows = await db
         .select({ status: issues.status, count: sql<number>`count(*)` })
@@ -52,17 +75,31 @@ export function dashboardService(db: Db) {
         .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
         .then((rows) => Number(rows[0]?.count ?? 0));
 
-      const agentCounts: Record<string, number> = {
-        active: 0,
-        running: 0,
+      // Canonical run-state taxonomy buckets (ZERA-579 / ZERA-580). The five
+      // mutually-exclusive operational states; `terminated` / `pending_approval`
+      // are not operational and excluded from the roster invariant
+      // (working + idle + paused + suspended + error == operational roster).
+      const agentCounts = {
+        working: 0,
+        idle: 0,
         paused: 0,
+        suspended: 0,
         error: 0,
       };
       for (const row of agentRows) {
         const count = Number(row.count);
-        // "idle" agents are operational — count them as active
-        const bucket = row.status === "idle" ? "active" : row.status;
-        agentCounts[bucket] = (agentCounts[bucket] ?? 0) + count;
+        const status = canonicalAgentStatus(row.status);
+        if (status === "working") agentCounts.working += count;
+        else if (status === "error") agentCounts.error += count;
+        else if (status === "paused") {
+          // Operator-initiated → `paused`; platform safety halt → `suspended`.
+          if (row.pauseOrigin === "platform") agentCounts.suspended += count;
+          else agentCounts.paused += count;
+        } else if (status === "idle" || status === "active") {
+          // Legacy `active` was always an idle agent (the ZERA-579 mislabel).
+          agentCounts.idle += count;
+        }
+        // terminated / pending_approval: intentionally not on the dashboard.
       }
 
       const taskCounts: Record<string, number> = {
@@ -137,10 +174,15 @@ export function dashboardService(db: Db) {
       return {
         companyId,
         agents: {
-          active: agentCounts.active,
-          running: agentCounts.running,
+          working: agentCounts.working,
+          idle: agentCounts.idle,
           paused: agentCounts.paused,
+          suspended: agentCounts.suspended,
           error: agentCounts.error,
+          dormant: dormantAgents,
+          // Deprecated one-release aliases — see DashboardSummary.agents.
+          active: agentCounts.idle,
+          running: agentCounts.working,
         },
         tasks: taskCounts,
         costs: {

@@ -41,6 +41,7 @@ function createAgent(id: string, name: string, icon: string, urlKey: string): Ag
     createdAt: now,
     updatedAt: now,
     pauseReason: null,
+    pauseOrigin: null,
     pausedAt: null,
     permissions: { canCreateAgents: false },
   };

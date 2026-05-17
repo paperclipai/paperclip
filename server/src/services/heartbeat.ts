@@ -6195,7 +6195,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const runningCount = await countRunningRunsForAgent(agentId);
     const nextStatus =
       runningCount > 0
-        ? "running"
+        ? "working"
         : outcome === "succeeded" || outcome === "cancelled"
           ? "idle"
           : "error";
@@ -7487,7 +7487,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const runningAgent = await db
         .update(agents)
-        .set({ status: "running", updatedAt: new Date() })
+        .set({ status: "working", updatedAt: new Date() })
         .where(eq(agents.id, agent.id))
         .returning()
         .then((rows) => rows[0] ?? null);
@@ -7499,7 +7499,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           payload: {
             agentId: runningAgent.id,
             status: runningAgent.status,
-            outcome: "running",
+            outcome: "working",
           },
         });
       }

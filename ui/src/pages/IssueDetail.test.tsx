@@ -429,6 +429,7 @@ function createAgent(overrides: Partial<Agent> = {}): Agent {
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     pauseReason: null,
+    pauseOrigin: null,
     pausedAt: null,
     permissions: { canCreateAgents: false },
     lastHeartbeatAt: null,

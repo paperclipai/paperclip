@@ -166,4 +166,83 @@ describeEmbeddedPostgres("dashboard service", () => {
       total: 3,
     });
   });
+
+  it("rolls agents up into the canonical run-state taxonomy breakdown", async () => {
+    const companyId = randomUUID();
+    const now = new Date();
+    const stale = new Date(now.getTime() - 25 * 60 * 60 * 1000);
+    const fresh = new Date(now.getTime() - 60 * 1000);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const baseAgent = {
+      companyId,
+      role: "engineer" as const,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    };
+
+    await db.insert(agents).values([
+      // working (canonical) + a legacy `running` row that must normalize to working
+      { ...baseAgent, id: randomUUID(), name: "Working", status: "working", lastHeartbeatAt: fresh },
+      { ...baseAgent, id: randomUUID(), name: "LegacyRunning", status: "running", lastHeartbeatAt: fresh },
+      // idle, fresh
+      { ...baseAgent, id: randomUUID(), name: "Idle", status: "idle", lastHeartbeatAt: fresh },
+      // idle but dormant (no heartbeat in 24h) — still counted in idle, also dormant
+      { ...baseAgent, id: randomUUID(), name: "Dormant", status: "idle", lastHeartbeatAt: stale },
+      // operator pause → paused
+      {
+        ...baseAgent,
+        id: randomUUID(),
+        name: "OperatorPaused",
+        status: "paused",
+        pauseReason: "manual",
+        pauseOrigin: "operator",
+        lastHeartbeatAt: fresh,
+      },
+      // platform halt → suspended
+      {
+        ...baseAgent,
+        id: randomUUID(),
+        name: "PlatformSuspended",
+        status: "paused",
+        pauseReason: "budget",
+        pauseOrigin: "platform",
+        lastHeartbeatAt: fresh,
+      },
+      // error
+      { ...baseAgent, id: randomUUID(), name: "Errored", status: "error", lastHeartbeatAt: fresh },
+      // terminated — excluded from the operational roster and dashboard
+      { ...baseAgent, id: randomUUID(), name: "Gone", status: "terminated", lastHeartbeatAt: stale },
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    expect(summary.agents).toMatchObject({
+      working: 2,
+      idle: 2,
+      paused: 1,
+      suspended: 1,
+      error: 1,
+      dormant: 1,
+      // deprecated one-release aliases
+      active: 2,
+      running: 2,
+    });
+    // Operational roster invariant (terminated excluded).
+    expect(
+      summary.agents.working +
+        summary.agents.idle +
+        summary.agents.paused +
+        summary.agents.suspended +
+        summary.agents.error,
+    ).toBe(7);
+  });
 });

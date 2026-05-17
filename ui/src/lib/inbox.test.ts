@@ -278,10 +278,14 @@ function makeExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): Ex
 const dashboard: DashboardSummary = {
   companyId: "company-1",
   agents: {
+    working: 0,
+    idle: 1,
+    paused: 0,
+    suspended: 0,
+    error: 1,
+    dormant: 0,
     active: 1,
     running: 0,
-    paused: 0,
-    error: 1,
   },
   tasks: {
     open: 1,
