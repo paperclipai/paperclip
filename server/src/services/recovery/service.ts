@@ -61,6 +61,8 @@ import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js"
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
+const MAX_RECOVERY_ATTEMPTS_BEFORE_ESCALATION = 3;
+const RECOVERY_ATTEMPT_LOOKBACK_HOURS = 24;
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
@@ -132,6 +134,25 @@ function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
     return " Latest retry failure details were withheld from the issue thread; inspect the linked run for evidence.";
   }
   return null;
+}
+
+/**
+ * Maximum number of cumulative failed runs before escalating a stranded issue to `blocked`.
+ * Used inside recoveryService — see hasExceededMaxRecoveryAttempts below.
+ */
+const MAX_STRANDED_RECOVERY_ATTEMPTS = 3;
+
+/**
+ * Check whether an issue has exceeded the maximum number of recovery attempts.
+ * Uses the issue_recovery_actions table to count cumulative re-dispatch attempts.
+ */
+async function hasExceededMaxRecoveryAttempts(
+  recoveryActionsSvc: ReturnType<typeof issueRecoveryActionService>,
+  companyId: string,
+  issueId: string,
+): Promise<boolean> {
+  const action = await recoveryActionsSvc.getActiveForIssue(companyId, issueId);
+  return (action?.attemptCount ?? 0) >= MAX_STRANDED_RECOVERY_ATTEMPTS;
 }
 
 function didAutomaticRecoveryFail(
@@ -425,6 +446,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function countRecentFailedRuns(companyId: string, issueId: string): Promise<number> {
+    const lookbackCutoff = new Date(Date.now() - RECOVERY_ATTEMPT_LOOKBACK_HOURS * 60 * 60 * 1000);
+    const rows = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          inArray(heartbeatRuns.status, [...UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES]),
+          gt(heartbeatRuns.createdAt, lookbackCutoff),
+        ),
+      );
+    return rows.length;
   }
 
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
@@ -1733,7 +1770,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     previousStatus: "todo" | "in_progress";
     latestRun: LatestIssueRun;
   }) {
-    const updated = await issuesSvc.update(input.issue.id, { status: "blocked" });
+    // Preserve existing blocker relations so the attention/blocker system
+    // can trace why this issue is blocked (AGE-14132).
+    const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    const updated = await issuesSvc.update(input.issue.id, {
+      status: "blocked",
+      blockedReason: "Recovery exhausted: no eligible recovery path found. Manual review required — see issue comments for failure details.",
+      blockedByIssueIds: blockerIds,
+    });
     if (!updated) return null;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
@@ -2037,6 +2081,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (issue.status === "todo") {
+        // Recovery loop guard: if this issue has accumulated too many failed runs
+        // within the lookback window, escalate to blocked instead of re-dispatching.
+        // This prevents infinite prune → todo → dispatch → fail → prune loops.
+        const recentFailureCount = await countRecentFailedRuns(issue.companyId, issue.id);
+        if (recentFailureCount >= MAX_RECOVERY_ATTEMPTS_BEFORE_ESCALATION) {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "todo",
+            latestRun: null,
+            comment:
+              `Paperclip detected ${recentFailureCount} failed runs for this issue in the last ${RECOVERY_ATTEMPT_LOOKBACK_HOURS}h. ` +
+              "This exceeds the recovery attempt threshold, indicating a persistent dispatch loop. " +
+              "Moving to `blocked` to stop the cycle and surface for manual intervention.",
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
         if (!latestRun) {
           if (await hasQueuedIssueWake(issue.companyId, issue.id)) {
             result.skipped += 1;
@@ -2073,6 +2140,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               "Paperclip automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
               `but it still has no live execution path.${failureSummary ?? ""} ` +
               "Moving it to `blocked` so it is visible for intervention.",
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        // Cumulative attempt guard: even if the single-run check above didn't flag
+        // this as a failed recovery (because Phase 3 prune reset the issue and the
+        // latest run doesn't carry retryReason), the issue_recovery_actions table
+        // tracks how many times we've re-dispatched this issue. Cap it.
+        if (await hasExceededMaxRecoveryAttempts(recoveryActionsSvc, issue.companyId, issue.id)) {
+          logger.info(
+            { issueId: issue.id, identifier: issue.identifier, attemptCount: (await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id))?.attemptCount },
+            "Stranded assignment recovery: issue has exceeded max recovery attempts, escalating to blocked",
+          );
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "todo",
+            latestRun,
+            comment:
+              "Paperclip has re-dispatched this assigned `todo` issue multiple times, " +
+              "but it keeps returning without a live execution path. " +
+              "Moving it to `blocked` to break the reconcile-re-dispatch loop.",
           });
           if (updated) {
             result.escalated += 1;

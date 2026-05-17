@@ -2933,4 +2933,88 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
   });
+
+  it("escalates todo issue to blocked after 3+ failed runs in the lookback window (recovery loop guard)", async () => {
+    // Seed a base stranded-todo fixture with a failed run.
+    // Then insert 2 additional failed runs for the same issue to reach
+    // the MAX_RECOVERY_ATTEMPTS_BEFORE_ESCALATION threshold (3),
+    // simulating the prune → dispatch → fail loop described in AGE-12137.
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+    });
+
+    // Insert 2 more failed heartbeat runs for the same issue (the fixture already created 1).
+    for (let i = 0; i < 2; i++) {
+      const extraRunId = randomUUID();
+      const extraWakeupId = randomUUID();
+
+      await db.insert(agentWakeupRequests).values({
+        id: extraWakeupId,
+        companyId,
+        agentId,
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        status: "failed",
+        runId: extraRunId,
+        claimedAt: new Date("2026-03-19T00:00:00.000Z"),
+        finishedAt: new Date("2026-03-19T00:05:00.000Z"),
+        error: "run failed before issue advanced",
+      });
+
+      await db.insert(heartbeatRuns).values({
+        id: extraRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "failed",
+        wakeupRequestId: extraWakeupId,
+        contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+        startedAt: new Date("2026-03-19T00:00:00.000Z"),
+        finishedAt: new Date("2026-03-19T00:05:00.000Z"),
+        updatedAt: new Date("2026-03-19T00:05:00.000Z"),
+        errorCode: "process_lost",
+        error: "run failed before issue advanced",
+        livenessState: null,
+      });
+    }
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // The recovery loop guard should have escalated the issue to blocked
+    // instead of attempting another dispatch.
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toContain(issueId);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    // Verify the escalation comment mentions the persistent dispatch loop.
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.length).toBeGreaterThanOrEqual(1);
+    const latestComment = comments[comments.length - 1];
+    expect(latestComment?.body).toContain("failed runs");
+    expect(latestComment?.body).toContain("persistent dispatch loop");
+  });
+
+  it("does not escalate todo issue with fewer than 3 failed runs in the lookback window", async () => {
+    // Seed a stranded-todo fixture with exactly 1 failed run (no assignment_recovery marker),
+    // which should trigger a recovery dispatch rather than escalation.
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // With only 1 failed run, the loop guard should NOT trigger.
+    // The first-recovery path should dispatch instead.
+    expect(result.escalated).toBe(0);
+    expect(result.dispatchRequeued).toBeGreaterThanOrEqual(1);
+  });
 });
