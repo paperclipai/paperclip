@@ -160,28 +160,17 @@ async function handleCommands(): Promise<QueryResult> {
     text: [
       "<b>Available commands</b>",
       "",
-      "<b>Instant commands</b>",
-      "These return immediately without lookup.",
-      "",
-      "• <code>/help</code> — What Chase can do",
-      "• <code>/commands</code> — Show shortcut commands",
-      "• <code>/about</code> — What Chase is",
-      "• <code>/ping</code> — Bot health check",
-      "• <code>/version</code> — Current deployed version",
-      "",
-      "<b>Paperclip lookup commands</b>",
-      "These may take a moment because Chase checks live Paperclip data.",
-      "",
-      "• <code>/overview</code> — Company overview",
-      "• <code>/status</code> — Paperclip system status",
-      "• <code>/blocked</code> — Blocked issues",
-      "• <code>/approvals</code> — Pending approvals",
-      "• <code>/agents</code> — List agents",
-      "• <code>/detail</code> — Issue details, e.g. <code>/detail CRE-123</code>",
-      "• <code>/search</code> — Search issues",
-      "• <code>/spend</code> — Monthly spend and budget",
-      "• <code>/recent</code> — Recent completed work",
+      "Tap a button below to run a command, or type it manually.",
     ].join("\n"),
+    replyMarkup: {
+      inline_keyboard: [
+        [{ text: "/help", callback_data: "/help" }, { text: "/about", callback_data: "/about" }, { text: "/ping", callback_data: "/ping" }],
+        [{ text: "/overview", callback_data: "/overview" }, { text: "/status", callback_data: "/status" }],
+        [{ text: "/blocked", callback_data: "/blocked" }, { text: "/approvals", callback_data: "/approvals" }],
+        [{ text: "/agents", callback_data: "/agents" }, { text: "/spend", callback_data: "/spend" }],
+        [{ text: "/recent", callback_data: "/recent" }, { text: "/version", callback_data: "/version" }],
+      ],
+    },
   };
 }
 

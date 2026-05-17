@@ -25,6 +25,16 @@ export interface StoredLocation {
 
 export type LocationSource = "manual" | "venue" | "live";
 
+export interface TelegramCallbackQuery {
+  id: string;
+  from: { id: number; first_name?: string; username?: string };
+  message?: {
+    message_id: number;
+    chat: { id: number; type: string };
+  };
+  data: string;
+}
+
 export interface TelegramUpdate {
   update_id: number;
   message?: {
@@ -36,6 +46,7 @@ export interface TelegramUpdate {
     venue?: TelegramVenue;
     date: number;
   };
+  callback_query?: TelegramCallbackQuery;
 }
 
 export interface PaperclipAgent {
@@ -75,8 +86,18 @@ export interface PaperclipActivity {
   actorType?: string;
 }
 
+export interface InlineKeyboardButton {
+  text: string;
+  callback_data: string;
+}
+
+export interface InlineKeyboardMarkup {
+  inline_keyboard: InlineKeyboardButton[][];
+}
+
 export interface QueryResult {
   text: string;
+  replyMarkup?: InlineKeyboardMarkup;
 }
 
 export interface LLMMessage {

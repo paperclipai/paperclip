@@ -1,6 +1,6 @@
 import { serve } from "std/http/server.ts";
 import type { TelegramUpdate } from "./types.ts";
-import { sendTelegram, isBotConfigured } from "./lib/telegram.ts";
+import { sendTelegram, answerCallbackQuery, isBotConfigured } from "./lib/telegram.ts";
 import { isPaperclipConfigured, PAPERCLIP_API_URL, paperclipPost, COMPANY_ID } from "./lib/api.ts";
 import { escapeHtml } from "./lib/html.ts";
 import { formatNotification, isAiConfigured, aiProvider } from "./lib/llm.ts";
@@ -150,6 +150,39 @@ function isAgentRoutingConfigured(): boolean {
 // ─── Webhook Handler ──────────────────────────────────────────────────
 
 export async function handleWebhook(update: TelegramUpdate): Promise<Response> {
+  // ── Handle callback queries from inline keyboard buttons ──
+  if (update.callback_query) {
+    const cq = update.callback_query;
+    const fromId = cq.from.id;
+
+    if (ALLOWED_IDS.length > 0 && !ALLOWED_IDS.includes(fromId)) {
+      console.warn(`Rejected callback query from unauthorized user: ${fromId}`);
+      return respondJson({ ok: true, reason: "unauthorized" });
+    }
+
+    const chatId = cq.message?.chat.id;
+    if (!chatId) {
+      return respondJson({ ok: true, reason: "callback query without chat" });
+    }
+
+    // Acknowledge the callback to dismiss the loading spinner on the button
+    await answerCallbackQuery(cq.id);
+
+    const command = cq.data;
+    await refreshFromStorage(chatId);
+    await clearPendingTask(chatId);
+    const { handler } = routeQuery(command, cq.from.first_name, chatId);
+    try {
+      const result = await handler();
+      await sendTelegram(chatId, result.text, "HTML", result.replyMarkup as Record<string, unknown> | undefined);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`Callback query failed [chatId=${chatId}, command="${command}"]: ${message}`);
+      await sendTelegram(chatId, "Sorry, I ran into an issue running that command. Please try again.");
+    }
+    return respondJson({ ok: true, callbackQuery: true });
+  }
+
   const msg = update.message;
   if (!msg?.from) {
     return respondJson({ ok: true, reason: "non-message update ignored" });
@@ -169,7 +202,7 @@ export async function handleWebhook(update: TelegramUpdate): Promise<Response> {
     const { latitude, longitude } = location;
     const handler = routeVenue(chatId, latitude, longitude, title, address, firstName);
     const result = await handler();
-    await sendTelegram(chatId, result.text);
+    await sendTelegram(chatId, result.text, "HTML", result.replyMarkup as Record<string, unknown> | undefined);
     return respondJson({ ok: true });
   }
 
@@ -179,7 +212,7 @@ export async function handleWebhook(update: TelegramUpdate): Promise<Response> {
     const handler = routeLocation(chatId, latitude, longitude, msg.text, firstName);
     const result = await handler();
     if (result.text) {
-      await sendTelegram(chatId, result.text);
+      await sendTelegram(chatId, result.text, "HTML", result.replyMarkup as Record<string, unknown> | undefined);
     }
     return respondJson({ ok: true });
   }
@@ -203,7 +236,7 @@ export async function handleWebhook(update: TelegramUpdate): Promise<Response> {
     const { handler } = routeQuery(text, firstName, chatId);
     try {
       const result = await handler();
-      await sendTelegram(chatId, result.text);
+      await sendTelegram(chatId, result.text, "HTML", result.replyMarkup as Record<string, unknown> | undefined);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const snippet = text.length > 80 ? text.slice(0, 80) + "..." : text;
@@ -235,7 +268,7 @@ export async function handleWebhook(update: TelegramUpdate): Promise<Response> {
 
   try {
     const result = await handler();
-    await sendTelegram(chatId, result.text);
+    await sendTelegram(chatId, result.text, "HTML", result.replyMarkup as Record<string, unknown> | undefined);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const snippet = text.length > 80 ? text.slice(0, 80) + "..." : text;
@@ -323,7 +356,7 @@ export async function handleSetupWebhook(request: Request): Promise<Response> {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           url: webhookUrl,
-          allowed_updates: ["message"],
+          allowed_updates: ["message", "callback_query"],
           drop_pending_updates: body.dropPending ?? true,
         }),
       },
