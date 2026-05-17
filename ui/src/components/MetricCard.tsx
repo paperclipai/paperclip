@@ -19,10 +19,10 @@ export function MetricCard({ icon: Icon, value, label, description, to, onClick 
   const inner = (
     <div
       className={cn(
-        "relative h-full overflow-hidden rounded-lg border border-border/60 bg-background/55 px-4 py-4 shadow-sm transition-colors sm:px-5 sm:py-5",
-        "before:pointer-events-none before:absolute before:inset-0 before:bg-[radial-gradient(circle_at_85%_10%,rgb(52_191_240/0.20),transparent_30%),radial-gradient(circle,currentColor_1px,transparent_1px)] before:bg-[length:100%_100%,12px_12px] before:opacity-[0.06]",
+        "relative h-full overflow-hidden rounded-md border border-border/60 bg-background/55 px-4 py-4 shadow-sm transition-colors sm:px-5 sm:py-5",
+        "before:pointer-events-none before:absolute before:inset-0 before:bg-[radial-gradient(circle_at_85%_10%,rgb(52_191_240/0.18),transparent_30%),radial-gradient(circle,rgb(108_189_253/0.20)_1px,transparent_1px)] before:bg-[length:100%_100%,12px_12px] before:opacity-[0.16]",
         "after:pointer-events-none after:absolute after:inset-x-0 after:top-0 after:h-px after:bg-foreground/15",
-        "dark:border-[#2C94EE]/25 dark:bg-[#030A19]/70 dark:shadow-[inset_0_1px_0_rgb(252_250_254/0.08),0_0_32px_rgb(31_132_233/0.08)]",
+        "dark:border-[#2C94EE]/30 dark:bg-[#030A19]/78 dark:shadow-[inset_0_1px_0_rgb(252_250_254/0.09),inset_0_0_0_1px_rgb(108_189_253/0.05),0_0_32px_rgb(31_132_233/0.09)]",
         isClickable && "cursor-pointer hover:bg-accent/45 dark:hover:border-[#34BFF0]/40 dark:hover:bg-[#05122E]/75",
       )}
     >

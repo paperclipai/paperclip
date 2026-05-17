@@ -4,12 +4,12 @@ import { cn } from "../lib/utils";
 type GlyphTone = "default" | "muted" | "success" | "warning" | "danger" | "live";
 
 const toneClasses: Record<GlyphTone, string> = {
-  default: "text-current",
-  muted: "text-muted-foreground",
+  default: "text-[#2C94EE]",
+  muted: "text-muted-foreground dark:text-[#6CBDFD]/65",
   success: "text-current",
   warning: "text-amber-500",
   danger: "text-red-500",
-  live: "text-current",
+  live: "text-[#34BFF0]",
 };
 
 export function DotMatrixText({
@@ -163,9 +163,42 @@ export function DotStack({
 }) {
   const total = values.reduce((sum, entry) => sum + entry.value, 0);
   const rows = 12;
+  const positiveValues = values.filter((entry) => entry.value > 0);
+  const allocations = new Map<string, number>();
+  let allocated = 0;
+
+  if (total > 0) {
+    const weighted = positiveValues.map((entry) => {
+      const exact = (entry.value / total) * rows;
+      const count = Math.max(1, Math.floor(exact));
+      allocated += count;
+      return { entry, count, remainder: exact - Math.floor(exact) };
+    });
+
+    while (allocated > rows) {
+      const candidate = weighted
+        .filter((item) => item.count > 1)
+        .sort((a, b) => a.remainder - b.remainder)[0];
+      if (!candidate) break;
+      candidate.count -= 1;
+      allocated -= 1;
+    }
+
+    while (allocated < rows) {
+      const candidate = weighted
+        .filter((item) => item.count < rows)
+        .sort((a, b) => b.remainder - a.remainder)[0];
+      if (!candidate) break;
+      candidate.count += 1;
+      allocated += 1;
+    }
+
+    weighted.forEach(({ entry, count }) => allocations.set(entry.key, count));
+  }
+
   const orderedDots: Array<{ key: string; tone?: GlyphTone; color?: string }> = [];
   values.forEach((entry) => {
-    const count = total > 0 ? Math.max(1, Math.round((entry.value / total) * rows)) : 0;
+    const count = allocations.get(entry.key) ?? 0;
     for (let i = 0; i < count; i += 1) orderedDots.push({ key: `${entry.key}-${i}`, tone: entry.tone, color: entry.color });
   });
   const visibleDots = orderedDots.slice(0, rows);

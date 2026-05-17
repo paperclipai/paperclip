@@ -5,7 +5,13 @@ import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { HeartbeatRun } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { RunActivityChart, SuccessRateChart } from "./ActivityCharts";
+import {
+  chartSemanticColors,
+  IssueStatusChart,
+  PriorityChart,
+  RunActivityChart,
+  SuccessRateChart,
+} from "./ActivityCharts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -84,6 +90,11 @@ function createRun(overrides: Partial<HeartbeatRun> = {}): HeartbeatRun {
   };
 }
 
+function renderedDotColors() {
+  return Array.from(container.querySelectorAll<HTMLElement>("[style*='--dot-color']"))
+    .map((node) => node.style.getPropertyValue("--dot-color"));
+}
+
 describe("ActivityCharts", () => {
   it("renders empty run charts when dashboard aggregate data is temporarily missing", () => {
     render(<RunActivityChart activity={undefined} />);
@@ -105,5 +116,65 @@ describe("ActivityCharts", () => {
 
     expect(container.textContent).not.toContain("No runs yet");
     expect(container.querySelector("[title='2026-04-20: 2 runs']")).not.toBeNull();
+  });
+
+  it("keeps run activity colors semantic and does not paint zero-count segments", () => {
+    render(
+      <RunActivityChart
+        runs={[
+          createRun({ id: "run-success", status: "succeeded" }),
+          createRun({ id: "run-failed", status: "failed" }),
+        ]}
+      />,
+    );
+
+    const colors = renderedDotColors();
+    expect(colors).toContain(chartSemanticColors.success);
+    expect(colors).toContain(chartSemanticColors.danger);
+    expect(colors).not.toContain(chartSemanticColors.other);
+  });
+
+  it("renders priority bars with critical/high/medium/low semantic colors", () => {
+    render(
+      <PriorityChart
+        issues={[
+          { priority: "critical", createdAt: new Date("2026-04-20T10:00:00.000Z") },
+          { priority: "high", createdAt: new Date("2026-04-20T10:00:00.000Z") },
+          { priority: "medium", createdAt: new Date("2026-04-20T10:00:00.000Z") },
+          { priority: "low", createdAt: new Date("2026-04-20T10:00:00.000Z") },
+        ]}
+      />,
+    );
+
+    const colors = renderedDotColors();
+    expect(colors).toContain(chartSemanticColors.danger);
+    expect(colors).toContain(chartSemanticColors.high);
+    expect(colors).toContain(chartSemanticColors.warning);
+    expect(colors).toContain(chartSemanticColors.info);
+  });
+
+  it("renders issue status bars with workflow semantic colors", () => {
+    render(
+      <IssueStatusChart
+        issues={[
+          { status: "todo", createdAt: new Date("2026-04-20T10:00:00.000Z") },
+          { status: "in_progress", createdAt: new Date("2026-04-20T10:00:00.000Z") },
+          { status: "in_review", createdAt: new Date("2026-04-20T10:00:00.000Z") },
+          { status: "done", createdAt: new Date("2026-04-20T10:00:00.000Z") },
+          { status: "blocked", createdAt: new Date("2026-04-20T10:00:00.000Z") },
+          { status: "cancelled", createdAt: new Date("2026-04-20T10:00:00.000Z") },
+          { status: "backlog", createdAt: new Date("2026-04-20T10:00:00.000Z") },
+        ]}
+      />,
+    );
+
+    const colors = renderedDotColors();
+    expect(colors).toContain(chartSemanticColors.info);
+    expect(colors).toContain(chartSemanticColors.warning);
+    expect(colors).toContain(chartSemanticColors.review);
+    expect(colors).toContain(chartSemanticColors.success);
+    expect(colors).toContain(chartSemanticColors.danger);
+    expect(colors).toContain(chartSemanticColors.cancelled);
+    expect(colors).toContain(chartSemanticColors.backlog);
   });
 });

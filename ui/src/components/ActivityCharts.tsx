@@ -1,4 +1,5 @@
 import type { DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
+import type { ReactNode } from "react";
 import { DotBar, DotStack } from "./NothingAesthetic";
 
 /* ---- Utilities ---- */
@@ -32,6 +33,18 @@ function DateLabels({ days }: { days: string[] }) {
   );
 }
 
+export const chartSemanticColors = {
+  success: "#22c55e",
+  warning: "#eab308",
+  review: "#8b5cf6",
+  info: "#3b82f6",
+  high: "#f97316",
+  danger: "#ef4444",
+  cancelled: "#6b7280",
+  backlog: "#64748b",
+  other: "#06b6d4",
+} as const;
+
 function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
   return (
     <div className="flex flex-wrap gap-x-2.5 gap-y-0.5 mt-2">
@@ -49,10 +62,11 @@ function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
   );
 }
 
-export function ChartCard({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
+export function ChartCard({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {
   return (
-    <div className="relative overflow-hidden rounded-lg border border-border/70 bg-background/55 p-4 shadow-sm space-y-3 dark:border-[#2C94EE]/25 dark:bg-[#030A19]/70 dark:shadow-[inset_0_1px_0_rgb(252_250_254/0.08),0_0_28px_rgb(31_132_233/0.08)]">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_0%,rgb(52_191_240/0.18),transparent_32%),radial-gradient(circle,currentColor_1px,transparent_1px)] bg-[length:100%_100%,14px_14px] opacity-70 dark:opacity-100" />
+    <div className="relative overflow-hidden rounded-md border border-border/70 bg-background/55 p-4 shadow-sm space-y-3 dark:border-[#2C94EE]/30 dark:bg-[#030A19]/78 dark:shadow-[inset_0_1px_0_rgb(252_250_254/0.09),inset_0_0_0_1px_rgb(108_189_253/0.05),0_0_30px_rgb(31_132_233/0.09)]">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_0%,rgb(52_191_240/0.16),transparent_34%),radial-gradient(circle_at_92%_18%,rgb(44_148_238/0.10),transparent_28%)]" />
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle,rgb(108_189_253/0.18)_1px,transparent_1px)] bg-[length:14px_14px] opacity-[0.18] dark:opacity-[0.16]" />
       <div className="relative">
         <h3 className="font-display text-[11px] text-muted-foreground dark:text-[#E1E5EA]/80">{title}</h3>
         {subtitle && <span className="text-[10px] text-muted-foreground/60">{subtitle}</span>}
@@ -114,9 +128,9 @@ export function RunActivityChart(props: RunChartProps) {
                   <DotStack
                     title={`${day}: ${total} runs`}
                     values={[
-                      { key: "succeeded", value: entry.succeeded, color: "#22c55e" },
-                      { key: "failed", value: entry.failed, color: "#ef4444" },
-                      { key: "other", value: entry.other, color: "#06b6d4" },
+                      { key: "succeeded", value: entry.succeeded, color: chartSemanticColors.success },
+                      { key: "failed", value: entry.failed, color: chartSemanticColors.danger },
+                      { key: "other", value: entry.other, color: chartSemanticColors.other },
                     ]}
                   />
                 </div>
@@ -133,10 +147,10 @@ export function RunActivityChart(props: RunChartProps) {
 }
 
 const priorityColors: Record<string, string> = {
-  critical: "#ef4444",
-  high: "#f97316",
-  medium: "#eab308",
-  low: "#3b82f6",
+  critical: chartSemanticColors.danger,
+  high: chartSemanticColors.high,
+  medium: chartSemanticColors.warning,
+  low: chartSemanticColors.info,
 };
 
 const priorityOrder = ["critical", "high", "medium", "low"] as const;
@@ -191,13 +205,13 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
 }
 
 const statusColors: Record<string, string> = {
-  todo: "#3b82f6",
-  in_progress: "#eab308",
-  in_review: "#8b5cf6",
-  done: "#22c55e",
-  blocked: "#ef4444",
-  cancelled: "#6b7280",
-  backlog: "#64748b",
+  todo: chartSemanticColors.info,
+  in_progress: chartSemanticColors.warning,
+  in_review: chartSemanticColors.review,
+  done: chartSemanticColors.success,
+  blocked: chartSemanticColors.danger,
+  cancelled: chartSemanticColors.cancelled,
+  backlog: chartSemanticColors.backlog,
 };
 
 const statusLabels: Record<string, string> = {
