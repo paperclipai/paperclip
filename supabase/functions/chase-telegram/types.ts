@@ -113,6 +113,30 @@ export interface LLMResponse {
   choices: LLMChoice[];
 }
 
+// ─── Telegram Bot Commands ──────────────────────────────────────────
+
+export interface BotCommand {
+  command: string;
+  description: string;
+}
+
+export const CHASE_COMMANDS: BotCommand[] = [
+  { command: "help", description: "What Chase can do" },
+  { command: "commands", description: "Show shortcut commands" },
+  { command: "about", description: "What Chase is" },
+  { command: "ping", description: "Bot health check" },
+  { command: "version", description: "Current deployed version" },
+  { command: "overview", description: "Company overview" },
+  { command: "status", description: "Paperclip system status" },
+  { command: "blocked", description: "Blocked issues" },
+  { command: "approvals", description: "Pending approvals" },
+  { command: "agents", description: "List agents" },
+  { command: "detail", description: "Issue details" },
+  { command: "search", description: "Search issues" },
+  { command: "spend", description: "Monthly spend and budget" },
+  { command: "recent", description: "Recent completed work" },
+];
+
 export type Intent =
   | "greeting"
   | "paperclip_query"

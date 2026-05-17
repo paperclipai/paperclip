@@ -1,6 +1,7 @@
 import { serve } from "std/http/server.ts";
 import type { TelegramUpdate } from "./types.ts";
-import { sendTelegram, answerCallbackQuery, isBotConfigured } from "./lib/telegram.ts";
+import { CHASE_COMMANDS } from "./types.ts";
+import { sendTelegram, answerCallbackQuery, setMyCommands, isBotConfigured } from "./lib/telegram.ts";
 import { isPaperclipConfigured, PAPERCLIP_API_URL, paperclipPost, COMPANY_ID } from "./lib/api.ts";
 import { escapeHtml } from "./lib/html.ts";
 import { formatNotification, isAiConfigured, aiProvider } from "./lib/llm.ts";
@@ -333,13 +334,21 @@ export async function handleNotify(request: Request): Promise<Response> {
   }
 }
 
-// ─── Webhook Setup Endpoint ───────────────────────────────────────────
+// ─── Bot Command Registration ─────────────────────────────────────────
+
+async function registerBotCommands(): Promise<boolean> {
+  return await setMyCommands(CHASE_COMMANDS);
+}
+
+// ─── Webhook Setup + Command Registration Endpoint ────────────────────
 
 export async function handleSetupWebhook(request: Request): Promise<Response> {
   const auth = request.headers.get("authorization") ?? "";
   if (!auth.startsWith("Bearer ") || auth.slice(7) !== WEBHOOK_SECRET) {
     return respondJson({ error: "Unauthorized" }, 401);
   }
+
+  const errors: string[] = [];
 
   try {
     const body = await request.json().catch(() => ({}));
@@ -361,12 +370,37 @@ export async function handleSetupWebhook(request: Request): Promise<Response> {
         }),
       },
     );
-    const result = await res.json();
-    return respondJson(result, res.ok ? 200 : 400);
+    const webhookResult = await res.json();
+    if (!res.ok) {
+      errors.push(`Webhook setup failed: ${JSON.stringify(webhookResult)}`);
+    }
+
+    const commandsOk = await registerBotCommands();
+    if (!commandsOk) {
+      errors.push("Bot command registration failed");
+    }
+
+    return respondJson({
+      webhook: webhookResult,
+      commandsRegistered: commandsOk,
+      errors: errors.length > 0 ? errors : undefined,
+    }, res.ok ? 200 : 400);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return respondJson({ error: message }, 500);
   }
+}
+
+// ─── Standalone Command Registration Endpoint ─────────────────────────
+
+export async function handleSetupCommands(request: Request): Promise<Response> {
+  const auth = request.headers.get("authorization") ?? "";
+  if (!auth.startsWith("Bearer ") || auth.slice(7) !== WEBHOOK_SECRET) {
+    return respondJson({ error: "Unauthorized" }, 401);
+  }
+
+  const ok = await registerBotCommands();
+  return respondJson({ ok, commands: CHASE_COMMANDS.map(c => `/${c.command}`) }, ok ? 200 : 500);
 }
 
 // ─── Health Check ─────────────────────────────────────────────────────
@@ -404,6 +438,10 @@ export async function handleRequest(request: Request): Promise<Response> {
 
   if (method === "POST" && path === "/setup-webhook") {
     return handleSetupWebhook(request);
+  }
+
+  if (method === "POST" && path === "/setup-commands") {
+    return handleSetupCommands(request);
   }
 
   if (method === "POST" && path === "/notify") {

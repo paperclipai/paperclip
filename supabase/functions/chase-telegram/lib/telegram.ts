@@ -65,6 +65,26 @@ export async function answerCallbackQuery(
   }
 }
 
+export async function setMyCommands(
+  commands: Array<{ command: string; description: string }>,
+): Promise<boolean> {
+  try {
+    const res = await fetch(telegramUrl("setMyCommands"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ commands }),
+    });
+    if (!res.ok) {
+      const bodyText = await res.text().catch(() => "");
+      console.error(`Telegram setMyCommands error: ${res.status} ${bodyText}`);
+    }
+    return res.ok;
+  } catch (err) {
+    console.error(`Telegram setMyCommands failed: ${err}`);
+    return false;
+  }
+}
+
 export function isBotConfigured(): boolean {
   return !!getBotToken();
 }
