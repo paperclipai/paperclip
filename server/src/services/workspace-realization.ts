@@ -21,7 +21,7 @@ function readNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function readWorkspaceRealizationRequest(value: unknown): WorkspaceRealizationRequest | null {
+export function readWorkspaceRealizationRequest(value: unknown): WorkspaceRealizationRequest | null {
   const parsed = parseObject(value);
   if (parsed.version !== 1) return null;
   const source = parseObject(parsed.source);
@@ -44,7 +44,9 @@ function readWorkspaceRealizationRequest(value: unknown): WorkspaceRealizationRe
     requestedMode: readString(parsed.requestedMode),
     source: {
       kind:
-        source.kind === "task_session" || source.kind === "agent_home"
+        source.kind === "task_session" ||
+        source.kind === "agent_home" ||
+        source.kind === "agent_config"
           ? source.kind
           : "project_primary",
       localPath,

@@ -86,12 +86,14 @@ describe("execution workspace policy helpers", () => {
     });
   });
 
-  it("clears managed workspace strategy when issue opts out to project primary or agent default", () => {
+  it("clears agent workspace strategy when project policy enforces a managed shared workspace", () => {
     const baseConfig = {
       workspaceStrategy: { type: "git_worktree", branchTemplate: "{{issue.identifier}}" },
       workspaceRuntime: { services: [{ name: "web" }] },
     };
 
+    // Project policy is enabled (managed mode) and the issue opts into shared_workspace —
+    // the project's primary workspace is in force, so the agent's strategy yields.
     expect(
       buildExecutionWorkspaceAdapterConfig({
         agentConfig: baseConfig,
@@ -101,16 +103,106 @@ describe("execution workspace policy helpers", () => {
         legacyUseProjectWorkspace: null,
       }).workspaceStrategy,
     ).toBeUndefined();
+  });
 
-    const agentDefault = buildExecutionWorkspaceAdapterConfig({
+  it("preserves agent workspace strategy when issue mode is agent_default with no project policy (upstream issue #4946)", () => {
+    // Regression: previously `else { delete nextConfig.workspaceStrategy }` ran
+    // unconditionally inside the hasWorkspaceControl branch, silently dropping
+    // the agent's own workspaceStrategy whenever the issue mode resolved to
+    // "agent_default" (or legacyUseProjectWorkspace === false). That caused
+    // agents hired with `{ type: "git_worktree" }` to spawn in `_default/`
+    // and fail with `fatal: not a git repository` (Gotcha #1 / cascade source
+    // for upstream PR #4944). The agent's strategy must survive when there is
+    // no explicit project/issue override and no enforced policy.
+    const baseConfig = {
+      workspaceStrategy: { type: "git_worktree", branchTemplate: "{{issue.identifier}}" },
+      workspaceRuntime: { services: [{ name: "web" }] },
+    };
+
+    const result = buildExecutionWorkspaceAdapterConfig({
       agentConfig: baseConfig,
       projectPolicy: null,
       issueSettings: { mode: "agent_default" },
       mode: "agent_default",
       legacyUseProjectWorkspace: null,
     });
-    expect(agentDefault.workspaceStrategy).toBeUndefined();
-    expect(agentDefault.workspaceRuntime).toBeUndefined();
+    expect(result.workspaceStrategy).toEqual({
+      type: "git_worktree",
+      branchTemplate: "{{issue.identifier}}",
+    });
+    // workspaceRuntime is still cleared in agent_default mode (legitimate behaviour:
+    // agent_default mode means no managed workspace runtime services).
+    expect(result.workspaceRuntime).toBeUndefined();
+  });
+
+  it("preserves agent workspace strategy when legacyUseProjectWorkspace=false but no policy/override exists", () => {
+    // The legacy `useProjectWorkspace: false` flag triggers hasWorkspaceControl
+    // even though the project has no policy and the issue has no override.
+    // The agent's strategy should survive in that case — same root cause as the
+    // agent_default scenario above, surfacing through a different trigger.
+    const baseConfig = {
+      workspaceStrategy: { type: "git_worktree", baseRef: "master" },
+    };
+
+    const result = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: baseConfig,
+      projectPolicy: null,
+      issueSettings: null,
+      mode: "agent_default",
+      legacyUseProjectWorkspace: false,
+    });
+    expect(result.workspaceStrategy).toEqual({
+      type: "git_worktree",
+      baseRef: "master",
+    });
+  });
+
+  it("clears agent strategy in shared_workspace / operator_branch mode even without a project policy (reviewer feedback on PR #4951)", () => {
+    // Reviewer flagged: when issueSettings.mode triggers a managed mode but
+    // projectPolicy is null and no explicit workspaceStrategy override exists,
+    // the agent's strategy must still yield — these modes are project-managed
+    // by definition and a residual agent-level git_worktree would conflict
+    // with the resolved cwd.
+    const baseConfig = {
+      workspaceStrategy: { type: "git_worktree", baseRef: "master" },
+    };
+
+    const sharedNoPolicy = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: baseConfig,
+      projectPolicy: null,
+      issueSettings: { mode: "shared_workspace" },
+      mode: "shared_workspace",
+      legacyUseProjectWorkspace: null,
+    });
+    expect(sharedNoPolicy.workspaceStrategy).toBeUndefined();
+
+    const operatorNoPolicy = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: baseConfig,
+      projectPolicy: null,
+      issueSettings: { mode: "operator_branch" },
+      mode: "operator_branch",
+      legacyUseProjectWorkspace: null,
+    });
+    expect(operatorNoPolicy.workspaceStrategy).toBeUndefined();
+  });
+
+  it("issue.workspaceStrategy override wins over agent's own strategy in non-isolated modes", () => {
+    // When the issue explicitly provides its own workspaceStrategy, that wins
+    // over the agent's — preserves the override semantics for caller-driven
+    // per-issue configuration.
+    const result = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: {
+        workspaceStrategy: { type: "git_worktree", baseRef: "master" },
+      },
+      projectPolicy: null,
+      issueSettings: {
+        mode: "shared_workspace",
+        workspaceStrategy: { type: "project_primary" },
+      },
+      mode: "shared_workspace",
+      legacyUseProjectWorkspace: null,
+    });
+    expect(result.workspaceStrategy).toEqual({ type: "project_primary" });
   });
 
   it("parses persisted JSON payloads into typed project and issue workspace settings", () => {
