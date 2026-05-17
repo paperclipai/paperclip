@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EnvironmentLease } from "@paperclipai/shared";
-import { sandboxRoutes } from "../routes/sandbox.js";
+import { sandboxRoutes, __testing as sandboxRoutesTesting } from "../routes/sandbox.js";
 import { errorHandler } from "../middleware/index.js";
 import {
   publishSandboxEvent,
@@ -282,6 +282,35 @@ describe("sandbox routes", () => {
     expect(stopRes.body.details?.code).toBe("SANDBOX_PREVIEW_ONLY");
   });
 
+  it("start/stop pseudo-routes return 401 for unauthenticated actors (not 409)", async () => {
+    const app = buildApp({ type: "none" });
+    const startRes = await request(app)
+      .post("/api/companies/company-1/sandbox/leases/lease-1/start");
+    expect(startRes.status).toBe(401);
+    expect(startRes.body.details?.code).not.toBe("SANDBOX_PREVIEW_ONLY");
+    const stopRes = await request(app)
+      .post("/api/companies/company-1/sandbox/leases/lease-1/stop");
+    expect(stopRes.status).toBe(401);
+    expect(stopRes.body.details?.code).not.toBe("SANDBOX_PREVIEW_ONLY");
+  });
+
+  it("start/stop pseudo-routes return 403 for cross-company agents (not 409)", async () => {
+    const app = buildApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "other-company",
+      source: "agent_key",
+    });
+    const startRes = await request(app)
+      .post("/api/companies/company-1/sandbox/leases/lease-1/start");
+    expect(startRes.status).toBe(403);
+    expect(startRes.body.details?.code).not.toBe("SANDBOX_PREVIEW_ONLY");
+    const stopRes = await request(app)
+      .post("/api/companies/company-1/sandbox/leases/lease-1/stop");
+    expect(stopRes.status).toBe(403);
+    expect(stopRes.body.details?.code).not.toBe("SANDBOX_PREVIEW_ONLY");
+  });
+
   it("GET /sandbox/events opens an SSE stream and delivers published events", async () => {
     const app = buildApp({ type: "board", userId: "user-1", source: "local_implicit" });
     server = app.listen(0);
@@ -338,6 +367,106 @@ describe("sandbox routes", () => {
     await reader.cancel().catch(() => undefined);
 
     // Subscriber should be cleaned up after the client disconnects
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (__sandboxSubscriberCount("company-1") === 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(__sandboxSubscriberCount("company-1")).toBe(0);
+  });
+
+  it("writeSseEvent returns false when res.write signals backpressure (so subscribers can clean up)", () => {
+    // The cleanup chain in the SSE route depends on writeSseEvent returning
+    // false when the kernel socket buffer is full. Prove that any false
+    // res.write propagates, not just thrown errors.
+    const writeCalls: string[] = [];
+    const fakeRes = {
+      writable: true,
+      write: (chunk: string) => {
+        writeCalls.push(chunk);
+        // Simulate the 3rd write (data: …) returning false.
+        return writeCalls.length < 3;
+      },
+    } as unknown as express.Response;
+
+    const ok = sandboxRoutesTesting.writeSseEvent(fakeRes, {
+      type: "sandbox.lease.state_changed",
+      id: 1,
+      data: { leaseId: "lease-1" },
+    });
+    expect(ok).toBe(false);
+    expect(writeCalls.length).toBe(3);
+
+    // And when res is no longer writable, return false without writing.
+    const closedRes = { writable: false, write: vi.fn() } as unknown as express.Response;
+    const okClosed = sandboxRoutesTesting.writeSseEvent(closedRes, {
+      type: "sandbox.lease.state_changed",
+      data: {},
+    });
+    expect(okClosed).toBe(false);
+    expect((closedRes as unknown as { write: ReturnType<typeof vi.fn> }).write).not.toHaveBeenCalled();
+  });
+
+  it("SSE redacts sensitive payload keys (token/apiKey/env/destinationId/password) end-to-end", async () => {
+    const app = buildApp({ type: "board", userId: "user-1", source: "local_implicit" });
+    server = app.listen(0);
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Failed to bind test server");
+    }
+    const url = `http://127.0.0.1:${address.port}/api/companies/company-1/sandbox/events`;
+
+    const controller = new AbortController();
+    const response = await fetch(url, { signal: controller.signal });
+    expect(response.status).toBe(200);
+
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    const readChunk = async (): Promise<string> => {
+      const { value, done } = await reader.read();
+      if (done || !value) return "";
+      return decoder.decode(value);
+    };
+    // Drain the ready frame.
+    await readChunk();
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (__sandboxSubscriberCount("company-1") > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    publishSandboxEvent({
+      companyId: "company-1",
+      type: "sandbox.lease.state_changed",
+      payload: {
+        leaseId: "lease-1",
+        token: "raw-token-aaaa",
+        apiKey: "raw-apikey-bbbb",
+        password: "raw-password-cccc",
+        env: { SECRET_THING: "raw-env-dddd" },
+        destinationId: "raw-destination-eeee",
+        nested: { credential: "raw-cred-ffff", proxy: { user: "u", pass: "raw-proxy-gggg" } },
+        summary: "ok",
+      },
+    });
+
+    let received = "";
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      received += await readChunk();
+      if (received.includes("sandbox.lease.state_changed")) break;
+    }
+    expect(received).toContain("event: sandbox.lease.state_changed");
+    expect(received).not.toContain("raw-token-aaaa");
+    expect(received).not.toContain("raw-apikey-bbbb");
+    expect(received).not.toContain("raw-password-cccc");
+    expect(received).not.toContain("raw-env-dddd");
+    expect(received).not.toContain("raw-destination-eeee");
+    expect(received).not.toContain("raw-cred-ffff");
+    expect(received).not.toContain("raw-proxy-gggg");
+    expect(received).toContain("[REDACTED]");
+
+    controller.abort();
+    await reader.cancel().catch(() => undefined);
+
     for (let attempt = 0; attempt < 20; attempt += 1) {
       if (__sandboxSubscriberCount("company-1") === 0) break;
       await new Promise((resolve) => setTimeout(resolve, 10));

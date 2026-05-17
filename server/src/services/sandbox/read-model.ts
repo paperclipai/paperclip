@@ -242,10 +242,51 @@ export function toSandboxLeaseReadModel(
 }
 
 /**
+ * Keys whose values are treated as secret regardless of content. Matched
+ * case-insensitively against key names anywhere in the payload tree. We
+ * pessimistically replace the value with the `[REDACTED]` sentinel rather
+ * than relying on regex-based string scrubbing, because secrets often do
+ * not match heuristic patterns (e.g. short tokens, opaque IDs).
+ */
+const SENSITIVE_KEY_PATTERNS: readonly RegExp[] = [
+  /token/i,
+  /secret/i,
+  /password/i,
+  /passwd/i,
+  /api[-_]?key/i,
+  /apikey/i,
+  /auth[-_]?(z|token|orization)?/i,
+  /credential/i,
+  /cred(?:s)?$/i,
+  /private[-_]?key/i,
+  /access[-_]?key/i,
+  /session[-_]?id/i,
+  /cookie/i,
+  /bearer/i,
+  /proxy/i,
+  /destination[-_]?id/i,
+  /^env$/i,
+  /environment[-_]?variables?/i,
+];
+
+const REDACTED_SENTINEL = "[REDACTED]";
+
+function isSensitiveKey(key: string): boolean {
+  for (const pattern of SENSITIVE_KEY_PATTERNS) {
+    if (pattern.test(key)) return true;
+  }
+  return false;
+}
+
+/**
  * Defense-in-depth redaction for an arbitrary event payload. Producers
  * should pass already-allowlisted payloads (`toSandboxLeaseReadModel`),
- * but this helper recursively scrubs string values for known secret
- * patterns before publish.
+ * but this helper additionally:
+ *   - drops/redacts values for sensitive keys (token, apiKey, password,
+ *     secret, credential, env, proxy, destinationId, …) regardless of
+ *     their value content, and
+ *   - recursively scrubs string values for known secret patterns via
+ *     `redactLearningEvidence`.
  */
 export function redactSandboxEventPayload<T>(value: T): T {
   if (value === null || value === undefined) return value;
@@ -258,6 +299,13 @@ export function redactSandboxEventPayload<T>(value: T): T {
   if (typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      if (isSensitiveKey(key)) {
+        // Replace any value (string, object, array, primitive) under a
+        // sensitive key with the redaction sentinel so the shape stays
+        // serializable but never leaks the underlying payload.
+        out[key] = REDACTED_SENTINEL;
+        continue;
+      }
       out[key] = redactSandboxEventPayload(item);
     }
     return out as unknown as T;
