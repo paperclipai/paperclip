@@ -1544,6 +1544,8 @@ export function IssueProperties({
   );
 
   const blockedByIds = issue.blockedBy?.map((relation) => relation.id) ?? [];
+  const shouldHideEmptyOperatorNoise = issue.status === "done" || issue.status === "cancelled";
+
   const descendantIssueIds = useMemo(() => {
     if (!allIssues?.length) return new Set<string>();
     const childrenByParentId = new Map<string, string[]>();
@@ -1746,18 +1748,20 @@ export function IssueProperties({
           />
         </PropertyRow>
 
-        <PropertyPicker
-          inline={inline}
-          label="Labels"
-          open={labelsOpen}
-          onOpenChange={(open) => { setLabelsOpen(open); if (!open) setLabelSearch(""); }}
-          triggerContent={labelsTrigger}
-          triggerClassName="min-w-0 max-w-full"
-          popoverClassName="w-64"
-          extra={labelsExtra}
-        >
-          {labelsContent}
-        </PropertyPicker>
+        {!shouldHideEmptyOperatorNoise || (issue.labelIds ?? []).length > 0 ? (
+          <PropertyPicker
+            inline={inline}
+            label="Labels"
+            open={labelsOpen}
+            onOpenChange={(open) => { setLabelsOpen(open); if (!open) setLabelSearch(""); }}
+            triggerContent={labelsTrigger}
+            triggerClassName="min-w-0 max-w-full"
+            popoverClassName="w-64"
+            extra={labelsExtra}
+          >
+            {labelsContent}
+          </PropertyPicker>
+        ) : null}
 
         <PropertyPicker
           inline={inline}
@@ -1877,35 +1881,35 @@ export function IssueProperties({
           </PropertyRow>
         )}
 
-        <PropertyRow label="Blocking">
-          {blockingIssues.length > 0 ? (
+        {!shouldHideEmptyOperatorNoise || blockingIssues.length > 0 ? (
+          <PropertyRow label="Blocking">
             <div className="flex flex-wrap gap-1">
               {blockingIssues.map((relation) => (
                 <IssueReferencePill key={relation.id} issue={relation} />
               ))}
             </div>
-          ) : null}
-        </PropertyRow>
+          </PropertyRow>
+        ) : null}
 
-        <PropertyRow label="Sub-issues">
-          <div className="flex flex-wrap items-center gap-1.5">
-            {childIssues.length > 0
-              ? childIssues.map((child) => (
+        {!shouldHideEmptyOperatorNoise || childIssues.length > 0 ? (
+          <PropertyRow label="Sub-issues">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {childIssues.map((child) => (
                 <IssueReferencePill key={child.id} issue={child} />
-              ))
-              : null}
-            {onAddSubIssue ? (
-              <button
-                type="button"
-                className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
-                onClick={onAddSubIssue}
-              >
-                <Plus className="h-3 w-3" />
-              Add sub-issue
-              </button>
-            ) : null}
-          </div>
-        </PropertyRow>
+              ))}
+              {onAddSubIssue ? (
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                  onClick={onAddSubIssue}
+                >
+                  <Plus className="h-3 w-3" />
+                Add sub-issue
+                </button>
+              ) : null}
+            </div>
+          </PropertyRow>
+        ) : null}
 
         {relatedTasks.length > 0 ? (
           <PropertyRow label="Related Tasks">
@@ -1917,42 +1921,46 @@ export function IssueProperties({
           </PropertyRow>
         ) : null}
 
-        <PropertyPicker
-          inline={inline}
-          label="Reviewers"
-          open={reviewersOpen}
-          onOpenChange={(open) => { setReviewersOpen(open); if (!open) setReviewerSearch(""); }}
-          triggerContent={reviewerTrigger}
-          triggerClassName="min-w-0 max-w-full"
-          popoverClassName="w-56"
-        >
-          {executionParticipantsContent(
-            "review",
-            reviewerValues,
-            reviewerSearch,
-            setReviewerSearch,
-            () => updateExecutionPolicy([], approverValues),
-          )}
-        </PropertyPicker>
+        {!shouldHideEmptyOperatorNoise || reviewerValues.length > 0 || nextRunnableExecutionStage === "review" ? (
+          <PropertyPicker
+            inline={inline}
+            label="Reviewers"
+            open={reviewersOpen}
+            onOpenChange={(open) => { setReviewersOpen(open); if (!open) setReviewerSearch(""); }}
+            triggerContent={reviewerTrigger}
+            triggerClassName="min-w-0 max-w-full"
+            popoverClassName="w-56"
+          >
+            {executionParticipantsContent(
+              "review",
+              reviewerValues,
+              reviewerSearch,
+              setReviewerSearch,
+              () => updateExecutionPolicy([], approverValues),
+            )}
+          </PropertyPicker>
+        ) : null}
         {nextRunnableExecutionStage === "review" && reviewerValues.length > 0 ? runExecutionButton("review") : null}
 
-        <PropertyPicker
-          inline={inline}
-          label="Approvers"
-          open={approversOpen}
-          onOpenChange={(open) => { setApproversOpen(open); if (!open) setApproverSearch(""); }}
-          triggerContent={approverTrigger}
-          triggerClassName="min-w-0 max-w-full"
-          popoverClassName="w-56"
-        >
-          {executionParticipantsContent(
-            "approval",
-            approverValues,
-            approverSearch,
-            setApproverSearch,
-            () => updateExecutionPolicy(reviewerValues, []),
-          )}
-        </PropertyPicker>
+        {!shouldHideEmptyOperatorNoise || approverValues.length > 0 || nextRunnableExecutionStage === "approval" ? (
+          <PropertyPicker
+            inline={inline}
+            label="Approvers"
+            open={approversOpen}
+            onOpenChange={(open) => { setApproversOpen(open); if (!open) setApproverSearch(""); }}
+            triggerContent={approverTrigger}
+            triggerClassName="min-w-0 max-w-full"
+            popoverClassName="w-56"
+          >
+            {executionParticipantsContent(
+              "approval",
+              approverValues,
+              approverSearch,
+              setApproverSearch,
+              () => updateExecutionPolicy(reviewerValues, []),
+            )}
+          </PropertyPicker>
+        ) : null}
         {nextRunnableExecutionStage === "approval" && approverValues.length > 0 ? runExecutionButton("approval") : null}
 
         {currentExecutionLabel && (
@@ -1976,18 +1984,20 @@ export function IssueProperties({
           </PropertyPicker>
         ) : null}
 
-        <PropertyPicker
-          inline={inline}
-          label="Monitor"
-          open={monitorOpen}
-          onOpenChange={setMonitorOpen}
-          triggerContent={monitorTrigger}
-          triggerClassName="min-w-0 max-w-full"
-          popoverClassName={cn("max-w-full", inline ? "w-full" : "w-80 sm:w-[32rem]")}
-          extra={monitorAttemptBadge}
-        >
-          {monitorContent}
-        </PropertyPicker>
+        {!shouldHideEmptyOperatorNoise || issue.executionPolicy?.monitor || issue.executionState?.monitor || issue.monitorAttemptCount ? (
+          <PropertyPicker
+            inline={inline}
+            label="Monitor"
+            open={monitorOpen}
+            onOpenChange={setMonitorOpen}
+            triggerContent={monitorTrigger}
+            triggerClassName="min-w-0 max-w-full"
+            popoverClassName={cn("max-w-full", inline ? "w-full" : "w-80 sm:w-[32rem]")}
+            extra={monitorAttemptBadge}
+          >
+            {monitorContent}
+          </PropertyPicker>
+        ) : null}
 
         {issue.requestDepth > 0 && (
           <PropertyRow label="Depth">

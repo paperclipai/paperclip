@@ -72,6 +72,8 @@ import { IssueReferenceActivitySummary } from "../components/IssueReferenceActiv
 import { IssueRelatedWorkPanel } from "../components/IssueRelatedWorkPanel";
 import { IssueMonitorActivityCard } from "../components/IssueMonitorActivityCard";
 import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
+import { IssueLineageStrip } from "../components/IssueLineageStrip";
+import { IssueOutcomeCard } from "../components/IssueOutcomeCard";
 import { IssueProperties } from "../components/IssueProperties";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
@@ -1337,6 +1339,12 @@ export function IssueDetail() {
     refetchInterval: 3000,
     select: (runs) => runs.length,
     placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueId ?? "pending"),
+  });
+  const { data: outcomeRuns } = useQuery({
+    queryKey: queryKeys.issues.runs(issueId!),
+    queryFn: () => activityApi.runsForIssue(issueId!),
+    enabled: !!issueId,
+    placeholderData: keepPreviousDataForSameQueryTail<RunForIssue[]>(issueId ?? "pending"),
   });
 
   const { data: hasActiveRun = false } = useQuery<ActiveRunForIssue | null, Error, boolean>({
@@ -3607,6 +3615,10 @@ export function IssueDetail() {
           }}
         />
       </div>
+
+      <IssueLineageStrip issue={issue} childIssues={childIssues} />
+
+      <IssueOutcomeCard issue={issue} runs={outcomeRuns} />
 
       <PluginSlotOutlet
         slotTypes={["toolbarButton", "contextMenuItem"]}
