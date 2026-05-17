@@ -496,6 +496,79 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     ).rejects.toMatchObject({ status: 403 });
   });
 
+  it("does not re-create evaluation issue immediately after previous evaluation is marked done (storm prevention)", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first.created).toBe(1);
+    const evaluationIssueId = first.evaluationIssueIds[0];
+    expect(evaluationIssueId).toBeTruthy();
+
+    // Reviewer closes the evaluation issue without recording a watchdog decision
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, evaluationIssueId!));
+
+    // Next scan should NOT create a new evaluation — implicit re-arm window applies
+    const second = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(second.created).toBe(0);
+    expect(second.suppressed).toBe(1);
+
+    // Multiple subsequent scans should all be suppressed (no storm)
+    const third = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(third.created).toBe(0);
+    expect(third.suppressed).toBe(1);
+
+    const allEvaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(allEvaluations).toHaveLength(1);
+    expect(allEvaluations[0]?.status).toBe("done");
+  });
+
+  it("re-creates evaluation issue after implicit re-arm window following close", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first.created).toBe(1);
+    const evaluationIssueId = first.evaluationIssueIds[0];
+
+    // Reviewer closes the evaluation
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, evaluationIssueId!));
+
+    // Scan within re-arm window: suppressed
+    const beforeRearm = await heartbeat.scanSilentActiveRuns({
+      now: new Date(now.getTime() + ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS - 60_000),
+      companyId,
+    });
+    expect(beforeRearm.suppressed).toBe(1);
+    expect(beforeRearm.created).toBe(0);
+
+    // Scan after re-arm window expires: new evaluation created
+    const afterRearm = await heartbeat.scanSilentActiveRuns({
+      now: new Date(now.getTime() + ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS + 60_000),
+      companyId,
+    });
+    expect(afterRearm.created).toBe(1);
+    expect(afterRearm.evaluationIssueIds[0]).not.toBe(evaluationIssueId);
+
+    const allEvaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(allEvaluations).toHaveLength(2);
+    expect(allEvaluations.filter((e) => e.status !== "done")).toHaveLength(1);
+  });
+
   it("validates createdByRunId before storing watchdog decisions", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const { companyId, managerId, runId } = await seedRunningRun({

@@ -723,6 +723,31 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  // Returns the most recently closed (done/cancelled) evaluation for a run, or null if none exists.
+  // Used to apply an implicit re-arm window after a reviewer closes an evaluation without recording
+  // an explicit watchdog decision — preventing a new evaluation from firing immediately.
+  async function findMostRecentClosedStaleRunEvaluation(companyId: string, runId: string) {
+    const [row] = await db
+      .select({
+        id: issues.id,
+        status: issues.status,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(1);
+    return row ?? null;
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -1069,6 +1094,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       return { kind: "existing" as const, evaluationIssueId: existing.id };
     }
 
+    // Guard against infinite re-creation storms: if a previous evaluation for this run was
+    // recently closed (done/cancelled) without an explicit watchdog decision being recorded,
+    // treat the closure as an implicit re-arm snooze for the standard quiet window.
+    // Without this check, each close-without-decision triggers a new issue on the next scan.
+    const recentlyClosed = await findMostRecentClosedStaleRunEvaluation(input.run.companyId, input.run.id);
+    if (recentlyClosed) {
+      const closedAgeMs = input.now.getTime() - recentlyClosed.updatedAt.getTime();
+      if (closedAgeMs < ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS) {
+        return { kind: "suppressed" as const };
+      }
+    }
+
     const ownerAgentId = await resolveStaleRunOwnerAgentId({ run: input.run, runningAgent, sourceIssue });
     const description = buildStaleRunEvaluationDescription({
       run: input.run,
@@ -1176,6 +1213,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       escalated: 0,
       snoozed: 0,
       skipped: 0,
+      suppressed: 0,
       evaluationIssueIds: [] as string[],
     };
 
@@ -1188,6 +1226,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (outcome.kind === "created") result.created += 1;
       else if (outcome.kind === "existing") result.existing += 1;
       else if (outcome.kind === "escalated") result.escalated += 1;
+      else if (outcome.kind === "suppressed") result.suppressed += 1;
       else result.skipped += 1;
       if ("evaluationIssueId" in outcome && outcome.evaluationIssueId) {
         result.evaluationIssueIds.push(outcome.evaluationIssueId);
