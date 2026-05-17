@@ -3,7 +3,7 @@
 **Issue:** CRE-641
 **Author:** Hunter (CTO)
 **Date:** 2026-05-17
-**Status:** Roadmap (approved)
+**Status:** Roadmap approved. ADR-001 pending board confirmation. Phase 0 ready.
 
 ---
 
@@ -34,7 +34,7 @@ Phase 1 delivered a functionally complete three-layer system (mobile app, backen
 
 | # | Task | Owner | Depends On | Deliverable |
 |---|------|-------|------------|-------------|
-| 0.1 | Confirm Apple Developer Program membership active | Jeff | — | Membership confirmation |
+| 0.1 | Apple Developer Program membership confirmed active | Jeff | — | Membership confirmed |
 | 0.2 | Merge `fix/cre-536-briefing-timeout` (or `fix/crewbrief-live-site`) into master | Engineering | — | PR merged, all CrewBrief types/schemas/routes/services on master |
 | 0.3 | Verify/regenerate Drizzle migration files for 5 CrewBrief tables | Engineering | 0.2 | `packages/db/drizzle/*.sql` with `briefing_feedback`, `briefing_quality`, `briefing_negative_rating_alerts`, `crew_rating_flags`, `re_review_queue` migrations |
 | 0.4 | Fix iOS deployment target mismatch (standardize on 15.1) | Engineering | 0.2 | Podfile 15.1, Info.plist 15.1 |
@@ -49,7 +49,7 @@ Phase 1 delivered a functionally complete three-layer system (mobile app, backen
 - [ ] `pnpm -r typecheck` passes with zero errors
 - [ ] `pnpm --filter @paperclipai/server test:run` passes (14 tests)
 - [ ] iOS deployment target = 15.1 everywhere
-- [ ] Apple Developer membership confirmed active
+- [x] Apple Developer membership confirmed active (Jeff confirmed)
 
 ---
 
