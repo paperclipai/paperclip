@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
-import { execute } from "@paperclipai/adapter-codex-local/server";
+import { execute, runCodexLogin } from "@paperclipai/adapter-codex-local/server";
 
 async function writeFakeCodexCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
@@ -37,6 +37,33 @@ async function writeFailingCodexCommand(commandPath: string, errorMessage: strin
   const script = `#!/usr/bin/env node
 console.log(JSON.stringify({ type: "error", message: ${JSON.stringify(errorMessage)} }));
 process.exit(1);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
+async function writeFakeCodexLoginCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+
+const authPath = path.join(process.env.CODEX_HOME, "auth.json");
+if (fs.existsSync(authPath)) {
+  console.error("stale auth.json was present before login");
+  process.exit(3);
+}
+fs.mkdirSync(process.env.CODEX_HOME, { recursive: true });
+fs.writeFileSync(authPath, JSON.stringify({
+  OPENAI_API_KEY: null,
+  tokens: {
+    access_token: "fresh-login-access-token",
+    refresh_token: "fresh-login-refresh-token"
+  },
+  last_refresh: "2026-05-15T00:00:00.000Z"
+}), "utf8");
+console.log("Open this URL to continue: https://auth.openai.com/activate");
+console.log("Enter code: ABCD-EFGH");
+process.exit(0);
 `;
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
@@ -176,6 +203,175 @@ describe("codex execute", () => {
           chunk: expect.stringContaining("Using Paperclip-managed Codex home"),
         }),
       );
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
+      if (previousPaperclipInWorktree === undefined) delete process.env.PAPERCLIP_IN_WORKTREE;
+      else process.env.PAPERCLIP_IN_WORKTREE = previousPaperclipInWorktree;
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves a fresh managed OAuth auth.json instead of restoring the stale shared auth symlink", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-managed-auth-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const sharedCodexHome = path.join(root, "shared-codex-home");
+    const paperclipHome = path.join(root, "paperclip-home");
+    const managedCodexHome = path.join(
+      paperclipHome,
+      "instances",
+      "default",
+      "companies",
+      "company-1",
+      "codex-home",
+    );
+    const managedAuthPath = path.join(managedCodexHome, "auth.json");
+    const freshManagedAuth = {
+      OPENAI_API_KEY: null,
+      tokens: {
+        access_token: "fresh-access-token",
+        refresh_token: "fresh-refresh-token",
+        account_id: "account-1",
+      },
+      last_refresh: "2026-05-15T00:00:00.000Z",
+    };
+
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(sharedCodexHome, { recursive: true });
+    await fs.mkdir(managedCodexHome, { recursive: true });
+    await fs.writeFile(path.join(sharedCodexHome, "auth.json"), '{"token":"stale-shared"}\n', "utf8");
+    await fs.writeFile(managedAuthPath, JSON.stringify(freshManagedAuth), "utf8");
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    const previousPaperclipInWorktree = process.env.PAPERCLIP_IN_WORKTREE;
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.HOME = root;
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+    delete process.env.PAPERCLIP_IN_WORKTREE;
+    process.env.CODEX_HOME = sharedCodexHome;
+
+    try {
+      const result = await execute({
+        runId: "run-managed-auth",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.codexHome).toBe(managedCodexHome);
+      expect((await fs.lstat(managedAuthPath)).isSymbolicLink()).toBe(false);
+      expect(JSON.parse(await fs.readFile(managedAuthPath, "utf8"))).toEqual(freshManagedAuth);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
+      if (previousPaperclipInWorktree === undefined) delete process.env.PAPERCLIP_IN_WORKTREE;
+      else process.env.PAPERCLIP_IN_WORKTREE = previousPaperclipInWorktree;
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("clears stale managed auth before running Codex device login recovery", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-login-recovery-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const sharedCodexHome = path.join(root, "shared-codex-home");
+    const paperclipHome = path.join(root, "paperclip-home");
+    const managedCodexHome = path.join(
+      paperclipHome,
+      "instances",
+      "default",
+      "companies",
+      "company-1",
+      "codex-home",
+    );
+    const sharedAuthPath = path.join(sharedCodexHome, "auth.json");
+    const managedAuthPath = path.join(managedCodexHome, "auth.json");
+
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(sharedCodexHome, { recursive: true });
+    await fs.writeFile(sharedAuthPath, '{"token":"stale-shared"}\n', "utf8");
+    await writeFakeCodexLoginCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    const previousPaperclipInWorktree = process.env.PAPERCLIP_IN_WORKTREE;
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.HOME = root;
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+    delete process.env.PAPERCLIP_IN_WORKTREE;
+    process.env.CODEX_HOME = sharedCodexHome;
+
+    try {
+      const result = await runCodexLogin({
+        runId: "codex-login-recovery",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+        },
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(await fs.readFile(sharedAuthPath, "utf8")).toBe('{"token":"stale-shared"}\n');
+      expect((await fs.lstat(managedAuthPath)).isSymbolicLink()).toBe(false);
+      expect(JSON.parse(await fs.readFile(managedAuthPath, "utf8"))).toEqual({
+        OPENAI_API_KEY: null,
+        tokens: {
+          access_token: "fresh-login-access-token",
+          refresh_token: "fresh-login-refresh-token",
+        },
+        last_refresh: "2026-05-15T00:00:00.000Z",
+      });
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

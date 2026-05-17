@@ -1439,10 +1439,10 @@ export function Inbox() {
     onMutate: (run) => {
       setRetryingRunIds((prev) => new Set(prev).add(run.id));
     },
-    onSuccess: ({ newRun, originalRun }) => {
+    onSuccess: ({ originalRun }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(originalRun.companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(originalRun.companyId, originalRun.agentId) });
-      navigate(`/agents/${originalRun.agentId}/runs/${newRun.id}`);
+      dismissInboxItem(`run:${originalRun.id}`);
     },
     onSettled: (_data, _error, run) => {
       if (!run) return;
@@ -2169,14 +2169,14 @@ export function Inbox() {
             searchQuery.trim()
               ? "No inbox items match your search."
               : tab === "decisions"
-              ? "Nothing waiting on you. You're all caught up."
+              ? "Nothing's blocking you. Ship."
               : tab === "mine"
-              ? "Inbox zero."
+              ? "No issues on you. Take a break."
               : tab === "unread"
-              ? "No new inbox items."
+              ? "All caught up."
               : tab === "recent"
-                ? "No recent inbox items."
-                : "No inbox items match these filters."
+                ? "Nothing here yet."
+                : "Inbox is empty."
           }
         />
       )}

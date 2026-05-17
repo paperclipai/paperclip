@@ -363,6 +363,7 @@ export async function runCodexLogin(input: {
     throw new Error("runCodexLogin could not resolve CODEX_HOME");
   }
   await fs.mkdir(effectiveCodexHome, { recursive: true });
+  await fs.rm(path.join(effectiveCodexHome, "auth.json"), { force: true });
 
   const env: Record<string, string> = agent ? { ...buildPaperclipEnv(agent) } : {};
   // CODEX_HOME is the canonical knob the Codex CLI uses to locate auth.json

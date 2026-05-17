@@ -1,5 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
@@ -45,6 +47,7 @@ import {
   issueRecoveryActionService,
   issueService,
   logActivity,
+  credentialService,
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
@@ -117,6 +120,39 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   return Math.min(max, Math.trunc(parsed));
 }
 
+function parseCodexAuthJsonCredential(raw: string): Record<string, unknown> {
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  const tokens =
+    parsed && typeof parsed.tokens === "object" && parsed.tokens !== null
+      ? (parsed.tokens as Record<string, unknown>)
+      : null;
+  const out: Record<string, unknown> = {};
+  const accessToken =
+    (tokens && typeof tokens.access_token === "string" ? tokens.access_token : null)
+    ?? (typeof parsed.accessToken === "string" ? parsed.accessToken : null);
+  const refreshToken =
+    (tokens && typeof tokens.refresh_token === "string" ? tokens.refresh_token : null)
+    ?? (typeof parsed.refreshToken === "string" ? parsed.refreshToken : null);
+  const idToken =
+    (tokens && typeof tokens.id_token === "string" ? tokens.id_token : null)
+    ?? (typeof parsed.idToken === "string" ? parsed.idToken : null);
+  const accountId =
+    (tokens && typeof tokens.account_id === "string" ? tokens.account_id : null)
+    ?? (typeof parsed.accountId === "string" ? parsed.accountId : null);
+  const lastRefresh = typeof parsed.last_refresh === "string"
+    ? parsed.last_refresh
+    : typeof parsed.lastRefresh === "string" ? parsed.lastRefresh : null;
+  if (accessToken) out.accessToken = accessToken;
+  if (refreshToken) out.refreshToken = refreshToken;
+  if (idToken) out.idToken = idToken;
+  if (accountId) out.accountId = accountId;
+  if (lastRefresh) out.lastRefresh = lastRefresh;
+  if (typeof out.accessToken !== "string") {
+    throw new Error("codex login completed but auth.json did not contain an access token");
+  }
+  return out;
+}
+
 export function agentRoutes(
   db: Db,
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
@@ -175,6 +211,7 @@ export function agentRoutes(
   const recovery = recoveryService(db, { enqueueWakeup: heartbeat.wakeup });
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
+  const credentialsSvc = credentialService(db);
   const instructions = agentInstructionsService();
   const companySkills = companySkillService(db);
   const workspaceOperations = workspaceOperationService(db);
@@ -3144,6 +3181,11 @@ export function agentRoutes(
     const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(agent.companyId, config);
 
     const sessionId = randomUUID();
+    const credential = agent.credentialId ? await credentialsSvc.getById(agent.credentialId) : null;
+    const codexCredentialLoginHome =
+      credential?.type === "codex_oauth"
+        ? path.join(os.tmpdir(), `paperclip-codex-agent-login-${sessionId}`)
+        : null;
     const session: CodexLoginSession = {
       agentId: agent.id,
       companyId: agent.companyId,
@@ -3173,6 +3215,7 @@ export function agentRoutes(
             adapterConfig: agent.adapterConfig,
           },
           config: runtimeConfig,
+          ...(codexCredentialLoginHome ? { codexHomeOverride: codexCredentialLoginHome } : {}),
           onLog: async (stream, chunk) => {
             const next = (stream === "stdout" ? session.stdout : session.stderr) + chunk;
             // Cap log buffer to keep the in-memory session small.
@@ -3211,6 +3254,35 @@ export function agentRoutes(
         }
 
         if ((result.exitCode ?? 0) === 0) {
+          if (credential?.type === "codex_oauth" && codexCredentialLoginHome) {
+            try {
+              const authJson = await fs.readFile(path.join(codexCredentialLoginHome, "auth.json"), "utf8");
+              const credentialPayload = parseCodexAuthJsonCredential(authJson);
+              const updated = await credentialsSvc.update(credential.id, { credential: credentialPayload });
+              if (!updated) {
+                session.status = "error";
+                session.errorCode = "infra";
+                session.error = "Codex login completed but the active credential could not be updated.";
+                return;
+              }
+              await logActivity(db, {
+                companyId: agent.companyId,
+                actorType: "user",
+                actorId: req.actor.type === "board" ? req.actor.userId ?? "board" : "board",
+                action: "credential.updated",
+                entityType: "credential",
+                entityId: credential.id,
+                details: { name: credential.name, type: credential.type, method: "codex_login_recovery" },
+              });
+            } catch (err) {
+              session.status = "error";
+              session.errorCode = "infra";
+              session.error =
+                "Codex login completed but the active credential could not be refreshed: " +
+                (err instanceof Error ? err.message : String(err));
+              return;
+            }
+          }
           session.status = "success";
           session.error = null;
           return;
@@ -3226,6 +3298,10 @@ export function agentRoutes(
         session.status = "error";
         session.errorCode = "infra";
         session.error = err instanceof Error ? err.message : String(err);
+      } finally {
+        if (codexCredentialLoginHome) {
+          await fs.rm(codexCredentialLoginHome, { recursive: true, force: true }).catch(() => {});
+        }
       }
     })();
 

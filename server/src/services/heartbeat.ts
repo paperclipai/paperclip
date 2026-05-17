@@ -8132,7 +8132,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     );
   }
 
-  async function releaseIssueExecutionAndPromote(run: typeof heartbeatRuns.$inferSelect) {
+  async function releaseIssueExecutionAndPromote(
+    run: typeof heartbeatRuns.$inferSelect,
+    options: { suppressImmediateRecovery?: boolean } = {},
+  ) {
     const runContext = parseObject(run.contextSnapshot);
     const contextIssueId = readNonEmptyString(runContext.issueId);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(runContext, null);
@@ -8386,6 +8389,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           run: newRun,
           reopenedActivity,
         };
+      }
+
+      if (options.suppressImmediateRecovery) {
+        return { kind: "released" as const };
       }
 
       const issueNeedsImmediateRecovery =
@@ -9348,7 +9355,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return wakeupIds.length;
   }
 
-  async function cancelRunInternal(runId: string, reason = "Cancelled by control plane") {
+  async function cancelRunInternal(
+    runId: string,
+    reason = "Cancelled by control plane",
+    options: { suppressImmediateRecovery?: boolean } = {},
+  ) {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
     if (!CANCELLABLE_HEARTBEAT_RUN_STATUSES.includes(run.status as (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number])) return run;
@@ -9393,7 +9404,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         level: "warn",
         message: "run cancelled",
       });
-      await releaseIssueExecutionAndPromote(cancelled);
+      await releaseIssueExecutionAndPromote(cancelled, {
+        suppressImmediateRecovery: options.suppressImmediateRecovery,
+      });
     }
 
     runningProcesses.delete(run.id);
@@ -9784,7 +9797,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     },
 
-    cancelRun: (runId: string) => cancelRunInternal(runId),
+    cancelRun: (runId: string, options?: { suppressImmediateRecovery?: boolean }) =>
+      cancelRunInternal(runId, "Cancelled by control plane", {
+        suppressImmediateRecovery: options?.suppressImmediateRecovery ?? true,
+      }),
 
     cancelActiveForAgent: (agentId: string) => cancelActiveForAgentInternal(agentId),
 

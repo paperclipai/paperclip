@@ -1767,6 +1767,65 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("does not immediately requeue assigned issue work after manual run cancellation", async () => {
+    const { agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "running",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const cancelled = await heartbeat.cancelRun(runId);
+    expect(cancelled?.status).toBe("cancelled");
+
+    const runsAfterCancel = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runsAfterCancel).toHaveLength(1);
+
+    const issueAfterCancel = await db
+      .select({
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issueAfterCancel).toEqual({
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
+
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId: cancelled!.companyId,
+      issueId,
+      authorUserId: "user-1",
+      body: "Please continue after cancel.",
+    });
+
+    const followup = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId, commentId },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        commentId,
+        wakeCommentId: commentId,
+        wakeReason: "issue_commented",
+        source: "issue.comment",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+    });
+    expect(followup).not.toBeNull();
+    await waitForRunToSettle(heartbeat, followup!.id, 5_000);
+  });
+
   it("dispatches assigned todo work with no prior run as a normal assignment wake", async () => {
     const { companyId, agentId, issueId } = await seedAssignedTodoNoRunFixture();
     const heartbeat = heartbeatService(db);
