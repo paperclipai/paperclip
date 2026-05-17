@@ -15,7 +15,7 @@ import {
 } from "@paperclipai/shared";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
-import { resolveHomeAwarePath } from "../home-paths.js";
+import { resolveHomeAwarePath, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
   createLocalServiceKey,
   findLocalServiceRegistryRecordByRuntimeServiceId,
@@ -620,6 +620,19 @@ async function directoryExists(value: string) {
   return fs.stat(value).then((stats) => stats.isDirectory()).catch(() => false);
 }
 
+function deriveRepoNameFromRepoUrlForRuntime(repoUrl: string | null | undefined): string | null {
+  const trimmed = (repoUrl ?? "").trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    const cleanedPath = parsed.pathname.replace(/\/+$/, "");
+    const repoName = cleanedPath.split("/").filter(Boolean).pop()?.replace(/\.git$/i, "") ?? "";
+    return repoName || null;
+  } catch {
+    return null;
+  }
+}
+
 async function listLinkedGitWorktreePaths(repoRoot: string): Promise<Set<string>> {
   const output = await runGit(["worktree", "list", "--porcelain"], repoRoot);
   const paths = new Set<string>();
@@ -1209,6 +1222,30 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   const provisionCommand = asString(input.workspace.config?.provisionCommand, "").trim();
 
   if (strategy !== "git_worktree") {
+    if (
+      input.workspace.mode === "shared_workspace"
+      && !(await isGitCheckout(cwd))
+    ) {
+      const repoUrl = asString(input.workspace.repoUrl ?? input.base.repoUrl, "").trim();
+      const projectId = asString(input.workspace.projectId ?? input.base.projectId, "").trim();
+      const companyId = asString(input.agent.companyId, "").trim();
+      if (repoUrl && projectId && companyId) {
+        const managedCwd = resolveManagedProjectWorkspaceDir({
+          companyId,
+          projectId,
+          repoName: deriveRepoNameFromRepoUrlForRuntime(repoUrl),
+        });
+        if (managedCwd !== cwd && (await isGitCheckout(managedCwd))) {
+          return {
+            ...realized,
+            cwd: managedCwd,
+            warnings: [
+              `Rebound stale shared workspace cwd "${cwd}" to managed checkout "${managedCwd}".`,
+            ],
+          };
+        }
+      }
+    }
     return realized;
   }
   if (await directoryExists(cwd)) {

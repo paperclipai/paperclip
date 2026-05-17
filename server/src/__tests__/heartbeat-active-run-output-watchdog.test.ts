@@ -270,6 +270,26 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(source?.status).toBe("blocked");
   });
 
+  it("does not file a review when the source issue is already blocked", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, issueId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+    });
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result).toMatchObject({ created: 0, escalated: 0, existing: 0, skipped: 1 });
+
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
+  });
+
   it("skips snoozed runs and healthy noisy runs", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const stale = await seedRunningRun({

@@ -94,6 +94,7 @@ import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./
 import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
+  ensurePersistedExecutionWorkspaceAvailable,
   ensureRuntimeServicesForRun,
   persistAdapterManagedRuntimeServices,
   realizeExecutionWorkspace,
@@ -7806,9 +7807,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       repoRef: resolvedWorkspace.repoRef,
     } satisfies ExecutionWorkspaceInput;
     const reusedExecutionWorkspace = shouldReuseExisting && existingExecutionWorkspace
-      ? buildRealizedExecutionWorkspaceFromPersisted({
+      ? await ensurePersistedExecutionWorkspaceAvailable({
           base: executionWorkspaceBase,
-          workspace: existingExecutionWorkspace,
+          workspace: {
+            mode: existingExecutionWorkspace.mode,
+            strategyType: existingExecutionWorkspace.strategyType,
+            cwd: existingExecutionWorkspace.cwd,
+            providerRef: existingExecutionWorkspace.providerRef,
+            projectId: existingExecutionWorkspace.projectId,
+            projectWorkspaceId: existingExecutionWorkspace.projectWorkspaceId,
+            repoUrl: existingExecutionWorkspace.repoUrl,
+            baseRef: existingExecutionWorkspace.baseRef,
+            branchName: existingExecutionWorkspace.branchName,
+            config: existingExecutionWorkspace.config,
+          },
+          issue: issueRef,
+          agent: {
+            id: agent.id,
+            name: agent.name,
+            companyId: agent.companyId,
+          },
+          recorder: workspaceOperationRecorder,
         })
       : null;
     const executionWorkspace = reusedExecutionWorkspace ?? await realizeExecutionWorkspace({
