@@ -771,7 +771,11 @@ describe("heartbeat comment wake batching", () => {
           .select()
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.some((run) => run.status === "cancelled");
+        return (
+          runs.length === 2 &&
+          runs.some((run) => run.status === "cancelled") &&
+          runs.every((run) => ["succeeded", "cancelled"].includes(run.status))
+        );
       }, 90_000);
 
       const finishedIssue = await db

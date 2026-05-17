@@ -6068,7 +6068,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issue.status === "done" || issue.status === "cancelled") {
-      if (!resumeIntent) {
+      const isMentionWake = wakeReason === "issue_comment_mentioned";
+      if (!resumeIntent && !isMentionWake) {
         return {
           stale: true,
           errorCode: "issue_terminal_status",
