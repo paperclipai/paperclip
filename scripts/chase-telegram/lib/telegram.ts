@@ -1,7 +1,9 @@
-const BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
+function getBotToken(): string {
+  return Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
+}
 
 function telegramUrl(method: string): string {
-  return `https://api.telegram.org/bot${BOT_TOKEN}/${method}`;
+  return `https://api.telegram.org/bot${getBotToken()}/${method}`;
 }
 
 export async function sendTelegram(
@@ -32,5 +34,5 @@ export async function sendTelegram(
 }
 
 export function isBotConfigured(): boolean {
-  return !!BOT_TOKEN;
+  return !!getBotToken();
 }
