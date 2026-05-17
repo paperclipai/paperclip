@@ -737,7 +737,7 @@ export function agentRoutes(
         ? environment.config as Record<string, unknown>
         : {};
       const provider = typeof config.provider === "string" ? config.provider : "";
-      if (provider === "fake") {
+      if (provider === "fake" || provider === "null") {
         throw unprocessable(
           `Selected sandbox provider "${provider}" is not supported for agent defaults yet`,
         );

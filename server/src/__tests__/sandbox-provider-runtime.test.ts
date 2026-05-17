@@ -1,220 +1,179 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  NULL_SANDBOX_PROVIDER_KEY,
+  NullSandboxProvider,
   acquireSandboxProviderLease,
   findReusableSandboxProviderLeaseId,
   getSandboxProvider,
+  listSandboxProviderDescriptors,
   listSandboxProviders,
   probeSandboxProvider,
   releaseSandboxProviderLease,
   sandboxConfigFromLeaseMetadata,
   sandboxConfigFromLeaseMetadataLoose,
+  sandboxProviderStatusMap,
   validateSandboxProviderConfig,
 } from "../services/sandbox-provider-runtime.ts";
 
 describe("sandbox provider runtime", () => {
-  it("exposes fake as the built-in sandbox provider implementation", async () => {
-    expect(listSandboxProviders().map((provider) => provider.provider).sort()).toEqual(["fake"]);
-    expect(getSandboxProvider("fake")?.provider).toBe("fake");
+  it("exposes built-in providers through the provider interface", () => {
+    expect(listSandboxProviders().map((provider) => provider.provider).sort()).toEqual([
+      "docker",
+      "fake",
+      "null",
+    ]);
+    expect(getSandboxProvider(NULL_SANDBOX_PROVIDER_KEY)).toBeInstanceOf(NullSandboxProvider);
     expect(getSandboxProvider("fake-plugin")).toBeNull();
 
+    const descriptors = listSandboxProviderDescriptors();
+    expect(descriptors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ provider: "null", kind: "builtin", enabled: false, previewOnly: true }),
+        expect.objectContaining({ provider: "docker", kind: "builtin", previewOnly: true }),
+      ]),
+    );
+    expect(descriptors.find((descriptor) => descriptor.provider === "null")?.capabilities).toMatchObject({
+      lease: true,
+      exec: false,
+      readLogs: true,
+      streamEvents: true,
+    });
+    expect(descriptors.find((descriptor) => descriptor.provider === "null")?.secretInjection).toMatchObject({
+      mode: "none",
+      acceptsRawSecrets: false,
+    });
+    expect(sandboxProviderStatusMap().has("docker")).toBe(true);
+  });
+
+  it("validates and probes null provider configs without external side effects", async () => {
     await expect(
-      validateSandboxProviderConfig({
-        provider: "fake",
-        image: "ubuntu:24.04",
-        reuseLease: true,
-      }),
+      validateSandboxProviderConfig({ provider: "null", reuseLease: true }),
     ).resolves.toEqual(
       expect.objectContaining({
         ok: true,
-        details: expect.objectContaining({
-          provider: "fake",
-          image: "ubuntu:24.04",
-        }),
+        summary: expect.stringContaining("Null sandbox provider"),
+        issues: [],
+        details: expect.objectContaining({ provider: "null", noOp: true }),
+      }),
+    );
+
+    await expect(
+      probeSandboxProvider({ provider: "null", reuseLease: true }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        ok: true,
+        driver: "sandbox",
+        details: expect.objectContaining({ provider: "null", noOp: true }),
       }),
     );
   });
 
-  it("does not route plugin-backed providers through the built-in provider helper", async () => {
+  it("implements the null provider lease/log/event/cleanup contract", async () => {
+    const provider = getSandboxProvider("null");
+    expect(provider).toBeTruthy();
+
+    const handle = await acquireSandboxProviderLease({
+      config: { provider: "null", reuseLease: true },
+      environmentId: "env-1",
+      heartbeatRunId: "run-1",
+      issueId: "issue-1",
+    });
+
+    expect(handle).toEqual(expect.objectContaining({
+      providerLeaseId: "sandbox://null/env-1",
+      metadata: expect.objectContaining({ provider: "null", previewOnly: true, noOp: true }),
+    }));
+
+    await expect(provider!.start({ lease: handle })).resolves.toBe(handle);
+    await expect(provider!.readLogs({ providerLeaseId: handle.providerLeaseId })).resolves.toEqual({
+      lines: [],
+      nextCursor: null,
+      truncated: false,
+    });
+
+    const events: unknown[] = [];
+    for await (const event of provider!.streamEvents({ providerLeaseId: handle.providerLeaseId })) {
+      events.push(event);
+    }
+    expect(events).toEqual([]);
+
+    await expect(releaseSandboxProviderLease({
+      config: { provider: "null", reuseLease: true },
+      providerLeaseId: handle.providerLeaseId,
+      status: "released",
+    })).resolves.toBeUndefined();
+    await expect(provider!.destroy({ providerLeaseId: handle.providerLeaseId })).resolves.toBeUndefined();
+  });
+
+  it("keeps null provider exec unsupported and categorized", async () => {
+    const provider = getSandboxProvider("null");
+    await expect(
+      provider!.exec({
+        config: { provider: "null", reuseLease: true },
+        providerLeaseId: "sandbox://null/env-1",
+        command: "echo",
+        args: ["hi"],
+      }),
+    ).rejects.toMatchObject({ code: "EXEC_UNSUPPORTED" });
+  });
+
+  it("honors cancellation with a categorized provider error", async () => {
+    const provider = getSandboxProvider("null");
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(provider!.exec({
+      config: { provider: "null", reuseLease: true },
+      providerLeaseId: "sandbox://null/env-1",
+      command: "echo",
+      signal: controller.signal,
+    })).rejects.toMatchObject({ code: "CANCELLED" });
+  });
+
+  it("matches and reconstructs null reusable leases through the selected provider", () => {
+    const metadata = { provider: "null", reuseLease: true, sandboxState: "requested", kind: "null" };
+    expect(findReusableSandboxProviderLeaseId({
+      config: { provider: "null", reuseLease: true },
+      leases: [{ providerLeaseId: "sandbox://null/env-1", metadata }],
+    })).toBe("sandbox://null/env-1");
+    expect(sandboxConfigFromLeaseMetadata({ metadata })).toEqual({ provider: "null", reuseLease: true });
+    expect(sandboxConfigFromLeaseMetadataLoose({ metadata })).toEqual({ provider: "null", reuseLease: true });
+  });
+
+  it("keeps plugin-backed reusable lease matching outside the built-in provider registry", () => {
+    const pluginConfig = {
+      provider: "fake-plugin",
+      image: "fake:test",
+      timeoutMs: 300000,
+      reuseLease: true,
+    };
+    const metadata = {
+      provider: pluginConfig.provider,
+      image: pluginConfig.image,
+      timeoutMs: pluginConfig.timeoutMs,
+      reuseLease: true,
+    };
+
+    expect(getSandboxProvider(pluginConfig.provider)).toBeNull();
+    expect(findReusableSandboxProviderLeaseId({
+      config: pluginConfig,
+      leases: [{ providerLeaseId: "sandbox://plugin/env-1", metadata }],
+    })).toBe("sandbox://plugin/env-1");
+    expect(findReusableSandboxProviderLeaseId({
+      config: { ...pluginConfig, image: "other:test" },
+      leases: [{ providerLeaseId: "sandbox://plugin/env-1", metadata }],
+    })).toBeNull();
+    expect(sandboxConfigFromLeaseMetadata({ metadata })).toBeNull();
+    expect(sandboxConfigFromLeaseMetadataLoose({ metadata })).toEqual(pluginConfig);
+  });
+
+  it("does not route plugin-backed providers through the built-in provider helpers", async () => {
     await expect(probeSandboxProvider({
       provider: "fake-plugin",
       image: "fake:test",
       timeoutMs: 300000,
       reuseLease: false,
     })).rejects.toThrow('Sandbox provider "fake-plugin" is not registered as a built-in provider.');
-  });
-
-  it("acquires and resumes fake leases deterministically", async () => {
-    const lease = await acquireSandboxProviderLease({
-      config: {
-        provider: "fake",
-        image: "ubuntu:24.04",
-        reuseLease: true,
-      },
-      environmentId: "env-1",
-      heartbeatRunId: "run-1",
-      issueId: "issue-1",
-    });
-
-    expect(lease.providerLeaseId).toBe("sandbox://fake/env-1");
-    expect(lease.metadata).toEqual(expect.objectContaining({
-      provider: "fake",
-      image: "ubuntu:24.04",
-      reuseLease: true,
-    }));
-
-    const resumed = await acquireSandboxProviderLease({
-      config: {
-        provider: "fake",
-        image: "ubuntu:24.04",
-        reuseLease: true,
-      },
-      environmentId: "env-1",
-      heartbeatRunId: "run-2",
-      issueId: "issue-1",
-      reusableProviderLeaseId: lease.providerLeaseId,
-    });
-
-    expect(resumed.providerLeaseId).toBe(lease.providerLeaseId);
-    expect(resumed.metadata).toEqual(expect.objectContaining({ resumedLease: true }));
-  });
-
-  it("matches reusable fake leases through the selected provider implementation", () => {
-    expect(
-      findReusableSandboxProviderLeaseId({
-        config: {
-          provider: "fake",
-          image: "image-b",
-          reuseLease: true,
-        },
-        leases: [
-          {
-            providerLeaseId: "sandbox-image-a",
-            metadata: {
-              provider: "fake",
-              image: "image-a",
-              reuseLease: true,
-            },
-          },
-          {
-            providerLeaseId: "sandbox-image-b",
-            metadata: {
-              provider: "fake",
-              image: "image-b",
-              reuseLease: true,
-            },
-          },
-        ],
-      }),
-    ).toBe("sandbox-image-b");
-  });
-
-  it("matches reusable plugin leases by persisted config fields", () => {
-    expect(
-      findReusableSandboxProviderLeaseId({
-        config: {
-          provider: "secure-plugin",
-          template: "template-b",
-          apiKey: "22222222-2222-2222-2222-222222222222",
-          timeoutMs: 300000,
-          reuseLease: true,
-        },
-        leases: [
-          {
-            providerLeaseId: "sandbox-template-a",
-            metadata: {
-              provider: "secure-plugin",
-              template: "template-a",
-              apiKey: "11111111-1111-1111-1111-111111111111",
-              reuseLease: true,
-            },
-          },
-          {
-            providerLeaseId: "sandbox-template-b",
-            metadata: {
-              provider: "secure-plugin",
-              template: "template-b",
-              apiKey: "22222222-2222-2222-2222-222222222222",
-              timeoutMs: 300000,
-              reuseLease: true,
-            },
-          },
-        ],
-      }),
-    ).toBe("sandbox-template-b");
-  });
-
-  it("reconstructs fake sandbox config from lease metadata for later release", () => {
-    const metadata = {
-      provider: "fake",
-      image: "paperclip-test",
-      reuseLease: true,
-    };
-
-    expect(sandboxConfigFromLeaseMetadata({ metadata })).toEqual({
-      provider: "fake",
-      image: "paperclip-test",
-      reuseLease: true,
-    });
-    expect(sandboxConfigFromLeaseMetadataLoose({ metadata })).toEqual({
-      provider: "fake",
-      image: "paperclip-test",
-      reuseLease: true,
-    });
-  });
-
-  it("reconstructs plugin-backed sandbox config from lease metadata for runtime recovery", () => {
-    const metadata = {
-      provider: "fake-plugin",
-      reuseLease: true,
-      timeoutMs: 45_000,
-      remoteCwd: "/workspace/project",
-      fakeRootDir: "/tmp/fake-root",
-    };
-
-    expect(sandboxConfigFromLeaseMetadataLoose({ metadata })).toEqual({
-      provider: "fake-plugin",
-      reuseLease: true,
-      timeoutMs: 45_000,
-      remoteCwd: "/workspace/project",
-      fakeRootDir: "/tmp/fake-root",
-    });
-  });
-
-  it("reconstructs plugin-backed secret-ref config from lease metadata for later release", () => {
-    expect(sandboxConfigFromLeaseMetadata({
-      metadata: {
-        provider: "secure-plugin",
-        template: "paperclip-template",
-      },
-    })).toBeNull();
-
-    expect(sandboxConfigFromLeaseMetadataLoose({
-      metadata: {
-        provider: "secure-plugin",
-        template: "paperclip-template",
-        timeoutMs: 120000,
-        reuseLease: true,
-        apiKey: "11111111-1111-1111-1111-111111111111",
-      },
-    })).toEqual({
-      provider: "secure-plugin",
-      template: "paperclip-template",
-      apiKey: "11111111-1111-1111-1111-111111111111",
-      timeoutMs: 120000,
-      reuseLease: true,
-    });
-  });
-
-  it("releases fake leases without external side effects", async () => {
-    await expect(releaseSandboxProviderLease({
-      config: {
-        provider: "fake",
-        image: "ubuntu:24.04",
-        reuseLease: true,
-      },
-      providerLeaseId: "sandbox://fake/env-1",
-      status: "released",
-    })).resolves.toBeUndefined();
   });
 });

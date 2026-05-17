@@ -35,9 +35,9 @@ export async function assertEnvironmentSelectionForCompany(
       ? environment.config as Record<string, unknown>
       : {};
     const provider = typeof config.provider === "string" ? config.provider : "";
-    if (provider === "fake") {
+    if (provider === "fake" || provider === "null") {
       throw unprocessable(
-        `Environment sandbox provider "${provider}" is not allowed here. The built-in fake provider is probe-only and cannot execute runs.`,
+        `Environment sandbox provider "${provider}" is not allowed here. The built-in ${provider} provider is preview-only and cannot execute runs.`,
       );
     }
     if (

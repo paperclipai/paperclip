@@ -145,6 +145,7 @@ describe("sandbox routes", () => {
       expect.arrayContaining([
         expect.objectContaining({ provider: "docker", kind: "builtin", enabled: false, previewOnly: true }),
         expect.objectContaining({ provider: "fake", kind: "builtin", enabled: false, previewOnly: true }),
+        expect.objectContaining({ provider: "null", kind: "builtin", enabled: false, previewOnly: true }),
       ]),
     );
   });
@@ -188,14 +189,15 @@ describe("sandbox routes", () => {
     expect(mockDockerExecute).not.toHaveBeenCalled();
   });
 
-  it("GET /sandbox/leases reflects truth=backend-backed when docker flag is set", async () => {
+  it("GET /sandbox/leases stays preview-only when docker flag is set", async () => {
     process.env.PAPERCLIP_DOCKER_SANDBOX_ENABLED = "1";
     mockListSandboxLeasesForCompany.mockResolvedValue([buildLease()]);
     const app = buildApp({ type: "board", userId: "user-1", source: "local_implicit" });
     const res = await request(app).get("/api/companies/company-1/sandbox/leases");
     expect(res.status).toBe(200);
-    expect(res.body.leases[0].truth).toBe("backend-backed");
+    expect(res.body.leases[0].truth).toBe("preview");
     expect(res.body.leases[0].providerEnabled).toBe(true);
+    expect(res.body.leases[0].providerPreviewOnly).toBe(true);
     expect(mockDockerExecute).not.toHaveBeenCalled();
   });
 
@@ -248,14 +250,14 @@ describe("sandbox routes", () => {
     expect(mockGetSandboxLeaseForCompany).toHaveBeenCalledWith(expect.anything(), "company-1", "lease-1");
   });
 
-  it("POST /sandbox/preview/validate validates a fake provider config without execution", async () => {
+  it("POST /sandbox/preview/validate validates a null provider config without execution", async () => {
     const app = buildApp({ type: "board", userId: "user-1", source: "local_implicit" });
     const res = await request(app)
       .post("/api/companies/company-1/sandbox/preview/validate")
-      .send({ provider: "fake", config: { image: "node:20", reuseLease: false } });
+      .send({ provider: "null", config: { reuseLease: true } });
     expect(res.status).toBe(200);
     expect(res.body.previewOnly).toBe(true);
-    expect(res.body.provider).toBe("fake");
+    expect(res.body.provider).toBe("null");
     expect(res.body.validation.ok).toBe(true);
     expect(mockDockerExecute).not.toHaveBeenCalled();
   });

@@ -182,7 +182,7 @@ describe("DockerSandboxProvider scaffold", () => {
     order.push(`redaction:${audit.policyHash.slice(0, 8)}`);
     const executeSpy = vi.spyOn(provider, "execute").mockImplementation(async () => {
       order.push("execute");
-      return { exitCode: 0, stdout: "", stderr: "" };
+      return { exitCode: 0, stdout: "", stderr: "", durationMs: 0 };
     });
     await provider.execute!({ config: baseConfig, providerLeaseId: audit.providerLeaseId, command: "echo" });
     expect(order[0]).toMatch(/^redaction:/);

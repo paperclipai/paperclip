@@ -108,17 +108,39 @@ describe("toSandboxLeaseReadModel", () => {
     expect(serialized).not.toContain("backchannel");
   });
 
-  it("labels truth=backend-backed when provider enabled and sandbox state advanced", () => {
+  it("labels truth=preview when provider is preview-only even if enabled and running", () => {
     const lease = buildLease();
-    const model = toSandboxLeaseReadModel(lease, new Map([["docker", true]]));
+    const model = toSandboxLeaseReadModel(
+      lease,
+      new Map([["docker", true]]),
+      new Map([["docker", true]]),
+    );
+    expect(model.truth).toBe("preview");
+    expect(model.providerEnabled).toBe(true);
+    expect(model.providerPreviewOnly).toBe(true);
+    expect(model.sandboxState).toBe("running");
+  });
+
+  it("labels truth=backend-backed when provider enabled, not preview-only, and sandbox state advanced", () => {
+    const lease = buildLease();
+    const model = toSandboxLeaseReadModel(
+      lease,
+      new Map([["docker", true]]),
+      new Map([["docker", false]]),
+    );
     expect(model.truth).toBe("backend-backed");
     expect(model.providerEnabled).toBe(true);
+    expect(model.providerPreviewOnly).toBe(false);
     expect(model.sandboxState).toBe("running");
   });
 
   it("labels truth=derived when sandbox state is only requested/provisioning", () => {
     const lease = buildLease({ metadata: { ...buildLease().metadata!, sandboxState: "requested" } });
-    const model = toSandboxLeaseReadModel(lease, new Map([["docker", true]]));
+    const model = toSandboxLeaseReadModel(
+      lease,
+      new Map([["docker", true]]),
+      new Map([["docker", false]]),
+    );
     expect(model.truth).toBe("derived");
   });
 

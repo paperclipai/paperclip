@@ -85,6 +85,7 @@ export function getAdapterEnvironmentSupport(
   const supportedProviders = new Set(supportedSandboxProvidersForAdapter(adapterType, additionalSandboxProviders));
   const sandboxProviders: Record<SandboxEnvironmentProvider, EnvironmentSupportStatus> = {
     fake: "unsupported",
+    null: "unsupported",
   };
   for (const provider of additionalSandboxProviders) {
     sandboxProviders[provider as SandboxEnvironmentProvider] = supportedProviders.has(provider as SandboxEnvironmentProvider)
@@ -118,6 +119,16 @@ export function getEnvironmentCapabilities(
       supportsRunExecution: false,
       supportsReusableLeases: true,
       displayName: "Fake",
+      source: "builtin",
+    },
+    null: {
+      status: "unsupported",
+      supportsSavedProbe: true,
+      supportsUnsavedProbe: true,
+      supportsRunExecution: false,
+      supportsReusableLeases: true,
+      displayName: "Null",
+      description: "No-op preview provider for tests and sandbox UI previews.",
       source: "builtin",
     },
   };
