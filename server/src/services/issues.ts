@@ -326,8 +326,9 @@ export type ChildIssueCompletionSummary = {
 };
 
 function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
+  if (!checkoutRunId) return true; // No checkout lock: any run from the assignee is allowed.
   if (actorRunId) return checkoutRunId === actorRunId;
-  return checkoutRunId == null;
+  return false;
 }
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
@@ -4776,14 +4777,6 @@ export function issueService(db: Db) {
       if (!current) throw notFound("Issue not found");
 
       if (
-        current.status === "in_progress" &&
-        current.assigneeAgentId === actorAgentId &&
-        sameRunLock(current.checkoutRunId, actorRunId)
-      ) {
-        return { ...current, adoptedFromRunId: null as string | null };
-      }
-
-      if (
         actorRunId &&
         current.status === "in_progress" &&
         current.assigneeAgentId === actorAgentId &&
@@ -4802,6 +4795,14 @@ export function issueService(db: Db) {
             adoptedFromRunId: null as string | null,
           };
         }
+      }
+
+      if (
+        current.status === "in_progress" &&
+        current.assigneeAgentId === actorAgentId &&
+        sameRunLock(current.checkoutRunId, actorRunId)
+      ) {
+        return { ...current, adoptedFromRunId: null as string | null };
       }
 
       if (

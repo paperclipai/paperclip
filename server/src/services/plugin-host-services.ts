@@ -472,6 +472,50 @@ if (_logFlushInterval.unref) _logFlushInterval.unref();
 /** Maximum time (ms) to keep a session event subscription alive before forcing cleanup. */
 const SESSION_EVENT_SUBSCRIPTION_TIMEOUT_MS = 30 * 60 * 1_000; // 30 minutes
 
+function nonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function extractAssistantMessageFromCodexStdout(stdout: string): string | null {
+  let latest: string | null = null;
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      if (parsed.type !== "item.completed") continue;
+      const item = recordValue(parsed.item);
+      if (item?.type !== "agent_message") continue;
+      const text = nonEmptyString(item.text);
+      if (text) latest = text;
+    } catch {
+      // Ignore non-JSON log lines from local harnesses.
+    }
+  }
+  return latest;
+}
+
+export function extractAssistantMessageFromRunResult(
+  resultJson: Record<string, unknown> | null | undefined,
+): string | null {
+  if (!resultJson) return null;
+  const stdout = nonEmptyString(resultJson.stdout);
+  const fromCodexStream = stdout ? extractAssistantMessageFromCodexStdout(stdout) : null;
+  if (fromCodexStream) return fromCodexStream;
+  for (const key of ["assistantMessage", "message", "result", "summary"] as const) {
+    const value = nonEmptyString(resultJson[key]);
+    if (value) return value;
+  }
+  return null;
+}
+
 export function buildHostServices(
   db: Db,
   pluginId: string,
@@ -2027,6 +2071,8 @@ export function buildHostServices(
             taskKey: session.taskKey,
             wakeSource: "automation",
             wakeTriggerDetail: "system",
+            paperclipPluginSessionId: params.sessionId,
+            paperclipPluginSessionPrompt: params.prompt,
           },
           requestedByActorType: "system",
           requestedByActorId: pluginId,
@@ -2038,6 +2084,7 @@ export function buildHostServices(
         // never reaches a terminal status (hang, crash, network partition).
         if (notifyWorker) {
           const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+          let terminalHandled = false;
 
           const cleanup = () => {
             unsubscribe();
@@ -2062,16 +2109,49 @@ export function buildHostServices(
             } else if (event.type === "heartbeat.run.status") {
               const status = payload.status as string;
               if (TERMINAL_STATUSES.has(status)) {
-                notifyWorker("agents.sessions.event", {
-                  sessionId: params.sessionId,
-                  runId: run.id,
-                  seq: 0,
-                  eventType: status === "succeeded" ? "done" : "error",
-                  stream: "system",
-                  message: status === "succeeded" ? "Run completed" : `Run ${status}`,
-                  payload: payload,
-                });
-                cleanup();
+                if (terminalHandled) return;
+                terminalHandled = true;
+                void (async () => {
+                  try {
+                    if (status === "succeeded") {
+                      const completedRun = await db
+                        .select({ resultJson: heartbeatRuns.resultJson })
+                        .from(heartbeatRuns)
+                        .where(eq(heartbeatRuns.id, run.id))
+                        .then((rows) => rows[0] ?? null);
+                      const assistantMessage = extractAssistantMessageFromRunResult(
+                        recordValue(completedRun?.resultJson),
+                      );
+                      if (assistantMessage) {
+                        notifyWorker("agents.sessions.event", {
+                          sessionId: params.sessionId,
+                          runId: run.id,
+                          seq: 0,
+                          eventType: "assistant_message",
+                          stream: "system",
+                          message: assistantMessage,
+                          payload: { ...payload, text: assistantMessage, final: true },
+                        });
+                      }
+                    }
+                  } catch (error) {
+                    logger.warn(
+                      { err: error, pluginId, pluginKey, runId: run.id },
+                      "failed to emit semantic assistant session event",
+                    );
+                  } finally {
+                    notifyWorker("agents.sessions.event", {
+                      sessionId: params.sessionId,
+                      runId: run.id,
+                      seq: 0,
+                      eventType: status === "succeeded" ? "done" : "error",
+                      stream: "system",
+                      message: status === "succeeded" ? "Run completed" : `Run ${status}`,
+                      payload: payload,
+                    });
+                    cleanup();
+                  }
+                })();
               } else {
                 notifyWorker("agents.sessions.event", {
                   sessionId: params.sessionId,

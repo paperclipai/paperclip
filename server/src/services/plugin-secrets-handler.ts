@@ -39,6 +39,8 @@ import {
   isUuidSecretRef,
   readConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
+import { pluginRegistryService } from "./plugin-registry.js";
+import { secretService } from "./secrets.js";
 
 export const PLUGIN_SECRET_REFS_DISABLED_MESSAGE =
   "Plugin secret references are disabled until company-scoped plugin config lands";
@@ -139,6 +141,10 @@ export interface PluginSecretsHandlerOptions {
    * that reach the plugin worker.
    */
   pluginId: string;
+  /** Test seam for the plugin registry. Production uses pluginRegistryService(db). */
+  registry?: Pick<ReturnType<typeof pluginRegistryService>, "getConfig">;
+  /** Test seam for company secrets. Production uses secretService(db). */
+  secrets?: Pick<ReturnType<typeof secretService>, "getById" | "resolveSecretValue">;
 }
 
 /**
@@ -200,6 +206,8 @@ export function createPluginSecretsHandler(
   options: PluginSecretsHandlerOptions,
 ): PluginSecretsService {
   const { pluginId } = options;
+  const registry = options.registry ?? pluginRegistryService(options.db);
+  const secrets = options.secrets ?? secretService(options.db);
 
   // Rate limit: max 30 resolution attempts per plugin per minute
   const rateLimiter = createRateLimiter(30, 60_000);
@@ -230,9 +238,22 @@ export function createPluginSecretsHandler(
         throw invalidSecretRef(trimmedRef);
       }
 
-      // Fail closed until plugin config and worker runtime both carry an
-      // explicit company scope for secret bindings and resolution.
-      throw new Error(PLUGIN_SECRET_REFS_DISABLED_MESSAGE);
+      const config = await registry.getConfig(pluginId);
+      const configuredRefs = extractSecretRefPathsFromConfig(config?.configJson ?? {});
+      if (!configuredRefs.has(trimmedRef)) {
+        const err = new Error("Secret reference is not configured for this plugin");
+        err.name = "SecretRefNotConfiguredError";
+        throw err;
+      }
+
+      const secret = await secrets.getById(trimmedRef);
+      if (!secret || secret.status === "deleted") {
+        const err = new Error("Secret not found");
+        err.name = "SecretNotFoundError";
+        throw err;
+      }
+
+      return secrets.resolveSecretValue(secret.companyId, trimmedRef, "latest");
     },
   };
 }

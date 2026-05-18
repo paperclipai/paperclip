@@ -1519,6 +1519,10 @@ export function issueRoutes(
     if (!resolved.agent) {
       throw notFound("Agent not found");
     }
+    const resolvedAgentName = typeof resolved.agent.name === "string" ? resolved.agent.name : "";
+    if (resolved.agent.status === "terminated" || resolvedAgentName.trim().startsWith("[DEPRECATED]")) {
+      throw conflict("Agent is deprecated or terminated and cannot be assigned issues.");
+    }
     return resolved.agent.id;
   }
   function toValidTimestamp(value: Date | string | null | undefined) {
@@ -3973,6 +3977,8 @@ export function issueRoutes(
               ? {
                   taskId: issue.id,
                   commentId: comment.id,
+                  commentBody: comment.body.slice(0, 2000),
+                  commentAuthorType: actor.actorType,
                   wakeCommentId: comment.id,
                 }
               : {}),
@@ -4034,6 +4040,8 @@ export function issueRoutes(
               issueId: id,
               taskId: id,
               commentId: comment.id,
+              commentBody: comment.body.slice(0, 2000),
+              commentAuthorType: actor.actorType,
               wakeCommentId: comment.id,
               source: reopened ? "issue.comment.reopen" : "issue.comment",
               wakeReason: reopened ? "issue_reopened_via_comment" : "issue_commented",
@@ -4064,6 +4072,8 @@ export function issueRoutes(
               issueId: id,
               taskId: id,
               commentId: comment.id,
+              commentBody: comment.body.slice(0, 2000),
+              commentAuthorType: actor.actorType,
               wakeCommentId: comment.id,
               wakeReason: "issue_comment_mentioned",
               source: "comment.mention",
@@ -5062,6 +5072,8 @@ export function issueRoutes(
               issueId: currentIssue.id,
               taskId: currentIssue.id,
               commentId: comment.id,
+              commentBody: comment.body.slice(0, 2000),
+              commentAuthorType: actor.actorType,
               wakeCommentId: comment.id,
               source: "issue.comment.reopen",
               wakeReason: "issue_reopened_via_comment",
@@ -5088,6 +5100,8 @@ export function issueRoutes(
               issueId: currentIssue.id,
               taskId: currentIssue.id,
               commentId: comment.id,
+              commentBody: comment.body.slice(0, 2000),
+              commentAuthorType: actor.actorType,
               wakeCommentId: comment.id,
               source: "issue.comment",
               wakeReason: "issue_commented",
@@ -5119,6 +5133,8 @@ export function issueRoutes(
             issueId: id,
             taskId: id,
             commentId: comment.id,
+            commentBody: comment.body.slice(0, 2000),
+            commentAuthorType: actor.actorType,
             wakeCommentId: comment.id,
             wakeReason: "issue_comment_mentioned",
             source: "comment.mention",

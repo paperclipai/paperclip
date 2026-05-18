@@ -67,16 +67,16 @@ import {
 } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
 import {
+  extractSecretRefsFromConfig,
+  PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
+} from "../services/plugin-secrets-handler.js";
+import {
   findLocalFolderDeclaration,
   getStoredLocalFolders,
   inspectPluginLocalFolder,
   requireLocalFolderDeclaration,
   setStoredLocalFolder,
 } from "../services/plugin-local-folders.js";
-import {
-  extractSecretRefPathsFromConfig,
-  PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
-} from "../services/plugin-secrets-handler.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 
 /** UI slot declaration extracted from plugin manifest */
@@ -1930,13 +1930,12 @@ export function pluginRoutes(
       }
     }
 
-    try {
-      const secretRefsByPath = extractSecretRefPathsFromConfig(body.configJson, schema);
-      if (secretRefsByPath.size > 0) {
-        res.status(422).json({ error: PLUGIN_SECRET_REFS_DISABLED_MESSAGE });
-        return;
-      }
+    const secretRefs = extractSecretRefsFromConfig(body.configJson, schema);
+    if (secretRefs.size > 0) {
+      throw unprocessable(PLUGIN_SECRET_REFS_DISABLED_MESSAGE);
+    }
 
+    try {
       const result = await registry.upsertConfig(plugin.id, {
         configJson: body.configJson,
       });

@@ -1837,6 +1837,7 @@ function enrichWakeContextSnapshot(input: {
   const { contextSnapshot, reason, source, triggerDetail, payload } = input;
   const issueIdFromPayload = readNonEmptyString(payload?.["issueId"]) ?? readNonEmptyString(payload?.["taskId"]);
   const commentIdFromPayload = readNonEmptyString(payload?.["commentId"]);
+  const pluginSessionPromptFromPayload = readNonEmptyString(payload?.["prompt"]);
   const taskKey = deriveTaskKey(contextSnapshot, payload);
   const wakeCommentId = deriveCommentId(contextSnapshot, payload);
   const wakeCommentIds = mergeWakeCommentIds(contextSnapshot, commentIdFromPayload);
@@ -1852,6 +1853,9 @@ function enrichWakeContextSnapshot(input: {
   }
   if (!readNonEmptyString(contextSnapshot["taskKey"]) && taskKey) {
     contextSnapshot.taskKey = taskKey;
+  }
+  if (!readNonEmptyString(contextSnapshot["paperclipPluginSessionPrompt"]) && pluginSessionPromptFromPayload) {
+    contextSnapshot.paperclipPluginSessionPrompt = pluginSessionPromptFromPayload;
   }
   if (!readNonEmptyString(contextSnapshot["commentId"]) && commentIdFromPayload) {
     contextSnapshot.commentId = commentIdFromPayload;
@@ -2153,6 +2157,7 @@ export function buildPaperclipTaskMarkdown(input: {
     id: string;
     body: string;
   } | null;
+  sessionPrompt?: string | null;
   interaction?: {
     kind?: string | null;
     status?: string | null;
@@ -2169,11 +2174,12 @@ export function buildPaperclipTaskMarkdown(input: {
   };
   const issue = input.issue;
   const wakeComment = input.wakeComment ?? null;
+  const sessionPrompt = input.sessionPrompt?.trim() || null;
   const acceptedPlanContinuation =
     !wakeComment &&
     input.interaction?.kind === "request_confirmation" &&
     input.interaction.status === "accepted";
-  if (!issue && !wakeComment) return null;
+  if (!issue && !wakeComment && !sessionPrompt) return null;
 
   const lines = [
     "Paperclip task context:",
@@ -2206,6 +2212,9 @@ export function buildPaperclipTaskMarkdown(input: {
   }
   if (wakeComment?.body.trim()) {
     lines.push("", "Latest wake comment:", fenceTaskText(wakeComment.body.trim()));
+  }
+  if (sessionPrompt) {
+    lines.push("", "Latest session message:", fenceTaskText(sessionPrompt));
   }
   lines.push("", "Use this task context as the current assignment.");
   return lines.join("\n");
@@ -7078,6 +7087,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         : null,
       wakeComment: wakeCommentContext,
+      sessionPrompt: readNonEmptyString(context.paperclipPluginSessionPrompt),
       interaction: {
         kind: readNonEmptyString(context.interactionKind),
         status: readNonEmptyString(context.interactionStatus),

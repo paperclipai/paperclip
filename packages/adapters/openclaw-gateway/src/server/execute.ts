@@ -135,7 +135,7 @@ function normalizeSessionKeyStrategy(value: unknown): SessionKeyStrategy {
 }
 
 function prefixSessionKeyForAgent(sessionKey: string, agentId: string | null): string {
-  if (!agentId || sessionKey.startsWith("agent:")) return sessionKey;
+  if (!agentId || agentId === "main" || sessionKey.startsWith("agent:")) return sessionKey;
   return `agent:${agentId}:${sessionKey}`;
 }
 
@@ -154,6 +154,12 @@ export function resolveSessionKey(input: {
     return prefixSessionKeyForAgent(`paperclip:issue:${input.issueId}`, input.agentId);
   }
   return prefixSessionKeyForAgent(fallback, input.agentId);
+}
+
+function normalizeGatewayAgentId(value: string | null): string | null {
+  if (!value) return null;
+  const normalized = value.trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9_-]*$/.test(normalized) ? normalized : value.trim();
 }
 
 function isLoopbackHost(hostname: string): boolean {
@@ -333,8 +339,16 @@ function resolvePaperclipApiUrlOverride(value: unknown): string | null {
 
 const DEFAULT_CLAIMED_API_KEY_PATH = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
 
-function resolveClaimedApiKeyPath(value: unknown): string {
-  return nonEmpty(value) ?? DEFAULT_CLAIMED_API_KEY_PATH;
+export function resolveClaimedApiKeyPath(config: Record<string, unknown>): string {
+  const explicit = nonEmpty(config.claimedApiKeyPath) ?? nonEmpty(config.paperclipApiKeyPath);
+  if (explicit) return explicit;
+
+  const agentId = normalizeGatewayAgentId(nonEmpty(config.agentId));
+  if (agentId && agentId !== "main") {
+    return `~/.openclaw/workspace-${agentId}/paperclip-claimed-api-key.json`;
+  }
+
+  return DEFAULT_CLAIMED_API_KEY_PATH;
 }
 
 function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: WakePayload): Record<string, string> {
@@ -365,8 +379,9 @@ function buildWakeText(
   payload: WakePayload,
   paperclipEnv: Record<string, string>,
   structuredWakePrompt: string,
+  config: Record<string, unknown>,
 ): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+  const claimedApiKeyPath = resolveClaimedApiKeyPath(config);
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
@@ -1110,12 +1125,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
   const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
   const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
+  const adapterConfig = parseObject(ctx.config);
   const wakeText = buildWakeText(
     wakePayload,
     paperclipEnv,
     structuredWakeJson
       ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
       : structuredWakePrompt,
+    adapterConfig,
   );
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
@@ -1123,7 +1140,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const sessionKey = resolveSessionKey({
     strategy: sessionKeyStrategy,
     configuredSessionKey,
-    agentId: nonEmpty(ctx.config.agentId),
+    agentId: normalizeGatewayAgentId(nonEmpty(ctx.config.agentId)),
     runId: ctx.runId,
     issueId: wakePayload.issueId,
   });
@@ -1141,7 +1158,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   delete agentParams.text;
   agentParams.paperclip = paperclipPayload;
 
-  const configuredAgentId = nonEmpty(ctx.config.agentId);
+  const configuredAgentId = normalizeGatewayAgentId(nonEmpty(ctx.config.agentId));
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
     agentParams.agentId = configuredAgentId;
   }
