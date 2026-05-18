@@ -58,6 +58,8 @@ type OutboxDeliveryResult = {
   retryAt?: Date | null;
 };
 
+type StandupOutboxJob = typeof standupOutboxJobs.$inferSelect;
+
 type IssueInsert = {
   projectId?: string | null;
   goalId?: string | null;
@@ -255,6 +257,21 @@ function deliveryProofId(job: typeof standupOutboxJobs.$inferSelect, attempts: n
   return proofId?.trim() || `standup_outbox_jobs:${job.id}:attempt:${attempts}`;
 }
 
+function payloadIssueId(job: StandupOutboxJob) {
+  const payload = job.payload && typeof job.payload === "object" ? job.payload as Record<string, unknown> : {};
+  if (job.jobType === "directive_wakeup") return String(payload.directiveIssueId ?? "");
+  if (job.jobType === "action_wakeup") return String(payload.issueId ?? "");
+  if (job.jobType === "escalation_wakeup") return String(payload.escalationIssueId ?? "");
+  return "";
+}
+
+function expectedIssueOrigin(job: StandupOutboxJob) {
+  if (job.jobType === "directive_wakeup") return "standup_directive";
+  if (job.jobType === "action_wakeup") return "standup_action";
+  if (job.jobType === "escalation_wakeup") return "standup_escalation";
+  return "";
+}
+
 function nextRetryAt(now: Date, attempts: number) {
   const delayMs = Math.min(15 * 60_000, 30_000 * 2 ** Math.max(0, attempts - 1));
   return new Date(now.getTime() + delayMs);
@@ -419,6 +436,47 @@ function escalationBody(input: {
 }
 
 export function standupService(db: Db) {
+  async function deliverIssueAssignment(job: StandupOutboxJob): Promise<OutboxDeliveryResult> {
+    if (job.targetKind !== "agent") {
+      return { ok: false, error: "delivery_target_kind_unsupported" };
+    }
+    const issueId = payloadIssueId(job);
+    if (!issueId) {
+      return { ok: false, error: "delivery_issue_id_missing" };
+    }
+    const [issue] = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        assigneeAgentId: issues.assigneeAgentId,
+        originKind: issues.originKind,
+        originId: issues.originId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    if (!issue) {
+      return { ok: false, error: "delivery_issue_missing" };
+    }
+    if (issue.companyId !== job.companyId) {
+      return { ok: false, error: "delivery_issue_company_mismatch" };
+    }
+    if (issue.assigneeAgentId !== job.targetId) {
+      return { ok: false, error: "delivery_issue_assignee_mismatch" };
+    }
+    const expectedOrigin = expectedIssueOrigin(job);
+    if (expectedOrigin && issue.originKind !== expectedOrigin) {
+      return { ok: false, error: "delivery_issue_origin_mismatch" };
+    }
+    if (issue.originId !== job.sessionId) {
+      return { ok: false, error: "delivery_issue_session_mismatch" };
+    }
+    return {
+      ok: true,
+      proofId: `paperclip_issue_assigned:${issue.identifier}:${job.id}`,
+    };
+  }
+
   async function inspect(input: InspectStandup): Promise<StandupInspection> {
     let session: typeof standupSessions.$inferSelect | null = null;
     if (input.sessionId) {
@@ -603,6 +661,8 @@ export function standupService(db: Db) {
   }
 
   return {
+    deliverIssueAssignment,
+
     getPolicy: (companyId: string, policyKey: string, standupType = "daily") =>
       getPolicyByKey(db, companyId, policyKey, standupType),
 
@@ -1126,6 +1186,7 @@ export function standupService(db: Db) {
                 reason,
                 deadlineAt: participant.escalationDueAt.toISOString(),
               },
+              nextAttemptAt: now,
             })
             .onConflictDoNothing()
             .returning();

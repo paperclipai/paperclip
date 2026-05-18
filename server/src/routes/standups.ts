@@ -1,7 +1,5 @@
 import { Router, type Request } from "express";
-import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issues } from "@paperclipai/db";
 import {
   createStandupActionSchema,
   disableStandupPolicySchema,
@@ -105,21 +103,6 @@ function redactedReplayReceipt(job: NonNullable<StandupOutboxJob>) {
   };
 }
 
-function payloadIssueId(job: ExistingStandupOutboxJob) {
-  const payload = job.payload && typeof job.payload === "object" ? job.payload as Record<string, unknown> : {};
-  if (job.jobType === "directive_wakeup") return String(payload.directiveIssueId ?? "");
-  if (job.jobType === "action_wakeup") return String(payload.issueId ?? "");
-  if (job.jobType === "escalation_wakeup") return String(payload.escalationIssueId ?? "");
-  return "";
-}
-
-function expectedIssueOrigin(job: ExistingStandupOutboxJob) {
-  if (job.jobType === "directive_wakeup") return "standup_directive";
-  if (job.jobType === "action_wakeup") return "standup_action";
-  if (job.jobType === "escalation_wakeup") return "standup_escalation";
-  return "";
-}
-
 function redactedProcessReceipt(job: ExistingStandupOutboxJob) {
   return {
     id: job.id,
@@ -148,47 +131,6 @@ export function standupRoutes(db: Db) {
   const router = Router();
   const svc = standupService(db);
   const access = accessService(db);
-
-  async function deliverIssueAssignment(job: ExistingStandupOutboxJob) {
-    if (job.targetKind !== "agent") {
-      return { ok: false, error: "delivery_target_kind_unsupported" };
-    }
-    const issueId = payloadIssueId(job);
-    if (!issueId) {
-      return { ok: false, error: "delivery_issue_id_missing" };
-    }
-    const [issue] = await db
-      .select({
-        id: issues.id,
-        companyId: issues.companyId,
-        identifier: issues.identifier,
-        assigneeAgentId: issues.assigneeAgentId,
-        originKind: issues.originKind,
-        originId: issues.originId,
-      })
-      .from(issues)
-      .where(eq(issues.id, issueId));
-    if (!issue) {
-      return { ok: false, error: "delivery_issue_missing" };
-    }
-    if (issue.companyId !== job.companyId) {
-      return { ok: false, error: "delivery_issue_company_mismatch" };
-    }
-    if (issue.assigneeAgentId !== job.targetId) {
-      return { ok: false, error: "delivery_issue_assignee_mismatch" };
-    }
-    const expectedOrigin = expectedIssueOrigin(job);
-    if (expectedOrigin && issue.originKind !== expectedOrigin) {
-      return { ok: false, error: "delivery_issue_origin_mismatch" };
-    }
-    if (issue.originId !== job.sessionId) {
-      return { ok: false, error: "delivery_issue_session_mismatch" };
-    }
-    return {
-      ok: true,
-      proofId: `paperclip_issue_assigned:${issue.identifier}:${job.id}`,
-    };
-  }
 
   async function inspectSessionForOperator(req: Request, sessionId: string) {
     const inspection = await svc.inspect({ sessionId });
@@ -291,7 +233,7 @@ export function standupRoutes(db: Db) {
       serviceRunId: req.body.serviceRunId,
       limit: req.body.limit,
       now: req.body.now ? new Date(req.body.now) : undefined,
-      deliver: deliverIssueAssignment,
+      deliver: svc.deliverIssueAssignment,
     });
     res.json({
       companyId,

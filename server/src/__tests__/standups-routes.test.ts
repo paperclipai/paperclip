@@ -162,6 +162,7 @@ const mockStandupService = vi.hoisted(() => ({
   getOutboxJob: vi.fn(),
   replayOutboxJob: vi.fn(),
   processOutbox: vi.fn(),
+  deliverIssueAssignment: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
