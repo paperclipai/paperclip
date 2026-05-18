@@ -13,6 +13,7 @@ import { companiesApi } from "../api/companies";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { ApplyPreviewPanel } from "./ApplyPreviewPanel";
+import { CapabilityApplyPanel } from "./CapabilityApplyPanel";
 import { CapabilityMarketplacePanel } from "./CapabilityMarketplacePanel";
 import { CustomMcpServerForm } from "./CustomMcpServerForm";
 
@@ -186,6 +187,7 @@ function CapabilitySettingsCard({
   emptyText = "No desired MCP servers saved yet.",
   effectivePreviewSettings,
   showEffectivePreview = false,
+  applyPanelContext,
 }: {
   title: string;
   description: string;
@@ -197,6 +199,7 @@ function CapabilitySettingsCard({
   emptyText?: string;
   effectivePreviewSettings?: AgentCapabilitySettingsResponse | undefined;
   showEffectivePreview?: boolean;
+  applyPanelContext?: { companyId: string; agentId: string };
 }) {
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState("");
@@ -441,12 +444,19 @@ function CapabilitySettingsCard({
           role="tabpanel"
           id="capability-workspace-panel-apply"
           aria-labelledby="capability-workspace-tab-apply"
+          className="space-y-4"
         >
           <ApplyPreviewPanel
             draftConfig={parsedDraft.config ?? capabilitiesQuery.data?.config}
             draftError={parsedDraft.error}
             previewFn={previewFn}
           />
+          {applyPanelContext && (
+            <CapabilityApplyPanel
+              companyId={applyPanelContext.companyId}
+              agentId={applyPanelContext.agentId}
+            />
+          )}
         </div>
       )}
 
@@ -594,6 +604,7 @@ export function AgentCapabilitiesCard({ agentId, companyId }: { agentId: string;
       enabled={Boolean(agentId)}
       effectivePreviewSettings={companyCapabilityDefaultsQuery.data}
       showEffectivePreview={Boolean(companyId)}
+      applyPanelContext={agentId && companyId ? { agentId, companyId } : undefined}
     />
   );
 }

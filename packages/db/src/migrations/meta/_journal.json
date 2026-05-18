@@ -610,6 +610,13 @@
       "when": 1779200000000,
       "tag": "0086_sandbox_lease_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1779300000000,
+      "tag": "0087_capability_apply_plans",
+      "breakpoints": true
     }
   ]
 }

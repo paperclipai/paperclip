@@ -13,6 +13,7 @@ import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { agentCapabilityRoutes } from "./routes/agent-capabilities.js";
+import { capabilityApplyRoutes } from "./routes/capability-apply.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
@@ -128,6 +129,7 @@ export async function createApp(
     bindHost: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    capabilityApplyLive?: boolean;
     instanceId?: string;
     hostVersion?: string;
     localPluginDir?: string;
@@ -192,6 +194,7 @@ export async function createApp(
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(companySkillRoutes(db));
   api.use(agentCapabilityRoutes(db));
+  api.use(capabilityApplyRoutes(db, { capabilityApplyLive: opts.capabilityApplyLive ?? false }));
   api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));

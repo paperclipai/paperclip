@@ -87,6 +87,7 @@ export interface Config {
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
+  capabilityApplyLive: boolean;
 }
 
 function detectTailnetBindHost(): string | undefined {
@@ -333,5 +334,8 @@ export function loadConfig(): Config {
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
+    // capability.apply.live is intentionally OFF everywhere by default.
+    // Flip only via CAPABILITY_APPLY_LIVE=true in a local env override; never in prod this slice.
+    capabilityApplyLive: process.env.CAPABILITY_APPLY_LIVE === "true",
   };
 }
