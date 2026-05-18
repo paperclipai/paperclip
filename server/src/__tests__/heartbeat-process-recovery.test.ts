@@ -1769,7 +1769,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   it("nulls executionRunId on the associated issue when a run is cancelled", async () => {
     const { runId, issueId } = await seedRunFixture({
-      agentStatus: "running",
+      agentStatus: "paused",
       includeIssue: true,
     });
     const heartbeat = heartbeatService(db);

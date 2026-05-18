@@ -4830,7 +4830,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             executionLockedAt: now,
             updatedAt: now,
           })
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), or(eq(issues.executionRunId, run.id), isNull(issues.executionRunId))));
       }
 
       return retryRun;
@@ -5557,7 +5557,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             executionLockedAt: now,
             updatedAt: now,
           })
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), or(eq(issues.executionRunId, run.id), isNull(issues.executionRunId))));
       }
 
       return {
