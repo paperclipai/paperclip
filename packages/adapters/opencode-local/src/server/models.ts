@@ -8,8 +8,8 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { isValidOpenCodeModelId } from "../index.js";
 
-const MODELS_CACHE_TTL_MS = 60_000;
-const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
+const MODELS_CACHE_TTL_MS = 600_000;
+const MODELS_DISCOVERY_TIMEOUT_MS = 60_000;
 
 function resolveOpenCodeCommand(input: unknown): string {
   const envOverride =
