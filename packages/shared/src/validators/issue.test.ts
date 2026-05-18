@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
+  SYSTEM_RESERVED_ORIGIN_KINDS,
   addIssueCommentSchema,
   createIssueSchema,
+  isSystemReservedOriginKind,
   issueBlockedInboxAttentionSchema,
   resolveIssueRecoveryActionSchema,
   respondIssueThreadInteractionSchema,
@@ -380,5 +382,110 @@ describe("issue validators", () => {
     });
 
     expect(parsed.success).toBe(false);
+  });
+
+  describe("origin fields on createIssueSchema", () => {
+    it("preserves namespaced origin fields supplied by external integrations", () => {
+      const parsed = createIssueSchema.parse({
+        title: "Linear webhook sync",
+        originKind: "linear",
+        originId: "LIN-123",
+        originFingerprint: "webhook",
+      });
+
+      expect(parsed.originKind).toBe("linear");
+      expect(parsed.originId).toBe("LIN-123");
+      expect(parsed.originFingerprint).toBe("webhook");
+    });
+
+    it("remains backwards compatible when origin fields are omitted", () => {
+      const parsed = createIssueSchema.parse({ title: "No origin info" });
+
+      expect(parsed.originKind).toBeUndefined();
+      expect(parsed.originId).toBeUndefined();
+      expect(parsed.originFingerprint).toBeUndefined();
+    });
+
+    it.each(SYSTEM_RESERVED_ORIGIN_KINDS)(
+      "rejects the system-reserved originKind %s",
+      (reserved) => {
+        const result = createIssueSchema.safeParse({
+          title: "external attempt",
+          originKind: reserved,
+        });
+
+        expect(result.success).toBe(false);
+        if (!result.success) {
+          const message = result.error.issues
+            .map((issue) => issue.message)
+            .join(" | ");
+          expect(message).toContain("reserved");
+          expect(message).toContain(reserved);
+        }
+      },
+    );
+
+    it("rejects originKind values matching the plugin operation namespace", () => {
+      const result = createIssueSchema.safeParse({
+        title: "external attempt",
+        originKind: "plugin:foo:operation",
+      });
+
+      expect(result.success).toBe(false);
+
+      const scopedResult = createIssueSchema.safeParse({
+        title: "external attempt",
+        originKind: "plugin:foo:operation:bar",
+      });
+
+      expect(scopedResult.success).toBe(false);
+    });
+
+    it("accepts namespaced plugin originKind values that are not the reserved operation form", () => {
+      const result = createIssueSchema.safeParse({
+        title: "plugin feature",
+        originKind: "plugin:paperclip.missions:feature",
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it("trims and applies length limits to origin fields", () => {
+      const parsed = createIssueSchema.parse({
+        title: "trim",
+        originKind: "  linear  ",
+        originId: " LIN-1 ",
+        originFingerprint: "  webhook  ",
+      });
+      expect(parsed.originKind).toBe("linear");
+      expect(parsed.originId).toBe("LIN-1");
+      expect(parsed.originFingerprint).toBe("webhook");
+
+      const overflow = createIssueSchema.safeParse({
+        title: "too long",
+        originKind: "x".repeat(121),
+      });
+      expect(overflow.success).toBe(false);
+    });
+
+    it("blocks reserved originKind values on updateIssueSchema by omitting the field", () => {
+      // updateIssueSchema intentionally omits origin fields; they are immutable
+      // after creation. Strict-stripping silently drops unknown keys, but the
+      // resulting parsed object should not contain originKind.
+      const parsed = updateIssueSchema.parse({
+        title: "rename",
+        originKind: "routine_execution",
+      } as Record<string, unknown>);
+
+      expect((parsed as Record<string, unknown>).originKind).toBeUndefined();
+    });
+
+    it("exposes a shared isSystemReservedOriginKind helper", () => {
+      expect(isSystemReservedOriginKind("routine_execution")).toBe(true);
+      expect(isSystemReservedOriginKind("plugin:x:operation")).toBe(true);
+      expect(isSystemReservedOriginKind("plugin:x:operation:y")).toBe(true);
+      expect(isSystemReservedOriginKind("linear")).toBe(false);
+      expect(isSystemReservedOriginKind("plugin:x:feature")).toBe(false);
+    });
   });
 });
