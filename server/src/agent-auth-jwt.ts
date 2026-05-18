@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 interface JwtHeader {
   alg: string;
@@ -18,6 +18,11 @@ export interface LocalAgentJwtClaims {
 }
 
 const JWT_ALGORITHM = "HS256";
+
+export function ensureLocalTrustedAgentJwtSecret() {
+  if (process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim() || process.env.BETTER_AUTH_SECRET?.trim()) return;
+  process.env.PAPERCLIP_AGENT_JWT_SECRET = `paperclip-local-${randomBytes(32).toString("hex")}`;
+}
 
 function parseNumber(value: string | undefined, fallback: number) {
   const parsed = Number(value);

@@ -92,6 +92,7 @@ describe("onboard", () => {
     delete process.env.PAPERCLIP_BIND;
     delete process.env.PAPERCLIP_BIND_HOST;
     delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
+    delete process.env.PAPERCLIP_SKIP_TAILNET_AUTO_DETECT;
     delete process.env.HOST;
   });
 
@@ -171,6 +172,7 @@ describe("onboard", () => {
   it("keeps tailnet quickstart on loopback until tailscale is available", async () => {
     const configPath = createFreshConfigPath();
     delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
+    process.env.PAPERCLIP_SKIP_TAILNET_AUTO_DETECT = "1";
 
     await onboard({ config: configPath, yes: true, invokedByRun: true, bind: "tailnet" });
 

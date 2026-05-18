@@ -126,6 +126,9 @@ const OUTCOME_LABEL: Record<IssueRecoveryActionOutcome, string> = {
   delegated: "delegated to follow-up",
   false_positive: "false positive",
   blocked: "blocked",
+  held: "held",
+  resource_capped: "resource capped",
+  operator_paused: "operator paused",
   escalated: "escalated",
   cancelled: "cancelled",
 };

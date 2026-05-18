@@ -343,9 +343,7 @@ describe("server adapter registry", () => {
         PAPERCLIP_RUN_ID: "run-123",
       },
     });
-    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain(
-      "Authorization: Bearer $PAPERCLIP_API_KEY",
-    );
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("Use Authorization: Bearer");
     expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain(
       "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID",
     );
@@ -414,6 +412,58 @@ describe("server adapter registry", () => {
 
     expect(hermesExecuteMock).toHaveBeenCalledTimes(1);
     expect(hermesExecuteMock).toHaveBeenCalledWith(ctx);
+  });
+
+  it("injects scoped Paperclip task context into Hermes prompt when an issue wake is present", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-issue-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {},
+      config: {
+        paperclipSkillSync: { desiredSkills: ["paperclip", "use-paperclip"] },
+      },
+      context: {
+        taskId: "task-123",
+        issueId: "issue-123",
+        wakeReason: "issue_assigned",
+        paperclipWake: {
+          issue: {
+            id: "issue-123",
+            identifier: "ATL-99",
+            title: "Write required artifact",
+            status: "in_progress",
+            workMode: "task",
+            priority: "medium",
+          },
+        },
+        paperclipIssue: {
+          id: "issue-123",
+          identifier: "ATL-99",
+          title: "Write required artifact",
+        },
+        paperclipTaskMarkdown: "Expected artifact: /tmp/atl-99-report.md",
+      },
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("Paperclip scoped task rule");
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("ATL-99");
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("Expected artifact: /tmp/atl-99-report.md");
+    expect(patchedCtx.agent.adapterConfig.promptTemplate).toContain("in_progress");
+    expect(patchedCtx.config.paperclipSkillSync.desiredSkills).toEqual(["paperclip", "use-paperclip"]);
   });
 
   it("preserves an explicit Hermes Paperclip API key and does not set promptTemplate when none was configured", async () => {

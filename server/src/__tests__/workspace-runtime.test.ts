@@ -71,6 +71,10 @@ async function createTempRepo(defaultBranch = "main") {
   await runGit(repoRoot, ["init"]);
   await runGit(repoRoot, ["config", "user.email", "paperclip@example.com"]);
   await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
+  // Keep git worktree fixtures isolated from developer/global hooks. In particular,
+  // global Git LFS post-checkout hooks make these temp repos depend on git-lfs being
+  // installed even though the fixture has no LFS-tracked files.
+  await runGit(repoRoot, ["config", "core.hooksPath", ".git/hooks"]);
   await fs.writeFile(path.join(repoRoot, "README.md"), "hello\n", "utf8");
   await runGit(repoRoot, ["add", "README.md"]);
   await runGit(repoRoot, ["commit", "-m", "Initial commit"]);

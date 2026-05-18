@@ -27,6 +27,7 @@ export function inferConfiguredBind(server?: Partial<ServerConfig>): BindMode {
 export function detectTailnetBindHost(): string | undefined {
   const explicit = process.env.PAPERCLIP_TAILNET_BIND_HOST?.trim();
   if (explicit) return explicit;
+  if (process.env.PAPERCLIP_SKIP_TAILNET_AUTO_DETECT === "1") return undefined;
 
   try {
     const stdout = execFileSync("tailscale", ["ip", "-4"], {

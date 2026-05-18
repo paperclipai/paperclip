@@ -28,9 +28,11 @@ import {
   clampIssueListLimit,
   deriveIssueCommentRunLogAttribution,
   ISSUE_LIST_MAX_LIMIT,
+  isPassingParentDoneProofEnvelope,
+  validateParentDoneProofEnvelope,
   issueService,
 } from "../services/issues.ts";
-import { buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
+import { buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH, updateIssueSchema } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -40,6 +42,68 @@ describe("issue list limit helpers", () => {
     expect(clampIssueListLimit(0)).toBe(1);
     expect(clampIssueListLimit(25.9)).toBe(25);
     expect(clampIssueListLimit(ISSUE_LIST_MAX_LIMIT + 10)).toBe(ISSUE_LIST_MAX_LIMIT);
+  });
+});
+
+describe("parent done proof envelope gate helpers", () => {
+  const passingEnvelope = {
+    proof_envelope_version: "parent_proof_envelope_v0.1",
+    verdict: "PASS",
+    parent_closeable: true,
+    child_count: 1,
+    children: [{ label: "CHILD-1", closeable: true }],
+    classifications: [],
+    parent_synthesis: {
+      exists: true,
+      hygiene: { checked: true, pass: true, findings: [] },
+    },
+  };
+
+  it("accepts the existing parent proof-envelope validator PASS contract", () => {
+    expect(isPassingParentDoneProofEnvelope(passingEnvelope)).toBe(true);
+  });
+
+  it("fails closed for missing child proof or non-passing synthesis", () => {
+    expect(isPassingParentDoneProofEnvelope({ ...passingEnvelope, child_count: 0, children: [] })).toBe(false);
+    expect(isPassingParentDoneProofEnvelope({ ...passingEnvelope, verdict: "HOLD" })).toBe(false);
+    expect(isPassingParentDoneProofEnvelope({
+      ...passingEnvelope,
+      classifications: ["parent_synthesis_missing_child_hash:CHILD-1"],
+    })).toBe(false);
+    expect(isPassingParentDoneProofEnvelope({
+      ...passingEnvelope,
+      parent_synthesis: { exists: true, hygiene: { checked: true, pass: false, findings: [] } },
+    })).toBe(false);
+  });
+
+
+  it("explains why a PASS-shaped envelope fails against actual child rows", () => {
+    const childId = randomUUID();
+    const validation = validateParentDoneProofEnvelope(
+      {
+        ...passingEnvelope,
+        children: [{ issueId: randomUUID(), label: "OTHER-1", closeable: true }],
+      },
+      [{ id: childId, identifier: "CHILD-1", status: "done" }],
+    );
+
+    expect(validation).toEqual({
+      ok: false,
+      reason: "child_proofs_do_not_match_actual_terminal_children",
+      details: {
+        missingChildren: [{ id: childId, identifier: "CHILD-1", status: "done" }],
+      },
+    });
+  });
+
+  it("preserves a proof envelope submitted through the public update schema", () => {
+    const parsed = updateIssueSchema.parse({
+      status: "done",
+      parentProofEnvelope: passingEnvelope,
+    });
+
+    expect(parsed.parentProofEnvelope).toEqual(passingEnvelope);
+    expect("executionState" in parsed).toBe(false);
   });
 });
 
@@ -423,6 +487,90 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
 
     expect(result.map((issue) => issue.id)).toEqual([commentMatchId, descriptionMatchId]);
+  });
+
+  it("blocks parent done when the default-off proof-envelope gate is enabled without passing proof", async () => {
+    const companyId = randomUUID();
+    const parentId = randomUUID();
+    const childId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      { id: parentId, companyId, title: "Parent", status: "todo", priority: "medium" },
+      { id: childId, companyId, parentId, title: "Child", status: "todo", priority: "medium" },
+    ]);
+    await instanceSettingsService(db).updateExperimental({ enableParentDoneProofEnvelopeGate: true });
+
+    await expect(svc.update(parentId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        gate: "parent_done_proof_envelope",
+        reason: "missing_or_invalid_envelope",
+      }),
+    });
+  });
+
+  it("leaves parent done behavior unchanged when the proof-envelope gate is disabled", async () => {
+    const companyId = randomUUID();
+    const parentId = randomUUID();
+    const childId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      { id: parentId, companyId, title: "Parent", status: "todo", priority: "medium" },
+      { id: childId, companyId, parentId, title: "Child", status: "todo", priority: "medium" },
+    ]);
+
+    const updated = await svc.update(parentId, { status: "done" });
+
+    expect(updated?.status).toBe("done");
+  });
+
+  it("allows parent done when the enabled gate sees a passing parent proof envelope", async () => {
+    const companyId = randomUUID();
+    const parentId = randomUUID();
+    const childId = randomUUID();
+    const parentProofEnvelope = {
+      proof_envelope_version: "parent_proof_envelope_v0.1",
+      verdict: "PASS",
+      parent_closeable: true,
+      child_count: 1,
+      children: [{ issueId: childId, label: "CHILD-1", closeable: true, artifact_sha256: "abc123" }],
+      classifications: [],
+      parent_synthesis: {
+        exists: true,
+        hygiene: { checked: true, pass: true, findings: [] },
+      },
+    };
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      { id: parentId, companyId, title: "Parent", status: "todo", priority: "medium" },
+      { id: childId, companyId, parentId, title: "Child", status: "done", priority: "medium" },
+    ]);
+    await instanceSettingsService(db).updateExperimental({ enableParentDoneProofEnvelopeGate: true });
+
+    const updated = await svc.update(parentId, {
+      status: "done",
+      parentProofEnvelope,
+    });
+
+    expect(updated?.status).toBe("done");
   });
 
   it("filters issue lists to the full descendant tree for a root issue", async () => {
