@@ -3361,6 +3361,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return result;
   }
 
+  async function retireDoneLivenessRecoveryBlockers() {
+    const closedRecoveries = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+        ),
+      );
+
+    let blockerRelationsRemoved = 0;
+    for (const recovery of closedRecoveries) {
+      if (await removeRecoveryBlockerFromSource(recovery)) {
+        blockerRelationsRemoved += 1;
+      }
+    }
+
+    return { blockerRelationsRemoved };
+  }
+
   function normalizeIssueGraphLivenessAutoRecoveryLookbackHours(raw: unknown) {
     const numeric = Math.floor(asNumber(raw, DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS));
     return Math.min(
@@ -3800,6 +3822,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const staleAt = new Date(now.getTime() - lookbackHours * 60 * 60 * 1000);
     const obsoleteRecoveryCleanup = await retireObsoleteLivenessRecoveryIssues(findings);
     const activityByIssueKey = await loadLivenessRecoveryIssueLastActivityByKey(findings);
+    const doneRecoveryBlockerCleanup = await retireDoneLivenessRecoveryBlockers();
     const result = {
       findings: findings.length,
       autoRecoveryEnabled,
@@ -3813,6 +3836,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       obsoleteRecoveriesRetired: obsoleteRecoveryCleanup.retired,
       obsoleteRecoveriesActiveSkipped: obsoleteRecoveryCleanup.activeSkipped,
       obsoleteRecoveryBlockerRelationsRemoved: obsoleteRecoveryCleanup.blockerRelationsRemoved,
+      doneRecoveryBlockerRelationsRemoved: doneRecoveryBlockerCleanup.blockerRelationsRemoved,
       issueIds: [] as string[],
       escalationIssueIds: [] as string[],
       retiredRecoveryIssueIds: obsoleteRecoveryCleanup.retiredIssueIds,

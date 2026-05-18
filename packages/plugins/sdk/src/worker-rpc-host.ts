@@ -715,6 +715,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
+      executionWorkspaces: {
+        async get(workspaceId: string, companyId: string) {
+          return callHost("executionWorkspaces.get", { workspaceId, companyId });
+        },
+      },
+
       routines: {
         managed: {
           async get(routineKey: string, companyId: string) {

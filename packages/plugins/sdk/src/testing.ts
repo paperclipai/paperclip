@@ -33,6 +33,7 @@ import type {
   ToolResult,
   ToolRunContext,
   PluginWorkspace,
+  PluginExecutionWorkspaceMetadata,
   AgentSession,
   AgentSessionEvent,
   PluginLocalFolderEntry,
@@ -91,6 +92,8 @@ export interface TestHarness {
       linearIssueId: string;
       paperclipIssueId: string;
     }>;
+    projectWorkspaces?: PluginWorkspace[];
+    executionWorkspaces?: PluginExecutionWorkspaceMetadata[];
   }): void;
   setConfig(config: Record<string, unknown>): void;
   /** Dispatch a host or plugin event to registered handlers. */
@@ -456,6 +459,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const agents = new Map<string, Agent>();
   const goals = new Map<string, Goal>();
   const projectWorkspaces = new Map<string, PluginWorkspace[]>();
+  const executionWorkspaces = new Map<string, PluginExecutionWorkspaceMetadata>();
   const localFolderStatuses = new Map<string, PluginLocalFolderStatus>();
   const localFolderFiles = new Map<string, string>();
 
@@ -1024,6 +1028,13 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           const resolved = await this.get(projectKey, companyId);
           return { ...resolved, status: resolved.project ? "reset" : resolved.status };
         },
+      },
+    },
+    executionWorkspaces: {
+      async get(workspaceId, companyId) {
+        requireCapability(manifest, capabilitySet, "execution.workspaces.read");
+        const workspace = executionWorkspaces.get(workspaceId);
+        return workspace?.companyId === companyId ? workspace : null;
       },
     },
     routines: {
@@ -2143,6 +2154,12 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       for (const row of input.linearIssueLinks ?? []) {
         linearIssueLinksByLinearIssueId.set(linkKey(row.companyId, row.linearIssueId), row.paperclipIssueId);
       }
+      for (const row of input.projectWorkspaces ?? []) {
+        const list = projectWorkspaces.get(row.projectId) ?? [];
+        list.push(row);
+        projectWorkspaces.set(row.projectId, list);
+      }
+      for (const row of input.executionWorkspaces ?? []) executionWorkspaces.set(row.id, row);
     },
     setConfig(config) {
       currentConfig = { ...config };

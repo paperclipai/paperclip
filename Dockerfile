@@ -68,6 +68,7 @@ COPY packages/plugins/paperclip-plugin-linear/package.json packages/plugins/pape
 COPY packages/plugins/paperclip-plugin-alertmanager/package.json packages/plugins/paperclip-plugin-alertmanager/
 COPY packages/plugins/paperclip-plugin-slack/package.json packages/plugins/paperclip-plugin-slack/
 COPY packages/plugins/plugin-llm-wiki/package.json packages/plugins/plugin-llm-wiki/
+COPY packages/plugins/plugin-workspace-diff/package.json packages/plugins/plugin-workspace-diff/
 COPY patches/ patches/
 
 # pnpm store mount: re-uses the content-addressable cache of downloaded

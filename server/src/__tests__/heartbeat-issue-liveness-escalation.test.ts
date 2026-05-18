@@ -927,4 +927,43 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(escalations).toHaveLength(1);
     expect(escalations[0]!.assigneeAgentId).toBe(rootAgentId);
   });
+
+  it("removes closed liveness escalations from blocker relations during reconciliation", async () => {
+    await enableAutoRecovery();
+    const { companyId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.reconcileIssueGraphLiveness();
+    expect(first.escalationsCreated).toBe(1);
+
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "harness_liveness_escalation"),
+        ),
+      );
+    expect(escalations).toHaveLength(1);
+
+    await db
+      .update(issues)
+      .set({ status: "done", blockedByIssueIds: [] })
+      .where(eq(issues.id, escalations[0]!.id));
+    await db
+      .update(issues)
+      .set({ status: "done", blockedByIssueIds: [] })
+      .where(eq(issues.id, blockerIssueId));
+
+    const second = await heartbeat.reconcileIssueGraphLiveness();
+    expect(second.obsoleteRecoveryBlockerRelationsRemoved).toBe(0);
+    expect(second.doneRecoveryBlockerRelationsRemoved).toBe(1);
+
+    const blockers = await db
+      .select({ blockerIssueId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(eq(issueRelations.relatedIssueId, blockedIssueId));
+    expect(blockers.some((row) => row.blockerIssueId === escalations[0]!.id)).toBe(false);
+  });
 });
