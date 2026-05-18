@@ -233,8 +233,6 @@ describe("Modal sandbox provider plugin", () => {
   });
 
   it("probes by creating, executing, and terminating a sandbox", async () => {
-    process.env.MODAL_TOKEN_ID = "host-id";
-    process.env.MODAL_TOKEN_SECRET = "host-secret";
     const sandbox = createFakeSandbox();
     mockAppFromName.mockResolvedValue({ appId: "ap-1" });
     mockSandboxesCreate.mockResolvedValue(sandbox);
@@ -280,8 +278,6 @@ describe("Modal sandbox provider plugin", () => {
   });
 
   it("returns a failure probe result when the probe command exits non-zero", async () => {
-    process.env.MODAL_TOKEN_ID = "host-id";
-    process.env.MODAL_TOKEN_SECRET = "host-secret";
     const sandbox = createFakeSandbox({
       execImpl: async (argv: string[]) => {
         if (argv[2] === "printf paperclip-probe") {
@@ -305,8 +301,6 @@ describe("Modal sandbox provider plugin", () => {
   });
 
   it("closes the Modal client when probe fails before sandbox creation", async () => {
-    process.env.MODAL_TOKEN_ID = "host-id";
-    process.env.MODAL_TOKEN_SECRET = "host-secret";
     mockAppFromName.mockRejectedValue(new Error("app lookup failed"));
 
     const result = await plugin.definition.onEnvironmentProbe?.({
@@ -327,8 +321,6 @@ describe("Modal sandbox provider plugin", () => {
   });
 
   it("acquires a lease, applies tags, and ensures the workspace directory", async () => {
-    process.env.MODAL_TOKEN_ID = "host-id";
-    process.env.MODAL_TOKEN_SECRET = "host-secret";
     const sandbox = createFakeSandbox({ id: "sb-acquire" });
     mockAppFromName.mockResolvedValue({ appId: "ap-1" });
     mockSandboxesCreate.mockResolvedValue(sandbox);
@@ -356,8 +348,6 @@ describe("Modal sandbox provider plugin", () => {
   });
 
   it("terminates the sandbox if acquire workspace setup throws", async () => {
-    process.env.MODAL_TOKEN_ID = "host-id";
-    process.env.MODAL_TOKEN_SECRET = "host-secret";
     const sandbox = createFakeSandbox({
       execImpl: async (argv: string[]) => {
         if (argv[2]?.startsWith("mkdir -p")) {
@@ -379,8 +369,6 @@ describe("Modal sandbox provider plugin", () => {
   });
 
   it("fails acquire when workspace creation exits non-zero", async () => {
-    process.env.MODAL_TOKEN_ID = "host-id";
-    process.env.MODAL_TOKEN_SECRET = "host-secret";
     const sandbox = createFakeSandbox({
       execImpl: async (argv: string[]) => {
         if (argv[2]?.startsWith("mkdir -p")) {
@@ -404,8 +392,6 @@ describe("Modal sandbox provider plugin", () => {
   });
 
   it("closes the Modal client when acquire fails before sandbox creation", async () => {
-    process.env.MODAL_TOKEN_ID = "host-id";
-    process.env.MODAL_TOKEN_SECRET = "host-secret";
     mockAppFromName.mockRejectedValue(new Error("app lookup failed"));
 
     await expect(
@@ -418,8 +404,6 @@ describe("Modal sandbox provider plugin", () => {
   });
 
   it("treats missing leases as expired on resume", async () => {
-    process.env.MODAL_TOKEN_ID = "host-id";
-    process.env.MODAL_TOKEN_SECRET = "host-secret";
     mockSandboxesFromId.mockRejectedValue(new MockNotFoundError("gone"));
 
     const lease = await plugin.definition.onEnvironmentResumeLease?.({
@@ -433,8 +417,6 @@ describe("Modal sandbox provider plugin", () => {
   });
 
   it("resumes a reusable lease by reconnecting via fromId", async () => {
-    process.env.MODAL_TOKEN_ID = "host-id";
-    process.env.MODAL_TOKEN_SECRET = "host-secret";
     const sandbox = createFakeSandbox({ id: "sb-resume" });
     mockSandboxesFromId.mockResolvedValue(sandbox);
 
@@ -458,8 +440,6 @@ describe("Modal sandbox provider plugin", () => {
   });
 
   it("detaches the sandbox if resumed workspace setup fails", async () => {
-    process.env.MODAL_TOKEN_ID = "host-id";
-    process.env.MODAL_TOKEN_SECRET = "host-secret";
     const sandbox = createFakeSandbox({
       id: "sb-resume",
       execImpl: async (argv: string[]) => {
@@ -484,8 +464,6 @@ describe("Modal sandbox provider plugin", () => {
   });
 
   it("detaches reusable leases and terminates ephemeral leases on release", async () => {
-    process.env.MODAL_TOKEN_ID = "host-id";
-    process.env.MODAL_TOKEN_SECRET = "host-secret";
     const reusable = createFakeSandbox({ id: "sb-reuse" });
     const ephemeral = createFakeSandbox({ id: "sb-ephem" });
     mockSandboxesFromId.mockResolvedValueOnce(reusable).mockResolvedValueOnce(ephemeral);
@@ -512,8 +490,6 @@ describe("Modal sandbox provider plugin", () => {
   });
 
   it("destroys leases by terminating, ignoring missing sandboxes", async () => {
-    process.env.MODAL_TOKEN_ID = "host-id";
-    process.env.MODAL_TOKEN_SECRET = "host-secret";
     const sandbox = createFakeSandbox({ id: "sb-destroy" });
     mockSandboxesFromId.mockResolvedValueOnce(sandbox);
 
@@ -539,8 +515,6 @@ describe("Modal sandbox provider plugin", () => {
   });
 
   it("realizes the workspace using the lease metadata cwd when available", async () => {
-    process.env.MODAL_TOKEN_ID = "host-id";
-    process.env.MODAL_TOKEN_SECRET = "host-secret";
     const sandbox = createFakeSandbox({ id: "sb-real" });
     mockSandboxesFromId.mockResolvedValue(sandbox);
 
@@ -568,8 +542,6 @@ describe("Modal sandbox provider plugin", () => {
   });
 
   it("executes commands with a login-shell wrapper that injects env after profile sourcing", async () => {
-    process.env.MODAL_TOKEN_ID = "host-id";
-    process.env.MODAL_TOKEN_SECRET = "host-secret";
     const sandbox = createFakeSandbox({
       execImpl: async (argv: string[]) =>
         makeFakeProcess({
@@ -615,8 +587,6 @@ describe("Modal sandbox provider plugin", () => {
   });
 
   it("stages stdin in the sandbox filesystem when execution needs redirected input", async () => {
-    process.env.MODAL_TOKEN_ID = "host-id";
-    process.env.MODAL_TOKEN_SECRET = "host-secret";
     const sandbox = createFakeSandbox();
     mockSandboxesFromId.mockResolvedValue(sandbox);
 
@@ -647,8 +617,6 @@ describe("Modal sandbox provider plugin", () => {
   });
 
   it("rejects invalid shell env keys before execution", async () => {
-    process.env.MODAL_TOKEN_ID = "host-id";
-    process.env.MODAL_TOKEN_SECRET = "host-secret";
     const sandbox = createFakeSandbox();
     mockSandboxesFromId.mockResolvedValue(sandbox);
 
@@ -667,9 +635,28 @@ describe("Modal sandbox provider plugin", () => {
     expect(sandbox.execCalls).toHaveLength(0);
   });
 
+  it("returns an error result when execute is called for an expired sandbox lease", async () => {
+    mockSandboxesFromId.mockRejectedValue(new MockNotFoundError("gone"));
+
+    const result = await plugin.definition.onEnvironmentExecute?.({
+      driverKey: "modal",
+      companyId: "c-1",
+      environmentId: "e-1",
+      config: baseConfig,
+      lease: { providerLeaseId: "sb-expired", metadata: {} },
+      command: "printf",
+      args: ["hello"],
+    });
+
+    expect(result).toEqual({
+      exitCode: 1,
+      timedOut: false,
+      stdout: "",
+      stderr: "Modal sandbox lease is no longer available.\n",
+    });
+  });
+
   it("returns a timedOut result when Modal raises a TimeoutError during exec", async () => {
-    process.env.MODAL_TOKEN_ID = "host-id";
-    process.env.MODAL_TOKEN_SECRET = "host-secret";
     const sandbox = createFakeSandbox({
       execImpl: async () =>
         makeFakeProcess({ throwOnWait: new MockTimeoutError("exec timed out") }),

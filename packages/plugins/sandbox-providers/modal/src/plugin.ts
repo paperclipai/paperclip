@@ -601,7 +601,15 @@ const plugin = definePlugin({
         : config.execTimeoutMs;
 
     try {
-      const sandbox = await client.sandboxes.fromId(params.lease.providerLeaseId);
+      const sandbox = await getSandboxOrNull(client, params.lease.providerLeaseId);
+      if (!sandbox) {
+        return {
+          exitCode: 1,
+          timedOut: false,
+          stdout: "",
+          stderr: "Modal sandbox lease is no longer available.\n",
+        };
+      }
       const stdinPath = params.stdin != null
         ? `/tmp/paperclip-stdin-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
         : null;
