@@ -3037,9 +3037,11 @@ export function agentRoutes(
     if (body.forceFreshSession === true) {
       contextSnapshot.forceFreshSession = true;
     }
+    const ALLOWED_TRIGGER_DETAILS = ["manual", "system", "ping", "callback"] as const;
+    type AllowedTriggerDetail = typeof ALLOWED_TRIGGER_DETAILS[number];
     const wakeOpts: Parameters<typeof heartbeat.wakeup>[1] = {
       source: "on_demand",
-      triggerDetail: typeof body.triggerDetail === "string" ? body.triggerDetail as "manual" | "system" | "ping" | "callback" : "manual",
+      triggerDetail: (ALLOWED_TRIGGER_DETAILS as readonly string[]).includes(body.triggerDetail as string) ? body.triggerDetail as AllowedTriggerDetail : "manual",
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
       contextSnapshot,
