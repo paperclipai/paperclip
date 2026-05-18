@@ -7,6 +7,7 @@ export type {
   AdapterRuntime,
   UsageSummary,
   AdapterExecutionResult,
+  AdapterCancelRunContext,
   AdapterInvocationMeta,
   AdapterExecutionContext,
   AdapterEnvironmentCheckLevel,

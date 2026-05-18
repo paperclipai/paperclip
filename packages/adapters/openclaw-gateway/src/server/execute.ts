@@ -1,4 +1,5 @@
 import type {
+  AdapterCancelRunContext,
   AdapterExecutionContext,
   AdapterExecutionResult,
   AdapterRuntimeServiceReport,
@@ -836,6 +837,136 @@ class GatewayWsClient {
   }
 }
 
+async function abortAcceptedRun(params: {
+  client: GatewayWsClient;
+  runId: string;
+  sessionKey: string | undefined;
+  timeoutMs: number;
+  reason?: string;
+  onLog: AdapterExecutionContext["onLog"];
+}) {
+  const reason = params.reason ? ` (${params.reason})` : "";
+  try {
+    await params.client.request<Record<string, unknown>>(
+      "chat.abort",
+      {
+        runId: params.runId,
+        ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
+      },
+      { timeoutMs: Math.max(1_000, Math.min(params.timeoutMs, 10_000)) },
+    );
+    await params.onLog("stderr", `[openclaw-gateway] aborted gateway run${reason} runId=${params.runId}\n`);
+  } catch (err) {
+    await params.onLog(
+      "stderr",
+      `[openclaw-gateway] failed to abort gateway run${reason} runId=${params.runId}: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+  }
+}
+
+export async function cancelRun(ctx: AdapterCancelRunContext): Promise<void> {
+  const onLog = ctx.onLog ?? (async () => {});
+  const urlValue = nonEmpty(ctx.config.url);
+  if (!urlValue) return;
+
+  const parsedUrl = normalizeUrl(urlValue);
+  if (!parsedUrl || (parsedUrl.protocol !== "ws:" && parsedUrl.protocol !== "wss:")) return;
+
+  const headers = toStringRecord(ctx.config.headers);
+  const authToken = resolveAuthToken(parseObject(ctx.config), headers);
+  const password = nonEmpty(ctx.config.password);
+  const deviceToken = nonEmpty(ctx.config.deviceToken);
+
+  if (authToken && !headerMapHasIgnoreCase(headers, "authorization")) {
+    headers.authorization = toAuthorizationHeaderValue(authToken);
+  }
+
+  const clientId = nonEmpty(ctx.config.clientId) ?? DEFAULT_CLIENT_ID;
+  const clientMode = nonEmpty(ctx.config.clientMode) ?? DEFAULT_CLIENT_MODE;
+  const clientVersion = nonEmpty(ctx.config.clientVersion) ?? DEFAULT_CLIENT_VERSION;
+  const role = nonEmpty(ctx.config.role) ?? DEFAULT_ROLE;
+  const scopes = normalizeScopes(ctx.config.scopes);
+  const deviceFamily = nonEmpty(ctx.config.deviceFamily);
+  const disableDeviceAuth = parseBoolean(ctx.config.disableDeviceAuth, false);
+  const configuredDevicePrivateKey = nonEmpty(ctx.config.devicePrivateKeyPem);
+  const configuredAgentId = nonEmpty(ctx.config.agentId);
+  const issueId = nonEmpty(ctx.context?.issueId) ?? nonEmpty(ctx.context?.taskId);
+  const sessionKey = resolveSessionKey({
+    strategy: normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy),
+    configuredSessionKey: nonEmpty(ctx.config.sessionKey),
+    runId: ctx.runId,
+    issueId,
+    agentId: configuredAgentId ?? ctx.agent.id,
+  });
+
+  const client = new GatewayWsClient({
+    url: parsedUrl.toString(),
+    headers,
+    onEvent: () => {},
+    onLog,
+  });
+
+  try {
+    const deviceIdentity =
+      !disableDeviceAuth && configuredDevicePrivateKey
+        ? resolveDeviceIdentity(parseObject(ctx.config))
+        : null;
+    await client.connect((nonce) => {
+      const connectParams: Record<string, unknown> = {
+        minProtocol: PROTOCOL_VERSION,
+        maxProtocol: PROTOCOL_VERSION,
+        client: {
+          id: clientId,
+          version: clientVersion,
+          platform: process.platform,
+          mode: clientMode,
+        },
+        auth: {
+          ...(authToken ? { token: authToken } : {}),
+          ...(password ? { password } : {}),
+          ...(deviceToken ? { deviceToken } : {}),
+          role,
+          scopes,
+        },
+      };
+      if (deviceIdentity) {
+        const signedAtMs = Date.now();
+        const payload = buildDeviceAuthPayloadV3({
+          deviceId: deviceIdentity.deviceId,
+          nonce,
+          clientId,
+          clientMode,
+          role,
+          scopes,
+          signedAtMs,
+          token: authToken,
+          platform: process.platform,
+          deviceFamily,
+        });
+        connectParams.device = {
+          id: deviceIdentity.deviceId,
+          publicKey: deviceIdentity.publicKeyRawBase64Url,
+          signature: signDevicePayload(deviceIdentity.privateKeyPem, payload),
+          signedAt: signedAtMs,
+          nonce,
+        };
+      }
+      return connectParams;
+    }, 10_000);
+
+    await abortAcceptedRun({
+      client,
+      runId: ctx.runId,
+      sessionKey,
+      timeoutMs: 10_000,
+      reason: ctx.reason,
+      onLog,
+    });
+  } finally {
+    client.close();
+  }
+}
+
 async function autoApproveDevicePairing(params: {
   url: string;
   headers: Record<string, string>;
@@ -1352,6 +1483,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
         const waitStatus = nonEmpty(waitPayload?.status)?.toLowerCase() ?? "";
         if (waitStatus === "timeout") {
+          await abortAcceptedRun({
+            client,
+            runId: acceptedRunId,
+            sessionKey: typeof agentParams.sessionKey === "string" ? agentParams.sessionKey : undefined,
+            timeoutMs: connectTimeoutMs,
+            reason: "agent.wait timeout",
+            onLog: ctx.onLog,
+          });
           return {
             exitCode: 1,
             signal: null,

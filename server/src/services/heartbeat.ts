@@ -6561,6 +6561,47 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  async function cancelAdapterRunIfSupported(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect | null,
+    reason: string,
+  ) {
+    if (!agent) return;
+    const adapter = getServerAdapter(agent.adapterType);
+    if (!adapter.cancelRun) return;
+
+    try {
+      await adapter.cancelRun({
+        runId: run.id,
+        agent: {
+          id: agent.id,
+          companyId: agent.companyId,
+          name: agent.name,
+          adapterType: agent.adapterType,
+          adapterConfig: parseObject(agent.adapterConfig),
+        },
+        config: parseObject(agent.adapterConfig),
+        context: parseObject(run.contextSnapshot),
+        reason,
+        onLog: async (stream, chunk) => {
+          const message = chunk.trim();
+          if (!message) return;
+          await appendRunEvent(run, await nextRunEventSeq(run.id), {
+            eventType: "lifecycle",
+            stream,
+            level: stream === "stderr" ? "warn" : "info",
+            message,
+          });
+        },
+      });
+    } catch (err) {
+      logger.warn(
+        { err, runId: run.id, adapterType: agent.adapterType },
+        "adapter run cancellation hook failed",
+      );
+    }
+  }
+
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -6623,6 +6664,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const agent = await getAgent(run.agentId);
+      await cancelAdapterRunIfSupported(run, agent, shouldRetry ? `${baseMessage}; retrying once` : baseMessage);
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
         error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
@@ -6655,7 +6698,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
       if (shouldRetry) {
-        const agent = await getAgent(run.agentId);
         if (agent) {
           retriedRun = await enqueueProcessLossRetry(finalizedRun, agent, now);
         }
@@ -9495,6 +9537,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         processGroupId: run.processGroupId,
       });
     }
+    await cancelAdapterRunIfSupported(run, agent ?? null, reason);
 
     const cancelled = await setRunStatus(run.id, "cancelled", {
       finishedAt: new Date(),
@@ -9538,6 +9581,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES])));
 
     for (const run of runs) {
+      await cancelAdapterRunIfSupported(run, agent ?? null, reason);
+
       await setRunStatus(run.id, "cancelled", {
         finishedAt: new Date(),
         error: reason,

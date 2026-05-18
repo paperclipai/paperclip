@@ -46,6 +46,7 @@ async function createMockGatewayServer(options?: {
   const wss = new WebSocketServer({ server });
 
   let agentPayload: Record<string, unknown> | null = null;
+  const requests: Array<{ method: string; params?: Record<string, unknown> }> = [];
 
   wss.on("connection", (socket) => {
     socket.send(
@@ -66,6 +67,7 @@ async function createMockGatewayServer(options?: {
       };
 
       if (frame.type !== "req") return;
+      requests.push({ method: frame.method, params: frame.params });
 
       if (frame.method === "connect") {
         socket.send(
@@ -150,6 +152,20 @@ async function createMockGatewayServer(options?: {
           }),
         );
       }
+
+      if (frame.method === "chat.abort") {
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              ok: true,
+              runIds: [frame.params?.runId],
+            },
+          }),
+        );
+      }
     });
   });
 
@@ -165,6 +181,7 @@ async function createMockGatewayServer(options?: {
   return {
     url: `ws://127.0.0.1:${address.port}`,
     getAgentPayload: () => agentPayload,
+    getRequests: () => requests,
     close: async () => {
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -564,6 +581,53 @@ describe("openclaw gateway adapter execute", () => {
           status: "running",
         }),
       ]);
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("aborts the accepted gateway run when agent.wait times out", async () => {
+    const gateway = await createMockGatewayServer({
+      waitPayload: {
+        runId: "run-123",
+        status: "timeout",
+      },
+    });
+    const logs: string[] = [];
+
+    try {
+      const result = await execute(
+        buildContext(
+          {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            waitTimeoutMs: 2000,
+          },
+          {
+            onLog: async (_stream, chunk) => {
+              logs.push(chunk);
+            },
+          },
+        ),
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(result.timedOut).toBe(true);
+      expect(result.errorCode).toBe("openclaw_gateway_wait_timeout");
+      expect(gateway.getRequests()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            method: "chat.abort",
+            params: expect.objectContaining({
+              runId: "run-123",
+              sessionKey: "paperclip:issue:issue-123",
+            }),
+          }),
+        ]),
+      );
+      expect(logs.some((entry) => entry.includes("aborted gateway run (agent.wait timeout) runId=run-123"))).toBe(true);
     } finally {
       await gateway.close();
     }
