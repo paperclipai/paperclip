@@ -859,7 +859,7 @@ export function pluginLoader(
       );
     } else {
       // npm install
-      const spec = version ? `${packageName}@${version}` : packageName!;
+      const spec = version ? `${packageName}@${version}` : `${packageName}@latest`;
 
       log.info(
         { spec, installDir: targetInstallDir },
@@ -1851,7 +1851,10 @@ export function pluginLoader(
         databaseNamespace,
         hostHandlers,
         autoRestart: true,
-        env: buildPluginWorkerEnv({ manifest, instanceInfo }),
+        env: {
+          PAPERCLIP_DEPLOYMENT_MODE: instanceInfo.deploymentMode ?? "",
+          PAPERCLIP_DEPLOYMENT_EXPOSURE: instanceInfo.deploymentExposure ?? "",
+        },
       };
 
       // Repo-local plugin installs can resolve workspace TS sources at runtime

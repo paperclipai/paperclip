@@ -19,6 +19,21 @@ const awsProvider: SecretProviderDescriptor = {
   configured: true,
 };
 
+const tMock = (key: string, options?: Record<string, string>) => {
+  const dictionary: Record<string, string> = {
+    "secrets.providerNotConfigured": "{{label}} is not configured in this deployment.",
+    "secrets.providerNotSupportedExternal": "{{label}} does not support linked external references.",
+    "secrets.providerVaultDraft": "This provider vault is saved as draft metadata only.",
+  };
+  let value = dictionary[key] ?? key;
+  if (options) {
+    for (const [k, v] of Object.entries(options)) {
+      value = value.replace(`{{${k}}}`, v);
+    }
+  }
+  return value;
+};
+
 describe("Secrets page provider helpers", () => {
   it("previews the derived AWS managed path from provider health details", () => {
     const health: SecretProviderHealthResponse = {
@@ -48,6 +63,7 @@ describe("Secrets page provider helpers", () => {
   it("blocks unconfigured providers before create submission", () => {
     expect(
       getCreateProviderBlockReason(
+        tMock,
         { ...awsProvider, configured: false },
         "managed",
         null,
@@ -69,6 +85,7 @@ describe("Secrets page provider helpers", () => {
 
     expect(
       getCreateProviderBlockReason(
+        tMock,
         { ...awsProvider, configured: false },
         "managed",
         health,
@@ -81,6 +98,7 @@ describe("Secrets page provider helpers", () => {
   it("blocks provider modes the backend does not support", () => {
     expect(
       getCreateProviderBlockReason(
+        tMock,
         {
           id: "local_encrypted",
           label: "Local encrypted (default)",
@@ -98,6 +116,7 @@ describe("Secrets page provider helpers", () => {
   it("chooses the ready default provider vault for a provider", () => {
     expect(
       getDefaultProviderConfigId(
+        tMock,
         [
           {
             id: "draft",
@@ -119,11 +138,14 @@ describe("Secrets page provider helpers", () => {
 
   it("explains why coming-soon provider vaults cannot be selected", () => {
     expect(
-      getProviderConfigBlockReason({
-        id: "vault-draft",
-        provider: "vault",
-        status: "coming_soon",
-      } as never),
+      getProviderConfigBlockReason(
+        tMock,
+        {
+          id: "vault-draft",
+          provider: "vault",
+          status: "coming_soon",
+        } as never
+      ),
     ).toBe("This provider vault is saved as draft metadata only.");
   });
 });

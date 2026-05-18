@@ -120,7 +120,8 @@ interface AvailablePluginExample {
   displayName: string;
   description: string;
   localPath: string;
-  tag: "example";
+  isLocalPath: boolean;
+  tag: "example" | "recommended";
 }
 
 /** Response body for GET /api/plugins/:pluginId/health */
@@ -151,6 +152,18 @@ const PLUGIN_SCOPED_API_RESPONSE_HEADER_ALLOWLIST = new Set([
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../..");
 
+const RECOMMENDED_PLUGINS: AvailablePluginExample[] = [
+  {
+    packageName: "paperclip-plugin-i18n-pt-br",
+    pluginKey: "paperclip-plugin-i18n-pt-br",
+    displayName: "Português (Brasil)",
+    description: "Pacote de idioma para Português do Brasil. Adiciona localização completa para a interface.",
+    localPath: "",
+    isLocalPath: false,
+    tag: "recommended",
+  },
+];
+
 const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
   {
     packageName: "@paperclipai/plugin-hello-world-example",
@@ -158,6 +171,7 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
     displayName: "Hello World Widget (Example)",
     description: "Reference UI plugin that adds a simple Hello World widget to the Paperclip dashboard.",
     localPath: "packages/plugins/examples/plugin-hello-world-example",
+    isLocalPath: true,
     tag: "example",
   },
   {
@@ -166,6 +180,7 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
     displayName: "File Browser (Example)",
     description: "Example plugin that adds a Files link in project navigation plus a project detail file browser.",
     localPath: "packages/plugins/examples/plugin-file-browser-example",
+    isLocalPath: true,
     tag: "example",
   },
   {
@@ -174,6 +189,7 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
     displayName: "Kitchen Sink (Example)",
     description: "Reference plugin that demonstrates the current Paperclip plugin API surface, bridge flows, UI extension surfaces, jobs, webhooks, tools, streams, and trusted local workspace/process demos.",
     localPath: "packages/plugins/examples/plugin-kitchen-sink-example",
+    isLocalPath: true,
     tag: "example",
   },
   {
@@ -182,16 +198,18 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
     displayName: "Orchestration Smoke (Example)",
     description: "Acceptance fixture for scoped plugin routes, restricted database namespaces, issue orchestration, documents, wakeups, summaries, and UI status surfaces.",
     localPath: "packages/plugins/examples/plugin-orchestration-smoke-example",
+    isLocalPath: true,
     tag: "example",
   },
 ];
 
 function listBundledPluginExamples(): AvailablePluginExample[] {
-  return BUNDLED_PLUGIN_EXAMPLES.flatMap((plugin) => {
+  const bundled = BUNDLED_PLUGIN_EXAMPLES.flatMap((plugin) => {
     const absoluteLocalPath = path.resolve(REPO_ROOT, plugin.localPath);
     if (!existsSync(absoluteLocalPath)) return [];
     return [{ ...plugin, localPath: absoluteLocalPath }];
   });
+  return [...bundled, ...RECOMMENDED_PLUGINS];
 }
 
 /**
@@ -1840,6 +1858,12 @@ export function pluginRoutes(
       publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "upgraded" } });
       res.json(result);
     } catch (err) {
+      // If upgrade fails, try to re-enable the plugin at its old version as a fallback
+      try {
+        await lifecycle.enable(plugin.id);
+      } catch {
+        // Best-effort recovery — don't mask the original upgrade error
+      }
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: message });
     }

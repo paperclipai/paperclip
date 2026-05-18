@@ -17,7 +17,11 @@ const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : 
 function createTempDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   cleanups.push(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    } catch (e) {
+      console.warn(`Failed to cleanup temp dir ${dir}`, e);
+    }
   });
   return dir;
 }

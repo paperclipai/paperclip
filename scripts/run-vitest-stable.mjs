@@ -251,6 +251,7 @@ function runVitest(args, label) {
     cwd: repoRoot,
     env,
     stdio: "inherit",
+    shell: process.platform === "win32",
   });
   if (result.error) {
     console.error(`[test:run] Failed to start Vitest: ${result.error.message}`);
