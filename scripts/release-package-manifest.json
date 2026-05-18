@@ -112,7 +112,7 @@
   {
     "dir": "packages/plugins/sandbox-providers/modal",
     "name": "@paperclipai/plugin-modal",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "ui",
