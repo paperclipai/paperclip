@@ -1249,6 +1249,10 @@ export function agentRoutes(
   }>(
     agent: T,
     source: string,
+    actor?: {
+      createdByAgentId: string | null;
+      createdByUserId: string | null;
+    },
   ): Promise<T> {
     const adapter = findActiveServerAdapter(agent.adapterType);
     if (!adapter?.ensureRuntimeIdentity) return agent;
@@ -1302,16 +1306,23 @@ export function agentRoutes(
       adapterConfig: result.adapterConfig,
     });
 
+    const patch: {
+      adapterConfig: Record<string, unknown>;
+      metadata?: Record<string, unknown> | null;
+    } = {
+      adapterConfig: normalizedAdapterConfig,
+    };
+    if (result.metadata !== null) {
+      patch.metadata = result.metadata;
+    }
+
     const updated = await svc.update(
       agent.id,
-      {
-        adapterConfig: normalizedAdapterConfig,
-        metadata: result.metadata,
-      },
+      patch,
       {
         recordRevision: {
-          createdByAgentId: null,
-          createdByUserId: null,
+          createdByAgentId: actor?.createdByAgentId ?? null,
+          createdByUserId: actor?.createdByUserId ?? null,
           source,
         },
       },
@@ -2092,6 +2103,7 @@ export function agentRoutes(
 
     const requiresApproval = company.requireBoardApprovalForNewAgents;
     const status = requiresApproval ? "pending_approval" : "idle";
+    const actor = getActorInfo(req);
     const createdAgent = await svc.create(companyId, {
       ...normalizedHireInput,
       status,
@@ -2104,10 +2116,13 @@ export function agentRoutes(
     const agent = await ensureAdapterRuntimeIdentityForAgent(
       bundledAgent,
       "adapter_runtime_identity_hire",
+      {
+        createdByAgentId: actor.agentId,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      },
     );
 
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
-    const actor = getActorInfo(req);
 
     if (requiresApproval) {
       const requestedAdapterType = normalizedHireInput.adapterType ?? agent.adapterType;
@@ -2272,6 +2287,7 @@ export function agentRoutes(
       allowedSandboxProviders: allowedSandboxProvidersForAgent(createInput.adapterType),
     });
 
+    const actor = getActorInfo(req);
     const createdAgent = await svc.create(companyId, {
       ...createInput,
       adapterConfig: normalizedAdapterConfig,
@@ -2284,6 +2300,10 @@ export function agentRoutes(
     const agent = await ensureAdapterRuntimeIdentityForAgent(
       bundledAgent,
       "adapter_runtime_identity_create",
+      {
+        createdByAgentId: actor.agentId,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      },
     );
     const agentEnv = asRecord(agent.adapterConfig)?.env;
     if (agentEnv) {
@@ -2294,7 +2314,6 @@ export function agentRoutes(
       );
     }
 
-    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId,
       actorType: actor.actorType,
@@ -2773,6 +2792,10 @@ export function agentRoutes(
       agent = await ensureAdapterRuntimeIdentityForAgent(
         agent,
         "adapter_runtime_identity_update",
+        {
+          createdByAgentId: actor.agentId,
+          createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+        },
       );
       const agentEnv = asRecord(agent.adapterConfig)?.env;
       await secretsSvc.syncEnvBindingsForTarget?.(

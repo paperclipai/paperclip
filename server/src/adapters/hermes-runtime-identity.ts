@@ -83,13 +83,54 @@ function parseHermesModelDefaultsFromConfig(content: string, source: string): He
     if (!match) continue;
 
     const key = match[1];
-    const value = match[2].trim().replace(/\s+#.*$/, "").replace(/^['"]|['"]$/g, "");
+    const value = parseYamlScalarString(match[2]);
     if (key === "default") model = value;
     if (key === "provider") provider = value;
   }
 
   if (!model) return null;
   return { model, provider, source };
+}
+
+function parseYamlScalarString(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("\"")) {
+    let escaped = false;
+    for (let index = 1; index < trimmed.length; index += 1) {
+      const char = trimmed[index];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === "\"") {
+        const quoted = trimmed.slice(0, index + 1);
+        try {
+          const parsed = JSON.parse(quoted);
+          if (typeof parsed === "string") return parsed;
+        } catch {
+          return quoted.slice(1, -1);
+        }
+      }
+    }
+  }
+  if (trimmed.startsWith("'")) {
+    let scalar = "";
+    for (let index = 1; index < trimmed.length; index += 1) {
+      const char = trimmed[index];
+      if (char === "'" && trimmed[index + 1] === "'") {
+        scalar += "'";
+        index += 1;
+        continue;
+      }
+      if (char === "'") return scalar;
+      scalar += char;
+    }
+  }
+  return trimmed.replace(/\s+#.*$/, "");
 }
 
 function modelDefaultsFromEnv(env: RuntimeIdentityEnv): HermesModelDefaults | null {
@@ -137,8 +178,8 @@ function buildManagedHermesConfig(modelDefaults: HermesModelDefaults | null): st
     ...(modelDefaults
       ? [
           "model:",
-          ...(modelDefaults.provider ? [`  provider: ${modelDefaults.provider}`] : []),
-          `  default: ${modelDefaults.model}`,
+          ...(modelDefaults.provider ? [`  provider: ${quoteYamlString(modelDefaults.provider)}`] : []),
+          `  default: ${quoteYamlString(modelDefaults.model)}`,
           "",
         ]
       : []),
@@ -146,6 +187,10 @@ function buildManagedHermesConfig(modelDefaults: HermesModelDefaults | null): st
     "  show_token_analytics: true",
     "",
   ].join("\n");
+}
+
+function quoteYamlString(value: string): string {
+  return JSON.stringify(value);
 }
 
 export function deriveHermesProfileSlug(input: {

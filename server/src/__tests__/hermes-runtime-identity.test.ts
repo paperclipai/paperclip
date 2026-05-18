@@ -3,6 +3,7 @@ import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
+  detectHermesRuntimeModelDefaults,
   ensureHermesRuntimeIdentity,
   deriveHermesProfileSlug,
 } from "../adapters/hermes-runtime-identity.js";
@@ -95,14 +96,37 @@ describe("Hermes runtime identity", () => {
     const profileHome = path.join(instanceRoot, "runtimes", "hermes", "profiles", "acme-reviewer");
     await expect(readFile(path.join(profileHome, "config.yaml"), "utf8")).resolves.toBe([
       "model:",
-      "  provider: openrouter",
-      "  default: anthropic/claude-sonnet-4",
+      "  provider: \"openrouter\"",
+      "  default: \"anthropic/claude-sonnet-4\"",
       "",
       "dashboard:",
       "  show_token_analytics: true",
       "",
     ].join("\n"));
     await expect(stat(path.join(profileHome, ".env"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("parses quoted Hermes config defaults without treating # as a comment", async () => {
+    const baseHermesHome = await mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-base-"));
+    const configPath = path.join(baseHermesHome, "config.yaml");
+    await writeFile(
+      configPath,
+      [
+        "model:",
+        "  provider: \"openrouter:chat\" # real comment",
+        "  default: \"anthropic/claude-sonnet-4 # primary\"",
+        "",
+      ].join("\n"),
+    );
+
+    await expect(detectHermesRuntimeModelDefaults({
+      baseHermesHome,
+      env: {},
+    })).resolves.toEqual({
+      model: "anthropic/claude-sonnet-4 # primary",
+      provider: "openrouter:chat",
+      source: configPath,
+    });
   });
 
   it("seeds a new profile from Hermes model environment defaults", async () => {
@@ -131,12 +155,43 @@ describe("Hermes runtime identity", () => {
       ),
     ).resolves.toBe([
       "model:",
-      "  provider: openai",
-      "  default: openai/gpt-5.2",
+      "  provider: \"openai\"",
+      "  default: \"openai/gpt-5.2\"",
       "",
       "dashboard:",
       "  show_token_analytics: true",
       "",
+    ].join("\n"));
+  });
+
+  it("quotes generated YAML model defaults", async () => {
+    const instanceRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-profile-"));
+
+    await ensureHermesRuntimeIdentity({
+      companyId: "company-1",
+      companyName: "Acme",
+      agentId: "agent-1",
+      agentName: "Reviewer",
+      adapterType: "hermes_local",
+      adapterConfig: {},
+      metadata: null,
+      instanceRoot,
+      env: {
+        HERMES_MODEL: "openai/gpt-5.2 # primary",
+        HERMES_PROVIDER: "openai:compatible",
+      },
+      now: "2026-05-18T00:00:00.000Z",
+    });
+
+    await expect(
+      readFile(
+        path.join(instanceRoot, "runtimes", "hermes", "profiles", "acme-reviewer", "config.yaml"),
+        "utf8",
+      ),
+    ).resolves.toContain([
+      "model:",
+      "  provider: \"openai:compatible\"",
+      "  default: \"openai/gpt-5.2 # primary\"",
     ].join("\n"));
   });
 

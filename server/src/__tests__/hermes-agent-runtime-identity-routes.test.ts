@@ -291,5 +291,64 @@ describe("Hermes runtime identity routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.adapterConfig.env.HERMES_HOME).toContain("/runtimes/hermes/profiles/");
     expect(res.body.metadata.runtimeIdentity.adapter).toBe("hermes_local");
+    expect(mockAgentService.update).toHaveBeenLastCalledWith(
+      existing.id,
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          env: expect.objectContaining({
+            HERMES_HOME: "/tmp/paperclip/runtimes/hermes/profiles/acme-reviewer",
+          }),
+        }),
+      }),
+      {
+        recordRevision: {
+          createdByAgentId: null,
+          createdByUserId: "local-board",
+          source: "adapter_runtime_identity_update",
+        },
+      },
+    );
+  });
+
+  it("does not overwrite existing metadata when runtime identity returns null metadata", async () => {
+    const existing = makeAgent({
+      adapterType: "hermes_local",
+      adapterConfig: {},
+      metadata: { existing: true },
+    });
+    let persistedAgent = existing;
+    mockAgentService.getById.mockResolvedValue(existing);
+    mockAgentService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+      persistedAgent = makeAgent({
+        ...persistedAgent,
+        ...patch,
+        adapterConfig: patch.adapterConfig ?? persistedAgent.adapterConfig,
+        ...(Object.prototype.hasOwnProperty.call(patch, "metadata") ? { metadata: patch.metadata } : {}),
+      });
+      return persistedAgent;
+    });
+    mockAdapter.ensureRuntimeIdentity.mockResolvedValueOnce({
+      adapterConfig: {
+        env: {
+          HERMES_HOME: "/tmp/paperclip/runtimes/hermes/profiles/acme-reviewer",
+        },
+      },
+      metadata: null,
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/agents/${existing.id}`)
+      .send({
+        adapterConfig: {
+          timeoutSec: 30,
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.metadata).toEqual({ existing: true });
+    const runtimeIdentityUpdate = mockAgentService.update.mock.calls.find((call) =>
+      call[2]?.recordRevision?.source === "adapter_runtime_identity_update",
+    );
+    expect(runtimeIdentityUpdate?.[1]).not.toHaveProperty("metadata");
   });
 });
