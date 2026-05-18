@@ -240,6 +240,12 @@ With these flags set, the Paperclip UI will automatically show the instructions 
 
 If capability flags are not set, the server falls back to legacy hardcoded lists for built-in adapter types. External adapters that omit the flags will default to `false` for all capabilities.
 
+## Runtime Identity Hooks
+
+Adapters that need one durable runtime profile per Paperclip agent can implement `ensureRuntimeIdentity`.
+
+The hook runs after Paperclip creates an agent and after adapter type/config changes. It must be idempotent. Return the adapter config and metadata Paperclip should persist. Do not delete runtime state from this hook.
+
 ## Skills Injection
 
 Make Paperclip skills discoverable to your agent runtime without writing to the agent's working directory:
