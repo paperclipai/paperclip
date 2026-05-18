@@ -78,4 +78,25 @@ EOF
     echo "Seeded default config at $CONFIG_PATH"
 fi
 
+# Optional SSH access. Started ONLY when the workspace was launched with a
+# public key (jade injects it as SSH_AUTHORIZED_KEY) — no key means no
+# daemon and no listening port. Key-only auth, node user only, no root,
+# no passwords. Host keys are baked into the image at build (ssh-keygen -A).
+if [ -n "${SSH_AUTHORIZED_KEY:-}" ]; then
+    SSH_HOME=${PAPERCLIP_HOME:-/paperclip}
+    mkdir -p "$SSH_HOME/.ssh"
+    printf '%s\n' "$SSH_AUTHORIZED_KEY" > "$SSH_HOME/.ssh/authorized_keys"
+    chmod 700 "$SSH_HOME/.ssh"
+    chmod 600 "$SSH_HOME/.ssh/authorized_keys"
+    chown -R node:node "$SSH_HOME/.ssh"
+    mkdir -p /run/sshd
+    echo "Starting sshd (key-only, user 'node')"
+    /usr/sbin/sshd \
+        -o PasswordAuthentication=no \
+        -o PermitRootLogin=no \
+        -o PubkeyAuthentication=yes \
+        -o AllowUsers=node \
+        -o X11Forwarding=no
+fi
+
 exec gosu node "$@"
