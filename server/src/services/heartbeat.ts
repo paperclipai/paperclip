@@ -2391,6 +2391,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
   const activeRunExecutions = new Set<string>();
+  let shutdownRequested = false;
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
@@ -8226,6 +8227,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             failureReason: latestRun?.error ?? undefined,
           });
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
+          await releaseIssueExecutionAndPromote(latestRun ?? run).catch(() => undefined);
           activeRunExecutions.delete(run.id);
           await startNextQueuedRunForAgent(run.agentId);
         }
@@ -9969,9 +9971,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             eq(heartbeatRuns.status, "running"),
           ),
         )
-        .orderBy(desc(heartbeatRuns.startedAt))
+        .orderBy(desc(heartbeatRuns.createdAt))
         .limit(1);
       return run ?? null;
+    },
+
+    gracefulShutdown: async (opts?: { timeoutMs?: number }) => {
+      shutdownRequested = true;
+      const timeoutMs = opts?.timeoutMs ?? 30_000;
+      const deadline = Date.now() + timeoutMs;
+
+      const activeRunIds = Array.from(activeRunExecutions);
+      for (const activeRunId of activeRunIds) {
+        try {
+          await cancelRunInternal(activeRunId, "Server shutting down");
+        } catch (err) {
+          logger.warn(
+            { err, runId: activeRunId },
+            "Failed to cancel active run during graceful shutdown",
+          );
+        }
+      }
+
+      while (activeRunExecutions.size > 0 && Date.now() < deadline) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      }
+
+      if (activeRunExecutions.size > 0) {
+        logger.warn(
+          { remainingActiveRuns: Array.from(activeRunExecutions) },
+          "Graceful shutdown timed out with active runs still executing",
+        );
+      }
     },
   };
 }

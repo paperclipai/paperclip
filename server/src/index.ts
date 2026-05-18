@@ -669,8 +669,11 @@ export async function startServer(): Promise<StartedServer> {
       logger.error({ err }, "startup reconciliation of persisted runtime services failed");
     });
   
+  let heartbeatServiceInstance: ReturnType<typeof heartbeatService> | null = null;
+
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    heartbeatServiceInstance = heartbeatService(db as any, { pluginWorkerManager });
+    const heartbeat = heartbeatServiceInstance;
     const routines = routineService(db as any, { pluginWorkerManager });
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
@@ -872,6 +875,15 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      if (heartbeatServiceInstance) {
+        logger.info({ signal }, "Gracefully shutting down active heartbeat runs");
+        try {
+          await heartbeatServiceInstance.gracefulShutdown({ timeoutMs: 30_000 });
+        } catch (err) {
+          logger.error({ err }, "Heartbeat graceful shutdown failed");
+        }
+      }
+
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         telemetryClient.stop();
