@@ -610,6 +610,20 @@
       "when": 1778976000000,
       "tag": "0086_routine_env_runtime_contract",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1779064937995,
+      "tag": "0087_red_human_cannonball",
+      "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1779070407463,
+      "tag": "0088_fearless_ser_duncan",
+      "breakpoints": true
     }
   ]
 }
