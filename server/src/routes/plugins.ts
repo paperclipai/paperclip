@@ -140,7 +140,14 @@ interface PluginHealthCheckResult {
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-const PLUGIN_API_BODY_LIMIT_BYTES = 1_000_000;
+// MAT-666 F7: scoped plugin-API JSON body limit. Enforced pre-parse by a
+// dedicated express.json() instance mounted in app.ts on the scoped API path
+// prefix, so oversize payloads are rejected with 413 before the parser
+// buffers them.
+export const PLUGIN_API_BODY_LIMIT_BYTES = 1_000_000;
+// Matches `/api/plugins/<id>/api` and `/api/plugins/<id>/api/<...>`. Used by
+// the app-level JSON-parser dispatcher to apply the scoped-API limit.
+export const PLUGIN_SCOPED_API_PATH_REGEX = /^\/api\/plugins\/[^/]+\/api(?:\/|$)/;
 const PLUGIN_SCOPED_API_RESPONSE_HEADER_ALLOWLIST = new Set([
   "cache-control",
   "etag",
@@ -1486,8 +1493,15 @@ export function pluginRoutes(
         return;
       }
       const requestBody = req.body ?? null;
-      const bodySize = Buffer.byteLength(JSON.stringify(requestBody));
-      if (bodySize > PLUGIN_API_BODY_LIMIT_BYTES) {
+      // MAT-666 F7: primary limit enforced pre-parse by the dedicated
+      // express.json() instance mounted in app.ts (PLUGIN_API_BODY_LIMIT_BYTES),
+      // which rejects oversize payloads with 413 before they are buffered into
+      // memory. Defense-in-depth fallback below uses the raw payload size
+      // captured by the parser's `verify` hook so the count reflects bytes
+      // actually received rather than `JSON.stringify(req.body)`, which can
+      // drift from the wire size.
+      const rawBodyLength = (req as unknown as { rawBody?: Buffer }).rawBody?.length ?? 0;
+      if (rawBodyLength > PLUGIN_API_BODY_LIMIT_BYTES) {
         res.status(413).json({ error: "Plugin API request body is too large" });
         return;
       }

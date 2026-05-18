@@ -1,4 +1,9 @@
-import express, { Router, type Request as ExpressRequest } from "express";
+import express, {
+  Router,
+  type Request as ExpressRequest,
+  type Response as ExpressResponse,
+  type NextFunction,
+} from "express";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -38,7 +43,11 @@ import { llmRoutes } from "./routes/llms.js";
 import { authRoutes } from "./routes/auth.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
-import { pluginRoutes } from "./routes/plugins.js";
+import {
+  pluginRoutes,
+  PLUGIN_API_BODY_LIMIT_BYTES,
+  PLUGIN_SCOPED_API_PATH_REGEX,
+} from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
@@ -137,13 +146,29 @@ export async function createApp(
 ) {
   const app = express();
 
-  app.use(express.json({
+  const captureRawBody = (req: ExpressRequest, _res: ExpressResponse, buf: Buffer) => {
+    (req as unknown as { rawBody: Buffer }).rawBody = buf;
+  };
+  // MAT-666 F7: scoped plugin-API routes get a dedicated parser with a tighter
+  // pre-parse limit than the default 10mb parser. express.json() rejects
+  // payloads exceeding the limit with a 413 PayloadTooLargeError before
+  // buffering, so oversize bodies on `/api/plugins/:pluginId/api/...` never
+  // reach the route handler.
+  const pluginScopedApiJsonParser = express.json({
+    limit: PLUGIN_API_BODY_LIMIT_BYTES,
+    verify: captureRawBody,
+  });
+  const defaultJsonParser = express.json({
     // Company import/export payloads can inline full portable packages.
     limit: "10mb",
-    verify: (req, _res, buf) => {
-      (req as unknown as { rawBody: Buffer }).rawBody = buf;
-    },
-  }));
+    verify: captureRawBody,
+  });
+  app.use((req: ExpressRequest, res: ExpressResponse, next: NextFunction) => {
+    if (PLUGIN_SCOPED_API_PATH_REGEX.test(req.path)) {
+      return pluginScopedApiJsonParser(req, res, next);
+    }
+    return defaultJsonParser(req, res, next);
+  });
   app.use(httpLogger);
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
