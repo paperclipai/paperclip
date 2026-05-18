@@ -312,6 +312,74 @@ describe("ProviderStatusPanel", () => {
     await act(async () => root.unmount());
   });
 
+  it("operator toggle Submit stays disabled on whitespace-only reason", async () => {
+    // LET-378 nit 2: harden the UI gate that backs the server-side 422 on
+    // empty/whitespace reasons. The Submit button must stay disabled and
+    // aria-disabled even when the textarea is non-empty as long as every
+    // character is whitespace.
+    billingCapState.getStatus.mockResolvedValue(
+      baseStatus({
+        meta: {
+          previewOnly: false,
+          allowLive: true,
+          generatedAt: "2026-05-17T22:00:00.000Z",
+          source: "e2b-usage-api",
+        },
+        operatorToggle: {
+          currentlyEnabled: false,
+          canOperate: true,
+          lockedReason: null,
+        },
+      }),
+    );
+
+    const root = await renderPanel(container);
+
+    const openButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Enable provider-enable config"]',
+    );
+    expect(openButton).not.toBeNull();
+    expect(openButton!.disabled).toBe(false);
+
+    await act(async () => {
+      openButton!.click();
+    });
+    await flush();
+
+    // Radix Dialog renders into a portal at document.body, not inside the
+    // mount container.
+    const textarea = document.body.querySelector<HTMLTextAreaElement>(
+      "#operator-toggle-reason",
+    );
+    expect(textarea).not.toBeNull();
+
+    // Drive the native value setter so React's synthetic onChange fires.
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype,
+      "value",
+    )!.set!;
+    await act(async () => {
+      valueSetter.call(textarea, "   \t  \n");
+      textarea!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flush();
+
+    expect(textarea!.value).toBe("   \t  \n");
+
+    const dialogButtons = Array.from(
+      document.body.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'),
+    );
+    const submit = dialogButtons.find(
+      (button) => button.textContent?.trim() === "Enable",
+    );
+    expect(submit).toBeDefined();
+    expect(submit!.disabled).toBe(true);
+    expect(submit!.getAttribute("aria-disabled")).toBe("true");
+    expect(billingCapState.flipOperatorToggle).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
   it("never renders raw vendor secret; only apiKeyConfigured + redacted suffix", async () => {
     billingCapState.getStatus.mockResolvedValue(
       baseStatus({

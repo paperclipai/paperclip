@@ -618,13 +618,20 @@ function RecentLeasesBlock({ leases }: { leases: SandboxProviderLeaseSummary[] }
               {top10.map((lease) => (
                 <tr key={lease.id} className="hover:bg-muted/30">
                   <td className="px-3 py-2 align-top">
-                    <Link
-                      to={`/sandbox/leases/${lease.id}`}
-                      className="font-mono text-xs underline-offset-2 hover:underline"
-                      aria-label={`Open lease ${lease.id} detail`}
+                    {/*
+                     * LET-378 nit 1: lease detail route (`/sandbox/leases/:id`)
+                     * is not declared in App.tsx yet. Render as plain text with
+                     * a title rather than emit a Link that lands on the SPA
+                     * not-found surface. Swap back to <Link> once the route
+                     * ships alongside LET-367's read-model work.
+                     */}
+                    <span
+                      className="font-mono text-xs text-muted-foreground"
+                      aria-label={`Lease ${lease.id} (detail route not yet available)`}
+                      title="Lease detail route not yet available"
                     >
                       {lease.id.slice(0, 12)}…
-                    </Link>
+                    </span>
                   </td>
                   <td className="px-3 py-2 align-top text-xs">
                     <StateChip label={lease.state} tone="info" />
@@ -649,10 +656,31 @@ function RecentLeasesBlock({ leases }: { leases: SandboxProviderLeaseSummary[] }
                     )}
                   </td>
                   <td className="px-3 py-2 align-top text-xs">
+                    {/*
+                     * LET-378 nit 1: top-level `/runs/:runId` is not declared
+                     * in App.tsx. The agent-scoped route
+                     * `/agents/:agentId/runs/:runId` IS defined (AgentDetail),
+                     * so when both ids are present we route there. Otherwise
+                     * fall back to plain text + title so clicks do not land on
+                     * the SPA not-found surface.
+                     */}
                     {lease.runId ? (
-                      <Link to={`/runs/${lease.runId}`} className="font-mono underline-offset-2 hover:underline">
-                        {lease.runId.slice(0, 8)}
-                      </Link>
+                      lease.agentId ? (
+                        <Link
+                          to={`/agents/${lease.agentId}/runs/${lease.runId}`}
+                          className="font-mono underline-offset-2 hover:underline"
+                        >
+                          {lease.runId.slice(0, 8)}
+                        </Link>
+                      ) : (
+                        <span
+                          className="font-mono text-muted-foreground"
+                          aria-label={`Run ${lease.runId} (detail route not yet available)`}
+                          title="Run detail route not yet available"
+                        >
+                          {lease.runId.slice(0, 8)}
+                        </span>
+                      )
                     ) : (
                       "—"
                     )}
