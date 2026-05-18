@@ -227,11 +227,11 @@ export async function testEnvironment(
   if (!checks.some((check) => check.code === "codex_command_not_absolute")) {
     try {
       await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
-    checks.push({
-      code: "codex_command_resolvable",
-      level: "info",
-      message: `Command is executable: ${command}`,
-    });
+      checks.push({
+        code: "codex_command_resolvable",
+        level: "info",
+        message: `Command is executable: ${command}`,
+      });
     } catch (err) {
       checks.push({
         code: "codex_command_unresolvable",
