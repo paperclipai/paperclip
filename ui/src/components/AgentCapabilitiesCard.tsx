@@ -7,6 +7,7 @@ import type {
   AgentCapabilityConfigInput,
   AgentCapabilityMcpServer,
   AgentCapabilitySettingsResponse,
+  CapabilityApplyPlanInput,
 } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { companiesApi } from "../api/companies";
@@ -176,6 +177,41 @@ const workspaceTabs: { key: WorkspaceTab; label: string }[] = [
   { key: "apply", label: "Apply Preview" },
 ];
 
+function deriveEffectiveDelta(
+  proposal: AgentCapabilityApplyPreviewProposal | null,
+): CapabilityApplyPlanInput["effectiveDelta"] | null {
+  if (!proposal || proposal.status === "no_op") return null;
+  // The plan-builder server is authoritative for risk-class derivation. Pass
+  // through identity + verified catalog hints; never invent destructiveHint or
+  // openWorldHint we don't have.
+  const mcpServerChanges = [
+    ...proposal.mcpServers.additions,
+    ...proposal.mcpServers.updates,
+    ...proposal.mcpServers.removals,
+  ].map((row) => ({
+    kind: row.kind,
+    serverId: row.id,
+    displayName: row.displayName,
+    transport: row.transport,
+    requiredSecretNames: row.requiredSecretNames,
+    // The preview row exposes low|medium|high risk bands. The server's plan
+    // builder re-derives the apply risk class; only `governance_critical` is
+    // forwarded so the plan builder refuses gov-critical adds.
+  }));
+  const skillRefChanges: NonNullable<CapabilityApplyPlanInput["effectiveDelta"]["skillRefChanges"]> = [
+    ...proposal.skillRefs.additions.map((r) => ({ kind: "add" as const, ref: r.ref })),
+    ...proposal.skillRefs.removals.map((r) => ({ kind: "remove" as const, ref: r.ref })),
+  ];
+  const toolRefChanges: NonNullable<CapabilityApplyPlanInput["effectiveDelta"]["toolRefChanges"]> = [
+    ...proposal.toolRefs.additions.map((r) => ({ kind: "add" as const, ref: r.ref })),
+    ...proposal.toolRefs.removals.map((r) => ({ kind: "remove" as const, ref: r.ref })),
+  ];
+  if (mcpServerChanges.length === 0 && skillRefChanges.length === 0 && toolRefChanges.length === 0) {
+    return null;
+  }
+  return { mcpServerChanges, skillRefChanges, toolRefChanges };
+}
+
 function CapabilitySettingsCard({
   title,
   description,
@@ -205,6 +241,7 @@ function CapabilitySettingsCard({
   const [draft, setDraft] = useState("");
   const [clientError, setClientError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("summary");
+  const [latestProposal, setLatestProposal] = useState<AgentCapabilityApplyPreviewProposal | null>(null);
 
   const capabilitiesQuery = useQuery({
     queryKey,
@@ -450,11 +487,13 @@ function CapabilitySettingsCard({
             draftConfig={parsedDraft.config ?? capabilitiesQuery.data?.config}
             draftError={parsedDraft.error}
             previewFn={previewFn}
+            onProposal={setLatestProposal}
           />
           {applyPanelContext && (
             <CapabilityApplyPanel
               companyId={applyPanelContext.companyId}
               agentId={applyPanelContext.agentId}
+              effectiveDelta={deriveEffectiveDelta(latestProposal) ?? undefined}
             />
           )}
         </div>

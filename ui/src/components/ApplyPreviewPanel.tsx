@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useMutation } from "@tanstack/react-query";
 import type {
   AgentCapabilityApplyPreviewProposal,
@@ -11,6 +12,8 @@ interface ApplyPreviewPanelProps {
   draftConfig: AgentCapabilityApplyPreviewRequestInput["draftConfig"] | undefined;
   draftError: string | null;
   previewFn: (body: AgentCapabilityApplyPreviewRequestInput) => Promise<AgentCapabilityApplyPreviewProposal>;
+  /** Optional observer for parent components that wire the proposal into the G.3 apply panel. */
+  onProposal?: (proposal: AgentCapabilityApplyPreviewProposal | null) => void;
 }
 
 function riskBadgeClass(risk: "low" | "medium" | "high"): string {
@@ -72,7 +75,7 @@ function RefRow({ row, label }: { row: AgentCapabilityRefChangeRow; label: strin
   );
 }
 
-export function ApplyPreviewPanel({ draftConfig, draftError, previewFn }: ApplyPreviewPanelProps) {
+export function ApplyPreviewPanel({ draftConfig, draftError, previewFn, onProposal }: ApplyPreviewPanelProps) {
   const mutation = useMutation({
     mutationFn: () =>
       previewFn({
@@ -82,6 +85,10 @@ export function ApplyPreviewPanel({ draftConfig, draftError, previewFn }: ApplyP
 
   const proposal = mutation.data ?? null;
   const errorMessage = mutation.error instanceof Error ? mutation.error.message : null;
+
+  useEffect(() => {
+    onProposal?.(proposal);
+  }, [proposal, onProposal]);
 
   return (
     <div className="space-y-3">
