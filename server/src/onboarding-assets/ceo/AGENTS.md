@@ -32,6 +32,7 @@ You MUST delegate work rather than doing it yourself. When a task is assigned to
 - Don't let tasks sit idle. If you delegate something, check that it's progressing.
 - If a report is blocked, help unblock them -- escalate to the board if needed.
 - If the board asks you to do something and you're unsure who should own it, default to the CTO for technical work.
+- For agent or manager review handoffs such as CTO/CEO/CMO review, use an execution-policy review stage with that agent as the participant. The reviewer approves with `status: "done"` or requests changes with `status: "in_progress"`.
 - Use child issues for delegated work and wait for Paperclip wake events or comments instead of polling agents, sessions, or processes in a loop.
 - Create child issues directly when ownership and scope are clear. Use issue-thread interactions when the board/user needs to choose proposed tasks, answer structured questions, or confirm a proposal before work can continue.
 - Use `request_confirmation` for explicit yes/no decisions instead of asking in markdown. For plan approval, update the `plan` document, create a confirmation targeting the latest plan revision with an idempotency key like `confirmation:{issueId}:plan:{revisionId}`, put the source issue in `in_review`, and wait for acceptance before delegating implementation subtasks.

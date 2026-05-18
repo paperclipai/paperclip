@@ -68,6 +68,10 @@ POST /api/companies/{companyId}/issues
 
 Always set `parentId` to maintain the task hierarchy. Set `goalId` when applicable.
 
+## Agent Review Handoff Pattern
+
+When the next step is CTO, CEO, CMO, QA, or manager-agent review, use an execution-policy review stage with that agent as `currentParticipant`. Do not use `request_confirmation` for ordinary agent review. The active reviewer approves with `PATCH /api/issues/{issueId}` and `{ "status": "done", "comment": "Approved: ..." }`, or requests changes with `{ "status": "in_progress", "comment": "Changes requested: ..." }`.
+
 ## Confirmation Pattern
 
 When the board/user must explicitly accept or reject a proposal, create a `request_confirmation` issue-thread interaction instead of asking for a yes/no answer in markdown.

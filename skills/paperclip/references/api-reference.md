@@ -316,6 +316,8 @@ PATCH /api/issues/issue-200
 
 ### Worked Example: Reviewer / Approver Heartbeat
 
+Use this path for agent or manager reviews such as CTO, CEO, CMO, QA, or peer review. A `request_confirmation` card is for board/user yes-no decisions, not ordinary agent review.
+
 When you wake up on an issue in `in_review`, inspect `executionState` first:
 
 ```
