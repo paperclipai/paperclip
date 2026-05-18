@@ -1,17 +1,21 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
+import type { ToolAccessMode } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
+import { logActivity } from "./activity-log.js";
 import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { toolAccessService } from "./tool-access.js";
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
   const budgets = budgetService(db);
   const instanceSettings = instanceSettingsService(db);
+  const toolAccess = toolAccessService(db);
   const canResolveStatuses = new Set(["pending", "revision_requested"]);
   const resolvableStatuses = Array.from(canResolveStatuses);
   type ApprovalRecord = typeof approvals.$inferSelect;
@@ -76,6 +80,52 @@ export function approvalService(db: Db) {
     throw unprocessable(
       `Only pending or revision requested approvals can be ${targetStatus === "approved" ? "approved" : "rejected"}`,
     );
+  }
+
+  async function applyToolAccessChangeApproval(updated: ApprovalRecord, decidedByUserId: string) {
+    const payload = updated.payload as Record<string, unknown>;
+    const agentId = typeof payload.agentId === "string" ? payload.agentId : null;
+    const toolId = typeof payload.toolId === "string" ? payload.toolId : null;
+    const mode = typeof payload.mode === "string" ? payload.mode : null;
+    if (!agentId || !toolId || !mode) throw unprocessable("Invalid tool access change payload");
+
+    const result = await toolAccess.setGrant(
+      updated.companyId,
+      agentId,
+      toolId,
+      mode as ToolAccessMode,
+      updated.requestedByUserId ?? decidedByUserId,
+    );
+
+    const agent = await agentsSvc.getById(result.grant.agentId);
+    if (agent && agent.companyId === updated.companyId && agent.adapterType === "hermes_local") {
+      const rendered = await toolAccess.renderHermesAgentConfig(updated.companyId, agent);
+      await agentsSvc.update(agent.id, { adapterConfig: rendered.adapterConfig }, {
+        recordRevision: {
+          createdByAgentId: updated.requestedByAgentId,
+          createdByUserId: decidedByUserId,
+          source: "tool_access_approval_render",
+        },
+      });
+    }
+
+    await logActivity(db, {
+      companyId: updated.companyId,
+      actorType: "user",
+      actorId: decidedByUserId,
+      agentId: updated.requestedByAgentId,
+      action: "company.tool_grant_changed",
+      entityType: "company_tool",
+      entityId: result.tool.id,
+      details: {
+        agentId: result.grant.agentId,
+        toolLabel: result.tool.label,
+        previousMode: result.previousMode,
+        newMode: result.grant.mode,
+        risk: result.tool.risk,
+        approvalId: updated.id,
+      },
+    });
   }
 
   return {
@@ -163,6 +213,10 @@ export function approvalService(db: Db) {
             approvedAt: now,
           }).catch(() => {});
         }
+      }
+
+      if (applied && updated.type === "tool_access_change") {
+        await applyToolAccessChangeApproval(updated, decidedByUserId);
       }
 
       return { approval: updated, applied };

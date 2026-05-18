@@ -1,6 +1,6 @@
 import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentToolGrants, agents, companyTools } from "@paperclipai/db";
+import { agentToolGrants, agents, companyTools, toolAccessPolicies } from "@paperclipai/db";
 import type { ToolAccessMode } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 
@@ -8,6 +8,10 @@ type ToolAccessAgent = Pick<typeof agents.$inferSelect, "id" | "adapterType" | "
 type ToolAccessMatrix = {
   tools: Array<typeof companyTools.$inferSelect>;
   grants: Array<typeof agentToolGrants.$inferSelect>;
+};
+type GrantChangePreview = {
+  previousMode: ToolAccessMode;
+  tool: typeof companyTools.$inferSelect;
 };
 
 interface ToolAccessRenderState {
@@ -20,6 +24,22 @@ interface ToolAccessRenderState {
 }
 
 const TOOL_ACCESS_RENDER_METADATA_KEY = "toolAccessRender";
+
+const RISK_RANK = { read: 1, write: 2, admin: 3, secret: 4 } as const;
+const MODE_RANK = { off: 0, read: 1, write: 2, admin: 3 } as const;
+
+export function riskMeetsThreshold(risk: string, threshold: string | null | undefined): boolean {
+  if (!threshold) return false;
+  const riskRank = RISK_RANK[risk as keyof typeof RISK_RANK] ?? 0;
+  const thresholdRank = RISK_RANK[threshold as keyof typeof RISK_RANK] ?? 99;
+  return riskRank >= thresholdRank;
+}
+
+export function modeIncreases(previousMode: string, newMode: string): boolean {
+  const previousRank = MODE_RANK[previousMode as keyof typeof MODE_RANK] ?? 0;
+  const newRank = MODE_RANK[newMode as keyof typeof MODE_RANK] ?? 0;
+  return newRank > previousRank;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -209,13 +229,12 @@ export function toolAccessService(db: Db) {
     return { tools, grants };
   }
 
-  async function setGrant(
+  async function previewGrantChange(
     companyId: string,
     agentId: string,
     toolId: string,
     mode: ToolAccessMode,
-    grantedByUserId: string | null,
-  ) {
+  ): Promise<GrantChangePreview> {
     const [agent] = await db.select().from(agents).where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)));
     if (!agent) throw notFound("Agent not found");
     const [tool] = await db.select().from(companyTools).where(and(eq(companyTools.id, toolId), eq(companyTools.companyId, companyId)));
@@ -232,12 +251,32 @@ export function toolAccessService(db: Db) {
         eq(agentToolGrants.toolId, toolId),
       ))
       .then((rows) => rows[0] ?? null);
+    return { previousMode: (existing?.mode ?? "off") as ToolAccessMode, tool };
+  }
+
+  async function setGrant(
+    companyId: string,
+    agentId: string,
+    toolId: string,
+    mode: ToolAccessMode,
+    grantedByUserId: string | null,
+  ) {
+    const preview = await previewGrantChange(companyId, agentId, toolId, mode);
+    const existing = await db
+      .select()
+      .from(agentToolGrants)
+      .where(and(
+        eq(agentToolGrants.companyId, companyId),
+        eq(agentToolGrants.agentId, agentId),
+        eq(agentToolGrants.toolId, toolId),
+      ))
+      .then((rows) => rows[0] ?? null);
     if (existing) {
       const [updated] = await db.update(agentToolGrants)
         .set({ mode, grantedByUserId, updatedAt: new Date() })
         .where(and(eq(agentToolGrants.id, existing.id), eq(agentToolGrants.companyId, companyId)))
         .returning();
-      return { previousMode: existing.mode as ToolAccessMode, grant: updated, tool };
+      return { previousMode: preview.previousMode, grant: updated, tool: preview.tool };
     }
     const [created] = await db.insert(agentToolGrants).values({
       companyId,
@@ -246,7 +285,7 @@ export function toolAccessService(db: Db) {
       mode,
       grantedByUserId,
     }).returning();
-    return { previousMode: "off" as ToolAccessMode, grant: created, tool };
+    return { previousMode: preview.previousMode, grant: created, tool: preview.tool };
   }
 
   return {
@@ -256,6 +295,35 @@ export function toolAccessService(db: Db) {
       const [created] = await db.insert(companyTools).values({ ...input, companyId }).returning();
       return created;
     },
+
+    getPolicy: async (companyId: string) => {
+      const [policy] = await db.select().from(toolAccessPolicies).where(eq(toolAccessPolicies.companyId, companyId));
+      return policy ?? null;
+    },
+
+    getTool: async (companyId: string, toolId: string) => {
+      const [tool] = await db.select().from(companyTools).where(and(eq(companyTools.companyId, companyId), eq(companyTools.id, toolId)));
+      if (!tool) throw notFound("Tool not found");
+      return tool;
+    },
+
+    upsertPolicy: async (companyId: string, input: { approvalRequiredAtRisk?: string | null }) => {
+      const existing = await db.select().from(toolAccessPolicies).where(eq(toolAccessPolicies.companyId, companyId)).then((rows) => rows[0] ?? null);
+      if (existing) {
+        const [updated] = await db.update(toolAccessPolicies)
+          .set({ approvalRequiredAtRisk: input.approvalRequiredAtRisk ?? null, updatedAt: new Date() })
+          .where(eq(toolAccessPolicies.id, existing.id))
+          .returning();
+        return updated;
+      }
+      const [created] = await db.insert(toolAccessPolicies).values({
+        companyId,
+        approvalRequiredAtRisk: input.approvalRequiredAtRisk ?? null,
+      }).returning();
+      return created;
+    },
+
+    previewGrantChange,
 
     renderHermesAgentConfig: async (
       companyId: string,

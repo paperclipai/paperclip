@@ -3,9 +3,11 @@ import type { Db } from "@paperclipai/db";
 import {
   agentToolGrantBulkSetSchema,
   companyToolCreateSchema,
+  toolAccessPolicyUpdateSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { accessService, agentService, logActivity, toolAccessService } from "../services/index.js";
+import { accessService, agentService, approvalService, logActivity, toolAccessService } from "../services/index.js";
+import { modeIncreases, riskMeetsThreshold } from "../services/tool-access.js";
 import { forbidden } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
@@ -48,16 +50,52 @@ export function toolAccessRoutes(db: Db) {
     res.status(201).json(tool);
   });
 
+  router.get("/companies/:companyId/tool-access-policy", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.getPolicy(companyId));
+  });
+
+  router.patch("/companies/:companyId/tool-access-policy", validate(toolAccessPolicyUpdateSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCanManage(req, companyId);
+    res.json(await svc.upsertPolicy(companyId, req.body));
+  });
+
   router.post("/companies/:companyId/tool-grants", validate(agentToolGrantBulkSetSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCanManage(req, companyId);
     const actor = getActorInfo(req);
-    const grantResults = await db.transaction(async (tx) => {
+    const result = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       const txSvc = toolAccessService(txDb);
       const txAgents = agentService(txDb);
+      const txApprovals = approvalService(txDb);
+      const policy = await txSvc.getPolicy(companyId);
       const savedResults = [];
+      const approvals = [];
       for (const grant of req.body.grants) {
+        const preview = await txSvc.previewGrantChange(companyId, grant.agentId, grant.toolId, grant.mode);
+        if (
+          policy
+          && grant.mode !== "off"
+          && modeIncreases(preview.previousMode, grant.mode)
+          && riskMeetsThreshold(preview.tool.risk, policy.approvalRequiredAtRisk)
+        ) {
+          const approval = await txApprovals.create(companyId, {
+            type: "tool_access_change",
+            status: "pending",
+            requestedByAgentId: actor.agentId,
+            requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
+            payload: {
+              agentId: grant.agentId,
+              toolId: grant.toolId,
+              mode: grant.mode,
+            },
+          });
+          approvals.push(approval);
+          continue;
+        }
         const saved = await txSvc.setGrant(
           companyId,
           grant.agentId,
@@ -107,9 +145,9 @@ export function toolAccessRoutes(db: Db) {
           },
         });
       }
-      return savedResults;
+      return { savedResults, approvals };
     });
-    res.json({ grants: grantResults.map((result) => result.grant) });
+    res.json({ grants: result.savedResults.map((entry) => entry.grant), approvals: result.approvals });
   });
 
   return router;
