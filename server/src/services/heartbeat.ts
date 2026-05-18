@@ -201,6 +201,8 @@ const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
+// BEY-1737: 5 min mute window after a self-comment-triggered wake skip.
+const SELF_COMMENT_WAKE_MUTE_MS = 5 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
@@ -2391,6 +2393,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
   const activeRunExecutions = new Set<string>();
+  // BEY-1737: Per-agent mute window timestamps (unix ms). Set when a self-comment
+  // triggered wake is filtered; suppresses further comment-triggered wakes on the
+  // same agent for SELF_COMMENT_MUTE_MS to defend against cascading self-wake loops.
+  const selfCommentWakeMuteUntil = new Map<string, number>();
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
@@ -8719,6 +8725,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         finishedAt: new Date(),
       });
     };
+
+    // BEY-1737: Central Self-Wake-Filter + 5-min Mute-Window. Catches all wake
+    // paths that pass a wakeCommentId. The existing route-level filters
+    // (routes/issues.ts:3626, :4638) only cover authenticated direct comment
+    // posts; this layer covers automation, recovery, and follow-up wakes.
+    if (wakeCommentId) {
+      const [commentRow] = await db
+        .select({ authorAgentId: issueComments.authorAgentId })
+        .from(issueComments)
+        .where(
+          and(eq(issueComments.companyId, agent.companyId), eq(issueComments.id, wakeCommentId)),
+        )
+        .limit(1);
+      const commentAuthorAgentId = commentRow?.authorAgentId ?? null;
+      if (commentAuthorAgentId && commentAuthorAgentId === agentId) {
+        selfCommentWakeMuteUntil.set(agentId, Date.now() + SELF_COMMENT_WAKE_MUTE_MS);
+        await writeSkippedRequest("self_comment_wake_skipped");
+        return null;
+      }
+      const mutedUntil = selfCommentWakeMuteUntil.get(agentId);
+      if (mutedUntil !== undefined) {
+        if (mutedUntil > Date.now()) {
+          await writeSkippedRequest("self_comment_mute_window_active");
+          return null;
+        }
+        selfCommentWakeMuteUntil.delete(agentId);
+      }
+    }
 
     let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
     if (!projectId && issueId) {
