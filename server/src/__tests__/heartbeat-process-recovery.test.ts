@@ -2987,11 +2987,22 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await waitForRunToSettle(heartbeat, runId, 5_000);
     await waitForHeartbeatIdle(db, 5_000);
 
-    const agent = await db
-      .select({ status: agents.status })
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .then((rows) => rows[0] ?? null);
+    // Wait for finalizeAgentStatus to fire after the run settles. executeRun sets
+    // agent.status = "running" before calling the adapter; finalizeAgentStatus
+    // resets it afterward. waitForHeartbeatIdle returns as soon as all runs are
+    // terminal, which can race with finalizeAgentStatus on the agent row.
+    const agent = await waitForValue(
+      () =>
+        db
+          .select({ status: agents.status })
+          .from(agents)
+          .where(eq(agents.id, agentId))
+          .then((rows) => {
+            const row = rows[0];
+            return row && row.status !== "running" ? row : null;
+          }),
+      5_000,
+    );
     expect(agent?.status).toBe("idle");
   });
 });
