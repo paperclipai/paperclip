@@ -349,6 +349,8 @@ const plugin: PaperclipPlugin = definePlugin({
           return await handleStateGet(input);
         case "state-put":
           return await handleStatePut(input);
+        case "import":
+          return await handleImport(input);
         default:
           return { status: 404, body: { error: `unknown routeKey: ${input.routeKey}` } };
       }
