@@ -298,6 +298,7 @@ describe("heartbeat comment wake batching", () => {
           headers: {
             "x-openclaw-token": "gateway-token",
           },
+          includePaperclipPayload: true,
           payloadTemplate: {
             message: "wake now",
           },
@@ -491,6 +492,7 @@ describe("heartbeat comment wake batching", () => {
           headers: {
             "x-openclaw-token": "gateway-token",
           },
+          includePaperclipPayload: true,
           payloadTemplate: {
             message: "wake now",
           },
@@ -653,6 +655,7 @@ describe("heartbeat comment wake batching", () => {
           headers: {
             "x-openclaw-token": "gateway-token",
           },
+          includePaperclipPayload: true,
           payloadTemplate: {
             message: "wake now",
           },
@@ -841,6 +844,7 @@ describe("heartbeat comment wake batching", () => {
             headers: {
               "x-openclaw-token": "gateway-token",
             },
+            includePaperclipPayload: true,
             payloadTemplate: {
               message: "wake now",
             },
@@ -861,6 +865,7 @@ describe("heartbeat comment wake batching", () => {
             headers: {
               "x-openclaw-token": "gateway-token",
             },
+            includePaperclipPayload: true,
             payloadTemplate: {
               message: "wake now",
             },
@@ -1039,6 +1044,7 @@ describe("heartbeat comment wake batching", () => {
           headers: {
             "x-openclaw-token": "gateway-token",
           },
+          includePaperclipPayload: true,
           payloadTemplate: {
             message: "wake now",
           },
@@ -1193,6 +1199,7 @@ describe("heartbeat comment wake batching", () => {
             headers: {
               "x-openclaw-token": "gateway-token",
             },
+            includePaperclipPayload: true,
             payloadTemplate: {
               message: "wake now",
             },
@@ -1213,6 +1220,7 @@ describe("heartbeat comment wake batching", () => {
             headers: {
               "x-openclaw-token": "gateway-token",
             },
+            includePaperclipPayload: true,
             payloadTemplate: {
               message: "wake now",
             },
@@ -1394,6 +1402,7 @@ describe("heartbeat comment wake batching", () => {
             headers: {
               "x-openclaw-token": "gateway-token",
             },
+            includePaperclipPayload: true,
             payloadTemplate: {
               message: "wake now",
             },
@@ -1414,6 +1423,7 @@ describe("heartbeat comment wake batching", () => {
             headers: {
               "x-openclaw-token": "gateway-token",
             },
+            includePaperclipPayload: true,
             payloadTemplate: {
               message: "wake now",
             },
@@ -1540,6 +1550,7 @@ describe("heartbeat comment wake batching", () => {
           headers: {
             "x-openclaw-token": "gateway-token",
           },
+          includePaperclipPayload: true,
           payloadTemplate: {
             message: "wake now",
           },
