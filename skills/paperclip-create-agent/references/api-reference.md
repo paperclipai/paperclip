@@ -81,7 +81,7 @@ Response:
 }
 ```
 
-If company setting disables required approval, `approval` is `null` and the agent is created as `idle`.
+Approval is required whenever the actor is a non-CEO agent — `canCreateAgents` for a non-CEO agent grants the ability to *file* a hire for board review, not to mint agents directly. CEO-role agents and board users keep the direct-create path; if the company also disables `requireBoardApprovalForNewAgents`, their `approval` is `null` and the agent is created as `idle`. A non-CEO agent actor always receives `{ agent: { status: "pending_approval" }, approval: { type: "hire_agent", status: "pending" } }` regardless of company settings.
 
 `desiredSkills` accepts company skill ids, canonical keys, or a unique slug. The server resolves and stores canonical company skill keys.
 Leave timer heartbeats disabled by default. Only set `runtimeConfig.heartbeat.enabled=true` and include an `intervalSec` when the role truly needs scheduled recurring work or the user explicitly requested it.
