@@ -1149,9 +1149,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
       }
     }
 
+    const resolvedAgentId = req.body.authorAgentId ?? actor.agentId ?? undefined;
     const comment = await svc.addComment(id, req.body.body, {
-      agentId: actor.agentId ?? undefined,
-      userId: actor.actorType === "user" ? actor.actorId : undefined,
+      agentId: resolvedAgentId,
+      userId: resolvedAgentId ? undefined : (req.body.authorUserId ?? (actor.actorType === "user" ? actor.actorId : undefined)),
     });
 
     await logActivity(db, {

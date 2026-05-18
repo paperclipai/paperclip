@@ -72,6 +72,8 @@ export const addIssueCommentSchema = z.object({
   body: z.string().min(1),
   reopen: z.boolean().optional(),
   interrupt: z.boolean().optional(),
+  authorAgentId: z.string().uuid().optional(),
+  authorUserId: z.string().optional(),
 });
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
