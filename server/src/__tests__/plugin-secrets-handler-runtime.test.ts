@@ -103,6 +103,67 @@ describe("createPluginSecretsHandler runtime company scoping", () => {
     });
   });
 
+  it("rate limits secret resolution per plugin and company", async () => {
+    const otherCompanyId = "33333333-3333-4333-8333-333333333333";
+    mocks.getConfig.mockResolvedValue({
+      configJson: {
+        apiKeyRef: secretRef,
+      },
+    });
+    mocks.resolveSecretValue.mockResolvedValue("plaintext-token");
+
+    const handler = createPluginSecretsHandler({
+      db: {} as never,
+      pluginId,
+      manifest: manifest as never,
+    });
+
+    for (let i = 0; i < 30; i += 1) {
+      await expect(handler.resolve({ secretRef, companyId })).resolves.toBe("plaintext-token");
+    }
+
+    await expect(handler.resolve({ secretRef, companyId })).rejects.toMatchObject({
+      name: "RateLimitExceededError",
+    });
+    await expect(handler.resolve({ secretRef, companyId: otherCompanyId })).resolves.toBe(
+      "plaintext-token",
+    );
+  });
+
+  it("reports duplicate secret-ref config paths when a ref is ambiguous", async () => {
+    mocks.getConfig.mockResolvedValue({
+      configJson: {
+        apiKeyRef: secretRef,
+        webhookKeyRef: secretRef,
+      },
+    });
+
+    const handler = createPluginSecretsHandler({
+      db: {} as never,
+      pluginId,
+      manifest: {
+        instanceConfigSchema: {
+          type: "object",
+          properties: {
+            apiKeyRef: {
+              type: "string",
+              format: "secret-ref",
+            },
+            webhookKeyRef: {
+              type: "string",
+              format: "secret-ref",
+            },
+          },
+        },
+      } as never,
+    });
+
+    await expect(handler.resolve({ secretRef, companyId })).rejects.toThrow(
+      /apiKeyRef, webhookKeyRef/,
+    );
+    expect(mocks.resolveSecretValue).not.toHaveBeenCalled();
+  });
+
   it("keeps the legacy UUID fallback for plugins without secret-ref schema annotations", async () => {
     mocks.getConfig.mockResolvedValue({
       configJson: {
