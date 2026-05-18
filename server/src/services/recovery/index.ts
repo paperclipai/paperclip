@@ -32,6 +32,14 @@ export {
   recoveryService,
 } from "./service.js";
 export {
+  ZERO_TOKEN_STARTUP_FAILURE_ERROR_CODES,
+  isZeroTokenStartupFailureRun,
+  runUsageTokenCounts,
+} from "./zero-token-startup-failure.js";
+export type {
+  ZeroTokenStartupFailureRunInput,
+} from "./zero-token-startup-failure.js";
+export {
   DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS,
   RUN_LIVENESS_CONTINUATION_REASON,
   buildRunLivenessContinuationIdempotencyKey,

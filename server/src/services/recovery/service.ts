@@ -58,6 +58,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { isZeroTokenStartupFailureRun } from "./zero-token-startup-failure.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
@@ -87,7 +88,7 @@ type RecoveryWakeup = (
 
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
-  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState" | "resultJson"
+  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState" | "resultJson" | "usageJson"
 > | null;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeeded" };
 
@@ -560,6 +561,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
         resultJson: heartbeatRuns.resultJson,
+        usageJson: heartbeatRuns.usageJson,
       })
       .from(heartbeatRuns)
       .where(
@@ -2209,6 +2211,91 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
   }
 
+  function buildZeroTokenStartupFailureComment(input: {
+    previousStatus: "todo" | "in_progress";
+    latestRun: LatestIssueRun;
+  }) {
+    const errorCode = readNonEmptyString(input.latestRun?.errorCode) ?? "context_overflow";
+    const verb = input.previousStatus === "todo" ? "dispatch" : "continuation";
+    return (
+      `Paperclip skipped automatic ${verb} recovery for this assigned \`${input.previousStatus}\` issue ` +
+      `because the last run failed with \`${errorCode}\` and burned zero tokens — a structural, pre-model ` +
+      "startup wedge (a poisoned/oversized session, or a model-config mismatch), not a transient failure. " +
+      "A `stranded_issue_recovery` wrapper would just re-invoke the same wedged session and loop, so none " +
+      "was created (see BLO-5681). Moving it to `blocked` so the chain-of-command owner can clear the wedge " +
+      "(reset the session, fix the adapter config, or reassign) before work resumes. The invariant will not " +
+      "re-fire until the issue leaves `blocked` and a non-zero-token run completes."
+    );
+  }
+
+  // BLO-5681: when a stranded issue's latest terminal failure is a structural,
+  // zero-token pre-model startup wedge (context_overflow / context_length_exceeded
+  // / startup_error_pre_model), escalate the source straight to `blocked` WITHOUT
+  // a `stranded_issue_recovery` wrapper. A wrapper re-runs the same wedged session
+  // and produces another zero-token failed run — the BLO-5378 → BLO-5676 loop
+  // (9 zero-token runs in ~1h). Because `reconcileStrandedAssignedIssues` only
+  // scans `todo`/`in_progress`, a `blocked` issue is never re-swept, so this
+  // escalation fires exactly once until a human moves the issue back; owner
+  // attention is then routed through the standard blocked-issue liveness path.
+  async function escalateZeroTokenStartupFailureIssue(input: {
+    issue: typeof issues.$inferSelect;
+    previousStatus: "todo" | "in_progress";
+    latestRun: LatestIssueRun;
+  }) {
+    return await db.transaction(async (tx) => {
+      // Serialize per (company, source-issue) so racing reconcile sweeps don't
+      // double-escalate. Xact-scoped advisory lock, same key shape as
+      // escalateStrandedAssignedIssue.
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${input.issue.companyId} || ':' || ${input.issue.id}, 0))`,
+      );
+
+      const [fresh] = await tx
+        .select()
+        .from(issues)
+        .where(eq(issues.id, input.issue.id))
+        .limit(1);
+      if (!fresh) return null;
+      // Peer sweep already escalated this source under the lock.
+      if (fresh.status === "blocked") return fresh;
+
+      const updated = await issuesSvc.update(input.issue.id, { status: "blocked" });
+      if (!updated) return null;
+
+      await issuesSvc.addComment(
+        input.issue.id,
+        buildZeroTokenStartupFailureComment({
+          previousStatus: input.previousStatus,
+          latestRun: input.latestRun,
+        }),
+        {},
+      );
+
+      await logActivity(db, {
+        companyId: input.issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: input.issue.id,
+        details: {
+          identifier: input.issue.identifier,
+          status: "blocked",
+          previousStatus: input.previousStatus,
+          source: "recovery.reconcile_stranded_assigned_issue.zero_token_startup_failure",
+          latestRunId: input.latestRun?.id ?? null,
+          latestRunStatus: input.latestRun?.status ?? null,
+          latestRunErrorCode: input.latestRun?.errorCode ?? null,
+          recoveryWrapperSuppressed: true,
+        },
+      });
+
+      return updated;
+    });
+  }
+
   async function reconcileStrandedAssignedIssues() {
     const candidates = await db
       .select()
@@ -2230,6 +2317,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       orphanBlockersAssigned: 0,
       successfulRunHandoffEscalated: 0,
       escalated: 0,
+      zeroTokenStartupFailureBlocked: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
@@ -2309,6 +2397,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           });
           if (updated) {
             result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        if (isZeroTokenStartupFailureRun(latestRun)) {
+          const updated = await escalateZeroTokenStartupFailureIssue({
+            issue,
+            previousStatus: "todo",
+            latestRun,
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.zeroTokenStartupFailureBlocked += 1;
             result.issueIds.push(issue.id);
           } else {
             result.skipped += 1;
@@ -2422,6 +2526,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         });
         if (updated) {
           result.escalated += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+      if (isZeroTokenStartupFailureRun(latestRun)) {
+        const updated = await escalateZeroTokenStartupFailureIssue({
+          issue,
+          previousStatus: "in_progress",
+          latestRun,
+        });
+        if (updated) {
+          result.escalated += 1;
+          result.zeroTokenStartupFailureBlocked += 1;
           result.issueIds.push(issue.id);
         } else {
           result.skipped += 1;

@@ -513,6 +513,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runErrorCode?: string | null;
     runError?: string | null;
     resultJson?: Record<string, unknown> | null;
+    runUsageJson?: Record<string, unknown> | null;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -586,6 +587,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         : ("runError" in input ? input.runError : "run failed before issue advanced"),
       livenessState: input.livenessState ?? null,
       resultJson: input.resultJson ?? null,
+      usageJson: input.runUsageJson ?? null,
     });
 
     await db.insert(issues).values([
@@ -2384,6 +2386,138 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("non-retryable code `workspace_import_conflict`");
+  });
+
+  // BLO-5681: when a stranded source issue's latest terminal failure is a
+  // structural zero-token pre-model startup wedge (context_overflow /
+  // context_length_exceeded / startup_error_pre_model), do NOT spawn a
+  // stranded_issue_recovery wrapper — a wrapper inherits the same wedged
+  // session and produces another zero-token failed run. Escalate the source
+  // straight to `blocked` so a human can clear the wedge. Concretely models
+  // the BLO-5378 → BLO-5676 loop: a failed continuation retry that
+  // overflowed before the model ran (the gate must apply ahead of
+  // didAutomaticRecoveryFail so even a retried failure does not spawn the
+  // wrapper).
+  it("blocks stranded in-progress work immediately on a zero-token context_overflow startup failure (no recovery wrapper) (BLO-5681)", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "context_overflow",
+      runError: "Context window exceeded before first model turn",
+      runUsageJson: { inputTokens: 0, outputTokens: 0 },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.zeroTokenStartupFailureBlocked).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    // The whole point of BLO-5681: NO stranded_issue_recovery wrapper.
+    const recoveryWrappers = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "stranded_issue_recovery"),
+          eq(issues.originId, issueId),
+        ),
+      );
+    expect(recoveryWrappers).toHaveLength(0);
+
+    // No continuation wake either — the wedged session must not be re-invoked.
+    const wakeRows = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeRows.some((row) => row.reason === "issue_continuation_needed")).toBe(false);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("context_overflow");
+    expect(comments[0]?.body).toContain("burned zero tokens");
+    expect(comments[0]?.body).toContain("BLO-5681");
+  });
+
+  // BLO-5681: same gate fires in the assigned-todo branch. An absent usage
+  // blob counts as zero work, so a startup_error_pre_model failure with no
+  // usageJson at all still routes through the no-wrapper path.
+  it("blocks assigned todo work immediately on a zero-token startup_error_pre_model failure (no recovery wrapper) (BLO-5681)", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      runErrorCode: "startup_error_pre_model",
+      runError: "Adapter crashed before the first model turn",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.zeroTokenStartupFailureBlocked).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    const recoveryWrappers = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "stranded_issue_recovery"),
+          eq(issues.originId, issueId),
+        ),
+      );
+    expect(recoveryWrappers).toHaveLength(0);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("startup_error_pre_model");
+    expect(comments[0]?.body).toContain("skipped automatic dispatch recovery");
+  });
+
+  // BLO-5681 counterfactual: a transient `rate_limit_exhausted` retry
+  // failure must STILL spawn a stranded_issue_recovery wrapper, exactly as
+  // before this change. The zero-token gate must not over-trigger on
+  // transient failure codes that happen to report zero usage on the failing
+  // attempt.
+  it("still spawns a recovery wrapper for a transient rate_limit_exhausted continuation retry, even at zero tokens (BLO-5681 counterfactual)", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "rate_limit_exhausted",
+      runError: "Provider rate limit exhausted",
+      runUsageJson: { inputTokens: 0, outputTokens: 0 },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    expect(result.zeroTokenStartupFailureBlocked).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    // Wrapper path is unchanged: the recovery artifact still exists and the
+    // source is blocked-by the wrapper.
+    await expectStrandedRecoveryArtifacts({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "in_progress",
+      retryReason: "issue_continuation_needed",
+    });
   });
 
   it("redacts error-code-only stranded recovery failures in issue copy", async () => {
