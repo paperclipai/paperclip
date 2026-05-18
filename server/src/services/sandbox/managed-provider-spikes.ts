@@ -162,7 +162,7 @@ const E2B_SURFACE: ManagedSandboxProviderSurface = Object.freeze({
   apiKeyEnv: "E2B_API_KEY",
   baseUrl: "https://api.e2b.app",
   createPath: "/sandboxes",
-  startPath: (sandboxId: string) => `/sandboxes/${encodeURIComponent(sandboxId)}/resume`,
+  startPath: (sandboxId: string) => `/sandboxes/${encodeURIComponent(sandboxId)}/connect`,
   execPath: (sandboxId: string) => `/sandboxes/${encodeURIComponent(sandboxId)}/commands`,
   logsPath: (sandboxId: string) => `/sandboxes/${encodeURIComponent(sandboxId)}/logs`,
   eventsPath: (sandboxId: string) => `/sandboxes/${encodeURIComponent(sandboxId)}/events`,
