@@ -880,6 +880,35 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/companies/:companyId/secrets` | Create secret                       |
 | PATCH  | `/api/secrets/:secretId`            | Update secret value (creates new version) |
 
+### Server Discovery (Skill / Server Skew)
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/api/_meta` | Deployed server version, optional gitSha, and the full list of routes the running process actually serves under `/api`. Use this when a documented endpoint returns 404 to disambiguate version skew (route missing from deployed server) from a permission issue (403) or a real bug. |
+
+`GET /api/_meta` response:
+
+```json
+{
+  "serverVersion": "0.3.1",
+  "gitSha": "abc123" /* or null when not set */,
+  "routes": [
+    { "method": "GET",   "path": "/api/_meta" },
+    { "method": "GET",   "path": "/api/agents/me" },
+    { "method": "POST",  "path": "/api/issues/:issueId/checkout" }
+    /* ... */
+  ]
+}
+```
+
+Investigation rhythm when a documented route returns 404:
+
+1. `curl $PAPERCLIP_API_URL/api/_meta` and check `serverVersion`.
+2. Search the `routes` array for the documented method+path. If absent, the deployed server predates the route — the operator needs to upgrade the `@paperclipai/server` install.
+3. If present but the call still fails, treat it as a permission or input issue, not skew.
+
+The route list is derived from the live express router stack at request time, so it always reflects what the running process can actually serve. `gitSha` is populated from `PAPERCLIP_GIT_SHA` in the server environment when available.
+
 ---
 
 ## Common Mistakes
