@@ -2,8 +2,11 @@ import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   agentToolGrantBulkSetSchema,
+  applyToolAccessPresetSchema,
   companyToolCreateSchema,
+  toolAccessPresetCreateSchema,
   toolAccessPolicyUpdateSchema,
+  type ToolAccessMode,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { accessService, agentService, approvalService, logActivity, toolAccessService } from "../services/index.js";
@@ -25,48 +28,12 @@ export function toolAccessRoutes(db: Db) {
     throw forbidden("Missing permission: agents:create");
   }
 
-  router.get("/companies/:companyId/tools", async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    res.json(await svc.listMatrix(companyId));
-  });
-
-  router.post("/companies/:companyId/tools", validate(companyToolCreateSchema), async (req, res) => {
-    const companyId = req.params.companyId as string;
-    await assertCanManage(req, companyId);
-    const tool = await svc.createTool(companyId, req.body);
-    const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "company.tool_created",
-      entityType: "company_tool",
-      entityId: tool.id,
-      details: { key: tool.key, label: tool.label, risk: tool.risk },
-    });
-    res.status(201).json(tool);
-  });
-
-  router.get("/companies/:companyId/tool-access-policy", async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    res.json(await svc.getPolicy(companyId));
-  });
-
-  router.patch("/companies/:companyId/tool-access-policy", validate(toolAccessPolicyUpdateSchema), async (req, res) => {
-    const companyId = req.params.companyId as string;
-    await assertCanManage(req, companyId);
-    res.json(await svc.upsertPolicy(companyId, req.body));
-  });
-
-  router.post("/companies/:companyId/tool-grants", validate(agentToolGrantBulkSetSchema), async (req, res) => {
-    const companyId = req.params.companyId as string;
-    await assertCanManage(req, companyId);
-    const actor = getActorInfo(req);
-    const result = await db.transaction(async (tx) => {
+  async function processGrantRequests(
+    companyId: string,
+    requests: Array<{ agentId: string; toolId: string; mode: ToolAccessMode }>,
+    actor: ReturnType<typeof getActorInfo>,
+  ) {
+    return db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       const txSvc = toolAccessService(txDb);
       const txAgents = agentService(txDb);
@@ -74,7 +41,7 @@ export function toolAccessRoutes(db: Db) {
       const policy = await txSvc.getPolicy(companyId);
       const savedResults = [];
       const approvals = [];
-      for (const grant of req.body.grants) {
+      for (const grant of requests) {
         const preview = await txSvc.previewGrantChange(companyId, grant.agentId, grant.toolId, grant.mode);
         if (
           policy
@@ -145,9 +112,72 @@ export function toolAccessRoutes(db: Db) {
           },
         });
       }
-      return { savedResults, approvals };
+      return { grants: savedResults.map((result) => result.grant), approvals };
     });
-    res.json({ grants: result.savedResults.map((entry) => entry.grant), approvals: result.approvals });
+  }
+
+  router.get("/companies/:companyId/tools", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.listMatrix(companyId));
+  });
+
+  router.post("/companies/:companyId/tools", validate(companyToolCreateSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCanManage(req, companyId);
+    const tool = await svc.createTool(companyId, req.body);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.tool_created",
+      entityType: "company_tool",
+      entityId: tool.id,
+      details: { key: tool.key, label: tool.label, risk: tool.risk },
+    });
+    res.status(201).json(tool);
+  });
+
+  router.get("/companies/:companyId/tool-access-policy", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.getPolicy(companyId));
+  });
+
+  router.patch("/companies/:companyId/tool-access-policy", validate(toolAccessPolicyUpdateSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCanManage(req, companyId);
+    res.json(await svc.upsertPolicy(companyId, req.body));
+  });
+
+  router.post("/companies/:companyId/tool-grants", validate(agentToolGrantBulkSetSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCanManage(req, companyId);
+    const actor = getActorInfo(req);
+    res.json(await processGrantRequests(companyId, req.body.grants, actor));
+  });
+
+  router.get("/companies/:companyId/tool-presets", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.listPresets(companyId));
+  });
+
+  router.post("/companies/:companyId/tool-presets", validate(toolAccessPresetCreateSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCanManage(req, companyId);
+    res.status(201).json(await svc.createPreset(companyId, req.body));
+  });
+
+  router.post("/companies/:companyId/tool-presets/apply", validate(applyToolAccessPresetSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCanManage(req, companyId);
+    const actor = getActorInfo(req);
+    const requests = await svc.presetGrantRequests(companyId, req.body.agentId, req.body.presetId);
+    res.json(await processGrantRequests(companyId, requests, actor));
   });
 
   return router;

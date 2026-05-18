@@ -63,6 +63,10 @@ export function CompanyTools() {
   const [draft, setDraft] = useState<Record<string, ToolAccessMode>>({});
   const [toolForm, setToolForm] = useState<ToolForm>(defaultToolForm);
   const [formError, setFormError] = useState<string | null>(null);
+  const [selectedPresetAgentId, setSelectedPresetAgentId] = useState("");
+  const [selectedPresetId, setSelectedPresetId] = useState("");
+  const [grantNotice, setGrantNotice] = useState<string | null>(null);
+  const [presetNotice, setPresetNotice] = useState<string | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([
@@ -84,6 +88,12 @@ export function CompanyTools() {
     enabled: Boolean(companyId),
   });
 
+  const { data: presets = [] } = useQuery({
+    queryKey: companyId ? queryKeys.toolAccess.presets(companyId) : ["tool-access", "__disabled__", "presets"] as const,
+    queryFn: () => toolAccessApi.listPresets(companyId),
+    enabled: Boolean(companyId),
+  });
+
   const grantByCell = useMemo(() => {
     const map = new Map<string, ToolAccessMode>();
     for (const grant of matrix?.grants ?? []) {
@@ -100,10 +110,37 @@ export function CompanyTools() {
         return { agentId: agentId!, toolId: toolId!, mode };
       }),
     ),
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       setDraft({});
+      setGrantNotice(
+        result.approvals?.length
+          ? `${result.approvals.length} change${result.approvals.length === 1 ? "" : "s"} awaiting approval.`
+          : null,
+      );
       await queryClient.invalidateQueries({ queryKey: queryKeys.toolAccess.matrix(companyId) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
+      if (result.approvals?.length) {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(companyId) });
+        await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(companyId, "pending") });
+      }
+    },
+  });
+
+  const applyPreset = useMutation({
+    mutationFn: () => toolAccessApi.applyPreset(companyId, {
+      agentId: selectedPresetAgentId,
+      presetId: selectedPresetId,
+    }),
+    onSuccess: async (result) => {
+      setPresetNotice(
+        result.approvals?.length
+          ? `${result.approvals.length} preset change${result.approvals.length === 1 ? "" : "s"} awaiting approval.`
+          : "Preset applied.",
+      );
+      await queryClient.invalidateQueries({ queryKey: queryKeys.toolAccess.matrix(companyId) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(companyId) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(companyId, "pending") });
     },
   });
 
@@ -293,6 +330,70 @@ export function CompanyTools() {
       </section>
 
       <section className="space-y-4">
+        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          Presets
+        </div>
+        <div className="rounded-md border border-border px-4 py-4">
+          <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+            <label className="space-y-1 text-xs font-medium text-muted-foreground">
+              Agent
+              <select
+                data-testid="company-tools-preset-agent"
+                value={selectedPresetAgentId}
+                onChange={(event) => {
+                  setSelectedPresetAgentId(event.target.value);
+                  setPresetNotice(null);
+                }}
+                className="mt-1 h-9 w-full rounded-md border border-border bg-background px-2.5 text-sm text-foreground outline-none"
+              >
+                <option value="">Select agent</option>
+                {agents.map((agent) => (
+                  <option key={agent.id} value={agent.id}>
+                    {agent.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="space-y-1 text-xs font-medium text-muted-foreground">
+              Preset
+              <select
+                data-testid="company-tools-preset"
+                value={selectedPresetId}
+                onChange={(event) => {
+                  setSelectedPresetId(event.target.value);
+                  setPresetNotice(null);
+                }}
+                className="mt-1 h-9 w-full rounded-md border border-border bg-background px-2.5 text-sm text-foreground outline-none"
+              >
+                <option value="">Select preset</option>
+                {presets.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="flex items-end">
+              <Button
+                size="sm"
+                onClick={() => applyPreset.mutate()}
+                disabled={!selectedPresetAgentId || !selectedPresetId || applyPreset.isPending}
+              >
+                <Save className="mr-1.5 h-3.5 w-3.5" />
+                {applyPreset.isPending ? "Applying..." : "Apply preset"}
+              </Button>
+            </div>
+          </div>
+          {presetNotice ? <p className="mt-3 text-xs text-muted-foreground">{presetNotice}</p> : null}
+          {applyPreset.isError ? (
+            <p className="mt-3 text-xs text-destructive">
+              {applyPreset.error instanceof Error ? applyPreset.error.message : "Failed to apply preset"}
+            </p>
+          ) : null}
+        </div>
+      </section>
+
+      <section className="space-y-4">
         <div className="flex items-center justify-between gap-3">
           <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
             Access Matrix
@@ -393,6 +494,7 @@ export function CompanyTools() {
             {saveGrants.error instanceof Error ? saveGrants.error.message : "Failed to apply grants"}
           </p>
         ) : null}
+        {grantNotice ? <p className="text-xs text-muted-foreground">{grantNotice}</p> : null}
       </section>
     </div>
   );

@@ -1,6 +1,6 @@
 import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentToolGrants, agents, companyTools, toolAccessPolicies } from "@paperclipai/db";
+import { agentToolGrants, agents, companyTools, toolAccessPolicies, toolAccessPresets } from "@paperclipai/db";
 import type { ToolAccessMode } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 
@@ -13,6 +13,7 @@ type GrantChangePreview = {
   previousMode: ToolAccessMode;
   tool: typeof companyTools.$inferSelect;
 };
+type ToolAccessGrantRequest = { agentId: string; toolId: string; mode: ToolAccessMode };
 
 interface ToolAccessRenderState {
   version: 1;
@@ -54,6 +55,14 @@ function normalizeModes(value: unknown): ToolAccessMode[] {
   return modes.filter((mode): mode is ToolAccessMode =>
     mode === "off" || mode === "read" || mode === "write" || mode === "admin"
   );
+}
+
+function normalizePresetGrants(value: unknown): Array<{ toolKey: string; mode: ToolAccessMode }> {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is { toolKey: string; mode: ToolAccessMode } => {
+    if (!isRecord(entry)) return false;
+    return typeof entry.toolKey === "string" && normalizeModes([entry.mode]).length === 1;
+  });
 }
 
 function parseToolsets(value: unknown): string[] {
@@ -288,6 +297,24 @@ export function toolAccessService(db: Db) {
     return { previousMode: preview.previousMode, grant: created, tool: preview.tool };
   }
 
+  async function presetGrantRequests(
+    companyId: string,
+    agentId: string,
+    presetId: string,
+  ): Promise<ToolAccessGrantRequest[]> {
+    const [preset] = await db.select().from(toolAccessPresets).where(and(eq(toolAccessPresets.companyId, companyId), eq(toolAccessPresets.id, presetId)));
+    if (!preset) throw notFound("Preset not found");
+    const tools = await db.select().from(companyTools).where(eq(companyTools.companyId, companyId));
+    const byKey = new Map(tools.map((tool) => [tool.key, tool]));
+    const requests: ToolAccessGrantRequest[] = [];
+    for (const item of normalizePresetGrants(preset.grants)) {
+      const tool = byKey.get(item.toolKey);
+      if (!tool) continue;
+      requests.push({ agentId, toolId: tool.id, mode: item.mode });
+    }
+    return requests;
+  }
+
   return {
     listMatrix,
 
@@ -324,6 +351,16 @@ export function toolAccessService(db: Db) {
     },
 
     previewGrantChange,
+
+    listPresets: async (companyId: string) =>
+      db.select().from(toolAccessPresets).where(eq(toolAccessPresets.companyId, companyId)).orderBy(asc(toolAccessPresets.label)),
+
+    createPreset: async (companyId: string, input: Omit<typeof toolAccessPresets.$inferInsert, "companyId">) => {
+      const [created] = await db.insert(toolAccessPresets).values({ ...input, companyId }).returning();
+      return created;
+    },
+
+    presetGrantRequests,
 
     renderHermesAgentConfig: async (
       companyId: string,

@@ -9,6 +9,8 @@ import { CompanyTools } from "./CompanyTools";
 const matrixMock = vi.hoisted(() => vi.fn());
 const createToolMock = vi.hoisted(() => vi.fn());
 const setGrantsMock = vi.hoisted(() => vi.fn());
+const listPresetsMock = vi.hoisted(() => vi.fn());
+const applyPresetMock = vi.hoisted(() => vi.fn());
 const listAgentsMock = vi.hoisted(() => vi.fn());
 const setBreadcrumbsMock = vi.hoisted(() => vi.fn());
 
@@ -17,6 +19,8 @@ vi.mock("@/api/tool-access", () => ({
     matrix: (companyId: string) => matrixMock(companyId),
     createTool: (companyId: string, data: unknown) => createToolMock(companyId, data),
     setGrants: (companyId: string, grants: unknown) => setGrantsMock(companyId, grants),
+    listPresets: (companyId: string) => listPresetsMock(companyId),
+    applyPreset: (companyId: string, data: unknown) => applyPresetMock(companyId, data),
   },
 }));
 
@@ -89,6 +93,8 @@ describe("CompanyTools", () => {
       updatedAt: new Date("2026-05-18T00:00:00.000Z"),
     });
     setGrantsMock.mockResolvedValue({ grants: [] });
+    listPresetsMock.mockResolvedValue([]);
+    applyPresetMock.mockResolvedValue({ grants: [] });
   });
 
   afterEach(() => {
@@ -228,6 +234,71 @@ describe("CompanyTools", () => {
     expect(setGrantsMock).toHaveBeenCalledWith("company-1", [
       { agentId: "agent-2", toolId: "tool-1", mode: "read" },
     ]);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("applies a preset to the selected agent", async () => {
+    listAgentsMock.mockResolvedValue([
+      { id: "agent-1", name: "Hermes Researcher", role: "researcher", status: "active" },
+    ]);
+    listPresetsMock.mockResolvedValue([
+      {
+        id: "preset-1",
+        companyId: "company-1",
+        key: "researcher",
+        label: "Researcher",
+        grants: [{ toolKey: "mcp.gbrain.query", mode: "read" }],
+        metadata: null,
+        createdAt: new Date("2026-05-18T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-18T00:00:00.000Z"),
+      },
+    ]);
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanyTools />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const agentSelect = container.querySelector('[data-testid="company-tools-preset-agent"]') as HTMLSelectElement | null;
+    const presetSelect = container.querySelector('[data-testid="company-tools-preset"]') as HTMLSelectElement | null;
+    expect(agentSelect).toBeTruthy();
+    expect(presetSelect).toBeTruthy();
+
+    await act(async () => {
+      agentSelect!.value = "agent-1";
+      agentSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+      presetSelect!.value = "preset-1";
+      presetSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushReact();
+
+    const applyButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Apply preset",
+    );
+    expect(applyButton).toBeTruthy();
+
+    await act(async () => {
+      applyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(applyPresetMock).toHaveBeenCalledWith("company-1", {
+      agentId: "agent-1",
+      presetId: "preset-1",
+    });
 
     await act(async () => {
       root.unmount();

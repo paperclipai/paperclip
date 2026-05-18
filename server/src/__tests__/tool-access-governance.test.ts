@@ -14,6 +14,7 @@ import {
   companyTools,
   createDb,
   toolAccessPolicies,
+  toolAccessPresets,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -48,6 +49,7 @@ describeEmbeddedPostgres("tool access governance", () => {
     await db.delete(approvals);
     await db.delete(agentToolGrants);
     await db.delete(companyTools);
+    await db.delete(toolAccessPresets);
     await db.delete(toolAccessPolicies);
     await db.delete(agentConfigRevisions);
     await db.delete(agents);
@@ -197,5 +199,59 @@ describeEmbeddedPostgres("tool access governance", () => {
         mode: "read",
       }),
     ]);
+  });
+
+  it("creates and applies presets as normal audited grants", async () => {
+    const app = createApp();
+    const { company, agent, tool } = await seedCompanyAgentAndTool();
+
+    const createPresetRes = await request(app)
+      .post(`/api/companies/${company.id}/tool-presets`)
+      .send({
+        key: "researcher",
+        label: "Researcher",
+        grants: [{ toolKey: "mcp.gbrain.query", mode: "read" }],
+      })
+      .expect(201);
+
+    expect(createPresetRes.body).toMatchObject({
+      companyId: company.id,
+      key: "researcher",
+      label: "Researcher",
+    });
+
+    const listPresetRes = await request(app)
+      .get(`/api/companies/${company.id}/tool-presets`)
+      .expect(200);
+
+    expect(listPresetRes.body).toEqual([
+      expect.objectContaining({
+        key: "researcher",
+        label: "Researcher",
+      }),
+    ]);
+
+    const applyRes = await request(app)
+      .post(`/api/companies/${company.id}/tool-presets/apply`)
+      .send({ agentId: agent.id, presetId: createPresetRes.body.id })
+      .expect(200);
+
+    expect(applyRes.body.grants).toEqual([
+      expect.objectContaining({
+        agentId: agent.id,
+        toolId: tool.id,
+        mode: "read",
+      }),
+    ]);
+
+    const activity = await db.select().from(activityLog).where(eq(activityLog.companyId, company.id));
+    const grantEvent = activity.find((event) => event.action === "company.tool_grant_changed");
+    expect(grantEvent?.details).toMatchObject({
+      agentId: agent.id,
+      toolLabel: "GBrain query",
+      previousMode: "off",
+      newMode: "read",
+      risk: "read",
+    });
   });
 });
