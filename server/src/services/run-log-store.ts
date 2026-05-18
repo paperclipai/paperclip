@@ -2,7 +2,16 @@ import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { notFound } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+
+const APPEND_FAILURE_RECOVERABLE_CODES = new Set(["ENOSPC", "EROFS", "EDQUOT", "EIO"]);
+
+function isRecoverableAppendError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const code = (err as { code?: unknown }).code;
+  return typeof code === "string" && APPEND_FAILURE_RECOVERABLE_CODES.has(code);
+}
 
 export type RunLogStoreType = "local_file";
 
@@ -115,8 +124,23 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
         chunk: event.chunk,
       });
       const persisted = `${line}\n`;
-      await fs.appendFile(absPath, persisted, "utf8");
-      return Buffer.byteLength(persisted, "utf8");
+      try {
+        await fs.appendFile(absPath, persisted, "utf8");
+        return Buffer.byteLength(persisted, "utf8");
+      } catch (err) {
+        // Disk pressure (ENOSPC/EROFS/EDQUOT/EIO) on the run-log path must
+        // not take down the server. Drop the chunk, log once, and report zero
+        // bytes so the heartbeat keeps running. Live-event delivery still
+        // happens upstream regardless of disk persistence.
+        if (isRecoverableAppendError(err)) {
+          logger.warn(
+            { err, logRef: handle.logRef, code: (err as { code?: unknown }).code },
+            "run-log append failed; dropping chunk to keep server alive",
+          );
+          return 0;
+        }
+        throw err;
+      }
     },
 
     async finalize(handle) {
