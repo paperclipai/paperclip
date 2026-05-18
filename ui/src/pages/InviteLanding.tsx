@@ -8,7 +8,10 @@ import { useCompany } from "@/context/CompanyContext";
 import { Link, useNavigate, useParams } from "@/lib/router";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
-import { companiesApi } from "../api/companies";
+import {
+  fetchCompanyListWithAuth,
+  type CompanyListResult,
+} from "../api/companies";
 import { healthApi } from "../api/health";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { clearPendingInviteToken, rememberPendingInviteToken } from "../lib/invite-memory";
@@ -247,12 +250,17 @@ export function InviteLandingPage() {
     retry: false,
   });
 
-  const companiesQuery = useQuery({
+  const companiesQuery = useQuery<CompanyListResult>({
     queryKey: queryKeys.companies.all,
-    queryFn: () => companiesApi.list(),
+    queryFn: fetchCompanyListWithAuth,
     enabled: !!sessionQuery.data && !!inviteQuery.data?.companyId,
     retry: false,
   });
+
+  const companies = useMemo(
+    () => companiesQuery.data?.companies ?? [],
+    [companiesQuery.data],
+  );
 
   useEffect(() => {
     if (token) rememberPendingInviteToken(token);
@@ -264,14 +272,14 @@ export function InviteLandingPage() {
 
   useEffect(() => {
     if (!companiesQuery.data || !inviteQuery.data?.companyId) return;
-    const isMember = companiesQuery.data.some(
+    const isMember = companies.some(
       (c) => c.id === inviteQuery.data!.companyId
     );
     if (isMember) {
       clearPendingInviteToken(token);
       navigate("/", { replace: true });
     }
-  }, [companiesQuery.data, inviteQuery.data, token, navigate]);
+  }, [companies, inviteQuery.data, token, navigate]);
 
   const invite = inviteQuery.data;
   const isCheckingExistingMembership =
@@ -280,9 +288,7 @@ export function InviteLandingPage() {
     companiesQuery.isLoading;
   const isCurrentMember =
     Boolean(invite?.companyId) &&
-    Boolean(
-      companiesQuery.data?.some((company) => company.id === invite?.companyId),
-    );
+    companies.some((company) => company.id === invite?.companyId);
   const companyName = invite?.companyName?.trim() || null;
   const companyDisplayName = companyName || "this Paperclip company";
   const companyLogoUrl = invite?.companyLogoUrl?.trim() || null;
@@ -375,13 +381,14 @@ export function InviteLandingPage() {
       setAuthFeedback(null);
       rememberPendingInviteToken(token);
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
-      const companies = await queryClient.fetchQuery({
+      const fetchedResult = await queryClient.fetchQuery<CompanyListResult>({
         queryKey: queryKeys.companies.all,
-        queryFn: () => companiesApi.list(),
+        queryFn: fetchCompanyListWithAuth,
         retry: false,
       });
+      const fetchedCompanies = fetchedResult.companies;
 
-      if (invite?.companyId && companies.some((company) => company.id === invite.companyId)) {
+      if (invite?.companyId && fetchedCompanies.some((company) => company.id === invite.companyId)) {
         clearPendingInviteToken(token);
         setSelectedCompanyId(invite.companyId, { source: "manual" });
         navigate("/", { replace: true });

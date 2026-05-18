@@ -9,12 +9,14 @@ import {
 } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Company } from "@paperclipai/shared";
-import { companiesApi } from "../api/companies";
-import { ApiError } from "../api/client";
+import {
+  companiesApi,
+  fetchCompanyListWithAuth,
+  type CompanyListResult,
+} from "../api/companies";
 import { queryKeys } from "../lib/queryKeys";
 import type { CompanySelectionSource } from "../lib/company-selection";
 type CompanySelectionOptions = { source?: CompanySelectionSource };
-type CompanyListResult = { companies: Company[]; unauthorized: boolean };
 
 interface CompanyContextValue {
   companies: Company[];
@@ -71,16 +73,7 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
 
   const { data: companiesResult = { companies: [], unauthorized: false }, isLoading, error } = useQuery<CompanyListResult>({
     queryKey: queryKeys.companies.all,
-    queryFn: async () => {
-      try {
-        return { companies: await companiesApi.list(), unauthorized: false };
-      } catch (err) {
-        if (err instanceof ApiError && err.status === 401) {
-          return { companies: [], unauthorized: true };
-        }
-        throw err;
-      }
-    },
+    queryFn: fetchCompanyListWithAuth,
     retry: false,
   });
   const companies = companiesResult.companies;
