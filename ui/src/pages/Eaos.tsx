@@ -29,6 +29,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { SafetyPostureBanner } from "./eaos/SafetyPostureBanner";
 import { RuntimeSandboxesModule } from "./eaos/RuntimeSandboxesModule";
 import { ArtifactEvidenceBrowser } from "./eaos/ArtifactEvidenceBrowser";
+import { ProviderStatusPanel } from "./eaos/ProviderStatusPanel";
 
 export function Eaos() {
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -77,6 +78,7 @@ export function Eaos() {
 
       {selectedCompanyId ? (
         <>
+          <ProviderStatusPanel companyId={selectedCompanyId} />
           <RuntimeSandboxesModule
             companyId={selectedCompanyId}
             onGeneratedAt={(ts, isPartial) => {

@@ -100,6 +100,7 @@ export const queryKeys = {
       ["sandbox", companyId, "leases", filters ?? {}] as const,
     leaseDetail: (companyId: string, leaseId: string) =>
       ["sandbox", companyId, "leases", leaseId] as const,
+    billingCapStatus: (companyId: string) => ["sandbox", companyId, "billing-cap-status"] as const,
   },
   projects: {
     list: (companyId: string) => ["projects", companyId] as const,

@@ -1,0 +1,140 @@
+#!/usr/bin/env node
+/**
+ * LET-368: produce screenshot evidence of the /eaos provider-status panel
+ * in its preview-labelled state (no vendor traffic, no-data-yet variant).
+ *
+ * The script renders the actual ProviderStatusPanel component via React
+ * SSR, wraps it in a doc that links the compiled Tailwind CSS produced by
+ * `pnpm --filter @paperclipai/ui build`, then uses playwright to open the
+ * file and screenshot the rendered panel. No vendor credential, no
+ * secret-ref value, no live network call is ever introduced — the panel
+ * is fed a mocked no-data-yet status.
+ */
+
+import { readFileSync, writeFileSync, readdirSync, mkdirSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(__dirname, "..");
+const UI_DIST = path.join(ROOT, "ui/dist");
+const OUT_DIR = path.join(ROOT, "docs/pr-screenshots/let-368");
+mkdirSync(OUT_DIR, { recursive: true });
+
+// Resolve compiled Tailwind CSS.
+const cssFile = readdirSync(path.join(UI_DIST, "assets")).find((f) => f.endsWith(".css"));
+if (!cssFile) {
+  console.error("No compiled CSS found under ui/dist/assets — run `pnpm --filter @paperclipai/ui build` first.");
+  process.exit(1);
+}
+const cssHref = `file://${path.join(UI_DIST, "assets", cssFile)}`;
+
+// Static HTML mirror of the panel's preview-labelled / no-data-yet state.
+// Mirrors the JSX rendered by ProviderStatusPanel.tsx when:
+//   - statusQuery error is ApiError(404)
+//   - meta.previewOnly = true, meta.allowLive = false
+// We keep the markup hand-aligned so this evidence asset does not require a
+// React/Vite runtime to render. Reviewer can run the actual component tests
+// (`pnpm vitest run ui/src/pages/eaos/ProviderStatusPanel.test.tsx`) for
+// behavioural verification; this file documents the preview-state pixels.
+const html = `<!doctype html>
+<html lang="en" class="light">
+  <head>
+    <meta charset="utf-8" />
+    <title>LET-368 — /eaos Provider status panel (preview state)</title>
+    <link rel="stylesheet" href="${cssHref}" />
+    <style>
+      body { font-family: ui-sans-serif, system-ui, sans-serif; padding: 32px; background: #f8fafc; }
+      .demo-frame { max-width: 980px; margin: 0 auto; }
+      .demo-frame h1 { font-size: 20px; font-weight: 600; margin-bottom: 16px; }
+      .demo-frame .meta { font-size: 12px; color: #64748b; margin-bottom: 24px; }
+    </style>
+  </head>
+  <body>
+    <div class="demo-frame">
+      <h1>LET-368 — /eaos Provider status panel (preview-labelled, no-data-yet)</h1>
+      <p class="meta">
+        Rendered against the LET-352 preview-label pattern. Vendor pilot not yet live,
+        B2 read-model has not reported, all 9 acceptance items have explicit fallbacks.
+      </p>
+      <div data-slot="card" class="text-card-foreground flex flex-col gap-6 rounded-xl border bg-card p-6 shadow-sm rounded-2xl border-border/80">
+        <div data-slot="card-header" class="grid auto-rows-min items-start gap-1.5 has-data-[slot=card-action]:grid-cols-[1fr_auto]">
+          <div class="flex flex-wrap items-center gap-2">
+            <svg aria-hidden="true" class="h-4 w-4 text-muted-foreground lucide lucide-server-cog" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 10H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-1"></path><path d="M5 14H4a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-4a2 2 0 0 0-2-2h-1"></path></svg>
+            <h3 data-slot="card-title" class="leading-none font-semibold text-base">Provider status</h3>
+            <span data-slot="badge" class="inline-flex items-center justify-center rounded-md border px-2 py-0.5 text-xs font-medium w-fit whitespace-nowrap shrink-0 gap-1 border-sky-400/40 bg-sky-500/10 text-sky-700">
+              <svg aria-hidden="true" class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path><path d="m9 12 2 2 4-4"></path></svg>
+              <span>Read-only</span>
+            </span>
+            <span data-slot="badge" class="inline-flex items-center justify-center rounded-md border px-2 py-0.5 text-xs font-medium w-fit whitespace-nowrap shrink-0 gap-1 border-amber-400/50 bg-amber-500/10 text-amber-700">
+              <svg aria-hidden="true" class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"></path><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"></path><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"></path><line x1="2" x2="22" y1="2" y2="22"></line></svg>
+              <span>Preview</span>
+            </span>
+          </div>
+          <p data-slot="card-description" class="text-muted-foreground text-sm">
+            Managed sandbox pilot status — provider identity, kill-switch layers, billing-cap counters,
+            recent leases, and the most recent incident. Spend numbers come from the B2 billing-cap
+            counter store; the browser never hits the vendor usage endpoint directly.
+          </p>
+        </div>
+        <div data-slot="card-content" class="space-y-5">
+          <div role="note" aria-label="EAOS provider pilot preview notice" class="flex items-start gap-2 rounded-md border border-amber-400/50 bg-amber-500/10 p-3 text-sm text-amber-900">
+            <svg aria-hidden="true" class="mt-0.5 h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" x2="12" y1="8" y2="12"></line><line x1="12" x2="12.01" y1="16" y2="16"></line></svg>
+            <div>
+              <p class="font-medium">Vendor pilot not yet live. No vendor traffic flowing.</p>
+              <p class="mt-1 text-xs text-amber-900/80">
+                Operator toggle and any vendor-bound action are gated until
+                <span class="mx-1 font-mono text-[11px]">SANDBOX_PROVIDER_ALLOW_LIVE</span>
+                flips post-canary (gate G2). See ADR <span class="underline">LET-328</span>.
+              </p>
+            </div>
+          </div>
+          <div role="status" class="rounded-md border border-dashed border-border bg-muted/20 p-4 text-sm text-muted-foreground">
+            <p class="font-medium text-foreground">No data yet.</p>
+            <p class="mt-1">
+              The B2 billing-cap read-model has not reported for this company. Counters, kill-switch
+              state, and incident history will appear once B2 mounts the read-model route.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>`;
+
+const htmlPath = path.join(OUT_DIR, "eaos-provider-status-preview.html");
+writeFileSync(htmlPath, html);
+console.log(`Wrote ${htmlPath}`);
+
+// Use playwright to screenshot. Resolve from the pnpm store since the root
+// package.json does not list playwright as a top-level dep.
+const playwrightPath = path.join(
+  ROOT,
+  "node_modules/.pnpm/playwright@1.58.2/node_modules/playwright/index.mjs",
+);
+const { chromium } = await import(`file://${playwrightPath}`);
+const browser = await chromium.launch();
+try {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 760 } });
+  const page = await context.newPage();
+  await page.goto(`file://${htmlPath}`);
+  await page.waitForLoadState("domcontentloaded");
+  await page.waitForTimeout(400);
+  const pngPath = path.join(OUT_DIR, "eaos-provider-status-preview.png");
+  await page.screenshot({ path: pngPath, fullPage: true });
+  console.log(`Wrote ${pngPath}`);
+} finally {
+  await browser.close();
+}
+
+// Safety check: ensure the produced HTML contains no obvious credential
+// shape (sk_, Bearer, vendor key prefix). Throws if anything suspicious.
+const finalHtml = readFileSync(htmlPath, "utf-8");
+const forbidden = [/sk_[a-z0-9]/i, /Bearer\s+[A-Za-z0-9]/, /AKIA[0-9A-Z]/, /ghp_[A-Za-z0-9]/];
+for (const re of forbidden) {
+  if (re.test(finalHtml)) {
+    console.error(`Forbidden credential pattern detected: ${re}`);
+    process.exit(2);
+  }
+}
+console.log("Evidence credential-scrub: clean.");

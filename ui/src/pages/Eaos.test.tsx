@@ -28,6 +28,11 @@ const sandboxState = vi.hoisted(() => ({
   getLease: vi.fn(),
 }));
 
+const sandboxBillingCapState = vi.hoisted(() => ({
+  getStatus: vi.fn(),
+  flipOperatorToggle: vi.fn(),
+}));
+
 const heartbeatsState = vi.hoisted(() => ({
   liveRunsForCompany: vi.fn(),
 }));
@@ -56,6 +61,14 @@ vi.mock("@/api/sandbox", async (importOriginal) => {
   return {
     ...actual,
     sandboxApi: sandboxState,
+  };
+});
+
+vi.mock("@/api/sandbox-billing-cap", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/sandbox-billing-cap")>();
+  return {
+    ...actual,
+    sandboxBillingCapApi: sandboxBillingCapState,
   };
 });
 
@@ -97,6 +110,12 @@ describe("EAOS Sandbox & runtime dashboard", () => {
     sandboxState.listProviders.mockReset();
     sandboxState.listLeases.mockReset();
     sandboxState.getLease.mockReset();
+    sandboxBillingCapState.getStatus.mockReset();
+    sandboxBillingCapState.flipOperatorToggle.mockReset();
+    // Default: B2 read model returns no-data-yet. Individual tests can override.
+    sandboxBillingCapState.getStatus.mockRejectedValue(
+      Object.assign(new Error("Not Found"), { name: "ApiError", status: 404 }),
+    );
     heartbeatsState.liveRunsForCompany.mockReset();
     workspacesState.list.mockReset();
     approvalsState.list.mockReset();
