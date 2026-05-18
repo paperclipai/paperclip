@@ -3,7 +3,34 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { testEnvironment } from "@paperclipai/adapter-codex-local/server";
-import { buildCodexExecArgs } from "@paperclipai/adapter-codex-local/server";
+
+const sandboxRunner = vi.hoisted(() =>
+  vi.fn(async (input: { command: string; args?: string[] }) => {
+    const stdout = input.command === "codex" || input.args?.includes("codex")
+      ? [
+          JSON.stringify({ type: "thread.started", thread_id: "test-thread" }),
+          JSON.stringify({
+            type: "item.completed",
+            item: { type: "agent_message", text: "hello" },
+          }),
+          JSON.stringify({
+            type: "turn.completed",
+            usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+          }),
+        ].join("\n")
+      : "";
+
+    return {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout,
+      stderr: "",
+      pid: 123,
+      startedAt: new Date().toISOString(),
+    };
+  }),
+);
 
 const itWindows = process.platform === "win32" ? it : it.skip;
 
@@ -13,6 +40,7 @@ describe("codex_local environment diagnostics", () => {
   });
   afterEach(() => {
     vi.unstubAllEnvs();
+    sandboxRunner.mockClear();
   });
   it("creates a missing working directory when cwd is absolute", async () => {
     const cwd = path.join(
@@ -141,12 +169,46 @@ describe("codex_local environment diagnostics", () => {
     }
   });
 
-  it("adds --skip-git-repo-check to Codex exec args for hello probes in non-git directories", () => {
-    const result = buildCodexExecArgs({
-      command: "codex",
-      cwd: path.join(os.tmpdir(), "paperclip-codex-non-git"),
-    });
+  it("adds --skip-git-repo-check only to sandbox Codex hello probes", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-codex-probe-args-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const cwd = path.join(root, "workspace");
 
-    expect(result.args.slice(0, 3)).toEqual(["exec", "--json", "--skip-git-repo-check"]);
+    try {
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "codex_local",
+        config: {
+          command: "codex",
+          cwd,
+          env: { OPENAI_API_KEY: "test-key" },
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "test-sandbox",
+          leaseId: "lease-1",
+          remoteCwd: cwd,
+          runner: { execute: sandboxRunner },
+        },
+      });
+
+      expect(result.checks.some((check) => check.level === "error")).toBe(false);
+      expect(
+        result.checks.some((check) => check.code === "codex_git_repo_check_skipped"),
+      ).toBe(true);
+      expect(
+        result.checks.some((check) => check.code === "codex_hello_probe_passed"),
+      ).toBe(true);
+      expect(sandboxRunner).toHaveBeenCalled();
+      const probeCall = sandboxRunner.mock.calls.find(([input]) => input.args?.includes("codex"));
+      expect(probeCall?.[0].args).toEqual(
+        expect.arrayContaining(["codex", "exec", "--json", "--skip-git-repo-check", "-"]),
+      );
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });

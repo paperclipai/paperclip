@@ -4,6 +4,11 @@ import {
   isCodexLocalFastModeSupported,
 } from "../index.js";
 
+export type BuildCodexExecArgsOptions = {
+  resumeSessionId?: string | null;
+  skipGitRepoCheck?: boolean;
+};
+
 export type BuildCodexExecArgsResult = {
   args: string[];
   model: string;
@@ -30,10 +35,7 @@ function formatFastModeSupportedModels(): string {
 
 export function buildCodexExecArgs(
   config: unknown,
-  options: {
-    resumeSessionId?: string | null;
-    skipGitRepoCheck?: boolean;
-  } = {},
+  options: BuildCodexExecArgsOptions = {},
 ): BuildCodexExecArgsResult {
   const record = asRecord(config);
   const model = asString(record.model, "").trim();
