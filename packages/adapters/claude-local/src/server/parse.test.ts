@@ -61,6 +61,12 @@ describe("isClaudeTransientUpstreamError", () => {
         errorMessage: "Claude run failed: subtype=success: You've hit your limit · resets 9:20am (UTC)",
       }),
     ).toBe(true);
+    // Unicode right-single-quote variant (’) — also handled by the regex
+    expect(
+      isClaudeTransientUpstreamError({
+        errorMessage: "You’ve hit your limit · resets 9:20am (UTC)",
+      }),
+    ).toBe(true);
   });
 
   it("classifies the subscription 5-hour / weekly limit wording", () => {
