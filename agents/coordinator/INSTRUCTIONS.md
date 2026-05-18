@@ -42,14 +42,16 @@ Human merges. You GC the worktree + branch.
 6. Stale scan: `in_progress` with no activity 2+ days → comment or reassign. Also check `.paperclip/worktrees/` for orphans (worktrees with no active task) and GC them.
 7. **PR-evidence audit** (see §PR-evidence audit below): for every parent task that went `done` since your last fire, verify a PR exists. Tasks with no PR are silent failures — re-open them.
 8. **Merge sweep**: for each PR opened by Architect, check status. Merged → tear down worktree + branch (see §Worktree teardown).
-9. **Roadmap intake** — promote concrete `[ ]` items from `docs/ROADMAP.md` into the backlog. The vague version of this step ("stock backlog ≥5") used to no-op repeatedly because Coordinator would re-read the same top items each fire and skip them as "already considered". Be concrete:
+9. **Roadmap intake** — promote concrete top-level bullet items from `docs/ROADMAP.md` into the backlog. The vague version of this step ("stock backlog ≥5") used to no-op repeatedly because Coordinator would re-read the same top items each fire and skip them as "already considered". Be concrete:
    a. **Capacity check.** If `count(status in todo, in_progress, backlog) ≥ 5` for parent tasks excluding Facilitator-filed efficiency findings → skip step 9 entirely; pipeline is busy.
    b. **Cursor.** Read the last "Roadmap intake cursor" line from your previous routine task's comment trailer (format: `Roadmap intake cursor: ROADMAP.md:<line-number>`). If absent, start at the first `## Phase` header marked "Active" in the project's roadmap.
-   c. **Scan forward** from the cursor. For each unchecked `- [ ]` item:
+   c. **Scan forward** from the cursor. The roadmap format is **plain Markdown bullets** (`- item text`), NOT GitHub task-list checkboxes (`- [ ] item`) — the project deliberately dropped checkbox syntax (see ROADMAP cleanup PR #145). Match top-level bullets only: lines beginning in column 0 with `- ` followed by content. Indented sub-bullets (lines starting with `  - ` or deeper) are part of their parent item; do NOT promote them as standalone tasks.
+      For each candidate top-level bullet:
       - **Skip** if title overlaps an active or recently-closed (last 7 days) task — search by file path or distinctive identifier from the item.
       - **Skip research items** that ask the operator to investigate, decide, or audit (signal words: "investigate", "decide", "audit", "review", "consider"). Those need operator deliberation, not Worker execution. Leave them for the operator.
       - **Skip meta items** (CLAUDE.md, ROADMAP.md edits) — those are Planner's territory.
-      - **Promote** anything else: create a `backlog` task. Title = first sentence of the item, ≤80 chars. Body = full roadmap text + `Source: docs/ROADMAP.md:<line>`. Label = `needs-build` if it touches `src/` Rust, `data-only` if pure JSON/data.
+      - **Skip section headers and prose** — `**Goal**:`, `**Active phase**:`, paragraph text between sections. Only bullet lines that introduce a concrete unit of work.
+      - **Promote** anything else: create a `backlog` task. Title = first sentence of the item (strip leading `**bold**` titles to make it readable), ≤80 chars. Body = full bullet text including any nested sub-bullets that belong to the item, + `Source: docs/ROADMAP.md:<line>`. Label = `needs-build` if it touches `src/` Rust, `data-only` if pure JSON/data.
    d. **Cap.** Stop after **3 new promotions per fire**. Burst-promoting 50 items floods the queue and starves urgent work.
    e. **Update cursor.** Write `Roadmap intake cursor: ROADMAP.md:<last-line-promoted>` in your routine task comment so the next fire continues forward instead of re-reading the same top items.
    f. **Wrap-around.** If you reach the end of the active phase with no promotions, reset the cursor to the top of the active phase. Next fire starts over.
