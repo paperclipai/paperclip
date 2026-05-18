@@ -1,7 +1,11 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  __clearProbeCacheForTesting,
+  __setShimSourcePathOverrideForTesting,
+} from "./paperclip-tools-mcp.js";
 
 const {
   runChildProcess,
@@ -79,8 +83,19 @@ import { execute } from "./execute.js";
 describe("claude remote execution", () => {
   const cleanupDirs: string[] = [];
 
+  beforeEach(() => {
+    // The compiled shim .js does not exist in source-only test runs; opt out of
+    // paperclip-tools MCP wiring so the existing remote test assertions about
+    // asset sync counts remain stable. The dedicated MCP wiring tests live in
+    // execute.test.ts and paperclip-tools-mcp-shim.test.ts.
+    __setShimSourcePathOverrideForTesting("/dev/null/nonexistent-shim.js");
+    __clearProbeCacheForTesting();
+  });
+
   afterEach(async () => {
     vi.clearAllMocks();
+    __setShimSourcePathOverrideForTesting(null);
+    __clearProbeCacheForTesting();
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
@@ -264,6 +279,66 @@ describe("claude remote execution", () => {
     expect(runChildProcess).toHaveBeenCalledTimes(1);
     const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
     expect(call?.[2]).not.toContain("--resume");
+  });
+
+  it("syncs the paperclip-tools-mcp shim asset and wires --mcp-config when wiring is enabled", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-mcp-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const fakeShimPath = path.join(rootDir, "paperclip-tools-mcp-shim.bundle.js");
+    await mkdir(workspaceDir, { recursive: true });
+    await writeFile(fakeShimPath, "// fixture\n", "utf8");
+    __setShimSourcePathOverrideForTesting(fakeShimPath);
+    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-mcp/workspace";
+
+    await execute({
+      runId: "run-mcp",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: "claude" },
+      context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(syncDirectoryToSsh).toHaveBeenCalledTimes(2);
+    const syncCalls = syncDirectoryToSsh.mock.calls as unknown as Array<[
+      Record<string, unknown>,
+    ]>;
+    const syncedRemoteDirs = syncCalls.map((call) => call[0]?.remoteDir);
+    expect(syncedRemoteDirs).toContain(
+      `${managedRemoteWorkspace}/.paperclip-runtime/claude/skills`,
+    );
+    expect(syncedRemoteDirs).toContain(
+      `${managedRemoteWorkspace}/.paperclip-runtime/claude/paperclip-tools-mcp`,
+    );
+
+    const call = runChildProcess.mock.calls[0] as unknown as
+      | [string, string, string[], { env: Record<string, string> }]
+      | undefined;
+    const args = call?.[2] ?? [];
+    const mcpIdx = args.indexOf("--mcp-config");
+    expect(mcpIdx).toBeGreaterThan(-1);
+    expect(args[mcpIdx + 1]).toBe(
+      `${managedRemoteWorkspace}/.paperclip-runtime/claude/paperclip-tools-mcp/paperclip-tools-mcp.json`,
+    );
   });
 
   it("resumes saved Claude sessions for remote SSH execution when the remote identity matches", async () => {
