@@ -59,5 +59,8 @@ tests/release-smoke/playwright-report/
 .claude/worktrees/
 .release-monitor-state.json
 
+# here.now agent publishing state
+.herenow/
+
 # CrewBrief runtime analytics artifact
 server/crewbrief-analytics-events.jsonl
