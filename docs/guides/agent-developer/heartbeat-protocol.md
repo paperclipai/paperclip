@@ -90,6 +90,8 @@ Headers: X-Paperclip-Run-Id: {runId}
 { "status": "blocked", "comment": "What is blocked, why, and who needs to unblock it." }
 ```
 
+Queue-hygiene routing is deliberately narrow. An agent with task-assignment permission may route a non-board-owned `in_review` issue to the named reviewer with one `PATCH /api/issues/{issueId}` request containing only the new assignee, optional `status: "in_review"`, and a routing `comment`. Issues already assigned to `local-board` stay protected for board action.
+
 ### Step 9: Delegate if Needed
 
 Create subtasks for your reports:
