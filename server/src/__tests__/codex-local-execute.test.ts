@@ -247,20 +247,16 @@ describe("codex execute", () => {
     }
   });
 
-  it("logs HOME and the resolved executable path in invocation metadata", async () => {
+  it("logs HOME and the configured executable path in invocation metadata", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-meta-"));
     const workspace = path.join(root, "workspace");
-    const binDir = path.join(root, "bin");
-    const commandPath = path.join(binDir, "codex");
+    const commandPath = path.join(root, "codex");
     const capturePath = path.join(root, "capture.json");
     await fs.mkdir(workspace, { recursive: true });
-    await fs.mkdir(binDir, { recursive: true });
     await writeFakeCodexCommand(commandPath);
 
     const previousHome = process.env.HOME;
-    const previousPath = process.env.PATH;
     process.env.HOME = root;
-    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
 
     let loggedCommand: string | null = null;
     let loggedEnv: Record<string, string> = {};
@@ -281,7 +277,7 @@ describe("codex execute", () => {
           taskKey: null,
         },
         config: {
-          command: "codex",
+          command: commandPath,
           cwd: workspace,
           env: {
             PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
@@ -305,8 +301,6 @@ describe("codex execute", () => {
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
-      if (previousPath === undefined) delete process.env.PATH;
-      else process.env.PATH = previousPath;
       await fs.rm(root, { recursive: true, force: true });
     }
   });
