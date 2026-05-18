@@ -1041,6 +1041,13 @@ export {
   type ListPluginState,
 } from "./validators/index.js";
 
+export {
+  EXTERNAL_LINK_PLATFORMS,
+  createExternalLinkSchema,
+  lookupExternalLinkQuerySchema,
+  type CreateExternalLink,
+} from "./validators/external-links.js";
+
 export { API_PREFIX, API } from "./api.js";
 export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";
 export { deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "./project-url-key.js";
