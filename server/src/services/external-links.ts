@@ -1,8 +1,8 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { externalLinks, issues } from "@paperclipai/db";
 import { conflict, notFound } from "../errors.js";
-import type { CreateExternalLink } from "@paperclipai/shared";
+import type { CreateExternalLink, IssueExternalRefsJira } from "@paperclipai/shared";
 
 export function externalLinkService(db: Db) {
   async function getIssue(issueId: string) {
@@ -90,6 +90,49 @@ export function externalLinkService(db: Db) {
         .returning({ id: externalLinks.id });
 
       if (rows.length === 0) throw notFound("External link not found");
+    },
+
+    // Upsert the Jira external link for an issue. Used by PATCH /issues/:id externalRefs.
+    upsertJiraLink: async (issueId: string, input: IssueExternalRefsJira) => {
+      const metadata: Record<string, unknown> = {};
+      if (input.projectKey) metadata.projectKey = input.projectKey;
+      if (input.instanceUrl) metadata.instanceUrl = input.instanceUrl;
+
+      await db
+        .insert(externalLinks)
+        .values({
+          issueId,
+          platform: "jira",
+          externalKey: input.key,
+          externalUrl: input.externalUrl,
+          metadata,
+        })
+        .onConflictDoUpdate({
+          target: [externalLinks.issueId, externalLinks.platform, externalLinks.externalKey],
+          set: {
+            externalUrl: input.externalUrl,
+            metadata: sql`excluded.metadata`,
+            updatedAt: sql`now()`,
+          },
+        });
+    },
+
+    // Remove all Jira links for an issue. Used when externalRefs.jira is set to null.
+    deleteJiraLinks: async (issueId: string) => {
+      await db
+        .delete(externalLinks)
+        .where(and(eq(externalLinks.issueId, issueId), eq(externalLinks.platform, "jira")));
+    },
+
+    // Returns the first Jira link for an issue, or null.
+    getJiraLink: async (issueId: string) => {
+      return db
+        .select()
+        .from(externalLinks)
+        .where(and(eq(externalLinks.issueId, issueId), eq(externalLinks.platform, "jira")))
+        .orderBy(externalLinks.createdAt)
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
     },
 
     lookupByPlatformKey: async (platform: string, externalKey: string) => {
