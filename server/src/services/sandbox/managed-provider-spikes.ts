@@ -904,15 +904,68 @@ export class E2BSandboxProvider extends BaseManagedSandboxProvider {
     return super.acquireLease(input);
   }
 
+  override async resumeLease(input: ResumeSandboxLeaseInput): Promise<SandboxLeaseHandle | null> {
+    // Persisted lease may arrive on a fresh provider instance after a server
+    // restart or via a deferred finalizer/cleanup worker. The live transport
+    // must be initialised here too, or the inherited mock-disabled transport
+    // would throw PROVIDER_DISABLED even though all three gates pass.
+    await this.ensureActiveTransport();
+    return super.resumeLease(input);
+  }
+
+  override async start(input: StartSandboxLeaseInput): Promise<SandboxLeaseHandle> {
+    await this.ensureActiveTransport();
+    return super.start(input);
+  }
+
+  override async execute(input: SandboxExecuteInput): Promise<SandboxExecuteResult> {
+    await this.ensureActiveTransport();
+    return super.execute(input);
+  }
+
+  override async exec(input: SandboxExecuteInput): Promise<SandboxExecuteResult> {
+    return this.execute(input);
+  }
+
+  override async readLogs(input: ReadSandboxLogsInput): Promise<SandboxProviderLogsResult> {
+    await this.ensureActiveTransport();
+    return super.readLogs(input);
+  }
+
+  override async *streamEvents(input: StreamSandboxEventsInput): AsyncIterable<SandboxProviderStreamEvent> {
+    await this.ensureActiveTransport();
+    yield* super.streamEvents(input);
+  }
+
+  override async stop(input: StopSandboxLeaseInput): Promise<void> {
+    await this.ensureActiveTransport();
+    return super.stop(input);
+  }
+
+  override async destroy(input: StopSandboxLeaseInput): Promise<void> {
+    await this.ensureActiveTransport();
+    return super.destroy(input);
+  }
+
   override async releaseLease(input: ReleaseSandboxLeaseInput): Promise<void> {
-    // Pilot policy: release maps to delete (no warm reuse) so cost accounting
-    // stays trivial. The underlying transport applies the same policy at the
-    // HTTP layer; this override ensures the policy holds for the mock-disabled
-    // path too (where release would otherwise be a no-op).
+    // Persisted-lease cleanup path: ensure the live transport is initialised
+    // before delegating to super, otherwise a server restart followed by a
+    // release would hit MockOnlyManagedSandboxTransport and leak the live
+    // sandbox. Pilot policy: release maps to delete (no warm reuse) so cost
+    // accounting stays trivial.
+    await this.ensureActiveTransport();
     if (this.testTransportInjected || this.releaseMode === "pause") {
       return await super.releaseLease(input);
     }
     return await super.destroyLease({ config: input.config, providerLeaseId: input.providerLeaseId });
+  }
+
+  override async destroyLease(input: DestroySandboxLeaseInput): Promise<void> {
+    // Same recovery concern as releaseLease: destroyLease may be invoked on a
+    // persisted providerLeaseId from a fresh provider instance, so the live
+    // transport must be lazily initialised before the base class dispatches.
+    await this.ensureActiveTransport();
+    return super.destroyLease(input);
   }
 }
 

@@ -3,18 +3,25 @@
  *
  * This module is the live counterpart to LET-351's `MockOnlyManagedSandboxTransport`.
  * It is only constructed once the three-gate fail-closed check in
- * `E2BSandboxProvider.acquireLease` has resolved an E2B API key from the
- * platform secret store and registered that value into the pre-provider
- * redaction registry. The transport itself never reads `process.env` and
- * never resolves secrets — it receives an already-resolved API key and a
- * redactor closure that has been primed with that key.
+ * `E2BSandboxProvider.acquireLease` (or any other live lifecycle entry point)
+ * has resolved an E2B API key from the platform secret store and registered
+ * that value into the pre-provider redaction registry. The transport itself
+ * never reads `process.env` and never resolves secrets — it receives an
+ * already-resolved API key and a redactor closure that has been primed with
+ * that key.
  *
- * Lifecycle mapping (per LET-365 plan, default pilot policy):
- *   Paperclip acquireLease  → POST {baseUrl}/sandboxes        (E2B create)
- *   Paperclip start         → POST {baseUrl}/sandboxes/{id}/resume
- *   Paperclip exec          → POST {baseUrl}/sandboxes/{id}/commands
- *   Paperclip release       → DELETE {baseUrl}/sandboxes/{id} (default delete, no warm reuse)
- *   Paperclip destroy       → DELETE {baseUrl}/sandboxes/{id}
+ * Wire protocol (post-QA remediation against E2B docs):
+ *   Sandbox CRUD on api.e2b.app — header `X-API-Key: <apiKey>` (NOT Bearer).
+ *   Process/exec on the sandbox-side envd host — Connect protocol with
+ *   `Content-Type: application/connect+json`, `X-Access-Token: <envd-token>`,
+ *   `Authorization: Basic <base64(apiKey)>`.
+ *
+ * Lifecycle mapping (LET-365 plan, default pilot policy):
+ *   Paperclip acquireLease  → POST   {apiBase}/sandboxes            (E2B create)
+ *   Paperclip start         → POST   {apiBase}/sandboxes/{id}/resume (E2B resume)
+ *   Paperclip exec          → POST   {envdHost}/process.Process/Start (E2B Connect)
+ *   Paperclip release       → DELETE {apiBase}/sandboxes/{id}        (pilot default; warm reuse is opt-in pause)
+ *   Paperclip destroy       → DELETE {apiBase}/sandboxes/{id}
  *
  * `release` can be remapped to pause via `releaseMode: "pause"` once warm
  * reuse becomes part of pilot scope. The pilot default is `delete` to keep
@@ -40,8 +47,17 @@ export type E2BLiveReleaseMode = "delete" | "pause";
 export interface E2BLiveTransportOptions {
   /** Resolved E2B API key bytes — never read from env. */
   apiKey: string;
-  /** Base URL of the E2B HTTP surface. Defaults to the public production host. */
+  /** Base URL of the E2B control-plane HTTP surface (sandbox CRUD).
+   *  Defaults to the public production host. */
   baseUrl?: string;
+  /** Optional sandbox-side envd host template. Tests can override this so
+   *  the captured `process.Process/Start` URL is deterministic. Supported
+   *  placeholders: `{sandboxId}`, `{clientId}`, `{port}`. */
+  envdHostTemplate?: string;
+  /** Default envd port that the sandbox subdomain exposes. E2B uses 49983
+   *  for the envd HTTP surface; the value is configurable so callers can
+   *  pin a different port in development. */
+  envdPort?: number;
   /** Injectable fetch (defaults to globalThis.fetch). Tests pass a mock. */
   fetchImpl?: typeof fetch;
   /** Pre-egress redaction registry primed with the resolved API key (and any
@@ -61,17 +77,35 @@ export interface E2BCapturedRequest {
   body: string | null;
 }
 
-interface E2BSandboxRecordResponse {
+interface E2BCreateSandboxResponse {
+  /** Documented field on api.e2b.app create response. */
+  sandboxID?: string;
+  /** Alias accepted defensively. */
+  sandboxId?: string;
   id?: string;
+  templateID?: string;
+  clientID?: string;
+  /** Token used by the sandbox-side envd Connect endpoint. */
+  envdAccessToken?: string;
+  domain?: string;
+  state?: string;
+  metadata?: Record<string, unknown>;
+}
+
+interface E2BResumeResponse {
+  sandboxID?: string;
   sandboxId?: string;
   state?: string;
   metadata?: Record<string, unknown>;
 }
 
-interface E2BExecuteResponse {
+interface E2BProcessStartResponse {
+  /** Connect protocol unary response. Tests can assert this shape. */
   exitCode?: number | null;
   stdout?: string | null;
   stderr?: string | null;
+  /** Connect protocol may also return an `error` envelope for failed unary calls. */
+  error?: { code?: string; message?: string };
 }
 
 interface E2BLogsResponse {
@@ -85,9 +119,15 @@ interface E2BEventsResponse {
 }
 
 const DEFAULT_BASE_URL = "https://api.e2b.app";
-const AUTH_HEADER = "Authorization" as const;
+const DEFAULT_ENVD_HOST_TEMPLATE = "https://{port}-{sandboxId}.e2b.app";
+const DEFAULT_ENVD_PORT = 49983;
+const API_KEY_HEADER = "X-API-Key" as const;
 const CONTENT_TYPE_HEADER = "Content-Type" as const;
 const ACCEPT_HEADER = "Accept" as const;
+const ACCESS_TOKEN_HEADER = "X-Access-Token" as const;
+const BASIC_AUTH_HEADER = "Authorization" as const;
+const CONNECT_CONTENT_TYPE = "application/connect+json" as const;
+const PROCESS_START_PATH = "/process.Process/Start" as const;
 
 function withTrailingSlashStripped(url: string): string {
   return url.endsWith("/") ? url.slice(0, -1) : url;
@@ -99,6 +139,17 @@ function nowIso(): string {
 
 function isLogStream(value: unknown): value is SandboxProviderLogLine["stream"] {
   return value === "stdout" || value === "stderr" || value === "system";
+}
+
+function toBase64(value: string): string {
+  // Use Buffer in Node; `btoa` would also work but Buffer is canonical here.
+  return Buffer.from(value, "utf8").toString("base64");
+}
+
+interface E2BSandboxSession {
+  clientId: string | null;
+  envdAccessToken: string | null;
+  domain: string | null;
 }
 
 /**
@@ -116,6 +167,13 @@ export class E2BLiveHttpTransport {
   private readonly redactor: PreProviderRedactionRegistry;
   private readonly releaseMode: E2BLiveReleaseMode;
   private readonly onRequest: ((request: E2BCapturedRequest) => void) | undefined;
+  private readonly envdHostTemplate: string;
+  private readonly envdPort: number;
+  /** Per-sandbox session details parsed from the create response. We need
+   *  clientId + envdAccessToken to talk to the sandbox-side envd Connect
+   *  endpoint. The map is keyed by sandboxId so subsequent exec calls in
+   *  the same provider instance can reuse them. */
+  private readonly sessions = new Map<string, E2BSandboxSession>();
 
   constructor(options: E2BLiveTransportOptions) {
     if (typeof options.apiKey !== "string" || options.apiKey.length === 0) {
@@ -131,6 +189,8 @@ export class E2BLiveHttpTransport {
     this.redactor = options.redactor;
     this.releaseMode = options.releaseMode ?? "delete";
     this.onRequest = options.onRequest;
+    this.envdHostTemplate = options.envdHostTemplate ?? DEFAULT_ENVD_HOST_TEMPLATE;
+    this.envdPort = options.envdPort ?? DEFAULT_ENVD_PORT;
   }
 
   async createSandbox(input: {
@@ -148,28 +208,33 @@ export class E2BLiveHttpTransport {
     heartbeatRunId: string;
     issueId: string | null;
   }): Promise<{ id: string; state: "created"; metadata: Record<string, unknown> }> {
-    const redactedEnv = redactRecordBeforeProvider(input.config.env, this.redactor);
+    const redactedEnvVars = redactRecordBeforeProvider(input.config.env, this.redactor);
+    // E2B documented create body: templateID, timeout (seconds), envVars, metadata.
+    // Template precedence: explicit `template` → `image` (treated as templateID by
+    // operators that key on image strings) → `snapshot` → undefined (server-side default).
+    const templateID = this.redact(input.config.template ?? input.config.image ?? input.config.snapshot);
+    const timeoutSeconds = typeof input.config.timeoutMs === "number"
+      ? Math.max(1, Math.ceil(input.config.timeoutMs / 1000))
+      : undefined;
     const body = {
-      image: this.redact(input.config.image),
-      snapshot: this.redact(input.config.snapshot),
-      template: this.redact(input.config.template),
-      timeoutMs: input.config.timeoutMs,
-      region: this.redact(input.config.region),
-      language: this.redact(input.config.language),
-      resources: input.config.resources,
-      env: redactedEnv,
+      templateID,
+      timeout: timeoutSeconds,
+      envVars: redactedEnvVars,
       metadata: {
         environmentId: this.redact(input.environmentId),
         heartbeatRunId: this.redact(input.heartbeatRunId),
         issueId: this.redact(input.issueId ?? null),
+        region: this.redact(input.config.region),
+        language: this.redact(input.config.language),
+        resources: input.config.resources,
       },
     };
-    const response = await this.request<E2BSandboxRecordResponse>({
+    const response = await this.controlPlaneRequest<E2BCreateSandboxResponse>({
       method: "POST",
       path: "/sandboxes",
       body,
     });
-    const sandboxId = response.id ?? response.sandboxId;
+    const sandboxId = response.sandboxID ?? response.sandboxId ?? response.id;
     if (typeof sandboxId !== "string" || sandboxId.length === 0) {
       throw new SandboxProviderError(
         "PROVIDER_FAILURE",
@@ -177,6 +242,11 @@ export class E2BLiveHttpTransport {
         { details: { provider: "e2b" } },
       );
     }
+    this.sessions.set(sandboxId, {
+      clientId: typeof response.clientID === "string" ? response.clientID : null,
+      envdAccessToken: typeof response.envdAccessToken === "string" ? response.envdAccessToken : null,
+      domain: typeof response.domain === "string" ? response.domain : null,
+    });
     return {
       id: sandboxId,
       state: "created",
@@ -185,6 +255,8 @@ export class E2BLiveHttpTransport {
         provider: "e2b",
         sandboxState: response.state ?? "created",
         transport: this.mode,
+        templateID: response.templateID ?? templateID ?? null,
+        clientID: response.clientID ?? null,
       },
     };
   }
@@ -195,7 +267,7 @@ export class E2BLiveHttpTransport {
     metadata: Record<string, unknown>;
   }> {
     throwIfAborted(input.signal);
-    const response = await this.request<E2BSandboxRecordResponse>({
+    const response = await this.controlPlaneRequest<E2BResumeResponse>({
       method: "POST",
       path: `/sandboxes/${encodeURIComponent(input.sandboxId)}/resume`,
       body: {},
@@ -224,20 +296,38 @@ export class E2BLiveHttpTransport {
     signal?: AbortSignal;
   }): Promise<SandboxExecuteResult> {
     throwIfAborted(input.signal);
-    const body = {
-      command: this.redact(input.command),
-      args: redactArrayBeforeProvider(input.args, this.redactor),
-      cwd: this.redact(input.cwd),
-      env: redactRecordBeforeProvider(input.env, this.redactor),
-      stdin: this.redact(input.stdin),
-      timeoutMs: input.timeoutMs,
+    const session = this.sessions.get(input.sandboxId) ?? {
+      clientId: null,
+      envdAccessToken: null,
+      domain: null,
     };
-    const response = await this.request<E2BExecuteResponse>({
+    // E2B Connect-protocol request body for process.Process/Start. The argv
+    // shape mirrors the public SDK (cmd + args + envs + cwd + stdin).
+    const body = {
+      process: {
+        cmd: this.redact(input.command),
+        args: redactArrayBeforeProvider(input.args, this.redactor),
+        cwd: this.redact(input.cwd),
+        envs: redactRecordBeforeProvider(input.env, this.redactor),
+      },
+      stdin: this.redact(input.stdin),
+      timeout: typeof input.timeoutMs === "number" ? Math.max(1, Math.ceil(input.timeoutMs / 1000)) : undefined,
+    };
+    const url = this.envdHostFor(input.sandboxId, session.clientId);
+    const response = await this.envdRequest<E2BProcessStartResponse>({
       method: "POST",
-      path: `/sandboxes/${encodeURIComponent(input.sandboxId)}/commands`,
+      url: `${url}${PROCESS_START_PATH}`,
       body,
+      envdAccessToken: session.envdAccessToken,
       signal: input.signal,
     });
+    if (response.error) {
+      throw new SandboxProviderError(
+        "PROVIDER_FAILURE",
+        `E2B process.Process/Start returned error: ${response.error.message ?? response.error.code ?? "unknown"}`,
+        { details: { provider: "e2b", connectError: response.error } },
+      );
+    }
     return {
       exitCode: typeof response.exitCode === "number" ? response.exitCode : null,
       stdout: typeof response.stdout === "string" ? response.stdout : "",
@@ -260,7 +350,7 @@ export class E2BLiveHttpTransport {
       query.push(`cursor=${encodeURIComponent(this.redact(input.cursor))}`);
     }
     const queryString = query.length > 0 ? `?${query.join("&")}` : "";
-    const response = await this.request<E2BLogsResponse>({
+    const response = await this.controlPlaneRequest<E2BLogsResponse>({
       method: "GET",
       path: `/sandboxes/${encodeURIComponent(input.sandboxId)}/logs${queryString}`,
       signal: input.signal,
@@ -287,7 +377,7 @@ export class E2BLiveHttpTransport {
     signal?: AbortSignal;
   }): AsyncIterable<SandboxProviderStreamEvent> {
     throwIfAborted(input.signal);
-    const response = await this.request<E2BEventsResponse>({
+    const response = await this.controlPlaneRequest<E2BEventsResponse>({
       method: "GET",
       path: `/sandboxes/${encodeURIComponent(input.sandboxId)}/events`,
       signal: input.signal,
@@ -305,7 +395,7 @@ export class E2BLiveHttpTransport {
   async releaseSandbox(input: { sandboxId: string; reason?: string | null; signal?: AbortSignal }): Promise<void> {
     throwIfAborted(input.signal);
     if (this.releaseMode === "pause") {
-      await this.request<unknown>({
+      await this.controlPlaneRequest<unknown>({
         method: "POST",
         path: `/sandboxes/${encodeURIComponent(input.sandboxId)}/pause`,
         body: { reason: this.redact(input.reason ?? null) },
@@ -319,11 +409,12 @@ export class E2BLiveHttpTransport {
 
   async destroySandbox(input: { sandboxId: string; signal?: AbortSignal }): Promise<void> {
     throwIfAborted(input.signal);
-    await this.request<unknown>({
+    await this.controlPlaneRequest<unknown>({
       method: "DELETE",
       path: `/sandboxes/${encodeURIComponent(input.sandboxId)}`,
       signal: input.signal,
     });
+    this.sessions.delete(input.sandboxId);
   }
 
   private redact<T extends string | null | undefined>(value: T): T {
@@ -331,7 +422,15 @@ export class E2BLiveHttpTransport {
     return redactBeforeProvider(value, this.redactor) as T;
   }
 
-  private async request<T>(input: {
+  private envdHostFor(sandboxId: string, clientId: string | null): string {
+    return this.envdHostTemplate
+      .replace("{sandboxId}", encodeURIComponent(sandboxId))
+      .replace("{clientId}", clientId ? encodeURIComponent(clientId) : "")
+      .replace("{port}", String(this.envdPort));
+  }
+
+  /** Sandbox CRUD on api.e2b.app. Uses `X-API-Key` per E2B documentation. */
+  private async controlPlaneRequest<T>(input: {
     method: string;
     path: string;
     body?: unknown;
@@ -339,7 +438,7 @@ export class E2BLiveHttpTransport {
   }): Promise<T> {
     const url = `${this.baseUrl}${input.path}`;
     const headers: Record<string, string> = {
-      [AUTH_HEADER]: `Bearer ${this.apiKey}`,
+      [API_KEY_HEADER]: this.apiKey,
       [ACCEPT_HEADER]: "application/json",
     };
     let serializedBody: string | null = null;
@@ -347,20 +446,65 @@ export class E2BLiveHttpTransport {
       headers[CONTENT_TYPE_HEADER] = "application/json";
       serializedBody = JSON.stringify(input.body ?? null);
     }
-    // Capture the redacted view (auth header stripped) for the test hook —
-    // never expose the raw bearer token to callers, even via the hook.
+    return this.dispatch<T>({
+      method: input.method,
+      url,
+      headers,
+      serializedBody,
+      signal: input.signal,
+    });
+  }
+
+  /** Sandbox-side envd Connect endpoint. Uses Connect protocol headers per
+   *  E2B documentation: Content-Type application/connect+json, X-Access-Token
+   *  with the envd-issued token, and Authorization: Basic <base64(apiKey)>. */
+  private async envdRequest<T>(input: {
+    method: string;
+    url: string;
+    body: unknown;
+    envdAccessToken: string | null;
+    signal?: AbortSignal;
+  }): Promise<T> {
+    const headers: Record<string, string> = {
+      [CONTENT_TYPE_HEADER]: CONNECT_CONTENT_TYPE,
+      [ACCEPT_HEADER]: CONNECT_CONTENT_TYPE,
+      [BASIC_AUTH_HEADER]: `Basic ${toBase64(this.apiKey)}`,
+    };
+    if (input.envdAccessToken !== null && input.envdAccessToken.length > 0) {
+      headers[ACCESS_TOKEN_HEADER] = input.envdAccessToken;
+    }
+    const serializedBody = JSON.stringify(input.body ?? null);
+    return this.dispatch<T>({
+      method: input.method,
+      url: input.url,
+      headers,
+      serializedBody,
+      signal: input.signal,
+    });
+  }
+
+  private async dispatch<T>(input: {
+    method: string;
+    url: string;
+    headers: Record<string, string>;
+    serializedBody: string | null;
+    signal?: AbortSignal;
+  }): Promise<T> {
+    // Capture the redacted view (auth/access-token stripped) for the test
+    // hook — never expose the raw API key or envd token to callers, even
+    // via the observability hook.
     if (this.onRequest) {
       this.onRequest({
         method: input.method,
-        url: redactBeforeProvider(url, this.redactor),
-        headers: redactCapturedHeaders(headers, this.apiKey, this.redactor),
-        body: serializedBody === null ? null : redactBeforeProvider(serializedBody, this.redactor),
+        url: redactBeforeProvider(input.url, this.redactor),
+        headers: redactCapturedHeaders(input.headers, this.apiKey, this.redactor),
+        body: input.serializedBody === null ? null : redactBeforeProvider(input.serializedBody, this.redactor),
       });
     }
-    const response = await this.fetchImpl(url, {
+    const response = await this.fetchImpl(input.url, {
       method: input.method,
-      headers,
-      body: serializedBody ?? undefined,
+      headers: input.headers,
+      body: input.serializedBody ?? undefined,
       signal: input.signal,
     });
     if (response.status === 401 || response.status === 403) {
@@ -422,8 +566,17 @@ function redactCapturedHeaders(
 ): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(headers)) {
-    if (name.toLowerCase() === AUTH_HEADER.toLowerCase()) {
-      out[name] = "Bearer [REDACTED]";
+    const lower = name.toLowerCase();
+    if (lower === API_KEY_HEADER.toLowerCase()) {
+      out[name] = "[REDACTED]";
+      continue;
+    }
+    if (lower === BASIC_AUTH_HEADER.toLowerCase()) {
+      out[name] = "Basic [REDACTED]";
+      continue;
+    }
+    if (lower === ACCESS_TOKEN_HEADER.toLowerCase()) {
+      out[name] = "[REDACTED]";
       continue;
     }
     let redacted = redactBeforeProvider(value, registry);

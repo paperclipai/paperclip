@@ -1,16 +1,23 @@
 /**
  * Phase 4A-S4 (LET-366) — Live E2BSandboxProvider behind SANDBOX_PROVIDER_ALLOW_LIVE.
  *
- * These tests cover the three acceptance criteria that distinguish the live
- * adapter from the LET-351 mock-only spike:
+ * These tests cover the acceptance criteria that distinguish the live adapter
+ * from the LET-351 mock-only spike, and the QA-remediated contract surface:
  *
  *  1. Three-gate fail-closed: PROVIDER_DISABLED is thrown from `acquireLease`
  *     before any HTTP egress when any of the three gates is missing.
  *  2. Pre-egress redaction boundary: a resolved-secret canary registered into
  *     the pre-provider redaction registry never reaches the captured outbound
  *     payload (request body, env values, command args, stdin, headers).
- *  3. Lifecycle mapping: acquireLease → POST /sandboxes, start → resume,
- *     exec → commands, release → DELETE (pilot default), destroy → DELETE.
+ *  3. Lifecycle mapping: acquireLease → POST /sandboxes (api.e2b.app),
+ *     start → POST /sandboxes/{id}/resume, exec → POST {envdHost}/process.Process/Start,
+ *     release → DELETE /sandboxes/{id} (pilot default), destroy → DELETE.
+ *  4. E2B documented HTTP contract: control-plane requests use `X-API-Key`
+ *     (not `Authorization: Bearer`); create body uses `templateID`, `timeout`
+ *     (seconds), `envVars`; sandbox-side exec uses Connect protocol with
+ *     `application/connect+json`, `X-Access-Token`, and `Authorization: Basic`.
+ *  5. Persisted-lease cleanup: a fresh provider instance can release/destroy/
+ *     resume an existing providerLeaseId without calling acquireLease first.
  *
  * No live HTTP call is made — every test injects either a stub fetch or
  * an override transport factory. The vendor placeholder is `<E2B_API_KEY>`.
@@ -64,6 +71,10 @@ function jsonResponse(body: unknown, status = 200): OkResponse {
     status,
     text: async () => JSON.stringify(body),
   };
+}
+
+function emptyResponse(status = 204): OkResponse {
+  return { ok: true, status, text: async () => "" };
 }
 
 describe("LET-366 E2BSandboxProvider live transport gating", () => {
@@ -194,7 +205,7 @@ describe("LET-366 E2BSandboxProvider live transport gating", () => {
     const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       if (method === "POST") {
-        return jsonResponse({ id: "e2b-sandbox-live-1", state: "created", metadata: {} }) as unknown as Response;
+        return jsonResponse({ sandboxID: "e2b-sandbox-live-1", state: "created", metadata: {} }) as unknown as Response;
       }
       return jsonResponse({}) as unknown as Response;
     });
@@ -235,10 +246,16 @@ describe("LET-366 E2BSandboxProvider live transport gating", () => {
     const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       if (method === "POST") {
-        return jsonResponse({ id: "e2b-sandbox-canary-1", state: "created", metadata: {} }) as unknown as Response;
+        return jsonResponse({
+          sandboxID: "e2b-sandbox-canary-1",
+          clientID: "client-abc",
+          envdAccessToken: "envd-canary-token",
+          state: "created",
+          metadata: {},
+        }) as unknown as Response;
       }
       if (method === "DELETE") {
-        return { ok: true, status: 204, text: async () => "" } as unknown as Response;
+        return emptyResponse(204) as unknown as Response;
       }
       return jsonResponse({}) as unknown as Response;
     });
@@ -271,15 +288,17 @@ describe("LET-366 E2BSandboxProvider live transport gating", () => {
     // resolved API key (plus any caller-planted canaries).
     expect(sharedRegistry.size()).toBeGreaterThanOrEqual(3);
 
-    // The Authorization header is the only place where the resolved key is
-    // legitimately handed to the transport in raw form. Verify the captured
-    // hook (which is observability-only) never sees the raw token there
-    // either — the hook view shows the redacted projection.
+    // The API-key header (control plane) and the Basic/X-Access-Token headers
+    // (sandbox-side envd Connect) are the only places where the resolved key
+    // or envd token are legitimately handed to the transport. The captured
+    // hook view must show the redacted projection for all of them.
     for (const request of captured) {
-      const auth = request.headers["Authorization"];
-      if (auth) {
-        expect(auth).toContain("[REDACTED]");
-        expect(auth).not.toContain(RESOLVED_API_KEY_CANARY);
+      for (const header of ["X-API-Key", "Authorization", "X-Access-Token"]) {
+        const value = request.headers[header];
+        if (value) {
+          expect(value).toContain("[REDACTED]");
+          expect(value).not.toContain(RESOLVED_API_KEY_CANARY);
+        }
       }
     }
 
@@ -296,24 +315,30 @@ describe("LET-366 E2BSandboxProvider live transport gating", () => {
     expect(haystack).toContain("safe-value");
   });
 
-  it("maps the Paperclip lifecycle to the E2B HTTP surface (create → resume → commands → DELETE) by default", async () => {
+  it("maps the Paperclip lifecycle to the documented E2B HTTP surface (api.e2b.app + envd Connect host) by default", async () => {
     process.env.SANDBOX_PROVIDER_ALLOW_LIVE = "true";
-    const recorded: Array<{ method: string; path: string }> = [];
+    const recorded: Array<{ method: string; host: string; path: string }> = [];
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
       const method = init?.method ?? "GET";
-      const path = new URL(url).pathname;
-      recorded.push({ method, path });
-      if (method === "POST" && path === "/sandboxes") {
-        return jsonResponse({ id: "e2b-sandbox-lifecycle", state: "created", metadata: {} }) as unknown as Response;
+      const parsed = new URL(url);
+      recorded.push({ method, host: parsed.host, path: parsed.pathname });
+      if (method === "POST" && parsed.pathname === "/sandboxes") {
+        return jsonResponse({
+          sandboxID: "e2b-sandbox-lifecycle",
+          clientID: "client-lc",
+          envdAccessToken: "envd-token-lc",
+          state: "created",
+          metadata: {},
+        }) as unknown as Response;
       }
-      if (method === "POST" && path.endsWith("/resume")) {
-        return jsonResponse({ id: "e2b-sandbox-lifecycle", state: "running", metadata: {} }) as unknown as Response;
+      if (method === "POST" && parsed.pathname.endsWith("/resume")) {
+        return jsonResponse({ sandboxID: "e2b-sandbox-lifecycle", state: "running", metadata: {} }) as unknown as Response;
       }
-      if (method === "POST" && path.endsWith("/commands")) {
+      if (method === "POST" && parsed.pathname === "/process.Process/Start") {
         return jsonResponse({ exitCode: 0, stdout: "ok", stderr: "" }) as unknown as Response;
       }
       if (method === "DELETE") {
-        return { ok: true, status: 204, text: async () => "" } as unknown as Response;
+        return emptyResponse(204) as unknown as Response;
       }
       return jsonResponse({}) as unknown as Response;
     });
@@ -345,13 +370,14 @@ describe("LET-366 E2BSandboxProvider live transport gating", () => {
       providerLeaseId: lease.providerLeaseId,
     });
     expect(recorded).toEqual([
-      { method: "POST", path: "/sandboxes" },
-      { method: "POST", path: "/sandboxes/e2b-sandbox-lifecycle/resume" },
-      { method: "POST", path: "/sandboxes/e2b-sandbox-lifecycle/commands" },
-      // releaseLease maps to DELETE per pilot default (no warm reuse).
-      { method: "DELETE", path: "/sandboxes/e2b-sandbox-lifecycle" },
+      { method: "POST", host: "api.e2b.app", path: "/sandboxes" },
+      { method: "POST", host: "api.e2b.app", path: "/sandboxes/e2b-sandbox-lifecycle/resume" },
+      // Exec leaves api.e2b.app and targets the sandbox-side envd Connect host.
+      { method: "POST", host: "49983-e2b-sandbox-lifecycle.e2b.app", path: "/process.Process/Start" },
+      // releaseLease maps to DELETE on api.e2b.app per pilot default (no warm reuse).
+      { method: "DELETE", host: "api.e2b.app", path: "/sandboxes/e2b-sandbox-lifecycle" },
       // destroyLease maps to DELETE.
-      { method: "DELETE", path: "/sandboxes/e2b-sandbox-lifecycle" },
+      { method: "DELETE", host: "api.e2b.app", path: "/sandboxes/e2b-sandbox-lifecycle" },
     ]);
   });
 
@@ -363,9 +389,9 @@ describe("LET-366 E2BSandboxProvider live transport gating", () => {
       const path = new URL(url).pathname;
       recorded.push({ method, path });
       if (method === "POST" && path === "/sandboxes") {
-        return jsonResponse({ id: "e2b-sandbox-pause", state: "created", metadata: {} }) as unknown as Response;
+        return jsonResponse({ sandboxID: "e2b-sandbox-pause", state: "created", metadata: {} }) as unknown as Response;
       }
-      return { ok: true, status: 204, text: async () => "" } as unknown as Response;
+      return emptyResponse(204) as unknown as Response;
     });
     const provider = new E2BSandboxProvider({
       isProviderEnabled: () => true,
@@ -388,6 +414,238 @@ describe("LET-366 E2BSandboxProvider live transport gating", () => {
       { method: "POST", path: "/sandboxes" },
       { method: "POST", path: "/sandboxes/e2b-sandbox-pause/pause" },
     ]);
+  });
+});
+
+/**
+ * QA-remediation contract tests: assert the on-the-wire shape matches the
+ * documented E2B API (X-API-Key header, templateID/timeout/envVars body
+ * field names, Connect protocol headers on the envd host).
+ */
+describe("LET-366 E2B documented HTTP contract", () => {
+  beforeEach(() => {
+    delete process.env.SANDBOX_PROVIDER_ALLOW_LIVE;
+  });
+  afterEach(() => {
+    restoreLiveFlag();
+    vi.restoreAllMocks();
+  });
+
+  it("uses X-API-Key (not Authorization: Bearer) and documented body fields on /sandboxes create", async () => {
+    process.env.SANDBOX_PROVIDER_ALLOW_LIVE = "true";
+    const captured: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      captured.push({ url, init });
+      return jsonResponse({
+        sandboxID: "sb-contract-1",
+        clientID: "client-contract",
+        envdAccessToken: "envd-contract",
+        state: "created",
+      }) as unknown as Response;
+    });
+    const provider = new E2BSandboxProvider({
+      isProviderEnabled: () => true,
+      resolveApiKey: async () => RESOLVED_API_KEY_CANARY,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await provider.acquireLease({
+      config: e2bLiveConfig,
+      environmentId: "env-contract",
+      heartbeatRunId: "run-contract",
+      issueId: "issue-contract",
+    });
+    expect(captured).toHaveLength(1);
+    const first = captured[0];
+    expect(first).toBeDefined();
+    const headers = (first!.init?.headers ?? {}) as Record<string, string>;
+    // Documented header for sandbox CRUD.
+    expect(headers["X-API-Key"]).toBe(RESOLVED_API_KEY_CANARY);
+    // Bearer is explicitly NOT used for control-plane calls.
+    expect(headers["Authorization"]).toBeUndefined();
+    const body = JSON.parse(first!.init?.body as string);
+    // Documented body field names: templateID, timeout (seconds), envVars.
+    expect(body).toMatchObject({
+      templateID: "base",
+      // 45_000 ms → 45 s rounded up.
+      timeout: 45,
+      envVars: expect.objectContaining({ SAFE_PUBLIC: "ok-public-value" }),
+    });
+    // Legacy field names from the pre-QA implementation must not be present.
+    expect(body.image).toBeUndefined();
+    expect(body.snapshot).toBeUndefined();
+    expect(body.template).toBeUndefined();
+    expect(body.env).toBeUndefined();
+    expect(body.timeoutMs).toBeUndefined();
+  });
+
+  it("uses Connect protocol headers on the sandbox-side envd host for process.Process/Start", async () => {
+    process.env.SANDBOX_PROVIDER_ALLOW_LIVE = "true";
+    const captured: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      captured.push({ url, init });
+      const parsed = new URL(url);
+      if (parsed.pathname === "/sandboxes") {
+        return jsonResponse({
+          sandboxID: "sb-connect-1",
+          clientID: "client-connect",
+          envdAccessToken: "envd-token-connect",
+          state: "created",
+        }) as unknown as Response;
+      }
+      if (parsed.pathname === "/process.Process/Start") {
+        return jsonResponse({ exitCode: 0, stdout: "", stderr: "" }) as unknown as Response;
+      }
+      return jsonResponse({}) as unknown as Response;
+    });
+    const provider = new E2BSandboxProvider({
+      isProviderEnabled: () => true,
+      resolveApiKey: async () => RESOLVED_API_KEY_CANARY,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const lease = await provider.acquireLease({
+      config: e2bLiveConfig,
+      environmentId: "env-connect",
+      heartbeatRunId: "run-connect",
+      issueId: "issue-connect",
+    });
+    await provider.exec({
+      config: e2bLiveConfig,
+      providerLeaseId: lease.providerLeaseId,
+      command: "echo",
+      args: ["hello"],
+    });
+    expect(captured).toHaveLength(2);
+    const execCall = captured[1];
+    expect(execCall).toBeDefined();
+    // Sandbox-side envd host (NOT api.e2b.app).
+    const parsed = new URL(execCall!.url);
+    expect(parsed.host).toBe("49983-sb-connect-1.e2b.app");
+    expect(parsed.pathname).toBe("/process.Process/Start");
+    const headers = (execCall!.init?.headers ?? {}) as Record<string, string>;
+    expect(headers["Content-Type"]).toBe("application/connect+json");
+    expect(headers["Accept"]).toBe("application/connect+json");
+    expect(headers["X-Access-Token"]).toBe("envd-token-connect");
+    expect(headers["Authorization"]).toBe(
+      `Basic ${Buffer.from(RESOLVED_API_KEY_CANARY, "utf8").toString("base64")}`,
+    );
+    // Body uses the documented Connect request shape: { process: { cmd, args, ... }, stdin, timeout }.
+    const body = JSON.parse(execCall!.init?.body as string);
+    expect(body).toMatchObject({
+      process: { cmd: "echo", args: ["hello"] },
+    });
+  });
+});
+
+/**
+ * QA-remediation: persisted-lease cleanup. A fresh provider instance must be
+ * able to release/destroy/resume an existing providerLeaseId after a server
+ * restart or via a deferred finalizer/cleanup worker that did not originally
+ * call acquireLease. The live transport must be lazy-initialised on these
+ * entry points; otherwise the inherited mock-disabled transport would throw
+ * PROVIDER_DISABLED and the live sandbox would leak (live cost / lifecycle
+ * integrity bug).
+ */
+describe("LET-366 persisted-lease cleanup without prior acquireLease", () => {
+  beforeEach(() => {
+    delete process.env.SANDBOX_PROVIDER_ALLOW_LIVE;
+  });
+  afterEach(() => {
+    restoreLiveFlag();
+    vi.restoreAllMocks();
+  });
+
+  const persistedLeaseId = "sandbox://e2b/persisted-sandbox-abc";
+
+  it("destroyLease on a persisted lease calls the live DELETE endpoint without prior acquireLease", async () => {
+    process.env.SANDBOX_PROVIDER_ALLOW_LIVE = "true";
+    const captured: Array<{ url: string; method: string }> = [];
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      captured.push({ url, method: init?.method ?? "GET" });
+      return emptyResponse(204) as unknown as Response;
+    });
+    const provider = new E2BSandboxProvider({
+      isProviderEnabled: () => true,
+      resolveApiKey: async () => RESOLVED_API_KEY_CANARY,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await provider.destroyLease({
+      config: e2bLiveConfig,
+      providerLeaseId: persistedLeaseId,
+    });
+    expect(captured).toEqual([
+      { url: "https://api.e2b.app/sandboxes/persisted-sandbox-abc", method: "DELETE" },
+    ]);
+  });
+
+  it("releaseLease on a persisted lease maps to live DELETE (pilot default) without prior acquireLease", async () => {
+    process.env.SANDBOX_PROVIDER_ALLOW_LIVE = "true";
+    const captured: Array<{ url: string; method: string }> = [];
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      captured.push({ url, method: init?.method ?? "GET" });
+      return emptyResponse(204) as unknown as Response;
+    });
+    const provider = new E2BSandboxProvider({
+      isProviderEnabled: () => true,
+      resolveApiKey: async () => RESOLVED_API_KEY_CANARY,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await provider.releaseLease({
+      config: e2bLiveConfig,
+      providerLeaseId: persistedLeaseId,
+      status: "released",
+    });
+    expect(captured).toEqual([
+      { url: "https://api.e2b.app/sandboxes/persisted-sandbox-abc", method: "DELETE" },
+    ]);
+  });
+
+  it("resumeLease on a persisted lease calls the live resume endpoint without prior acquireLease", async () => {
+    process.env.SANDBOX_PROVIDER_ALLOW_LIVE = "true";
+    const captured: Array<{ url: string; method: string }> = [];
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      captured.push({ url, method: init?.method ?? "GET" });
+      return jsonResponse({ sandboxID: "persisted-sandbox-abc", state: "running" }) as unknown as Response;
+    });
+    const provider = new E2BSandboxProvider({
+      isProviderEnabled: () => true,
+      resolveApiKey: async () => RESOLVED_API_KEY_CANARY,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const result = await provider.resumeLease({
+      config: e2bLiveConfig,
+      providerLeaseId: persistedLeaseId,
+    });
+    expect(result?.providerLeaseId).toBe(persistedLeaseId);
+    expect(captured).toEqual([
+      { url: "https://api.e2b.app/sandboxes/persisted-sandbox-abc/resume", method: "POST" },
+    ]);
+  });
+
+  it("persisted-lease cleanup still fails closed when the three-gate check fails", async () => {
+    delete process.env.SANDBOX_PROVIDER_ALLOW_LIVE;
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const provider = new E2BSandboxProvider({
+      isProviderEnabled: () => true,
+      resolveApiKey: async () => RESOLVED_API_KEY_CANARY,
+      fetchImpl: globalThis.fetch.bind(globalThis),
+    });
+    await expect(
+      provider.destroyLease({ config: e2bLiveConfig, providerLeaseId: persistedLeaseId }),
+    ).rejects.toMatchObject({
+      code: "PROVIDER_DISABLED",
+      details: expect.objectContaining({ gate: "env_flag" }),
+    });
+    await expect(
+      provider.releaseLease({ config: e2bLiveConfig, providerLeaseId: persistedLeaseId, status: "released" }),
+    ).rejects.toMatchObject({
+      code: "PROVIDER_DISABLED",
+    });
+    await expect(
+      provider.resumeLease({ config: e2bLiveConfig, providerLeaseId: persistedLeaseId }),
+    ).rejects.toMatchObject({
+      code: "PROVIDER_DISABLED",
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 
