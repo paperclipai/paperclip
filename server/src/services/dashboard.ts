@@ -1,4 +1,4 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { aliasedTable, and, eq, gte, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
@@ -51,6 +51,39 @@ export function dashboardService(db: Db) {
         .from(approvals)
         .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
         .then((rows) => Number(rows[0]?.count ?? 0));
+
+      const parentIssues = aliasedTable(issues, "parent_issues");
+      const orphanRows = await db
+        .select({
+          projectOrphan: sql<number>`count(*) filter (where ${issues.projectId} is null and ${parentIssues.projectId} is not null)`,
+          goalOrphan: sql<number>`count(*) filter (where ${issues.goalId} is null and ${parentIssues.goalId} is not null)`,
+          total: sql<number>`count(*)`,
+        })
+        .from(issues)
+        .innerJoin(
+          parentIssues,
+          and(
+            eq(parentIssues.id, issues.parentId),
+            eq(parentIssues.companyId, issues.companyId),
+          ),
+        )
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            isNull(issues.hiddenAt),
+            sql`${issues.status} not in ('done', 'cancelled')`,
+            sql`(
+              (${issues.projectId} is null and ${parentIssues.projectId} is not null)
+              or (${issues.goalId} is null and ${parentIssues.goalId} is not null)
+            )`,
+          ),
+        );
+
+      const orphanCandidates = {
+        projectOrphans: Number(orphanRows[0]?.projectOrphan ?? 0),
+        goalOrphans: Number(orphanRows[0]?.goalOrphan ?? 0),
+        total: Number(orphanRows[0]?.total ?? 0),
+      };
 
       const agentCounts: Record<string, number> = {
         active: 0,
@@ -156,6 +189,7 @@ export function dashboardService(db: Db) {
           pausedProjects: budgetOverview.pausedProjectCount,
         },
         runActivity: Array.from(runActivity.values()),
+        orphanCandidates,
       };
     },
   };

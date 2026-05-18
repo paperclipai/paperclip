@@ -20,7 +20,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, AlertTriangle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -233,6 +233,25 @@ export function Dashboard() {
               </div>
               <Link to="/costs" className="text-sm underline underline-offset-2 text-red-100">
                 Open budgets
+              </Link>
+            </div>
+          ) : null}
+
+          {data.orphanCandidates.total > 0 ? (
+            <div className="flex items-start justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 dark:border-amber-500/25 dark:bg-amber-950/60">
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                <div>
+                  <p className="text-sm font-medium text-amber-900 dark:text-amber-100">
+                    {data.orphanCandidates.total} orphan candidate issue{data.orphanCandidates.total === 1 ? "" : "s"}
+                  </p>
+                  <p className="text-xs text-amber-800/80 dark:text-amber-100/70">
+                    {data.orphanCandidates.projectOrphans} missing project · {data.orphanCandidates.goalOrphans} missing goal (parent has it set)
+                  </p>
+                </div>
+              </div>
+              <Link to="/issues" className="text-sm underline underline-offset-2 text-amber-800 dark:text-amber-100 shrink-0">
+                Review
               </Link>
             </div>
           ) : null}
