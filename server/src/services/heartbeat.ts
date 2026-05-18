@@ -6579,7 +6579,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const reaped: string[] = [];
 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
-      if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
+      const hasRunningProcessHandle = runningProcesses.has(run.id);
+      const hasActiveExecution = activeRunExecutions.has(run.id);
+      if (hasRunningProcessHandle) continue;
 
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {
@@ -6590,6 +6592,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
+      if (hasActiveExecution) {
+        const hasTrackedProcessMetadata = tracksLocalChild && Boolean(run.processPid || run.processGroupId);
+        const trackedProcessLost = hasTrackedProcessMetadata && !processPidAlive && !processGroupAlive;
+        if (!trackedProcessLost) continue;
+      }
       if (processPidAlive) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
@@ -6652,6 +6659,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         status: finalizedRun.status,
         failureReason: finalizedRun.error ?? undefined,
       });
+      await recovery.retireResolvedStaleRunEvaluations({
+        companyId: finalizedRun.companyId,
+        runId: finalizedRun.id,
+        restoreSourceStatus: true,
+      });
 
       let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
       if (shouldRetry) {
@@ -6680,6 +6692,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       await finalizeAgentStatus(run.agentId, "failed");
       await startNextQueuedRunForAgent(run.agentId);
+      activeRunExecutions.delete(run.id);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
     }
@@ -7872,7 +7885,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       let outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
       const latestRun = await getRun(run.id);
-      if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
+      const latestRunAlreadyTerminal = isHeartbeatRunTerminalStatus(latestRun?.status);
+      if (latestRunAlreadyTerminal) {
         outcome = latestRun.status;
       } else if (adapterResult.timedOut) {
         outcome = "timed_out";
@@ -7881,22 +7895,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       } else {
         outcome = "failed";
       }
+      const adapterFallbackErrorMessage =
+        adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed");
       const runErrorMessage =
         outcome === "cancelled"
           ? (latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled")
           : outcome === "succeeded"
             ? null
             : redactCurrentUserText(
-                adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+                latestRunAlreadyTerminal ? (latestRun?.error ?? adapterFallbackErrorMessage) : adapterFallbackErrorMessage,
                 currentUserRedactionOptions,
               );
+      const adapterFallbackErrorCode = outcome === "timed_out" ? "timeout" : (adapterResult.errorCode ?? "adapter_failed");
       const runErrorCode =
         outcome === "timed_out"
-          ? "timeout"
+          ? (latestRunAlreadyTerminal ? (latestRun?.errorCode ?? "timeout") : "timeout")
           : outcome === "cancelled"
             ? (latestRun?.errorCode ?? "cancelled")
             : outcome === "failed"
-              ? (adapterResult.errorCode ?? "adapter_failed")
+              ? (latestRunAlreadyTerminal ? (latestRun?.errorCode ?? adapterFallbackErrorCode) : adapterFallbackErrorCode)
               : null;
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
@@ -7961,7 +7978,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       );
 
       let persistedRun = await setRunStatus(run.id, status, {
-        finishedAt: new Date(),
+        finishedAt: latestRunAlreadyTerminal ? (latestRun?.finishedAt ?? new Date()) : new Date(),
         error: runErrorMessage,
         errorCode: runErrorCode,
         exitCode: adapterResult.exitCode,

@@ -479,7 +479,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       });
     }
 
-    return { companyId, agentId, runId, wakeupRequestId, issueId };
+    return { companyId, agentId, runId, wakeupRequestId, issueId, issuePrefix };
   }
 
   async function seedEnvironmentLeaseFixture(input: {
@@ -956,6 +956,56 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
     expect(issue?.checkoutRunId).toBe(runId);
+  });
+
+  it("retires stale watchdog evaluations when terminalizing a lost local process", async () => {
+    const { companyId, agentId, runId, issueId, issuePrefix } = await seedRunFixture({
+      processPid: 999_999_999,
+    });
+    const evaluationIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: evaluationIssueId,
+      companyId,
+      parentId: issueId,
+      title: "Review silent active run for CodexCoder",
+      status: "todo",
+      priority: "high",
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+      originKind: "stale_active_run_evaluation",
+      originId: runId,
+      originRunId: runId,
+      originFingerprint: `stale_active_run:${companyId}:${runId}`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: evaluationIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result).toMatchObject({ reaped: 1, runIds: [runId] });
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const failedRun = runs.find((row) => row.id === runId);
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+    expect(retryRun?.status).toBe("queued");
+
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(sourceIssue?.status).toBe("in_progress");
+    expect(sourceIssue?.executionRunId).toBe(retryRun?.id ?? null);
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
+
+    const [evaluationIssue] = await db.select().from(issues).where(eq(issues.id, evaluationIssueId));
+    expect(evaluationIssue?.status).toBe("cancelled");
   });
 
   it("releases active environment leases when an orphaned run is reaped", async () => {
@@ -2490,6 +2540,90 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
   });
 
+  it("routes adapter quota recovery off a CEO-owned issue to an invokable engineering owner", async () => {
+    const { companyId, agentId: ceoId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "adapter_failed",
+      runError: "Codex usage limit reached. Try again later.",
+    });
+    const engineerId = randomUUID();
+
+    await db
+      .update(agents)
+      .set({
+        name: "CEO",
+        role: "ceo",
+        title: null,
+        capabilities: null,
+      })
+      .where(eq(agents.id, ceoId));
+    await db.insert(agents).values({
+      id: engineerId,
+      companyId,
+      name: "Forge",
+      role: "general",
+      title: "Engineer (BE/FE, GCP, AI)",
+      capabilities: "Owns backend/frontend runtime repair and adapter recovery.",
+      status: "idle",
+      reportsTo: ceoId,
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    expect(issue?.assigneeAgentId).toBe(engineerId);
+
+    const recoveryAction = await waitForValue(async () =>
+      db.select().from(issueRecoveryActions).where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.sourceIssueId, issueId),
+        ),
+      ).then((rows) => rows[0] ?? null),
+    );
+    expect(recoveryAction).toMatchObject({
+      ownerType: "agent",
+      ownerAgentId: engineerId,
+      previousOwnerAgentId: ceoId,
+      returnOwnerAgentId: ceoId,
+      recoveryIssueId: null,
+    });
+    expect(recoveryAction?.evidence).toMatchObject({
+      latestRunId: runId,
+      latestRunErrorCode: "adapter_failed",
+      retryReason: "issue_continuation_needed",
+    });
+
+    const recoveryWakeup = await waitForValue(async () => {
+      const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, engineerId));
+      return wakeups.find((wakeup) => {
+        const payload = wakeup.payload as Record<string, unknown> | null;
+        return payload?.issueId === issueId &&
+          payload?.recoveryActionId === recoveryAction?.id &&
+          payload?.strandedRunId === runId;
+      }) ?? null;
+    });
+    expect(recoveryWakeup?.reason).toBe("source_scoped_recovery_action");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("Latest retry adapter failure");
+    expect(comments[0]?.body).toContain("adapter_failed");
+    expect(comments[0]?.body).toContain("Codex usage limit reached");
+    expect(comments[0]?.body).toContain("Recovery owner: [Forge]");
+    expect(comments[0]?.body).not.toContain("Recovery owner: [CEO]");
+  });
+
   it("redacts error-code-only stranded recovery failures in issue copy", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
@@ -2518,7 +2652,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
+    expect(comments[0]?.body).toContain("Latest retry adapter failure");
+    expect(comments[0]?.body).toContain("adapter_exit_code");
     expect(comments[0]?.body).not.toContain("- Failure: none recorded");
   });
 
@@ -2705,7 +2840,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(2);
-    expect(comments[1]?.body).toContain("Latest retry failure details were withheld from the issue thread");
+    expect(comments[1]?.body).toContain("Latest retry adapter failure");
+    expect(comments[1]?.body).toContain("adapter_failed");
+    expect(comments[1]?.body).toContain("adapter failed while retrying recovery issue");
   });
 
   it("does not escalate paused-tree recovery when the automatic continuation retry was cancelled by the hold", async () => {
