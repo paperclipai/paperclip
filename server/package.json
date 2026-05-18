@@ -1,6 +1,6 @@
 {
   "name": "@paperclipai/server",
-  "version": "0.3.1",
+  "version": "2026.513.0-sparkeros.56",
   "license": "MIT",
   "homepage": "https://github.com/paperclipai/paperclip",
   "bugs": {
@@ -68,7 +68,7 @@
     "drizzle-orm": "^0.45.2",
     "embedded-postgres": "^18.1.0-beta.16",
     "express": "^5.1.0",
-    "hermes-paperclip-adapter": "^0.2.0",
+    "hermes-paperclip-adapter": "file:../../hermes-paperclip-adapter",
     "jsdom": "^28.1.0",
     "multer": "^2.1.1",
     "open": "^11.0.0",

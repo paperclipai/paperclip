@@ -81,6 +81,7 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
       : isAttentionBlocked
         ? "needs_attention"
         : undefined;
+  const isCancelled = status === "cancelled";
 
   const circle = (
     <span
@@ -105,6 +106,19 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
       )}
       {isStalledBlocked && (
         <span className="absolute inset-0 m-auto h-1.5 w-1.5 rounded-full bg-current" />
+      )}
+      {isCancelled && (
+        <svg
+          className="absolute inset-0 m-auto size-2.5! text-card"
+          viewBox="0 0 12 12"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+        >
+          <line x1="3" y1="3" x2="9" y2="9" />
+          <line x1="9" y1="3" x2="3" y2="9" />
+        </svg>
       )}
     </span>
   );

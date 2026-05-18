@@ -4,11 +4,15 @@ import {
   issueGraphLivenessAutoRecoveryRequestSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceGeneralSettingsSchema,
+  patchInstanceBackupSettingsSchema,
+  type InstanceBackupSettings,
 } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { heartbeatService, instanceSettingsService, logActivity } from "../services/index.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
+import { readConfigFile, updateConfigFile } from "../config-store.js";
+import { loadConfig } from "../config.js";
 
 function assertCanManageInstanceSettings(req: Request) {
   if (req.actor.type !== "board") {
@@ -144,6 +148,75 @@ export function instanceSettingsRoutes(db: Db) {
         ),
       );
       res.json(result);
+    },
+  );
+
+  router.get("/instance/settings/backup", async (req, res) => {
+    assertCanManageInstanceSettings(req);
+    // Read from runtime config (reflects env vars + config file)
+    const runtimeConfig = loadConfig();
+    const backup: InstanceBackupSettings = {
+      enabled: runtimeConfig.databaseBackupEnabled,
+      intervalMinutes: runtimeConfig.databaseBackupIntervalMinutes,
+      retentionDays: runtimeConfig.databaseBackupRetentionDays,
+      dir: runtimeConfig.databaseBackupDir,
+    };
+    // Also include whether config file exists for UI feedback
+    const configFile = readConfigFile();
+    res.json({
+      ...backup,
+      configFileExists: configFile !== null,
+      requiresRestart: true,
+    });
+  });
+
+  router.patch(
+    "/instance/settings/backup",
+    validate(patchInstanceBackupSettingsSchema),
+    async (req, res) => {
+      assertCanManageInstanceSettings(req);
+      const configFile = readConfigFile();
+      if (!configFile) {
+        res.status(400).json({
+          error: "No config file found. Run `paperclipai onboard` first.",
+        });
+        return;
+      }
+      const updated = updateConfigFile((config) => ({
+        ...config,
+        database: {
+          ...config.database,
+          backup: {
+            ...config.database.backup,
+            ...req.body,
+          },
+        },
+      }));
+      const actor = getActorInfo(req);
+      const companyIds = await svc.listCompanyIds();
+      await Promise.all(
+        companyIds.map((companyId) =>
+          logActivity(db, {
+            companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "instance.settings.backup_updated",
+            entityType: "instance_settings",
+            entityId: "backup",
+            details: {
+              backup: updated.database.backup,
+              changedKeys: Object.keys(req.body).sort(),
+            },
+          }),
+        ),
+      );
+      res.json({
+        ...updated.database.backup,
+        configFileExists: true,
+        requiresRestart: true,
+      });
     },
   );
 

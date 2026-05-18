@@ -73,7 +73,7 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   general: "General",
 };
 
-export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
+export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 1;
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
 
 export const MODEL_PROFILE_KEYS = ["cheap"] as const;
@@ -257,7 +257,7 @@ export function isPluginOperationIssueOriginKind(originKind: string | null | und
   return typeof originKind === "string" && /^plugin:[^:]+:operation(?::|$)/.test(originKind);
 }
 
-export const ISSUE_RELATION_TYPES = ["blocks"] as const;
+export const ISSUE_RELATION_TYPES = ["blocks", "blocked_by", "related", "duplicate"] as const;
 export type IssueRelationType = (typeof ISSUE_RELATION_TYPES)[number];
 
 export const ISSUE_TREE_CONTROL_MODES = ["pause", "resume", "cancel", "restore"] as const;

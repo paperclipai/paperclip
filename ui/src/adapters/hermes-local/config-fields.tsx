@@ -9,6 +9,8 @@ const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 const instructionsFileHint =
   "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime.";
+const endpointHint =
+  "Optional. When set, the adapter talks to a remote Hermes gateway (POST /v1/runs + SSE /v1/runs/{id}/events) instead of spawning hermes locally. Use for agents whose Hermes runtime lives on another machine (e.g. over Tailscale).";
 
 export function HermesLocalConfigFields({
   isCreate,
@@ -19,31 +21,55 @@ export function HermesLocalConfigFields({
   mark,
   hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
-  if (hideInstructionsFile) return null;
   return (
-    <Field label="Agent instructions file" hint={instructionsFileHint}>
-      <div className="flex items-center gap-2">
+    <>
+      {!hideInstructionsFile && (
+        <Field label="Agent instructions file" hint={instructionsFileHint}>
+          <div className="flex items-center gap-2">
+            <DraftInput
+              value={
+                isCreate
+                  ? values!.instructionsFilePath ?? ""
+                  : eff(
+                      "adapterConfig",
+                      "instructionsFilePath",
+                      String(config.instructionsFilePath ?? ""),
+                    )
+              }
+              onCommit={(v) =>
+                isCreate
+                  ? set!({ instructionsFilePath: v })
+                  : mark("adapterConfig", "instructionsFilePath", v || undefined)
+              }
+              immediate
+              className={inputClass}
+              placeholder="/absolute/path/to/AGENTS.md"
+            />
+            <ChoosePathButton />
+          </div>
+        </Field>
+      )}
+      <Field label="Remote gateway endpoint" hint={endpointHint}>
         <DraftInput
           value={
             isCreate
-              ? values!.instructionsFilePath ?? ""
+              ? values!.endpoint ?? ""
               : eff(
                   "adapterConfig",
-                  "instructionsFilePath",
-                  String(config.instructionsFilePath ?? ""),
+                  "endpoint",
+                  String(config.endpoint ?? ""),
                 )
           }
           onCommit={(v) =>
             isCreate
-              ? set!({ instructionsFilePath: v })
-              : mark("adapterConfig", "instructionsFilePath", v || undefined)
+              ? set!({ endpoint: v })
+              : mark("adapterConfig", "endpoint", v || undefined)
           }
           immediate
           className={inputClass}
-          placeholder="/absolute/path/to/AGENTS.md"
+          placeholder="http://host.example:8642"
         />
-        <ChoosePathButton />
-      </div>
-    </Field>
+      </Field>
+    </>
   );
 }

@@ -59,8 +59,20 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
 }
 
 describe("successful run handoff decision", () => {
-  it("queues one corrective handoff wake for a successful progress run without a visible next action", () => {
-    const decision = decide();
+  it("skips the handoff when a successful run produced visible progress (comments / work products)", () => {
+    // Default decide() uses detectedProgressSummary = "Run produced concrete
+    // action evidence: 1 issue comment(s)" — i.e. the agent left visible
+    // evidence the board operator can act on directly. Surfacing a MISSING
+    // DISPOSITION recovery card on top of that evidence creates an extra
+    // escalation the operator must manually dismiss, so we skip.
+    expect(decide()).toEqual({
+      kind: "skip",
+      reason: "successful run produced visible progress; awaiting operator disposition without auto-escalation",
+    });
+  });
+
+  it("queues one corrective handoff wake for a silent-stall run (productive liveness state but no visible progress)", () => {
+    const decision = decide({ detectedProgressSummary: null });
 
     expect(decision.kind).toBe("enqueue");
     if (decision.kind !== "enqueue") return;

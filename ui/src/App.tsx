@@ -39,6 +39,7 @@ import { CompanyImport } from "./pages/CompanyImport";
 import { DesignGuide } from "./pages/DesignGuide";
 import { InstanceGeneralSettings } from "./pages/InstanceGeneralSettings";
 import { InstanceAccess } from "./pages/InstanceAccess";
+import { InstanceBackupSettings } from "./pages/InstanceBackupSettings";
 import { InstanceSettings } from "./pages/InstanceSettings";
 import { InstanceExperimentalSettings } from "./pages/InstanceExperimentalSettings";
 import { ProfileSettings } from "./pages/ProfileSettings";
@@ -286,6 +287,7 @@ export function App() {
             <Route path="profile" element={<ProfileSettings />} />
             <Route path="general" element={<InstanceGeneralSettings />} />
             <Route path="access" element={<InstanceAccess />} />
+            <Route path="backups" element={<InstanceBackupSettings />} />
             <Route path="heartbeats" element={<InstanceSettings />} />
             <Route path="experimental" element={<InstanceExperimentalSettings />} />
             <Route path="plugins" element={<PluginManager />} />

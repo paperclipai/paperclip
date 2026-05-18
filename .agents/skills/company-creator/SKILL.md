@@ -162,6 +162,8 @@ Add a concise execution contract to every generated working agent:
 - Mark blocked work with the unblock owner and action.
 - Respect budget, pause/cancel, approval gates, and company boundaries.
 
+**Disposition state-machine contract (platform-enforced).** Paperclip requires every assignee run to end with an explicit disposition write or it auto-flags the issue as `MISSING ISSUE DISPOSITION`. The local-adapter layer injects the canonical disposition rules (6 valid dispositions + idle-wake exception + end-of-run checklist) into every agent's system prompt automatically. You do NOT need to duplicate that table in the generated AGENTS.md. You SHOULD include a one-sentence role-specific note about which dispositions fit which work — for example, "As CEO your role is planning, so you will more often write `in_review` or `delegated` than `done`. As Engineer your role is execution, so you will more often write `done` or `blocked`." Full contract: `docs/guides/agent-developer/disposition-state-machine.md`.
+
 ### Step 5: Confirm Output Location
 
 Ask the user where to write the package. Common options:

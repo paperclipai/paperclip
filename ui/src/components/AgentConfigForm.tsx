@@ -26,6 +26,13 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { FolderOpen, Heart, ChevronDown, X } from "lucide-react";
 import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
@@ -1211,6 +1218,44 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 numberHint={help.intervalSec}
                 showNumber={eff("heartbeat", "enabled", heartbeat.enabled === true)}
               />
+              {eff("heartbeat", "enabled", heartbeat.enabled === true) && (
+                <>
+                  <ToggleField
+                    label="Proactive self-assignment"
+                    hint="When no issues are assigned and the heartbeat fires, agent will scan for and claim unassigned work."
+                    checked={eff(
+                      "heartbeat",
+                      "proactiveAssignment",
+                      !!heartbeat.proactiveAssignment,
+                    )}
+                    onChange={(v) => mark("heartbeat", "proactiveAssignment", v)}
+                  />
+                  {eff("heartbeat", "proactiveAssignment", !!heartbeat.proactiveAssignment) && (
+                    <Field
+                      label="Self-assignment scope of unassigned issues"
+                      hint="Which issue statuses to scan for unassigned work."
+                    >
+                      <Select
+                        value={eff(
+                          "heartbeat",
+                          "proactiveAssignmentScope",
+                          (heartbeat.proactiveAssignmentScope as string) || "backlog",
+                        )}
+                        onValueChange={(v: string) => mark("heartbeat", "proactiveAssignmentScope", v)}
+                      >
+                        <SelectTrigger className="w-full h-8 text-sm font-mono">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="backlog">Backlog only</SelectItem>
+                          <SelectItem value="todo">Todo only</SelectItem>
+                          <SelectItem value="both">Todo then backlog</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                  )}
+                </>
+              )}
             </div>
             <CollapsibleSection
               title="Advanced Run Policy"
@@ -1228,6 +1273,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   heartbeat.wakeOnDemand !== false,
                 )}
                 onChange={(v) => mark("heartbeat", "wakeOnDemand", v)}
+              />
+              <ToggleField
+                label="Skip heartbeat if no actionable assignments"
+                hint="On timer-triggered wakes, skip the LLM invocation entirely when the agent has no assigned issues in todo or backlog status. Issues in in_progress, in_review, blocked, done, or cancelled do not count. Prevents token burn on blocked or stalled work. Event-triggered wakes (assignments, on-demand) are unaffected."
+                checked={eff(
+                  "heartbeat",
+                  "skipIfNoActionableAssignments",
+                  !!heartbeat.skipIfNoActionableAssignments,
+                )}
+                onChange={(v) => mark("heartbeat", "skipIfNoActionableAssignments", v)}
               />
               <Field label="Cooldown (sec)" hint={help.cooldownSec}>
                 <DraftNumberInput

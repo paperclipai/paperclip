@@ -86,7 +86,7 @@ type GatewayClientRequestOptions = {
   expectFinal?: boolean;
 };
 
-const PROTOCOL_VERSION = 3;
+const PROTOCOL_VERSION = 4;
 const DEFAULT_SCOPES = ["operator.admin"];
 const DEFAULT_CLIENT_ID = "gateway-client";
 const DEFAULT_CLIENT_MODE = "backend";
@@ -429,7 +429,8 @@ function buildWakeText(
     "   - For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}; wait for acceptance before creating implementation subtasks.",
     "   - If blocked, PATCH /api/issues/{issueId} with {\"status\":\"blocked\",\"comment\":\"what is blocked, who owns the unblock, and the next action\"}.",
     "   - If instructions require a comment, POST /api/issues/{issueId}/comments with {\"body\":\"...\"}.",
-    "   - PATCH /api/issues/{issueId} with {\"status\":\"done\",\"comment\":\"what changed and why\"}.",
+    "   - POST /api/issues/{issueId}/comments with {\"body\":\"what changed and why\"} to record completion.",
+    "   - PATCH /api/issues/{issueId} with {\"status\":\"done\"} (do NOT include comment field in PATCH).",
     "4) If issueId does not exist:",
     "   - GET /api/companies/$PAPERCLIP_COMPANY_ID/issues?assigneeAgentId=$PAPERCLIP_AGENT_ID&status=todo,in_progress,in_review,blocked",
     "   - Pick in_progress first, then in_review when you were woken by a comment, then todo, then blocked, then execute step 3.",
@@ -1092,6 +1093,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const headers = toStringRecord(ctx.config.headers);
   const authToken = resolveAuthToken(parseObject(ctx.config), headers);
   const password = nonEmpty(ctx.config.password);
+  const model = nonEmpty(ctx.config.model);
   const deviceToken = nonEmpty(ctx.config.deviceToken);
 
   if (authToken && !headerMapHasIgnoreCase(headers, "authorization")) {
@@ -1148,6 +1150,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   if (typeof agentParams.timeout !== "number") {
     agentParams.timeout = waitTimeoutMs;
+  }
+
+  if (model && !("model" in agentParams)) {
+    agentParams.model = model;
   }
 
   if (ctx.onMeta) {

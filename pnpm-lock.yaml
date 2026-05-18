@@ -666,8 +666,8 @@ importers:
         specifier: ^5.1.0
         version: 5.2.1
       hermes-paperclip-adapter:
-        specifier: ^0.2.0
-        version: 0.2.0
+        specifier: file:../../hermes-paperclip-adapter
+        version: file:../hermes-paperclip-adapter
       jsdom:
         specifier: ^28.1.0
         version: 28.1.0(@noble/hashes@2.0.1)
@@ -5337,6 +5337,10 @@ packages:
 
   hermes-paperclip-adapter@0.2.0:
     resolution: {integrity: sha512-6CP5vxfvY4jY9XJK5zu4ZUL9aB7HHNtEMk6q7m1Pu9Gzoby1Vx5VNmVqte3NUO+1cvVK9Arj1f67xLagWkbo5Q==}
+    engines: {node: '>=20.0.0'}
+
+  hermes-paperclip-adapter@file:../hermes-paperclip-adapter:
+    resolution: {directory: ../hermes-paperclip-adapter, type: directory}
     engines: {node: '>=20.0.0'}
 
   hono@4.12.12:
@@ -12359,6 +12363,11 @@ snapshots:
   help-me@5.0.0: {}
 
   hermes-paperclip-adapter@0.2.0:
+    dependencies:
+      '@paperclipai/adapter-utils': 2026.325.0
+      picocolors: 1.1.1
+
+  hermes-paperclip-adapter@file:../hermes-paperclip-adapter:
     dependencies:
       '@paperclipai/adapter-utils': 2026.325.0
       picocolors: 1.1.1

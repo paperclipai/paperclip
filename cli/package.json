@@ -1,7 +1,7 @@
 {
   "name": "paperclipai",
-  "version": "0.3.1",
-  "description": "Paperclip CLI — orchestrate AI agent teams to run a business",
+  "version": "2026.513.0-sparkeros.56",
+  "description": "Paperclip CLI \u2014 orchestrate AI agent teams to run a business",
   "type": "module",
   "bin": {
     "paperclipai": "./dist/index.js"

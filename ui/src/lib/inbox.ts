@@ -753,11 +753,14 @@ export function getApprovalsForTab(
 
 export function isApprovalVisibleInMine(
   approval: Approval,
-  currentUserId?: string | null,
+  _currentUserId?: string | null,
 ): boolean {
-  if (ACTIONABLE_APPROVAL_STATUSES.has(approval.status)) return true;
-  if (!currentUserId) return false;
-  return approval.requestedByUserId === currentUserId || approval.decidedByUserId === currentUserId;
+  // Mine should only surface approvals that still need action. Once an
+  // approval is approved/rejected it has no follow-up for the requester or
+  // the decider — keeping it visible just because the current user requested
+  // or decided it produces "ghost" rows (notably after a duplicate-approval
+  // storm: every rejected dupe stays pinned in Mine forever).
+  return ACTIONABLE_APPROVAL_STATUSES.has(approval.status);
 }
 
 export function approvalActivityTimestamp(approval: Approval): number {

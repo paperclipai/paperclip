@@ -5834,11 +5834,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
 
+    const proactiveAssignmentScope = readNonEmptyString(
+      heartbeat.proactiveAssignmentScope as string | undefined,
+    );
+    const validScopes = ["todo", "backlog", "both"] as const;
+    type ProactiveScope = typeof validScopes[number];
+    const normalizedScope: ProactiveScope =
+      validScopes.includes(proactiveAssignmentScope as ProactiveScope)
+        ? (proactiveAssignmentScope as ProactiveScope)
+        : "backlog";
+
     return {
       enabled: asBoolean(heartbeat.enabled, false),
-      intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
+      intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 300)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      proactiveAssignment: asBoolean(heartbeat.proactiveAssignment, false),
+      proactiveAssignmentScope: normalizedScope,
+      skipIfNoActionableAssignments: asBoolean(heartbeat.skipIfNoActionableAssignments, false),
     };
   }
 
@@ -7211,9 +7224,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       runScopedMentionedSkillKeys,
     );
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
+    const heartbeatPolicy = parseHeartbeatPolicy(agent);
     let runtimeConfig = {
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
+      proactiveAssignment: heartbeatPolicy.proactiveAssignment,
+      proactiveAssignmentScope: heartbeatPolicy.proactiveAssignmentScope,
     };
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
       companyId: agent.companyId,
@@ -8286,6 +8302,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(eq(issues.id, issue.id));
       }
 
+      // If the issue reached a terminal state during the run (e.g. agent marked
+      // it done and then posted a comment which queued a deferred wakeup), skip
+      // all deferred wakeups — there is no work left to promote.
+      if (issue.status === "done" || issue.status === "cancelled") {
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "skipped",
+            finishedAt: new Date(),
+            error: "Issue already in terminal state; deferred promotion skipped",
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, issue.companyId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+            ),
+          );
+        return null;
+      }
+
       while (true) {
         const deferred = await tx
           .select()
@@ -8784,6 +8822,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
       return null;
+    }
+
+    if (source === "timer" && policy.skipIfNoActionableAssignments) {
+      const assignedCount = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, agent.companyId),
+            eq(issues.assigneeAgentId, agentId),
+            inArray(issues.status, ["todo", "backlog"]),
+          ),
+        )
+        .then(([row]) => Number(row?.count ?? 0));
+      if (assignedCount === 0) {
+        await writeSkippedRequest("heartbeat.skipIfNoActionableAssignments");
+        await db
+          .update(agents)
+          .set({ lastHeartbeatAt: new Date() })
+          .where(eq(agents.id, agentId));
+        return null;
+      }
     }
 
     if (issueId) {

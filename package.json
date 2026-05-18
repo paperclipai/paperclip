@@ -68,5 +68,6 @@
     "overrides": {
       "rollup": ">=4.59.0"
     }
-  }
+  },
+  "version": "2026.513.0-sparkeros.56"
 }

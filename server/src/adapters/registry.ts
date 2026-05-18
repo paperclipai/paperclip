@@ -459,6 +459,49 @@ const hermesLocalAdapter: ServerAdapterModule = {
       "Never use a board, browser, or local-board session for Paperclip API writes.",
     ].join("\n");
 
+    // Paperclip enforces a strict per-issue state machine: any assignee run that
+    // finishes without writing a disposition is auto-flagged
+    // `successful_run_missing_state` and surfaces a RECOVERY NEEDED card on the
+    // issue (see server/src/services/recovery/successful-run-handoff.ts). The
+    // platform requires every adapter to teach its agent this contract; this
+    // injection makes the contract part of the system prompt regardless of what
+    // the agent author put in their custom promptTemplate or AGENTS.md.
+    const dispositionGuardPrompt = [
+      "Paperclip disposition rule (non-negotiable):",
+      "Every assignee run MUST end with a disposition write to the issue.",
+      "Without one, Paperclip auto-flags the issue as MISSING DISPOSITION and surfaces a RECOVERY NEEDED card.",
+      "Valid dispositions (PATCH http://localhost:3100/api/issues/{issueId} with the two headers above):",
+      "  - done                  : work complete                              → {\"status\":\"done\"}",
+      "  - cancelled             : will not do (obsolete / out of scope)      → {\"status\":\"cancelled\"} + comment with reason",
+      "  - in_review             : needs human/board review before close      → {\"status\":\"in_review\"}",
+      "  - blocked               : real Paperclip-issue blocker must resolve  → {\"status\":\"blocked\",\"blockedByIssueIds\":[\"<id>\",...]} + comment naming blocker",
+      "  - delegated             : handed off to another agent                → {\"assigneeAgentId\":\"<agent-id>\"} + comment naming agent + reason",
+      "  - explicit_continuation : partial completion; another wake needed    → status unchanged + comment ending `Continuation needed: <reason>`",
+      "Idle-wake exception: if your last comment is unanswered AND no new operator comment AND no new edits to any interview file, exit with one log line `Idle: awaiting operator reply.` — this is the only legitimate exit without a disposition write.",
+      "Before exiting any run, verify you have completed: (1) all task-specific actions required by the issue body, (2) any required comments per the agent's playbook (e.g. 'what's next' recommendation on done issues), (3) the disposition write. Skipping any item = non-compliant run.",
+    ].join("\n");
+
+    // Hermes ships a structured `http` tool that takes {method, url, headers,
+    // body} as JSON. It bypasses bash entirely, so it avoids two failure modes
+    // that the `terminal` tool routinely hits when the model emits a curl
+    // command with embedded JSON: (a) single-quote / double-quote escaping
+    // bugs that bash rejects with `unexpected EOF while looking for matching
+    // '` (one whole model turn wasted), and (b) per-call fork+exec overhead
+    // on every curl. Telling the model to prefer `http` over `terminal curl`
+    // for Paperclip API calls converges Hermes's per-issue latency with
+    // OpenClaw (which already calls execvp directly with argv lists).
+    //
+    // Only inject for hermes_local — OpenClaw's codex CLI has no `http` tool
+    // and would silently ignore this guidance.
+    const httpToolPreferencePrompt = [
+      "Paperclip API tool preference (hermes_local only):",
+      "For every Paperclip API call (POST /issues/{id}/comments, PATCH /issues/{id}, GET /api/agents/me, etc.) PREFER the `http` tool over `terminal` with curl.",
+      "The `http` tool takes structured args: { method, url, headers, body } as JSON. It avoids shell-quoting bugs (no unbalanced single-quote / double-quote in JSON bodies) and is 5-10x faster per call than spawning a bash subprocess for curl.",
+      "Reserve `terminal` for genuine shell work (git, ls, grep, pnpm, file edits). NEVER use `terminal curl` for a Paperclip API call when `http` is available.",
+      "Example http call shape (Paperclip POST comment):",
+      "  http({ method: \"POST\", url: \"$PAPERCLIP_API_URL/issues/<issueId>/comments\", headers: { \"Authorization\": \"Bearer $PAPERCLIP_API_KEY\", \"X-Paperclip-Run-Id\": \"$PAPERCLIP_RUN_ID\", \"Content-Type\": \"application/json\" }, body: { \"body\": \"DONE: <summary>.\" } })",
+    ].join("\n");
+
     const patchedConfig: Record<string, unknown> = {
       ...existingConfig,
       env: {
@@ -468,11 +511,12 @@ const hermesLocalAdapter: ServerAdapterModule = {
       },
     };
 
-    // Only inject the auth guard into promptTemplate when a custom template already exists.
-    // When no custom template is set, Hermes uses its built-in default heartbeat/task prompt —
-    // overwriting it with only the auth guard text would strip the assigned issue/workflow instructions.
+    // Only inject the platform guards into promptTemplate when a custom template
+    // already exists. When no custom template is set, Hermes uses its built-in
+    // default heartbeat/task prompt — overwriting it with only the guard text
+    // would strip the assigned issue/workflow instructions.
     if (promptTemplate) {
-      patchedConfig.promptTemplate = `${authGuardPrompt}\n\n${promptTemplate}`;
+      patchedConfig.promptTemplate = `${authGuardPrompt}\n\n${dispositionGuardPrompt}\n\n${httpToolPreferencePrompt}\n\n${promptTemplate}`;
     }
 
     const patchedCtx = {

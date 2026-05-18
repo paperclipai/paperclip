@@ -20,6 +20,7 @@ import {
   ISSUE_RECOVERY_ACTION_STATUSES,
   ISSUE_WORK_MODES,
   clampIssueRequestDepth,
+  ISSUE_RELATION_TYPES,
   ISSUE_STATUSES,
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
   ISSUE_THREAD_INTERACTION_KINDS,
@@ -390,6 +391,7 @@ const createIssueBaseSchema = z.object({
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
+  dueAt: z.string().datetime().nullable().optional(),
 });
 
 export const createIssueInputSchema = createIssueBaseSchema.extend({
@@ -822,3 +824,10 @@ export const restoreIssueDocumentRevisionSchema = z.object({});
 export type IssueDocumentFormat = z.infer<typeof issueDocumentFormatSchema>;
 export type UpsertIssueDocument = z.infer<typeof upsertIssueDocumentSchema>;
 export type RestoreIssueDocumentRevision = z.infer<typeof restoreIssueDocumentRevisionSchema>;
+
+export const createIssueRelationSchema = z.object({
+  relatedIssueId: z.string().uuid(),
+  type: z.enum(ISSUE_RELATION_TYPES),
+});
+
+export type CreateIssueRelation = z.infer<typeof createIssueRelationSchema>;

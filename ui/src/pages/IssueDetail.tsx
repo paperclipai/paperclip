@@ -75,6 +75,7 @@ import { IssueMonitorActivityCard } from "../components/IssueMonitorActivityCard
 import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
 import { IssueProperties } from "../components/IssueProperties";
 import { IssueRunLedger } from "../components/IssueRunLedger";
+import { IssueRelations } from "../components/IssueRelations";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ImageGalleryModal } from "../components/ImageGalleryModal";
@@ -2653,12 +2654,17 @@ export function IssueDetail() {
       return;
     }
     openPanel(
-      <IssueProperties
-        issue={panelIssue}
-        childIssues={panelChildIssues}
-        onAddSubIssue={openNewSubIssue}
-        onUpdate={handleIssuePropertiesUpdate}
-      />
+      <>
+        <IssueProperties
+          issue={panelIssue}
+          childIssues={panelChildIssues}
+          onAddSubIssue={openNewSubIssue}
+          onUpdate={handleIssuePropertiesUpdate}
+        />
+        <div className="mt-4 pt-4 border-t border-border">
+          <IssueRelations issueId={panelIssue.id} />
+        </div>
+      </>
     );
     return () => closePanel();
   }, [
@@ -4188,6 +4194,9 @@ export function IssueDetail() {
                 onUpdate={(data) => updateIssue.mutate(data)}
                 inline
               />
+              <div className="mt-4 pt-4 border-t border-border">
+                <IssueRelations issueId={issue.id} />
+              </div>
             </div>
           </ScrollArea>
         </SheetContent>
