@@ -1,5 +1,8 @@
+import path from "node:path";
+import fs from "node:fs";
 import type { AdapterModel } from "./types.js";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
+import { codexHomeDir } from "@paperclipai/adapter-codex-local/server";
 import { readConfigFile } from "../config-file.js";
 
 const OPENAI_MODELS_ENDPOINT = "https://api.openai.com/v1/models";
@@ -41,6 +44,33 @@ function resolveOpenAiApiKey(): string | null {
   return configKey && configKey.length > 0 ? configKey : null;
 }
 
+interface CodexCacheEntry {
+  slug?: unknown;
+  display_name?: unknown;
+  visibility?: unknown;
+}
+
+function readCodexModelsCache(): AdapterModel[] {
+  try {
+    const file = path.join(codexHomeDir(), "models_cache.json");
+    const raw = JSON.parse(fs.readFileSync(file, "utf-8"));
+    const list: CodexCacheEntry[] = Array.isArray(raw?.models) ? raw.models : [];
+    return dedupeModels(
+      list
+        .filter((m) => m.visibility === "list" && typeof m.slug === "string")
+        .map((m) => ({
+          id: (m.slug as string).trim(),
+          label:
+            typeof m.display_name === "string" && m.display_name.trim().length > 0
+              ? m.display_name.trim()
+              : (m.slug as string).trim(),
+        })),
+    );
+  } catch {
+    return [];
+  }
+}
+
 async function fetchOpenAiModels(apiKey: string): Promise<AdapterModel[]> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), OPENAI_MODELS_TIMEOUT_MS);
@@ -72,8 +102,16 @@ async function fetchOpenAiModels(apiKey: string): Promise<AdapterModel[]> {
 
 async function loadCodexModels(options?: { forceRefresh?: boolean }): Promise<AdapterModel[]> {
   const forceRefresh = options?.forceRefresh === true;
-  const apiKey = resolveOpenAiApiKey();
   const fallback = dedupeModels(codexFallbackModels);
+
+  // forceRefresh is a no-op here — reading the file is cheap, and the only
+  // memoization (cached) fingerprints the API-key path below.
+  const fromCache = readCodexModelsCache();
+  if (fromCache.length > 0) {
+    return mergedWithFallback(fromCache);
+  }
+
+  const apiKey = resolveOpenAiApiKey();
   if (!apiKey) return fallback;
 
   const now = Date.now();
