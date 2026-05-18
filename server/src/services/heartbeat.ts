@@ -1760,6 +1760,7 @@ function isBlockedCommentInteractionWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
   issueStatus: string | null | undefined,
 ) {
+  if (contextSnapshot?.blockedCommentInteraction === true) return true;
   if (readNonEmptyString(issueStatus) !== "blocked") return false;
   if (!deriveCommentId(contextSnapshot, null)) return false;
   if (contextSnapshot?.resumeIntent === true || contextSnapshot?.followUpRequested === true) return false;
@@ -8374,6 +8375,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
 
         const promotedContextSeed: Record<string, unknown> = { ...deferredContextSeed };
+        if (
+          issue.status === "blocked" &&
+          deferredContextSeed.resumeIntent !== true &&
+          deferredContextSeed.followUpRequested !== true
+        ) {
+          promotedContextSeed.blockedCommentInteraction = true;
+        }
         if (activePauseHold) {
           promotedContextSeed.treeHoldInteraction = true;
           promotedContextSeed.activeTreeHold = {
@@ -9077,6 +9085,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             issue.id,
             dependencyReadiness.unresolvedBlockerIssueIds,
           );
+        }
+
+        if (
+          issue.status === "blocked" &&
+          allowsIssueInteractionWake(enrichedContextSnapshot) &&
+          enrichedContextSnapshot.resumeIntent !== true &&
+          enrichedContextSnapshot.followUpRequested !== true
+        ) {
+          enrichedContextSnapshot.blockedCommentInteraction = true;
         }
 
         if (!activeExecutionRun && dependencyReadiness && !dependencyReadiness.isDependencyReady && !blockedInteractionWake) {

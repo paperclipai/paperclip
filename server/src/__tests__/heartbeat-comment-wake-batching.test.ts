@@ -708,6 +708,17 @@ describe("heartbeat comment wake batching", () => {
           .then((rows) => rows[0] ?? null);
         return run?.status === "running";
       });
+      await waitFor(async () => {
+        const activeIssue = await db
+          .select({
+            status: issues.status,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((rows) => rows[0] ?? null);
+        return activeIssue?.status === "in_progress" && activeIssue.executionRunId === firstRun!.id;
+      });
 
       const comment2 = await db
         .insert(issueComments)

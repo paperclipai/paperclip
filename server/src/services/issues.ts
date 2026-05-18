@@ -2993,6 +2993,18 @@ export function issueService(db: Db) {
     });
   }
 
+  async function isBlockedCommentInteractionCheckout(checkoutRunId: string | null, companyId: string) {
+    if (!checkoutRunId) return false;
+    const run = await db
+      .select({
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, checkoutRunId), eq(heartbeatRuns.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    return run?.contextSnapshot !== null && parseObject(run.contextSnapshot).blockedCommentInteraction === true;
+  }
+
   async function assertAssignableUser(companyId: string, userId: string) {
     const membership = await db
       .select({ id: companyMemberships.id })
@@ -4648,6 +4660,27 @@ export function issueService(db: Db) {
       const executionLockCondition = checkoutRunId
         ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
         : isNull(issues.executionRunId);
+      if (
+        expectedStatuses.includes("blocked") &&
+        await isBlockedCommentInteractionCheckout(checkoutRunId, issueCompany.companyId)
+      ) {
+        const currentBlocked = await db
+          .select()
+          .from(issues)
+          .where(
+            and(
+              eq(issues.id, id),
+              eq(issues.status, "blocked"),
+              eq(issues.assigneeAgentId, agentId),
+              executionLockCondition,
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        if (currentBlocked) {
+          const [enriched] = await withIssueLabels(db, [currentBlocked]);
+          return enriched;
+        }
+      }
       const updated = await db
         .update(issues)
         .set({
