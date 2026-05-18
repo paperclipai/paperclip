@@ -163,6 +163,53 @@ describe("probeEnvironment", () => {
     });
   });
 
+  it.each(["e2b", "daytona"])(
+    "keeps first-party %s sandbox provider plugins on the plugin-worker path",
+    async (provider) => {
+      mockProbePluginSandboxProviderDriver.mockResolvedValue({
+        ok: true,
+        driver: "sandbox",
+        summary: `${provider} plugin probe passed.`,
+        details: {
+          provider,
+          metadata: { ready: true },
+        },
+      });
+      const workerManager = {} as any;
+
+      const result = await probeEnvironment({} as any, {
+        id: `env-${provider}-plugin`,
+        companyId: "company-1",
+        name: `${provider} Plugin Sandbox`,
+        description: null,
+        driver: "sandbox",
+        status: "active",
+        config: {
+          provider,
+          image: "fake:test",
+          reuseLease: false,
+        },
+        metadata: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }, { pluginWorkerManager: workerManager });
+
+      expect(result.ok).toBe(true);
+      expect(mockProbePluginSandboxProviderDriver).toHaveBeenCalledWith({
+        db: expect.anything(),
+        workerManager,
+        companyId: "company-1",
+        environmentId: `env-${provider}-plugin`,
+        provider,
+        config: {
+          provider,
+          image: "fake:test",
+          reuseLease: false,
+        },
+      });
+    },
+  );
+
   it("routes plugin environment probes through the plugin worker host", async () => {
     mockProbePluginEnvironmentDriver.mockResolvedValue({
       ok: true,

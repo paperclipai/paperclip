@@ -1348,6 +1348,10 @@ export {
   storageS3ConfigSchema,
   secretsLocalEncryptedConfigSchema,
   telemetryConfigSchema,
+  sandboxConfigSchema,
+  sandboxProvidersConfigSchema,
+  sandboxE2BProviderConfigSchema,
+  sandboxProviderSecretRefSchema,
   type TelemetryConfig,
   type PaperclipConfig,
   type LlmConfig,
@@ -1362,6 +1366,10 @@ export {
   type SecretsConfig,
   type SecretsLocalEncryptedConfig,
   type ConfigMeta,
+  type SandboxConfig,
+  type SandboxProvidersConfig,
+  type SandboxE2BProviderConfig,
+  type SandboxProviderSecretRef,
 } from "./config-schema.js";
 
 export {

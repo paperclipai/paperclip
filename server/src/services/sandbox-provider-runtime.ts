@@ -10,6 +10,11 @@ import {
   DockerSandboxProvider,
 } from "./sandbox/docker-provider.js";
 import {
+  E2B_SANDBOX_PROVIDER_KEY,
+  E2BSandboxProvider,
+  type E2BSandboxProviderLiveDependencies,
+} from "./sandbox/managed-provider-spikes.js";
+import {
   NULL_SANDBOX_PROVIDER_KEY,
   NullSandboxProvider,
 } from "./sandbox/null-provider.js";
@@ -70,6 +75,12 @@ export {
   SandboxProviderError,
   previewSandboxProviderStatus,
 } from "./sandbox/provider-contract.js";
+export {
+  DAYTONA_SANDBOX_PROVIDER_KEY,
+  E2B_SANDBOX_PROVIDER_KEY,
+  DaytonaSandboxProvider,
+  E2BSandboxProvider,
+} from "./sandbox/managed-provider-spikes.js";
 export {
   NULL_SANDBOX_PROVIDER_KEY,
   NullSandboxProvider,
@@ -255,6 +266,26 @@ const registeredSandboxProviders = new Map<SandboxEnvironmentProvider, SandboxPr
   ["fake", new FakeSandboxProvider()],
   [DOCKER_SANDBOX_PROVIDER_KEY, new DockerSandboxProvider()],
 ]);
+
+/**
+ * LET-366 Phase 4A-S4 B1. Install or replace the E2B sandbox provider with a
+ * live-capable adapter wired through Layer-1 config (`isProviderEnabled`) and
+ * the platform secret store (`resolveApiKey`). Even when called, the live
+ * transport never initialises unless all three gates pass at lease time:
+ *   1. `SANDBOX_PROVIDER_ALLOW_LIVE === "true"` (env var, exact match),
+ *   2. `isProviderEnabled()` returns true (Layer 1 config),
+ *   3. `resolveApiKey()` returns a non-empty string (secret store).
+ * Any missing gate causes `acquireLease` to throw `PROVIDER_DISABLED` before
+ * any HTTP egress. Call this once during server bootstrap.
+ */
+export function registerE2BSandboxProvider(
+  deps: E2BSandboxProviderLiveDependencies = {},
+): void {
+  registeredSandboxProviders.set(
+    E2B_SANDBOX_PROVIDER_KEY as SandboxEnvironmentProvider,
+    new E2BSandboxProvider(deps),
+  );
+}
 
 /**
  * Returns a built-in sandbox provider, or null if the provider key is not
