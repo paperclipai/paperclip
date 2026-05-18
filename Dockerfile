@@ -4,6 +4,7 @@ ARG USER_UID=1000
 ARG USER_GID=1000
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 \
+       openjdk-21-jdk-headless maven \
   && rm -rf /var/lib/apt/lists/* \
   && corepack enable
 
