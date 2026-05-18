@@ -223,6 +223,53 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(allRoutines.map((entry) => entry.id)).toEqual(expect.arrayContaining([routine.id, otherRoutine.id]));
   });
 
+  it("filters listed routines by assigneeAgentId", async () => {
+    const { companyId, agentId, routine, svc } = await seedFixture();
+
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "OtherCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const otherAgentRoutine = await svc.create(
+      companyId,
+      {
+        projectId: routine.projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "other agent routine",
+        description: null,
+        assigneeAgentId: otherAgentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+
+    const ownRoutines = await svc.list(companyId, { assigneeAgentId: agentId });
+    const otherRoutines = await svc.list(companyId, { assigneeAgentId: otherAgentId });
+    const bogusRoutines = await svc.list(companyId, {
+      assigneeAgentId: "00000000-0000-4000-8000-000000000000",
+    });
+    const allRoutines = await svc.list(companyId);
+
+    expect(ownRoutines.map((entry) => entry.id)).toEqual([routine.id]);
+    expect(otherRoutines.map((entry) => entry.id)).toEqual([otherAgentRoutine.id]);
+    expect(bogusRoutines).toEqual([]);
+    expect(allRoutines.map((entry) => entry.id)).toEqual(
+      expect.arrayContaining([routine.id, otherAgentRoutine.id]),
+    );
+  });
+
   it("creates a fresh execution issue when the previous routine issue is open but idle", async () => {
     const { companyId, issueSvc, routine, svc } = await seedFixture();
     const previousRunId = randomUUID();

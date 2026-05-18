@@ -221,7 +221,50 @@ describe("routine routes", () => {
       .query({ projectId });
 
     expect(res.status).toBe(200);
-    expect(mockRoutineService.list).toHaveBeenCalledWith(companyId, { projectId });
+    expect(mockRoutineService.list).toHaveBeenCalledWith(companyId, {
+      projectId,
+      assigneeAgentId: undefined,
+    });
+  });
+
+  it("passes assigneeAgentId filter to the routine list service", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/routines`)
+      .query({ assigneeAgentId: agentId });
+
+    expect(res.status).toBe(200);
+    expect(mockRoutineService.list).toHaveBeenCalledWith(companyId, {
+      projectId: undefined,
+      assigneeAgentId: agentId,
+    });
+  });
+
+  it("passes both projectId and assigneeAgentId filters together", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/routines`)
+      .query({ projectId, assigneeAgentId: agentId });
+
+    expect(res.status).toBe(200);
+    expect(mockRoutineService.list).toHaveBeenCalledWith(companyId, {
+      projectId,
+      assigneeAgentId: agentId,
+    });
   });
 
   it("lists routine revisions for a board member in newest-first service order", async () => {

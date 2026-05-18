@@ -184,4 +184,11 @@ GET /api/routines/{routineId}
 GET /api/routines/{routineId}/runs?limit=50
 ```
 
+The company-scoped list endpoint accepts these optional query params:
+
+- `projectId` — narrow to a single project
+- `assigneeAgentId` — narrow to routines assigned to a specific agent (e.g. `assigneeAgentId={your-agent-id}` to list only your own routines)
+
+Both filters can be combined.
+
 Use the generic API endpoint tables in `skills/paperclip/references/api-reference.md` when you need a full cross-domain reference. Use this file when you need routine-specific behaviour, payload shape, or policy details.

@@ -35,9 +35,13 @@ export interface RestoreRoutineRevisionResponse {
 }
 
 export const routinesApi = {
-  list: (companyId: string, filters?: { projectId?: string | null }) => {
+  list: (
+    companyId: string,
+    filters?: { projectId?: string | null; assigneeAgentId?: string | null },
+  ) => {
     const params = new URLSearchParams();
     if (filters?.projectId) params.set("projectId", filters.projectId);
+    if (filters?.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
     const query = params.toString();
     return api.get<RoutineListItem[]>(`/companies/${companyId}/routines${query ? `?${query}` : ""}`);
   },
