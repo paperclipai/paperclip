@@ -59,6 +59,7 @@ import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
+import { buildApiRootHintHtml } from "./api-root-hint.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -133,6 +134,7 @@ export async function createApp(
     pluginWorkerManager?: PluginWorkerManager;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
+    uiBaseUrl?: string;
   },
 ) {
   const app = express();
@@ -302,6 +304,7 @@ export async function createApp(
   }));
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  let uiCatchAllInstalled = false;
   if (opts.uiMode === "static") {
     // Try published location first (server/ui-dist/), then monorepo dev location (../../ui/dist)
     const candidates = [
@@ -352,6 +355,7 @@ export async function createApp(
           .set("Cache-Control", "no-cache")
           .end(indexHtml);
       });
+      uiCatchAllInstalled = true;
     } else {
       console.warn("[paperclip] UI dist not found; running in API-only mode");
     }
@@ -398,6 +402,21 @@ export async function createApp(
       }
     });
     app.use(vite.middlewares);
+    uiCatchAllInstalled = true;
+  }
+
+  if (!uiCatchAllInstalled) {
+    // API-only mode (uiMode === "none" or static dist not found): return an informative
+    // HTML hint page so a browser hitting the API port gets a clear signal rather than
+    // Express's default "Cannot GET /" 404.
+    const hintHtml = buildApiRootHintHtml({
+      deploymentMode: opts.deploymentMode,
+      bindHost: opts.bindHost,
+      uiBaseUrl: opts.uiBaseUrl,
+    });
+    app.get(/.*/, (_req, res) => {
+      res.status(200).set("Content-Type", "text/html").end(hintHtml);
+    });
   }
 
   app.use(errorHandler);
