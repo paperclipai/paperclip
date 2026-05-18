@@ -5,6 +5,7 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  agentRuntimeState,
   agentWakeupRequests,
   activityLog,
   companies,
@@ -138,6 +139,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(agentRuntimeState);
     await db.delete(environments);
     await db.delete(issues);
     await db.delete(agents);
@@ -217,14 +219,17 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   }
 
-  function createApp(actor: any = { type: "board", source: "local_implicit" }) {
+  function createApp(
+    actor: any = { type: "board", source: "local_implicit" },
+    heartbeat: any = { wakeup: vi.fn(async () => null) },
+  ) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
       (req as any).actor = actor;
       next();
     });
-    app.use("/api", issueRoutes(db, {} as any));
+    app.use("/api", issueRoutes(db, {} as any, { heartbeatWakeup: heartbeat.wakeup }));
     app.use(errorHandler);
     return app;
   }
@@ -572,7 +577,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
   });
 
   it("resolves an active recovery action by returning the source issue to todo", async () => {
-    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, sourceIssueId));
     const recoveryActionSvc = issueRecoveryActionService(db);
     const action = await recoveryActionSvc.upsertSourceScoped({
@@ -587,7 +592,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       nextAction: "Restore a live execution path.",
       wakePolicy: { type: "manual" },
     });
-    const app = createApp();
+    const heartbeat = { wakeup: vi.fn(async () => null) };
+    const app = createApp(undefined, heartbeat);
 
     const resolved = await request(app)
       .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
@@ -611,6 +617,24 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       resolutionNote: "Try the source issue again.",
     });
     expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toBeNull();
+    expect(heartbeat.wakeup).toHaveBeenCalledWith(
+      coderId,
+      expect.objectContaining({
+        reason: "issue_recovery_action_restored",
+        payload: expect.objectContaining({
+          issueId: sourceIssueId,
+          recoveryActionId: action.id,
+          mutation: "recovery_action_resolution",
+        }),
+        contextSnapshot: expect.objectContaining({
+          issueId: sourceIssueId,
+          taskId: sourceIssueId,
+          wakeReason: "issue_recovery_action_restored",
+          source: "issue.recovery_action_resolution",
+          recoveryActionId: action.id,
+        }),
+      }),
+    );
   });
 
   it("marks a recovery action stale when a blocked source issue is manually moved to todo", async () => {
