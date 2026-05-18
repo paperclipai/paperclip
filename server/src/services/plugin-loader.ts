@@ -1709,11 +1709,12 @@ export function pluginLoader(
       // 3. Unregister agent tools
       toolDispatcher.unregisterPluginTools(pluginKey);
 
-      // 4. Stop the worker process
+      // 4. Stop the worker process.
+      // Call stopWorker unconditionally: the manager handles the "not found"
+      // case gracefully, and a worker in crashed/starting/stopping state also
+      // needs its handle removed so a subsequent startWorker call succeeds.
       try {
-        if (workerManager.isRunning(pluginId)) {
-          await workerManager.stopWorker(pluginId);
-        }
+        await workerManager.stopWorker(pluginId);
       } catch (err) {
         log.warn(
           { pluginId, err: err instanceof Error ? err.message : String(err) },
@@ -1932,7 +1933,8 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       const toolDeclarations = manifest.tools ?? [];
       if (toolDeclarations.length > 0) {
-        toolDispatcher.registerPluginTools(pluginKey, manifest);
+        // Pass pluginId (DB UUID) so tools resolve correctly in isRunning() checks.
+        toolDispatcher.registerPluginTools(pluginKey, manifest, pluginId);
         registered.tools = toolDeclarations.length;
 
         log.info(
