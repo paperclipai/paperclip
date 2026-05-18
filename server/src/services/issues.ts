@@ -486,6 +486,18 @@ async function getWorkspaceInheritanceIssue(
   return issue;
 }
 
+async function getProjectIdForProjectWorkspace(
+  db: DbReader,
+  companyId: string,
+  projectWorkspaceId: string,
+) {
+  return db
+    .select({ projectId: projectWorkspaces.projectId })
+    .from(projectWorkspaces)
+    .where(and(eq(projectWorkspaces.id, projectWorkspaceId), eq(projectWorkspaces.companyId, companyId)))
+    .then((rows) => rows[0]?.projectId ?? null);
+}
+
 function touchedByUserCondition(companyId: string, userId: string) {
   return sql<boolean>`
     (
@@ -4039,7 +4051,6 @@ export function issueService(db: Db) {
       }
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
-        const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
         let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
         let executionWorkspacePreference = issueData.executionWorkspacePreference ?? null;
@@ -4052,6 +4063,20 @@ export function issueService(db: Db) {
           issueData.executionWorkspaceSettings !== undefined;
         if (workspaceInheritanceIssueId) {
           const workspaceSource = await getWorkspaceInheritanceIssue(tx, companyId, workspaceInheritanceIssueId);
+          if (
+            issueData.projectId == null &&
+            workspaceSource.projectId == null &&
+            workspaceSource.projectWorkspaceId
+          ) {
+            issueData.projectId = await getProjectIdForProjectWorkspace(
+              tx,
+              companyId,
+              workspaceSource.projectWorkspaceId,
+            );
+          }
+          if (issueData.projectId == null && workspaceSource.projectId) {
+            issueData.projectId = workspaceSource.projectId;
+          }
           if (projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
             projectWorkspaceId = workspaceSource.projectWorkspaceId;
           }
@@ -4140,6 +4165,7 @@ export function issueService(db: Db) {
             }
           }
         }
+        const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         if (!projectWorkspaceId && issueData.projectId) {
           const project = await tx
             .select({

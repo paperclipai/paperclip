@@ -682,6 +682,9 @@ describe("renderPaperclipWakePrompt", () => {
   it("includes continuation and child issue summaries in structured wake context", () => {
     const payload = {
       reason: "issue_children_completed",
+      sourceIssueId: "source-issue-1",
+      recoveryActionId: "recovery-action-1",
+      strandedRunId: "run-stranded-1",
       issue: {
         id: "parent-1",
         identifier: "PAP-100",
@@ -716,6 +719,9 @@ describe("renderPaperclipWakePrompt", () => {
     };
 
     expect(JSON.parse(stringifyPaperclipWakePayload(payload) ?? "{}")).toMatchObject({
+      sourceIssueId: "source-issue-1",
+      recoveryActionId: "recovery-action-1",
+      strandedRunId: "run-stranded-1",
       continuationSummary: {
         body: expect.stringContaining("Continuation Summary"),
       },

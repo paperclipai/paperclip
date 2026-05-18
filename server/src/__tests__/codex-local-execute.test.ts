@@ -427,6 +427,8 @@ describe("codex execute", () => {
           wakeCommentId: "comment-2",
           paperclipWake: {
             reason: "issue_commented",
+            sourceIssueId: "source-issue-1",
+            strandedRunId: "run-stranded-1",
             issue: {
               id: "issue-1",
               identifier: "PAP-874",
@@ -475,6 +477,8 @@ describe("codex execute", () => {
       expect(capture.paperclipWakePayloadJson).not.toBeNull();
       expect(JSON.parse(capture.paperclipWakePayloadJson ?? "{}")).toMatchObject({
         reason: "issue_commented",
+        sourceIssueId: "source-issue-1",
+        strandedRunId: "run-stranded-1",
         latestCommentId: "comment-2",
         commentIds: ["comment-1", "comment-2"],
       });

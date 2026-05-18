@@ -2034,6 +2034,66 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
+  it("inherits project id from a source issue's project workspace when the source project id is missing", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+        defaultMode: "isolated_workspace",
+        allowIssueOverride: true,
+        defaultProjectWorkspaceId: projectWorkspaceId,
+      },
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      isPrimary: true,
+    });
+
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId: null,
+      projectWorkspaceId,
+      title: "Source issue with workspace but missing project id",
+      status: "blocked",
+      priority: "high",
+    });
+
+    const recovery = await svc.create(companyId, {
+      parentId: sourceIssueId,
+      title: "Recover stalled issue",
+      status: "todo",
+      inheritExecutionWorkspaceFromIssueId: sourceIssueId,
+    });
+
+    expect(recovery.parentId).toBe(sourceIssueId);
+    expect(recovery.projectId).toBe(projectId);
+    expect(recovery.projectWorkspaceId).toBe(projectWorkspaceId);
+    expect(recovery.executionWorkspaceSettings).toEqual({
+      mode: "isolated_workspace",
+    });
+  });
+
   it("createChild applies parent defaults, acceptance criteria, workspace inheritance, and optional parent blocker chaining", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
