@@ -2499,6 +2499,68 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ).rejects.toMatchObject({ status: 422 });
   });
 
+  it("keeps blocked comment interaction checkouts from reviving blocked issues", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const runId = randomUUID();
+    const commentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const blockedId = randomUUID();
+    await db.insert(issues).values({
+      id: blockedId,
+      companyId,
+      title: "Blocked interaction issue",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: assigneeAgentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "queued",
+      contextSnapshot: {
+        issueId: blockedId,
+        taskId: blockedId,
+        wakeReason: "issue_commented",
+        commentId,
+        wakeCommentId: commentId,
+        blockedCommentInteraction: true,
+      },
+    });
+
+    const checkedOut = await svc.checkout(blockedId, assigneeAgentId, ["todo", "blocked"], runId);
+
+    expect(checkedOut).toMatchObject({
+      id: blockedId,
+      status: "blocked",
+      assigneeAgentId,
+      executionRunId: null,
+      checkoutRunId: null,
+    });
+
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+  });
+
   it("wakes parents only when all direct children are terminal", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();

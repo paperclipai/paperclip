@@ -718,6 +718,77 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run?.errorCode).toBeNull();
   });
 
+  it("runs blocked comment wakes without reattaching the execution lock", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    const commentId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Blocked issue interaction",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorUserId: "user-1",
+      body: "Status update?",
+    });
+
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_commented",
+      invocationSource: "automation",
+      contextExtras: {
+        commentId,
+        wakeCommentId: commentId,
+        source: "issue.comment",
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+
+    const [run, issue] = await Promise.all([
+      db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({
+          status: issues.status,
+          executionRunId: issues.executionRunId,
+          executionLockedAt: issues.executionLockedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run?.status).toBe("succeeded");
+    expect(run?.errorCode).toBeNull();
+    expect(issue).toMatchObject({
+      status: "blocked",
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+    expect(countExecuteCallsForRun(runId)).toBe(1);
+  });
+
   it("baseline: runs queued runs when the issue is in_progress with the same assignee", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
