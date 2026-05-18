@@ -1851,6 +1851,38 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     ].join("\n");
   }
 
+  // Cascade detection / pause helpers — coupled with stranded-issue recovery.
+  // Three consecutive failed runs within the window means the agent is in a
+  // tight failure loop; creating more recovery issues for it just produces
+  // garbage. Threshold matches schema v0.3.3 §8 "run cascade" check.
+  const CASCADE_THRESHOLD = 3;
+  const CASCADE_WINDOW_MS = 15 * 60 * 1000;
+
+  async function detectAgentRunCascade(agentId: string): Promise<boolean> {
+    const since = new Date(Date.now() - CASCADE_WINDOW_MS);
+    const recent = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), gt(heartbeatRuns.startedAt, since)))
+      .orderBy(desc(heartbeatRuns.startedAt))
+      .limit(CASCADE_THRESHOLD);
+    if (recent.length < CASCADE_THRESHOLD) return false;
+    return recent.every((r) => r.status === "failed");
+  }
+
+  async function pauseAgentForCascade(agentId: string): Promise<void> {
+    const now = new Date();
+    await db
+      .update(agents)
+      .set({
+        status: "paused",
+        pauseReason: "cascade",
+        pausedAt: now,
+        updatedAt: now,
+      })
+      .where(eq(agents.id, agentId));
+  }
+
   async function ensureStrandedIssueRecoveryIssue(input: {
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
@@ -1865,6 +1897,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
     if (!ownerAgentId) return null;
+
+    // Cascade short-circuit: if the recovery owner has been failing in a
+    // tight loop, creating another recovery issue just feeds the loop.
+    // Pause the agent and skip recovery instead. Caught 2026-05-09 when a
+    // misconfigured Hermes adapter generated 156 recovery issues in 10
+    // minutes — same agent failing every heartbeat, each failure spawning
+    // a fresh recovery issue assigned right back to it.
+    const cascading = await detectAgentRunCascade(ownerAgentId);
+    if (cascading) {
+      await pauseAgentForCascade(ownerAgentId);
+      logger.warn(
+        { agentId: ownerAgentId, sourceIssueId: input.issue.id },
+        "recovery.short_circuit_cascade",
+      );
+      return null;
+    }
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
     const sourceAssignee = input.issue.assigneeAgentId ? await getAgent(input.issue.assigneeAgentId) : null;
