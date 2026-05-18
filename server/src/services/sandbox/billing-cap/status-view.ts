@@ -272,7 +272,12 @@ export function buildStatusView(input: BuildStatusViewInput): SandboxBillingCapS
     recentLeases: input.recentLeases,
     lastIncident,
     operatorToggle: {
-      currentlyEnabled: input.allowLive,
+      // The operator toggle reports the persisted operator-toggle layer state,
+      // NOT the env-gate. `allowLive` belongs to the env-gate kill-switch
+      // layer; conflating the two misled operators into seeing a manual pause
+      // as live. Default to `true` (toggle "on") when no row exists yet so
+      // a brand-new pilot company doesn't render as paused.
+      currentlyEnabled: state?.operatorToggleEnabled !== false,
       canOperate: input.canOperate,
       lockedReason: input.operatorLockedReason,
     },

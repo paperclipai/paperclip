@@ -97,6 +97,49 @@ describe("buildStatusView", () => {
     expect(view.killSwitch.layers.find((l) => l.id === "billing-cap-monitor")?.state).toBe("degraded");
   });
 
+  it("AC #4 / QA LET-386: operator-toggle currentlyEnabled reflects persisted operatorToggleEnabled, not allowLive", () => {
+    // Regression for LET-386 QA finding: previous implementation set
+    // operatorToggle.currentlyEnabled = allowLive, which would render the
+    // toggle as `true` whenever allowLive=true even though the operator had
+    // paused via the persisted toggle. The operator-toggle layer and the
+    // operatorToggle block must agree.
+    const view = buildStatusView({
+      now: NOW,
+      provider: PROVIDER,
+      state: row({
+        operatorToggleEnabled: false,
+        operatorToggleReason: "manual pause",
+        operatorToggleActorLabel: "operator:test",
+        operatorToggleTransitionAt: NOW,
+      }),
+      recentEvents: [],
+      recentLeases: [],
+      allowLive: true,
+      previewOnly: true,
+      canOperate: true,
+      operatorLockedReason: null,
+    });
+    expect(view.operatorToggle.currentlyEnabled).toBe(false);
+    expect(view.killSwitch.layers.find((l) => l.id === "operator-toggle")?.state).toBe("disabled");
+    expect(view.killSwitch.layers.find((l) => l.id === "env-gate")?.state).toBe("enabled");
+    expect(view.meta.allowLive).toBe(true);
+  });
+
+  it("defaults operator-toggle currentlyEnabled to true when no state row exists yet", () => {
+    const view = buildStatusView({
+      now: NOW,
+      provider: PROVIDER,
+      state: null,
+      recentEvents: [],
+      recentLeases: [],
+      allowLive: true,
+      previewOnly: true,
+      canOperate: true,
+      operatorLockedReason: null,
+    });
+    expect(view.operatorToggle.currentlyEnabled).toBe(true);
+  });
+
   it("surfaces last incident from monthly_incident_opened event", () => {
     const view = buildStatusView({
       now: NOW,
