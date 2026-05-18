@@ -87,6 +87,32 @@ describe("paperclip MCP tools", () => {
     });
   });
 
+  it("allows create issue requests to omit status so the API applies assignee defaults", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ id: "issue-1", status: "todo" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipCreateIssue");
+    await tool.execute({
+      title: "Assigned follow-up",
+      assigneeAgentId: "22222222-2222-2222-2222-222222222222",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/issues",
+    );
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({
+      title: "Assigned follow-up",
+      workMode: "standard",
+      priority: "medium",
+      assigneeAgentId: "22222222-2222-2222-2222-222222222222",
+      requestDepth: 0,
+    });
+  });
+
   it("defaults issue document format to markdown", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse({ key: "plan", latestRevisionNumber: 2 }),

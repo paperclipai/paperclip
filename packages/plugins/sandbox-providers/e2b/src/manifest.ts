@@ -28,7 +28,7 @@ const manifest: PaperclipPluginManifestV1 = {
         properties: {
           template: {
             type: "string",
-            description: "E2B sandbox template name.",
+            description: "E2B sandbox template name. Defaults to base when omitted.",
             default: "base",
           },
           apiKey: {
@@ -48,7 +48,6 @@ const manifest: PaperclipPluginManifestV1 = {
             default: false,
           },
         },
-        required: ["template"],
       },
     },
   ],

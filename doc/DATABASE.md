@@ -149,7 +149,15 @@ The plugin runtime tracks plugin-owned database namespaces and migrations in `pl
 
 ## Backups
 
-Paperclip supports automatic and manual database backups. See `doc/DEVELOPING.md` for the current `paperclipai db:backup` / `pnpm db:backup` commands and backup retention configuration.
+Paperclip supports automatic and manual logical database backups. These dumps include
+non-system database schemas such as `public`, the Drizzle migration journal, and
+plugin-owned database schemas. See `doc/DEVELOPING.md` for the current
+`paperclipai db:backup` / `pnpm db:backup` commands and backup retention
+configuration.
+
+Database backups do not include non-database instance files such as local-disk
+uploads, workspace files, or the local encrypted secrets master key. Back those paths
+up separately when you need full instance disaster recovery.
 
 ## Secret storage
 
@@ -157,12 +165,18 @@ Paperclip stores secret metadata and versions in:
 
 - `company_secrets`
 - `company_secret_versions`
+- `company_secret_bindings`
+- `secret_access_events`
+
+Secret-aware env bindings are supported by agents, projects, and routines. Routine env lives in `routines.env`, is captured in `routine_revisions.snapshot`, and routine dispatches store `routine_runs.routine_revision_id` so runtime secret resolution uses the env snapshot that existed when the run was created. Routine secret refs bind with `target_type = 'routine'`, `target_id = routines.id`, and `config_path` values under `env.*`.
 
 For local/default installs, the active provider is `local_encrypted`:
 
 - Secret material is encrypted at rest with a local master key.
 - Default key file: `~/.paperclip/instances/default/secrets/master.key` (auto-created if missing).
 - CLI config location: `~/.paperclip/instances/default/config.json` under `secrets.localEncrypted.keyFilePath`.
+- Backup/restore requires both the database metadata and the local master key file; either artifact alone is insufficient.
+- The server best-effort enforces `0600` key file permissions and provider health reports permission warnings.
 
 Optional overrides:
 
@@ -184,5 +198,10 @@ pnpm paperclipai configure --section secrets
 Inline secret migration command:
 
 ```sh
+pnpm paperclipai secrets migrate-inline-env --company-id <company-id> --apply
+
+# direct database maintenance fallback
 pnpm secrets:migrate-inline-env --apply
 ```
+
+Hosted AWS provider notes live in [SECRETS-AWS-PROVIDER.md](./SECRETS-AWS-PROVIDER.md).

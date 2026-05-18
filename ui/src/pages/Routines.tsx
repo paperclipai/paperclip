@@ -1,7 +1,7 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "@/lib/router";
-import { Check, ChevronDown, ChevronRight, Layers, MoreHorizontal, Plus, Repeat } from "lucide-react";
+import { ArrowUpDown, Check, ChevronDown, ChevronRight, Layers, Plus, Repeat } from "lucide-react";
 import { routinesApi } from "../api/routines";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
@@ -18,7 +18,6 @@ import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
-import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -26,6 +25,7 @@ import { PageTabBar } from "../components/PageTabBar";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "../components/InlineEntitySelector";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "../components/MarkdownEditor";
+import { RoutineListRow, nextRoutineStatus } from "../components/RoutineList";
 import {
   RoutineRunVariablesDialog,
   type RoutineRunDialogSubmitData,
@@ -35,13 +35,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
@@ -71,20 +64,14 @@ function autoResizeTextarea(element: HTMLTextAreaElement | null) {
   element.style.height = `${element.scrollHeight}px`;
 }
 
-function formatLastRunTimestamp(value: Date | string | null | undefined) {
-  if (!value) return "Never";
-  return new Date(value).toLocaleString();
-}
-
-function nextRoutineStatus(currentStatus: string, enabled: boolean) {
-  if (currentStatus === "archived" && enabled) return "active";
-  return enabled ? "active" : "paused";
-}
-
 type RoutinesTab = "routines" | "runs";
 type RoutineGroupBy = "none" | "project" | "assignee";
+type RoutineSortField = "updated" | "created" | "title" | "lastRun";
+type RoutineSortDir = "asc" | "desc";
 
 type RoutineViewState = {
+  sortField: RoutineSortField;
+  sortDir: RoutineSortDir;
   groupBy: RoutineGroupBy;
   collapsedGroups: string[];
 };
@@ -96,6 +83,8 @@ type RoutineGroup = {
 };
 
 const defaultRoutineViewState: RoutineViewState = {
+  sortField: "updated",
+  sortDir: "desc",
   groupBy: "none",
   collapsedGroups: [],
 };
@@ -114,9 +103,14 @@ function saveRoutineViewState(key: string, state: RoutineViewState) {
   localStorage.setItem(key, JSON.stringify(state));
 }
 
-function formatRoutineRunStatus(value: string | null | undefined) {
-  if (!value) return null;
-  return value.replaceAll("_", " ");
+function timestampValue(value: Date | string | null | undefined) {
+  if (!value) return Number.NEGATIVE_INFINITY;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
+}
+
+function compareNullableText(left: string | null | undefined, right: string | null | undefined) {
+  return (left ?? "").localeCompare(right ?? "", undefined, { sensitivity: "base" });
 }
 
 function buildRoutineMutationPayload(input: {
@@ -176,119 +170,33 @@ export function buildRoutineGroups(
     }));
 }
 
-function buildRoutinesTabHref(tab: RoutinesTab) {
-  return tab === "runs" ? "/routines?tab=runs" : "/routines";
+export function sortRoutines(
+  routines: RoutineListItem[],
+  sortField: RoutineSortField,
+  sortDir: RoutineSortDir,
+): RoutineListItem[] {
+  const direction = sortDir === "asc" ? 1 : -1;
+  return [...routines].sort((left, right) => {
+    let result = 0;
+
+    if (sortField === "title") {
+      result = compareNullableText(left.title, right.title);
+    } else if (sortField === "created") {
+      result = timestampValue(left.createdAt) - timestampValue(right.createdAt);
+    } else if (sortField === "lastRun") {
+      result = timestampValue(left.lastRun?.triggeredAt ?? left.lastTriggeredAt) -
+        timestampValue(right.lastRun?.triggeredAt ?? right.lastTriggeredAt);
+    } else {
+      result = timestampValue(left.updatedAt) - timestampValue(right.updatedAt);
+    }
+
+    if (result !== 0) return result * direction;
+    return compareNullableText(left.title, right.title);
+  });
 }
 
-function RoutineListRow({
-  routine,
-  projectById,
-  agentById,
-  runningRoutineId,
-  statusMutationRoutineId,
-  href,
-  onRunNow,
-  onToggleEnabled,
-  onToggleArchived,
-}: {
-  routine: RoutineListItem;
-  projectById: Map<string, { name: string; color?: string | null }>;
-  agentById: Map<string, { name: string; icon?: string | null }>;
-  runningRoutineId: string | null;
-  statusMutationRoutineId: string | null;
-  href: string;
-  onRunNow: (routine: RoutineListItem) => void;
-  onToggleEnabled: (routine: RoutineListItem, enabled: boolean) => void;
-  onToggleArchived: (routine: RoutineListItem) => void;
-}) {
-  const enabled = routine.status === "active";
-  const isArchived = routine.status === "archived";
-  const isStatusPending = statusMutationRoutineId === routine.id;
-  const project = routine.projectId ? projectById.get(routine.projectId) ?? null : null;
-  const agent = routine.assigneeAgentId ? agentById.get(routine.assigneeAgentId) ?? null : null;
-  const isDraft = !isArchived && !routine.assigneeAgentId;
-
-  return (
-    <Link
-      to={href}
-      className="group flex flex-col gap-3 border-b border-border px-3 py-3 transition-colors hover:bg-accent/50 last:border-b-0 sm:flex-row sm:items-center no-underline text-inherit"
-    >
-      <div className="min-w-0 flex-1 space-y-1.5">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="truncate text-sm font-medium">{routine.title}</span>
-          {(isArchived || routine.status === "paused" || isDraft) ? (
-            <span className="text-xs text-muted-foreground">
-              {isArchived ? "archived" : isDraft ? "draft" : "paused"}
-            </span>
-          ) : null}
-        </div>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-          <span className="flex items-center gap-2">
-            <span
-              className="h-2.5 w-2.5 shrink-0 rounded-sm"
-              style={{ backgroundColor: project?.color ?? "#64748b" }}
-            />
-            <span>{routine.projectId ? (project?.name ?? "Unknown project") : "No project"}</span>
-          </span>
-          <span className="flex items-center gap-2">
-            {agent?.icon ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0" /> : null}
-            <span>{routine.assigneeAgentId ? (agent?.name ?? "Unknown agent") : "No default agent"}</span>
-          </span>
-          <span>
-            {formatLastRunTimestamp(routine.lastRun?.triggeredAt)}
-            {routine.lastRun ? ` · ${formatRoutineRunStatus(routine.lastRun.status)}` : ""}
-          </span>
-        </div>
-      </div>
-
-      <div className="flex items-center gap-3" onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}>
-        <div className="flex items-center gap-3">
-          <ToggleSwitch
-            size="lg"
-            checked={enabled}
-            onCheckedChange={() => onToggleEnabled(routine, enabled)}
-            disabled={isStatusPending || isArchived}
-            aria-label={enabled ? `Disable ${routine.title}` : `Enable ${routine.title}`}
-          />
-          <span className="w-12 text-xs text-muted-foreground">
-            {isArchived ? "Archived" : isDraft ? "Draft" : enabled ? "On" : "Off"}
-          </span>
-        </div>
-
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon-sm" aria-label={`More actions for ${routine.title}`}>
-              <MoreHorizontal className="h-4 w-4" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem asChild>
-              <Link to={href}>Edit</Link>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              disabled={runningRoutineId === routine.id || isArchived}
-              onClick={() => onRunNow(routine)}
-            >
-              {runningRoutineId === routine.id ? "Running..." : "Run now"}
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              onClick={() => onToggleEnabled(routine, enabled)}
-              disabled={isStatusPending || isArchived}
-            >
-              {enabled ? "Pause" : "Enable"}
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={() => onToggleArchived(routine)}
-              disabled={isStatusPending}
-            >
-              {routine.status === "archived" ? "Restore" : "Archive"}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
-    </Link>
-  );
+function buildRoutinesTabHref(tab: RoutinesTab) {
+  return tab === "runs" ? "/routines?tab=runs" : "/routines";
 }
 
 export function Routines() {
@@ -509,9 +417,13 @@ export function Routines() {
     [projects],
   );
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
+  const sortedRoutines = useMemo(
+    () => sortRoutines(routines ?? [], routineViewState.sortField, routineViewState.sortDir),
+    [routineViewState.sortDir, routineViewState.sortField, routines],
+  );
   const routineGroups = useMemo(
-    () => buildRoutineGroups(routines ?? [], routineViewState.groupBy, projectById, agentById),
-    [agentById, projectById, routineViewState.groupBy, routines],
+    () => buildRoutineGroups(sortedRoutines, routineViewState.groupBy, projectById, agentById),
+    [agentById, projectById, routineViewState.groupBy, sortedRoutines],
   );
   const recentRunsIssueLinkState = useMemo(
     () =>
@@ -606,36 +518,79 @@ export function Routines() {
             <p className="text-sm text-muted-foreground">
               {(routines ?? []).length} routine{(routines ?? []).length === 1 ? "" : "s"}
             </p>
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button variant="ghost" size="sm" className="text-xs">
-                  <Layers className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-                  <span className="hidden sm:inline">Group</span>
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent align="end" className="w-44 p-0">
-                <div className="p-2 space-y-0.5">
-                  {([
-                    ["project", "Project"],
-                    ["assignee", "Agent"],
-                    ["none", "None"],
-                  ] as const).map(([value, label]) => (
-                    <button
-                      key={value}
-                      className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm ${
-                        routineViewState.groupBy === value
-                          ? "bg-accent/50 text-foreground"
-                          : "text-muted-foreground hover:bg-accent/50"
-                      }`}
-                      onClick={() => updateRoutineView({ groupBy: value, collapsedGroups: [] })}
-                    >
-                      <span>{label}</span>
-                      {routineViewState.groupBy === value ? <Check className="h-3.5 w-3.5" /> : null}
-                    </button>
-                  ))}
-                </div>
-              </PopoverContent>
-            </Popover>
+            <div className="flex items-center gap-1">
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="ghost" size="sm" className="text-xs" title="Sort">
+                    <ArrowUpDown className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
+                    <span className="hidden sm:inline">Sort</span>
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-44 p-0">
+                  <div className="p-2 space-y-0.5">
+                    {([
+                      ["updated", "Updated"],
+                      ["created", "Created"],
+                      ["lastRun", "Last run"],
+                      ["title", "Title"],
+                    ] as const).map(([field, label]) => (
+                      <button
+                        key={field}
+                        className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm ${
+                          routineViewState.sortField === field
+                            ? "bg-accent/50 text-foreground"
+                            : "text-muted-foreground hover:bg-accent/50"
+                        }`}
+                        onClick={() => {
+                          updateRoutineView(
+                            routineViewState.sortField === field
+                              ? { sortDir: routineViewState.sortDir === "asc" ? "desc" : "asc" }
+                              : { sortField: field, sortDir: field === "title" ? "asc" : "desc" },
+                          );
+                        }}
+                      >
+                        <span>{label}</span>
+                        {routineViewState.sortField === field ? (
+                          <span className="text-xs text-muted-foreground">
+                            {routineViewState.sortDir === "asc" ? "Asc" : "Desc"}
+                          </span>
+                        ) : null}
+                      </button>
+                    ))}
+                  </div>
+                </PopoverContent>
+              </Popover>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="ghost" size="sm" className="text-xs" title="Group">
+                    <Layers className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
+                    <span className="hidden sm:inline">Group</span>
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-44 p-0">
+                  <div className="p-2 space-y-0.5">
+                    {([
+                      ["project", "Project"],
+                      ["assignee", "Agent"],
+                      ["none", "None"],
+                    ] as const).map(([value, label]) => (
+                      <button
+                        key={value}
+                        className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm ${
+                          routineViewState.groupBy === value
+                            ? "bg-accent/50 text-foreground"
+                            : "text-muted-foreground hover:bg-accent/50"
+                        }`}
+                        onClick={() => updateRoutineView({ groupBy: value, collapsedGroups: [] })}
+                      >
+                        <span>{label}</span>
+                        {routineViewState.groupBy === value ? <Check className="h-3.5 w-3.5" /> : null}
+                      </button>
+                    ))}
+                  </div>
+                </PopoverContent>
+              </Popover>
+            </div>
           </div>
         </TabsContent>
         <TabsContent value="runs">
@@ -962,6 +917,7 @@ export function Routines() {
                         runningRoutineId={runningRoutineId}
                         statusMutationRoutineId={statusMutationRoutineId}
                         href={`/routines/${routine.id}`}
+                        runNowButton
                         onRunNow={handleRunNow}
                         onToggleEnabled={handleToggleEnabled}
                         onToggleArchived={handleToggleArchived}

@@ -1,5 +1,5 @@
 {
-  "id": "cef7df04-eeed-4766-aba4-777b877f08f6",
+  "id": "fdc9cd8b-5423-4d64-b255-9bc1497fdd6a",
   "prevId": "12b3d91e-98ee-4a48-aecb-891f5bde6eda",
   "version": "7",
   "dialect": "postgresql",
@@ -174,7 +174,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
@@ -11114,6 +11114,43 @@
           "primaryKey": false,
           "notNull": false
         },
+        "monitor_next_check_at": {
+          "name": "monitor_next_check_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "monitor_wake_requested_at": {
+          "name": "monitor_wake_requested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "monitor_last_triggered_at": {
+          "name": "monitor_last_triggered_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "monitor_attempt_count": {
+          "name": "monitor_attempt_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "monitor_notes": {
+          "name": "monitor_notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "monitor_scheduled_by": {
+          "name": "monitor_scheduled_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "execution_workspace_id": {
           "name": "execution_workspace_id",
           "type": "uuid",
@@ -11348,6 +11385,27 @@
             },
             {
               "expression": "execution_workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "issues_company_monitor_due_idx": {
+          "name": "issues_company_monitor_due_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "monitor_next_check_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

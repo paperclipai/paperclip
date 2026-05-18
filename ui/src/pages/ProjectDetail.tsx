@@ -33,7 +33,7 @@ import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slo
 
 /* ── Top-level tab types ── */
 
-type ProjectBaseTab = "overview" | "list" | "workspaces" | "configuration" | "budget";
+type ProjectBaseTab = "overview" | "list" | "plugin-operations" | "workspaces" | "configuration" | "budget";
 type ProjectPluginTab = `plugin:${string}`;
 type ProjectTab = ProjectBaseTab | ProjectPluginTab;
 
@@ -50,6 +50,7 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   if (tab === "configuration") return "configuration";
   if (tab === "budget") return "budget";
   if (tab === "issues") return "list";
+  if (tab === "plugin-operations") return "plugin-operations";
   if (tab === "workspaces") return "workspaces";
   return null;
 }
@@ -203,6 +204,67 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
       liveIssueIds={liveIssueIds}
       projectId={projectId}
       viewStateKey="paperclip:project-issues-view"
+      onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+    />
+  );
+}
+
+function ProjectPluginOperationsList({
+  projectId,
+  companyId,
+  pluginKey,
+}: {
+  projectId: string;
+  companyId: string;
+  pluginKey: string;
+}) {
+  const queryClient = useQueryClient();
+  const originKindPrefix = `plugin:${pluginKey}`;
+
+  const { data: agents } = useQuery({
+    queryKey: queryKeys.agents.list(companyId),
+    queryFn: () => agentsApi.list(companyId),
+    enabled: !!companyId,
+  });
+  const { data: projects } = useQuery({
+    queryKey: queryKeys.projects.list(companyId),
+    queryFn: () => projectsApi.list(companyId),
+    enabled: !!companyId,
+  });
+  const { data: liveRuns } = useQuery({
+    queryKey: queryKeys.liveRuns(companyId),
+    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
+    enabled: !!companyId,
+    refetchInterval: 5000,
+  });
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
+
+  const { data: issues, isLoading, error } = useQuery({
+    queryKey: queryKeys.issues.listPluginOperationsByProject(companyId, projectId, originKindPrefix),
+    queryFn: () => issuesApi.list(companyId, { projectId, originKindPrefix }),
+    enabled: !!companyId && !!projectId,
+  });
+
+  const updateIssue = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
+      issuesApi.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listPluginOperationsByProject(companyId, projectId, originKindPrefix) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+    },
+  });
+
+  return (
+    <IssuesList
+      issues={issues ?? []}
+      isLoading={isLoading}
+      error={error as Error | null}
+      agents={agents}
+      projects={projects}
+      liveIssueIds={liveIssueIds}
+      projectId={projectId}
+      viewStateKey={`paperclip:project-plugin-operations-view:${pluginKey}`}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
   );
@@ -390,6 +452,10 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/budget`, { replace: true });
       return;
     }
+    if (activeTab === "plugin-operations") {
+      navigate(`/projects/${canonicalProjectRef}/plugin-operations`, { replace: true });
+      return;
+    }
     if (activeTab === "workspaces") {
       navigate(`/projects/${canonicalProjectRef}/workspaces`, { replace: true });
       return;
@@ -523,6 +589,9 @@ export function ProjectDetail() {
     if (cachedTab === "budget") {
       return <Navigate to={`/projects/${canonicalProjectRef}/budget`} replace />;
     }
+    if (cachedTab === "plugin-operations" && project?.managedByPlugin) {
+      return <Navigate to={`/projects/${canonicalProjectRef}/plugin-operations`} replace />;
+    }
     if (cachedTab === "workspaces" && workspaceTabDecisionLoaded && showWorkspacesTab) {
       return <Navigate to={`/projects/${canonicalProjectRef}/workspaces`} replace />;
     }
@@ -554,6 +623,8 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/workspaces`);
     } else if (tab === "budget") {
       navigate(`/projects/${canonicalProjectRef}/budget`);
+    } else if (tab === "plugin-operations") {
+      navigate(`/projects/${canonicalProjectRef}/plugin-operations`);
     } else if (tab === "configuration") {
       navigate(`/projects/${canonicalProjectRef}/configuration`);
     } else {
@@ -581,6 +652,12 @@ export function ProjectDetail() {
             <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-red-200">
               <span className="h-2 w-2 rounded-full bg-red-400" />
               Paused by budget hard stop
+            </div>
+          ) : null}
+          {project.managedByPlugin ? (
+            <div className="inline-flex items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-[11px] font-medium text-muted-foreground">
+              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: project.color ?? "#6366f1" }} />
+              Managed by {project.managedByPlugin.pluginDisplayName}
             </div>
           ) : null}
         </div>
@@ -622,6 +699,7 @@ export function ProjectDetail() {
           items={[
             { value: "list", label: "Issues" },
             { value: "overview", label: "Overview" },
+            ...(project.managedByPlugin ? [{ value: "plugin-operations", label: "Plugin operations" }] : []),
             ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
             { value: "configuration", label: "Configuration" },
             { value: "budget", label: "Budget" },
@@ -649,6 +727,14 @@ export function ProjectDetail() {
 
       {activeTab === "list" && project?.id && resolvedCompanyId && (
         <ProjectIssuesList projectId={project.id} companyId={resolvedCompanyId} />
+      )}
+
+      {activeTab === "plugin-operations" && project?.id && resolvedCompanyId && project.managedByPlugin && (
+        <ProjectPluginOperationsList
+          projectId={project.id}
+          companyId={resolvedCompanyId}
+          pluginKey={project.managedByPlugin.pluginKey}
+        />
       )}
 
       {activeTab === "workspaces" ? (
