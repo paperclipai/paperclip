@@ -2,11 +2,12 @@ import path from "node:path";
 import fs from "node:fs";
 import pino from "pino";
 import { pinoHttp } from "pino-http";
+import { detectInsecureLogDir } from "@paperclipai/shared";
 import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
 import { shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
 
-function resolveServerLogDir(): string {
+export function resolveServerLogDir(): string {
   const envOverride = process.env.PAPERCLIP_LOG_DIR?.trim();
   if (envOverride) return resolveHomeAwarePath(envOverride);
 
@@ -16,7 +17,32 @@ function resolveServerLogDir(): string {
   return resolveDefaultLogsDir();
 }
 
+// LET-436: refuse to start the server when the resolved log dir points at a
+// vitest scratch path. A production deployment that ends up writing to
+// `/tmp/paperclip-vitest-*` loses logs whenever vitest cleans the tempdir,
+// which then surfaces in Paperclip as a flood of `adapter_failed` /
+// `process_lost` terminals from the heartbeat reaper. Fail loudly at startup
+// instead so the misconfiguration is visible to the operator.
+export function assertServerLogDirIsSafe(
+  resolvedLogDir: string,
+  options?: { nodeEnv?: string | undefined },
+): void {
+  const nodeEnv = options?.nodeEnv ?? process.env.NODE_ENV;
+  const mode = nodeEnv === "test" ? "test" : "production";
+  const verdict = detectInsecureLogDir(resolvedLogDir, { mode });
+  if (verdict.ok) return;
+  const message =
+    "[paperclip][LET-436] Refusing to start: " +
+    (verdict.reason ?? `insecure logging.logDir: ${resolvedLogDir}`);
+  if (verdict.severity === "error") {
+    throw new Error(message);
+  }
+  // eslint-disable-next-line no-console
+  console.warn(message);
+}
+
 const logDir = resolveServerLogDir();
+assertServerLogDirIsSafe(logDir);
 fs.mkdirSync(logDir, { recursive: true });
 
 const logFile = path.join(logDir, "server.log");
