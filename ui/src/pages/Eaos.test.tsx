@@ -135,7 +135,7 @@ describe("EAOS Sandbox & runtime dashboard", () => {
     });
     await flush();
 
-    expect(container.textContent).toContain("EAOS — Sandbox & runtime dashboard");
+    expect(container.textContent).toContain("Sandbox & runtime");
     expect(container.textContent).toContain("Read-only");
     expect(container.textContent).toContain("Preview");
     expect(container.textContent).toContain("No live sandbox execution");
@@ -147,9 +147,11 @@ describe("EAOS Sandbox & runtime dashboard", () => {
     expect(container.textContent).toContain("Stub — no real container isolation");
     const adrLink = container.querySelector('a[href="/issues/LET-328"]');
     expect(adrLink).not.toBeNull();
+    // LET-372: breadcrumbs put Sandbox / Runtime under the EAOS shell crumb.
     expect(breadcrumbState.setBreadcrumbs).toHaveBeenCalledWith([
       { label: "Paperclip", href: "/dashboard" },
-      { label: "EAOS Sandbox & runtime" },
+      { label: "EAOS", href: "/eaos" },
+      { label: "Sandbox / Runtime" },
     ]);
 
     await act(async () => root.unmount());

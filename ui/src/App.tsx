@@ -49,6 +49,10 @@ import { PluginPage } from "./pages/PluginPage";
 import { OrgChart } from "./pages/OrgChart";
 import { AgentOs } from "./pages/AgentOs";
 import { Eaos } from "./pages/Eaos";
+import { EaosShell } from "./eaos/EaosShell";
+import { CommandCenterLanding } from "./eaos/CommandCenterLanding";
+import { EaosZonePlaceholder } from "./eaos/EaosZonePlaceholder";
+import { EAOS_PRIMARY_NAV } from "./eaos/nav-zones";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
@@ -82,7 +86,33 @@ function boardRoutes() {
       <Route path="plugins/:pluginId" element={<PluginPage />} />
       <Route path="org" element={<OrgChart />} />
       <Route path="agent-os" element={<AgentOs />} />
-      <Route path="eaos" element={<Eaos />} />
+      {/*
+        LET-372 canonical /eaos shell. EaosShell owns the inner banner /
+        navigation / region / contentinfo landmarks; the existing Paperclip
+        Layout still owns the page-level <main>. Sandbox / Runtime mounts
+        the read-only LET-326 dashboard. Other primary-nav zones render the
+        LET-187 zone placeholder until their read models are wired.
+      */}
+      <Route path="eaos" element={<EaosShell variant="eaos" />}>
+        <Route index element={<CommandCenterLanding />} />
+        <Route path="sandbox" element={<Eaos />} />
+        {EAOS_PRIMARY_NAV.filter((zone) => zone.path !== "/eaos" && zone.path !== "/eaos/sandbox").map((zone) => (
+          <Route
+            key={zone.id}
+            path={zone.path.replace(/^\/eaos\//, "")}
+            element={<EaosZonePlaceholder title={zone.label} description={zone.description} />}
+          />
+        ))}
+        <Route
+          path="*"
+          element={
+            <EaosZonePlaceholder
+              title="Coming soon"
+              description="This zone is referenced by the shell but not yet wired to a read model or page."
+            />
+          }
+        />
+      </Route>
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents/all" element={<Agents />} />
       <Route path="agents/active" element={<Agents />} />

@@ -63,4 +63,27 @@ describe("company routes", () => {
     expect(toCompanyRelativePath("/PAP/eaos")).toBe("/eaos");
     expect(toCompanyRelativePath("/PAP/eaos?tab=leases")).toBe("/eaos?tab=leases");
   });
+
+  it("treats LET-372 /eaos shell sub-routes as board paths under the active company prefix", () => {
+    // Canonical shell zones (LET-181/LET-334 nav-zones) must keep working
+    // as board sub-paths so /<companyPrefix>/eaos/sandbox etc. resolve into
+    // the EaosShell child <Outlet/> instead of being treated as a company
+    // prefix.
+    for (const sub of [
+      "/eaos/sandbox",
+      "/eaos/projects",
+      "/eaos/missions",
+      "/eaos/agents",
+      "/eaos/runs",
+      "/eaos/approvals",
+      "/eaos/capabilities",
+      "/eaos/knowledge",
+      "/eaos/admin",
+    ]) {
+      expect(isBoardPathWithoutPrefix(sub)).toBe(true);
+      expect(extractCompanyPrefixFromPath(sub)).toBeNull();
+      expect(applyCompanyPrefix(sub, "PAP")).toBe(`/PAP${sub}`);
+      expect(toCompanyRelativePath(`/PAP${sub}`)).toBe(sub);
+    }
+  });
 });

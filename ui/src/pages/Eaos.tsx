@@ -1,8 +1,12 @@
 /**
- * LET-326: Enterprise Agent OS (EAOS) command center — read-only Sandbox &
- * runtime dashboard. Phase 4A slice. This page composes the safety-posture
- * banner, the runtime & sandboxes module, and the read-only artifact /
- * evidence browser.
+ * LET-326 + LET-372: Sandbox / Runtime zone module mounted inside the
+ * canonical `/eaos` command-center shell (LET-181/LET-334 reconciliation).
+ *
+ * Composition:
+ *   - Safety posture banner (LET-326 backend-derived truth labels)
+ *   - Provider status panel integration seam (LET-368, PR #52)
+ *   - Runtime & sandboxes module (LET-326 read-only lease table)
+ *   - Artifact / evidence browser (LET-326 read-only artifacts)
  *
  * Hard constraints (also enforced by the modules below):
  *   - No live sandbox start/stop, no real egress, no runtime control
@@ -11,6 +15,12 @@
  *     Center would expose a button, this slice shows the labels only.
  *   - Missing fields render as Unknown; backend failures render as Partial
  *     / red alert and never as green.
+ *
+ * Landmarks: this module renders a `<section>` only. The EaosShell already
+ * owns the `<header role=banner>` / `<nav role=navigation>` / `<section
+ * role=region>` / `<footer role=contentinfo>` landmarks, and the Paperclip
+ * Layout owns the page-level `<main>`. Rendering an additional `<main>`
+ * here would duplicate the landmark.
  */
 
 import { useEffect, useState } from "react";
@@ -28,29 +38,42 @@ export function Eaos() {
 
   useEffect(() => {
     const companyCrumb = selectedCompany ? [{ label: selectedCompany.name, href: "/dashboard" }] : [];
-    setBreadcrumbs([...companyCrumb, { label: "EAOS Sandbox & runtime" }]);
+    setBreadcrumbs([
+      ...companyCrumb,
+      { label: "EAOS", href: "/eaos" },
+      { label: "Sandbox / Runtime" },
+    ]);
   }, [selectedCompany, setBreadcrumbs]);
 
   return (
-    <main
-      className="mx-auto max-w-7xl space-y-6 p-4 lg:p-6"
-      aria-labelledby="eaos-heading"
+    <section
+      aria-labelledby="eaos-sandbox-zone-heading"
+      className="space-y-6"
+      data-testid="eaos-sandbox-runtime-zone"
     >
       <header className="space-y-3">
-        <h1 id="eaos-heading" className="text-2xl font-semibold tracking-tight">
-          EAOS — Sandbox &amp; runtime dashboard{" "}
+        <h1 id="eaos-sandbox-zone-heading" className="text-2xl font-semibold tracking-tight">
+          Sandbox &amp; runtime{" "}
           <span className="text-base font-normal text-muted-foreground">(preview / stub)</span>
         </h1>
         <p className="text-sm leading-6 text-muted-foreground">
-          Read-only Enterprise Agent OS command center. Backed by the LET-314 / LET-323 preview-only
-          sandbox APIs plus existing live-runs, workspaces, and approvals reads. The sandbox /
-          runtime stack itself is still a stub: no real container isolation, no real egress
-          enforcement, and no runtime service mutation has shipped yet — see ADR LET-328 for the
-          buy-vs-build decision driving this surface.
+          Read-only Enterprise Agent OS Sandbox / Runtime zone. Backed by the LET-314 / LET-323
+          preview-only sandbox APIs plus existing live-runs, workspaces, and approvals reads. The
+          sandbox / runtime stack itself is still a stub: no real container isolation, no real
+          egress enforcement, and no runtime service mutation has shipped yet — see ADR LET-328 for
+          the buy-vs-build decision driving this surface.
         </p>
       </header>
 
       <SafetyPostureBanner generatedAt={generatedAt} partial={partial} />
+
+      {/*
+        LET-368 ProviderStatusPanel integration seam. The provider-status
+        panel (PR #52) mounts here once LET-368 lands on master; until then
+        this comment marks the integration slot. The panel renders directly
+        above RuntimeSandboxesModule so the provider-allow-live posture and
+        billing-cap auto-disable state are visible before the lease table.
+      */}
 
       {selectedCompanyId ? (
         <>
@@ -68,6 +91,6 @@ export function Eaos() {
           Select a company to view its EAOS sandbox &amp; runtime state.
         </div>
       )}
-    </main>
+    </section>
   );
 }
