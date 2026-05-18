@@ -1,4 +1,4 @@
-app = "paperclip-3arywg"
+app = "paperclip-staging"
 primary_region = "lax"
 
 [http_service]
