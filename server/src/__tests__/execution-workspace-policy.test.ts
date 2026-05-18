@@ -31,8 +31,31 @@ describe("execution workspace policy helpers", () => {
     expect(
       resolveExecutionWorkspaceMode({
         projectPolicy: { enabled: true, defaultMode: "shared_workspace" },
+        issuePreference: null,
         issueSettings: { mode: "isolated_workspace" },
         legacyUseProjectWorkspace: false,
+      }),
+    ).toBe("isolated_workspace");
+  });
+
+  it("uses issue workspace preference when settings do not carry a mode", () => {
+    expect(
+      resolveExecutionWorkspaceMode({
+        projectPolicy: null,
+        issuePreference: "isolated_workspace",
+        issueSettings: null,
+        legacyUseProjectWorkspace: null,
+      }),
+    ).toBe("isolated_workspace");
+  });
+
+  it("ignores reuse-existing preference when resolving the concrete run mode", () => {
+    expect(
+      resolveExecutionWorkspaceMode({
+        projectPolicy: { enabled: true, defaultMode: "isolated_workspace" },
+        issuePreference: "reuse_existing",
+        issueSettings: null,
+        legacyUseProjectWorkspace: null,
       }),
     ).toBe("isolated_workspace");
   });
@@ -41,6 +64,7 @@ describe("execution workspace policy helpers", () => {
     expect(
       resolveExecutionWorkspaceMode({
         projectPolicy: { enabled: true, defaultMode: "isolated_workspace" },
+        issuePreference: null,
         issueSettings: null,
         legacyUseProjectWorkspace: false,
       }),
@@ -48,6 +72,7 @@ describe("execution workspace policy helpers", () => {
     expect(
       resolveExecutionWorkspaceMode({
         projectPolicy: null,
+        issuePreference: null,
         issueSettings: null,
         legacyUseProjectWorkspace: false,
       }),
@@ -71,6 +96,7 @@ describe("execution workspace policy helpers", () => {
           services: [{ name: "web", command: "pnpm dev" }],
         },
       },
+      issuePreference: null,
       issueSettings: null,
       mode: "isolated_workspace",
       legacyUseProjectWorkspace: null,
@@ -86,6 +112,19 @@ describe("execution workspace policy helpers", () => {
     });
   });
 
+  it("applies default git worktree strategy for issue-level isolated preference", () => {
+    const result = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: {},
+      projectPolicy: null,
+      issuePreference: "isolated_workspace",
+      issueSettings: null,
+      mode: "isolated_workspace",
+      legacyUseProjectWorkspace: null,
+    });
+
+    expect(result.workspaceStrategy).toEqual({ type: "git_worktree" });
+  });
+
   it("clears managed workspace strategy when issue opts out to project primary or agent default", () => {
     const baseConfig = {
       workspaceStrategy: { type: "git_worktree", branchTemplate: "{{issue.identifier}}" },
@@ -96,6 +135,7 @@ describe("execution workspace policy helpers", () => {
       buildExecutionWorkspaceAdapterConfig({
         agentConfig: baseConfig,
         projectPolicy: { enabled: true, defaultMode: "isolated_workspace" },
+        issuePreference: null,
         issueSettings: { mode: "shared_workspace" },
         mode: "shared_workspace",
         legacyUseProjectWorkspace: null,
@@ -105,6 +145,7 @@ describe("execution workspace policy helpers", () => {
     const agentDefault = buildExecutionWorkspaceAdapterConfig({
       agentConfig: baseConfig,
       projectPolicy: null,
+      issuePreference: null,
       issueSettings: { mode: "agent_default" },
       mode: "agent_default",
       legacyUseProjectWorkspace: null,
