@@ -345,6 +345,7 @@ describe("Routines page", () => {
 
   it("groups routines by project using project names for the section labels", () => {
     const groups = buildRoutineGroups(
+      (k: string) => k,
       [
         createRoutine({ id: "routine-1", title: "Morning sync", projectId: "project-1" }),
         createRoutine({ id: "routine-2", title: "Weekly digest", projectId: "project-2", assigneeAgentId: "agent-2" }),

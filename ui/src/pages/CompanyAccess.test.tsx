@@ -188,10 +188,10 @@ describe("CompanyAccess", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("Manage company user memberships");
+    expect(container.textContent).toContain("Manage membership for Paperclip.");
     expect(container.textContent).toContain("Humans");
     expect(container.textContent).toContain("Pending human joins");
-    expect(container.textContent).toContain("User account");
+    expect(container.textContent).toContain("User Account");
     expect(container.textContent).not.toContain("Agents");
     expect(container.textContent).not.toContain("Pending agent joins");
     expect(container.textContent).not.toContain("Open join request queue");
@@ -210,11 +210,9 @@ describe("CompanyAccess", () => {
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Implicit grants from role");
+    expect(document.body.textContent).toContain("Implicit Role Grants");
     expect(document.body.textContent).toContain("Owner currently includes these permissions automatically.");
-    expect(document.body.textContent).toContain(
-      "Included implicitly by the Owner role. Add an explicit grant only if it should stay after the role changes.",
-    );
+    expect(document.body.textContent).toContain("Included implicitly by role Owner.");
 
     await act(async () => {
       root.unmount();
@@ -248,7 +246,7 @@ describe("CompanyAccess", () => {
     await flushReact();
 
     const saveButton = Array.from(document.body.querySelectorAll("button")).find(
-      (button) => button.textContent === "Save access",
+      (button) => button.textContent === "Save Access",
     );
     expect(saveButton).toBeTruthy();
 
@@ -294,7 +292,7 @@ describe("CompanyAccess", () => {
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Remove member");
+    expect(document.body.textContent).toContain("Remove Member");
     expect(document.body.textContent).toContain("Assigned to removed user");
 
     const reassignmentSelect = document.body.querySelector("select");
@@ -305,7 +303,7 @@ describe("CompanyAccess", () => {
     });
 
     const confirmButton = Array.from(document.body.querySelectorAll("button")).find(
-      (button) => button.textContent === "Remove member",
+      (button) => button.textContent === "Remove Member",
     );
     expect(confirmButton).toBeTruthy();
 
