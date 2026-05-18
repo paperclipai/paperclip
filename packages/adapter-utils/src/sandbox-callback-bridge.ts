@@ -29,7 +29,7 @@ export interface SandboxCallbackBridgeRouteRule {
 // still enforces actor-level permissions on top of this allowlist; the list
 // exists to bound the surface area a compromised CLI could reach via the
 // reverse bridge. Keep this in sync with the Paperclip skill in
-// `skills/paperclip/SKILL.md` and `references/api-reference.md`.
+// `skills/paperclip/SKILL.md` and `skills/paperclip/references/api-reference.md`.
 export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCallbackBridgeRouteRule[] = [
   // Identity, inbox, agent self-management
   { method: "GET", path: /^\/api\/agents\/me$/ },
@@ -95,6 +95,10 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "POST", path: /^\/api\/routines\/[^/]+\/triggers$/ },
   { method: "PATCH", path: /^\/api\/routine-triggers\/[^/]+$/ },
   { method: "DELETE", path: /^\/api\/routine-triggers\/[^/]+$/ },
+
+  // Attachments — list metadata and fetch content
+  { method: "GET", path: /^\/api\/issues\/[^/]+\/attachments$/ },
+  { method: "GET", path: /^\/api\/attachments\/[^/]+\/content$/ },
 ] as const;
 
 export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST = [
