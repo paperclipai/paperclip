@@ -302,6 +302,16 @@ const dashboard: DashboardSummary = {
     pausedProjects: 0,
   },
   runActivity: [],
+  tokenActivity: {
+    recentSuccessfulRuns: 0,
+    tokenizedRuns: 0,
+    subscriptionIncludedRuns: 0,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    lastTokenAt: null,
+  },
 };
 
 describe("inbox helpers", () => {
