@@ -116,8 +116,18 @@ export function Sidebar() {
 
         <SidebarSection label="Company">
           <SidebarNavItem to="/org" label="Org" icon={Network} />
-          <SidebarNavItem to="/agent-os" label="Agent OS" icon={Rocket} />
-          <SidebarNavItem to="/eaos" label="EAOS" icon={ServerCog} />
+          <SidebarNavItem
+            to="/agent-os"
+            label="Agent OS"
+            sublabel="Kernel admin"
+            icon={Rocket}
+          />
+          <SidebarNavItem
+            to="/eaos"
+            label="EAOS"
+            sublabel="Sandbox & runtime preview"
+            icon={ServerCog}
+          />
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />

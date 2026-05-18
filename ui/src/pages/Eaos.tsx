@@ -23,7 +23,7 @@
  * here would duplicate the landmark.
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { SafetyPostureBanner } from "./eaos/SafetyPostureBanner";
@@ -45,6 +45,14 @@ export function Eaos() {
       { label: "Sandbox / Runtime" },
     ]);
   }, [selectedCompany, setBreadcrumbs]);
+
+  // Stable identity so RuntimeSandboxesModule's useEffect deps (generatedAt,
+  // partial, onGeneratedAt) only re-fire on real value changes, not on every
+  // parent render.
+  const handleGeneratedAt = useCallback((ts: string | null, isPartial: boolean) => {
+    setGeneratedAt(ts);
+    setPartial(isPartial);
+  }, []);
 
   return (
     <section
@@ -81,10 +89,7 @@ export function Eaos() {
           <ProviderStatusPanel companyId={selectedCompanyId} />
           <RuntimeSandboxesModule
             companyId={selectedCompanyId}
-            onGeneratedAt={(ts, isPartial) => {
-              setGeneratedAt(ts);
-              setPartial(isPartial);
-            }}
+            onGeneratedAt={handleGeneratedAt}
           />
           <ArtifactEvidenceBrowser companyId={selectedCompanyId} />
         </>

@@ -16,6 +16,7 @@ interface SidebarNavItemProps {
   textBadgeTone?: "default" | "amber";
   alert?: boolean;
   liveCount?: number;
+  sublabel?: string;
 }
 
 export function SidebarNavItem({
@@ -30,6 +31,7 @@ export function SidebarNavItem({
   textBadgeTone = "default",
   alert = false,
   liveCount,
+  sublabel,
 }: SidebarNavItemProps) {
   const { isMobile, setSidebarOpen } = useSidebar();
 
@@ -55,7 +57,16 @@ export function SidebarNavItem({
           <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-red-500 shadow-[0_0_0_2px_hsl(var(--background))]" />
         )}
       </span>
-      <span className="flex-1 truncate">{label}</span>
+      {sublabel ? (
+        <span className="flex min-w-0 flex-1 flex-col leading-tight">
+          <span className="truncate">{label}</span>
+          <span className="truncate text-[11px] font-normal text-muted-foreground">
+            {sublabel}
+          </span>
+        </span>
+      ) : (
+        <span className="flex-1 truncate">{label}</span>
+      )}
       {textBadge && (
         <span
           className={cn(

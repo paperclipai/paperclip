@@ -45,7 +45,6 @@ import {
 } from "./EaosChips";
 import {
   cleanupChipFor,
-  displayRedactedValue,
   isRedactedValue,
   lifecycleChipFor,
   providerChipFor,
@@ -598,10 +597,12 @@ function approvalStatusTone(status: string) {
   return "neutral" as const;
 }
 
-// Re-export for tests
+// Re-export for tests. `displayRedactedValue` is intentionally not re-exported
+// here — it is owned by `./eaos-state-labels` and already covered by
+// `eaos-state-labels.test.ts`, so re-exporting it from this module would just
+// be a leaked test helper.
 export const __testing = {
   hasRedactedValue,
-  displayRedactedValue,
   runStatusTone,
   livenessTone,
   workspaceStatusTone,

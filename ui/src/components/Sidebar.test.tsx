@@ -178,8 +178,18 @@ describe("Sidebar", () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     const root = await renderSidebar();
 
-    const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Agent OS");
-    expect(link?.getAttribute("href")).toBe("/agent-os");
+    const links = [...container.querySelectorAll("a")];
+    // Look up by href rather than textContent so the LET-337 disambiguation
+    // sublabel ("Kernel admin") does not break the match.
+    const agentOsLink = links.find((anchor) => anchor.getAttribute("href") === "/agent-os");
+    expect(agentOsLink).toBeDefined();
+    expect(agentOsLink?.textContent).toContain("Agent OS");
+    expect(agentOsLink?.textContent).toContain("Kernel admin");
+
+    const eaosLink = links.find((anchor) => anchor.getAttribute("href") === "/eaos");
+    expect(eaosLink).toBeDefined();
+    expect(eaosLink?.textContent).toContain("EAOS");
+    expect(eaosLink?.textContent).toContain("Sandbox & runtime preview");
 
     await act(async () => {
       root.unmount();

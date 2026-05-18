@@ -2,11 +2,12 @@
  * LET-326 Phase 4A frontend client for the read-only `/api/sandbox` REST + SSE
  * read-models added in LET-314 / LET-323.
  *
- * Preview-only consumer. This module never issues writes. The `validate` and
- * `previewEgress` calls hit POST endpoints, but the server has tagged both as
- * `previewOnly: true` (no Docker run, no socket open, no DNS) — they only
- * compute redacted decisions. UI callers that wrap these MUST surface the
- * `previewOnly` chip on results so operators are not misled.
+ * Read-only on both ends. This module never issues writes; only GET endpoints
+ * (`/providers`, `/leases`, plus the SSE stream) are wrapped here. Any future
+ * preview-only decision endpoints (e.g. `validate`, `previewEgress`) would
+ * land in a separate, explicitly-labeled module so the read-only property of
+ * this client stays explicit in code and so the `previewOnly` chip wiring
+ * lives next to the call site it gates.
  */
 
 import type { EnvironmentLease } from "@paperclipai/shared";
