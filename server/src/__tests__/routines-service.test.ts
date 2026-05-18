@@ -229,7 +229,14 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       responseSchema: { required: ["whatHappened", "why", "nextAction", "owner", "dueTime", "proofTarget"] },
       genericAnswerDenylist: ["monitoring", "awaiting directives"],
       nonGreenTriggerRule: { source: "car-loop-recovery" },
-      actionRouting: { missing_response: { actingOwnerAgentId: fixture.agentId } },
+      actionRouting: {
+        generator_nonproductive: {
+          ownerAgentId: fixture.agentId,
+          proofTarget: `/api/companies/${fixture.companyId}/issues/CAR-37`,
+          safeAction: "Create a proof-backed generator recovery action before the next standup.",
+        },
+        missing_response: { actingOwnerAgentId: fixture.agentId },
+      },
       disableSettings: { drainMode: "drain" },
       linkedRoutineId: fixture.routine.id,
       serviceRunId,
@@ -682,26 +689,23 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .where(eq(issues.originKind, "routine_execution"));
     expect(routineIssues).toHaveLength(0);
 
-    let inspection = await standups.inspect({
+    const inspection = await standups.inspect({
       companyId: fixture.companyId,
       policyKey: "car-daily",
       localDate: "2026-05-16",
     });
-    expect(inspection.standup_forced).toBe(false);
-    expect(inspection.missing_evidence).toContain("directive_delivery");
+    expect(inspection.standup_forced).toBe(true);
+    expect(inspection.action_taken).toBe(true);
+    expect(inspection.missing_evidence).not.toContain("directive_delivery");
+    expect(inspection.missing_evidence).not.toContain("action_delivery");
     expect(inspection.session?.routineId).toBe(fixture.routine.id);
     expect(inspection.session?.routineRunId).toBe(run.id);
     expect(inspection.session?.standupIssueId).toBe(run.linkedIssueId);
     expect(inspection.session?.triggerSource).toBe("manual");
     expect(inspection.participants).toHaveLength(1);
-    expect(inspection.outboxJobs.map((job) => job.jobType)).toEqual(["directive_wakeup"]);
-
-    await standups.processOutbox({
-      limit: 10,
-      deliver: async (job) => ({ ok: true, proofId: `delivered:${job.id}` }),
-    });
-    inspection = await standups.inspect({ sessionId: inspection.session!.id });
-    expect(inspection.standup_forced).toBe(true);
+    expect(inspection.actions).toHaveLength(1);
+    expect(inspection.outboxJobs.map((job) => job.jobType).sort()).toEqual(["action_wakeup", "directive_wakeup"]);
+    expect(inspection.outboxJobs.every((job) => job.status === "succeeded")).toBe(true);
   });
 
   it("fires linked standup routines from missed scheduled ticks", async () => {
@@ -728,6 +732,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(result.triggered).toBe(1);
     const [session] = await db.select().from(standupSessions);
     expect(session).toBeTruthy();
+    expect(session?.localDate).toBe("2026-05-16");
     const runs = await fixture.svc.listRuns(fixture.routine.id);
     expect(runs).toHaveLength(1);
     expect(runs[0]?.source).toBe("schedule");
@@ -735,6 +740,10 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(runs[0]?.linkedIssueId).toBe(session?.standupIssueId);
 
     const inspection = await standups.inspect({ sessionId: session!.id });
+    expect(inspection.standup_forced).toBe(true);
+    expect(inspection.action_taken).toBe(true);
+    expect(inspection.missing_evidence).not.toContain("directive_delivery");
+    expect(inspection.missing_evidence).not.toContain("action_delivery");
     expect(inspection.session?.triggerId).toBe(trigger.id);
     expect(inspection.session?.routineRunId).toBe(runs[0]?.id);
     expect(inspection.session?.triggerSource).toBe("schedule");
@@ -747,6 +756,37 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       scheduledFor: scheduledFor.toISOString(),
       missedRunRecovered: true,
     });
+  });
+
+  it("evaluates linked standup SLAs and drains escalation outbox on scheduler ticks with no due routines", async () => {
+    const fixture = await seedFixture();
+    const standups = await linkStandupPolicy(fixture);
+    const { trigger } = await fixture.svc.createTrigger(
+      fixture.routine.id,
+      {
+        kind: "schedule",
+        label: "Daily 08:30",
+        cronExpression: "30 8 * * *",
+        timezone: "America/Chicago",
+      },
+      {},
+    );
+    const scheduledFor = new Date("2026-05-16T13:30:00.000Z");
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: scheduledFor })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    await fixture.svc.tickScheduledTriggers(new Date("2026-05-16T13:31:00.000Z"));
+    const afterDeadline = await fixture.svc.tickScheduledTriggers(new Date("2026-05-16T15:16:00.000Z"));
+
+    expect(afterDeadline.triggered).toBe(0);
+    const [session] = await db.select().from(standupSessions);
+    const inspection = await standups.inspect({ sessionId: session!.id });
+    expect(inspection.escalations).toHaveLength(1);
+    expect(inspection.escalations[0]?.deliveryProofId).toBeTruthy();
+    expect(inspection.outboxJobs.some((job) => job.jobType === "escalation_wakeup" && job.status === "succeeded")).toBe(true);
+    expect(inspection.missing_evidence).not.toContain("escalation_delivery");
   });
 
   it("does not mark normal scheduled linked standups as missed recovery", async () => {
@@ -773,6 +813,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(result.triggered).toBe(1);
     const [session] = await db.select().from(standupSessions);
+    expect(session?.localDate).toBe("2026-05-16");
     const runs = await fixture.svc.listRuns(fixture.routine.id);
     expect(runs[0]?.triggeredAt.toISOString()).toBe(tickedAt.toISOString());
 

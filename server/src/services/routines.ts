@@ -19,7 +19,9 @@ import {
   routineRuns,
   routines,
   routineTriggers,
+  standupParticipants,
   standupPolicies,
+  standupSessions,
 } from "@paperclipai/db";
 import type {
   CreateRoutine,
@@ -81,6 +83,7 @@ const WEEKDAY_INDEX: Record<string, number> = {
 type Actor = { agentId?: string | null; userId?: string | null; runId?: string | null };
 type RoutineRow = typeof routines.$inferSelect;
 type RoutineTriggerRow = typeof routineTriggers.$inferSelect;
+type StandupPolicyRow = typeof standupPolicies.$inferSelect;
 
 interface RoutineTriggerSecretRestoreMaterial extends RoutineTriggerSecretMaterial {
   triggerId: string;
@@ -359,6 +362,60 @@ function nonEmptyRecordOr(value: unknown, fallback: Record<string, unknown>) {
 
 function optionalString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function wallTimeToDate(localDate: string, localTime: string, timeZone: string) {
+  const [year, month, day] = localDate.split("-").map(Number);
+  const [hour, minute] = localTime.split(":").map(Number);
+  let candidate = new Date(Date.UTC(year, month - 1, day, hour, minute, 0, 0));
+  const desiredAsUtc = Date.UTC(year, month - 1, day, hour, minute, 0, 0);
+
+  for (let i = 0; i < 3; i += 1) {
+    const parts = getZonedMinuteParts(candidate, timeZone);
+    const actualAsUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, 0, 0);
+    const diff = desiredAsUtc - actualAsUtc;
+    if (diff === 0) break;
+    candidate = new Date(candidate.getTime() + diff);
+  }
+
+  return candidate;
+}
+
+function localDateString(parts: Pick<ReturnType<typeof getZonedMinuteParts>, "year" | "month" | "day">) {
+  return [
+    String(parts.year).padStart(4, "0"),
+    String(parts.month).padStart(2, "0"),
+    String(parts.day).padStart(2, "0"),
+  ].join("-");
+}
+
+function addLocalDays(localDate: string, days: number) {
+  const [year, month, day] = localDate.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day + days, 12, 0, 0, 0)).toISOString().slice(0, 10);
+}
+
+function standupActionDueAt(now: Date, timeZone: string) {
+  const localParts = getZonedMinuteParts(now, timeZone);
+  const localDate = localDateString(localParts);
+  const noon = wallTimeToDate(localDate, "12:00", timeZone);
+  if (now < noon) return noon;
+  return wallTimeToDate(addLocalDays(localDate, 1), "08:00", timeZone);
+}
+
+function configuredStandupActionRoutes(policy: StandupPolicyRow) {
+  return Object.entries(asRecord(policy.actionRouting)).flatMap(([sourceBlockerKey, rawRoute]) => {
+    if (sourceBlockerKey === "missing_response") return [];
+    const route = asRecord(rawRoute);
+    const ownerAgentId = optionalString(route.ownerAgentId);
+    const proofTarget = optionalString(route.proofTarget);
+    if (!ownerAgentId || !proofTarget) return [];
+    return [{
+      sourceBlockerKey,
+      ownerAgentId,
+      proofTarget,
+      safeAction: route.safeAction,
+    }];
+  });
 }
 
 function isMissedScheduledOccurrence(scheduledFor: Date | null | undefined, firedAt: Date) {
@@ -1141,6 +1198,78 @@ export function routineService(
     return serviceRun.id;
   }
 
+  async function createConfiguredStandupActions(input: {
+    policy: StandupPolicyRow;
+    inspection: Awaited<ReturnType<typeof standupSvc.fireStandup>>;
+    serviceRunId: string;
+    triggeredAt: Date;
+  }) {
+    const session = input.inspection.session;
+    if (!session) return [];
+    const dueAt = standupActionDueAt(input.triggeredAt, input.policy.timezone).toISOString();
+    const actions = [];
+    for (const route of configuredStandupActionRoutes(input.policy)) {
+      actions.push(await standupSvc.createAction({
+        sessionId: session.id,
+        ownerAgentId: route.ownerAgentId,
+        sourceBlockerKey: route.sourceBlockerKey,
+        canonicalKey: `${input.policy.policyKey}:${session.localDate}:${route.sourceBlockerKey}:${route.ownerAgentId}`,
+        dueAt,
+        proofTarget: route.proofTarget,
+        timingState: "before_next_standup",
+        status: "open",
+        actionJson: {
+          source: "paperclip:routine_standup",
+          safeAction: route.safeAction ?? null,
+        },
+        serviceRunId: input.serviceRunId,
+      }));
+    }
+    return actions;
+  }
+
+  async function processStandupSchedulerWork(now: Date) {
+    const dueRows = await db
+      .select({
+        sessionId: standupParticipants.sessionId,
+        serviceRunId: standupSessions.serviceRunId,
+      })
+      .from(standupParticipants)
+      .innerJoin(standupSessions, eq(standupParticipants.sessionId, standupSessions.id))
+      .where(
+        and(
+          inArray(standupParticipants.responseStatus, ["pending", "rejected", "missing"]),
+          lte(standupParticipants.responseDueAt, now),
+          inArray(standupSessions.status, ["forced", "completed"]),
+        ),
+      )
+      .orderBy(asc(standupParticipants.responseDueAt), asc(standupParticipants.createdAt), asc(standupParticipants.id))
+      .limit(100);
+
+    const seenSessionIds = new Set<string>();
+    for (const row of dueRows) {
+      if (!row.serviceRunId) continue;
+      if (seenSessionIds.has(row.sessionId)) continue;
+      seenSessionIds.add(row.sessionId);
+      await standupSvc.evaluateSla({
+        sessionId: row.sessionId,
+        now: now.toISOString(),
+        serviceRunId: row.serviceRunId,
+      });
+    }
+
+    const processed = await standupSvc.processOutbox({
+      now,
+      limit: 100,
+      deliver: standupSvc.deliverIssueAssignment,
+    });
+
+    return {
+      evaluatedSessions: seenSessionIds.size,
+      processedOutboxJobs: processed.length,
+    };
+  }
+
   async function dispatchStandupRoutineRun(input: DispatchRoutineRunInput, policy: typeof standupPolicies.$inferSelect) {
     const claim = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
@@ -1218,12 +1347,16 @@ export function routineService(
       source: "routine",
       status: "assessment_missing",
     });
+    const standupLocalDate = optionalString(payload.localDate) ??
+      (input.source === "schedule" && scheduledForDate
+        ? localDateString(getZonedMinuteParts(scheduledForDate, policy.timezone))
+        : undefined);
 
     try {
       const inspection = await standupSvc.fireStandup(input.routine.companyId, {
         policyKey: policy.policyKey,
         standupType: policy.standupType,
-        localDate: optionalString(payload.localDate),
+        localDate: standupLocalDate,
         idempotencyKey: input.idempotencyKey ?? undefined,
         routineId: input.routine.id,
         triggerId: input.trigger?.id ?? null,
@@ -1242,15 +1375,32 @@ export function routineService(
         },
         serviceRunId,
       });
-      const linkedIssueId = inspection.session?.standupIssueId ?? null;
+      const sessionId = inspection.session?.id ?? null;
+      await createConfiguredStandupActions({
+        policy,
+        inspection,
+        serviceRunId,
+        triggeredAt: claim.triggeredAt,
+      });
+      if (sessionId) {
+        await standupSvc.processOutbox({
+          companyId: input.routine.companyId,
+          sessionId,
+          serviceRunId,
+          limit: 100,
+          deliver: standupSvc.deliverIssueAssignment,
+        });
+      }
+      const finalInspection = sessionId ? await standupSvc.inspect({ sessionId }) : inspection;
+      const linkedIssueId = finalInspection.session?.standupIssueId ?? null;
       const sessionFired =
         !!linkedIssueId &&
-        ["forced", "completed"].includes(inspection.session?.status ?? "") &&
-        inspection.participants.length > 0 &&
-        inspection.participants.every((participant) => !!participant.directiveIssueId);
+        ["forced", "completed"].includes(finalInspection.session?.status ?? "") &&
+        finalInspection.participants.length > 0 &&
+        finalInspection.participants.every((participant) => !!participant.directiveIssueId);
       const status = sessionFired ? "issue_created" : "failed";
       const failureReason = status === "failed"
-        ? inspection.session?.failureReason ?? `standup_fire_missing:${inspection.missing_evidence.join(",") || "standup_forced"}`
+        ? finalInspection.session?.failureReason ?? `standup_fire_missing:${finalInspection.missing_evidence.join(",") || "standup_forced"}`
         : null;
       const updated = await finalizeRun(claim.run.id, {
         status,
@@ -2525,6 +2675,8 @@ export function routineService(
     },
 
     tickScheduledTriggers: async (now: Date = new Date()) => {
+      await processStandupSchedulerWork(now);
+
       const due = await db
         .select({
           trigger: routineTriggers,
@@ -2591,6 +2743,8 @@ export function routineService(
           triggered += 1;
         }
       }
+
+      await processStandupSchedulerWork(now);
 
       return { triggered };
     },
