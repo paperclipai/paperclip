@@ -27,6 +27,18 @@ const mockSecretService = vi.hoisted(() => ({
   normalizeHireApprovalPayloadForPersistence: vi.fn(),
 }));
 
+const mockCompanyService = vi.hoisted(() => ({
+  getById: vi.fn(async () => null),
+}));
+
+const mockAgentService = vi.hoisted(() => ({
+  getById: vi.fn(async () => null),
+}));
+
+const mockIssueService = vi.hoisted(() => ({
+  addComment: vi.fn(async () => undefined),
+}));
+
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
@@ -36,6 +48,9 @@ function registerModuleMocks() {
     issueApprovalService: () => mockIssueApprovalService,
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
+    companyService: () => mockCompanyService,
+    agentService: () => mockAgentService,
+    issueService: () => mockIssueService,
   }));
 }
 
