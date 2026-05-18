@@ -64,6 +64,10 @@ const mockRoutineService = vi.hoisted(() => ({
   syncRunStatusForIssue: vi.fn(async () => undefined),
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  listForIssue: vi.fn(async () => []),
+  acceptInteraction: vi.fn(async () => ({ interaction: null, createdIssues: [] })),
+  rejectInteraction: vi.fn(async () => null),
+  getById: vi.fn(async () => null),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
@@ -196,6 +200,8 @@ function makeIssue(status: "todo" | "done" | "blocked" | "cancelled" | "in_progr
     assigneeAgentId: "22222222-2222-4222-8222-222222222222",
     assigneeUserId: null,
     createdByUserId: "local-board",
+    projectId: null,
+    goalId: null,
     identifier: "PAP-580",
     title: "Comment reopen default",
   };
@@ -242,6 +248,12 @@ describe.sequential("issue comment reopen routes", () => {
     mockInstanceSettingsService.get.mockReset();
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockRoutineService.syncRunStatusForIssue.mockReset();
+    mockIssueThreadInteractionService.listForIssue.mockReset();
+    mockIssueThreadInteractionService.acceptInteraction.mockReset();
+    mockIssueThreadInteractionService.rejectInteraction.mockReset();
+    mockIssueThreadInteractionService.getById.mockReset();
+    mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockReset();
+    mockIssueThreadInteractionService.expireStaleRequestConfirmationsForIssueDocument.mockReset();
     mockIssueRecoveryActionService.getActiveForIssue.mockReset();
     mockIssueTreeControlService.getActivePauseHoldGate.mockReset();
     mockTxInsertValues.mockReset();
@@ -279,6 +291,40 @@ describe.sequential("issue comment reopen routes", () => {
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
+    mockIssueThreadInteractionService.acceptInteraction.mockResolvedValue({
+      interaction: {
+        id: "interaction-review",
+        companyId: "company-1",
+        issueId: "11111111-1111-4111-8111-111111111111",
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "none",
+        payload: { version: 1, prompt: "Approve this review?" },
+        result: { version: 1, outcome: "accepted" },
+        createdAt: "2026-05-18T09:00:00.000Z",
+        updatedAt: "2026-05-18T09:05:00.000Z",
+        resolvedAt: "2026-05-18T09:05:00.000Z",
+      },
+      createdIssues: [],
+      continuationIssue: null,
+    });
+    mockIssueThreadInteractionService.rejectInteraction.mockResolvedValue({
+      id: "interaction-review",
+      companyId: "company-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      kind: "request_confirmation",
+      status: "rejected",
+      continuationPolicy: "none",
+      payload: { version: 1, prompt: "Approve this review?" },
+      result: { version: 1, outcome: "rejected", reason: "Needs changes" },
+      createdAt: "2026-05-18T09:00:00.000Z",
+      updatedAt: "2026-05-18T09:05:00.000Z",
+      resolvedAt: "2026-05-18T09:05:00.000Z",
+    });
+    mockIssueThreadInteractionService.getById.mockResolvedValue(null);
+    mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([]);
+    mockIssueThreadInteractionService.expireStaleRequestConfirmationsForIssueDocument.mockResolvedValue([]);
     mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(null);
     mockIssueTreeControlService.getActivePauseHoldGate.mockResolvedValue(null);
     mockIssueService.addComment.mockResolvedValue({
@@ -1336,5 +1382,164 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
     ));
+  });
+
+  it("auto-accepts pending request confirmations when the assigned CTO reviewer approves by closeout", async () => {
+    const executorAgentId = "22222222-2222-4222-8222-222222222222";
+    const ctoReviewerAgentId = "33333333-3333-4333-8333-333333333333";
+    const policy = await normalizePolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "review",
+          participants: [{ type: "agent", agentId: ctoReviewerAgentId }],
+        },
+      ],
+    })!;
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_review",
+      assigneeAgentId: ctoReviewerAgentId,
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: ctoReviewerAgentId },
+        returnAssignee: { type: "agent", agentId: executorAgentId },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([
+      {
+        id: "interaction-review",
+        companyId: "company-1",
+        issueId: issue.id,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "none",
+        createdByAgentId: executorAgentId,
+        createdByUserId: null,
+        payload: { version: 1, prompt: "CTO review: approve this closeout?" },
+        result: null,
+        createdAt: "2026-05-18T09:00:00.000Z",
+        updatedAt: "2026-05-18T09:00:00.000Z",
+      },
+    ]);
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: ctoReviewerAgentId,
+        companyId: "company-1",
+        runId: "run-review",
+      }),
+    )
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        status: "done",
+        comment: "Approved: CTO review complete.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueThreadInteractionService.acceptInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: issue.id,
+        status: "done",
+      }),
+      "interaction-review",
+      {},
+      { agentId: ctoReviewerAgentId, userId: null },
+    );
+    expect(mockIssueThreadInteractionService.rejectInteraction).not.toHaveBeenCalled();
+  });
+
+  it("auto-rejects pending request confirmations when the assigned CTO reviewer requests changes", async () => {
+    const executorAgentId = "22222222-2222-4222-8222-222222222222";
+    const ctoReviewerAgentId = "33333333-3333-4333-8333-333333333333";
+    const policy = await normalizePolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "review",
+          participants: [{ type: "agent", agentId: ctoReviewerAgentId }],
+        },
+      ],
+    })!;
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_review",
+      assigneeAgentId: ctoReviewerAgentId,
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: ctoReviewerAgentId },
+        returnAssignee: { type: "agent", agentId: executorAgentId },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([
+      {
+        id: "interaction-review",
+        companyId: "company-1",
+        issueId: issue.id,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "none",
+        createdByAgentId: executorAgentId,
+        createdByUserId: null,
+        payload: { version: 1, prompt: "CTO review: approve this closeout?" },
+        result: null,
+        createdAt: "2026-05-18T09:00:00.000Z",
+        updatedAt: "2026-05-18T09:00:00.000Z",
+      },
+    ]);
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: ctoReviewerAgentId,
+        companyId: "company-1",
+        runId: "run-review",
+      }),
+    )
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        status: "in_progress",
+        comment: "Needs changes: document deployment verification.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueThreadInteractionService.rejectInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: issue.id,
+        status: "in_progress",
+        assigneeAgentId: executorAgentId,
+      }),
+      "interaction-review",
+      { reason: "Needs changes: document deployment verification." },
+      { agentId: ctoReviewerAgentId, userId: null },
+    );
+    expect(mockIssueThreadInteractionService.acceptInteraction).not.toHaveBeenCalled();
   });
 });

@@ -70,6 +70,8 @@ Use your tools and capabilities to complete the task. If the issue is actionable
 
 Leave durable progress in comments, documents, or work products, and include the next action before exiting. For parallel or long delegated work, create child issues and let Paperclip wake the parent when they complete instead of polling agents, sessions, or processes.
 
+When the next step is an agent or manager review, use an execution-policy review stage with that reviewer as the participant. `request_confirmation` is for board/user yes-no decisions, not ordinary CTO/CEO/CMO review handoffs.
+
 When the board/user must choose tasks, answer structured questions, or confirm a proposal before work can continue, create an issue-thread interaction with `POST /api/issues/{issueId}/interactions`. Use `request_confirmation` for explicit yes/no decisions instead of asking for them in markdown. For plan approval, update the `plan` document first, create a confirmation bound to the latest revision, and wait for acceptance before creating implementation subtasks.
 
 ### Step 8: Update Status
@@ -89,6 +91,8 @@ PATCH /api/issues/{issueId}
 Headers: X-Paperclip-Run-Id: {runId}
 { "status": "blocked", "comment": "What is blocked, why, and who needs to unblock it." }
 ```
+
+Queue-hygiene routing is deliberately narrow. An agent with task-assignment permission may route a non-board-owned `in_review` issue to the named reviewer with one `PATCH /api/issues/{issueId}` request containing only the new assignee, optional `status: "in_review"`, and a routing `comment`. Issues already assigned to `local-board` stay protected for board action.
 
 ### Step 9: Delegate if Needed
 
